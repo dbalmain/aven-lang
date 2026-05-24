@@ -1,0 +1,25 @@
+[package]
+name = "aven"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "aven"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+aven-core.workspace = true
+aven-fmt.workspace = true
+aven-lsp.workspace = true
+aven-parser.workspace = true
+clap.workspace = true
+codespan-reporting.workspace = true
+tokio.workspace = true
+
