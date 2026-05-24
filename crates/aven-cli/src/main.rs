@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use codespan_reporting::diagnostic::{Diagnostic, Label, Severity as CodespanSeverity};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-use codespan_reporting::term::{Config, emit};
+use codespan_reporting::term::{Config, emit_to_write_style};
 
 #[derive(Debug, Parser)]
 #[command(name = "aven")]
@@ -95,7 +95,7 @@ fn print_diagnostics(path: &Path, source: &str, diagnostics: &[AvenDiagnostic]) 
 
     for diagnostic in diagnostics {
         let codespan_diagnostic = to_codespan_diagnostic(file_id, diagnostic);
-        emit(&mut writer.lock(), &config, &files, &codespan_diagnostic)
+        emit_to_write_style(&mut writer.lock(), &config, &files, &codespan_diagnostic)
             .context("failed to print diagnostic")?;
     }
 
