@@ -18,4 +18,12 @@ mod tests {
         assert_eq!(format_source("x = 1   \n\n"), "x = 1\n\n");
         assert_eq!(format_source("x = 1"), "x = 1\n");
     }
+
+    #[test]
+    fn preserves_existing_leading_indentation() {
+        assert_eq!(
+            format_source("x =\n  y = 1   \n    z = 2\t\n"),
+            "x =\n  y = 1\n    z = 2\n"
+        );
+    }
 }

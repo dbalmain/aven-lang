@@ -21,6 +21,7 @@ pub struct Binding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expr {
+    // TODO: replace this source slice with a real expression AST in the parser milestone.
     pub text: String,
     pub span: Span,
 }
@@ -87,6 +88,17 @@ impl Parser<'_> {
 
         let leading = code.len() - code.trim_start().len();
         if leading > 0 {
+            self.diagnostics.push(
+                Diagnostic::error("unexpected indentation")
+                    .with_code("parse.unexpected-indentation")
+                    .with_label(Label::primary(
+                        Span::new(line_start, line_start + leading),
+                        "indented blocks are not supported by the starter parser yet",
+                    ))
+                    .with_note(
+                        "indented blocks will be supported in milestone 3 (layout and blocks)",
+                    ),
+            );
             return;
         }
 
@@ -293,12 +305,19 @@ fn find_top_level_equals(code: &str) -> Option<usize> {
             '"' => in_string = true,
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            '=' if depth == 0 => return Some(index),
+            '=' if depth == 0 && is_binding_equals(code, index) => return Some(index),
             _ => {}
         }
     }
 
     None
+}
+
+fn is_binding_equals(code: &str, index: usize) -> bool {
+    let previous = code[..index].chars().next_back();
+    let next = code[index + 1..].chars().next();
+
+    !matches!(previous, Some('=' | ':' | '!' | '<' | '>')) && !matches!(next, Some('=' | '>'))
 }
 
 fn is_identifier(text: &str) -> bool {
@@ -334,6 +353,34 @@ mod tests {
         assert_eq!(
             output.diagnostics[0].code.as_deref(),
             Some("parse.unclosed-delimiter")
+        );
+    }
+
+    #[test]
+    fn reports_indented_lines() {
+        let output = parse_module("  value = 1\n");
+
+        assert_eq!(output.diagnostics.len(), 1);
+        assert_eq!(
+            output.diagnostics[0].code.as_deref(),
+            Some("parse.unexpected-indentation")
+        );
+    }
+
+    #[test]
+    fn does_not_parse_comparison_operators_as_bindings() {
+        let output = parse_module(
+            "left == right\nnext := value\nlambda => body\nleft != right\nleft <= right\nleft >= right\n",
+        );
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(output.module.items.len(), 6);
+        assert!(
+            output
+                .module
+                .items
+                .iter()
+                .all(|item| matches!(item, Item::Expr(_)))
         );
     }
 }

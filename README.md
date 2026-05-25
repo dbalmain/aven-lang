@@ -26,3 +26,7 @@ cargo run -p aven -- lsp
 - `crates/aven-lsp` - language server implementation
 - `crates/aven-cli` - `aven` command-line interface
 
+## Plans
+
+- [`docs/tooling-first-plan.md`](docs/tooling-first-plan.md) - parser,
+  diagnostics, formatter, CLI, and LSP milestones

@@ -66,7 +66,10 @@ fn check(path: &Path) -> Result<()> {
         bail!("check failed");
     }
 
-    println!("{}: ok", path.display());
+    println!(
+        "{}: ok (parse checks only; semantic analysis is not implemented yet)",
+        path.display()
+    );
     Ok(())
 }
 
@@ -121,9 +124,14 @@ fn to_codespan_diagnostic(file_id: usize, diagnostic: &AvenDiagnostic) -> Diagno
         })
         .collect();
 
-    Diagnostic::new(severity)
-        .with_code(diagnostic.code.as_deref().unwrap_or("aven"))
+    let mut result = Diagnostic::new(severity)
         .with_message(diagnostic.message.clone())
         .with_labels(labels)
-        .with_notes(diagnostic.notes.clone())
+        .with_notes(diagnostic.notes.clone());
+
+    if let Some(code) = &diagnostic.code {
+        result = result.with_code(code);
+    }
+
+    result
 }

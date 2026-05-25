@@ -5,8 +5,9 @@ use aven_core::{Diagnostic as AvenDiagnostic, Severity, Span};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, OneOf, Position, Range,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    DocumentFormattingParams, InitializeParams, InitializeResult, InitializedParams, MessageType,
+    OneOf, Position, Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -72,6 +73,22 @@ impl LanguageServer for Backend {
         self.set_document(uri.clone(), text.clone());
         self.publish_diagnostics(uri, &text).await;
     }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let Some(source) = self.document_text(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let formatted = aven_fmt::format_source(&source);
+        if formatted == source {
+            return Ok(Some(Vec::new()));
+        }
+
+        Ok(Some(vec![TextEdit {
+            range: full_document_range(&source),
+            new_text: formatted,
+        }]))
+    }
 }
 
 impl Backend {
@@ -79,6 +96,14 @@ impl Backend {
         if let Ok(mut documents) = self.documents.lock() {
             documents.insert(uri, text);
         }
+    }
+
+    fn document_text(&self, uri: &Url) -> Option<String> {
+        // A poisoned mutex degrades to "document missing" rather than crashing the LSP.
+        self.documents
+            .lock()
+            .ok()
+            .and_then(|documents| documents.get(uri).cloned())
     }
 
     async fn publish_diagnostics(&self, uri: Url, text: &str) {
@@ -126,6 +151,16 @@ fn span_to_range(source: &str, span: Span) -> Range {
     Range {
         start: offset_to_position(source, span.start),
         end: offset_to_position(source, span.end.max(span.start + 1)),
+    }
+}
+
+fn full_document_range(source: &str) -> Range {
+    Range {
+        start: Position {
+            line: 0,
+            character: 0,
+        },
+        end: offset_to_position(source, source.len()),
     }
 }
 
