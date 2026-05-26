@@ -95,6 +95,10 @@ Status: in progress
 
 Goal: make source files and diagnostics robust enough for parser work.
 
+Progress: fixture-based parser diagnostic assertions landed alongside
+Milestone 8 setup. The "tests assert structured diagnostics, not terminal
+snapshots" done-when is satisfied.
+
 Even though incremental compilation is deferred, this milestone should make the
 data-shape decisions that keep incremental tooling possible:
 
@@ -413,9 +417,13 @@ Done when:
 
 ## Milestone 8: Test Harness And Fixtures
 
-Status: queued
+Status: in progress
 
 Goal: make syntax and diagnostic changes reviewable.
+
+Fixture mechanism: hand-rolled goldenfile assertions against structured
+diagnostic summaries. Parser fixtures live under
+`crates/aven-parser/tests/fixtures/parser/`.
 
 Tasks:
 

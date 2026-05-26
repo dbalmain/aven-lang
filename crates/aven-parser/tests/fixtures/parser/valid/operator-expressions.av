@@ -1,0 +1,7 @@
+left == right
+next := value
+lambda => body
+left != right
+left <= right
+left >= right
+

@@ -1,0 +1,2 @@
+error parse.invalid-binding-name: invalid binding name
+  label 0..2: binding names must start with a letter or `_`

@@ -1,0 +1,2 @@
+error parse.unterminated-string: unterminated string literal
+  label 4..5: string starts here

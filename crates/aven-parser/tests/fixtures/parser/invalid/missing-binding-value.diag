@@ -1,0 +1,2 @@
+error parse.missing-binding-value: binding is missing a value
+  label 7..7: expected an expression after `=`
