@@ -1,13 +1,12 @@
 use std::fs;
+use std::io::{self, IsTerminal};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use ariadne::{Config as AriadneConfig, Label as AriadneLabel, Report, ReportKind, Source};
 use aven_core::{Diagnostic as AvenDiagnostic, Severity};
 use clap::{Parser, Subcommand};
-use codespan_reporting::diagnostic::{Diagnostic, Label, Severity as CodespanSeverity};
-use codespan_reporting::files::SimpleFiles;
-use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-use codespan_reporting::term::{Config, emit_to_write_style};
 
 #[derive(Debug, Parser)]
 #[command(name = "aven")]
@@ -91,47 +90,85 @@ fn fmt(path: &Path, check: bool) -> Result<()> {
 }
 
 fn print_diagnostics(path: &Path, source: &str, diagnostics: &[AvenDiagnostic]) -> Result<()> {
-    let mut files = SimpleFiles::new();
-    let file_id = files.add(path.display().to_string(), source);
-    let writer = StandardStream::stderr(ColorChoice::Auto);
-    let config = Config::default();
+    let source_id = path.display().to_string();
+    let use_color = io::stderr().is_terminal();
 
     for diagnostic in diagnostics {
-        let codespan_diagnostic = to_codespan_diagnostic(file_id, diagnostic);
-        emit_to_write_style(&mut writer.lock(), &config, &files, &codespan_diagnostic)
+        print_diagnostic(&source_id, source, diagnostic, use_color)
             .context("failed to print diagnostic")?;
     }
 
     Ok(())
 }
 
-fn to_codespan_diagnostic(file_id: usize, diagnostic: &AvenDiagnostic) -> Diagnostic<usize> {
-    let severity = match diagnostic.severity {
-        Severity::Error => CodespanSeverity::Error,
-        Severity::Warning => CodespanSeverity::Warning,
-        Severity::Note => CodespanSeverity::Note,
+fn print_diagnostic(
+    source_id: &str,
+    source: &str,
+    diagnostic: &AvenDiagnostic,
+    use_color: bool,
+) -> std::io::Result<()> {
+    debug_assert!(
+        !diagnostic.labels.is_empty(),
+        "diagnostic `{}` has no labels",
+        diagnostic.code.as_deref().unwrap_or("unclassified")
+    );
+
+    let primary_span = diagnostic
+        .labels
+        .first()
+        .map(|label| label.span)
+        .unwrap_or_else(|| aven_core::Span::point(source.len()));
+
+    let kind = match diagnostic.severity {
+        Severity::Error => ReportKind::Error,
+        Severity::Warning => ReportKind::Warning,
+        Severity::Note => ReportKind::Advice,
     };
 
-    let labels = diagnostic
-        .labels
-        .iter()
-        .map(|label| {
-            Label::primary(
-                file_id,
-                label.span.start..label.span.end.max(label.span.start + 1),
-            )
-            .with_message(label.message.clone())
-        })
-        .collect();
-
-    let mut result = Diagnostic::new(severity)
-        .with_message(diagnostic.message.clone())
-        .with_labels(labels)
-        .with_notes(diagnostic.notes.clone());
+    let mut builder = Report::build(kind, (source_id, span_range(source, primary_span)))
+        .with_config(AriadneConfig::default().with_color(use_color))
+        .with_message(diagnostic.message.clone());
 
     if let Some(code) = &diagnostic.code {
-        result = result.with_code(code);
+        builder = builder.with_code(code);
     }
 
-    result
+    for label in &diagnostic.labels {
+        builder = builder.with_label(
+            AriadneLabel::new((source_id, span_range(source, label.span)))
+                .with_message(label.message.clone()),
+        );
+    }
+
+    for note in &diagnostic.notes {
+        builder = builder.with_note(note);
+    }
+
+    builder.finish().eprint((source_id, Source::from(source)))
+}
+
+fn span_range(source: &str, span: aven_core::Span) -> Range<usize> {
+    debug_assert!(
+        span.start <= span.end,
+        "invalid span: start {} is after end {}",
+        span.start,
+        span.end
+    );
+    debug_assert!(
+        span.start <= source.len(),
+        "invalid span: start {} is beyond source length {}",
+        span.start,
+        source.len()
+    );
+    debug_assert!(
+        span.end <= source.len(),
+        "invalid span: end {} is beyond source length {}",
+        span.end,
+        source.len()
+    );
+
+    let start = span.start.min(source.len());
+    let end = span.end.min(source.len()).max(start);
+
+    start..end
 }

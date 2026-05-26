@@ -91,7 +91,7 @@ belongs to the lexer/layout/parser milestones.
 
 ## Milestone 1: Source And Diagnostic Infrastructure
 
-Status: queued
+Status: in progress
 
 Goal: make source files and diagnostics robust enough for parser work.
 
