@@ -11,4 +11,3 @@ workspace = true
 
 [dependencies]
 aven-core.workspace = true
-

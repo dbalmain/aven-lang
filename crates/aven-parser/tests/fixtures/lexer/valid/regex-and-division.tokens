@@ -1,0 +1,10 @@
+0..5 identifier `match`
+6..7 operator `=`
+8..17 regex `/a[\/]+/i`
+17..18 newline
+18..23 identifier `ratio`
+24..25 operator `=`
+26..27 identifier `a`
+28..29 operator `/`
+30..31 identifier `b`
+31..32 newline

@@ -1,0 +1,4 @@
+Name = "Aven"
+  value = 42 # comment
+## doc
+@std/Text

@@ -24,6 +24,12 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Print lexer tokens for debugging parser work.
+    Tokens {
+        /// Source file to tokenize.
+        path: PathBuf,
+    },
+
     /// Format a source file.
     Fmt {
         /// Check formatting without writing changes.
@@ -44,6 +50,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Check { path } => check(&path),
+        Command::Tokens { path } => tokens(&path),
         Command::Fmt { check, path } => fmt(&path, check),
         Command::Lsp => {
             aven_lsp::run_stdio().await;
@@ -69,6 +76,31 @@ fn check(path: &Path) -> Result<()> {
         "{}: ok (parse checks only; semantic analysis is not implemented yet)",
         path.display()
     );
+    Ok(())
+}
+
+fn tokens(path: &Path) -> Result<()> {
+    let source =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let output = aven_parser::lex_source(&source);
+
+    if !output.diagnostics.is_empty() {
+        print_diagnostics(path, &source, &output.diagnostics)?;
+    }
+
+    for token in output.tokens {
+        println!(
+            "{}..{} {}",
+            token.span.start,
+            token.span.end,
+            token.kind.describe()
+        );
+    }
+
+    if output.diagnostics.iter().any(AvenDiagnostic::is_error) {
+        bail!("tokenization failed");
+    }
+
     Ok(())
 }
 

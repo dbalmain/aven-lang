@@ -1,0 +1,3 @@
+error lex.unterminated-regex: unterminated regex literal
+  label 10..14: regex starts here
+  note: close the regex with `/`, or use `Regex.compile(pattern)` for a dynamic pattern.

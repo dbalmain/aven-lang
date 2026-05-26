@@ -1,0 +1,10 @@
+0..11 path `./data.json`
+11..12 newline
+12..24 path `../parent.av`
+24..25 newline
+25..37 path `$/project.av`
+37..38 newline
+38..47 path `~/home.av`
+47..48 newline
+48..61 path `//absolute.av`
+61..62 newline

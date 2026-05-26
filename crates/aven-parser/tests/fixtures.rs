@@ -4,12 +4,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use aven_core::{Diagnostic, Severity};
+use aven_parser::Token;
 
-const FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parser");
+const PARSER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parser");
+const LEXER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/lexer");
 
 #[test]
 fn valid_parser_fixtures_have_no_diagnostics() -> Result<(), Box<dyn Error>> {
-    for path in fixture_files("valid")? {
+    for path in fixture_files(PARSER_FIXTURE_ROOT, "valid")? {
         let source = fs::read_to_string(&path)?;
         let output = aven_parser::parse_module(&source);
 
@@ -26,7 +28,7 @@ fn valid_parser_fixtures_have_no_diagnostics() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn invalid_parser_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Error>> {
-    for path in fixture_files("invalid")? {
+    for path in fixture_files(PARSER_FIXTURE_ROOT, "invalid")? {
         let source = fs::read_to_string(&path)?;
         let output = aven_parser::parse_module(&source);
         let actual = render_diagnostics(&output.diagnostics);
@@ -45,9 +47,57 @@ fn invalid_parser_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Er
     Ok(())
 }
 
-fn fixture_files(group: &str) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+#[test]
+fn valid_lexer_fixtures_match_expected_tokens() -> Result<(), Box<dyn Error>> {
+    for path in fixture_files(LEXER_FIXTURE_ROOT, "valid")? {
+        let source = fs::read_to_string(&path)?;
+        let output = aven_parser::lex_source(&source);
+        let actual = render_tokens(&output.tokens);
+        let expected_path = path.with_extension("tokens");
+        let expected = fs::read_to_string(&expected_path)?;
+
+        assert!(
+            output.diagnostics.is_empty(),
+            "{} unexpectedly produced diagnostics:\n{}",
+            path.display(),
+            render_diagnostics(&output.diagnostics)
+        );
+        assert_eq!(
+            actual,
+            expected,
+            "tokens for {} did not match {}",
+            path.display(),
+            expected_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn invalid_lexer_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Error>> {
+    for path in fixture_files(LEXER_FIXTURE_ROOT, "invalid")? {
+        let source = fs::read_to_string(&path)?;
+        let output = aven_parser::lex_source(&source);
+        let actual = render_diagnostics(&output.diagnostics);
+        let expected_path = path.with_extension("diag");
+        let expected = fs::read_to_string(&expected_path)?;
+
+        assert_eq!(
+            actual,
+            expected,
+            "diagnostics for {} did not match {}",
+            path.display(),
+            expected_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn fixture_files(root: &str, group: &str) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut paths = Vec::new();
-    for entry in fs::read_dir(Path::new(FIXTURE_ROOT).join(group))? {
+    for entry in fs::read_dir(Path::new(root).join(group))? {
         let path = entry?.path();
         if path.extension().and_then(|extension| extension.to_str()) == Some("av") {
             paths.push(path);
@@ -55,6 +105,22 @@ fn fixture_files(group: &str) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     }
     paths.sort();
     Ok(paths)
+}
+
+fn render_tokens(tokens: &[Token]) -> String {
+    let mut output = String::new();
+
+    for token in tokens {
+        let _ = writeln!(
+            output,
+            "{}..{} {}",
+            token.span.start,
+            token.span.end,
+            token.kind.describe()
+        );
+    }
+
+    output
 }
 
 fn render_diagnostics(diagnostics: &[Diagnostic]) -> String {

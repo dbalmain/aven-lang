@@ -1,0 +1,3 @@
+error lex.unexpected-character: unexpected character `€`
+  label 7..10: this character is not valid syntax
+  note: see the lexical grammar section of the language spec for accepted source characters

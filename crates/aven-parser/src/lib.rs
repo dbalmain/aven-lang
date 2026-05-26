@@ -1,5 +1,9 @@
 use aven_core::{Diagnostic, Label, Span};
 
+mod lexer;
+
+pub use lexer::{LexOutput, Token, TokenKind, lex_source};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub items: Vec<Item>,
@@ -178,6 +182,9 @@ impl Parser<'_> {
         }));
     }
 
+    // TODO(milestone-3): this starter parser duplicates lexer scanning for
+    // delimiters and strings. Remove it once parsing consumes the lexer/layout
+    // token stream.
     fn scan_delimiters(&mut self, line_start: usize, code: &str) {
         let mut chars = code.char_indices().peekable();
 
@@ -258,6 +265,9 @@ impl Parser<'_> {
     }
 }
 
+// TODO(milestone-3): comment stripping and top-level `=` detection are
+// transitional starter-parser helpers. Remove them once parsing consumes the
+// lexer/layout token stream.
 fn strip_comment(line: &str) -> usize {
     let mut escaped = false;
     let mut in_string = false;

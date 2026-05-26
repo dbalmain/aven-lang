@@ -44,24 +44,31 @@ parse structure, not name resolution, types, or runtime semantics.
 
 Use three layers:
 
-- `chumsky` for lexing/parsing and error recovery
+- a hand-written raw lexer for byte-accurate spans, source trivia, and layout
+  inputs
+- a small hand-written layout pass that turns indentation widths into block
+  tokens
+- a parser implementation chosen at Milestone 4a
 - `ariadne` for terminal diagnostic rendering
 - `aven-core` as the stable internal diagnostic/source model
 
-`chumsky` and `ariadne` should not leak through public crate boundaries unless
-there is a strong reason. A future parser replacement should not force a rewrite
-of the CLI, LSP, formatter, or test harness.
+Parser implementation is deliberately deferred. The default assumption is a
+hand-written recursive descent parser over tokens because it keeps errors,
+recovery, and layout handling explicit. Parser-combinator libraries such as
+`chumsky` can still be evaluated when Milestone 4a starts, but they should not
+be added as dependencies until production parser code uses them.
+
+`ariadne` should not leak through public crate boundaries unless there is a
+strong reason. A future parser replacement should not force a rewrite of the
+CLI, LSP, formatter, or test harness.
 
 Current starting versions to evaluate:
 
-- `chumsky = "1.0.0-alpha.8"`
 - `ariadne = "0.6.0"`
 
-These are pragmatic starting choices, not permanent architecture. `chumsky`
-has useful recovery and parser-combinator ergonomics, but its compile times,
-generic-heavy Rust errors, and alpha API stability are real risks. Pin the exact
-version when adding it, keep it behind `aven-parser`, and revisit the choice
-once the grammar is large enough to judge compile time and error quality.
+This is a pragmatic starting choice, not permanent architecture. Keep third
+party parser choices behind `aven-parser` so the CLI, LSP, formatter, and test
+harness do not depend on the parsing library.
 
 ## Milestone 0: Stabilize The Starter Loop
 
@@ -148,7 +155,12 @@ Done when:
 
 ## Milestone 2: Lexer
 
-Status: later
+Status: in progress
+
+Progress: a first hand-written raw lexer emits owned tokens for names,
+literals, paths, labels, operators, delimiters, newlines, indentation widths,
+comments, and basic lexer diagnostics. The starter parser does not consume this
+token stream yet; layout conversion is the next step.
 
 Goal: replace ad hoc string scanning with one tokenization pass.
 
@@ -185,7 +197,9 @@ Tasks:
 
 Recommended approach:
 
-- use `chumsky` for the lexer if it stays simple and readable
+- keep the raw lexer hand-written unless a library demonstrably improves
+  clarity
+- defer the parser-library decision until the Milestone 4a parser starts
 - keep the token representation owned by `aven-parser`
 - expose a debug CLI command once useful:
 
@@ -296,8 +310,9 @@ Tasks:
 
 Recommended approach:
 
-- use `chumsky` for parser combinators and recovery
-- use its Pratt support for expression precedence
+- use a hand-written Pratt parser for expression precedence by default
+- evaluate parser-combinator libraries only if handwritten recovery becomes
+  worse than the dependency cost
 - keep parser modules split by syntactic family:
   - `lexer`
   - `layout`
@@ -513,7 +528,7 @@ The next few queued changes should be:
 1. commit the starter honesty fixes from Milestone 0
 2. add `ariadne` and replace CLI diagnostic rendering
 3. add fixture tests for structured diagnostics
-4. add `chumsky` and implement a token lexer with newline/indent trivia
+4. implement a token lexer with newline/indent trivia
 5. add the layout module that emits `Indent`/`Dedent`/`Newline`
 6. replace the line parser with Milestone 4a: bindings, literals, calls, and
    lambdas
