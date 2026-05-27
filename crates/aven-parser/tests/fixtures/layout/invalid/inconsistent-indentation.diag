@@ -1,0 +1,3 @@
+error layout.inconsistent-indentation: inconsistent indentation
+  label 20..21: this line is indented to 1 space
+  note: indentation must match an open block: 0 spaces, 2 spaces

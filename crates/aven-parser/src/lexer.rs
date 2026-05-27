@@ -28,8 +28,11 @@ pub enum TokenKind {
     CloseBrace,
     OpenBracket,
     CloseBracket,
+    RawNewline,
+    RawIndent { spaces: usize },
     Newline,
-    Indent { spaces: usize },
+    Indent,
+    Dedent,
     Comment(String),
     DocComment(String),
 }
@@ -51,8 +54,11 @@ impl TokenKind {
             Self::CloseBrace => "delimiter `}`".to_owned(),
             Self::OpenBracket => "delimiter `[`".to_owned(),
             Self::CloseBracket => "delimiter `]`".to_owned(),
-            Self::Newline => "newline".to_owned(),
-            Self::Indent { spaces } => format!("indent `{spaces}`"),
+            Self::RawNewline => "newline".to_owned(),
+            Self::RawIndent { spaces } => format!("indent `{spaces}`"),
+            Self::Newline => "layout newline".to_owned(),
+            Self::Indent => "layout indent".to_owned(),
+            Self::Dedent => "layout dedent".to_owned(),
             Self::Comment(text) => format!("comment `{text}`"),
             Self::DocComment(text) => format!("doc_comment `{text}`"),
         }
@@ -166,7 +172,10 @@ impl Lexer<'_> {
         }
 
         if spaces > 0 && !self.at_newline_or_eof() {
-            self.push(TokenKind::Indent { spaces }, Span::new(start, self.offset));
+            self.push(
+                TokenKind::RawIndent { spaces },
+                Span::new(start, self.offset),
+            );
         }
 
         self.at_line_start = false;
@@ -181,7 +190,7 @@ impl Lexer<'_> {
             self.offset += 1;
         }
 
-        self.push(TokenKind::Newline, Span::new(start, self.offset));
+        self.push(TokenKind::RawNewline, Span::new(start, self.offset));
         self.at_line_start = true;
     }
 
@@ -548,7 +557,13 @@ impl TokenKind {
     fn is_trivia(&self) -> bool {
         matches!(
             self,
-            Self::Newline | Self::Indent { .. } | Self::Comment(_) | Self::DocComment(_)
+            Self::RawNewline
+                | Self::RawIndent { .. }
+                | Self::Newline
+                | Self::Indent
+                | Self::Dedent
+                | Self::Comment(_)
+                | Self::DocComment(_)
         )
     }
 }
@@ -604,7 +619,7 @@ mod tests {
         let spans: Vec<_> = output
             .tokens
             .iter()
-            .filter(|token| token.kind == TokenKind::Newline)
+            .filter(|token| token.kind == TokenKind::RawNewline)
             .map(|token| token.span)
             .collect();
 

@@ -1,0 +1,6 @@
+main =
+  name = "Aven"
+
+  # comment-only line
+  print(name)
+done = 1

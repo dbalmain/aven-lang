@@ -1,0 +1,6 @@
+0..15 doc_comment ` Main binding`
+15..16 layout newline
+16..20 identifier `main`
+21..22 operator `=`
+23..24 number `1`
+24..25 layout newline

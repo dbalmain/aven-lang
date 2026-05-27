@@ -30,6 +30,12 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Print layout tokens for debugging parser work.
+    Layout {
+        /// Source file to layout.
+        path: PathBuf,
+    },
+
     /// Format a source file.
     Fmt {
         /// Check formatting without writing changes.
@@ -51,6 +57,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Check { path } => check(&path),
         Command::Tokens { path } => tokens(&path),
+        Command::Layout { path } => layout(&path),
         Command::Fmt { check, path } => fmt(&path, check),
         Command::Lsp => {
             aven_lsp::run_stdio().await;
@@ -99,6 +106,31 @@ fn tokens(path: &Path) -> Result<()> {
 
     if output.diagnostics.iter().any(AvenDiagnostic::is_error) {
         bail!("tokenization failed");
+    }
+
+    Ok(())
+}
+
+fn layout(path: &Path) -> Result<()> {
+    let source =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let output = aven_parser::layout_source(&source);
+
+    if !output.diagnostics.is_empty() {
+        print_diagnostics(path, &source, &output.diagnostics)?;
+    }
+
+    for token in output.tokens {
+        println!(
+            "{}..{} {}",
+            token.span.start,
+            token.span.end,
+            token.kind.describe()
+        );
+    }
+
+    if output.diagnostics.iter().any(AvenDiagnostic::is_error) {
+        bail!("layout failed");
     }
 
     Ok(())

@@ -7,7 +7,12 @@ Parser and lexer fixture tests use paired golden files.
 - `lexer/valid/*.av` must lex without diagnostics and have a matching
   `.tokens` file with the same stem.
 - `lexer/invalid/*.av` must have a matching `.diag` file with the same stem.
+- `layout/valid/*.av` must lex and layout without diagnostics and have a
+  matching `.layout` file with the same stem.
+- `layout/invalid/*.av` must have a matching `.diag` file with the same stem.
 - `.tokens` files contain one structured token per line:
+  `start..end description`.
+- `.layout` files contain one parser-facing layout token per line:
   `start..end description`.
 - `.diag` files contain structured diagnostic summaries, not terminal output:
   `severity code: message`, then indented `label start..end: message` lines,

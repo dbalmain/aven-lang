@@ -8,6 +8,7 @@ use aven_parser::Token;
 
 const PARSER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parser");
 const LEXER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/lexer");
+const LAYOUT_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/layout");
 
 #[test]
 fn valid_parser_fixtures_have_no_diagnostics() -> Result<(), Box<dyn Error>> {
@@ -79,6 +80,54 @@ fn invalid_lexer_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Err
     for path in fixture_files(LEXER_FIXTURE_ROOT, "invalid")? {
         let source = fs::read_to_string(&path)?;
         let output = aven_parser::lex_source(&source);
+        let actual = render_diagnostics(&output.diagnostics);
+        let expected_path = path.with_extension("diag");
+        let expected = fs::read_to_string(&expected_path)?;
+
+        assert_eq!(
+            actual,
+            expected,
+            "diagnostics for {} did not match {}",
+            path.display(),
+            expected_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn valid_layout_fixtures_match_expected_tokens() -> Result<(), Box<dyn Error>> {
+    for path in fixture_files(LAYOUT_FIXTURE_ROOT, "valid")? {
+        let source = fs::read_to_string(&path)?;
+        let output = aven_parser::layout_source(&source);
+        let actual = render_tokens(&output.tokens);
+        let expected_path = path.with_extension("layout");
+        let expected = fs::read_to_string(&expected_path)?;
+
+        assert!(
+            output.diagnostics.is_empty(),
+            "{} unexpectedly produced diagnostics:\n{}",
+            path.display(),
+            render_diagnostics(&output.diagnostics)
+        );
+        assert_eq!(
+            actual,
+            expected,
+            "layout tokens for {} did not match {}",
+            path.display(),
+            expected_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn invalid_layout_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Error>> {
+    for path in fixture_files(LAYOUT_FIXTURE_ROOT, "invalid")? {
+        let source = fs::read_to_string(&path)?;
+        let output = aven_parser::layout_source(&source);
         let actual = render_diagnostics(&output.diagnostics);
         let expected_path = path.with_extension("diag");
         let expected = fs::read_to_string(&expected_path)?;

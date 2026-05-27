@@ -34,7 +34,7 @@ The repository currently has:
 - `aven-parser` with a line-oriented starter parser
 - `aven-fmt` with a minimal whitespace formatter
 - `aven-lsp` with diagnostics and document formatting
-- `aven` CLI with `check`, `fmt`, and `lsp`
+- `aven` CLI with `check`, `tokens`, `layout`, `fmt`, and `lsp`
 
 This is enough to exercise the toolchain shape, but it is not yet a real
 language parser. `aven check` currently validates only lexical and starter
@@ -160,7 +160,7 @@ Status: in progress
 Progress: a first hand-written raw lexer emits owned tokens for names,
 literals, paths, labels, operators, delimiters, newlines, indentation widths,
 comments, and basic lexer diagnostics. The starter parser does not consume this
-token stream yet; layout conversion is the next step.
+token stream yet, but a separate layout pass now does.
 
 Goal: replace ad hoc string scanning with one tokenization pass.
 
@@ -215,7 +215,13 @@ Done when:
 
 ## Milestone 3: Layout And Blocks
 
-Status: later
+Status: in progress
+
+Progress: a first hand-written layout pass converts raw lexer indentation and
+newline trivia into parser-facing `Indent`, `Dedent`, and `Newline` tokens. It
+skips blank/comment-only lines, emits EOF dedents, reports inconsistent
+dedents, and is exposed through `aven layout` for debugging. The starter parser
+does not consume the layout stream yet.
 
 Goal: support meaningful whitespace before deep expression parsing.
 
