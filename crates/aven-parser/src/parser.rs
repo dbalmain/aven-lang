@@ -60,11 +60,50 @@ pub enum ExprKind {
         operator_span: Span,
         right: Box<Expr>,
     },
+    Propagate {
+        value: Box<Expr>,
+        operator_span: Span,
+        mode: PropagationMode,
+    },
+    Match {
+        subject: Box<Expr>,
+        operator_span: Span,
+        arms: Vec<MatchArm>,
+    },
     Lambda {
         params: Vec<Param>,
         body: Box<Expr>,
     },
     Block(Vec<Item>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropagationMode {
+    ReturnError,
+    Panic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternKind {
+    Missing,
+    Wildcard,
+    Name(String),
+    Constructor { name: String, args: Vec<Pattern> },
+    Literal(Literal),
+    Tuple(Vec<Pattern>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,7 +338,13 @@ impl Parser<'_> {
     }
 
     fn parse_expression(&mut self) -> Expr {
-        self.parse_binary_expression(0)
+        let expr = self.parse_binary_expression(0);
+
+        if self.current_is_operator("?") {
+            return self.finish_match(expr);
+        }
+
+        expr
     }
 
     fn parse_binary_expression(&mut self, min_binding_power: u8) -> Expr {
@@ -421,6 +466,11 @@ impl Parser<'_> {
                 continue;
             }
 
+            if self.current_is_operator("?^") || self.current_is_operator("?!") {
+                expr = self.finish_propagation(expr);
+                continue;
+            }
+
             break;
         }
 
@@ -477,6 +527,131 @@ impl Parser<'_> {
                 args,
             },
             span: Span::new(start, end),
+        }
+    }
+
+    fn finish_propagation(&mut self, value: Expr) -> Expr {
+        let operator_span = self.current_span();
+        let mode = if self.current_is_operator("?!") {
+            PropagationMode::Panic
+        } else {
+            PropagationMode::ReturnError
+        };
+        self.advance();
+
+        Expr {
+            span: value.span.merge(operator_span),
+            kind: ExprKind::Propagate {
+                value: Box::new(value),
+                operator_span,
+                mode,
+            },
+        }
+    }
+
+    fn finish_match(&mut self, subject: Expr) -> Expr {
+        let operator_span = self.current_span();
+        self.advance();
+
+        let arms = if self.current_is(TokenKind::Newline) {
+            self.advance();
+
+            if self.current_is(TokenKind::Indent) {
+                self.parse_match_arm_block()
+            } else {
+                self.report_missing_match_arms(operator_span.end);
+                Vec::new()
+            }
+        } else {
+            self.report_missing_match_arms(operator_span.end);
+            Vec::new()
+        };
+
+        let end = arms
+            .last()
+            .map(|arm| arm.span.end)
+            .unwrap_or(operator_span.end);
+
+        Expr {
+            span: Span::new(subject.span.start, end),
+            kind: ExprKind::Match {
+                subject: Box::new(subject),
+                operator_span,
+                arms,
+            },
+        }
+    }
+
+    fn parse_match_arm_block(&mut self) -> Vec<MatchArm> {
+        self.advance();
+        let mut arms = Vec::new();
+
+        while !self.at_end() && !self.current_is(TokenKind::Dedent) {
+            self.skip_newlines_and_doc_comments();
+
+            if self.at_end() || self.current_is(TokenKind::Dedent) {
+                break;
+            }
+
+            if self.current_is(TokenKind::Indent) {
+                self.report_unexpected_indentation();
+                self.advance();
+                continue;
+            }
+
+            arms.push(self.parse_match_arm());
+            self.consume_newline();
+        }
+
+        if self.current_is(TokenKind::Dedent) {
+            self.advance();
+        }
+
+        arms
+    }
+
+    fn parse_match_arm(&mut self) -> MatchArm {
+        let pattern = self.parse_pattern();
+
+        if self.current_is_operator(",") {
+            self.report_unsupported_match_guard(self.current_span());
+            self.recover_to_next_line();
+            let body = missing_expr(Span::point(pattern.span.end));
+            return MatchArm {
+                span: pattern.span.merge(body.span),
+                pattern,
+                body,
+            };
+        }
+
+        if !self.consume_operator("=>") {
+            self.report_expected_match_arrow(self.current_span());
+            self.recover_to_next_line();
+            let body = missing_expr(Span::point(pattern.span.end));
+            return MatchArm {
+                span: pattern.span.merge(body.span),
+                pattern,
+                body,
+            };
+        }
+
+        let body = if self.current_is(TokenKind::Newline) {
+            self.advance();
+            if self.current_is(TokenKind::Indent) {
+                self.parse_block(self.current_span())
+            } else {
+                self.report_missing_match_body(self.previous_end())
+            }
+        } else if self.at_item_boundary() {
+            self.report_missing_match_body(self.previous_end())
+        } else {
+            self.parse_expression()
+        };
+
+        MatchArm {
+            span: pattern.span.merge(body.span),
+            pattern,
+            body,
         }
     }
 
@@ -827,6 +1002,183 @@ impl Parser<'_> {
         }
     }
 
+    fn parse_pattern(&mut self) -> Pattern {
+        let Some(token) = self.current().cloned() else {
+            return missing_pattern(Span::point(self.previous_end()));
+        };
+
+        match token.kind {
+            TokenKind::Identifier(name) if name == "_" => {
+                self.advance();
+                Pattern {
+                    kind: PatternKind::Wildcard,
+                    span: token.span,
+                }
+            }
+            TokenKind::Identifier(name) => {
+                self.advance();
+                Pattern {
+                    kind: PatternKind::Name(name),
+                    span: token.span,
+                }
+            }
+            TokenKind::ComptimeIdentifier(name) => self.parse_constructor_pattern(name, token.span),
+            TokenKind::Number(number) => {
+                self.advance();
+                literal_pattern(Literal::Number(number), token.span)
+            }
+            TokenKind::StringLiteral(text) => {
+                self.advance();
+                literal_pattern(Literal::String(text), token.span)
+            }
+            TokenKind::RegexLiteral(regex) => {
+                self.advance();
+                literal_pattern(Literal::Regex(regex), token.span)
+            }
+            TokenKind::PathLiteral(path) => {
+                self.advance();
+                literal_pattern(Literal::Path(path), token.span)
+            }
+            TokenKind::LabelPath(label) => {
+                self.advance();
+                literal_pattern(Literal::Label(label), token.span)
+            }
+            TokenKind::OpenParen => self.parse_tuple_pattern(),
+            TokenKind::OpenBrace => self.parse_record_pattern_placeholder(token.span),
+            _ => {
+                self.report_expected_pattern(token.span);
+                self.advance();
+                missing_pattern(token.span)
+            }
+        }
+    }
+
+    fn parse_constructor_pattern(&mut self, name: String, name_span: Span) -> Pattern {
+        self.advance();
+
+        if !self.current_is(TokenKind::OpenParen) {
+            return Pattern {
+                kind: PatternKind::Constructor {
+                    name,
+                    args: Vec::new(),
+                },
+                span: name_span,
+            };
+        }
+
+        self.advance();
+        let args = self.parse_pattern_list(TokenKind::CloseParen);
+        let end = self.consume_close(TokenKind::CloseParen);
+
+        Pattern {
+            kind: PatternKind::Constructor { name, args },
+            span: Span::new(name_span.start, end),
+        }
+    }
+
+    fn parse_tuple_pattern(&mut self) -> Pattern {
+        let start = self.current_span().start;
+        self.advance();
+
+        self.skip_collection_trivia();
+
+        if self.current_is(TokenKind::CloseParen) {
+            let end = self.current_span().end;
+            self.advance();
+            return Pattern {
+                kind: PatternKind::Tuple(Vec::new()),
+                span: Span::new(start, end),
+            };
+        }
+
+        let first = self.parse_pattern();
+        self.skip_collection_trivia();
+
+        if !self.current_is_operator(",") {
+            let end = self.consume_close(TokenKind::CloseParen);
+            return Pattern {
+                kind: first.kind,
+                span: Span::new(start, end),
+            };
+        }
+
+        let first_comma_span = self.current_span();
+        self.advance();
+
+        let mut items = vec![first];
+        loop {
+            self.skip_collection_trivia();
+
+            if self.current_is(TokenKind::CloseParen) || self.at_end() {
+                break;
+            }
+
+            if self.current_is_any_close_delimiter() {
+                break;
+            }
+
+            items.push(self.parse_pattern());
+            self.skip_collection_trivia();
+
+            if self.current_is_operator(",") {
+                self.advance();
+                continue;
+            }
+
+            break;
+        }
+
+        if items.len() == 1 {
+            self.report_single_item_tuple(first_comma_span);
+        }
+
+        let end = self.consume_close(TokenKind::CloseParen);
+
+        Pattern {
+            kind: PatternKind::Tuple(items),
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_record_pattern_placeholder(&mut self, span: Span) -> Pattern {
+        self.report_unsupported_record_pattern(span);
+        self.advance();
+
+        while !self.at_end() && !self.at_item_boundary() && !self.current_is_operator("=>") {
+            self.advance();
+        }
+
+        missing_pattern(Span::new(span.start, self.previous_end()))
+    }
+
+    fn parse_pattern_list(&mut self, close: TokenKind) -> Vec<Pattern> {
+        let mut items = Vec::new();
+        self.skip_collection_trivia();
+
+        while !self.at_end() && !self.current_is(close.clone()) {
+            if self.current_is_any_close_delimiter() {
+                break;
+            }
+
+            items.push(self.parse_pattern());
+
+            if self.current_is(close.clone()) {
+                break;
+            }
+
+            let had_separator = self.consume_collection_separator(false);
+            if self.current_is(close.clone()) {
+                break;
+            }
+
+            if !had_separator {
+                break;
+            }
+        }
+
+        items
+    }
+
     fn recover_record_entry(&mut self) {
         while !self.at_end()
             && !self.current_is(TokenKind::CloseBrace)
@@ -928,6 +1280,69 @@ impl Parser<'_> {
                 .with_note("a lambda body is an expression on the same line, or an indented block: `(params) =>\n  body`"),
         );
         missing_expr(span)
+    }
+
+    fn report_missing_match_arms(&mut self, offset: usize) {
+        let span = Span::point(offset);
+        self.diagnostics.push(
+            Diagnostic::error("match expression is missing arms")
+                .with_code("parse.missing-match-arms")
+                .with_label(Label::primary(
+                    span,
+                    "expected an indented block of match arms after `?`",
+                ))
+                .with_note("write one arm per line, for example `Ok(value) => value`"),
+        );
+    }
+
+    fn report_expected_match_arrow(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("expected match arm arrow")
+                .with_code("parse.expected-match-arrow")
+                .with_label(Label::primary(span, "expected `=>` after this pattern"))
+                .with_note("match arms use `pattern => expression`"),
+        );
+    }
+
+    fn report_missing_match_body(&mut self, offset: usize) -> Expr {
+        let span = Span::point(offset);
+        self.diagnostics.push(
+            Diagnostic::error("match arm is missing a body")
+                .with_code("parse.missing-match-body")
+                .with_label(Label::primary(
+                    span,
+                    "expected an expression or indented block after `=>`",
+                ))
+                .with_note("add the expression that should run when this pattern matches"),
+        );
+        missing_expr(span)
+    }
+
+    fn report_expected_pattern(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("expected pattern")
+                .with_code("parse.expected-pattern")
+                .with_label(Label::primary(span, "expected a pattern here"))
+                .with_note("patterns can be `_`, names, literals, tuples, or constructors like `Ok(value)`"),
+        );
+    }
+
+    fn report_unsupported_record_pattern(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("record patterns are not supported yet")
+                .with_code("parse.unsupported-record-pattern")
+                .with_label(Label::primary(span, "record pattern starts here"))
+                .with_note("record patterns are deferred to Milestone 4e Pattern Syntax Completion; bind the value and destructure it in the arm body for now"),
+        );
+    }
+
+    fn report_unsupported_match_guard(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("match guards are not supported yet")
+                .with_code("parse.unsupported-match-guard")
+                .with_label(Label::primary(span, "guard starts here"))
+                .with_note("guarded match arms are deferred to Milestone 4e Pattern Syntax Completion; move the condition into the arm body for now"),
+        );
     }
 
     fn report_single_item_tuple(&mut self, comma_span: Span) {
@@ -1256,6 +1671,20 @@ fn missing_expr(span: Span) -> Expr {
     }
 }
 
+fn literal_pattern(literal: Literal, span: Span) -> Pattern {
+    Pattern {
+        kind: PatternKind::Literal(literal),
+        span,
+    }
+}
+
+fn missing_pattern(span: Span) -> Pattern {
+    Pattern {
+        kind: PatternKind::Missing,
+        span,
+    }
+}
+
 fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
     let precedence = match operator {
         "|>" => 1,
@@ -1357,7 +1786,10 @@ fn delimiter_text(kind: &TokenKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExprKind, Item, Literal, ParseOutput, RecordEntry, parse_module};
+    use super::{
+        ExprKind, Item, Literal, ParseOutput, PatternKind, PropagationMode, RecordEntry,
+        parse_module,
+    };
 
     #[test]
     fn parses_call_expressions_into_ast_nodes() {
@@ -1508,6 +1940,65 @@ mod tests {
             } if field == "active"
         ));
         assert!(matches!(&right.kind, ExprKind::Call { .. }));
+    }
+
+    #[test]
+    fn parses_result_propagation_into_ast_nodes() {
+        let output = parse_module("value = read(path)?^\nquick = read(path)?!\n");
+
+        assert!(output.diagnostics.is_empty());
+        assert!(matches!(
+            binding_value(&output, 0),
+            ExprKind::Propagate {
+                mode: PropagationMode::ReturnError,
+                ..
+            }
+        ));
+        assert!(matches!(
+            binding_value(&output, 1),
+            ExprKind::Propagate {
+                mode: PropagationMode::Panic,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_match_operator_into_ast_nodes() {
+        let output =
+            parse_module("value = result ?\n  Ok(x) => x\n  Err(error) => fallback(error)\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Match { subject, arms, .. } = binding_value(&output, 0) else {
+            panic!("expected match expression");
+        };
+
+        assert!(matches!(&subject.kind, ExprKind::Name(name) if name == "result"));
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(
+            &arms[0].pattern.kind,
+            PatternKind::Constructor { name, args } if name == "Ok" && args.len() == 1
+        ));
+        assert!(matches!(
+            &arms[1].pattern.kind,
+            PatternKind::Constructor { name, args } if name == "Err" && args.len() == 1
+        ));
+    }
+
+    #[test]
+    fn parses_parenthesized_patterns_as_grouping() {
+        let output = parse_module("value = result ?\n  (Ok(x)) => x\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
+            panic!("expected match expression");
+        };
+
+        assert_eq!(arms.len(), 1);
+        assert!(matches!(
+            &arms[0].pattern.kind,
+            PatternKind::Constructor { name, args } if name == "Ok" && args.len() == 1
+        ));
     }
 
     fn binding_value(output: &ParseOutput, index: usize) -> &ExprKind {

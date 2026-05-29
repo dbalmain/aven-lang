@@ -309,11 +309,14 @@ Done when:
 
 ## Milestone 4c: Operators, Access, And Branching Forms
 
-Status: in progress
+Status: done
 
-Progress: the first operator parser slice adds Pratt parsing for ordinary
-binary operators, pipelines, field access, and nil-safe field access. The
-remaining `?` match/propagation forms are still pending.
+Progress: the expression parser now handles the 4c expression subset:
+Pratt-parsed binary operators, pipelines, field access, nil-safe field access,
+nil coalescing, postfix `?^`/`?!` propagation forms, and newline `?` match
+expressions with literals, names, tuples, and constructor patterns. Record
+patterns and guarded match arms are not part of this subset; they have targeted
+diagnostics and are deferred to Milestone 4e.
 
 Goal: parse the expression syntax that controls execution order.
 
@@ -350,9 +353,9 @@ Recommended approach:
 Done when:
 
 - representative pipeline, access, operator, and `?`-family examples parse
-- operator precedence is tested with AST-shape assertions. Unit tests are
-  acceptable while 4c is in progress; before closing 4c, either keep that as
-  the explicit policy or add a fixture mechanism that captures tree shape.
+- operator precedence is tested with AST-shape assertions. For now, parser unit
+  tests are the AST-shape assertion mechanism; parser fixtures stay focused on
+  parse-clean and diagnostic coverage.
 
 ## Milestone 4d: Type Syntax Parser
 
@@ -372,6 +375,26 @@ Done when:
 
 - parser fixtures cover the type syntax used in the language spec
 - invalid type syntax produces structured parser diagnostics
+
+## Milestone 4e: Pattern Syntax Completion
+
+Status: later
+
+Goal: complete pattern syntax after the expression and type parsers have
+settled.
+
+Tasks:
+
+- parse record patterns
+- parse guarded match arms
+- decide whether patterns need their own AST-shape fixture harness
+- keep semantic validation for later type checking
+
+Done when:
+
+- record-pattern examples parse
+- guarded-arm examples parse
+- unsupported pattern forms have targeted diagnostics
 
 ## Milestone 5: Formatter
 
@@ -545,17 +568,24 @@ Before parser milestones:
 
 ## Near-Term Order
 
+Completed parser groundwork:
+
+- Milestone 4a: bindings, literals, calls, lambdas, and blocks
+- Milestone 4b: structural collections
+- Milestone 4c: operators, access, propagation, and the implemented `?` match
+  subset
+
 The next few queued changes should be:
 
-1. commit the starter honesty fixes from Milestone 0
-2. add `ariadne` and replace CLI diagnostic rendering
-3. add fixture tests for structured diagnostics
-4. implement a token lexer with newline/indent trivia
-5. add the layout module that emits `Indent`/`Dedent`/`Newline`
-6. replace the line parser with Milestone 4a: bindings, literals, calls, and
-   lambdas
-7. add Milestone 4b collections: arrays, records, sets, variants, and tuples
-8. expand LSP from diagnostics/formatting to document symbols
+1. finish review cleanup for Milestone 4c and commit it
+2. implement Milestone 4d type syntax
+3. implement Milestone 4e pattern syntax completion for record patterns and
+   guarded match arms
+4. decide whether parser tests need AST-shape fixtures beyond unit tests
+5. decide the CST/trivia strategy before formatter work expands
+6. start Milestone 5 formatter work
+7. expand LSP from diagnostics/formatting to document symbols
+8. start Milestone 6 name resolution skeleton
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.
