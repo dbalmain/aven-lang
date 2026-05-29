@@ -1,2 +1,3 @@
 error parse.invalid-binding-name: invalid binding name
-  label 0..2: binding names must start with a letter or `_`
+  label 0..2: binding names must be a single identifier
+  note: a binding name is a single identifier such as `name` or `myValue`

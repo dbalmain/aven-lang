@@ -1,2 +1,3 @@
 error parse.missing-binding-name: binding is missing a name
   label 0..0: expected a name
+  note: add a name before `=`, for example `name = expr`

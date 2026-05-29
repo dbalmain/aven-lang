@@ -1,2 +1,3 @@
-error parse.unterminated-string: unterminated string literal
-  label 4..5: string starts here
+error lex.unterminated-string: unterminated string literal
+  label 4..10: string starts here
+  note: close the string with a `"`, or use a raw string for multi-line content.

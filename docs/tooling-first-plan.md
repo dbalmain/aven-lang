@@ -31,13 +31,13 @@ without changing the user-facing commands every milestone.
 The repository currently has:
 
 - `aven-core` with `Span`, `SourceMap`, and structured diagnostics
-- `aven-parser` with a line-oriented starter parser
+- `aven-parser` with a raw lexer, layout pass, and core expression parser
 - `aven-fmt` with a minimal whitespace formatter
 - `aven-lsp` with diagnostics and document formatting
 - `aven` CLI with `check`, `tokens`, `layout`, `fmt`, and `lsp`
 
-This is enough to exercise the toolchain shape, but it is not yet a real
-language parser. `aven check` currently validates only lexical and starter
+This is enough to exercise the toolchain shape, but it is not yet a complete
+language parser. `aven check` currently validates lexical, layout, and core
 parse structure, not name resolution, types, or runtime semantics.
 
 ## Library Direction
@@ -159,8 +159,9 @@ Status: in progress
 
 Progress: a first hand-written raw lexer emits owned tokens for names,
 literals, paths, labels, operators, delimiters, newlines, indentation widths,
-comments, and basic lexer diagnostics. The starter parser does not consume this
-token stream yet, but a separate layout pass now does.
+comments, and basic lexer diagnostics. The lexer feeds the layout pass, which
+in turn feeds the Milestone 4a core parser. The starter parser has been
+replaced.
 
 Goal: replace ad hoc string scanning with one tokenization pass.
 
@@ -220,8 +221,8 @@ Status: in progress
 Progress: a first hand-written layout pass converts raw lexer indentation and
 newline trivia into parser-facing `Indent`, `Dedent`, and `Newline` tokens. It
 skips blank/comment-only lines, emits EOF dedents, reports inconsistent
-dedents, and is exposed through `aven layout` for debugging. The starter parser
-does not consume the layout stream yet.
+dedents, and is exposed through `aven layout` for debugging. The core parser now
+consumes the layout stream.
 
 Goal: support meaningful whitespace before deep expression parsing.
 
@@ -248,7 +249,12 @@ Done when:
 
 ## Milestone 4a: Core Expression Parser
 
-Status: later
+Status: in progress
+
+Progress: `aven check` now parses through the lexer/layout pipeline and builds
+real AST nodes for bindings, literal expressions, names, parenthesized function
+calls, lambdas, and block-bodied lambdas. Unsupported operator syntax produces
+an explicit recovery diagnostic and remains scheduled for Milestone 4c.
 
 Goal: replace source-slice expressions with the smallest real AST that supports
 ordinary scripts and editor recovery.

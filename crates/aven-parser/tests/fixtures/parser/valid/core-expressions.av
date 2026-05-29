@@ -1,0 +1,3 @@
+identity = (value) => value
+message = greet("Aven", identity(name))
+print(message)

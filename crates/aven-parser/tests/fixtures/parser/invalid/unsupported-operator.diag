@@ -1,0 +1,3 @@
+error parse.unsupported-syntax: unsupported expression syntax
+  label 5..7: this syntax is not supported by the core parser yet
+  note: operator expressions will be parsed in Milestone 4c

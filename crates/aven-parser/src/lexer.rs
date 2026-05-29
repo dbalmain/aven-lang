@@ -12,6 +12,19 @@ pub struct Token {
     pub span: Span,
 }
 
+impl Token {
+    pub(crate) fn is_operator(&self, expected: &str) -> bool {
+        matches!(&self.kind, TokenKind::Operator(operator) if operator == expected)
+    }
+
+    pub(crate) fn is_close_delimiter(&self) -> bool {
+        matches!(
+            self.kind,
+            TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Identifier(String),

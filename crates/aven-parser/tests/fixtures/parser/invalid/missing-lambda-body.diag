@@ -1,0 +1,4 @@
+error parse.missing-lambda-body: lambda is missing a body
+  label 10..10: expected an expression or indented block after `=>`
+  note: a lambda body is an expression on the same line, or an indented block: `(params) =>
+  body`
