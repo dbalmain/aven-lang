@@ -1,0 +1,3 @@
+error parse.expected-record-entry: expected record entry
+  label 8..9: expected a record field or transform
+  note: record entries are fields, shorthands, spreads, deletes, or renames

@@ -249,7 +249,7 @@ Done when:
 
 ## Milestone 4a: Core Expression Parser
 
-Status: in progress
+Status: done
 
 Progress: `aven check` now parses through the lexer/layout pipeline and builds
 real AST nodes for bindings, literal expressions, names, parenthesized function
@@ -278,7 +278,11 @@ Done when:
 
 ## Milestone 4b: Structural Collections
 
-Status: later
+Status: in progress
+
+Progress: the first structural parser slice handles array literals, tuple
+literals, record literals/transforms, and `@{...}` set/variant-set literals.
+Anonymous one-item tuples produce a targeted diagnostic.
 
 Goal: parse the data shapes that make Aven useful as a glue language.
 
@@ -295,7 +299,7 @@ Tasks:
   - overwrite spreads
   - deletes
   - renames
-  - picks
+  - shorthands
 - preserve enough delimiter and trivia information for later formatting
 
 Done when:

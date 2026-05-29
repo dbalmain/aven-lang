@@ -1,0 +1,3 @@
+error parse.unexpected-separator: unexpected separator
+  label 11..12: extra separator
+  note: remove the extra `,` or `;`

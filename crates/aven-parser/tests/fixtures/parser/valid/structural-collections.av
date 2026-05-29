@@ -1,0 +1,10 @@
+numbers = [1, 2, 3]
+pair = (1, "two")
+user = { name = "Ada", age = 36 }
+cleaned = { ..user, :..defaults, -password, name -> fullName, active = true }
+colors = @{ Red, Green, Blue }
+results = @{ Ok(1), Err("bad") }
+profile = {
+  name = "Ada"
+  age = 36
+}

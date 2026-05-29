@@ -40,9 +40,46 @@ pub enum ExprKind {
     Name(String),
     ComptimeName(String),
     Group(Box<Expr>),
+    Tuple(Vec<Expr>),
+    Array(Vec<Expr>),
+    Record(Vec<RecordEntry>),
+    Set(Vec<Expr>),
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Lambda { params: Vec<Param>, body: Box<Expr> },
     Block(Vec<Item>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordEntry {
+    Field {
+        name: String,
+        name_span: Span,
+        value: Expr,
+        overwrite: bool,
+        span: Span,
+    },
+    Shorthand {
+        name: String,
+        name_span: Span,
+        span: Span,
+    },
+    Spread {
+        value: Expr,
+        overwrite: bool,
+        span: Span,
+    },
+    Delete {
+        name: String,
+        name_span: Span,
+        span: Span,
+    },
+    Rename {
+        from: String,
+        from_span: Span,
+        to: String,
+        to_span: Span,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,7 +454,14 @@ impl Parser<'_> {
                 self.advance();
                 literal_expr(Literal::Label(label), token.span)
             }
-            TokenKind::OpenParen => self.parse_group(),
+            TokenKind::Operator(operator)
+                if operator == "@" && self.next_is(TokenKind::OpenBrace) =>
+            {
+                self.parse_set()
+            }
+            TokenKind::OpenParen => self.parse_group_or_tuple(),
+            TokenKind::OpenBracket => self.parse_array(),
+            TokenKind::OpenBrace => self.parse_record(),
             TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
                 self.advance();
                 missing_expr(token.span)
@@ -427,7 +471,7 @@ impl Parser<'_> {
                     Diagnostic::error("expected expression")
                         .with_code("parse.expected-expression")
                         .with_label(Label::primary(token.span, "expected an expression here"))
-                        .with_note("expressions are literals, identifiers, function calls, or parenthesized groups"),
+                        .with_note("expressions are literals, identifiers, function calls, lambdas, or collection literals"),
                 );
                 self.advance();
                 missing_expr(token.span)
@@ -435,22 +479,269 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_group(&mut self) -> Expr {
+    fn parse_group_or_tuple(&mut self) -> Expr {
         let start = self.current_span().start;
         self.advance();
+        self.skip_collection_trivia();
 
-        let expr = if self.current_is(TokenKind::CloseParen) {
-            missing_expr(Span::point(self.current_span().start))
-        } else {
-            self.parse_expression()
-        };
+        if self.current_is(TokenKind::CloseParen) {
+            let end = self.current_span().end;
+            self.advance();
+            return Expr {
+                kind: ExprKind::Tuple(Vec::new()),
+                span: Span::new(start, end),
+            };
+        }
 
-        self.skip_until_close_or_line(TokenKind::CloseParen);
-        let end = self.previous_end();
+        let first = self.parse_expression();
+        self.skip_collection_trivia();
+
+        if !self.current_is_operator(",") {
+            let end = if self.current_is(TokenKind::CloseParen) {
+                self.consume_close(TokenKind::CloseParen)
+            } else if self.close_exists_before_item_boundary(TokenKind::CloseParen) {
+                self.previous_end()
+            } else {
+                self.recover_to_next_line();
+                self.previous_end()
+            };
+            return Expr {
+                kind: ExprKind::Group(Box::new(first)),
+                span: Span::new(start, end),
+            };
+        }
+
+        let first_comma_span = self.current_span();
+        self.advance();
+
+        let mut items = vec![first];
+        loop {
+            self.skip_collection_trivia();
+
+            if self.current_is(TokenKind::CloseParen) || self.at_end() {
+                break;
+            }
+
+            if self.current_is_any_close_delimiter() {
+                break;
+            }
+
+            items.push(self.parse_expression());
+            self.skip_collection_trivia();
+
+            if self.current_is_operator(",") {
+                self.advance();
+                continue;
+            }
+
+            break;
+        }
+
+        if items.len() == 1 {
+            self.report_single_item_tuple(first_comma_span);
+        }
+
+        let end = self.consume_close(TokenKind::CloseParen);
 
         Expr {
-            kind: ExprKind::Group(Box::new(expr)),
+            kind: ExprKind::Tuple(items),
             span: Span::new(start, end),
+        }
+    }
+
+    fn parse_array(&mut self) -> Expr {
+        let start = self.current_span().start;
+        self.advance();
+        let items = self.parse_expression_list(TokenKind::CloseBracket);
+        let end = self.consume_close(TokenKind::CloseBracket);
+
+        Expr {
+            kind: ExprKind::Array(items),
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_set(&mut self) -> Expr {
+        let start = self.current_span().start;
+        // Consume the `@{` set/variant-set literal opener.
+        self.advance();
+        self.advance();
+        let items = self.parse_expression_list(TokenKind::CloseBrace);
+        let end = self.consume_close(TokenKind::CloseBrace);
+
+        Expr {
+            kind: ExprKind::Set(items),
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_expression_list(&mut self, close: TokenKind) -> Vec<Expr> {
+        let mut items = Vec::new();
+        self.skip_collection_trivia();
+
+        while !self.at_end() && !self.current_is(close.clone()) {
+            if self.current_is_any_close_delimiter() {
+                break;
+            }
+
+            items.push(self.parse_expression());
+
+            if self.current_is(close.clone()) {
+                break;
+            }
+
+            let had_separator = self.consume_collection_separator(false);
+            if self.current_is(close.clone()) {
+                break;
+            }
+
+            if !had_separator {
+                break;
+            }
+        }
+
+        items
+    }
+
+    fn parse_record(&mut self) -> Expr {
+        let start = self.current_span().start;
+        self.advance();
+        let mut entries = Vec::new();
+        self.skip_collection_trivia();
+
+        while !self.at_end() && !self.current_is(TokenKind::CloseBrace) {
+            if self.current_is_any_close_delimiter() {
+                break;
+            }
+
+            if let Some(entry) = self.parse_record_entry() {
+                entries.push(entry);
+            }
+
+            if self.current_is(TokenKind::CloseBrace) {
+                break;
+            }
+
+            let had_separator = self.consume_collection_separator(true);
+            if self.current_is(TokenKind::CloseBrace) {
+                break;
+            }
+
+            if !had_separator {
+                break;
+            }
+        }
+
+        let end = self.consume_close(TokenKind::CloseBrace);
+
+        Expr {
+            kind: ExprKind::Record(entries),
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_record_entry(&mut self) -> Option<RecordEntry> {
+        if matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::LabelPath(_))
+        ) {
+            self.report_expected_record_label(self.current_span());
+            self.recover_record_entry();
+            return None;
+        }
+
+        if self.current_is_operator("..") || self.current_is_operator(":..") {
+            let operator_span = self.current_span();
+            let overwrite = self.current_is_operator(":..");
+            self.advance();
+            let value = self.parse_expression();
+            let span = operator_span.merge(value.span);
+            return Some(RecordEntry::Spread {
+                value,
+                overwrite,
+                span,
+            });
+        }
+
+        if self.current_is_operator("-") {
+            let operator_span = self.current_span();
+            self.advance();
+            let Some((name, name_span)) = self.parse_label_name() else {
+                self.report_expected_record_label(self.current_span());
+                self.recover_record_entry();
+                return None;
+            };
+            return Some(RecordEntry::Delete {
+                name,
+                name_span,
+                span: operator_span.merge(name_span),
+            });
+        }
+
+        let Some((name, name_span)) = self.parse_label_name() else {
+            self.report_expected_record_entry(self.current_span());
+            self.recover_record_entry();
+            return None;
+        };
+
+        if self.current_is_operator("=") || self.current_is_operator(":=") {
+            let overwrite = self.current_is_operator(":=");
+            self.advance();
+            let value = self.parse_expression();
+            let span = name_span.merge(value.span);
+            return Some(RecordEntry::Field {
+                name,
+                name_span,
+                value,
+                overwrite,
+                span,
+            });
+        }
+
+        if self.current_is_operator("->") {
+            self.advance();
+            let Some((to, to_span)) = self.parse_label_name() else {
+                self.report_expected_record_label(self.current_span());
+                self.recover_record_entry();
+                return None;
+            };
+            return Some(RecordEntry::Rename {
+                from: name,
+                from_span: name_span,
+                to,
+                to_span,
+                span: name_span.merge(to_span),
+            });
+        }
+
+        Some(RecordEntry::Shorthand {
+            name,
+            name_span,
+            span: name_span,
+        })
+    }
+
+    fn parse_label_name(&mut self) -> Option<(String, Span)> {
+        let token = self.current()?.clone();
+        match token.kind {
+            TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name) => {
+                self.advance();
+                Some((name, token.span))
+            }
+            _ => None,
+        }
+    }
+
+    fn recover_record_entry(&mut self) {
+        while !self.at_end()
+            && !self.current_is(TokenKind::CloseBrace)
+            && !self.current_is(TokenKind::Newline)
+            && !self.current_is(TokenKind::Indent)
+            && !self.current_is(TokenKind::Dedent)
+            && !self.current_is_operator(",")
+            && !self.current_is_operator(";")
+        {
+            self.advance();
         }
     }
 
@@ -544,6 +835,45 @@ impl Parser<'_> {
         missing_expr(span)
     }
 
+    fn report_single_item_tuple(&mut self, comma_span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("anonymous 1-tuples are not supported")
+                .with_code("parse.single-item-tuple")
+                .with_label(Label::primary(
+                    comma_span,
+                    "this comma creates an anonymous 1-tuple",
+                ))
+                .with_note("remove the comma for grouping, or use a tagged tuple like `Ok(value)`"),
+        );
+    }
+
+    fn report_expected_record_entry(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("expected record entry")
+                .with_code("parse.expected-record-entry")
+                .with_label(Label::primary(span, "expected a record field or transform"))
+                .with_note("record entries are fields, shorthands, spreads, deletes, or renames"),
+        );
+    }
+
+    fn report_expected_record_label(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("expected record label")
+                .with_code("parse.expected-record-label")
+                .with_label(Label::primary(span, "expected a field name here"))
+                .with_note("use a bare field name such as `password` or `fullName`"),
+        );
+    }
+
+    fn report_unexpected_separator(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("unexpected separator")
+                .with_code("parse.unexpected-separator")
+                .with_label(Label::primary(span, "extra separator"))
+                .with_note("remove the extra `,` or `;`"),
+        );
+    }
+
     fn report_unexpected_indentation(&mut self) {
         let span = self.current_span();
         self.diagnostics.push(
@@ -580,22 +910,6 @@ impl Parser<'_> {
         self.recover_to_next_line();
     }
 
-    fn skip_until_close_or_line(&mut self, close: TokenKind) {
-        while !self.at_end() && !self.at_item_boundary() {
-            if self.current_is(close.clone()) {
-                self.advance();
-                return;
-            }
-
-            if self.current().is_some_and(Token::is_close_delimiter) {
-                self.advance();
-                return;
-            }
-
-            self.advance();
-        }
-    }
-
     fn consume_close_paren(&mut self) {
         if self.current_is(TokenKind::CloseParen) {
             self.advance();
@@ -624,6 +938,78 @@ impl Parser<'_> {
         }
 
         false
+    }
+
+    fn current_is_operator(&self, expected: &str) -> bool {
+        self.current()
+            .is_some_and(|token| token.is_operator(expected))
+    }
+
+    fn consume_collection_separator(&mut self, allow_semicolon: bool) -> bool {
+        let mut consumed = self.skip_collection_trivia();
+        let mut seen_separator = false;
+
+        loop {
+            if let Some(separator_count) = self.current_separator_count(allow_semicolon) {
+                let span = self.current_span();
+                let first_extra_index = usize::from(!seen_separator);
+
+                for index in first_extra_index..separator_count {
+                    self.report_unexpected_separator(Span::new(
+                        span.start + index,
+                        span.start + index + 1,
+                    ));
+                }
+
+                seen_separator = true;
+                consumed = true;
+                self.advance();
+                consumed |= self.skip_collection_trivia();
+                continue;
+            }
+
+            break;
+        }
+
+        consumed
+    }
+
+    fn current_separator_count(&self, allow_semicolon: bool) -> Option<usize> {
+        let Some(Token {
+            kind: TokenKind::Operator(operator),
+            ..
+        }) = self.current()
+        else {
+            return None;
+        };
+
+        if operator.is_empty()
+            || !operator
+                .bytes()
+                .all(|byte| byte == b',' || (allow_semicolon && byte == b';'))
+        {
+            return None;
+        }
+
+        Some(operator.len())
+    }
+
+    fn skip_collection_trivia(&mut self) -> bool {
+        let mut consumed = false;
+
+        while self.current_is(TokenKind::Newline)
+            || self.current_is(TokenKind::Indent)
+            || self.current_is(TokenKind::Dedent)
+            || matches!(
+                self.current().map(|token| &token.kind),
+                Some(TokenKind::DocComment(_))
+            )
+        {
+            consumed = true;
+            self.advance();
+        }
+
+        consumed
     }
 
     fn consume_newline(&mut self) -> bool {
@@ -674,8 +1060,39 @@ impl Parser<'_> {
         self.current().is_some_and(|token| token.kind == kind)
     }
 
+    fn next_is(&self, kind: TokenKind) -> bool {
+        self.tokens
+            .get(self.cursor + 1)
+            .is_some_and(|token| token.kind == kind)
+    }
+
+    fn close_exists_before_item_boundary(&self, close: TokenKind) -> bool {
+        for token in &self.tokens[self.cursor..] {
+            if token.kind == close {
+                return true;
+            }
+
+            if matches!(token.kind, TokenKind::Newline | TokenKind::Dedent) {
+                return false;
+            }
+        }
+
+        false
+    }
+
     fn current_is_any_close_delimiter(&self) -> bool {
         self.current().is_some_and(Token::is_close_delimiter)
+    }
+
+    fn consume_close(&mut self, close: TokenKind) -> usize {
+        if self.current_is(close) {
+            let span = self.current_span();
+            self.advance();
+            return span.end;
+        }
+
+        self.consume_close_delimiter_if_present();
+        self.previous_end()
     }
 
     fn advance(&mut self) {
@@ -798,7 +1215,7 @@ fn delimiter_text(kind: &TokenKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExprKind, Item, Literal, parse_module};
+    use super::{ExprKind, Item, Literal, ParseOutput, RecordEntry, parse_module};
 
     #[test]
     fn parses_call_expressions_into_ast_nodes() {
@@ -845,5 +1262,67 @@ mod tests {
             &binding.value.kind,
             ExprKind::Literal(Literal::String(text)) if text == "\"Aven\""
         ));
+    }
+
+    #[test]
+    fn parses_structural_literals_into_ast_nodes() {
+        let output =
+            parse_module("items = [1, \"two\"]\npair = (1, \"two\")\ncolors = @{ Red, Ok(1) }\n");
+
+        assert!(output.diagnostics.is_empty());
+        assert!(matches!(binding_value(&output, 0), ExprKind::Array(items) if items.len() == 2));
+        assert!(matches!(binding_value(&output, 1), ExprKind::Tuple(items) if items.len() == 2));
+        assert!(matches!(binding_value(&output, 2), ExprKind::Set(items) if items.len() == 2));
+    }
+
+    #[test]
+    fn parses_record_transform_entries_into_ast_nodes() {
+        let output = parse_module(
+            "cleaned = { ..user, :..defaults, -password, name -> fullName, active = true }\n",
+        );
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Record(entries) = binding_value(&output, 0) else {
+            panic!("expected record expression");
+        };
+
+        assert_eq!(entries.len(), 5);
+        assert!(matches!(
+            &entries[0],
+            RecordEntry::Spread {
+                overwrite: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Spread {
+                overwrite: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &entries[2],
+            RecordEntry::Delete { name, .. } if name == "password"
+        ));
+        assert!(matches!(
+            &entries[3],
+            RecordEntry::Rename { from, to, .. } if from == "name" && to == "fullName"
+        ));
+        assert!(matches!(
+            &entries[4],
+            RecordEntry::Field {
+                name,
+                overwrite: false,
+                ..
+            } if name == "active"
+        ));
+    }
+
+    fn binding_value(output: &ParseOutput, index: usize) -> &ExprKind {
+        let Some(Item::Binding(binding)) = output.module.items.get(index) else {
+            panic!("expected binding item");
+        };
+        &binding.value.kind
     }
 }
