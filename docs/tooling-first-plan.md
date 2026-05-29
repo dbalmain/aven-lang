@@ -278,7 +278,7 @@ Done when:
 
 ## Milestone 4b: Structural Collections
 
-Status: in progress
+Status: done
 
 Progress: the first structural parser slice handles array literals, tuple
 literals, record literals/transforms, and `@{...}` set/variant-set literals.
@@ -309,7 +309,11 @@ Done when:
 
 ## Milestone 4c: Operators, Access, And Branching Forms
 
-Status: later
+Status: in progress
+
+Progress: the first operator parser slice adds Pratt parsing for ordinary
+binary operators, pipelines, field access, and nil-safe field access. The
+remaining `?` match/propagation forms are still pending.
 
 Goal: parse the expression syntax that controls execution order.
 
@@ -346,7 +350,9 @@ Recommended approach:
 Done when:
 
 - representative pipeline, access, operator, and `?`-family examples parse
-- operator precedence is tested with fixtures
+- operator precedence is tested with AST-shape assertions. Unit tests are
+  acceptable while 4c is in progress; before closing 4c, either keep that as
+  the explicit policy or add a fixture mechanism that captures tree shape.
 
 ## Milestone 4d: Type Syntax Parser
 

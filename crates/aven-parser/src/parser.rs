@@ -44,8 +44,26 @@ pub enum ExprKind {
     Array(Vec<Expr>),
     Record(Vec<RecordEntry>),
     Set(Vec<Expr>),
-    Call { callee: Box<Expr>, args: Vec<Expr> },
-    Lambda { params: Vec<Param>, body: Box<Expr> },
+    FieldAccess {
+        receiver: Box<Expr>,
+        field: String,
+        field_span: Span,
+        null_safe: bool,
+    },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    Binary {
+        left: Box<Expr>,
+        operator: String,
+        operator_span: Span,
+        right: Box<Expr>,
+    },
+    Lambda {
+        params: Vec<Param>,
+        body: Box<Expr>,
+    },
     Block(Vec<Item>),
 }
 
@@ -120,6 +138,14 @@ struct Parser<'a> {
     tokens: &'a [Token],
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone)]
+struct InfixOperator {
+    text: String,
+    span: Span,
+    left_binding_power: u8,
+    right_binding_power: u8,
 }
 
 impl Parser<'_> {
@@ -273,11 +299,41 @@ impl Parser<'_> {
     }
 
     fn parse_expression(&mut self) -> Expr {
+        self.parse_binary_expression(0)
+    }
+
+    fn parse_binary_expression(&mut self, min_binding_power: u8) -> Expr {
         if self.is_lambda_start() {
             return self.parse_lambda();
         }
 
-        self.parse_call()
+        let mut left = self.parse_postfix();
+
+        loop {
+            let Some(operator) = self.current_infix_operator() else {
+                break;
+            };
+
+            if operator.left_binding_power < min_binding_power {
+                break;
+            }
+
+            self.advance();
+            let right = self.parse_binary_expression(operator.right_binding_power);
+            let span = left.span.merge(right.span);
+
+            left = Expr {
+                kind: ExprKind::Binary {
+                    left: Box::new(left),
+                    operator: operator.text,
+                    operator_span: operator.span,
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        left
     }
 
     fn parse_lambda(&mut self) -> Expr {
@@ -351,11 +407,21 @@ impl Parser<'_> {
         params
     }
 
-    fn parse_call(&mut self) -> Expr {
+    fn parse_postfix(&mut self) -> Expr {
         let mut expr = self.parse_atom();
 
-        while self.current_is(TokenKind::OpenParen) {
-            expr = self.finish_call(expr);
+        loop {
+            if self.current_is(TokenKind::OpenParen) {
+                expr = self.finish_call(expr);
+                continue;
+            }
+
+            if self.current_is_operator(".") || self.current_is_operator("?.") {
+                expr = self.finish_field_access(expr);
+                continue;
+            }
+
+            break;
         }
 
         expr
@@ -411,6 +477,35 @@ impl Parser<'_> {
                 args,
             },
             span: Span::new(start, end),
+        }
+    }
+
+    fn finish_field_access(&mut self, receiver: Expr) -> Expr {
+        let operator_span = self.current_span();
+        let null_safe = self.current_is_operator("?.");
+        self.advance();
+
+        let Some((field, field_span)) = self.parse_label_name() else {
+            self.report_expected_field_name(self.current_span());
+            return Expr {
+                span: receiver.span.merge(operator_span),
+                kind: ExprKind::FieldAccess {
+                    receiver: Box::new(receiver),
+                    field: String::new(),
+                    field_span: Span::point(operator_span.end),
+                    null_safe,
+                },
+            };
+        };
+
+        Expr {
+            span: receiver.span.merge(field_span),
+            kind: ExprKind::FieldAccess {
+                receiver: Box::new(receiver),
+                field,
+                field_span,
+                null_safe,
+            },
         }
     }
 
@@ -865,6 +960,18 @@ impl Parser<'_> {
         );
     }
 
+    fn report_expected_field_name(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("expected field name")
+                .with_code("parse.expected-field-name")
+                .with_label(Label::primary(
+                    span,
+                    "expected a field name after this access",
+                ))
+                .with_note("field access uses `.name` or `?.name`"),
+        );
+    }
+
     fn report_unexpected_separator(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("unexpected separator")
@@ -905,7 +1012,7 @@ impl Parser<'_> {
                     token.span,
                     "this syntax is not supported by the core parser yet",
                 ))
-                .with_note("operator expressions will be parsed in Milestone 4c"),
+                .with_note("custom operators are not supported yet; supported operators are `|>`, `??`, `||`, `&&`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, and `^`"),
         );
         self.recover_to_next_line();
     }
@@ -943,6 +1050,25 @@ impl Parser<'_> {
     fn current_is_operator(&self, expected: &str) -> bool {
         self.current()
             .is_some_and(|token| token.is_operator(expected))
+    }
+
+    fn current_infix_operator(&self) -> Option<InfixOperator> {
+        let Some(Token {
+            kind: TokenKind::Operator(operator),
+            span,
+        }) = self.current()
+        else {
+            return None;
+        };
+
+        let (left_binding_power, right_binding_power) = infix_binding_power(operator)?;
+
+        Some(InfixOperator {
+            text: operator.clone(),
+            span: *span,
+            left_binding_power,
+            right_binding_power,
+        })
     }
 
     fn consume_collection_separator(&mut self, allow_semicolon: bool) -> bool {
@@ -1128,6 +1254,22 @@ fn missing_expr(span: Span) -> Expr {
         kind: ExprKind::Missing,
         span,
     }
+}
+
+fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
+    let precedence = match operator {
+        "|>" => 1,
+        "??" => 2,
+        "||" => 3,
+        "&&" => 4,
+        "==" | "!=" | "<" | "<=" | ">" | ">=" => 5,
+        "+" | "-" => 6,
+        "*" | "/" | "%" => 7,
+        "^" => return Some((8, 8)),
+        _ => return None,
+    };
+
+    Some((precedence, precedence + 1))
 }
 
 fn scan_delimiters(tokens: &[Token]) -> Vec<Diagnostic> {
@@ -1317,6 +1459,55 @@ mod tests {
                 ..
             } if name == "active"
         ));
+    }
+
+    #[test]
+    fn parses_binary_precedence_into_ast_nodes() {
+        let output = parse_module("value = 1 + 2 * 3\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Binary {
+            operator, right, ..
+        } = binding_value(&output, 0)
+        else {
+            panic!("expected binary expression");
+        };
+
+        assert_eq!(operator, "+");
+        assert!(matches!(
+            &right.kind,
+            ExprKind::Binary {
+                operator,
+                ..
+            } if operator == "*"
+        ));
+    }
+
+    #[test]
+    fn parses_field_access_and_pipelines_into_ast_nodes() {
+        let output = parse_module("value = users?.active |> toJson()\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Binary {
+            operator,
+            left,
+            right,
+            ..
+        } = binding_value(&output, 0)
+        else {
+            panic!("expected binary pipeline expression");
+        };
+
+        assert_eq!(operator, "|>");
+        assert!(matches!(
+            &left.kind,
+            ExprKind::FieldAccess {
+                field,
+                null_safe: true,
+                ..
+            } if field == "active"
+        ));
+        assert!(matches!(&right.kind, ExprKind::Call { .. }));
     }
 
     fn binding_value(output: &ParseOutput, index: usize) -> &ExprKind {

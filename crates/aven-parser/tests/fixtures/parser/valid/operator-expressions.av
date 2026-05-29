@@ -1,0 +1,4 @@
+sum = 1 + 2 * 3
+comparison = user.age >= 18
+fallback = user?.profile.name ?? "anonymous"
+output = users |> filterAdults() |> toJson()
