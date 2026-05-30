@@ -1,6 +1,6 @@
 use aven_core::{Diagnostic, Label, Span};
 
-use crate::{Token, TokenKind, layout_source};
+use crate::{Token, TokenKind, lex_then_layout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
@@ -175,26 +175,39 @@ pub enum Literal {
 
 #[derive(Debug, Clone)]
 pub struct ParseOutput {
+    /// Raw lexer tokens, including comments and raw newline/indent trivia.
+    ///
+    /// The formatter can use this stream to preserve source trivia without
+    /// requiring the AST to carry every comment and blank line.
+    pub raw_tokens: Vec<Token>,
+    /// Parser-facing tokens after layout has converted raw indentation into
+    /// `Indent`/`Dedent`/`Newline` markers.
+    pub layout_tokens: Vec<Token>,
     pub module: Module,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 pub fn parse_module(source: &str) -> ParseOutput {
-    let mut layout = layout_source(source);
-    let mut diagnostics = Vec::new();
-    diagnostics.append(&mut layout.diagnostics);
-    diagnostics.extend(scan_delimiters(&layout.tokens));
+    let (raw_tokens, mut layout) = lex_then_layout(source);
+    let layout_tokens = layout.tokens;
+    let mut diagnostics = std::mem::take(&mut layout.diagnostics);
+    diagnostics.extend(scan_delimiters(&layout_tokens));
 
-    let mut parser = Parser {
-        tokens: &layout.tokens,
-        cursor: 0,
-        diagnostics,
+    let (module, diagnostics) = {
+        let mut parser = Parser {
+            tokens: &layout_tokens,
+            cursor: 0,
+            diagnostics,
+        };
+        let module = parser.parse_module();
+        (module, parser.diagnostics)
     };
-    let module = parser.parse_module();
 
     ParseOutput {
+        raw_tokens,
+        layout_tokens,
         module,
-        diagnostics: parser.diagnostics,
+        diagnostics,
     }
 }
 
@@ -1913,6 +1926,7 @@ fn delimiter_text(kind: &TokenKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{ExprKind, Item, Literal, ParseOutput, PropagationMode, RecordEntry, parse_module};
+    use crate::TokenKind;
 
     #[test]
     fn parses_call_expressions_into_ast_nodes() {
@@ -1928,6 +1942,37 @@ mod tests {
 
         assert!(matches!(callee.kind, ExprKind::Name(_)));
         assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn parse_output_preserves_raw_and_layout_token_streams() {
+        let output = parse_module("# plain\n## doc\nvalue = 1\n");
+
+        assert!(output.diagnostics.is_empty());
+        assert!(
+            output
+                .raw_tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::Comment(_)))
+        );
+        assert!(
+            output
+                .raw_tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::DocComment(_)))
+        );
+        assert!(
+            !output
+                .layout_tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::Comment(_)))
+        );
+        assert!(
+            output
+                .layout_tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::DocComment(_)))
+        );
     }
 
     #[test]

@@ -341,12 +341,15 @@ Recommended approach:
   - `expr`
   - `term`
   - `module`
-- decide before deep formatter work whether the parser produces:
-  - a CST/token tree plus AST view, or
-  - AST only with attached trivia
-
-  Bias toward a CST/token tree plus AST view if formatter quality matters. An
-  AST-only parser makes comment and blank-line preservation harder.
+- parser tree/trivia decision:
+  - Phase 1 uses an AST plus two token streams, not a full CST dependency.
+  - `ParseOutput` carries raw lexer tokens, including comments and raw
+    newline/indent trivia, for source-preserving tools.
+  - `ParseOutput` also carries parser-facing layout tokens, so diagnostics,
+    formatting, and LSP features can share the same layout view as the parser.
+  - The formatter should use tokens for trivia preservation and the AST only
+    where syntax shape matters. Revisit a real CST once formatter edits require
+    parent/child token navigation rather than flat token walks.
 
 Done when:
 
@@ -435,8 +438,8 @@ Goal: make formatting useful before semantics are complete.
 
 Tasks:
 
-- format from AST where possible
-- preserve comments through trivia
+- preserve comments and blank lines through the raw token stream
+- use AST shape where formatting needs syntax context
 - define stable formatting for:
   - bindings
   - function signatures
@@ -458,10 +461,10 @@ Done when:
 - common examples can be formatted without losing comments
 - formatting unsupported syntax reports a diagnostic instead of rewriting badly
 
-Note: full AST-driven formatting needs comment and blank-line preservation.
-Before expanding this milestone, confirm the Milestone 4 parser has either a
-CST/token tree or a deliberate trivia attachment model. Otherwise this milestone
-will force a parser rewrite.
+Note: Phase 1 deliberately uses a token-backed AST model rather than a full CST.
+That is enough for predictable early formatting while avoiding a parser rewrite
+today. If formatting starts needing nested token ownership or comment attachment
+rules that are hard to express over flat tokens, revisit a CST then.
 
 ## Milestone 6: Name Resolution Skeleton
 
@@ -610,13 +613,14 @@ Completed parser groundwork:
   separate `TypeExpr`)
 - Milestone 4e: record patterns and guarded match arms
 - AST-shape golden fixtures for precedence, type terms, and match patterns
+- token-backed trivia strategy: `ParseOutput` carries raw lexer tokens and
+  parser-facing layout tokens alongside the AST
 
 The next few queued changes should be:
 
-1. decide the CST/trivia strategy before formatter work expands
-2. start Milestone 5 formatter work
-3. expand LSP from diagnostics/formatting to document symbols
-4. start Milestone 6 name resolution skeleton
+1. start Milestone 5 formatter work
+2. expand LSP from diagnostics/formatting to document symbols
+3. start Milestone 6 name resolution skeleton
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

@@ -9,6 +9,11 @@ pub struct LayoutOutput {
 }
 
 pub fn layout_source(source: &str) -> LayoutOutput {
+    let (_, output) = lex_then_layout(source);
+    output
+}
+
+pub(crate) fn lex_then_layout(source: &str) -> (Vec<Token>, LayoutOutput) {
     let LexOutput {
         tokens,
         mut diagnostics,
@@ -16,10 +21,13 @@ pub fn layout_source(source: &str) -> LayoutOutput {
     let mut output = layout_tokens(&tokens);
     diagnostics.append(&mut output.diagnostics);
 
-    LayoutOutput {
-        tokens: output.tokens,
-        diagnostics,
-    }
+    (
+        tokens,
+        LayoutOutput {
+            tokens: output.tokens,
+            diagnostics,
+        },
+    )
 }
 
 pub fn layout_tokens(tokens: &[Token]) -> LayoutOutput {
