@@ -99,11 +99,8 @@ and stops at `=`; `value = result ?` parses `Nullable(Name)` with no diagnostics
 `result ?>\n  Ok(x) => x` parses a `Match`; `result ?>` with no block reports
 `parse.missing-match-arms`.
 
-> **Spec follow-up (not done here):** if this `?>` design is adopted, the shared
-> language spec's `?`-family section — which currently spells pattern matching as
-> bare `expr ?` — must be updated to use `?>` for match (and to state that bare
-> `?` is purely the nullable marker). That edit belongs in the spec, which this
-> worktree does not modify.
+> **Spec follow-up:** the shared language spec was updated to use `?>` for match
+> and to state that bare `?` is purely the nullable marker.
 
 `is_lambda_start` was extended (`lambda_arrow_follows`) so a `)` may be followed
 either by `=>` directly or by `: returnType =>` and still be recognised as a
@@ -139,11 +136,21 @@ lambda head.
    is a single known operator with no infix binding power, which still exercises
    `parse.unsupported-syntax`.
 3. **`TermContext` not threaded.** The brief offered a `TermContext { Value,
-   Type, Pattern }` for tuning diagnostic wording. It proved unnecessary: the
-   only annotation-specific message (`parse.expected-type`) is produced directly
-   in `parse_annotation_term` before delegating to the shared expression entry
-   point. Avoiding the parameter keeps the parser smaller with identical tree
-   shape, which is the stated goal.
+   Type, Pattern }` for tuning diagnostic wording. It proved unnecessary:
+   annotation-specific messages such as `parse.expected-type`, and
+   match-position messages such as `parse.expected-pattern`, are produced at
+   the call sites before delegating to the shared expression entry point.
+   Avoiding the parameter keeps the parser smaller with identical tree shape,
+   which is the stated goal.
+
+## Pattern follow-up: pattern terms are expressions too
+
+Milestone 4e applied the same fold to match patterns. `MatchArm.pattern` is now
+an `Expr`; constructor patterns are ordinary calls, nullary tags are comptime
+names, tuple/group patterns are ordinary tuple/group expressions, and record
+patterns use the same `RecordEntry` parser as value/type records. Bind-vs-ref,
+wildcard `_`, illegal pattern-position deletes/optional fields, and other
+pattern legality rules are semantic questions, not parser questions.
 
 ## Lexer: longest-match operators
 
@@ -172,8 +179,9 @@ no-match branch is `unreachable!`. Consequence: `Text?,` lexes as `Text` `?`
   with no arm block (see deviation 1).
 - Changed (match line `?` → `?>`): `parser/valid/question-operators.av`;
   `parser/invalid/expected-match-arrow.{av,diag}`,
-  `single-item-pattern-tuple.{av,diag}`, `unsupported-match-guard.{av,diag}`,
-  `unsupported-record-pattern.{av,diag}` (the `?>` is one byte longer than `?`,
+  `single-item-pattern-tuple.{av,diag}` (the `?>` is one byte longer than `?`,
   so the indented-arm label spans on the following line shift by +1).
+- Added after the pattern fold: `parser/valid/patterns.av`; removed the former
+  unsupported record-pattern and match-guard fixtures.
 - Lexer: `?>` added to `KNOWN_OPERATORS` (before bare `?`).
 - `parser/valid/type-syntax.av` is unaffected (uses `?^` and `Text?`, not match).

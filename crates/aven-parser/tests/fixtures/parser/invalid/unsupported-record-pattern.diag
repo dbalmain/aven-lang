@@ -1,3 +1,0 @@
-error parse.unsupported-record-pattern: record patterns are not supported yet
-  label 18..19: record pattern starts here
-  note: record patterns are deferred to Milestone 4e Pattern Syntax Completion; bind the value and destructure it in the arm body for now

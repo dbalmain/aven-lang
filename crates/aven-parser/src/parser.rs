@@ -65,8 +65,8 @@ pub enum ExprKind {
         callee: Box<Expr>,
         args: Vec<Expr>,
     },
-    /// `T?`: postfix nullable marker (type-level "optional"). See the
-    /// nullable-vs-match seam in `parse_postfix`.
+    /// `T?`: postfix nullable marker (type-level "optional"). Match uses the
+    /// distinct `?>` operator, so bare `?` is parsed uniformly.
     Nullable(Box<Expr>),
     /// `a -> b` / `(A, B) -> C`: a function/arrow form, right-associative.
     /// A parenthesized tuple on the left flattens into `params`.
@@ -117,25 +117,11 @@ pub enum PropagationMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
-    pub pattern: Pattern,
+    /// Parsed as an ordinary expression; pattern meaning is assigned later.
+    pub pattern: Expr,
+    pub guards: Vec<Expr>,
     pub body: Expr,
     pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pattern {
-    pub kind: PatternKind,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PatternKind {
-    Missing,
-    Wildcard,
-    Name(String),
-    Constructor { name: String, args: Vec<Pattern> },
-    Literal(Literal),
-    Tuple(Vec<Pattern>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,7 +409,7 @@ impl Parser<'_> {
             return self.report_expected_type(self.previous_end());
         }
 
-        self.parse_expression()
+        self.parse_arrow_with_lambda(false)
     }
 
     fn parse_binding_value(&mut self, missing_offset: usize) -> Expr {
@@ -460,7 +446,11 @@ impl Parser<'_> {
     /// its elements into `params`, so `(A, B) -> C` has two params while
     /// `A -> C` has one. Wraps the binary-expression layer.
     fn parse_arrow(&mut self) -> Expr {
-        let left = self.parse_binary_expression(0);
+        self.parse_arrow_with_lambda(true)
+    }
+
+    fn parse_arrow_with_lambda(&mut self, allow_lambda: bool) -> Expr {
+        let left = self.parse_binary_expression(0, allow_lambda);
 
         if !self.current_is_operator("->") {
             return left;
@@ -468,7 +458,7 @@ impl Parser<'_> {
 
         self.advance();
         // Right-recurse so `a -> b -> c` parses as `a -> (b -> c)`.
-        let result = self.parse_arrow();
+        let result = self.parse_arrow_with_lambda(allow_lambda);
         let span = left.span.merge(result.span);
 
         let params = match left.kind {
@@ -485,8 +475,8 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_binary_expression(&mut self, min_binding_power: u8) -> Expr {
-        if self.is_lambda_start() {
+    fn parse_binary_expression(&mut self, min_binding_power: u8, allow_lambda: bool) -> Expr {
+        if allow_lambda && self.is_lambda_start() {
             return self.parse_lambda();
         }
 
@@ -502,7 +492,7 @@ impl Parser<'_> {
             }
 
             self.advance();
-            let right = self.parse_binary_expression(operator.right_binding_power);
+            let right = self.parse_binary_expression(operator.right_binding_power, allow_lambda);
             let span = left.span.merge(right.span);
 
             left = Expr {
@@ -815,17 +805,16 @@ impl Parser<'_> {
     }
 
     fn parse_match_arm(&mut self) -> MatchArm {
-        let pattern = self.parse_pattern();
+        let pattern = self.parse_match_pattern_term();
+        let mut guards = Vec::new();
 
-        if self.current_is_operator(",") {
-            self.report_unsupported_match_guard(self.current_span());
-            self.recover_to_next_line();
-            let body = missing_expr(Span::point(pattern.span.end));
-            return MatchArm {
-                span: pattern.span.merge(body.span),
-                pattern,
-                body,
-            };
+        while self.consume_operator(",") {
+            if self.current_is_operator("=>") || self.at_item_boundary() {
+                guards.push(missing_expr(Span::point(self.previous_end())));
+                break;
+            }
+
+            guards.push(self.parse_expression());
         }
 
         if !self.consume_operator("=>") {
@@ -835,6 +824,7 @@ impl Parser<'_> {
             return MatchArm {
                 span: pattern.span.merge(body.span),
                 pattern,
+                guards,
                 body,
             };
         }
@@ -855,8 +845,20 @@ impl Parser<'_> {
         MatchArm {
             span: pattern.span.merge(body.span),
             pattern,
+            guards,
             body,
         }
+    }
+
+    fn parse_match_pattern_term(&mut self) -> Expr {
+        if self.current_is_operator("=>")
+            || self.current_is_operator(",")
+            || self.at_item_boundary()
+        {
+            return self.report_expected_pattern(self.current_span());
+        }
+
+        self.parse_arrow_with_lambda(false)
     }
 
     fn finish_field_access(&mut self, receiver: Expr) -> Expr {
@@ -1050,31 +1052,7 @@ impl Parser<'_> {
     }
 
     fn parse_expression_list(&mut self, close: TokenKind) -> Vec<Expr> {
-        let mut items = Vec::new();
-        self.skip_collection_trivia();
-
-        while !self.at_end() && !self.current_is(close.clone()) {
-            if self.current_is_any_close_delimiter() {
-                break;
-            }
-
-            items.push(self.parse_expression());
-
-            if self.current_is(close.clone()) {
-                break;
-            }
-
-            let had_separator = self.consume_collection_separator(false);
-            if self.current_is(close.clone()) {
-                break;
-            }
-
-            if !had_separator {
-                break;
-            }
-        }
-
-        items
+        self.parse_delimited(close, false, |parser| Some(parser.parse_expression()))
     }
 
     fn parse_record(&mut self) -> Expr {
@@ -1093,24 +1071,35 @@ impl Parser<'_> {
     /// The only difference is how a bare term is interpreted, which is handled
     /// inside `parse_record_entry` via the `EntryMode`.
     fn parse_entry_list(&mut self, mode: EntryMode) -> Vec<RecordEntry> {
-        let mut entries = Vec::new();
+        self.parse_delimited(TokenKind::CloseBrace, true, |parser| {
+            parser.parse_record_entry(mode)
+        })
+    }
+
+    fn parse_delimited<T>(
+        &mut self,
+        close: TokenKind,
+        allow_semicolon: bool,
+        mut parse_item: impl FnMut(&mut Self) -> Option<T>,
+    ) -> Vec<T> {
+        let mut items = Vec::new();
         self.skip_collection_trivia();
 
-        while !self.at_end() && !self.current_is(TokenKind::CloseBrace) {
+        while !self.at_end() && !self.current_is(close.clone()) {
             if self.current_is_any_close_delimiter() {
                 break;
             }
 
-            if let Some(entry) = self.parse_record_entry(mode) {
-                entries.push(entry);
+            if let Some(item) = parse_item(self) {
+                items.push(item);
             }
 
-            if self.current_is(TokenKind::CloseBrace) {
+            if self.current_is(close.clone()) {
                 break;
             }
 
-            let had_separator = self.consume_collection_separator(true);
-            if self.current_is(TokenKind::CloseBrace) {
+            let had_separator = self.consume_collection_separator(allow_semicolon);
+            if self.current_is(close.clone()) {
                 break;
             }
 
@@ -1119,7 +1108,7 @@ impl Parser<'_> {
             }
         }
 
-        entries
+        items
     }
 
     fn parse_record_entry(&mut self, mode: EntryMode) -> Option<RecordEntry> {
@@ -1138,6 +1127,19 @@ impl Parser<'_> {
             let operator_span = self.current_span();
             let overwrite = self.current_is_operator(":..");
             self.advance();
+
+            if !overwrite
+                && (self.current_is(TokenKind::CloseBrace)
+                    || self.current_is(TokenKind::Newline)
+                    || self.current_is(TokenKind::Indent)
+                    || self.current_is(TokenKind::Dedent)
+                    || self.current_is_operator(",")
+                    || self.current_is_operator(";"))
+            {
+                return Some(RecordEntry::Open {
+                    span: operator_span,
+                });
+            }
 
             // `.._` is the open-row marker, distinct from a spread of `_`.
             if mode == EntryMode::Record
@@ -1256,183 +1258,6 @@ impl Parser<'_> {
             }
             _ => None,
         }
-    }
-
-    fn parse_pattern(&mut self) -> Pattern {
-        let Some(token) = self.current().cloned() else {
-            return missing_pattern(Span::point(self.previous_end()));
-        };
-
-        match token.kind {
-            TokenKind::Identifier(name) if name == "_" => {
-                self.advance();
-                Pattern {
-                    kind: PatternKind::Wildcard,
-                    span: token.span,
-                }
-            }
-            TokenKind::Identifier(name) => {
-                self.advance();
-                Pattern {
-                    kind: PatternKind::Name(name),
-                    span: token.span,
-                }
-            }
-            TokenKind::ComptimeIdentifier(name) => self.parse_constructor_pattern(name, token.span),
-            TokenKind::Number(number) => {
-                self.advance();
-                literal_pattern(Literal::Number(number), token.span)
-            }
-            TokenKind::StringLiteral(text) => {
-                self.advance();
-                literal_pattern(Literal::String(text), token.span)
-            }
-            TokenKind::RegexLiteral(regex) => {
-                self.advance();
-                literal_pattern(Literal::Regex(regex), token.span)
-            }
-            TokenKind::PathLiteral(path) => {
-                self.advance();
-                literal_pattern(Literal::Path(path), token.span)
-            }
-            TokenKind::LabelPath(label) => {
-                self.advance();
-                literal_pattern(Literal::Label(label), token.span)
-            }
-            TokenKind::OpenParen => self.parse_tuple_pattern(),
-            TokenKind::OpenBrace => self.parse_record_pattern_placeholder(token.span),
-            _ => {
-                self.report_expected_pattern(token.span);
-                self.advance();
-                missing_pattern(token.span)
-            }
-        }
-    }
-
-    fn parse_constructor_pattern(&mut self, name: String, name_span: Span) -> Pattern {
-        self.advance();
-
-        if !self.current_is(TokenKind::OpenParen) {
-            return Pattern {
-                kind: PatternKind::Constructor {
-                    name,
-                    args: Vec::new(),
-                },
-                span: name_span,
-            };
-        }
-
-        self.advance();
-        let args = self.parse_pattern_list(TokenKind::CloseParen);
-        let end = self.consume_close(TokenKind::CloseParen);
-
-        Pattern {
-            kind: PatternKind::Constructor { name, args },
-            span: Span::new(name_span.start, end),
-        }
-    }
-
-    fn parse_tuple_pattern(&mut self) -> Pattern {
-        let start = self.current_span().start;
-        self.advance();
-
-        self.skip_collection_trivia();
-
-        if self.current_is(TokenKind::CloseParen) {
-            let end = self.current_span().end;
-            self.advance();
-            return Pattern {
-                kind: PatternKind::Tuple(Vec::new()),
-                span: Span::new(start, end),
-            };
-        }
-
-        let first = self.parse_pattern();
-        self.skip_collection_trivia();
-
-        if !self.current_is_operator(",") {
-            let end = self.consume_close(TokenKind::CloseParen);
-            return Pattern {
-                kind: first.kind,
-                span: Span::new(start, end),
-            };
-        }
-
-        let first_comma_span = self.current_span();
-        self.advance();
-
-        let mut items = vec![first];
-        loop {
-            self.skip_collection_trivia();
-
-            if self.current_is(TokenKind::CloseParen) || self.at_end() {
-                break;
-            }
-
-            if self.current_is_any_close_delimiter() {
-                break;
-            }
-
-            items.push(self.parse_pattern());
-            self.skip_collection_trivia();
-
-            if self.current_is_operator(",") {
-                self.advance();
-                continue;
-            }
-
-            break;
-        }
-
-        if items.len() == 1 {
-            self.report_single_item_tuple(first_comma_span);
-        }
-
-        let end = self.consume_close(TokenKind::CloseParen);
-
-        Pattern {
-            kind: PatternKind::Tuple(items),
-            span: Span::new(start, end),
-        }
-    }
-
-    fn parse_record_pattern_placeholder(&mut self, span: Span) -> Pattern {
-        self.report_unsupported_record_pattern(span);
-        self.advance();
-
-        while !self.at_end() && !self.at_item_boundary() && !self.current_is_operator("=>") {
-            self.advance();
-        }
-
-        missing_pattern(Span::new(span.start, self.previous_end()))
-    }
-
-    fn parse_pattern_list(&mut self, close: TokenKind) -> Vec<Pattern> {
-        let mut items = Vec::new();
-        self.skip_collection_trivia();
-
-        while !self.at_end() && !self.current_is(close.clone()) {
-            if self.current_is_any_close_delimiter() {
-                break;
-            }
-
-            items.push(self.parse_pattern());
-
-            if self.current_is(close.clone()) {
-                break;
-            }
-
-            let had_separator = self.consume_collection_separator(false);
-            if self.current_is(close.clone()) {
-                break;
-            }
-
-            if !had_separator {
-                break;
-            }
-        }
-
-        items
     }
 
     fn recover_record_entry(&mut self) {
@@ -1624,31 +1449,14 @@ impl Parser<'_> {
         missing_expr(span)
     }
 
-    fn report_expected_pattern(&mut self, span: Span) {
+    fn report_expected_pattern(&mut self, span: Span) -> Expr {
         self.diagnostics.push(
             Diagnostic::error("expected pattern")
                 .with_code("parse.expected-pattern")
                 .with_label(Label::primary(span, "expected a pattern here"))
-                .with_note("patterns can be `_`, names, literals, tuples, or constructors like `Ok(value)`"),
+                .with_note("patterns can be `_`, names, literals, tuples, records, or constructors like `Ok(value)`"),
         );
-    }
-
-    fn report_unsupported_record_pattern(&mut self, span: Span) {
-        self.diagnostics.push(
-            Diagnostic::error("record patterns are not supported yet")
-                .with_code("parse.unsupported-record-pattern")
-                .with_label(Label::primary(span, "record pattern starts here"))
-                .with_note("record patterns are deferred to Milestone 4e Pattern Syntax Completion; bind the value and destructure it in the arm body for now"),
-        );
-    }
-
-    fn report_unsupported_match_guard(&mut self, span: Span) {
-        self.diagnostics.push(
-            Diagnostic::error("match guards are not supported yet")
-                .with_code("parse.unsupported-match-guard")
-                .with_label(Label::primary(span, "guard starts here"))
-                .with_note("guarded match arms are deferred to Milestone 4e Pattern Syntax Completion; move the condition into the arm body for now"),
-        );
+        missing_expr(span)
     }
 
     fn report_single_item_tuple(&mut self, comma_span: Span) {
@@ -2003,20 +1811,6 @@ fn missing_expr(span: Span) -> Expr {
     }
 }
 
-fn literal_pattern(literal: Literal, span: Span) -> Pattern {
-    Pattern {
-        kind: PatternKind::Literal(literal),
-        span,
-    }
-}
-
-fn missing_pattern(span: Span) -> Pattern {
-    Pattern {
-        kind: PatternKind::Missing,
-        span,
-    }
-}
-
 fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
     let precedence = match operator {
         "|>" => 1,
@@ -2118,10 +1912,7 @@ fn delimiter_text(kind: &TokenKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ExprKind, Item, Literal, ParseOutput, PatternKind, PropagationMode, RecordEntry,
-        parse_module,
-    };
+    use super::{ExprKind, Item, Literal, ParseOutput, PropagationMode, RecordEntry, parse_module};
 
     #[test]
     fn parses_call_expressions_into_ast_nodes() {
@@ -2320,11 +2111,67 @@ mod tests {
         assert_eq!(arms.len(), 2);
         assert!(matches!(
             &arms[0].pattern.kind,
-            PatternKind::Constructor { name, args } if name == "Ok" && args.len() == 1
+            ExprKind::Call { callee, args }
+                if matches!(&callee.kind, ExprKind::ComptimeName(name) if name == "Ok")
+                    && args.len() == 1
         ));
         assert!(matches!(
             &arms[1].pattern.kind,
-            PatternKind::Constructor { name, args } if name == "Err" && args.len() == 1
+            ExprKind::Call { callee, args }
+                if matches!(&callee.kind, ExprKind::ComptimeName(name) if name == "Err")
+                    && args.len() == 1
+        ));
+    }
+
+    #[test]
+    fn parses_record_patterns_and_match_guards() {
+        let output = parse_module(
+            "value = user ?>\n  { age }, age >= 18 => \"adult\"\n  { givenName -> firstName, status = Active, ..rest } => firstName\n  { .. } => \"ignored\"\n",
+        );
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
+            panic!("expected match expression");
+        };
+
+        assert_eq!(arms.len(), 3);
+        assert_eq!(arms[0].guards.len(), 1);
+        assert!(
+            matches!(&arms[0].guards[0].kind, ExprKind::Binary { operator, .. } if operator == ">=")
+        );
+        assert!(matches!(
+            &arms[0].pattern.kind,
+            ExprKind::Record(entries)
+                if matches!(
+                    &entries[..],
+                    [RecordEntry::Shorthand { name, .. }] if name == "age"
+                )
+        ));
+        assert!(matches!(
+            &arms[1].pattern.kind,
+            ExprKind::Record(entries)
+                if entries.len() == 3
+                    && matches!(
+                        &entries[0],
+                        RecordEntry::Rename { from, to, .. }
+                            if from == "givenName" && to == "firstName"
+                    )
+                    && matches!(
+                        &entries[1],
+                        RecordEntry::Field { name, value, .. }
+                            if name == "status"
+                                && matches!(&value.kind, ExprKind::ComptimeName(name) if name == "Active")
+                    )
+                    && matches!(
+                        &entries[2],
+                        RecordEntry::Spread { value, overwrite: false, .. }
+                            if matches!(&value.kind, ExprKind::Name(name) if name == "rest")
+                    )
+        ));
+        assert!(matches!(
+            &arms[2].pattern.kind,
+            ExprKind::Record(entries)
+                if matches!(&entries[..], [RecordEntry::Open { .. }])
         ));
     }
 
@@ -2340,7 +2187,13 @@ mod tests {
         assert_eq!(arms.len(), 1);
         assert!(matches!(
             &arms[0].pattern.kind,
-            PatternKind::Constructor { name, args } if name == "Ok" && args.len() == 1
+            ExprKind::Group(inner)
+                if matches!(
+                    &inner.kind,
+                    ExprKind::Call { callee, args }
+                        if matches!(&callee.kind, ExprKind::ComptimeName(name) if name == "Ok")
+                            && args.len() == 1
+                )
         ));
     }
 

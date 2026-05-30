@@ -1,0 +1,4 @@
+value = user ?>
+  { age }, age >= 18 => "adult"
+  { givenName -> firstName, status = Active, ..rest } => firstName
+  { .. } => "ignored"

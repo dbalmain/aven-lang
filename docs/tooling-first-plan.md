@@ -313,10 +313,9 @@ Status: done
 
 Progress: the expression parser now handles the 4c expression subset:
 Pratt-parsed binary operators, pipelines, field access, nil-safe field access,
-nil coalescing, postfix `?^`/`?!` propagation forms, and newline `?` match
+nil coalescing, postfix `?^`/`?!` propagation forms, and newline `?>` match
 expressions with literals, names, tuples, and constructor patterns. Record
-patterns and guarded match arms are not part of this subset; they have targeted
-diagnostics and are deferred to Milestone 4e.
+patterns and guarded match arms were deliberately deferred to Milestone 4e.
 
 Goal: parse the expression syntax that controls execution order.
 
@@ -325,7 +324,7 @@ Tasks:
 - parse:
   - pipelines
   - field access
-  - `?` match expressions
+  - `?>` match expressions
   - `?^`, `?!`, `?.`, `??`
 - add Pratt parsing for operators
 - keep operator declarations out of expression parsing until the module-level
@@ -340,8 +339,7 @@ Recommended approach:
   - `lexer`
   - `layout`
   - `expr`
-  - `pattern`
-  - `type_expr`
+  - `term`
   - `module`
 - decide before deep formatter work whether the parser produces:
   - a CST/token tree plus AST view, or
@@ -359,7 +357,7 @@ Done when:
 
 ## Milestone 4d: Type Syntax Parser
 
-Status: in progress
+Status: done
 
 Goal: parse type annotations without implementing full type inference yet.
 
@@ -390,7 +388,6 @@ Tasks:
   singleton-marker type syntax
 - parse requirement/interface headers only as syntax if needed for examples
 - keep semantic validation for Milestone 7
-- finish review and cleanup of the unified-grammar slice
 
 Done when:
 
@@ -401,7 +398,16 @@ Done when:
 
 ## Milestone 4e: Pattern Syntax Completion
 
-Status: later
+Status: done
+
+Progress: match arms now parse pattern terms through the ordinary expression
+grammar, matching the type-syntax fold from Milestone 4d. Constructor patterns
+are calls, nullary tags are comptime names, tuple/group patterns are ordinary
+tuple/group expressions, and record patterns use the existing `RecordEntry`
+parser. Guard expressions follow the pattern with comma syntax, matching the
+language spec's comprehension-style guard shape. Parser unit tests remain the
+AST-shape assertion mechanism for pattern-position terms; fixtures cover
+parse-clean examples.
 
 Goal: complete pattern syntax after the expression and type parsers have
 settled.
@@ -410,14 +416,16 @@ Tasks:
 
 - parse record patterns
 - parse guarded match arms
-- decide whether patterns need their own AST-shape fixture harness
+- fold pattern syntax into the ordinary expression AST
+- decide whether pattern-position terms need AST-shape fixtures beyond unit
+  tests
 - keep semantic validation for later type checking
 
 Done when:
 
 - record-pattern examples parse
 - guarded-arm examples parse
-- unsupported pattern forms have targeted diagnostics
+- remaining pattern legality checks are deferred to semantic validation
 
 ## Milestone 5: Formatter
 
@@ -597,22 +605,17 @@ Completed parser groundwork:
 - Milestone 4b: structural collections
 - Milestone 4c: operators, access, propagation, and the implemented `?` match
   subset
-
-Work in progress:
-
 - Milestone 4d: unified-grammar type syntax slice (types parse as `Expr`; no
   separate `TypeExpr`)
+- Milestone 4e: record patterns and guarded match arms
 
 The next few queued changes should be:
 
-1. finish review and cleanup of the Milestone 4d unified-grammar slice
-2. implement Milestone 4e pattern syntax completion for record patterns and
-   guarded match arms
-3. decide whether parser tests need AST-shape fixtures beyond unit tests
-4. decide the CST/trivia strategy before formatter work expands
-5. start Milestone 5 formatter work
-6. expand LSP from diagnostics/formatting to document symbols
-7. start Milestone 6 name resolution skeleton
+1. decide whether parser tests need AST-shape fixtures beyond unit tests
+2. decide the CST/trivia strategy before formatter work expands
+3. start Milestone 5 formatter work
+4. expand LSP from diagnostics/formatting to document symbols
+5. start Milestone 6 name resolution skeleton
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

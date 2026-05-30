@@ -1,3 +1,0 @@
-error parse.unsupported-match-guard: match guards are not supported yet
-  label 29..30: guard starts here
-  note: guarded match arms are deferred to Milestone 4e Pattern Syntax Completion; move the condition into the arm body for now
