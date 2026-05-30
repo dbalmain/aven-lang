@@ -1,3 +1,3 @@
 error parse.missing-match-arms: match expression is missing arms
-  label 16..16: expected an indented block of match arms after `?`
+  label 17..17: expected an indented block of match arms after `?>`
   note: write one arm per line, for example `Ok(value) => value`

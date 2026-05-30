@@ -503,13 +503,21 @@ impl Lexer<'_> {
 
     fn scan_operator(&mut self) {
         let start = self.offset;
+        let rest = &self.source[start..];
 
-        while self.current_byte().is_some_and(is_operator_byte) {
-            self.offset += 1;
-        }
+        // Longest-match over the known-operator table. The table is ordered so
+        // that any operator that is a prefix of another appears after it, so the
+        // first match is also the longest. `is_operator_byte` is derived from the
+        // same table, so a leading operator byte always matches some entry here.
+        let operator = KNOWN_OPERATORS
+            .iter()
+            .find(|candidate| rest.starts_with(**candidate))
+            .copied()
+            .unwrap_or_else(|| unreachable!("operator byte did not match any known operator"));
 
+        self.offset += operator.len();
         self.push(
-            TokenKind::Operator(self.source[start..self.offset].to_owned()),
+            TokenKind::Operator(operator.to_owned()),
             Span::new(start, self.offset),
         );
     }
@@ -589,29 +597,21 @@ fn is_identifier_continue_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric()
 }
 
+/// Every operator the lexer recognises, ordered so that longer operators come
+/// before any operator that is a prefix of them. `scan_operator` does a
+/// first-match scan over this table, which is therefore also a longest match.
+const KNOWN_OPERATORS: &[&str] = &[
+    ":..", "=>", "->", "==", "!=", "<=", ">=", "|>", "&&", "||", "??", "?.", "?^", "?!", "?>",
+    "..", ":=", "=", ":", "!", "<", ">", "+", "-", "*", "/", "?", "^", ".", "|", "&", ",", ";",
+    "%", "~", "@", "\\",
+];
+
 fn is_operator_byte(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'=' | b':'
-            | b'!'
-            | b'<'
-            | b'>'
-            | b'+'
-            | b'-'
-            | b'*'
-            | b'/'
-            | b'?'
-            | b'^'
-            | b'.'
-            | b'|'
-            | b'&'
-            | b','
-            | b';'
-            | b'%'
-            | b'~'
-            | b'@'
-            | b'\\'
-    )
+    // Single source of truth: a byte starts an operator iff it is the first byte
+    // of some known operator.
+    KNOWN_OPERATORS
+        .iter()
+        .any(|operator| operator.as_bytes().first() == Some(&byte))
 }
 
 fn is_path_end_byte(byte: u8) -> bool {

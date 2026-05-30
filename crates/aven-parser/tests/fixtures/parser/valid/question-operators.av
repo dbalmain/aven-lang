@@ -1,6 +1,6 @@
 config = readConfig(path)?^
 quick = readConfig(path)?!
 fallback = user?.profile.name ?? "anonymous"
-message = result ?
+message = result ?>
   Ok(value) => value
   Err(error) => fallbackFor(error)

@@ -1,0 +1,21 @@
+0..5 identifier `value`
+6..7 operator `:`
+8..12 comptime_identifier `Text`
+12..13 operator `?`
+13..14 operator `,`
+14..15 operator `,`
+16..20 identifier `next`
+20..21 newline
+21..25 identifier `safe`
+26..27 operator `=`
+28..29 identifier `a`
+29..31 operator `?.`
+31..32 identifier `b`
+32..33 newline
+33..40 identifier `compare`
+41..42 operator `=`
+43..47 identifier `left`
+48..50 operator `<=`
+50..51 operator `>`
+52..57 identifier `right`
+57..58 newline

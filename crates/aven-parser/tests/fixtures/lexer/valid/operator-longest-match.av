@@ -1,0 +1,3 @@
+value : Text?,, next
+safe = a?.b
+compare = left <=> right

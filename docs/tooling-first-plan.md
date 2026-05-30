@@ -359,9 +359,29 @@ Done when:
 
 ## Milestone 4d: Type Syntax Parser
 
-Status: later
+Status: in progress
 
 Goal: parse type annotations without implementing full type inference yet.
+
+Progress: the type-syntax slice uses a unified term grammar — type expressions
+reuse `Expr`/`ExprKind` rather than a separate `TypeExpr` tree. Function arrows,
+`[]` applications, `T?` nullable, record/variant rows, and tuple forms are all
+parsed as ordinary expressions. Annotations and signatures are `:` ascriptions
+whose right-hand side is an ordinary term. Record, set, and variant brace forms
+share one entry parser (spreads, deletes, renames, open-row `.._`, optional-field
+markers), matching the language's concept-reuse goal.
+
+Deferred to semantics: two checks that would be parse-time errors in a
+separate-`TypeExpr` design are deferred to later semantic phases (no semantic
+phase exists yet), because the unified grammar accepts them as well-formed
+syntax. The difference is handled by context in evaluation, not at the parser
+level:
+
+- uppercase-tag enforcement for variant members: `@{ok(Text)}` parses without
+  error; a lowercase tag is a resolver-phase error, not a parser error.
+- type-vs-value legality of record entries: an `optional` field marker or the
+  `.._` open-row marker is syntactically accepted in any record context; whether
+  it is meaningful is a semantic concern.
 
 Tasks:
 
@@ -370,11 +390,14 @@ Tasks:
   singleton-marker type syntax
 - parse requirement/interface headers only as syntax if needed for examples
 - keep semantic validation for Milestone 7
+- finish review and cleanup of the unified-grammar slice
 
 Done when:
 
-- parser fixtures cover the type syntax used in the language spec
-- invalid type syntax produces structured parser diagnostics
+- parser fixtures cover the type syntax used in the language spec, parsing clean
+  with no diagnostics
+- forms that remain syntactically malformed (e.g. `{ 1 = Text }`, a missing term
+  after `:`) produce structured parser diagnostics
 
 ## Milestone 4e: Pattern Syntax Completion
 
@@ -575,17 +598,21 @@ Completed parser groundwork:
 - Milestone 4c: operators, access, propagation, and the implemented `?` match
   subset
 
+Work in progress:
+
+- Milestone 4d: unified-grammar type syntax slice (types parse as `Expr`; no
+  separate `TypeExpr`)
+
 The next few queued changes should be:
 
-1. finish review cleanup for Milestone 4c and commit it
-2. implement Milestone 4d type syntax
-3. implement Milestone 4e pattern syntax completion for record patterns and
+1. finish review and cleanup of the Milestone 4d unified-grammar slice
+2. implement Milestone 4e pattern syntax completion for record patterns and
    guarded match arms
-4. decide whether parser tests need AST-shape fixtures beyond unit tests
-5. decide the CST/trivia strategy before formatter work expands
-6. start Milestone 5 formatter work
-7. expand LSP from diagnostics/formatting to document symbols
-8. start Milestone 6 name resolution skeleton
+3. decide whether parser tests need AST-shape fixtures beyond unit tests
+4. decide the CST/trivia strategy before formatter work expands
+5. start Milestone 5 formatter work
+6. expand LSP from diagnostics/formatting to document symbols
+7. start Milestone 6 name resolution skeleton
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

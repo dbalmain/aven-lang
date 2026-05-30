@@ -1,2 +1,2 @@
-value = result ?
+value = result ?>
   Ok(value), value > 0 => value

@@ -10,6 +10,7 @@ pub struct Module {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Binding(Binding),
+    Signature(Signature),
     Expr(Expr),
 }
 
@@ -17,13 +18,26 @@ pub enum Item {
 pub struct Binding {
     pub name: String,
     pub name_span: Span,
+    /// Optional `: type` ascription, parsed as an ordinary expression.
+    pub annotation: Option<Expr>,
     pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signature {
+    pub name: String,
+    pub name_span: Span,
+    /// The annotation term following `:`, parsed as an ordinary expression.
+    pub annotation: Expr,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     pub name: String,
+    /// Optional `: type` ascription, parsed as an ordinary expression.
+    pub annotation: Option<Expr>,
     pub span: Span,
 }
 
@@ -43,7 +57,23 @@ pub enum ExprKind {
     Tuple(Vec<Expr>),
     Array(Vec<Expr>),
     Record(Vec<RecordEntry>),
-    Set(Vec<Expr>),
+    Set(Vec<RecordEntry>),
+    /// `Array[a]` / `users[2]`: postfix square-bracket application or indexing.
+    /// Whether this is a type application or an element index is decided in a
+    /// later semantic phase.
+    Index {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    /// `T?`: postfix nullable marker (type-level "optional"). See the
+    /// nullable-vs-match seam in `parse_postfix`.
+    Nullable(Box<Expr>),
+    /// `a -> b` / `(A, B) -> C`: a function/arrow form, right-associative.
+    /// A parenthesized tuple on the left flattens into `params`.
+    Arrow {
+        params: Vec<Expr>,
+        result: Box<Expr>,
+    },
     FieldAccess {
         receiver: Box<Expr>,
         field: String,
@@ -72,6 +102,8 @@ pub enum ExprKind {
     },
     Lambda {
         params: Vec<Param>,
+        /// Optional `: type` return annotation, parsed as an ordinary expression.
+        return_annotation: Option<Box<Expr>>,
         body: Box<Expr>,
     },
     Block(Vec<Item>),
@@ -113,6 +145,8 @@ pub enum RecordEntry {
         name_span: Span,
         value: Expr,
         overwrite: bool,
+        /// `phone? = Text`: the field is marked optional with a trailing `?`.
+        optional: bool,
         span: Span,
     },
     Shorthand {
@@ -137,6 +171,11 @@ pub enum RecordEntry {
         to_span: Span,
         span: Span,
     },
+    /// `.._`: the open-row marker inside a record (type) shape.
+    Open { span: Span },
+    /// A bare member of a `@{...}` set/variant shape: `Red`, `Ok(1)`,
+    /// `ParseError(Text)`, `NotFound`.
+    Element(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +216,16 @@ struct Parser<'a> {
     tokens: &'a [Token],
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
+}
+
+/// Whether a brace-entry loop is parsing a record `{...}` or a set/variant
+/// `@{...}`. The only behavioural difference is how bare terms are treated:
+/// a bare label is a `Shorthand` in a record, while a bare term is an `Element`
+/// in a set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryMode {
+    Record,
+    Set,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +314,10 @@ impl Parser<'_> {
             return self.parse_binding(equals).map(Item::Binding);
         }
 
+        if self.is_signature_start() {
+            return self.parse_signature().map(Item::Signature);
+        }
+
         let expr = self.parse_expression();
         self.report_unsupported_remainder();
         self.consume_newline();
@@ -286,23 +339,37 @@ impl Parser<'_> {
         }
 
         let name_token = &self.tokens[self.cursor];
-        if equals != self.cursor + 1 {
-            let span = Span::new(name_token.span.start, self.tokens[equals - 1].span.end);
-            self.report_invalid_binding_name(span);
-            self.recover_to_next_line();
-            return None;
-        }
-
         let (name, name_span) = match &name_token.kind {
             TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name) => {
                 (name.clone(), name_token.span)
             }
             _ => {
-                self.report_invalid_binding_name(name_token.span);
+                let span = Span::new(name_token.span.start, self.tokens[equals - 1].span.end);
+                self.report_invalid_binding_name(span);
                 self.recover_to_next_line();
                 return None;
             }
         };
+
+        self.advance();
+
+        // `name : type = value`: the optional annotation occupies everything
+        // between the name and the depth-0 `=`.
+        let annotation = if self.current_is_operator(":") {
+            self.advance();
+            Some(self.parse_annotation_term())
+        } else {
+            None
+        };
+
+        if self.cursor != equals {
+            // The name (and optional annotation) did not consume up to `=`;
+            // whatever is left is not a valid binding head.
+            let span = Span::new(name_span.start, self.tokens[equals - 1].span.end);
+            self.report_invalid_binding_name(span);
+            self.recover_to_next_line();
+            return None;
+        }
 
         self.cursor = equals + 1;
         let value = self.parse_binding_value(self.tokens[equals].span.end);
@@ -312,9 +379,51 @@ impl Parser<'_> {
         Some(Binding {
             name,
             name_span,
+            annotation,
             value,
             span,
         })
+    }
+
+    fn parse_signature(&mut self) -> Option<Signature> {
+        let name_token = self.tokens[self.cursor].clone();
+        let (name, name_span) = match &name_token.kind {
+            TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name) => {
+                (name.clone(), name_token.span)
+            }
+            _ => return None,
+        };
+
+        self.advance();
+        // `is_signature_start` guarantees the next token is `:`.
+        self.advance();
+        let annotation = self.parse_annotation_term();
+        let span = name_span.merge(annotation.span);
+        self.report_unsupported_remainder();
+        self.consume_newline();
+
+        Some(Signature {
+            name,
+            name_span,
+            annotation,
+            span,
+        })
+    }
+
+    /// Parse the term following a `:` ascription. Types are ordinary
+    /// expressions under the fold, so this is just the normal expression entry
+    /// point with a dedicated "expected type" diagnostic when the term is
+    /// missing (the next token closes the binding with `=`/`=>` or a boundary).
+    fn parse_annotation_term(&mut self) -> Expr {
+        if self.current_is_operator("=") || self.current_is_operator("=>") {
+            return self.report_expected_type(self.current_span().start);
+        }
+
+        if self.at_item_boundary() {
+            return self.report_expected_type(self.previous_end());
+        }
+
+        self.parse_expression()
     }
 
     fn parse_binding_value(&mut self, missing_offset: usize) -> Expr {
@@ -338,13 +447,42 @@ impl Parser<'_> {
     }
 
     fn parse_expression(&mut self) -> Expr {
-        let expr = self.parse_binary_expression(0);
+        let expr = self.parse_arrow();
 
-        if self.current_is_operator("?") {
+        if self.current_is_operator("?>") {
             return self.finish_match(expr);
         }
 
         expr
+    }
+
+    /// `a -> b`, right-associative. A parenthesized tuple on the left flattens
+    /// its elements into `params`, so `(A, B) -> C` has two params while
+    /// `A -> C` has one. Wraps the binary-expression layer.
+    fn parse_arrow(&mut self) -> Expr {
+        let left = self.parse_binary_expression(0);
+
+        if !self.current_is_operator("->") {
+            return left;
+        }
+
+        self.advance();
+        // Right-recurse so `a -> b -> c` parses as `a -> (b -> c)`.
+        let result = self.parse_arrow();
+        let span = left.span.merge(result.span);
+
+        let params = match left.kind {
+            ExprKind::Tuple(items) => items,
+            _ => vec![left],
+        };
+
+        Expr {
+            kind: ExprKind::Arrow {
+                params,
+                result: Box::new(result),
+            },
+            span,
+        }
     }
 
     fn parse_binary_expression(&mut self, min_binding_power: u8) -> Expr {
@@ -386,6 +524,15 @@ impl Parser<'_> {
         self.advance();
         let params = self.parse_lambda_params();
         self.consume_close_paren();
+
+        // Optional `: type` return annotation between the params and `=>`.
+        let return_annotation = if self.current_is_operator(":") {
+            self.advance();
+            Some(Box::new(self.parse_annotation_term()))
+        } else {
+            None
+        };
+
         self.consume_operator("=>");
 
         let body = if self.current_is(TokenKind::Newline) {
@@ -405,6 +552,7 @@ impl Parser<'_> {
         Expr {
             kind: ExprKind::Lambda {
                 params,
+                return_annotation,
                 body: Box::new(body),
             },
             span,
@@ -424,11 +572,26 @@ impl Parser<'_> {
                     kind: TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name),
                     span,
                 }) => {
-                    params.push(Param {
-                        name: name.clone(),
-                        span: *span,
-                    });
+                    let name = name.clone();
+                    let name_span = *span;
                     self.advance();
+
+                    let annotation = if self.current_is_operator(":") {
+                        self.advance();
+                        Some(self.parse_annotation_term())
+                    } else {
+                        None
+                    };
+
+                    let span = annotation
+                        .as_ref()
+                        .map_or(name_span, |term| name_span.merge(term.span));
+
+                    params.push(Param {
+                        name,
+                        annotation,
+                        span,
+                    });
                 }
                 Some(token) => {
                     self.diagnostics.push(
@@ -461,6 +624,11 @@ impl Parser<'_> {
                 continue;
             }
 
+            if self.current_is(TokenKind::OpenBracket) {
+                expr = self.finish_index(expr);
+                continue;
+            }
+
             if self.current_is_operator(".") || self.current_is_operator("?.") {
                 expr = self.finish_field_access(expr);
                 continue;
@@ -471,10 +639,38 @@ impl Parser<'_> {
                 continue;
             }
 
+            // `T?`: postfix nullable. Bare `?` is unconditionally nullable now;
+            // the match operator is the distinct `?>` token, handled in
+            // `parse_expression`.
+            if self.current_is_operator("?") {
+                let operator_span = self.current_span();
+                self.advance();
+                expr = Expr {
+                    span: expr.span.merge(operator_span),
+                    kind: ExprKind::Nullable(Box::new(expr)),
+                };
+                continue;
+            }
+
             break;
         }
 
         expr
+    }
+
+    fn finish_index(&mut self, callee: Expr) -> Expr {
+        let start = callee.span.start;
+        self.advance();
+        let args = self.parse_expression_list(TokenKind::CloseBracket);
+        let end = self.consume_close(TokenKind::CloseBracket);
+
+        Expr {
+            kind: ExprKind::Index {
+                callee: Box::new(callee),
+                args,
+            },
+            span: Span::new(start, end),
+        }
     }
 
     fn finish_call(&mut self, callee: Expr) -> Expr {
@@ -550,6 +746,7 @@ impl Parser<'_> {
     }
 
     fn finish_match(&mut self, subject: Expr) -> Expr {
+        // Consume the `?>` match operator.
         let operator_span = self.current_span();
         self.advance();
 
@@ -559,11 +756,18 @@ impl Parser<'_> {
             if self.current_is(TokenKind::Indent) {
                 self.parse_match_arm_block()
             } else {
+                // `?>` followed by a newline without an indented block (or by a
+                // boundary/EOF): the arms are simply missing.
                 self.report_missing_match_arms(operator_span.end);
                 Vec::new()
             }
-        } else {
+        } else if self.at_item_boundary() {
             self.report_missing_match_arms(operator_span.end);
+            Vec::new()
+        } else {
+            // Tokens follow `?>` on the same line, e.g. `result ?> Ok(x) => x`.
+            self.report_inline_match_arms(self.current_span());
+            self.recover_to_next_line();
             Vec::new()
         };
 
@@ -836,11 +1040,11 @@ impl Parser<'_> {
         // Consume the `@{` set/variant-set literal opener.
         self.advance();
         self.advance();
-        let items = self.parse_expression_list(TokenKind::CloseBrace);
+        let entries = self.parse_entry_list(EntryMode::Set);
         let end = self.consume_close(TokenKind::CloseBrace);
 
         Expr {
-            kind: ExprKind::Set(items),
+            kind: ExprKind::Set(entries),
             span: Span::new(start, end),
         }
     }
@@ -876,6 +1080,19 @@ impl Parser<'_> {
     fn parse_record(&mut self) -> Expr {
         let start = self.current_span().start;
         self.advance();
+        let entries = self.parse_entry_list(EntryMode::Record);
+        let end = self.consume_close(TokenKind::CloseBrace);
+
+        Expr {
+            kind: ExprKind::Record(entries),
+            span: Span::new(start, end),
+        }
+    }
+
+    /// Shared entry loop for both `{...}` records and `@{...}` sets/variants.
+    /// The only difference is how a bare term is interpreted, which is handled
+    /// inside `parse_record_entry` via the `EntryMode`.
+    fn parse_entry_list(&mut self, mode: EntryMode) -> Vec<RecordEntry> {
         let mut entries = Vec::new();
         self.skip_collection_trivia();
 
@@ -884,7 +1101,7 @@ impl Parser<'_> {
                 break;
             }
 
-            if let Some(entry) = self.parse_record_entry() {
+            if let Some(entry) = self.parse_record_entry(mode) {
                 entries.push(entry);
             }
 
@@ -902,19 +1119,16 @@ impl Parser<'_> {
             }
         }
 
-        let end = self.consume_close(TokenKind::CloseBrace);
-
-        Expr {
-            kind: ExprKind::Record(entries),
-            span: Span::new(start, end),
-        }
+        entries
     }
 
-    fn parse_record_entry(&mut self) -> Option<RecordEntry> {
-        if matches!(
-            self.current().map(|token| &token.kind),
-            Some(TokenKind::LabelPath(_))
-        ) {
+    fn parse_record_entry(&mut self, mode: EntryMode) -> Option<RecordEntry> {
+        if mode == EntryMode::Record
+            && matches!(
+                self.current().map(|token| &token.kind),
+                Some(TokenKind::LabelPath(_))
+            )
+        {
             self.report_expected_record_label(self.current_span());
             self.recover_record_entry();
             return None;
@@ -924,6 +1138,22 @@ impl Parser<'_> {
             let operator_span = self.current_span();
             let overwrite = self.current_is_operator(":..");
             self.advance();
+
+            // `.._` is the open-row marker, distinct from a spread of `_`.
+            if mode == EntryMode::Record
+                && !overwrite
+                && matches!(
+                    self.current().map(|token| &token.kind),
+                    Some(TokenKind::Identifier(name)) if name == "_"
+                )
+            {
+                let underscore_span = self.current_span();
+                self.advance();
+                return Some(RecordEntry::Open {
+                    span: operator_span.merge(underscore_span),
+                });
+            }
+
             let value = self.parse_expression();
             let span = operator_span.merge(value.span);
             return Some(RecordEntry::Spread {
@@ -948,26 +1178,27 @@ impl Parser<'_> {
             });
         }
 
+        // In a set/variant shape, a bare term is an element (`Red`, `Ok(1)`,
+        // `ParseError(Text)`). The element parser covers calls and other terms,
+        // so labels do not get the record-only treatment below.
+        if mode == EntryMode::Set {
+            let term = self.parse_expression();
+            if matches!(term.kind, ExprKind::Missing) {
+                self.report_expected_record_entry(term.span);
+                self.recover_record_entry();
+                return None;
+            }
+            return Some(RecordEntry::Element(term));
+        }
+
         let Some((name, name_span)) = self.parse_label_name() else {
             self.report_expected_record_entry(self.current_span());
             self.recover_record_entry();
             return None;
         };
 
-        if self.current_is_operator("=") || self.current_is_operator(":=") {
-            let overwrite = self.current_is_operator(":=");
-            self.advance();
-            let value = self.parse_expression();
-            let span = name_span.merge(value.span);
-            return Some(RecordEntry::Field {
-                name,
-                name_span,
-                value,
-                overwrite,
-                span,
-            });
-        }
-
+        // A rename `name -> to` must be detected before treating `->` as a
+        // function-type arrow inside a field value.
         if self.current_is_operator("->") {
             self.advance();
             let Some((to, to_span)) = self.parse_label_name() else {
@@ -984,10 +1215,35 @@ impl Parser<'_> {
             });
         }
 
+        // `phone? = Text`: an optional-field marker before the `=`.
+        let optional = self.current_is_operator("?");
+        let optional_end = if optional {
+            let span = self.current_span();
+            self.advance();
+            span.end
+        } else {
+            name_span.end
+        };
+
+        if self.current_is_operator("=") || self.current_is_operator(":=") {
+            let overwrite = self.current_is_operator(":=");
+            self.advance();
+            let value = self.parse_expression();
+            let span = name_span.merge(value.span);
+            return Some(RecordEntry::Field {
+                name,
+                name_span,
+                value,
+                overwrite,
+                optional,
+                span,
+            });
+        }
+
         Some(RecordEntry::Shorthand {
             name,
             name_span,
-            span: name_span,
+            span: Span::new(name_span.start, optional_end),
         })
     }
 
@@ -1216,6 +1472,18 @@ impl Parser<'_> {
         None
     }
 
+    fn is_signature_start(&self) -> bool {
+        // A signature is `name : term` with no depth-0 `=` (callers check the
+        // no-`=` part via `find_binding_equals` first).
+        matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::Identifier(_) | TokenKind::ComptimeIdentifier(_))
+        ) && self
+            .tokens
+            .get(self.cursor + 1)
+            .is_some_and(|token| token.is_operator(":"))
+    }
+
     fn is_lambda_start(&self) -> bool {
         if !self.current_is(TokenKind::OpenParen) {
             return false;
@@ -1229,12 +1497,41 @@ impl Parser<'_> {
                 TokenKind::CloseParen => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
-                        return self
-                            .tokens
-                            .get(index + 1)
-                            .is_some_and(|token| token.is_operator("=>"));
+                        return self.lambda_arrow_follows(index + 1);
                     }
                 }
+                TokenKind::Newline | TokenKind::Dedent if depth == 0 => return false,
+                _ => {}
+            }
+        }
+
+        false
+    }
+
+    /// After the lambda parameter list's closing `)`, the head is a lambda when
+    /// either `=>` follows directly, or a `: returnType` annotation followed by
+    /// a depth-0 `=>` (before any newline) follows.
+    fn lambda_arrow_follows(&self, start: usize) -> bool {
+        let Some(token) = self.tokens.get(start) else {
+            return false;
+        };
+
+        if token.is_operator("=>") {
+            return true;
+        }
+
+        if !token.is_operator(":") {
+            return false;
+        }
+
+        let mut depth = 0usize;
+        for token in &self.tokens[start + 1..] {
+            match &token.kind {
+                TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => depth += 1,
+                TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
+                    depth = depth.saturating_sub(1);
+                }
+                TokenKind::Operator(operator) if operator == "=>" && depth == 0 => return true,
                 TokenKind::Newline | TokenKind::Dedent if depth == 0 => return false,
                 _ => {}
             }
@@ -1289,9 +1586,18 @@ impl Parser<'_> {
                 .with_code("parse.missing-match-arms")
                 .with_label(Label::primary(
                     span,
-                    "expected an indented block of match arms after `?`",
+                    "expected an indented block of match arms after `?>`",
                 ))
                 .with_note("write one arm per line, for example `Ok(value) => value`"),
+        );
+    }
+
+    fn report_inline_match_arms(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("match arms must start on the next line, indented")
+                .with_code("parse.inline-match-arms")
+                .with_label(Label::primary(span, "move these arms to an indented block"))
+                .with_note("write one arm per line, indented under `?>`, for example:\n  result ?>\n    Ok(value) => value"),
         );
     }
 
@@ -1355,6 +1661,17 @@ impl Parser<'_> {
                 ))
                 .with_note("remove the comma for grouping, or use a tagged tuple like `Ok(value)`"),
         );
+    }
+
+    fn report_expected_type(&mut self, offset: usize) -> Expr {
+        let span = Span::point(offset);
+        self.diagnostics.push(
+            Diagnostic::error("expected type")
+                .with_code("parse.expected-type")
+                .with_label(Label::primary(span, "expected a type here"))
+                .with_note("types include names like `Text`, variables like `a`, functions like `a -> b`, records, variants, and applications like `Array[a]`"),
+        );
+        missing_expr(span)
     }
 
     fn report_expected_record_entry(&mut self, span: Span) {
@@ -1584,7 +1901,22 @@ impl Parser<'_> {
     }
 
     fn at_item_boundary(&self) -> bool {
-        self.at_end() || self.current_is(TokenKind::Newline) || self.current_is(TokenKind::Dedent)
+        // A block-bodied lambda's closing `Dedent` may already be consumed as
+        // collection trivia, leaving the cursor on the next top-level item with
+        // the Dedent as the *previous* token. Treat that as a boundary too so a
+        // following binding (`first = () =>\n  value\nsecond = 2`) is not
+        // swallowed as a continuation of the lambda body.
+        self.at_end()
+            || self.current_is(TokenKind::Newline)
+            || self.current_is(TokenKind::Dedent)
+            || self.previous_is(TokenKind::Dedent)
+    }
+
+    fn previous_is(&self, kind: TokenKind) -> bool {
+        self.cursor
+            .checked_sub(1)
+            .and_then(|index| self.tokens.get(index))
+            .is_some_and(|token| token.kind == kind)
     }
 
     fn current(&self) -> Option<&Token> {
@@ -1815,7 +2147,7 @@ mod tests {
         let Some(Item::Binding(binding)) = output.module.items.first() else {
             panic!("expected binding item");
         };
-        let ExprKind::Lambda { params, body } = &binding.value.kind else {
+        let ExprKind::Lambda { params, body, .. } = &binding.value.kind else {
             panic!("expected lambda expression");
         };
 
@@ -1846,7 +2178,18 @@ mod tests {
         assert!(output.diagnostics.is_empty());
         assert!(matches!(binding_value(&output, 0), ExprKind::Array(items) if items.len() == 2));
         assert!(matches!(binding_value(&output, 1), ExprKind::Tuple(items) if items.len() == 2));
-        assert!(matches!(binding_value(&output, 2), ExprKind::Set(items) if items.len() == 2));
+        let ExprKind::Set(entries) = binding_value(&output, 2) else {
+            panic!("expected set expression");
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(
+            &entries[0],
+            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::ComptimeName(name) if name == "Red")
+        ));
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::Call { .. })
+        ));
     }
 
     #[test]
@@ -1966,7 +2309,7 @@ mod tests {
     #[test]
     fn parses_match_operator_into_ast_nodes() {
         let output =
-            parse_module("value = result ?\n  Ok(x) => x\n  Err(error) => fallback(error)\n");
+            parse_module("value = result ?>\n  Ok(x) => x\n  Err(error) => fallback(error)\n");
 
         assert!(output.diagnostics.is_empty());
         let ExprKind::Match { subject, arms, .. } = binding_value(&output, 0) else {
@@ -1987,7 +2330,7 @@ mod tests {
 
     #[test]
     fn parses_parenthesized_patterns_as_grouping() {
-        let output = parse_module("value = result ?\n  (Ok(x)) => x\n");
+        let output = parse_module("value = result ?>\n  (Ok(x)) => x\n");
 
         assert!(output.diagnostics.is_empty());
         let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
@@ -1999,6 +2342,209 @@ mod tests {
             &arms[0].pattern.kind,
             PatternKind::Constructor { name, args } if name == "Ok" && args.len() == 1
         ));
+    }
+
+    #[test]
+    fn parses_function_type_into_arrow_with_flattened_params() {
+        let output = parse_module("mapper : (Array[a], a -> b) -> Array[b]\n");
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Signature(signature)) = output.module.items.first() else {
+            panic!("expected signature item");
+        };
+        let ExprKind::Arrow { params, result } = &signature.annotation.kind else {
+            panic!("expected arrow type");
+        };
+
+        // `(Array[a], a -> b)` flattens to two params.
+        assert_eq!(params.len(), 2);
+        assert!(matches!(&params[0].kind, ExprKind::Index { .. }));
+        assert!(matches!(&params[1].kind, ExprKind::Arrow { .. }));
+        assert!(matches!(&result.kind, ExprKind::Index { .. }));
+    }
+
+    #[test]
+    fn parses_single_param_arrow_with_one_param() {
+        let output = parse_module("f : a -> b\n");
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Signature(signature)) = output.module.items.first() else {
+            panic!("expected signature item");
+        };
+        let ExprKind::Arrow { params, .. } = &signature.annotation.kind else {
+            panic!("expected arrow type");
+        };
+        assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn parses_index_application_into_ast_nodes() {
+        let output = parse_module("xs : Array[a]\n");
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Signature(signature)) = output.module.items.first() else {
+            panic!("expected signature item");
+        };
+        let ExprKind::Index { callee, args } = &signature.annotation.kind else {
+            panic!("expected index expression");
+        };
+        assert!(matches!(&callee.kind, ExprKind::ComptimeName(name) if name == "Array"));
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn parses_postfix_nullable_and_stops_at_equals() {
+        let output = parse_module("value : Text? = name\n");
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected binding item");
+        };
+        let annotation = binding.annotation.as_ref().expect("expected an annotation");
+        let ExprKind::Nullable(inner) = &annotation.kind else {
+            panic!("expected nullable annotation, got {:?}", annotation.kind);
+        };
+        assert!(matches!(&inner.kind, ExprKind::ComptimeName(name) if name == "Text"));
+        assert!(matches!(&binding.value.kind, ExprKind::Name(name) if name == "name"));
+    }
+
+    #[test]
+    fn match_operator_followed_by_indented_block_parses_match() {
+        let output = parse_module("value = result ?>\n  Ok(x) => x\n");
+
+        assert!(output.diagnostics.is_empty());
+        assert!(matches!(binding_value(&output, 0), ExprKind::Match { .. }));
+    }
+
+    #[test]
+    fn bare_question_postfix_is_nullable_with_no_diagnostics() {
+        let output = parse_module("value = result ?\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Nullable(inner) = binding_value(&output, 0) else {
+            panic!("expected nullable expression");
+        };
+        assert!(matches!(&inner.kind, ExprKind::Name(name) if name == "result"));
+    }
+
+    #[test]
+    fn match_operator_without_arm_block_reports_missing_match_arms() {
+        let output = parse_module("value = result ?>\n");
+
+        let codes: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .collect();
+        assert_eq!(codes, vec!["parse.missing-match-arms"]);
+    }
+
+    #[test]
+    fn parses_lambda_param_and_return_annotations() {
+        let output =
+            parse_module("load = (path : Path) : Result[Config, ConfigError] =>\n  read(path)?^\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Lambda {
+            params,
+            return_annotation,
+            ..
+        } = binding_value(&output, 0)
+        else {
+            panic!("expected lambda expression");
+        };
+        assert_eq!(params.len(), 1);
+        assert!(matches!(
+            params[0].annotation.as_ref().map(|a| &a.kind),
+            Some(ExprKind::ComptimeName(name)) if name == "Path"
+        ));
+        let return_annotation = return_annotation
+            .as_ref()
+            .expect("expected return annotation");
+        assert!(matches!(&return_annotation.kind, ExprKind::Index { .. }));
+    }
+
+    #[test]
+    fn parses_record_type_with_open_optional_and_delete_entries() {
+        let output = parse_module(
+            "user : { .._, name = Text, email = Text?, phone? = Text, -password } = current\n",
+        );
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected binding item");
+        };
+        let annotation = binding.annotation.as_ref().expect("expected annotation");
+        let ExprKind::Record(entries) = &annotation.kind else {
+            panic!("expected record type annotation");
+        };
+        assert_eq!(entries.len(), 5);
+        assert!(matches!(&entries[0], RecordEntry::Open { .. }));
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Field { name, optional: false, .. } if name == "name"
+        ));
+        assert!(matches!(
+            &entries[2],
+            RecordEntry::Field { name, value, optional: false, .. }
+                if name == "email" && matches!(&value.kind, ExprKind::Nullable(_))
+        ));
+        assert!(matches!(
+            &entries[3],
+            RecordEntry::Field { name, optional: true, .. } if name == "phone"
+        ));
+        assert!(matches!(
+            &entries[4],
+            RecordEntry::Delete { name, .. } if name == "password"
+        ));
+    }
+
+    #[test]
+    fn parses_variant_type_elements_spreads_and_deletes() {
+        let output = parse_module(
+            "error : @{ParseError(Text), NotFound, ..FileError, -Internal} = ParseError(\"bad\")\n",
+        );
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected binding item");
+        };
+        let annotation = binding.annotation.as_ref().expect("expected annotation");
+        let ExprKind::Set(entries) = &annotation.kind else {
+            panic!("expected variant set annotation");
+        };
+        assert_eq!(entries.len(), 4);
+        assert!(matches!(
+            &entries[0],
+            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::Call { .. })
+        ));
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::ComptimeName(name) if name == "NotFound")
+        ));
+        assert!(matches!(
+            &entries[2],
+            RecordEntry::Spread {
+                overwrite: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &entries[3],
+            RecordEntry::Delete { name, .. } if name == "Internal"
+        ));
+    }
+
+    #[test]
+    fn parses_top_level_signature_item() {
+        let output = parse_module("load : (Path) -> Result[Config, ConfigError]\n");
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Signature(signature)) = output.module.items.first() else {
+            panic!("expected signature item");
+        };
+        assert_eq!(signature.name, "load");
+        assert!(matches!(&signature.annotation.kind, ExprKind::Arrow { .. }));
     }
 
     fn binding_value(output: &ParseOutput, index: usize) -> &ExprKind {
