@@ -351,9 +351,9 @@ Recommended approach:
 Done when:
 
 - representative pipeline, access, operator, and `?`-family examples parse
-- operator precedence is tested with AST-shape assertions. For now, parser unit
-  tests are the AST-shape assertion mechanism; parser fixtures stay focused on
-  parse-clean and diagnostic coverage.
+- operator precedence is tested with AST-shape assertions. Parser unit tests
+  cover local invariants, and `parser/ast/valid` golden fixtures lock
+  precedence-facing tree shape.
 
 ## Milestone 4d: Type Syntax Parser
 
@@ -405,9 +405,9 @@ grammar, matching the type-syntax fold from Milestone 4d. Constructor patterns
 are calls, nullary tags are comptime names, tuple/group patterns are ordinary
 tuple/group expressions, and record patterns use the existing `RecordEntry`
 parser. Guard expressions follow the pattern with comma syntax, matching the
-language spec's comprehension-style guard shape. Parser unit tests remain the
-AST-shape assertion mechanism for pattern-position terms; fixtures cover
-parse-clean examples.
+language spec's comprehension-style guard shape. Parser unit tests cover local
+invariants, and `parser/ast/valid` golden fixtures lock the reusable
+pattern-position tree shape.
 
 Goal: complete pattern syntax after the expression and type parsers have
 settled.
@@ -518,13 +518,14 @@ diagnostic summaries. Parser fixtures live under
 
 Tasks:
 
-- choose the fixture mechanism early. Either use `insta` snapshots of structured
-  JSON diagnostics/AST summaries or a small hand-rolled goldenfile assertion.
-  Start this style before parser tests grow large.
+- choose the fixture mechanism early. Use small hand-rolled goldenfile
+  assertions for structured diagnostics, token streams, layout streams, and
+  compact AST summaries before parser tests grow large.
 - add fixture-driven tests:
 
 ```text
 tests/fixtures/parser/valid/*.av
+tests/fixtures/parser/ast/valid/*.av
 tests/fixtures/parser/invalid/*.av
 tests/fixtures/formatter/*.av
 ```
@@ -608,14 +609,14 @@ Completed parser groundwork:
 - Milestone 4d: unified-grammar type syntax slice (types parse as `Expr`; no
   separate `TypeExpr`)
 - Milestone 4e: record patterns and guarded match arms
+- AST-shape golden fixtures for precedence, type terms, and match patterns
 
 The next few queued changes should be:
 
-1. decide whether parser tests need AST-shape fixtures beyond unit tests
-2. decide the CST/trivia strategy before formatter work expands
-3. start Milestone 5 formatter work
-4. expand LSP from diagnostics/formatting to document symbols
-5. start Milestone 6 name resolution skeleton
+1. decide the CST/trivia strategy before formatter work expands
+2. start Milestone 5 formatter work
+3. expand LSP from diagnostics/formatting to document symbols
+4. start Milestone 6 name resolution skeleton
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

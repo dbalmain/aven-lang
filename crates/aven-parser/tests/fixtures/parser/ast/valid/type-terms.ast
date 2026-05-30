@@ -1,0 +1,27 @@
+module
+  signature mapper
+    annotation
+      arrow
+        params
+          index
+            callee
+              comptime Array
+            args
+              name a
+          arrow
+            params
+              name a
+            result
+              name b
+        result
+          index
+            callee
+              comptime Array
+            args
+              name b
+  binding value
+    annotation
+      nullable
+        comptime Text
+    value
+      name name

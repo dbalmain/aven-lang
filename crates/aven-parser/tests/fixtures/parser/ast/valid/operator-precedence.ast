@@ -1,0 +1,24 @@
+module
+  binding value
+    value
+      binary +
+        left
+          number 1
+        right
+          binary *
+            left
+              number 2
+            right
+              number 3
+  binding pipe
+    value
+      binary |>
+        left
+          field-access active null_safe=true
+            receiver
+              name users
+        right
+          call
+            callee
+              name toJson
+            args

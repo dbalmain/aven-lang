@@ -1,0 +1,35 @@
+module
+  binding value
+    value
+      match
+        subject
+          name user
+        arms
+          arm
+            pattern
+              record
+                shorthand age
+            guard
+              binary >=
+                left
+                  name age
+                right
+                  number 18
+            body
+              string "adult"
+          arm
+            pattern
+              record
+                rename givenName -> firstName
+                field status optional=false overwrite=false
+                  comptime Active
+                spread overwrite=false
+                  name rest
+            body
+              name firstName
+          arm
+            pattern
+              record
+                open
+            body
+              string "ignored"

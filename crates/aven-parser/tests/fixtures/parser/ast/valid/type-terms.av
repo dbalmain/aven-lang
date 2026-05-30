@@ -1,0 +1,2 @@
+mapper : (Array[a], a -> b) -> Array[b]
+value : Text? = name
