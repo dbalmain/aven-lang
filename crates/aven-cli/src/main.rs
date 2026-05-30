@@ -139,7 +139,13 @@ fn layout(path: &Path) -> Result<()> {
 fn fmt(path: &Path, check: bool) -> Result<()> {
     let source =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let formatted = aven_fmt::format_source(&source);
+    let formatted = match aven_fmt::format_source(&source) {
+        Ok(formatted) => formatted,
+        Err(diagnostics) => {
+            print_diagnostics(path, &source, &diagnostics)?;
+            bail!("formatting failed");
+        }
+    };
 
     if source == formatted {
         return Ok(());

@@ -432,7 +432,14 @@ Done when:
 
 ## Milestone 5: Formatter
 
-Status: later
+Status: in progress
+
+Progress: the first formatter slice is layout-depth-driven line reindentation.
+It trims trailing whitespace, normalizes newlines to `\n`, normalizes layout
+indentation to two spaces per layout depth, preserves comments and blank lines,
+refuses to format sources with parse errors, and has an idempotence regression
+test. Expression-level spacing and multi-line collection layout are still
+untouched.
 
 Goal: make formatting useful before semantics are complete.
 
@@ -465,6 +472,10 @@ Note: Phase 1 deliberately uses a token-backed AST model rather than a full CST.
 That is enough for predictable early formatting while avoiding a parser rewrite
 today. If formatting starts needing nested token ownership or comment attachment
 rules that are hard to express over flat tokens, revisit a CST then.
+
+Decision rule: expression spacing starts the raw-token-driven emitter and
+replaces the current line pass. Do not extend the line model into intra-line
+formatting.
 
 ## Milestone 6: Name Resolution Skeleton
 
@@ -615,12 +626,15 @@ Completed parser groundwork:
 - AST-shape golden fixtures for precedence, type terms, and match patterns
 - token-backed trivia strategy: `ParseOutput` carries raw lexer tokens and
   parser-facing layout tokens alongside the AST
+- Milestone 5 first slice: formatter normalizes layout indentation while
+  preserving comments and blank lines
 
 The next few queued changes should be:
 
-1. start Milestone 5 formatter work
-2. expand LSP from diagnostics/formatting to document symbols
-3. start Milestone 6 name resolution skeleton
+1. add formatter fixture tests and CLI `fmt --check` coverage
+2. define expression-spacing formatting rules for simple bindings/calls
+3. expand LSP from diagnostics/formatting to document symbols
+4. start Milestone 6 name resolution skeleton
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

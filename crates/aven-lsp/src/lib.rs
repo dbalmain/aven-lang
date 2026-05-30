@@ -79,7 +79,10 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let formatted = aven_fmt::format_source(&source);
+        let Ok(formatted) = aven_fmt::format_source(&source) else {
+            return Ok(None);
+        };
+
         if formatted == source {
             return Ok(Some(Vec::new()));
         }
