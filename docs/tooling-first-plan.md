@@ -495,7 +495,10 @@ Status: in progress
 
 Progress: the LSP now advertises document symbols and extracts a top-level
 outline from the parser AST. Adjacent `signature + binding` pairs are merged
-into one symbol so ordinary annotated functions do not appear twice.
+into one symbol so ordinary annotated functions do not appear twice. The
+signature/binding walk now lives in `aven-parser` as a shared declaration
+collection layer, so go-to-definition and phase diagnostics can build on the
+same model.
 
 Goal: enable editor features before full type inference.
 
@@ -652,11 +655,15 @@ Completed parser groundwork:
   diagnostics for unknown runs instead of silently splitting
 - LSP document symbols expose top-level bindings/signatures, merging adjacent
   annotated bindings into one outline entry
+- `aven-parser` exposes a first declaration collection pass for top-level
+  bindings/signatures and the uppercase/lowercase phase split
 
 The next few queued changes should be:
 
-1. start Milestone 6 name resolution skeleton
-2. add go-to definition for local bindings once declarations are collected
+1. cache parsed documents in the LSP before adding more parse-backed requests
+2. add go-to definition for top-level bindings using the declaration index
+3. add duplicate/shadowing diagnostics once overload rules have a parser-level
+   representation
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

@@ -167,84 +167,49 @@ fn to_lsp_diagnostic(source: &str, diagnostic: &AvenDiagnostic) -> Diagnostic {
 
 fn document_symbols(source: &str) -> Vec<DocumentSymbol> {
     let output = aven_parser::parse_module(source);
-    let mut symbols = Vec::new();
-    let mut items = output.module.items.iter().peekable();
-
-    while let Some(item) = items.next() {
-        match item {
-            aven_parser::Item::Signature(signature) => {
-                if let Some(aven_parser::Item::Binding(binding)) = items.peek()
-                    && binding.name == signature.name
-                {
-                    symbols.push(binding_symbol(source, binding, Some(signature)));
-                    items.next();
-                    continue;
-                }
-
-                symbols.push(signature_symbol(source, signature));
-            }
-            aven_parser::Item::Binding(binding) => {
-                symbols.push(binding_symbol(source, binding, None));
-            }
-            aven_parser::Item::Expr(_) => {}
-        }
-    }
-
-    symbols
+    aven_parser::collect_declarations(&output.module)
+        .iter()
+        .map(|declaration| declaration_symbol(source, declaration))
+        .collect()
 }
 
 #[allow(deprecated)]
-fn binding_symbol(
-    source: &str,
-    binding: &aven_parser::Binding,
-    signature: Option<&aven_parser::Signature>,
-) -> DocumentSymbol {
-    let range_span = signature.map_or(binding.span, |signature| signature.span.merge(binding.span));
-
+fn declaration_symbol(source: &str, declaration: &aven_parser::Declaration) -> DocumentSymbol {
     DocumentSymbol {
-        name: binding.name.clone(),
-        detail: signature.map(|_| "binding with signature".to_owned()),
-        kind: binding_symbol_kind(binding),
+        name: declaration.name.clone(),
+        detail: declaration_detail(declaration),
+        kind: symbol_kind(declaration),
         tags: None,
         deprecated: None,
-        range: span_to_range(source, range_span),
-        selection_range: span_to_range(source, binding.name_span),
+        range: span_to_range(source, declaration.span),
+        selection_range: span_to_range(source, declaration.name_span),
         children: None,
     }
 }
 
-#[allow(deprecated)]
-fn signature_symbol(source: &str, signature: &aven_parser::Signature) -> DocumentSymbol {
-    DocumentSymbol {
-        name: signature.name.clone(),
-        detail: Some("signature".to_owned()),
-        kind: symbol_kind_for_name(&signature.name, SymbolKind::FUNCTION),
-        tags: None,
-        deprecated: None,
-        range: span_to_range(source, signature.span),
-        selection_range: span_to_range(source, signature.name_span),
-        children: None,
-    }
-}
-
-fn binding_symbol_kind(binding: &aven_parser::Binding) -> SymbolKind {
-    if matches!(binding.value.kind, aven_parser::ExprKind::Lambda { .. }) {
-        return SymbolKind::FUNCTION;
+fn declaration_detail(declaration: &aven_parser::Declaration) -> Option<String> {
+    if declaration.has_signature {
+        return Some("binding with signature".to_owned());
     }
 
-    symbol_kind_for_name(&binding.name, SymbolKind::VARIABLE)
+    if declaration.kind == aven_parser::DeclarationKind::Signature {
+        return Some("signature".to_owned());
+    }
+
+    None
 }
 
-fn symbol_kind_for_name(name: &str, fallback: SymbolKind) -> SymbolKind {
-    if name
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_uppercase())
-    {
+fn symbol_kind(declaration: &aven_parser::Declaration) -> SymbolKind {
+    if declaration.phase == aven_parser::DeclarationPhase::Comptime {
         return SymbolKind::STRUCT;
     }
 
-    fallback
+    match declaration.kind {
+        aven_parser::DeclarationKind::Function | aven_parser::DeclarationKind::Signature => {
+            SymbolKind::FUNCTION
+        }
+        aven_parser::DeclarationKind::Binding => SymbolKind::VARIABLE,
+    }
 }
 
 fn span_to_range(source: &str, span: Span) -> Range {
@@ -317,5 +282,17 @@ mod tests {
         assert_eq!(symbols[0].selection_range.start.line, 1);
         assert_eq!(symbols[0].selection_range.start.character, 0);
         assert_eq!(symbols[0].selection_range.end.character, 6);
+    }
+
+    #[test]
+    fn document_symbols_keep_unmatched_signatures() {
+        let symbols = document_symbols("value : Int\nother = 1\n");
+
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "value");
+        assert_eq!(symbols[0].kind, SymbolKind::FUNCTION);
+        assert_eq!(symbols[0].detail.as_deref(), Some("signature"));
+        assert_eq!(symbols[1].name, "other");
+        assert_eq!(symbols[1].kind, SymbolKind::VARIABLE);
     }
 }

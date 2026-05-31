@@ -1,7 +1,9 @@
+mod declarations;
 mod layout;
 mod lexer;
 mod parser;
 
+pub use declarations::{Declaration, DeclarationKind, DeclarationPhase, collect_declarations};
 pub(crate) use layout::lex_then_layout;
 pub use layout::{LayoutOutput, layout_source, layout_tokens};
 pub use lexer::{LexOutput, Token, TokenKind, lex_source};
