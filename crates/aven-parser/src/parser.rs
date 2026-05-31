@@ -90,6 +90,11 @@ pub enum ExprKind {
         operator_span: Span,
         right: Box<Expr>,
     },
+    Unary {
+        operator: String,
+        operator_span: Span,
+        value: Box<Expr>,
+    },
     Propagate {
         value: Box<Expr>,
         operator_span: Span,
@@ -493,7 +498,7 @@ impl Parser<'_> {
             return self.parse_lambda();
         }
 
-        let mut left = self.parse_postfix();
+        let mut left = self.parse_unary();
 
         loop {
             let Some(operator) = self.current_infix_operator() else {
@@ -520,6 +525,28 @@ impl Parser<'_> {
         }
 
         left
+    }
+
+    fn parse_unary(&mut self) -> Expr {
+        if self.current_is_operator("-") {
+            let Some(operator) = self.current().cloned() else {
+                return self.parse_postfix();
+            };
+            self.advance();
+            let value = self.parse_unary();
+            let span = operator.span.merge(value.span);
+
+            return Expr {
+                kind: ExprKind::Unary {
+                    operator: "-".to_owned(),
+                    operator_span: operator.span,
+                    value: Box::new(value),
+                },
+                span,
+            };
+        }
+
+        self.parse_postfix()
     }
 
     fn parse_lambda(&mut self) -> Expr {
@@ -608,7 +635,7 @@ impl Parser<'_> {
                 None => break,
             }
 
-            if self.consume_operator(",") {
+            if self.consume_comma() {
                 continue;
             }
 
@@ -704,7 +731,7 @@ impl Parser<'_> {
 
             args.push(self.parse_expression());
 
-            if self.consume_operator(",") {
+            if self.consume_comma() {
                 continue;
             }
 
@@ -821,7 +848,7 @@ impl Parser<'_> {
         let pattern = self.parse_match_pattern_term();
         let mut guards = Vec::new();
 
-        while self.consume_operator(",") {
+        while self.consume_comma() {
             if self.current_is_operator("=>") || self.at_item_boundary() {
                 guards.push(missing_expr(Span::point(self.previous_end())));
                 break;
@@ -865,7 +892,7 @@ impl Parser<'_> {
 
     fn parse_match_pattern_term(&mut self) -> Expr {
         if self.current_is_operator("=>")
-            || self.current_is_operator(",")
+            || self.current_is(TokenKind::Comma)
             || self.at_item_boundary()
         {
             return self.report_expected_pattern(self.current_span());
@@ -985,7 +1012,7 @@ impl Parser<'_> {
         let first = self.parse_expression();
         self.skip_collection_trivia();
 
-        if !self.current_is_operator(",") {
+        if !self.current_is(TokenKind::Comma) {
             let end = if self.current_is(TokenKind::CloseParen) {
                 self.consume_close(TokenKind::CloseParen)
             } else if self.close_exists_before_item_boundary(TokenKind::CloseParen) {
@@ -1018,7 +1045,7 @@ impl Parser<'_> {
             items.push(self.parse_expression());
             self.skip_collection_trivia();
 
-            if self.current_is_operator(",") {
+            if self.current_is(TokenKind::Comma) {
                 self.advance();
                 continue;
             }
@@ -1146,8 +1173,8 @@ impl Parser<'_> {
                     || self.current_is(TokenKind::Newline)
                     || self.current_is(TokenKind::Indent)
                     || self.current_is(TokenKind::Dedent)
-                    || self.current_is_operator(",")
-                    || self.current_is_operator(";"))
+                    || self.current_is(TokenKind::Comma)
+                    || self.current_is(TokenKind::Semicolon))
             {
                 return Some(RecordEntry::Open {
                     span: operator_span,
@@ -1279,8 +1306,8 @@ impl Parser<'_> {
             && !self.current_is(TokenKind::Newline)
             && !self.current_is(TokenKind::Indent)
             && !self.current_is(TokenKind::Dedent)
-            && !self.current_is_operator(",")
-            && !self.current_is_operator(";")
+            && !self.current_is(TokenKind::Comma)
+            && !self.current_is(TokenKind::Semicolon)
         {
             self.advance();
         }
@@ -1600,6 +1627,15 @@ impl Parser<'_> {
         false
     }
 
+    fn consume_comma(&mut self) -> bool {
+        if self.current_is(TokenKind::Comma) {
+            self.advance();
+            return true;
+        }
+
+        false
+    }
+
     fn current_is_operator(&self, expected: &str) -> bool {
         self.current()
             .is_some_and(|token| token.is_operator(expected))
@@ -1629,15 +1665,12 @@ impl Parser<'_> {
         let mut seen_separator = false;
 
         loop {
-            if let Some(separator_count) = self.current_separator_count(allow_semicolon) {
+            if self.current_is(TokenKind::Comma)
+                || (allow_semicolon && self.current_is(TokenKind::Semicolon))
+            {
                 let span = self.current_span();
-                let first_extra_index = usize::from(!seen_separator);
-
-                for index in first_extra_index..separator_count {
-                    self.report_unexpected_separator(Span::new(
-                        span.start + index,
-                        span.start + index + 1,
-                    ));
+                if seen_separator {
+                    self.report_unexpected_separator(span);
                 }
 
                 seen_separator = true;
@@ -1651,26 +1684,6 @@ impl Parser<'_> {
         }
 
         consumed
-    }
-
-    fn current_separator_count(&self, allow_semicolon: bool) -> Option<usize> {
-        let Some(Token {
-            kind: TokenKind::Operator(operator),
-            ..
-        }) = self.current()
-        else {
-            return None;
-        };
-
-        if operator.is_empty()
-            || !operator
-                .bytes()
-                .all(|byte| byte == b',' || (allow_semicolon && byte == b';'))
-        {
-            return None;
-        }
-
-        Some(operator.len())
     }
 
     fn skip_collection_trivia(&mut self) -> bool {
@@ -2003,6 +2016,71 @@ mod tests {
         assert!(matches!(
             &binding.value.kind,
             ExprKind::Literal(Literal::String(text)) if text == "\"Aven\""
+        ));
+    }
+
+    #[test]
+    fn parses_negative_number_literals_into_ast_nodes() {
+        let output = parse_module("value = -1\n");
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected binding item");
+        };
+
+        let ExprKind::Unary {
+            operator, value, ..
+        } = &binding.value.kind
+        else {
+            panic!("expected unary expression");
+        };
+
+        assert_eq!(operator, "-");
+        assert!(matches!(
+            &value.kind,
+            ExprKind::Literal(Literal::Number(number)) if number == "1"
+        ));
+    }
+
+    #[test]
+    fn parses_unary_minus_after_binary_operators() {
+        let output = parse_module("result = 1 + -2\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Binary {
+            operator, right, ..
+        } = binding_value(&output, 0)
+        else {
+            panic!("expected binary expression");
+        };
+
+        assert_eq!(operator, "+");
+        let ExprKind::Unary {
+            operator, value, ..
+        } = &right.kind
+        else {
+            panic!("expected unary expression");
+        };
+
+        assert_eq!(operator, "-");
+        assert!(matches!(
+            &value.kind,
+            ExprKind::Literal(Literal::Number(number)) if number == "2"
+        ));
+    }
+
+    #[test]
+    fn parses_unary_minus_before_names_and_groups() {
+        let output = parse_module("left = -x\nright = -(a + b)\n");
+
+        assert!(output.diagnostics.is_empty());
+        assert!(matches!(
+            binding_value(&output, 0),
+            ExprKind::Unary { value, .. } if matches!(&value.kind, ExprKind::Name(name) if name == "x")
+        ));
+        assert!(matches!(
+            binding_value(&output, 1),
+            ExprKind::Unary { value, .. } if matches!(&value.kind, ExprKind::Group(_))
         ));
     }
 

@@ -157,11 +157,13 @@ Done when:
 
 Status: in progress
 
-Progress: a first hand-written raw lexer emits owned tokens for names,
-literals, paths, labels, operators, delimiters, newlines, indentation widths,
-comments, and basic lexer diagnostics. The lexer feeds the layout pass, which
-in turn feeds the Milestone 4a core parser. The starter parser has been
-replaced.
+Progress: a hand-written raw lexer emits owned tokens for names, literals,
+paths, labels, delimiters, comma/semicolon separators, newlines, indentation
+widths, comments, and basic lexer diagnostics. Operators use maximal-munch
+symbolic runs so custom operators can be tokenized without feeding declarations
+back into the lexer. The language-reserved operator starts `=`, `:`, `.`, `?`,
+and `@` reject unknown symbolic runs instead of silently splitting them. The
+lexer feeds the layout pass, which in turn feeds the Milestone 4 parser.
 
 Goal: replace ad hoc string scanning with one tokenization pass.
 
@@ -181,7 +183,8 @@ Tasks:
   - regex literals
   - path literals
   - numbers
-  - operators
+  - maximal-munch operators
+  - comma/semicolon separators
   - delimiters
   - newlines and indentation markers
   - comments and doc comments
@@ -195,6 +198,9 @@ Tasks:
 - implement regex/path disambiguation early enough to avoid syntax debt
 - add lexical recovery for unterminated strings, regexes, and delimiters
 - emit tokens with spans and trivia spans
+- keep lexing context-free: custom operator fixity belongs to parser/semantic
+  phases, not the lexer; custom operators cannot start with `=`, `:`, `.`,
+  `?`, or `@`
 
 Recommended approach:
 
@@ -357,6 +363,8 @@ Done when:
 - operator precedence is tested with AST-shape assertions. Parser unit tests
   cover local invariants, and `parser/ast/valid` golden fixtures lock
   precedence-facing tree shape.
+- watch item: before custom fixity grows, extract one shared operator
+  classification source so parser precedence and formatter spacing do not drift.
 
 ## Milestone 4d: Type Syntax Parser
 
@@ -440,7 +448,9 @@ indentation to two spaces per layout depth, preserves comments and blank lines,
 refuses to format sources with parse errors, and has an idempotence regression
 test. Formatter golden fixtures and CLI `fmt --check` integration tests cover
 the current behavior. Expression-level spacing and multi-line collection layout
-are still untouched.
+have started: the formatter now uses a raw-token emitter for simple intra-line
+spacing around bindings, calls, commas, field access, pipelines, records, and
+sets. Multi-line collection layout is still untouched.
 
 Goal: make formatting useful before semantics are complete.
 
@@ -474,9 +484,10 @@ That is enough for predictable early formatting while avoiding a parser rewrite
 today. If formatting starts needing nested token ownership or comment attachment
 rules that are hard to express over flat tokens, revisit a CST then.
 
-Decision rule: expression spacing starts the raw-token-driven emitter and
-replaces the current line pass. Do not extend the line model into intra-line
-formatting.
+Decision rule: expression spacing belongs in the raw-token-driven emitter, not
+in a line-string rewrite pass. The emitter can normalize intra-line trivia, but
+line-break and reflow decisions need AST context; do not add those to the
+token-only spacing pass.
 
 ## Milestone 6: Name Resolution Skeleton
 
@@ -630,12 +641,16 @@ Completed parser groundwork:
 - Milestone 5 first slice: formatter normalizes layout indentation while
   preserving comments and blank lines
 - formatter fixtures and CLI `fmt --check` integration coverage
+- formatter raw-token emitter handles simple expression spacing
+- lexer uses maximal-munch operators with comma/semicolon as dedicated
+  separators, so custom operators do not require lexer registration
+- reserved operator starts `=`, `:`, `.`, `?`, and `@` produce lexer
+  diagnostics for unknown runs instead of silently splitting
 
 The next few queued changes should be:
 
-1. define expression-spacing formatting rules for simple bindings/calls
-2. expand LSP from diagnostics/formatting to document symbols
-3. start Milestone 6 name resolution skeleton
+1. expand LSP from diagnostics/formatting to document symbols
+2. start Milestone 6 name resolution skeleton
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

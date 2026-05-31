@@ -41,6 +41,8 @@ pub enum TokenKind {
     CloseBrace,
     OpenBracket,
     CloseBracket,
+    Comma,
+    Semicolon,
     RawNewline,
     RawIndent { spaces: usize },
     Newline,
@@ -67,6 +69,8 @@ impl TokenKind {
             Self::CloseBrace => "delimiter `}`".to_owned(),
             Self::OpenBracket => "delimiter `[`".to_owned(),
             Self::CloseBracket => "delimiter `]`".to_owned(),
+            Self::Comma => "comma".to_owned(),
+            Self::Semicolon => "semicolon".to_owned(),
             Self::RawNewline => "newline".to_owned(),
             Self::RawIndent { spaces } => format!("indent `{spaces}`"),
             Self::Newline => "layout newline".to_owned(),
@@ -134,7 +138,9 @@ impl Lexer<'_> {
                 Some(b'}') => self.push_single(TokenKind::CloseBrace),
                 Some(b'[') => self.push_single(TokenKind::OpenBracket),
                 Some(b']') => self.push_single(TokenKind::CloseBracket),
-                Some(byte) if is_operator_byte(byte) => self.scan_operator(),
+                Some(b',') => self.push_single(TokenKind::Comma),
+                Some(b';') => self.push_single(TokenKind::Semicolon),
+                Some(byte) if is_operator_start_byte(byte) => self.scan_operator(),
                 Some(_) => self.scan_unexpected_character(),
                 None => break,
             }
@@ -354,6 +360,19 @@ impl Lexer<'_> {
     fn scan_label_or_operator(&mut self) {
         let start = self.offset;
 
+        if self.peek_byte(1) == Some(b'{') {
+            self.push_single(TokenKind::Operator("@".to_owned()));
+            return;
+        }
+
+        if self
+            .peek_byte(1)
+            .is_some_and(|byte| reserved_operator_continues("@", byte))
+        {
+            self.scan_reserved_operator_run("@");
+            return;
+        }
+
         if !self.peek_byte(1).is_some_and(is_identifier_start_byte) {
             self.push_single(TokenKind::Operator("@".to_owned()));
             return;
@@ -502,24 +521,90 @@ impl Lexer<'_> {
     }
 
     fn scan_operator(&mut self) {
+        match self.current_byte() {
+            Some(b'?') => self.scan_reserved_operator("?", &["?.", "??", "?^", "?!", "?>", "?"]),
+            Some(b'=') => self.scan_reserved_operator("=", &["=>", "==", "="]),
+            Some(b':') => self.scan_reserved_operator(":", &[":..", ":=", ":"]),
+            Some(b'.') => self.scan_reserved_operator(".", &["..", "."]),
+            _ => self.scan_custom_operator(),
+        }
+    }
+
+    fn scan_reserved_operator(&mut self, prefix: &str, allowed: &[&str]) {
         let start = self.offset;
+
         let rest = &self.source[start..];
-
-        // Longest-match over the known-operator table. The table is ordered so
-        // that any operator that is a prefix of another appears after it, so the
-        // first match is also the longest. `is_operator_byte` is derived from the
-        // same table, so a leading operator byte always matches some entry here.
-        let operator = KNOWN_OPERATORS
+        let operator = allowed
             .iter()
-            .find(|candidate| rest.starts_with(**candidate))
+            .find(|operator| rest.starts_with(**operator))
             .copied()
-            .unwrap_or_else(|| unreachable!("operator byte did not match any known operator"));
-
+            .unwrap_or(prefix);
         self.offset += operator.len();
+
+        if self
+            .current_byte()
+            .is_some_and(|byte| reserved_operator_continues(prefix, byte))
+        {
+            while self
+                .current_byte()
+                .is_some_and(|byte| reserved_operator_continues(prefix, byte))
+            {
+                self.offset += self.current_char_len();
+            }
+            self.push_reserved_operator_diagnostic(start, prefix);
+        }
+
         self.push(
             TokenKind::Operator(operator.to_owned()),
             Span::new(start, self.offset),
         );
+    }
+
+    fn scan_reserved_operator_run(&mut self, prefix: &str) {
+        let start = self.offset;
+        self.scan_operator_run();
+        self.push_reserved_operator_diagnostic(start, prefix);
+        self.push(
+            TokenKind::Operator(self.source[start..self.offset].to_owned()),
+            Span::new(start, self.offset),
+        );
+    }
+
+    fn push_reserved_operator_diagnostic(&mut self, start: usize, prefix: &str) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("reserved `{prefix}` operator"))
+                .with_code("lex.reserved-operator")
+                .with_label(Label::primary(
+                    Span::new(start, self.offset),
+                    "this operator namespace is reserved by the language",
+                ))
+                .with_note("custom operators cannot start with `=`, `:`, `.`, `?`, or `@`"),
+        );
+    }
+
+    fn scan_custom_operator(&mut self) {
+        let start = self.offset;
+        self.offset += self.current_char_len();
+
+        while self
+            .current_byte()
+            .is_some_and(is_custom_operator_continue_byte)
+        {
+            self.offset += self.current_char_len();
+        }
+
+        self.push(
+            TokenKind::Operator(self.source[start..self.offset].to_owned()),
+            Span::new(start, self.offset),
+        );
+    }
+
+    fn scan_operator_run(&mut self) {
+        self.offset += self.current_char_len();
+
+        while self.current_byte().is_some_and(is_operator_run_byte) {
+            self.offset += self.current_char_len();
+        }
     }
 
     fn scan_unexpected_character(&mut self) {
@@ -597,21 +682,59 @@ fn is_identifier_continue_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric()
 }
 
-/// Every operator the lexer recognises, ordered so that longer operators come
-/// before any operator that is a prefix of them. `scan_operator` does a
-/// first-match scan over this table, which is therefore also a longest match.
-const KNOWN_OPERATORS: &[&str] = &[
-    ":..", "=>", "->", "==", "!=", "<=", ">=", "|>", "&&", "||", "??", "?.", "?^", "?!", "?>",
-    "..", ":=", "=", ":", "!", "<", ">", "+", "-", "*", "/", "?", "^", ".", "|", "&", ",", ";",
-    "%", "~", "@", "\\",
-];
+fn is_operator_start_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'=' | b':'
+            | b'.'
+            | b'?'
+            | b'+'
+            | b'-'
+            | b'*'
+            | b'/'
+            | b'%'
+            | b'^'
+            | b'|'
+            | b'&'
+            | b'<'
+            | b'>'
+            | b'!'
+            | b'~'
+            | b'$'
+    )
+}
 
-fn is_operator_byte(byte: u8) -> bool {
-    // Single source of truth: a byte starts an operator iff it is the first byte
-    // of some known operator.
-    KNOWN_OPERATORS
-        .iter()
-        .any(|operator| operator.as_bytes().first() == Some(&byte))
+fn is_custom_operator_continue_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'+' | b'-'
+            | b'*'
+            | b'/'
+            | b'%'
+            | b'^'
+            | b'|'
+            | b'&'
+            | b'<'
+            | b'>'
+            | b'!'
+            | b'~'
+            | b'$'
+            | b'='
+    )
+}
+
+fn is_operator_run_byte(byte: u8) -> bool {
+    is_custom_operator_continue_byte(byte) || matches!(byte, b':' | b'?' | b'.' | b'@')
+}
+
+fn reserved_operator_continues(prefix: &str, byte: u8) -> bool {
+    match prefix {
+        "?" | "@" => is_operator_run_byte(byte),
+        "=" => byte == b'=',
+        ":" => matches!(byte, b':' | b'.' | b'?' | b'='),
+        "." => is_custom_operator_continue_byte(byte) || matches!(byte, b'.' | b'?'),
+        _ => false,
+    }
 }
 
 fn is_path_end_byte(byte: u8) -> bool {

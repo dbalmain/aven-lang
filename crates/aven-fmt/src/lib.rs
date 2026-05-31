@@ -13,20 +13,19 @@ pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let line_starts = line_starts(source);
     let mut line_indents = layout_line_indents(line_count, &line_starts, &parse.layout_tokens);
     fill_trivia_line_indents(source, &mut line_indents);
+    let line_tokens = content_tokens_by_line(line_count, &line_starts, &parse.raw_tokens);
 
     let mut output = String::with_capacity(source.len() + 1);
 
-    for (line_index, line) in source.lines().enumerate() {
-        let line = line.trim_end();
-
-        if line.trim().is_empty() {
+    for (line_index, tokens) in line_tokens.iter().enumerate() {
+        if tokens.is_empty() {
             output.push('\n');
             continue;
         }
 
         let indent = line_indents.get(line_index).copied().flatten().unwrap_or(0);
         output.push_str(&" ".repeat(indent * INDENT_WIDTH));
-        output.push_str(line.trim_start());
+        emit_line(&mut output, source, tokens);
         output.push('\n');
     }
 
@@ -84,6 +83,198 @@ fn nearest_indent(index: usize, line_indents: &[Option<usize>]) -> Option<usize>
         .flatten();
 
     next.or(previous)
+}
+
+fn content_tokens_by_line<'a>(
+    line_count: usize,
+    line_starts: &[usize],
+    tokens: &'a [Token],
+) -> Vec<Vec<&'a Token>> {
+    let mut lines = vec![Vec::new(); line_count];
+
+    for token in tokens {
+        if matches!(
+            token.kind,
+            TokenKind::RawIndent { .. } | TokenKind::RawNewline
+        ) {
+            continue;
+        }
+
+        let line = line_for_offset(line_starts, token.span.start);
+        if line < lines.len() {
+            lines[line].push(token);
+        }
+    }
+
+    lines
+}
+
+fn emit_line(output: &mut String, source: &str, tokens: &[&Token]) {
+    for (index, token) in tokens.iter().enumerate() {
+        let previous = index
+            .checked_sub(1)
+            .and_then(|index| tokens.get(index).copied());
+        let previous_previous = index
+            .checked_sub(2)
+            .and_then(|index| tokens.get(index).copied());
+
+        if let Some(previous) = previous
+            && needs_space(previous_previous, previous, token)
+        {
+            output.push(' ');
+        }
+
+        output.push_str(&token_text(source, token));
+    }
+}
+
+fn token_text(source: &str, token: &Token) -> String {
+    let text = source
+        .get(token.span.start..token.span.end)
+        .unwrap_or_default();
+
+    if matches!(token.kind, TokenKind::Comment(_) | TokenKind::DocComment(_)) {
+        text.trim_end().to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
+fn needs_space(previous_previous: Option<&Token>, previous: &Token, current: &Token) -> bool {
+    if is_comment(current) {
+        return true;
+    }
+
+    if is_comment(previous)
+        || is_close_paren_or_bracket(current)
+        || is_tight_postfix_operator(current)
+        || is_tight_access_operator(current)
+    {
+        return false;
+    }
+
+    if is_close_brace(current) {
+        return !is_open_brace(previous);
+    }
+
+    if is_open_delimiter(current) {
+        return needs_space_before_open_delimiter(previous, current);
+    }
+
+    if is_open_delimiter(previous) {
+        return needs_space_after_open_delimiter(previous, current);
+    }
+
+    if is_separator(current) {
+        return false;
+    }
+
+    if is_separator(previous) {
+        return true;
+    }
+
+    if is_tight_access_operator(previous)
+        || is_tight_postfix_operator(previous)
+        || is_tight_prefix_operator(previous, Some(current))
+        || is_at_set_marker(previous, Some(current))
+    {
+        return false;
+    }
+
+    if is_prefix_minus(previous, previous_previous) {
+        return false;
+    }
+
+    if is_binary_operator(current) || is_binary_operator(previous) {
+        return true;
+    }
+
+    true
+}
+
+fn needs_space_before_open_delimiter(previous: &Token, current: &Token) -> bool {
+    if is_open_brace(current) {
+        return !is_at_set_marker(previous, Some(current));
+    }
+
+    if is_binary_operator(previous) {
+        return true;
+    }
+
+    false
+}
+
+fn needs_space_after_open_delimiter(previous: &Token, current: &Token) -> bool {
+    is_open_brace(previous) && !is_close_delimiter(current)
+}
+
+fn is_comment(token: &Token) -> bool {
+    matches!(token.kind, TokenKind::Comment(_) | TokenKind::DocComment(_))
+}
+
+fn is_open_delimiter(token: &Token) -> bool {
+    matches!(
+        token.kind,
+        TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace
+    )
+}
+
+fn is_open_brace(token: &Token) -> bool {
+    matches!(token.kind, TokenKind::OpenBrace)
+}
+
+fn is_close_delimiter(token: &Token) -> bool {
+    matches!(
+        token.kind,
+        TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace
+    )
+}
+
+fn is_close_paren_or_bracket(token: &Token) -> bool {
+    matches!(token.kind, TokenKind::CloseParen | TokenKind::CloseBracket)
+}
+
+fn is_close_brace(token: &Token) -> bool {
+    matches!(token.kind, TokenKind::CloseBrace)
+}
+
+fn is_separator(token: &Token) -> bool {
+    matches!(token.kind, TokenKind::Comma | TokenKind::Semicolon)
+}
+
+fn is_binary_operator(token: &Token) -> bool {
+    matches!(&token.kind, TokenKind::Operator(operator) if !matches!(
+        operator.as_str(),
+        "." | "?." | "?" | "?^" | "?!" | "@" | ".." | ":.."
+    ))
+}
+
+fn is_tight_access_operator(token: &Token) -> bool {
+    matches!(&token.kind, TokenKind::Operator(operator) if operator == "." || operator == "?.")
+}
+
+fn is_tight_postfix_operator(token: &Token) -> bool {
+    matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), "?" | "?^" | "?!"))
+}
+
+fn is_tight_prefix_operator(token: &Token, next: Option<&Token>) -> bool {
+    matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), ".." | ":.."))
+        || is_at_set_marker(token, next)
+}
+
+fn is_at_set_marker(token: &Token, next: Option<&Token>) -> bool {
+    matches!(&token.kind, TokenKind::Operator(operator) if operator == "@")
+        && next.is_some_and(is_open_brace)
+}
+
+fn is_prefix_minus(token: &Token, previous_previous: Option<&Token>) -> bool {
+    if !matches!(&token.kind, TokenKind::Operator(operator) if operator == "-") {
+        return false;
+    }
+
+    previous_previous.is_none_or(|previous| {
+        is_open_delimiter(previous) || is_separator(previous) || is_binary_operator(previous)
+    })
 }
 
 fn line_starts(source: &str) -> Vec<usize> {
@@ -161,5 +352,18 @@ mod tests {
             result,
             Err(diagnostics) if diagnostics.iter().any(Diagnostic::is_error)
         ));
+    }
+
+    #[test]
+    fn normalizes_simple_expression_spacing() {
+        assert_eq!(
+            format_source(
+                "sum=add(1,2)+user . age\njson=users ?. active |>toJson ( )\nshape=@{Red,Ok(1)}\nrecord={name=\"Ada\",age=36}\nnegative=-1\noffset=1 + -2\ncleaned={..user,-password}\n"
+            ),
+            Ok(
+                "sum = add(1, 2) + user.age\njson = users?.active |> toJson()\nshape = @{ Red, Ok(1) }\nrecord = { name = \"Ada\", age = 36 }\nnegative = -1\noffset = 1 + -2\ncleaned = { ..user, -password }\n"
+                    .to_owned()
+            )
+        );
     }
 }

@@ -347,6 +347,13 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             let _ = writeln!(output, "right");
             render_expr_ast(output, right, indent + 2);
         }
+        ExprKind::Unary {
+            operator, value, ..
+        } => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "unary {operator}");
+            render_expr_ast(output, value, indent + 1);
+        }
         ExprKind::Propagate { value, mode, .. } => {
             write_indent(output, indent);
             let _ = writeln!(output, "propagate {}", propagation_mode_name(*mode));

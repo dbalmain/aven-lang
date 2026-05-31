@@ -1,0 +1,7 @@
+sum = add(1, 2) + user.age
+json = users?.active |> toJson()
+shape = @{ Red, Ok(1) }
+record = { name = "Ada", age = 36 }
+negative = -1
+offset = 1 + -2
+cleaned = { ..user, -password }

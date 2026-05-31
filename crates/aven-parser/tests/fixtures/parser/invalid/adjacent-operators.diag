@@ -1,0 +1,3 @@
+error parse.unsupported-syntax: unsupported expression syntax
+  label 10..12: this syntax is not supported by the core parser yet
+  note: custom operators are not supported yet; supported operators are `|>`, `??`, `||`, `&&`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, and `^`

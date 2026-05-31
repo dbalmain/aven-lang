@@ -1,0 +1,15 @@
+error lex.reserved-operator: reserved `?` operator
+  label 8..10: this operator namespace is reserved by the language
+  note: custom operators cannot start with `=`, `:`, `.`, `?`, or `@`
+error lex.reserved-operator: reserved `@` operator
+  label 22..24: this operator namespace is reserved by the language
+  note: custom operators cannot start with `=`, `:`, `.`, `?`, or `@`
+error lex.reserved-operator: reserved `.` operator
+  label 37..40: this operator namespace is reserved by the language
+  note: custom operators cannot start with `=`, `:`, `.`, `?`, or `@`
+error lex.reserved-operator: reserved `=` operator
+  label 54..57: this operator namespace is reserved by the language
+  note: custom operators cannot start with `=`, `:`, `.`, `?`, or `@`
+error lex.reserved-operator: reserved `:` operator
+  label 70..72: this operator namespace is reserved by the language
+  note: custom operators cannot start with `=`, `:`, `.`, `?`, or `@`

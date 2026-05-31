@@ -2,8 +2,8 @@
 6..7 operator `:`
 8..12 comptime_identifier `Text`
 12..13 operator `?`
-13..14 operator `,`
-14..15 operator `,`
+13..14 comma
+14..15 comma
 16..20 identifier `next`
 20..21 newline
 21..25 identifier `safe`
@@ -15,7 +15,18 @@
 33..40 identifier `compare`
 41..42 operator `=`
 43..47 identifier `left`
-48..50 operator `<=`
-50..51 operator `>`
+48..51 operator `<=>`
 52..57 identifier `right`
 57..58 newline
+58..65 identifier `entries`
+66..67 operator `=`
+68..69 delimiter `{`
+69..72 identifier `one`
+73..74 operator `=`
+75..76 number `1`
+76..77 semicolon
+78..81 identifier `two`
+82..83 operator `=`
+84..85 number `2`
+85..86 delimiter `}`
+86..87 newline
