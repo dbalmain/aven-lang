@@ -246,11 +246,7 @@ impl Lexer<'_> {
         }
 
         let text = self.source[start..self.offset].to_owned();
-        let kind = if text
-            .as_bytes()
-            .first()
-            .is_some_and(|byte| byte.is_ascii_uppercase())
-        {
+        let kind = if is_comptime_identifier_name(&text) {
             TokenKind::ComptimeIdentifier(text)
         } else {
             TokenKind::Identifier(text)
@@ -680,6 +676,12 @@ fn is_identifier_start_byte(byte: u8) -> bool {
 
 fn is_identifier_continue_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+pub(crate) fn is_comptime_identifier_name(name: &str) -> bool {
+    name.as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_uppercase())
 }
 
 fn is_operator_start_byte(byte: u8) -> bool {

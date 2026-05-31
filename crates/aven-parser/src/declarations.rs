@@ -1,5 +1,6 @@
 use aven_core::Span;
 
+use crate::lexer::is_comptime_identifier_name;
 use crate::parser::{Binding, ExprKind, Item, Module, Signature};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,7 +10,7 @@ pub struct Declaration {
     pub span: Span,
     pub kind: DeclarationKind,
     pub phase: DeclarationPhase,
-    pub has_signature: bool,
+    pub is_annotated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +60,7 @@ fn binding_declaration(binding: &Binding, signature: Option<&Signature>) -> Decl
         span,
         kind: binding_kind(binding),
         phase: declaration_phase(&binding.name),
-        has_signature: signature.is_some(),
+        is_annotated: signature.is_some(),
     }
 }
 
@@ -70,7 +71,7 @@ fn signature_declaration(signature: &Signature) -> Declaration {
         span: signature.span,
         kind: DeclarationKind::Signature,
         phase: declaration_phase(&signature.name),
-        has_signature: false,
+        is_annotated: false,
     }
 }
 
@@ -83,11 +84,7 @@ fn binding_kind(binding: &Binding) -> DeclarationKind {
 }
 
 fn declaration_phase(name: &str) -> DeclarationPhase {
-    if name
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_uppercase())
-    {
+    if is_comptime_identifier_name(name) {
         return DeclarationPhase::Comptime;
     }
 
@@ -123,7 +120,7 @@ mod tests {
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].name, "double");
         assert_eq!(declarations[0].kind, DeclarationKind::Function);
-        assert!(declarations[0].has_signature);
+        assert!(declarations[0].is_annotated);
         assert_eq!(declarations[0].span.start, 0);
         assert_eq!(declarations[0].name_span.start, 22);
     }
@@ -136,7 +133,7 @@ mod tests {
         assert_eq!(declarations.len(), 2);
         assert_eq!(declarations[0].name, "value");
         assert_eq!(declarations[0].kind, DeclarationKind::Signature);
-        assert!(!declarations[0].has_signature);
+        assert!(!declarations[0].is_annotated);
         assert_eq!(declarations[1].name, "other");
         assert_eq!(declarations[1].kind, DeclarationKind::Binding);
     }

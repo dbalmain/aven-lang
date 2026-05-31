@@ -6,9 +6,9 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, OneOf, Position, Range,
-    ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Url,
+    GotoDefinitionParams, GotoDefinitionResponse, InitializeParams, InitializeResult,
+    InitializedParams, Location, MessageType, OneOf, Position, Range, ServerCapabilities,
+    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -27,7 +27,27 @@ pub async fn run_stdio() {
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    documents: Arc<std::sync::Mutex<HashMap<Url, String>>>,
+    documents: Arc<std::sync::Mutex<HashMap<Url, Arc<ParsedDocument>>>>,
+}
+
+#[derive(Debug)]
+struct ParsedDocument {
+    source: String,
+    parse: aven_parser::ParseOutput,
+    declarations: Vec<aven_parser::Declaration>,
+}
+
+impl ParsedDocument {
+    fn new(source: String) -> Self {
+        let parse = aven_parser::parse_module(&source);
+        let declarations = aven_parser::collect_declarations(&parse.module);
+
+        Self {
+            source,
+            parse,
+            declarations,
+        }
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -40,6 +60,7 @@ impl LanguageServer for Backend {
                 )),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                definition_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -60,8 +81,8 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let text = params.text_document.text;
 
-        self.set_document(uri.clone(), text.clone());
-        self.publish_diagnostics(uri, &text).await;
+        self.set_document(uri.clone(), text);
+        self.publish_diagnostics(uri).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -72,25 +93,25 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let text = change.text;
 
-        self.set_document(uri.clone(), text.clone());
-        self.publish_diagnostics(uri, &text).await;
+        self.set_document(uri.clone(), text);
+        self.publish_diagnostics(uri).await;
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        let Some(source) = self.document_text(&params.text_document.uri) else {
+        let Some(document) = self.document(&params.text_document.uri) else {
             return Ok(None);
         };
 
-        let Ok(formatted) = aven_fmt::format_source(&source) else {
+        let Ok(formatted) = aven_fmt::format_source(&document.source) else {
             return Ok(None);
         };
 
-        if formatted == source {
+        if formatted == document.source {
             return Ok(Some(Vec::new()));
         }
 
         Ok(Some(vec![TextEdit {
-            range: full_document_range(&source),
+            range: full_document_range(&document.source),
             new_text: formatted,
         }]))
     }
@@ -99,24 +120,37 @@ impl LanguageServer for Backend {
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        let Some(source) = self.document_text(&params.text_document.uri) else {
+        let Some(document) = self.document(&params.text_document.uri) else {
             return Ok(None);
         };
 
         Ok(Some(DocumentSymbolResponse::Nested(document_symbols(
-            &source,
+            &document,
         ))))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(document) = self.document(&uri) else {
+            return Ok(None);
+        };
+
+        Ok(definition_location(&document, uri, position).map(GotoDefinitionResponse::Scalar))
     }
 }
 
 impl Backend {
     fn set_document(&self, uri: Url, text: String) {
         if let Ok(mut documents) = self.documents.lock() {
-            documents.insert(uri, text);
+            documents.insert(uri, Arc::new(ParsedDocument::new(text)));
         }
     }
 
-    fn document_text(&self, uri: &Url) -> Option<String> {
+    fn document(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
         // A poisoned mutex degrades to "document missing" rather than crashing the LSP.
         self.documents
             .lock()
@@ -124,12 +158,16 @@ impl Backend {
             .and_then(|documents| documents.get(uri).cloned())
     }
 
-    async fn publish_diagnostics(&self, uri: Url, text: &str) {
-        let output = aven_parser::parse_module(text);
-        let diagnostics = output
+    async fn publish_diagnostics(&self, uri: Url) {
+        let Some(document) = self.document(&uri) else {
+            return;
+        };
+
+        let diagnostics = document
+            .parse
             .diagnostics
             .iter()
-            .map(|diagnostic| to_lsp_diagnostic(text, diagnostic))
+            .map(|diagnostic| to_lsp_diagnostic(&document.source, diagnostic))
             .collect();
 
         self.client
@@ -165,11 +203,11 @@ fn to_lsp_diagnostic(source: &str, diagnostic: &AvenDiagnostic) -> Diagnostic {
     }
 }
 
-fn document_symbols(source: &str) -> Vec<DocumentSymbol> {
-    let output = aven_parser::parse_module(source);
-    aven_parser::collect_declarations(&output.module)
+fn document_symbols(document: &ParsedDocument) -> Vec<DocumentSymbol> {
+    document
+        .declarations
         .iter()
-        .map(|declaration| declaration_symbol(source, declaration))
+        .map(|declaration| declaration_symbol(&document.source, declaration))
         .collect()
 }
 
@@ -188,7 +226,7 @@ fn declaration_symbol(source: &str, declaration: &aven_parser::Declaration) -> D
 }
 
 fn declaration_detail(declaration: &aven_parser::Declaration) -> Option<String> {
-    if declaration.has_signature {
+    if declaration.is_annotated {
         return Some("binding with signature".to_owned());
     }
 
@@ -212,11 +250,78 @@ fn symbol_kind(declaration: &aven_parser::Declaration) -> SymbolKind {
     }
 }
 
+fn definition_location(
+    document: &ParsedDocument,
+    uri: Url,
+    position: Position,
+) -> Option<Location> {
+    let name = identifier_at_position(document, position)?;
+    // TODO(milestone-6): resolve lexical scopes before falling back to top-level
+    // declarations. Today a parameter/local that shadows a top-level binding
+    // will still jump to the top-level declaration.
+    let declaration = document
+        .declarations
+        .iter()
+        .find(|declaration| declaration.name == name)?;
+
+    Some(Location::new(
+        uri,
+        span_to_range(&document.source, declaration.name_span),
+    ))
+}
+
+fn identifier_at_position(document: &ParsedDocument, position: Position) -> Option<String> {
+    let offset = position_to_offset(&document.source, position)?;
+
+    document.parse.raw_tokens.iter().find_map(|token| {
+        if offset < token.span.start || offset >= token.span.end {
+            return None;
+        }
+
+        match &token.kind {
+            aven_parser::TokenKind::Identifier(name)
+            | aven_parser::TokenKind::ComptimeIdentifier(name) => Some(name.clone()),
+            _ => None,
+        }
+    })
+}
+
 fn span_to_range(source: &str, span: Span) -> Range {
     Range {
         start: offset_to_position(source, span.start),
         end: offset_to_position(source, span.end.max(span.start + 1)),
     }
+}
+
+fn position_to_offset(source: &str, target: Position) -> Option<usize> {
+    let mut line = 0u32;
+    let mut character = 0u32;
+
+    for (offset, ch) in source.char_indices() {
+        if line == target.line && character >= target.character {
+            return Some(offset);
+        }
+
+        if ch == '\n' {
+            if line == target.line {
+                return Some(offset);
+            }
+
+            line += 1;
+            character = 0;
+            continue;
+        }
+
+        if line == target.line {
+            let next_character = character + ch.len_utf16() as u32;
+            if target.character < next_character {
+                return Some(offset);
+            }
+            character = next_character;
+        }
+    }
+
+    (line == target.line).then_some(source.len())
 }
 
 fn full_document_range(source: &str) -> Range {
@@ -258,7 +363,10 @@ mod tests {
 
     #[test]
     fn document_symbols_include_top_level_bindings() {
-        let symbols = document_symbols("User = { name = Text }\ndouble = (x) => x\nvalue = 1\n");
+        let document = ParsedDocument::new(
+            "User = { name = Text }\ndouble = (x) => x\nvalue = 1\n".to_owned(),
+        );
+        let symbols = document_symbols(&document);
 
         assert_eq!(symbols.len(), 3);
         assert_eq!(symbols[0].name, "User");
@@ -271,7 +379,8 @@ mod tests {
 
     #[test]
     fn document_symbols_merge_adjacent_signature_and_binding() {
-        let symbols = document_symbols("double : (Int) -> Int\ndouble = (x) => x\n");
+        let document = ParsedDocument::new("double : (Int) -> Int\ndouble = (x) => x\n".to_owned());
+        let symbols = document_symbols(&document);
 
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "double");
@@ -286,7 +395,8 @@ mod tests {
 
     #[test]
     fn document_symbols_keep_unmatched_signatures() {
-        let symbols = document_symbols("value : Int\nother = 1\n");
+        let document = ParsedDocument::new("value : Int\nother = 1\n".to_owned());
+        let symbols = document_symbols(&document);
 
         assert_eq!(symbols.len(), 2);
         assert_eq!(symbols[0].name, "value");
@@ -294,5 +404,49 @@ mod tests {
         assert_eq!(symbols[0].detail.as_deref(), Some("signature"));
         assert_eq!(symbols[1].name, "other");
         assert_eq!(symbols[1].kind, SymbolKind::VARIABLE);
+    }
+
+    #[test]
+    fn definition_location_finds_top_level_runtime_bindings() {
+        let document = ParsedDocument::new("value = 1\nother = value\n".to_owned());
+        let Some(location) = definition_location(&document, test_uri(), position(1, 9)) else {
+            panic!("expected definition location");
+        };
+
+        assert_eq!(location.range.start, position(0, 0));
+        assert_eq!(location.range.end, position(0, 5));
+    }
+
+    #[test]
+    fn definition_location_finds_top_level_comptime_bindings() {
+        let document = ParsedDocument::new("User = { name = Text }\nvalue = User\n".to_owned());
+        let Some(location) = definition_location(&document, test_uri(), position(1, 9)) else {
+            panic!("expected definition location");
+        };
+
+        assert_eq!(location.range.start, position(0, 0));
+        assert_eq!(location.range.end, position(0, 4));
+    }
+
+    #[test]
+    fn definition_location_is_top_level_only_until_local_resolution() {
+        let document = ParsedDocument::new("x = 1\nf = (x) => x\n".to_owned());
+        let Some(location) = definition_location(&document, test_uri(), position(1, 11)) else {
+            panic!("expected definition location");
+        };
+
+        assert_eq!(location.range.start, position(0, 0));
+        assert_eq!(location.range.end, position(0, 1));
+    }
+
+    fn position(line: u32, character: u32) -> Position {
+        Position { line, character }
+    }
+
+    fn test_uri() -> Url {
+        match Url::parse("file:///test.av") {
+            Ok(uri) => uri,
+            Err(error) => panic!("failed to parse test URI: {error}"),
+        }
     }
 }
