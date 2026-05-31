@@ -723,6 +723,8 @@ Completed parser groundwork:
   annotated bindings into one outline entry
 - `aven-parser` exposes a first declaration collection pass for top-level
   bindings/signatures and the uppercase/lowercase phase split
+- declaration golden fixtures lock the top-level declaration model before
+  diagnostics and local scope resolution grow
 - LSP go-to-definition resolves top-level runtime/comptime declarations in the
   current file using the cached declaration list
 - declaration collection shares the lexer's uppercase/lowercase identifier rule
@@ -730,8 +732,7 @@ Completed parser groundwork:
 
 The next few queued changes should be:
 
-1. add a parser/name-resolution fixture style for declaration diagnostics
-2. add duplicate/shadowing diagnostics once overload rules have a parser-level
+1. add duplicate/shadowing diagnostics once overload rules have a parser-level
    representation
 
 This keeps tooling ahead of semantics without spending too long on temporary

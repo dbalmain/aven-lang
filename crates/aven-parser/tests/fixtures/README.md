@@ -5,6 +5,8 @@ Parser and lexer fixture tests use paired golden files.
 - `parser/valid/*.av` must parse without diagnostics.
 - `parser/ast/valid/*.av` must parse without diagnostics and have a matching
   `.ast` file with the same stem.
+- `declarations/valid/*.av` must parse without diagnostics and have a matching
+  `.decl` file with the same stem.
 - `parser/invalid/*.av` must have a matching `.diag` file with the same stem.
 - `lexer/valid/*.av` must lex without diagnostics and have a matching
   `.tokens` file with the same stem.
@@ -21,5 +23,7 @@ Parser and lexer fixture tests use paired golden files.
   then indented `note: message` lines.
 - `.ast` files contain compact parser tree summaries. They intentionally omit
   spans and semantic meaning so they only lock parser shape.
+- `.decl` files contain compact top-level declaration summaries. They include
+  spans because declaration navigation depends on source locations.
 - After an intentional diagnostic change, run `cargo test -p aven-parser`,
   compare the failure's actual output, and update only the affected golden file.

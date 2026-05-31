@@ -1,0 +1,9 @@
+User = { name = Text }
+
+double : (Int) -> Int
+double = (x) => x
+
+value : Int
+other = value
+
+Color = @{ Red, Green }

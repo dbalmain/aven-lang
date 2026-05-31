@@ -5,12 +5,15 @@ use std::path::{Path, PathBuf};
 
 use aven_core::{Diagnostic, Severity};
 use aven_parser::{
-    Expr, ExprKind, Item, Literal, MatchArm, Module, Param, PropagationMode, RecordEntry, Token,
+    Declaration, DeclarationKind, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm,
+    Module, Param, PropagationMode, RecordEntry, Token,
 };
 
 const PARSER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parser");
 const PARSER_AST_FIXTURE_ROOT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parser/ast");
+const DECLARATION_FIXTURE_ROOT: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/declarations");
 const LEXER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/lexer");
 const LAYOUT_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/layout");
 
@@ -73,6 +76,36 @@ fn parser_ast_fixtures_match_expected_tree() -> Result<(), Box<dyn Error>> {
             actual,
             expected,
             "AST summary for {} did not match {}",
+            path.display(),
+            expected_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn declaration_fixtures_match_expected_output() -> Result<(), Box<dyn Error>> {
+    for path in fixture_files(DECLARATION_FIXTURE_ROOT, "valid")? {
+        let source = fs::read_to_string(&path)?;
+        let output = aven_parser::parse_module(&source);
+
+        assert!(
+            output.diagnostics.is_empty(),
+            "{} unexpectedly produced parse diagnostics:\n{}",
+            path.display(),
+            render_diagnostics(&output.diagnostics)
+        );
+
+        let declarations = aven_parser::collect_declarations(&output.module);
+        let actual = render_declarations(&declarations);
+        let expected_path = path.with_extension("decl");
+        let expected = fs::read_to_string(&expected_path)?;
+
+        assert_eq!(
+            actual,
+            expected,
+            "declarations for {} did not match {}",
             path.display(),
             expected_path.display()
         );
@@ -214,6 +247,42 @@ fn render_module_ast(module: &Module) -> String {
     }
 
     output
+}
+
+fn render_declarations(declarations: &[Declaration]) -> String {
+    let mut output = String::new();
+
+    for declaration in declarations {
+        let _ = writeln!(
+            output,
+            "{} {} phase={} annotated={} span={}..{} name={}..{}",
+            declaration_kind_name(declaration.kind),
+            declaration.name,
+            declaration_phase_name(declaration.phase),
+            declaration.is_annotated,
+            declaration.span.start,
+            declaration.span.end,
+            declaration.name_span.start,
+            declaration.name_span.end
+        );
+    }
+
+    output
+}
+
+fn declaration_kind_name(kind: DeclarationKind) -> &'static str {
+    match kind {
+        DeclarationKind::Binding => "binding",
+        DeclarationKind::Function => "function",
+        DeclarationKind::Signature => "signature",
+    }
+}
+
+fn declaration_phase_name(phase: DeclarationPhase) -> &'static str {
+    match phase {
+        DeclarationPhase::Runtime => "runtime",
+        DeclarationPhase::Comptime => "comptime",
+    }
 }
 
 fn render_item_ast(output: &mut String, item: &Item, indent: usize) {

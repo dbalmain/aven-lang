@@ -1,0 +1,5 @@
+binding User phase=comptime annotated=false span=0..22 name=0..4
+function double phase=runtime annotated=true span=24..63 name=46..52
+signature value phase=runtime annotated=false span=65..76 name=65..70
+binding other phase=runtime annotated=false span=77..90 name=77..82
+binding Color phase=comptime annotated=false span=92..115 name=92..97
