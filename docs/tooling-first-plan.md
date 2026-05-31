@@ -579,17 +579,79 @@ Status: later
 
 Goal: prepare for fast editor feedback.
 
+Strategy:
+
+"Partial parsing" is three separate problems, and they matter very differently
+for an embedded language:
+
+1. incremental re-parsing — reuse the old tree, re-parse only the edited region
+   (tree-sitter, Roslyn)
+2. error-tolerant parsing — produce a useful tree from the broken input that
+   exists while someone is mid-edit
+3. lazy parsing — defer work (e.g. function bodies) until something needs it
+
+Aven targets embedded scripts (Lua/Wren scale): hundreds to a few thousand
+lines, not 100k-line files. At that size a hand-written recursive-descent parse
+is well under a millisecond, so (1) optimizes the cheap half. The latency a
+developer feels after an edit comes from name resolution, HM inference, and
+comptime evaluation — not the parse. The incrementality that pays is therefore
+memoized *computation* plus strong error recovery (2), not an incremental
+parser.
+
+Decision: do not build tree-sitter/Roslyn-grade incremental re-parsing. Two
+reasons beyond file size. First, an incremental GLR engine or a red-green CST
+is a large amount of code that works against the "compiler fits in an agent's
+context" budget. Second, the layout pass makes subtree reuse unsound-prone:
+editing indentation can change `Indent`/`Dedent`/`Newline` tokens and block
+structure far from the edit, so a reused subtree's boundaries are not local to
+the change. Indentation-sensitive languages are exactly where tree-sitter needs
+a hand-written external scanner.
+
+Approach, in order:
+
+- cache `ParseOutput` per document version in the LSP so one parse backs
+  diagnostics, symbols, go-to-definition, and formatting — no per-request
+  re-parse
+- make the top-level declaration the unit of incrementality: full-reparse the
+  file (cheap) but key downstream analysis on individual declarations, so an
+  edit to one binding invalidates only that binding's analysis. The
+  `collect_declarations` pass is the seam for this.
+- keep investing in error recovery; recovery quality drives per-keystroke DX
+  more than reparse speed
+- only if profiling shows the parse itself is the bottleneck: add incremental
+  *lexing* (re-lex from the edit until the token stream resynchronizes, which
+  is layout-pass friendly), and adopt a red-green / lossless CST (e.g. rowan)
+  only if the CST is un-deferred for other reasons
+
+Revisit triggers: real scripts routinely exceed ~10k lines; profiling shows
+parse latency (not semantic analysis) dominating edit-to-feedback time; or a
+host needs single-keystroke latency on large generated sources.
+
+If a memoized-query layer (Salsa-style demand-driven computation, as in
+rust-analyzer) is adopted for the second step, weigh it against "third-party
+libraries stay behind crate boundaries": a query framework is a deep
+architectural commitment that is hard to hide behind a boundary, unlike
+chumsky/ariadne. A thin hand-rolled version keyed on document version plus
+declaration identity may be the smaller first step.
+
+Background, if a trigger is hit: red-green trees (Roslyn) and rowan are the
+position-independent, structurally-shared "rope equivalent" for syntax trees;
+tree-sitter descends from Wagner's incremental-GLR work; Salsa is the
+demand-driven memoization model.
+
 Tasks:
 
-- store per-file parse results in the LSP backend
+- store per-file parse results in the LSP backend, keyed on document version
 - separate cheap lexer/parser diagnostics from expensive semantic diagnostics
 - cache line indexes for span conversion
 - add debounce/cancellation around document changes
-- design the compiler database interface before imports/type inference
+- design the compiler database interface (declaration-keyed memoization) before
+  imports/type inference
 
 Done when:
 
 - LSP does not rederive every intermediate artifact by hand
+- a single parse backs every per-document request
 - parse/check latency is visible and measurable
 
 ## Phase 2 Scope
