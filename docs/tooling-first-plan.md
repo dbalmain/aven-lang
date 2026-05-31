@@ -491,7 +491,11 @@ token-only spacing pass.
 
 ## Milestone 6: Name Resolution Skeleton
 
-Status: later
+Status: in progress
+
+Progress: the LSP now advertises document symbols and extracts a top-level
+outline from the parser AST. Adjacent `signature + binding` pairs are merged
+into one symbol so ordinary annotated functions do not appear twice.
 
 Goal: enable editor features before full type inference.
 
@@ -646,11 +650,13 @@ Completed parser groundwork:
   separators, so custom operators do not require lexer registration
 - reserved operator starts `=`, `:`, `.`, `?`, and `@` produce lexer
   diagnostics for unknown runs instead of silently splitting
+- LSP document symbols expose top-level bindings/signatures, merging adjacent
+  annotated bindings into one outline entry
 
 The next few queued changes should be:
 
-1. expand LSP from diagnostics/formatting to document symbols
-2. start Milestone 6 name resolution skeleton
+1. start Milestone 6 name resolution skeleton
+2. add go-to definition for local bindings once declarations are collected
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.
