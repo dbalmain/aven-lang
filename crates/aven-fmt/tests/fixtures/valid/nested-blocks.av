@@ -1,0 +1,4 @@
+load = (path) =>
+    config =
+        read(path)?^   
+    config

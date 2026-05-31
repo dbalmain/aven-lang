@@ -1,0 +1,6 @@
+# module comment
+value =
+  # block comment
+  item = 1
+
+next = 2

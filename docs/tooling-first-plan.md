@@ -438,8 +438,9 @@ Progress: the first formatter slice is layout-depth-driven line reindentation.
 It trims trailing whitespace, normalizes newlines to `\n`, normalizes layout
 indentation to two spaces per layout depth, preserves comments and blank lines,
 refuses to format sources with parse errors, and has an idempotence regression
-test. Expression-level spacing and multi-line collection layout are still
-untouched.
+test. Formatter golden fixtures and CLI `fmt --check` integration tests cover
+the current behavior. Expression-level spacing and multi-line collection layout
+are still untouched.
 
 Goal: make formatting useful before semantics are complete.
 
@@ -628,13 +629,13 @@ Completed parser groundwork:
   parser-facing layout tokens alongside the AST
 - Milestone 5 first slice: formatter normalizes layout indentation while
   preserving comments and blank lines
+- formatter fixtures and CLI `fmt --check` integration coverage
 
 The next few queued changes should be:
 
-1. add formatter fixture tests and CLI `fmt --check` coverage
-2. define expression-spacing formatting rules for simple bindings/calls
-3. expand LSP from diagnostics/formatting to document symbols
-4. start Milestone 6 name resolution skeleton
+1. define expression-spacing formatting rules for simple bindings/calls
+2. expand LSP from diagnostics/formatting to document symbols
+3. start Milestone 6 name resolution skeleton
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.
