@@ -471,6 +471,11 @@ Tasks:
 format(format(source)) == format(source)
 ```
 
+  Idempotence and totality are load-bearing beyond formatter hygiene: a total,
+  idempotent formatter is the canonical-form bridge that lets agents emit an
+  unambiguous explicit-delimiter form and have it normalized back to layout. See
+  [`agent-syntax-ergonomics.md`](agent-syntax-ergonomics.md).
+
 - add `aven fmt --check` tests
 - wire LSP formatting to the same formatter
 
@@ -644,6 +649,13 @@ Background, if a trigger is hit: red-green trees (Roslyn) and rowan are the
 position-independent, structurally-shared "rope equivalent" for syntax trees;
 tree-sitter descends from Wagner's incremental-GLR work; Salsa is the
 demand-driven memoization model.
+
+A lossless CST is also the prerequisite for any agent-facing projectional
+editing (translate to a brace-explicit view for an LLM, translate back to
+layout). That idea is deferred for the same reason and on the same trigger; the
+cheaper near-term substitute is optional explicit-delimiter input plus the
+idempotent formatter, not a translator. See
+[`agent-syntax-ergonomics.md`](agent-syntax-ergonomics.md).
 
 Tasks:
 
