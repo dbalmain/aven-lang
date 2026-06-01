@@ -510,7 +510,10 @@ bindings, and match-arm pattern binders before falling back to top-level
 declarations within the same file, using `aven-parser`'s first local definition
 resolver rather than walking the AST in the LSP. Cached documents are stored
 behind `Arc`, so LSP requests do not deep-clone the parse tree when retrieving
-cached state.
+cached state. Top-level declarations now carry a parser-level overload shape,
+recording arity plus whether parameter and result annotations are present. This
+is intentionally not type identity; typed overload disjointness waits for M7
+normalization.
 
 Goal: enable editor features before full type inference.
 
@@ -752,11 +755,13 @@ Completed parser groundwork:
 - `aven-parser` exposes a first local definition resolver for lambda parameters,
   sequential block bindings, and match-arm pattern binders; LSP
   go-to-definition uses it before falling back to the top-level declaration list
+- declaration fixtures include shallow parser-level callable shapes, giving
+  duplicate/shadowing diagnostics enough information to avoid false positives on
+  plausible typed overloads while deferring overload disjointness to M7
 
 The next few queued changes should be:
 
-1. add duplicate/shadowing diagnostics once overload rules have a parser-level
-   representation
+1. add duplicate/shadowing diagnostics using shallow declaration shapes
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

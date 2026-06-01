@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use aven_core::{Diagnostic, Severity};
 use aven_parser::{
-    Declaration, DeclarationKind, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm,
-    Module, Param, PropagationMode, RecordEntry, Token,
+    Declaration, DeclarationKind, DeclarationPhase, DeclarationShape, Expr, ExprKind, Item,
+    Literal, MatchArm, Module, Param, PropagationMode, RecordEntry, Token,
 };
 
 const PARSER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parser");
@@ -255,11 +255,12 @@ fn render_declarations(declarations: &[Declaration]) -> String {
     for declaration in declarations {
         let _ = writeln!(
             output,
-            "{} {} phase={} annotated={} span={}..{} name={}..{}",
+            "{} {} phase={} annotated={} shape={} span={}..{} name={}..{}",
             declaration_kind_name(declaration.kind),
             declaration.name,
             declaration_phase_name(declaration.phase),
             declaration.is_annotated,
+            declaration_shape_name(&declaration.shape),
             declaration.span.start,
             declaration.span.end,
             declaration.name_span.start,
@@ -268,6 +269,25 @@ fn render_declarations(declarations: &[Declaration]) -> String {
     }
 
     output
+}
+
+fn declaration_shape_name(shape: &DeclarationShape) -> String {
+    match shape {
+        DeclarationShape::Value => "value".to_owned(),
+        DeclarationShape::Callable(callable) => {
+            let parameters = callable
+                .parameter_annotations
+                .iter()
+                .map(|is_annotated| if *is_annotated { "typed" } else { "?" })
+                .collect::<Vec<_>>();
+            let result = if callable.has_result_annotation {
+                "typed"
+            } else {
+                "?"
+            };
+            format!("fn({})->{result}", parameters.join(","))
+        }
+    }
 }
 
 fn declaration_kind_name(kind: DeclarationKind) -> &'static str {

@@ -1,0 +1,3 @@
+function show phase=runtime annotated=true shape=fn(typed)->typed span=0..44 name=21..25
+function show phase=runtime annotated=true shape=fn(typed)->typed span=46..97 name=68..72
+function fallback phase=runtime annotated=false shape=fn(?)->? span=99..126 name=99..107

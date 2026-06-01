@@ -1,0 +1,7 @@
+show : (Int) -> Text
+show = (value) => value
+
+show : (Text) -> Text
+show = (value: Text) => value
+
+fallback = (value) => value

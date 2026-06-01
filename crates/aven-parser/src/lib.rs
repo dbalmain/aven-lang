@@ -4,7 +4,10 @@ mod lexer;
 mod parser;
 mod resolve;
 
-pub use declarations::{Declaration, DeclarationKind, DeclarationPhase, collect_declarations};
+pub use declarations::{
+    CallableShape, Declaration, DeclarationKind, DeclarationPhase, DeclarationShape,
+    collect_declarations,
+};
 pub(crate) use layout::lex_then_layout;
 pub use layout::{LayoutOutput, layout_source, layout_tokens};
 pub use lexer::{LexOutput, Token, TokenKind, lex_source};
