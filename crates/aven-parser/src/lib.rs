@@ -2,6 +2,7 @@ mod declarations;
 mod layout;
 mod lexer;
 mod parser;
+mod resolve;
 
 pub use declarations::{Declaration, DeclarationKind, DeclarationPhase, collect_declarations};
 pub(crate) use layout::lex_then_layout;
@@ -11,3 +12,4 @@ pub use parser::{
     Binding, Expr, ExprKind, Item, Literal, MatchArm, Module, Param, ParseOutput, PropagationMode,
     RecordEntry, Signature, parse_module,
 };
+pub use resolve::resolve_local_definition;

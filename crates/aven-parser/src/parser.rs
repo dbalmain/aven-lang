@@ -36,6 +36,7 @@ pub struct Signature {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     pub name: String,
+    pub name_span: Span,
     /// Optional `: type` ascription, parsed as an ordinary expression.
     pub annotation: Option<Expr>,
     pub span: Span,
@@ -619,6 +620,7 @@ impl Parser<'_> {
 
                     params.push(Param {
                         name,
+                        name_span,
                         annotation,
                         span,
                     });

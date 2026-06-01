@@ -500,9 +500,11 @@ signature/binding walk now lives in `aven-parser` as a shared declaration
 collection layer, so go-to-definition and phase diagnostics can build on the
 same model. The LSP document store now caches parsed documents and their
 declarations, avoiding a fresh parse for each diagnostics or document-symbol
-request. Go-to-definition now resolves identifier tokens to top-level
-declarations within the same file. Cached documents are stored behind `Arc`, so
-LSP requests do not deep-clone the parse tree when retrieving cached state.
+request. Go-to-definition now resolves lambda parameters before falling back to
+top-level declarations within the same file, using `aven-parser`'s first local
+definition resolver rather than walking the AST in the LSP. Cached documents are
+stored behind `Arc`, so LSP requests do not deep-clone the parse tree when
+retrieving cached state.
 
 Goal: enable editor features before full type inference.
 
@@ -729,10 +731,14 @@ Completed parser groundwork:
   current file using the cached declaration list
 - declaration collection shares the lexer's uppercase/lowercase identifier rule
   instead of reimplementing the phase split
+- `aven-parser` exposes a first local definition resolver for lambda parameters;
+  LSP go-to-definition uses it before falling back to the top-level declaration
+  list
 
 The next few queued changes should be:
 
-1. add duplicate/shadowing diagnostics once overload rules have a parser-level
+1. extend local resolution to block bindings and pattern binders
+2. add duplicate/shadowing diagnostics once overload rules have a parser-level
    representation
 
 This keeps tooling ahead of semantics without spending too long on temporary

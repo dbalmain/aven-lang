@@ -255,14 +255,22 @@ fn definition_location(
     uri: Url,
     position: Position,
 ) -> Option<Location> {
-    let name = identifier_at_position(document, position)?;
-    // TODO(milestone-6): resolve lexical scopes before falling back to top-level
-    // declarations. Today a parameter/local that shadows a top-level binding
-    // will still jump to the top-level declaration.
+    let identifier = identifier_at_position(document, position)?;
+
+    if let Some(span) = aven_parser::resolve_local_definition(
+        &document.parse.module,
+        &identifier.name,
+        identifier.span,
+    ) {
+        return Some(Location::new(uri, span_to_range(&document.source, span)));
+    }
+
+    // TODO(milestone-6): resolve block bindings and pattern bindings before
+    // falling back to top-level declarations.
     let declaration = document
         .declarations
         .iter()
-        .find(|declaration| declaration.name == name)?;
+        .find(|declaration| declaration.name == identifier.name)?;
 
     Some(Location::new(
         uri,
@@ -270,7 +278,16 @@ fn definition_location(
     ))
 }
 
-fn identifier_at_position(document: &ParsedDocument, position: Position) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IdentifierAtPosition {
+    name: String,
+    span: Span,
+}
+
+fn identifier_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<IdentifierAtPosition> {
     let offset = position_to_offset(&document.source, position)?;
 
     document.parse.raw_tokens.iter().find_map(|token| {
@@ -280,7 +297,10 @@ fn identifier_at_position(document: &ParsedDocument, position: Position) -> Opti
 
         match &token.kind {
             aven_parser::TokenKind::Identifier(name)
-            | aven_parser::TokenKind::ComptimeIdentifier(name) => Some(name.clone()),
+            | aven_parser::TokenKind::ComptimeIdentifier(name) => Some(IdentifierAtPosition {
+                name: name.clone(),
+                span: token.span,
+            }),
             _ => None,
         }
     })
@@ -429,14 +449,25 @@ mod tests {
     }
 
     #[test]
-    fn definition_location_is_top_level_only_until_local_resolution() {
+    fn definition_location_prefers_lambda_parameters_over_top_level_bindings() {
         let document = ParsedDocument::new("x = 1\nf = (x) => x\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(1, 11)) else {
             panic!("expected definition location");
         };
 
-        assert_eq!(location.range.start, position(0, 0));
-        assert_eq!(location.range.end, position(0, 1));
+        assert_eq!(location.range.start, position(1, 5));
+        assert_eq!(location.range.end, position(1, 6));
+    }
+
+    #[test]
+    fn definition_location_uses_nearest_lambda_parameter() {
+        let document = ParsedDocument::new("x = 1\nf = (x) => (x) => x\n".to_owned());
+        let Some(location) = definition_location(&document, test_uri(), position(1, 18)) else {
+            panic!("expected definition location");
+        };
+
+        assert_eq!(location.range.start, position(1, 12));
+        assert_eq!(location.range.end, position(1, 13));
     }
 
     fn position(line: u32, character: u32) -> Position {
