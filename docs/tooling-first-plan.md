@@ -768,11 +768,14 @@ Completed parser groundwork:
   them
 - local `signature + binding` pairs are treated as one binder for name
   diagnostics, matching top-level declaration collection
+- shallow phase diagnostics reject uppercase value parameters, because function
+  parameters are runtime binders in the current syntax. RHS classification for
+  uppercase bindings, including liftable values like `HttpOk = 200`, is deferred
+  to the M7 comptime/liftability phase.
 
 The next few queued changes should be:
 
-1. add shallow uppercase/lowercase phase diagnostics
-2. add unused-binding diagnostics where safe
+1. add unused-binding diagnostics where safe
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

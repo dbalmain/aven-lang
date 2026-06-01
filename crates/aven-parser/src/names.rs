@@ -1,6 +1,7 @@
 use aven_core::{Diagnostic, Label, Span};
 
 use crate::declarations::{CallableShape, Declaration, DeclarationShape, collect_declarations};
+use crate::lexer::is_comptime_identifier_name;
 use crate::parser::{Expr, ExprKind, Item, MatchArm, Module};
 use crate::resolve::{BindingSite, pattern_bindings};
 use crate::walk::walk_expr_children;
@@ -121,6 +122,7 @@ fn analyze_expr(expr: &Expr, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
 
             scopes.push();
             for param in params {
+                diagnose_uppercase_runtime_name(&param.name, param.name_span, diagnostics);
                 scopes.define(&param.name, param.name_span, diagnostics);
             }
             analyze_expr(body, scopes, diagnostics);
@@ -205,6 +207,21 @@ fn define_pattern_bindings(
     for binding in bindings {
         scopes.define(binding.name, binding.span, diagnostics);
     }
+}
+
+fn diagnose_uppercase_runtime_name(name: &str, span: Span, diagnostics: &mut Vec<Diagnostic>) {
+    if !is_comptime_identifier_name(name) {
+        return;
+    }
+
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "uppercase parameter `{name}` cannot bind a runtime argument"
+        ))
+        .with_code("name.uppercase-runtime-binding")
+        .with_label(Label::primary(span, "runtime binding introduced here"))
+        .with_note("runtime values use lowercase names; uppercase names are reserved for comptime identifiers"),
+    );
 }
 
 impl ScopeStack {
@@ -312,6 +329,15 @@ mod tests {
     #[test]
     fn allows_local_bindings_to_shadow_top_level_declarations() {
         let output = parse_module("value = 1\nf = (value) => value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn leaves_type_shaped_uppercase_bindings_to_the_semantic_phase() {
+        let output =
+            parse_module("HttpOk = 200\nUser = { name = Text }\nColor = @{ Red, Green }\n");
         let analysis = analyze_names(&output.module);
 
         assert!(analysis.diagnostics.is_empty());

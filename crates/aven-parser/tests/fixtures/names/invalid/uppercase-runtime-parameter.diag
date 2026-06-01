@@ -1,0 +1,3 @@
+error name.uppercase-runtime-binding: uppercase parameter `Value` cannot bind a runtime argument
+  label 8..13: runtime binding introduced here
+  note: runtime values use lowercase names; uppercase names are reserved for comptime identifiers
