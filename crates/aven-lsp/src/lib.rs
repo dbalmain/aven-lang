@@ -7,8 +7,9 @@ use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, Position, Range, ServerCapabilities,
-    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    InitializedParams, Location, MessageType, OneOf, Position, Range, RenameParams,
+    ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -71,6 +72,7 @@ impl LanguageServer for Backend {
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -150,6 +152,21 @@ impl LanguageServer for Backend {
         };
 
         Ok(definition_location(&document, uri, position).map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some(document) = self.document(&uri) else {
+            return Ok(None);
+        };
+
+        Ok(rename_workspace_edit(
+            &document,
+            uri,
+            position,
+            params.new_name,
+        ))
     }
 }
 
@@ -276,8 +293,6 @@ fn definition_location(
         return Some(Location::new(uri, span_to_range(&document.source, span)));
     }
 
-    // TODO(milestone-6): resolve block bindings and pattern bindings before
-    // falling back to top-level declarations.
     let declaration = document
         .declarations
         .iter()
@@ -287,6 +302,46 @@ fn definition_location(
         uri,
         span_to_range(&document.source, declaration.name_span),
     ))
+}
+
+fn rename_workspace_edit(
+    document: &ParsedDocument,
+    uri: Url,
+    position: Position,
+    new_name: String,
+) -> Option<WorkspaceEdit> {
+    if !aven_parser::is_identifier(&new_name) {
+        return None;
+    }
+
+    let identifier = identifier_at_position(document, position)?;
+
+    if aven_parser::is_comptime_identifier_name(&new_name)
+        != aven_parser::is_comptime_identifier_name(&identifier.name)
+    {
+        return None;
+    }
+
+    let spans = aven_parser::resolve_local_references(
+        &document.parse.module,
+        &document.parse.raw_tokens,
+        &identifier.name,
+        identifier.span,
+    )?;
+
+    let edits = spans
+        .into_iter()
+        .map(|span| TextEdit {
+            range: span_to_range(&document.source, span),
+            new_text: new_name.clone(),
+        })
+        .collect();
+
+    Some(WorkspaceEdit {
+        changes: Some(HashMap::from([(uri, edits)])),
+        document_changes: None,
+        change_annotations: None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -514,6 +569,54 @@ mod tests {
 
         assert_eq!(location.range.start, position(2, 7));
         assert_eq!(location.range.end, position(2, 12));
+    }
+
+    #[test]
+    fn rename_workspace_edit_renames_nearest_local_binding() {
+        let document = ParsedDocument::new("x = 1\nf = (x) => (x) => x\n".to_owned());
+        let Some(edit) =
+            rename_workspace_edit(&document, test_uri(), position(1, 18), "item".to_owned())
+        else {
+            panic!("expected rename edit");
+        };
+
+        let edits = edit
+            .changes
+            .as_ref()
+            .and_then(|changes| changes.get(&test_uri()))
+            .expect("expected edits for test URI");
+
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].range.start, position(1, 12));
+        assert_eq!(edits[0].range.end, position(1, 13));
+        assert_eq!(edits[0].new_text, "item");
+        assert_eq!(edits[1].range.start, position(1, 18));
+        assert_eq!(edits[1].range.end, position(1, 19));
+        assert_eq!(edits[1].new_text, "item");
+    }
+
+    #[test]
+    fn rename_workspace_edit_skips_top_level_bindings() {
+        let document = ParsedDocument::new("x = 1\nvalue = x\n".to_owned());
+        let edit = rename_workspace_edit(&document, test_uri(), position(1, 8), "item".to_owned());
+
+        assert!(edit.is_none());
+    }
+
+    #[test]
+    fn rename_workspace_edit_rejects_invalid_identifiers() {
+        let document = ParsedDocument::new("f = (x) => x\n".to_owned());
+        let edit = rename_workspace_edit(&document, test_uri(), position(0, 10), "1x".to_owned());
+
+        assert!(edit.is_none());
+    }
+
+    #[test]
+    fn rename_workspace_edit_rejects_phase_class_changes() {
+        let document = ParsedDocument::new("f = (x) => x\n".to_owned());
+        let edit = rename_workspace_edit(&document, test_uri(), position(0, 10), "Name".to_owned());
+
+        assert!(edit.is_none());
     }
 
     fn position(line: u32, character: u32) -> Position {

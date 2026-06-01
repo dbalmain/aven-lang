@@ -2,6 +2,7 @@ use aven_core::Span;
 
 use crate::parser::{Expr, ExprKind, Item, MatchArm, Module, RecordEntry};
 use crate::walk::find_map_expr_children;
+use crate::{Token, TokenKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BindingSite<'a> {
@@ -14,6 +15,42 @@ pub fn resolve_local_definition(module: &Module, name: &str, reference: Span) ->
         .items
         .iter()
         .find_map(|item| resolve_in_item(item, name, reference))
+}
+
+pub fn resolve_local_references(
+    module: &Module,
+    tokens: &[Token],
+    name: &str,
+    reference: Span,
+) -> Option<Vec<Span>> {
+    let definition = resolve_local_definition(module, name, reference)?;
+
+    if is_top_level_definition(module, name, definition) {
+        return None;
+    }
+
+    let references = tokens
+        .iter()
+        .filter_map(|token| match &token.kind {
+            TokenKind::Identifier(token_name) | TokenKind::ComptimeIdentifier(token_name)
+                if token_name == name
+                    && resolve_local_definition(module, name, token.span) == Some(definition) =>
+            {
+                Some(token.span)
+            }
+            _ => None,
+        })
+        .collect();
+
+    Some(references)
+}
+
+fn is_top_level_definition(module: &Module, name: &str, definition: Span) -> bool {
+    module.items.iter().any(|item| match item {
+        Item::Binding(binding) => binding.name == name && binding.name_span == definition,
+        Item::Signature(signature) => signature.name == name && signature.name_span == definition,
+        Item::Expr(_) => false,
+    })
 }
 
 fn resolve_in_item(item: &Item, name: &str, reference: Span) -> Option<Span> {
@@ -378,6 +415,37 @@ mod tests {
         let span = resolve_local_definition(&output.module, "rest", nth_span(source, "rest", 1));
 
         assert_eq!(span, Some(nth_span(source, "rest", 0)));
+    }
+
+    #[test]
+    fn local_references_include_definition_and_uses() {
+        let source = "x = 1\nf = (x) => (x) => x\n";
+        let output = parse_module(source);
+        let spans = resolve_local_references(
+            &output.module,
+            &output.raw_tokens,
+            "x",
+            nth_span(source, "x", 3),
+        );
+
+        assert_eq!(
+            spans,
+            Some(vec![nth_span(source, "x", 2), nth_span(source, "x", 3)])
+        );
+    }
+
+    #[test]
+    fn local_references_skip_top_level_declarations() {
+        let source = "x = 1\nvalue = x\n";
+        let output = parse_module(source);
+        let spans = resolve_local_references(
+            &output.module,
+            &output.raw_tokens,
+            "x",
+            nth_span(source, "x", 0),
+        );
+
+        assert_eq!(spans, None);
     }
 
     #[test]

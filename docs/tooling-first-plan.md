@@ -519,6 +519,9 @@ parameters, and match-arm pattern binders; the CLI and LSP publish these
 diagnostics alongside parse diagnostics. For now, name analysis runs only after
 a clean parse, and local bindings are allowed to shadow top-level declarations;
 both choices are covered by fixtures so they can be revisited deliberately.
+The LSP rename provider now renames same-file local bindings by reusing the
+parser's local-reference resolver; top-level rename is intentionally deferred
+until module/export semantics exist.
 
 Goal: enable editor features before full type inference.
 
@@ -775,10 +778,12 @@ Completed parser groundwork:
 - unused local binding warnings now cover lambda parameters, sequential block
   bindings, and match pattern binders. The pass suppresses unused warnings when
   the same name-analysis run has errors, keeping recovery noise low.
+- LSP rename edits cover same-file local bindings and reject invalid identifier
+  targets. Top-level and cross-file rename are deferred.
 
 The next few queued changes should be:
 
-1. expose LSP rename for local bindings
+1. start Milestone 7 with the type skeleton and typed hover plumbing
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

@@ -99,6 +99,22 @@ pub fn lex_source(source: &str) -> LexOutput {
     }
 }
 
+pub fn is_identifier(name: &str) -> bool {
+    let output = lex_source(name);
+
+    if !output.diagnostics.is_empty() {
+        return false;
+    }
+
+    matches!(
+        output.tokens.as_slice(),
+        [Token {
+            kind: TokenKind::Identifier(_) | TokenKind::ComptimeIdentifier(_),
+            span,
+        }] if span.start == 0 && span.end == name.len()
+    )
+}
+
 struct Lexer<'a> {
     source: &'a str,
     offset: usize,
@@ -678,7 +694,7 @@ fn is_identifier_continue_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric()
 }
 
-pub(crate) fn is_comptime_identifier_name(name: &str) -> bool {
+pub fn is_comptime_identifier_name(name: &str) -> bool {
     name.as_bytes()
         .first()
         .is_some_and(|byte| byte.is_ascii_uppercase())
@@ -749,7 +765,7 @@ fn is_path_end_byte(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{TokenKind, lex_source};
+    use super::{TokenKind, is_identifier, lex_source};
 
     #[test]
     fn normalizes_newline_shapes_to_newline_tokens() {
@@ -781,5 +797,16 @@ mod tests {
             .collect();
 
         assert_eq!(codes, vec!["lex.leading-bom", "lex.tab-indentation"]);
+    }
+
+    #[test]
+    fn validates_identifiers_with_the_lexer() {
+        assert!(is_identifier("name"));
+        assert!(is_identifier("Name"));
+        assert!(is_identifier("_scratch"));
+        assert!(!is_identifier(""));
+        assert!(!is_identifier("1name"));
+        assert!(!is_identifier("name+"));
+        assert!(!is_identifier("two words"));
     }
 }
