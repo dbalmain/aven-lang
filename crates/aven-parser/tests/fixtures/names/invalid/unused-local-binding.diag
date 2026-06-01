@@ -1,0 +1,3 @@
+warning name.unused-binding: unused local binding `value`
+  label 12..17: binding is never used
+  note: remove the binding or use its value

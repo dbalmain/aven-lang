@@ -1,0 +1,3 @@
+warning name.unused-binding: unused parameter `value`
+  label 5..10: parameter is never used
+  note: replace the parameter with `_` if the argument is intentionally ignored

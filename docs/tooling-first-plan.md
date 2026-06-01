@@ -772,10 +772,13 @@ Completed parser groundwork:
   parameters are runtime binders in the current syntax. RHS classification for
   uppercase bindings, including liftable values like `HttpOk = 200`, is deferred
   to the M7 comptime/liftability phase.
+- unused local binding warnings now cover lambda parameters, sequential block
+  bindings, and match pattern binders. The pass suppresses unused warnings when
+  the same name-analysis run has errors, keeping recovery noise low.
 
 The next few queued changes should be:
 
-1. add unused-binding diagnostics where safe
+1. expose LSP rename for local bindings
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

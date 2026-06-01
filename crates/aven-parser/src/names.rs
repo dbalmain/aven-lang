@@ -2,7 +2,7 @@ use aven_core::{Diagnostic, Label, Span};
 
 use crate::declarations::{CallableShape, Declaration, DeclarationShape, collect_declarations};
 use crate::lexer::is_comptime_identifier_name;
-use crate::parser::{Expr, ExprKind, Item, MatchArm, Module};
+use crate::parser::{Expr, ExprKind, Item, MatchArm, Module, RecordEntry};
 use crate::resolve::{BindingSite, pattern_bindings};
 use crate::walk::walk_expr_children;
 
@@ -16,11 +16,21 @@ pub struct NameAnalysis {
 struct ScopeBinding {
     name: String,
     span: Span,
+    kind: BindingKind,
+    used: bool,
 }
 
 #[derive(Debug, Default)]
 struct ScopeStack {
     scopes: Vec<Vec<ScopeBinding>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindingKind {
+    Local,
+    Parameter,
+    Pattern,
+    Signature,
 }
 
 pub fn analyze_names(module: &Module) -> NameAnalysis {
@@ -30,6 +40,10 @@ pub fn analyze_names(module: &Module) -> NameAnalysis {
 
     for item in &module.items {
         analyze_item(item, &mut scopes, &mut diagnostics);
+    }
+
+    if diagnostics.iter().any(Diagnostic::is_error) {
+        diagnostics.retain(Diagnostic::is_error);
     }
 
     NameAnalysis {
@@ -123,16 +137,22 @@ fn analyze_expr(expr: &Expr, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
             scopes.push();
             for param in params {
                 diagnose_uppercase_runtime_name(&param.name, param.name_span, diagnostics);
-                scopes.define(&param.name, param.name_span, diagnostics);
+                scopes.define(
+                    &param.name,
+                    param.name_span,
+                    BindingKind::Parameter,
+                    diagnostics,
+                );
             }
             analyze_expr(body, scopes, diagnostics);
-            scopes.pop();
+            scopes.pop(diagnostics);
         }
         ExprKind::Block(items) => analyze_block(items, scopes, diagnostics),
-        ExprKind::Missing
-        | ExprKind::Literal(_)
-        | ExprKind::Name(_)
-        | ExprKind::ComptimeName(_) => {}
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => scopes.mark_used(name),
+        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+            analyze_record_entries(entries, scopes, diagnostics);
+        }
+        ExprKind::Missing | ExprKind::Literal(_) => {}
         _ => walk_expr_children(expr, &mut |child| {
             analyze_expr(child, scopes, diagnostics);
         }),
@@ -155,25 +175,56 @@ fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<
                         analyze_expr(annotation, scopes, diagnostics);
                     }
                     analyze_expr(&binding.value, scopes, diagnostics);
-                    scopes.define(&binding.name, binding.name_span, diagnostics);
+                    scopes.define(
+                        &binding.name,
+                        binding.name_span,
+                        BindingKind::Local,
+                        diagnostics,
+                    );
                     items.next();
                     continue;
                 }
 
-                scopes.define(&signature.name, signature.name_span, diagnostics);
+                scopes.define(
+                    &signature.name,
+                    signature.name_span,
+                    BindingKind::Signature,
+                    diagnostics,
+                );
             }
             Item::Binding(binding) => {
                 if let Some(annotation) = &binding.annotation {
                     analyze_expr(annotation, scopes, diagnostics);
                 }
                 analyze_expr(&binding.value, scopes, diagnostics);
-                scopes.define(&binding.name, binding.name_span, diagnostics);
+                scopes.define(
+                    &binding.name,
+                    binding.name_span,
+                    BindingKind::Local,
+                    diagnostics,
+                );
             }
             Item::Expr(expr) => analyze_expr(expr, scopes, diagnostics),
         }
     }
 
-    scopes.pop();
+    scopes.pop(diagnostics);
+}
+
+fn analyze_record_entries(
+    entries: &[RecordEntry],
+    scopes: &mut ScopeStack,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { value, .. }
+            | RecordEntry::Spread { value, .. }
+            | RecordEntry::Element(value) => analyze_expr(value, scopes, diagnostics),
+            RecordEntry::Shorthand { name, .. } => scopes.mark_used(name),
+            RecordEntry::Delete { .. } | RecordEntry::Rename { .. } | RecordEntry::Open { .. } => {}
+        }
+    }
 }
 
 fn analyze_match(
@@ -189,7 +240,7 @@ fn analyze_match(
         define_pattern_bindings(pattern_bindings(&arm.pattern), scopes, diagnostics);
         analyze_exprs(&arm.guards, scopes, diagnostics);
         analyze_expr(&arm.body, scopes, diagnostics);
-        scopes.pop();
+        scopes.pop(diagnostics);
     }
 }
 
@@ -205,7 +256,12 @@ fn define_pattern_bindings(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for binding in bindings {
-        scopes.define(binding.name, binding.span, diagnostics);
+        scopes.define(
+            binding.name,
+            binding.span,
+            BindingKind::Pattern,
+            diagnostics,
+        );
     }
 }
 
@@ -229,11 +285,25 @@ impl ScopeStack {
         self.scopes.push(Vec::new());
     }
 
-    fn pop(&mut self) {
-        self.scopes.pop();
+    fn pop(&mut self, diagnostics: &mut Vec<Diagnostic>) {
+        let Some(scope) = self.scopes.pop() else {
+            return;
+        };
+
+        for binding in scope {
+            if !binding.used && binding.kind.reports_unused() && !binding.name.starts_with('_') {
+                diagnostics.push(unused_binding_diagnostic(&binding));
+            }
+        }
     }
 
-    fn define(&mut self, name: &str, span: Span, diagnostics: &mut Vec<Diagnostic>) {
+    fn define(
+        &mut self,
+        name: &str,
+        span: Span,
+        kind: BindingKind,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
         if name == "_" {
             return;
         }
@@ -270,7 +340,24 @@ impl ScopeStack {
             scope.push(ScopeBinding {
                 name: name.to_owned(),
                 span,
+                kind,
+                used: false,
             });
+        }
+    }
+
+    fn mark_used(&mut self, name: &str) {
+        if name == "_" {
+            return;
+        }
+
+        if let Some(binding) = self
+            .scopes
+            .iter_mut()
+            .rev()
+            .find_map(|scope| scope.iter_mut().rev().find(|binding| binding.name == name))
+        {
+            binding.used = true;
         }
     }
 
@@ -289,6 +376,40 @@ impl ScopeStack {
             .skip(1)
             .find_map(|scope| scope.iter().rev().find(|binding| binding.name == name))
     }
+}
+
+impl BindingKind {
+    fn reports_unused(self) -> bool {
+        matches!(self, Self::Local | Self::Parameter | Self::Pattern)
+    }
+}
+
+fn unused_binding_diagnostic(binding: &ScopeBinding) -> Diagnostic {
+    let (message, label, note) = match binding.kind {
+        BindingKind::Local => (
+            format!("unused local binding `{}`", binding.name),
+            "binding is never used",
+            "remove the binding or use its value",
+        ),
+        BindingKind::Parameter => (
+            format!("unused parameter `{}`", binding.name),
+            "parameter is never used",
+            "replace the parameter with `_` if the argument is intentionally ignored",
+        ),
+        BindingKind::Pattern => (
+            format!("unused pattern binding `{}`", binding.name),
+            "pattern binding is never used",
+            "replace the binding with `_` in the pattern if the value is intentionally ignored",
+        ),
+        BindingKind::Signature => {
+            unreachable!("unused_binding_diagnostic only receives kinds accepted by reports_unused")
+        }
+    };
+
+    Diagnostic::warning(message)
+        .with_code("name.unused-binding")
+        .with_label(Label::primary(binding.span, label))
+        .with_note(note)
 }
 
 #[cfg(test)]
@@ -364,6 +485,46 @@ mod tests {
         assert_eq!(
             analysis.diagnostics[0].code.as_deref(),
             Some("name.accidental-shadowing")
+        );
+    }
+
+    #[test]
+    fn reports_unused_lambda_parameters() {
+        let output = parse_module("f = (value) => 1\n");
+        let analysis = analyze_names(&output.module);
+
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert_eq!(
+            analysis.diagnostics[0].code.as_deref(),
+            Some("name.unused-binding")
+        );
+    }
+
+    #[test]
+    fn treats_record_shorthand_as_a_local_use() {
+        let output = parse_module("f = (name) => { name }\n");
+        let analysis = analyze_names(&output.module);
+
+        assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn ignores_unused_underscore_prefixed_bindings() {
+        let output = parse_module("f = () =>\n  _scratch = 1\n  2\n");
+        let analysis = analyze_names(&output.module);
+
+        assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn suppresses_unused_warnings_when_name_errors_exist() {
+        let output = parse_module("f = (value, value) => 1\n");
+        let analysis = analyze_names(&output.module);
+
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert_eq!(
+            analysis.diagnostics[0].code.as_deref(),
+            Some("name.duplicate-local")
         );
     }
 }
