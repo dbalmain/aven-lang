@@ -513,7 +513,12 @@ behind `Arc`, so LSP requests do not deep-clone the parse tree when retrieving
 cached state. Top-level declarations now carry a parser-level overload shape,
 recording arity plus whether parameter and result annotations are present. This
 is intentionally not type identity; typed overload disjointness waits for M7
-normalization.
+normalization. Name analysis now emits first-pass duplicate and accidental
+shadowing diagnostics for top-level declarations, local bindings, lambda
+parameters, and match-arm pattern binders; the CLI and LSP publish these
+diagnostics alongside parse diagnostics. For now, name analysis runs only after
+a clean parse, and local bindings are allowed to shadow top-level declarations;
+both choices are covered by fixtures so they can be revisited deliberately.
 
 Goal: enable editor features before full type inference.
 
@@ -534,10 +539,10 @@ Done when:
 - local scripts get useful name diagnostics
 - basic editor navigation works before type checking
 
-Watch item: `resolve_in_expr` and `pattern_bindings` are now two exhaustive
-structural walks over `ExprKind`. Keep them explicit while there are only two;
-if a third pass appears, extract a shared visitor before the AST-walk surface
-spreads across the codebase.
+AST-walk note: the third structural `ExprKind` pass triggered the earlier watch
+item, so boring child traversal now lives in one shared expression walker.
+Resolver and name analysis keep only their scope-specific `Match`/`Lambda`/
+`Block` behavior local.
 
 ## Milestone 7: Type Skeleton
 
@@ -758,10 +763,16 @@ Completed parser groundwork:
 - declaration fixtures include shallow parser-level callable shapes, giving
   duplicate/shadowing diagnostics enough information to avoid false positives on
   plausible typed overloads while deferring overload disjointness to M7
+- `aven-parser::analyze_names` emits first-pass duplicate declaration, duplicate
+  local, and accidental-shadowing diagnostics; `aven check` and the LSP publish
+  them
+- local `signature + binding` pairs are treated as one binder for name
+  diagnostics, matching top-level declaration collection
 
 The next few queued changes should be:
 
-1. add duplicate/shadowing diagnostics using shallow declaration shapes
+1. add shallow uppercase/lowercase phase diagnostics
+2. add unused-binding diagnostics where safe
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

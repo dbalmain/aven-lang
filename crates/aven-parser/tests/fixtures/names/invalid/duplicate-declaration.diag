@@ -1,0 +1,4 @@
+error name.duplicate-declaration: duplicate declaration `value`
+  label 10..15: declaration repeated here
+  label 0..5: previous declaration with the same name
+  note: typed overload disjointness is checked later; untyped or value declarations must use distinct names

@@ -1,6 +1,7 @@
 use aven_core::Span;
 
 use crate::parser::{Expr, ExprKind, Item, MatchArm, Module, RecordEntry};
+use crate::walk::find_map_expr_children;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BindingSite<'a> {
@@ -84,29 +85,13 @@ fn resolve_in_expr(expr: &Expr, name: &str, reference: Span) -> Option<Span> {
 
             None
         }
-        ExprKind::Group(inner)
-        | ExprKind::Nullable(inner)
-        | ExprKind::Unary { value: inner, .. }
-        | ExprKind::Propagate { value: inner, .. } => resolve_in_expr(inner, name, reference),
-        ExprKind::Tuple(items) | ExprKind::Array(items) => resolve_in_exprs(items, name, reference),
-        ExprKind::Record(entries) | ExprKind::Set(entries) => {
-            resolve_in_record_entries(entries, name, reference)
-        }
-        ExprKind::Index { callee, args } | ExprKind::Call { callee, args } => {
-            resolve_in_expr(callee, name, reference)
-                .or_else(|| resolve_in_exprs(args, name, reference))
-        }
-        ExprKind::Arrow { params, result } => resolve_in_exprs(params, name, reference)
-            .or_else(|| resolve_in_expr(result, name, reference)),
-        ExprKind::FieldAccess { receiver, .. } => resolve_in_expr(receiver, name, reference),
-        ExprKind::Binary { left, right, .. } => resolve_in_expr(left, name, reference)
-            .or_else(|| resolve_in_expr(right, name, reference)),
         ExprKind::Match { subject, arms, .. } => resolve_in_match(subject, arms, name, reference),
         ExprKind::Block(items) => resolve_in_block(items, name, reference),
         ExprKind::Missing
         | ExprKind::Literal(_)
         | ExprKind::Name(_)
         | ExprKind::ComptimeName(_) => None,
+        _ => find_map_expr_children(expr, |child| resolve_in_expr(child, name, reference)),
     }
 }
 
@@ -193,18 +178,6 @@ fn exprs_contain(items: &[Expr], reference: Span) -> bool {
     items.iter().any(|item| item.span.contains(reference))
 }
 
-fn resolve_in_record_entries(entries: &[RecordEntry], name: &str, reference: Span) -> Option<Span> {
-    entries.iter().find_map(|entry| match entry {
-        RecordEntry::Field { value, .. }
-        | RecordEntry::Spread { value, .. }
-        | RecordEntry::Element(value) => resolve_in_expr(value, name, reference),
-        RecordEntry::Shorthand { .. }
-        | RecordEntry::Delete { .. }
-        | RecordEntry::Rename { .. }
-        | RecordEntry::Open { .. } => None,
-    })
-}
-
 pub(crate) fn pattern_bindings(pattern: &Expr) -> Vec<BindingSite<'_>> {
     let mut bindings = Vec::new();
     collect_pattern_bindings(pattern, &mut bindings);
@@ -219,13 +192,6 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
             name,
             span: pattern.span,
         }),
-        ExprKind::Group(inner)
-        | ExprKind::Nullable(inner)
-        | ExprKind::Unary { value: inner, .. }
-        | ExprKind::Propagate { value: inner, .. } => collect_pattern_bindings(inner, bindings),
-        ExprKind::Tuple(items) | ExprKind::Array(items) => {
-            collect_pattern_bindings_from_exprs(items, bindings);
-        }
         ExprKind::Record(entries) | ExprKind::Set(entries) => {
             collect_pattern_bindings_from_record_entries(entries, bindings);
         }
@@ -238,33 +204,16 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
             }
             collect_pattern_bindings_from_exprs(args, bindings);
         }
-        ExprKind::Arrow { params, result } => {
-            collect_pattern_bindings_from_exprs(params, bindings);
-            collect_pattern_bindings(result, bindings);
-        }
-        ExprKind::FieldAccess { receiver, .. } => collect_pattern_bindings(receiver, bindings),
-        ExprKind::Binary { left, right, .. } => {
-            collect_pattern_bindings(left, bindings);
-            collect_pattern_bindings(right, bindings);
-        }
-        ExprKind::Match { subject, arms, .. } => {
-            collect_pattern_bindings(subject, bindings);
-            for arm in arms {
-                collect_pattern_bindings(&arm.pattern, bindings);
-                collect_pattern_bindings_from_exprs(&arm.guards, bindings);
-                collect_pattern_bindings(&arm.body, bindings);
-            }
-        }
-        ExprKind::Block(items) => {
-            for item in items {
-                collect_pattern_bindings_from_item(item, bindings);
-            }
-        }
         ExprKind::Lambda { .. } => {}
         ExprKind::Missing
         | ExprKind::Literal(_)
         | ExprKind::Name(_)
         | ExprKind::ComptimeName(_) => {}
+        _ => {
+            crate::walk::walk_expr_children(pattern, &mut |child| {
+                collect_pattern_bindings(child, bindings);
+            });
+        }
     }
 }
 
@@ -305,14 +254,6 @@ fn collect_pattern_bindings_from_record_entries<'a>(
             }),
             RecordEntry::Delete { .. } | RecordEntry::Open { .. } => {}
         }
-    }
-}
-
-fn collect_pattern_bindings_from_item<'a>(item: &'a Item, bindings: &mut Vec<BindingSite<'a>>) {
-    match item {
-        Item::Binding(binding) => collect_pattern_bindings(&binding.value, bindings),
-        Item::Signature(signature) => collect_pattern_bindings(&signature.annotation, bindings),
-        Item::Expr(expr) => collect_pattern_bindings(expr, bindings),
     }
 }
 

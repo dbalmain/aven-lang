@@ -34,17 +34,27 @@ struct Backend {
 struct ParsedDocument {
     source: String,
     parse: aven_parser::ParseOutput,
+    name_diagnostics: Vec<AvenDiagnostic>,
     declarations: Vec<aven_parser::Declaration>,
 }
 
 impl ParsedDocument {
     fn new(source: String) -> Self {
         let parse = aven_parser::parse_module(&source);
-        let declarations = aven_parser::collect_declarations(&parse.module);
+        let (declarations, name_diagnostics) =
+            if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
+                // Keep the first name-analysis pass off recovered parse trees.
+                // Partial-tree analysis can be added once recovery semantics are clearer.
+                (aven_parser::collect_declarations(&parse.module), Vec::new())
+            } else {
+                let analysis = aven_parser::analyze_names(&parse.module);
+                (analysis.declarations, analysis.diagnostics)
+            };
 
         Self {
             source,
             parse,
+            name_diagnostics,
             declarations,
         }
     }
@@ -167,6 +177,7 @@ impl Backend {
             .parse
             .diagnostics
             .iter()
+            .chain(document.name_diagnostics.iter())
             .map(|diagnostic| to_lsp_diagnostic(&document.source, diagnostic))
             .collect();
 
@@ -424,6 +435,17 @@ mod tests {
         assert_eq!(symbols[0].detail.as_deref(), Some("signature"));
         assert_eq!(symbols[1].name, "other");
         assert_eq!(symbols[1].kind, SymbolKind::VARIABLE);
+    }
+
+    #[test]
+    fn parsed_documents_include_name_diagnostics() {
+        let document = ParsedDocument::new("value = 1\nvalue = 2\n".to_owned());
+
+        assert_eq!(document.name_diagnostics.len(), 1);
+        assert_eq!(
+            document.name_diagnostics[0].code.as_deref(),
+            Some("name.duplicate-declaration")
+        );
     }
 
     #[test]

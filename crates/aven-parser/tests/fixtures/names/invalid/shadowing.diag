@@ -1,0 +1,4 @@
+error name.accidental-shadowing: accidental shadowing of `value`
+  label 29..34: new binding shadows this name
+  label 8..13: existing binding with the same name
+  note: rename the binding, or use explicit shadowing syntax once it exists

@@ -14,6 +14,7 @@ const PARSER_AST_FIXTURE_ROOT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parser/ast");
 const DECLARATION_FIXTURE_ROOT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/declarations");
+const NAME_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/names");
 const LEXER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/lexer");
 const LAYOUT_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/layout");
 
@@ -106,6 +107,62 @@ fn declaration_fixtures_match_expected_output() -> Result<(), Box<dyn Error>> {
             actual,
             expected,
             "declarations for {} did not match {}",
+            path.display(),
+            expected_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn valid_name_fixtures_have_no_diagnostics() -> Result<(), Box<dyn Error>> {
+    for path in fixture_files(NAME_FIXTURE_ROOT, "valid")? {
+        let source = fs::read_to_string(&path)?;
+        let output = aven_parser::parse_module(&source);
+
+        assert!(
+            output.diagnostics.is_empty(),
+            "{} unexpectedly produced parse diagnostics:\n{}",
+            path.display(),
+            render_diagnostics(&output.diagnostics)
+        );
+
+        let analysis = aven_parser::analyze_names(&output.module);
+
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{} unexpectedly produced name diagnostics:\n{}",
+            path.display(),
+            render_diagnostics(&analysis.diagnostics)
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn invalid_name_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Error>> {
+    for path in fixture_files(NAME_FIXTURE_ROOT, "invalid")? {
+        let source = fs::read_to_string(&path)?;
+        let output = aven_parser::parse_module(&source);
+
+        assert!(
+            output.diagnostics.is_empty(),
+            "{} unexpectedly produced parse diagnostics:\n{}",
+            path.display(),
+            render_diagnostics(&output.diagnostics)
+        );
+
+        let analysis = aven_parser::analyze_names(&output.module);
+        let actual = render_diagnostics(&analysis.diagnostics);
+        let expected_path = path.with_extension("diag");
+        let expected = fs::read_to_string(&expected_path)?;
+
+        assert_eq!(
+            actual,
+            expected,
+            "name diagnostics for {} did not match {}",
             path.display(),
             expected_path.display()
         );

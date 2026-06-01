@@ -79,8 +79,24 @@ fn check(path: &Path) -> Result<()> {
         bail!("check failed");
     }
 
+    // Name analysis intentionally waits for a clean parse in the first pass.
+    // Analyzing recovered `Missing` trees is a later diagnostics-recovery task.
+    let name_analysis = aven_parser::analyze_names(&output.module);
+
+    if !name_analysis.diagnostics.is_empty() {
+        print_diagnostics(path, &source, &name_analysis.diagnostics)?;
+    }
+
+    if name_analysis
+        .diagnostics
+        .iter()
+        .any(AvenDiagnostic::is_error)
+    {
+        bail!("check failed");
+    }
+
     println!(
-        "{}: ok (parse checks only; semantic analysis is not implemented yet)",
+        "{}: ok (parse and name checks only; type checking is not implemented yet)",
         path.display()
     );
     Ok(())

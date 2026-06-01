@@ -1,0 +1,2 @@
+zero = (): NonEmptyText => "-"
+zero = (): NonEmptyArray[a] => [zero()]
