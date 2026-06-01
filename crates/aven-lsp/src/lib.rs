@@ -470,6 +470,30 @@ mod tests {
         assert_eq!(location.range.end, position(1, 13));
     }
 
+    #[test]
+    fn definition_location_finds_block_bindings() {
+        let document = ParsedDocument::new("f = () =>\n  x = 1\n  y = x\n".to_owned());
+        let Some(location) = definition_location(&document, test_uri(), position(2, 6)) else {
+            panic!("expected definition location");
+        };
+
+        assert_eq!(location.range.start, position(1, 2));
+        assert_eq!(location.range.end, position(1, 3));
+    }
+
+    #[test]
+    fn definition_location_finds_match_pattern_binders() {
+        let document = ParsedDocument::new(
+            "f = (result) =>\n  result ?>\n    Ok(value) => value\n".to_owned(),
+        );
+        let Some(location) = definition_location(&document, test_uri(), position(2, 17)) else {
+            panic!("expected definition location");
+        };
+
+        assert_eq!(location.range.start, position(2, 7));
+        assert_eq!(location.range.end, position(2, 12));
+    }
+
     fn position(line: u32, character: u32) -> Position {
         Position { line, character }
     }
