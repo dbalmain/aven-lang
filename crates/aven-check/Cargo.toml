@@ -1,5 +1,5 @@
 [package]
-name = "aven"
+name = "aven-check"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -9,17 +9,6 @@ version.workspace = true
 [lints]
 workspace = true
 
-[[bin]]
-name = "aven"
-path = "src/main.rs"
-
 [dependencies]
-anyhow.workspace = true
-ariadne.workspace = true
-aven-check.workspace = true
 aven-core.workspace = true
-aven-fmt.workspace = true
-aven-lsp.workspace = true
 aven-parser.workspace = true
-clap.workspace = true
-tokio.workspace = true

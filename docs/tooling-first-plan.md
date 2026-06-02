@@ -549,7 +549,7 @@ Resolver and name analysis keep only their scope-specific `Match`/`Lambda`/
 
 ## Milestone 7: Type Skeleton
 
-Status: later
+Status: in progress
 
 Goal: introduce types in a way that powers tooling early. This is a semantics
 milestone, not a syntax one: Milestone 4d already parses type annotations as
@@ -602,6 +602,15 @@ Done when:
 - unknown type names and the deferred semantic checks produce clear `type.*`
   diagnostics, locked by fixtures
 - no separate syntactic type tree was introduced; annotations remain `Expr`
+
+Progress: the first M7 slice added `aven-check` as the semantic-validation
+crate. It validates written annotations without a `TypeExpr` or semantic `Type`
+tree, knows a fixed builtin type-name set, treats lowercase names in type
+position as type variables, reports `type.unknown-name`, and owns the two
+deferred M4d checks for lowercase variant tags in variant type annotations and
+type-only record entries in value records. `aven check` and the LSP now publish
+these diagnostics, and LSP hover shows the written annotation for annotated
+top-level bindings and lambda parameters.
 
 ## Milestone 8: Test Harness And Fixtures
 
@@ -819,8 +828,8 @@ Completed parser groundwork:
 
 The next few queued changes should be:
 
-1. start Milestone 7: stand up `aven-check`, then annotation-driven hover and
-   `type.*` diagnostics (no semantic `Type` yet — see the milestone's decisions)
+1. add fixture/protocol coverage for hover if needed, then mark M7 done unless
+   normalized/computed hover output becomes necessary before inference
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

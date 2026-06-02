@@ -1,6 +1,7 @@
 use aven_core::Span;
 
-use crate::parser::{Expr, ExprKind, Item, MatchArm, Module, RecordEntry};
+use crate::items::{MergedItem, merged_items};
+use crate::parser::{Binding, Expr, ExprKind, Item, MatchArm, Module, RecordEntry};
 use crate::walk::find_map_expr_children;
 use crate::{Token, TokenKind};
 
@@ -45,12 +46,87 @@ pub fn resolve_local_references(
     Some(references)
 }
 
+pub fn annotation_for_definition(module: &Module, definition: Span) -> Option<&Expr> {
+    annotation_for_definition_in_items(&module.items, definition)
+}
+
+pub fn render_annotation(source: &str, annotation: &Expr) -> String {
+    source
+        .get(annotation.span.start..annotation.span.end)
+        .unwrap_or("")
+        .trim()
+        .to_owned()
+}
+
 fn is_top_level_definition(module: &Module, name: &str, definition: Span) -> bool {
     module.items.iter().any(|item| match item {
         Item::Binding(binding) => binding.name == name && binding.name_span == definition,
         Item::Signature(signature) => signature.name == name && signature.name_span == definition,
         Item::Expr(_) => false,
     })
+}
+
+fn annotation_for_definition_in_items(items: &[Item], definition: Span) -> Option<&Expr> {
+    for item in merged_items(items) {
+        match item {
+            MergedItem::Binding { signature, binding } => {
+                if let Some(signature) = signature
+                    && signature.name_span == definition
+                {
+                    return Some(&signature.annotation);
+                }
+
+                if binding.name_span == definition {
+                    return binding
+                        .annotation
+                        .as_ref()
+                        .or_else(|| signature.map(|signature| &signature.annotation));
+                }
+
+                if let Some(found) = annotation_for_definition_in_binding(binding, definition) {
+                    return Some(found);
+                }
+            }
+            MergedItem::Signature(signature) => {
+                if signature.name_span == definition {
+                    return Some(&signature.annotation);
+                }
+            }
+            MergedItem::Expr(expr) => {
+                if let Some(found) = annotation_for_definition_in_expr(expr, definition) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn annotation_for_definition_in_binding(binding: &Binding, definition: Span) -> Option<&Expr> {
+    if let Some(annotation) = &binding.annotation
+        && annotation.span.contains(definition)
+    {
+        return None;
+    }
+
+    annotation_for_definition_in_expr(&binding.value, definition)
+}
+
+fn annotation_for_definition_in_expr(expr: &Expr, definition: Span) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Lambda { params, body, .. } => {
+            if let Some(param) = params.iter().find(|param| param.name_span == definition) {
+                return param.annotation.as_ref();
+            }
+
+            annotation_for_definition_in_expr(body, definition)
+        }
+        ExprKind::Block(items) => annotation_for_definition_in_items(items, definition),
+        _ => find_map_expr_children(expr, |child| {
+            annotation_for_definition_in_expr(child, definition)
+        }),
+    }
 }
 
 fn resolve_in_item(item: &Item, name: &str, reference: Span) -> Option<Span> {
@@ -469,6 +545,32 @@ mod tests {
                 ("rest", nth_span(source, "rest", 0)),
             ]
         );
+    }
+
+    #[test]
+    fn finds_signature_annotation_for_binding_definition() {
+        let source = "double : (Int) -> Int\ndouble = (value) => value\n";
+        let output = parse_module(source);
+        let Item::Binding(binding) = &output.module.items[1] else {
+            panic!("expected binding");
+        };
+        let Some(annotation) = annotation_for_definition(&output.module, binding.name_span) else {
+            panic!("expected annotation");
+        };
+
+        assert_eq!(render_annotation(source, annotation), "(Int) -> Int");
+    }
+
+    #[test]
+    fn finds_lambda_parameter_annotations() {
+        let source = "id = (value : Text) => value\n";
+        let output = parse_module(source);
+        let span = Span::new(6, 11);
+        let Some(annotation) = annotation_for_definition(&output.module, span) else {
+            panic!("expected annotation");
+        };
+
+        assert_eq!(render_annotation(source, annotation), "Text");
     }
 
     fn nth_span(source: &str, needle: &str, occurrence: usize) -> Span {

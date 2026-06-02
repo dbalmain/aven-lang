@@ -1,4 +1,5 @@
 mod declarations;
+mod items;
 mod layout;
 mod lexer;
 mod names;
@@ -20,4 +21,6 @@ pub use parser::{
     Binding, Expr, ExprKind, Item, Literal, MatchArm, Module, Param, ParseOutput, PropagationMode,
     RecordEntry, Signature, parse_module,
 };
+pub use resolve::{annotation_for_definition, render_annotation};
 pub use resolve::{resolve_local_definition, resolve_local_references};
+pub use walk::{find_map_expr_children, walk_expr_children};

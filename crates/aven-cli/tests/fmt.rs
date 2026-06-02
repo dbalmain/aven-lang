@@ -83,6 +83,21 @@ fn check_reports_name_diagnostics() {
     );
 }
 
+#[test]
+fn check_reports_type_diagnostics() {
+    let source = "value : Missing = value\n";
+    let file = TempFile::new("type-error", source);
+
+    let output = run_aven(["check"], file.path());
+
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("type.unknown-name"),
+        "expected type diagnostic, got:\n{}",
+        stderr(&output)
+    );
+}
+
 fn run_aven<const N: usize>(args: [&str; N], path: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_aven"))
         .args(args)

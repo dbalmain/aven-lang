@@ -82,24 +82,33 @@ fn check(path: &Path) -> Result<()> {
     // Name analysis intentionally waits for a clean parse in the first pass.
     // Analyzing recovered `Missing` trees is a later diagnostics-recovery task.
     let name_analysis = aven_parser::analyze_names(&output.module);
+    let check_output = aven_check::check_module(&output.module);
+    let mut semantic_diagnostics = name_analysis.diagnostics;
+    semantic_diagnostics.extend(check_output.diagnostics);
+    semantic_diagnostics.sort_by_key(diagnostic_sort_key);
 
-    if !name_analysis.diagnostics.is_empty() {
-        print_diagnostics(path, &source, &name_analysis.diagnostics)?;
+    if !semantic_diagnostics.is_empty() {
+        print_diagnostics(path, &source, &semantic_diagnostics)?;
     }
 
-    if name_analysis
-        .diagnostics
-        .iter()
-        .any(AvenDiagnostic::is_error)
-    {
+    if semantic_diagnostics.iter().any(AvenDiagnostic::is_error) {
         bail!("check failed");
     }
 
     println!(
-        "{}: ok (parse and name checks only; type checking is not implemented yet)",
+        "{}: ok (parse, name, and annotation checks only; inference is not implemented yet)",
         path.display()
     );
     Ok(())
+}
+
+fn diagnostic_sort_key(diagnostic: &AvenDiagnostic) -> (usize, usize) {
+    diagnostic
+        .labels
+        .first()
+        .map_or((usize::MAX, usize::MAX), |label| {
+            (label.span.start, label.span.end)
+        })
 }
 
 fn tokens(path: &Path) -> Result<()> {

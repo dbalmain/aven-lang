@@ -1,0 +1,3 @@
+error type.unknown-name: unknown type name `Missing`
+  label 8..15: type name not found
+  note: define the type, import it, or use a lowercase type variable for a generic type

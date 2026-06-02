@@ -6,8 +6,9 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, InitializeParams, InitializeResult,
-    InitializedParams, Location, MessageType, OneOf, Position, Range, RenameParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MarkupContent, MarkupKind, MessageType, OneOf, Position, Range, RenameParams,
     ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
     Url, WorkspaceEdit,
 };
@@ -36,26 +37,37 @@ struct ParsedDocument {
     source: String,
     parse: aven_parser::ParseOutput,
     name_diagnostics: Vec<AvenDiagnostic>,
+    check_diagnostics: Vec<AvenDiagnostic>,
     declarations: Vec<aven_parser::Declaration>,
 }
 
 impl ParsedDocument {
     fn new(source: String) -> Self {
         let parse = aven_parser::parse_module(&source);
-        let (declarations, name_diagnostics) =
+        let (declarations, name_diagnostics, check_diagnostics) =
             if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
                 // Keep the first name-analysis pass off recovered parse trees.
                 // Partial-tree analysis can be added once recovery semantics are clearer.
-                (aven_parser::collect_declarations(&parse.module), Vec::new())
+                (
+                    aven_parser::collect_declarations(&parse.module),
+                    Vec::new(),
+                    Vec::new(),
+                )
             } else {
                 let analysis = aven_parser::analyze_names(&parse.module);
-                (analysis.declarations, analysis.diagnostics)
+                let check = aven_check::check_module(&parse.module);
+                (
+                    analysis.declarations,
+                    analysis.diagnostics,
+                    check.diagnostics,
+                )
             };
 
         Self {
             source,
             parse,
             name_diagnostics,
+            check_diagnostics,
             declarations,
         }
     }
@@ -73,6 +85,7 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -154,6 +167,16 @@ impl LanguageServer for Backend {
         Ok(definition_location(&document, uri, position).map(GotoDefinitionResponse::Scalar))
     }
 
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(document) = self.document(&uri) else {
+            return Ok(None);
+        };
+
+        Ok(hover_at_position(&document, position))
+    }
+
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
@@ -195,6 +218,7 @@ impl Backend {
             .diagnostics
             .iter()
             .chain(document.name_diagnostics.iter())
+            .chain(document.check_diagnostics.iter())
             .map(|diagnostic| to_lsp_diagnostic(&document.source, diagnostic))
             .collect();
 
@@ -341,6 +365,37 @@ fn rename_workspace_edit(
         changes: Some(HashMap::from([(uri, edits)])),
         document_changes: None,
         change_annotations: None,
+    })
+}
+
+fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Hover> {
+    let identifier = identifier_at_position(document, position)?;
+    let definition = aven_parser::resolve_local_definition(
+        &document.parse.module,
+        &identifier.name,
+        identifier.span,
+    )
+    .or_else(|| {
+        document
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name == identifier.name)
+            .map(|declaration| declaration.name_span)
+    })?;
+
+    let annotation = aven_parser::annotation_for_definition(&document.parse.module, definition)?;
+    let rendered = aven_parser::render_annotation(&document.source, annotation);
+
+    if rendered.is_empty() {
+        return None;
+    }
+
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("```aven\n{} : {}\n```", identifier.name, rendered),
+        }),
+        range: Some(span_to_range(&document.source, identifier.span)),
     })
 }
 
@@ -504,6 +559,17 @@ mod tests {
     }
 
     #[test]
+    fn parsed_documents_include_check_diagnostics() {
+        let document = ParsedDocument::new("value : Missing = value\n".to_owned());
+
+        assert_eq!(document.check_diagnostics.len(), 1);
+        assert_eq!(
+            document.check_diagnostics[0].code.as_deref(),
+            Some("type.unknown-name")
+        );
+    }
+
+    #[test]
     fn definition_location_finds_top_level_runtime_bindings() {
         let document = ParsedDocument::new("value = 1\nother = value\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(1, 9)) else {
@@ -619,8 +685,44 @@ mod tests {
         assert!(edit.is_none());
     }
 
+    #[test]
+    fn hover_at_position_shows_top_level_signature() {
+        let document = ParsedDocument::new("double : (Int) -> Int\ndouble = (x) => x\n".to_owned());
+        let Some(hover) = hover_at_position(&document, position(1, 1)) else {
+            panic!("expected hover");
+        };
+
+        assert_hover_value(hover, "```aven\ndouble : (Int) -> Int\n```");
+    }
+
+    #[test]
+    fn hover_at_position_shows_lambda_parameter_annotation() {
+        let document = ParsedDocument::new("id = (value : Text) => value\n".to_owned());
+        let Some(hover) = hover_at_position(&document, position(0, 24)) else {
+            panic!("expected hover");
+        };
+
+        assert_hover_value(hover, "```aven\nvalue : Text\n```");
+    }
+
+    #[test]
+    fn hover_at_position_returns_none_for_unannotated_bindings() {
+        let document = ParsedDocument::new("value = 1\nother = value\n".to_owned());
+        let hover = hover_at_position(&document, position(1, 9));
+
+        assert!(hover.is_none());
+    }
+
     fn position(line: u32, character: u32) -> Position {
         Position { line, character }
+    }
+
+    fn assert_hover_value(hover: Hover, expected: &str) {
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markup hover");
+        };
+
+        assert_eq!(markup.value, expected);
     }
 
     fn test_uri() -> Url {

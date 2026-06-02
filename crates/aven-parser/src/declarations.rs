@@ -1,7 +1,8 @@
 use aven_core::Span;
 
+use crate::items::{MergedItem, merged_items};
 use crate::lexer::is_comptime_identifier_name;
-use crate::parser::{Binding, Expr, ExprKind, Item, Module, Param, Signature};
+use crate::parser::{Binding, Expr, ExprKind, Module, Param, Signature};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declaration {
@@ -47,23 +48,14 @@ pub struct CallableShape {
 
 pub fn collect_declarations(module: &Module) -> Vec<Declaration> {
     let mut declarations = Vec::new();
-    let mut items = module.items.iter().peekable();
 
-    while let Some(item) = items.next() {
+    for item in merged_items(&module.items) {
         match item {
-            Item::Signature(signature) => {
-                if let Some(Item::Binding(binding)) = items.peek()
-                    && binding.name == signature.name
-                {
-                    declarations.push(binding_declaration(binding, Some(signature)));
-                    items.next();
-                    continue;
-                }
-
-                declarations.push(signature_declaration(signature));
+            MergedItem::Binding { signature, binding } => {
+                declarations.push(binding_declaration(binding, signature));
             }
-            Item::Binding(binding) => declarations.push(binding_declaration(binding, None)),
-            Item::Expr(_) => {}
+            MergedItem::Signature(signature) => declarations.push(signature_declaration(signature)),
+            MergedItem::Expr(_) => {}
         }
     }
 

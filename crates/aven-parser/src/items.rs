@@ -1,0 +1,57 @@
+use crate::parser::{Binding, Expr, Item, Signature};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MergedItem<'a> {
+    Binding {
+        signature: Option<&'a Signature>,
+        binding: &'a Binding,
+    },
+    Signature(&'a Signature),
+    Expr(&'a Expr),
+}
+
+pub(crate) fn merged_items(items: &[Item]) -> MergedItems<'_> {
+    MergedItems { items, index: 0 }
+}
+
+#[derive(Debug)]
+pub(crate) struct MergedItems<'a> {
+    items: &'a [Item],
+    index: usize,
+}
+
+impl<'a> Iterator for MergedItems<'a> {
+    type Item = MergedItem<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.items.get(self.index)?;
+
+        match item {
+            Item::Signature(signature) => {
+                if let Some(Item::Binding(binding)) = self.items.get(self.index + 1)
+                    && binding.name == signature.name
+                {
+                    self.index += 2;
+                    return Some(MergedItem::Binding {
+                        signature: Some(signature),
+                        binding,
+                    });
+                }
+
+                self.index += 1;
+                Some(MergedItem::Signature(signature))
+            }
+            Item::Binding(binding) => {
+                self.index += 1;
+                Some(MergedItem::Binding {
+                    signature: None,
+                    binding,
+                })
+            }
+            Item::Expr(expr) => {
+                self.index += 1;
+                Some(MergedItem::Expr(expr))
+            }
+        }
+    }
+}

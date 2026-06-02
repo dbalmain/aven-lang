@@ -1,6 +1,7 @@
 use aven_core::{Diagnostic, Label, Span};
 
 use crate::declarations::{CallableShape, Declaration, DeclarationShape, collect_declarations};
+use crate::items::{MergedItem, merged_items};
 use crate::lexer::is_comptime_identifier_name;
 use crate::parser::{Expr, ExprKind, Item, MatchArm, Module, RecordEntry};
 use crate::resolve::{BindingSite, pattern_bindings};
@@ -161,38 +162,14 @@ fn analyze_expr(expr: &Expr, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
 
 fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<Diagnostic>) {
     scopes.push();
-    let mut items = items.iter().peekable();
 
-    while let Some(item) = items.next() {
+    for item in merged_items(items) {
         match item {
-            Item::Signature(signature) => {
-                analyze_expr(&signature.annotation, scopes, diagnostics);
-
-                if let Some(Item::Binding(binding)) = items.peek()
-                    && binding.name == signature.name
-                {
-                    if let Some(annotation) = &binding.annotation {
-                        analyze_expr(annotation, scopes, diagnostics);
-                    }
-                    analyze_expr(&binding.value, scopes, diagnostics);
-                    scopes.define(
-                        &binding.name,
-                        binding.name_span,
-                        BindingKind::Local,
-                        diagnostics,
-                    );
-                    items.next();
-                    continue;
+            MergedItem::Binding { signature, binding } => {
+                if let Some(signature) = signature {
+                    analyze_expr(&signature.annotation, scopes, diagnostics);
                 }
 
-                scopes.define(
-                    &signature.name,
-                    signature.name_span,
-                    BindingKind::Signature,
-                    diagnostics,
-                );
-            }
-            Item::Binding(binding) => {
                 if let Some(annotation) = &binding.annotation {
                     analyze_expr(annotation, scopes, diagnostics);
                 }
@@ -204,7 +181,16 @@ fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<
                     diagnostics,
                 );
             }
-            Item::Expr(expr) => analyze_expr(expr, scopes, diagnostics),
+            MergedItem::Signature(signature) => {
+                analyze_expr(&signature.annotation, scopes, diagnostics);
+                scopes.define(
+                    &signature.name,
+                    signature.name_span,
+                    BindingKind::Signature,
+                    diagnostics,
+                );
+            }
+            MergedItem::Expr(expr) => analyze_expr(expr, scopes, diagnostics),
         }
     }
 

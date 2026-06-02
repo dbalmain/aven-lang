@@ -1,6 +1,6 @@
 use crate::parser::{Expr, ExprKind, Item, RecordEntry};
 
-pub(crate) fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
+pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
     match &expr.kind {
         ExprKind::Group(inner)
         | ExprKind::Nullable(inner)
@@ -67,7 +67,7 @@ pub(crate) fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a 
     }
 }
 
-pub(crate) fn find_map_expr_children<'a, T>(
+pub fn find_map_expr_children<'a, T>(
     expr: &'a Expr,
     mut find: impl FnMut(&'a Expr) -> Option<T>,
 ) -> Option<T> {
