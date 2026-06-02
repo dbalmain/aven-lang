@@ -551,21 +551,57 @@ Resolver and name analysis keep only their scope-specific `Match`/`Lambda`/
 
 Status: later
 
-Goal: introduce types in a way that powers tooling early.
+Goal: introduce types in a way that powers tooling early. This is a semantics
+milestone, not a syntax one: Milestone 4d already parses type annotations as
+ordinary `Expr` terms (function arrows, `[]` applications, `T?`, record/variant
+rows, tuples) and deferred their semantic validation here. M7 validates and
+renders those annotation terms; it does not add a parsing pass and must not
+introduce a parallel `TypeExpr` tree.
+
+Decisions to lock before starting:
+
+- crate placement: semantic validation lives in a new `aven-check` crate
+  (`aven-parser` <- `aven-check` <- `aven-lsp`/`aven-cli`), so type machinery
+  does not bloat the parser and later type milestones have a home. If a semantic
+  `Type` is ever introduced it would define + render in `aven-core`, with
+  elaboration in `aven-check`.
+- no semantic `Type` yet: hover and unknown-name are both reachable directly on
+  the annotation `Expr`, so the real `Type` (with unification variables) is
+  deferred to the inference milestone, where its shape is driven by unification
+  rather than by hover. Revisit only if hover must show normalized/computed
+  types rather than the author's written annotation.
+- builtin type set: M7 knows a fixed primitive set (`Int`, `Text`, `Bool`,
+  `Unit`, `Nil`, ...) and nothing else. Records-as-types, variants/rows, `[a]`
+  application semantics, and comptime type computation stay deferred to their
+  milestones.
 
 Tasks:
 
-- define type AST
-- parse type annotations
-- add primitive types and function types
-- add typed hover output for annotated bindings
-- add type diagnostic plumbing before full inference
-- create fixtures for expected type diagnostics
+- add an `aven-check` crate for semantic validation over the parser AST (no new
+  syntactic tree; annotations stay `Expr`)
+- define the builtin type-name set; treat lowercase names in type position as
+  type variables, not unknown types (same phase subtlety as the uppercase-runtime
+  check — design it in, do not patch it later)
+- validate annotation terms: report `type.unknown-name` for unresolved uppercase
+  type names, reusing top-level declaration collection for the in-scope comptime
+  set
+- pick up the two checks Milestone 4d deferred to here: lowercase variant tags in
+  `@{ ... }`, and type-vs-value legality of record entries (`optional` marker,
+  `.._` open row)
+- add LSP hover that renders an annotated binding's type by reusing the local
+  resolver (`identifier_at_position` + `resolve_local_definition`) plus
+  annotation pretty-printing
+- emit structured `type.*` diagnostics with codes, spans, and repair notes;
+  recover rather than abort
+- create fixtures for hover output and each type diagnostic
 
 Done when:
 
-- LSP hover can show parsed/known types
-- invalid type syntax and unknown type names have clear diagnostics
+- hover shows the declared type for annotated bindings; unannotated bindings
+  hover cleanly as unknown (no inference yet)
+- unknown type names and the deferred semantic checks produce clear `type.*`
+  diagnostics, locked by fixtures
+- no separate syntactic type tree was introduced; annotations remain `Expr`
 
 ## Milestone 8: Test Harness And Fixtures
 
@@ -783,7 +819,8 @@ Completed parser groundwork:
 
 The next few queued changes should be:
 
-1. start Milestone 7 with the type skeleton and typed hover plumbing
+1. start Milestone 7: stand up `aven-check`, then annotation-driven hover and
+   `type.*` diagnostics (no semantic `Type` yet — see the milestone's decisions)
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.
