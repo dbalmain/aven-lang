@@ -111,7 +111,10 @@ the shared `LineIndex` stored on `SourceFile`; the LSP uses that structural
 source/index pair for offset/range conversion instead of rescanning the source
 for every request. Parser output now carries a `FileId`, and `parse_source`
 threads the id from `SourceFile` into `ParseOutput`; LSP documents keep stable
-file ids across edits to the same URI.
+file ids across edits to the same URI. Diagnostics stay file-agnostic while
+they are produced; `DiagnosticReport` attaches the stable `FileId` at the CLI
+rendering boundary, while the LSP stores a merged diagnostics vector on each
+parsed document and publishes it by URI without per-publish cloning.
 
 Even though incremental compilation is deferred, this milestone should make the
 data-shape decisions that keep incremental tooling possible:
@@ -838,8 +841,9 @@ The next few queued changes should be:
 
 1. add a small LSP protocol smoke test once the test harness has a clean way to
    drive `tower-lsp` requests end-to-end
-2. continue M1 source identity work: attach `FileId` directly to diagnostics or
-   introduce a diagnostic-report wrapper for multi-file rendering
+2. continue M1 source identity work: use `SourceMap` in CLI/LSP paths. The CLI
+   now has a `load_source_file` seam where single-file `SourceFile::new` can be
+   replaced with `SourceMap::add`.
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

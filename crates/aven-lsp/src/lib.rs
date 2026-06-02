@@ -55,8 +55,7 @@ impl FileIdRegistry {
 struct ParsedDocument {
     file: SourceFile,
     parse: aven_parser::ParseOutput,
-    name_diagnostics: Vec<AvenDiagnostic>,
-    check_diagnostics: Vec<AvenDiagnostic>,
+    diagnostics: Vec<AvenDiagnostic>,
     declarations: Vec<aven_parser::Declaration>,
 }
 
@@ -69,36 +68,34 @@ impl ParsedDocument {
     fn with_file_id(file_id: FileId, source: String) -> Self {
         let file = SourceFile::new(file_id, format!("lsp:{}", file_id.0), None, source);
         let parse = aven_parser::parse_source(&file);
-        let (declarations, name_diagnostics, check_diagnostics) =
-            if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
-                // Keep the first name-analysis pass off recovered parse trees.
-                // Partial-tree analysis can be added once recovery semantics are clearer.
-                (
-                    aven_parser::collect_declarations(&parse.module),
-                    Vec::new(),
-                    Vec::new(),
-                )
-            } else {
-                let analysis = aven_parser::analyze_names(&parse.module);
-                let check = aven_check::check_module(&parse.module);
-                (
-                    analysis.declarations,
-                    analysis.diagnostics,
-                    check.diagnostics,
-                )
-            };
+        let mut diagnostics = parse.diagnostics.clone();
+        let declarations = if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
+            // Keep the first name-analysis pass off recovered parse trees.
+            // Partial-tree analysis can be added once recovery semantics are clearer.
+            aven_parser::collect_declarations(&parse.module)
+        } else {
+            let analysis = aven_parser::analyze_names(&parse.module);
+            let check = aven_check::check_module(&parse.module);
+            diagnostics.extend(analysis.diagnostics);
+            diagnostics.extend(check.diagnostics);
+            analysis.declarations
+        };
 
         Self {
             file,
             parse,
-            name_diagnostics,
-            check_diagnostics,
+            diagnostics,
             declarations,
         }
     }
 
     fn source(&self) -> &str {
         self.file.source()
+    }
+
+    #[cfg(test)]
+    fn diagnostic_report(&self) -> aven_core::DiagnosticReport {
+        aven_core::DiagnosticReport::new(self.file.id, self.diagnostics.clone())
     }
 }
 
@@ -251,13 +248,9 @@ impl Backend {
         let Some(document) = self.document(&uri) else {
             return;
         };
-
         let diagnostics = document
-            .parse
             .diagnostics
             .iter()
-            .chain(document.name_diagnostics.iter())
-            .chain(document.check_diagnostics.iter())
             .map(|diagnostic| to_lsp_diagnostic(&document, diagnostic))
             .collect();
 
@@ -563,9 +556,9 @@ mod tests {
     fn parsed_documents_include_name_diagnostics() {
         let document = ParsedDocument::new("value = 1\nvalue = 2\n".to_owned());
 
-        assert_eq!(document.name_diagnostics.len(), 1);
+        assert_eq!(document.diagnostics.len(), 1);
         assert_eq!(
-            document.name_diagnostics[0].code.as_deref(),
+            document.diagnostics[0].code.as_deref(),
             Some("name.duplicate-declaration")
         );
     }
@@ -574,9 +567,9 @@ mod tests {
     fn parsed_documents_include_check_diagnostics() {
         let document = ParsedDocument::new("value : Missing = value\n".to_owned());
 
-        assert_eq!(document.check_diagnostics.len(), 1);
+        assert_eq!(document.diagnostics.len(), 1);
         assert_eq!(
-            document.check_diagnostics[0].code.as_deref(),
+            document.diagnostics[0].code.as_deref(),
             Some("type.unknown-name")
         );
     }
@@ -587,6 +580,20 @@ mod tests {
 
         assert_eq!(document.file.id, FileId(7));
         assert_eq!(document.parse.file_id, FileId(7));
+    }
+
+    #[test]
+    fn parsed_document_diagnostic_report_uses_file_id() {
+        let document =
+            ParsedDocument::with_file_id(FileId(7), "value : Missing = value\n".to_owned());
+        let report = document.diagnostic_report();
+
+        assert_eq!(report.file_id, FileId(7));
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(
+            report.diagnostics[0].code.as_deref(),
+            Some("type.unknown-name")
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use ariadne::{Config as AriadneConfig, Label as AriadneLabel, Report, ReportKind, Source};
-use aven_core::{Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile};
+use aven_core::{Diagnostic as AvenDiagnostic, DiagnosticReport, FileId, Severity, SourceFile};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
@@ -78,14 +78,7 @@ async fn main() -> Result<()> {
 }
 
 fn check(path: &Path, format: OutputFormat) -> Result<()> {
-    let source =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let file = SourceFile::new(
-        FileId(0),
-        path.display().to_string(),
-        Some(path.to_path_buf()),
-        source,
-    );
+    let file = load_source_file(path)?;
     let output = aven_parser::parse_source(&file);
     let mut diagnostics = output.diagnostics.clone();
 
@@ -98,18 +91,19 @@ fn check(path: &Path, format: OutputFormat) -> Result<()> {
         diagnostics.extend(check_output.diagnostics);
     }
 
-    diagnostics.sort_by_key(diagnostic_sort_key);
+    let mut report = DiagnosticReport::new(output.file_id, diagnostics);
+    report.sort_by_primary_span();
 
     match format {
         OutputFormat::Text => {
-            if !diagnostics.is_empty() {
-                print_diagnostics(path, file.source(), &diagnostics)?;
+            if !report.is_empty() {
+                print_diagnostics(&file, &report)?;
             }
         }
-        OutputFormat::Json => print_json_diagnostics(&file, &diagnostics)?,
+        OutputFormat::Json => print_json_diagnostics(&file, &report)?,
     }
 
-    if diagnostics.iter().any(AvenDiagnostic::is_error) {
+    if report.has_errors() {
         bail!("check failed");
     }
 
@@ -123,22 +117,15 @@ fn check(path: &Path, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn diagnostic_sort_key(diagnostic: &AvenDiagnostic) -> (usize, usize) {
-    diagnostic
-        .labels
-        .first()
-        .map_or((usize::MAX, usize::MAX), |label| {
-            (label.span.start, label.span.end)
-        })
-}
+fn print_json_diagnostics(file: &SourceFile, report: &DiagnosticReport) -> Result<()> {
+    debug_assert_eq!(file.id, report.file_id);
 
-fn print_json_diagnostics(file: &SourceFile, diagnostics: &[AvenDiagnostic]) -> Result<()> {
     let output = json!({
-        "fileId": file.id.0,
+        "fileId": report.file_id.0,
         "path": file.path.as_ref().map(|path| path.display().to_string()),
         "name": file.name.as_str(),
-        "ok": !diagnostics.iter().any(AvenDiagnostic::is_error),
-        "diagnostics": diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
+        "ok": !report.has_errors(),
+        "diagnostics": report.diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
     });
 
     println!("{}", serde_json::to_string_pretty(&output)?);
@@ -172,12 +159,12 @@ fn severity_name(severity: Severity) -> &'static str {
 }
 
 fn tokens(path: &Path) -> Result<()> {
-    let source =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let output = aven_parser::lex_source(&source);
+    let file = load_source_file(path)?;
+    let output = aven_parser::lex_source(file.source());
+    let report = DiagnosticReport::new(file.id, output.diagnostics.clone());
 
-    if !output.diagnostics.is_empty() {
-        print_diagnostics(path, &source, &output.diagnostics)?;
+    if !report.is_empty() {
+        print_diagnostics(&file, &report)?;
     }
 
     for token in output.tokens {
@@ -189,7 +176,7 @@ fn tokens(path: &Path) -> Result<()> {
         );
     }
 
-    if output.diagnostics.iter().any(AvenDiagnostic::is_error) {
+    if report.has_errors() {
         bail!("tokenization failed");
     }
 
@@ -197,12 +184,12 @@ fn tokens(path: &Path) -> Result<()> {
 }
 
 fn layout(path: &Path) -> Result<()> {
-    let source =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let output = aven_parser::layout_source(&source);
+    let file = load_source_file(path)?;
+    let output = aven_parser::layout_source(file.source());
+    let report = DiagnosticReport::new(file.id, output.diagnostics.clone());
 
-    if !output.diagnostics.is_empty() {
-        print_diagnostics(path, &source, &output.diagnostics)?;
+    if !report.is_empty() {
+        print_diagnostics(&file, &report)?;
     }
 
     for token in output.tokens {
@@ -214,7 +201,7 @@ fn layout(path: &Path) -> Result<()> {
         );
     }
 
-    if output.diagnostics.iter().any(AvenDiagnostic::is_error) {
+    if report.has_errors() {
         bail!("layout failed");
     }
 
@@ -222,17 +209,17 @@ fn layout(path: &Path) -> Result<()> {
 }
 
 fn fmt(path: &Path, check: bool) -> Result<()> {
-    let source =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let formatted = match aven_fmt::format_source(&source) {
+    let file = load_source_file(path)?;
+    let formatted = match aven_fmt::format_source(file.source()) {
         Ok(formatted) => formatted,
         Err(diagnostics) => {
-            print_diagnostics(path, &source, &diagnostics)?;
+            let report = DiagnosticReport::new(file.id, diagnostics);
+            print_diagnostics(&file, &report)?;
             bail!("formatting failed");
         }
     };
 
-    if source == formatted {
+    if file.source() == formatted {
         return Ok(());
     }
 
@@ -244,12 +231,26 @@ fn fmt(path: &Path, check: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_diagnostics(path: &Path, source: &str, diagnostics: &[AvenDiagnostic]) -> Result<()> {
-    let source_id = path.display().to_string();
+fn load_source_file(path: &Path) -> Result<SourceFile> {
+    let source =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+
+    Ok(SourceFile::new(
+        FileId(0),
+        path.display().to_string(),
+        Some(path.to_path_buf()),
+        source,
+    ))
+}
+
+fn print_diagnostics(file: &SourceFile, report: &DiagnosticReport) -> Result<()> {
+    debug_assert_eq!(file.id, report.file_id);
+
+    let source_id = file.name.clone();
     let use_color = io::stderr().is_terminal();
 
-    for diagnostic in diagnostics {
-        print_diagnostic(&source_id, source, diagnostic, use_color)
+    for diagnostic in &report.diagnostics {
+        print_diagnostic(&source_id, file.source(), diagnostic, use_color)
             .context("failed to print diagnostic")?;
     }
 
