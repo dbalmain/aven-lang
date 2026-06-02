@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aven_core::{Diagnostic as AvenDiagnostic, Severity, Span};
+use aven_core::{Diagnostic as AvenDiagnostic, LineIndex, Severity, SourcePosition, Span};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
@@ -35,6 +35,7 @@ struct Backend {
 #[derive(Debug)]
 struct ParsedDocument {
     source: String,
+    line_index: LineIndex,
     parse: aven_parser::ParseOutput,
     name_diagnostics: Vec<AvenDiagnostic>,
     check_diagnostics: Vec<AvenDiagnostic>,
@@ -64,6 +65,7 @@ impl ParsedDocument {
             };
 
         Self {
+            line_index: LineIndex::new(&source),
             source,
             parse,
             name_diagnostics,
@@ -136,7 +138,7 @@ impl LanguageServer for Backend {
         }
 
         Ok(Some(vec![TextEdit {
-            range: full_document_range(&document.source),
+            range: full_document_range(&document),
             new_text: formatted,
         }]))
     }
@@ -219,7 +221,7 @@ impl Backend {
             .iter()
             .chain(document.name_diagnostics.iter())
             .chain(document.check_diagnostics.iter())
-            .map(|diagnostic| to_lsp_diagnostic(&document.source, diagnostic))
+            .map(|diagnostic| to_lsp_diagnostic(&document, diagnostic))
             .collect();
 
         self.client
@@ -228,7 +230,7 @@ impl Backend {
     }
 }
 
-fn to_lsp_diagnostic(source: &str, diagnostic: &AvenDiagnostic) -> Diagnostic {
+fn to_lsp_diagnostic(document: &ParsedDocument, diagnostic: &AvenDiagnostic) -> Diagnostic {
     let span = diagnostic
         .labels
         .first()
@@ -236,7 +238,7 @@ fn to_lsp_diagnostic(source: &str, diagnostic: &AvenDiagnostic) -> Diagnostic {
         .unwrap_or_else(|| Span::point(0));
 
     Diagnostic {
-        range: span_to_range(source, span),
+        range: span_to_range(document, span),
         severity: Some(match diagnostic.severity {
             Severity::Error => DiagnosticSeverity::ERROR,
             Severity::Warning => DiagnosticSeverity::WARNING,
@@ -259,20 +261,23 @@ fn document_symbols(document: &ParsedDocument) -> Vec<DocumentSymbol> {
     document
         .declarations
         .iter()
-        .map(|declaration| declaration_symbol(&document.source, declaration))
+        .map(|declaration| declaration_symbol(document, declaration))
         .collect()
 }
 
 #[allow(deprecated)]
-fn declaration_symbol(source: &str, declaration: &aven_parser::Declaration) -> DocumentSymbol {
+fn declaration_symbol(
+    document: &ParsedDocument,
+    declaration: &aven_parser::Declaration,
+) -> DocumentSymbol {
     DocumentSymbol {
         name: declaration.name.clone(),
         detail: declaration_detail(declaration),
         kind: symbol_kind(declaration),
         tags: None,
         deprecated: None,
-        range: span_to_range(source, declaration.span),
-        selection_range: span_to_range(source, declaration.name_span),
+        range: span_to_range(document, declaration.span),
+        selection_range: span_to_range(document, declaration.name_span),
         children: None,
     }
 }
@@ -314,7 +319,7 @@ fn definition_location(
         &identifier.name,
         identifier.span,
     ) {
-        return Some(Location::new(uri, span_to_range(&document.source, span)));
+        return Some(Location::new(uri, span_to_range(document, span)));
     }
 
     let declaration = document
@@ -324,7 +329,7 @@ fn definition_location(
 
     Some(Location::new(
         uri,
-        span_to_range(&document.source, declaration.name_span),
+        span_to_range(document, declaration.name_span),
     ))
 }
 
@@ -356,7 +361,7 @@ fn rename_workspace_edit(
     let edits = spans
         .into_iter()
         .map(|span| TextEdit {
-            range: span_to_range(&document.source, span),
+            range: span_to_range(document, span),
             new_text: new_name.clone(),
         })
         .collect();
@@ -395,7 +400,7 @@ fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Ho
             kind: MarkupKind::Markdown,
             value: format!("```aven\n{} : {}\n```", identifier.name, rendered),
         }),
-        range: Some(span_to_range(&document.source, identifier.span)),
+        range: Some(span_to_range(document, identifier.span)),
     })
 }
 
@@ -409,7 +414,7 @@ fn identifier_at_position(
     document: &ParsedDocument,
     position: Position,
 ) -> Option<IdentifierAtPosition> {
-    let offset = position_to_offset(&document.source, position)?;
+    let offset = position_to_offset(document, position)?;
 
     document.parse.raw_tokens.iter().find_map(|token| {
         if offset < token.span.start || offset >= token.span.end {
@@ -427,74 +432,40 @@ fn identifier_at_position(
     })
 }
 
-fn span_to_range(source: &str, span: Span) -> Range {
+fn span_to_range(document: &ParsedDocument, span: Span) -> Range {
+    let (start, end) = document.line_index.span_to_range(&document.source, span);
+
     Range {
-        start: offset_to_position(source, span.start),
-        end: offset_to_position(source, span.end.max(span.start + 1)),
+        start: to_lsp_position(start),
+        end: to_lsp_position(end),
     }
 }
 
-fn position_to_offset(source: &str, target: Position) -> Option<usize> {
-    let mut line = 0u32;
-    let mut character = 0u32;
-
-    for (offset, ch) in source.char_indices() {
-        if line == target.line && character >= target.character {
-            return Some(offset);
-        }
-
-        if ch == '\n' {
-            if line == target.line {
-                return Some(offset);
-            }
-
-            line += 1;
-            character = 0;
-            continue;
-        }
-
-        if line == target.line {
-            let next_character = character + ch.len_utf16() as u32;
-            if target.character < next_character {
-                return Some(offset);
-            }
-            character = next_character;
-        }
-    }
-
-    (line == target.line).then_some(source.len())
+fn position_to_offset(document: &ParsedDocument, target: Position) -> Option<usize> {
+    document.line_index.position_to_offset(
+        &document.source,
+        SourcePosition::new(target.line, target.character),
+    )
 }
 
-fn full_document_range(source: &str) -> Range {
+fn full_document_range(document: &ParsedDocument) -> Range {
     Range {
         start: Position {
             line: 0,
             character: 0,
         },
-        end: offset_to_position(source, source.len()),
+        end: to_lsp_position(
+            document
+                .line_index
+                .offset_to_position(&document.source, document.source.len()),
+        ),
     }
 }
 
-fn offset_to_position(source: &str, target: usize) -> Position {
-    let mut line = 0u32;
-    let mut column = 0u32;
-
-    for (offset, ch) in source.char_indices() {
-        if offset >= target {
-            break;
-        }
-
-        if ch == '\n' {
-            line += 1;
-            column = 0;
-        } else {
-            column += ch.len_utf16() as u32;
-        }
-    }
-
+fn to_lsp_position(position: SourcePosition) -> Position {
     Position {
-        line,
-        character: column,
+        line: position.line,
+        character: position.character,
     }
 }
 
