@@ -102,6 +102,7 @@ dependencies = [
  "aven-lsp",
  "aven-parser",
  "clap",
+ "serde_json",
  "tokio",
 ]
 

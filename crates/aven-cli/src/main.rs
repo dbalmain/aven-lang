@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use ariadne::{Config as AriadneConfig, Label as AriadneLabel, Report, ReportKind, Source};
 use aven_core::{Diagnostic as AvenDiagnostic, Severity};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::json;
 
 #[derive(Debug, Parser)]
 #[command(name = "aven")]
@@ -22,6 +23,10 @@ enum Command {
     Check {
         /// Source file to check.
         path: PathBuf,
+
+        /// Diagnostic output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
 
     /// Print lexer tokens for debugging parser work.
@@ -50,12 +55,18 @@ enum Command {
     Lsp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { path } => check(&path),
+        Command::Check { path, format } => check(&path, format),
         Command::Tokens { path } => tokens(&path),
         Command::Layout { path } => layout(&path),
         Command::Fmt { check, path } => fmt(&path, check),
@@ -66,39 +77,43 @@ async fn main() -> Result<()> {
     }
 }
 
-fn check(path: &Path) -> Result<()> {
+fn check(path: &Path, format: OutputFormat) -> Result<()> {
     let source =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let output = aven_parser::parse_module(&source);
+    let mut diagnostics = output.diagnostics.clone();
 
-    if !output.diagnostics.is_empty() {
-        print_diagnostics(path, &source, &output.diagnostics)?;
+    if !diagnostics.iter().any(AvenDiagnostic::is_error) {
+        // Name analysis intentionally waits for a clean parse in the first pass.
+        // Analyzing recovered `Missing` trees is a later diagnostics-recovery task.
+        let name_analysis = aven_parser::analyze_names(&output.module);
+        let check_output = aven_check::check_module(&output.module);
+        diagnostics.extend(name_analysis.diagnostics);
+        diagnostics.extend(check_output.diagnostics);
     }
 
-    if output.diagnostics.iter().any(AvenDiagnostic::is_error) {
+    diagnostics.sort_by_key(diagnostic_sort_key);
+
+    match format {
+        OutputFormat::Text => {
+            if !diagnostics.is_empty() {
+                print_diagnostics(path, &source, &diagnostics)?;
+            }
+        }
+        OutputFormat::Json => print_json_diagnostics(path, &diagnostics)?,
+    }
+
+    if diagnostics.iter().any(AvenDiagnostic::is_error) {
         bail!("check failed");
     }
 
-    // Name analysis intentionally waits for a clean parse in the first pass.
-    // Analyzing recovered `Missing` trees is a later diagnostics-recovery task.
-    let name_analysis = aven_parser::analyze_names(&output.module);
-    let check_output = aven_check::check_module(&output.module);
-    let mut semantic_diagnostics = name_analysis.diagnostics;
-    semantic_diagnostics.extend(check_output.diagnostics);
-    semantic_diagnostics.sort_by_key(diagnostic_sort_key);
-
-    if !semantic_diagnostics.is_empty() {
-        print_diagnostics(path, &source, &semantic_diagnostics)?;
+    if format == OutputFormat::Text {
+        println!(
+            "{}: ok (parse, name, and annotation checks only; inference is not implemented yet)",
+            path.display()
+        );
     }
 
-    if semantic_diagnostics.iter().any(AvenDiagnostic::is_error) {
-        bail!("check failed");
-    }
-
-    println!(
-        "{}: ok (parse, name, and annotation checks only; inference is not implemented yet)",
-        path.display()
-    );
     Ok(())
 }
 
@@ -109,6 +124,43 @@ fn diagnostic_sort_key(diagnostic: &AvenDiagnostic) -> (usize, usize) {
         .map_or((usize::MAX, usize::MAX), |label| {
             (label.span.start, label.span.end)
         })
+}
+
+fn print_json_diagnostics(path: &Path, diagnostics: &[AvenDiagnostic]) -> Result<()> {
+    let output = json!({
+        "path": path.display().to_string(),
+        "ok": !diagnostics.iter().any(AvenDiagnostic::is_error),
+        "diagnostics": diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn diagnostic_json(diagnostic: &AvenDiagnostic) -> serde_json::Value {
+    json!({
+        "severity": severity_name(diagnostic.severity),
+        "code": diagnostic.code,
+        "message": diagnostic.message,
+        "labels": diagnostic.labels.iter().map(|label| {
+            json!({
+                "span": {
+                    "start": label.span.start,
+                    "end": label.span.end,
+                },
+                "message": label.message,
+            })
+        }).collect::<Vec<_>>(),
+        "notes": diagnostic.notes,
+    })
+}
+
+fn severity_name(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Note => "note",
+    }
 }
 
 fn tokens(path: &Path) -> Result<()> {

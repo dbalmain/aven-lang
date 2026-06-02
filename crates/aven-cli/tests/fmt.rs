@@ -98,6 +98,28 @@ fn check_reports_type_diagnostics() {
     );
 }
 
+#[test]
+fn check_json_reports_structured_diagnostics() {
+    let source = "value : Missing = value\n";
+    let file = TempFile::new("json-type-error", source);
+
+    let output = run_aven(["check", "--format", "json"], file.path());
+
+    assert_failure(&output);
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("expected valid JSON diagnostics");
+
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["diagnostics"][0]["severity"], "error");
+    assert_eq!(json["diagnostics"][0]["code"], "type.unknown-name");
+    assert_eq!(
+        json["diagnostics"][0]["message"],
+        "unknown type name `Missing`"
+    );
+    assert_eq!(json["diagnostics"][0]["labels"][0]["span"]["start"], 8);
+    assert_eq!(json["diagnostics"][0]["labels"][0]["span"]["end"], 15);
+}
+
 fn run_aven<const N: usize>(args: [&str; N], path: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_aven"))
         .args(args)

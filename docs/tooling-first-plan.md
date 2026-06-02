@@ -104,7 +104,9 @@ Goal: make source files and diagnostics robust enough for parser work.
 
 Progress: fixture-based parser diagnostic assertions landed alongside
 Milestone 8 setup. The "tests assert structured diagnostics, not terminal
-snapshots" done-when is satisfied.
+snapshots" done-when is satisfied. `aven check --format json` now emits
+machine-readable diagnostics with severity, code, message, labels, byte spans,
+and notes, so tools do not need to scrape terminal output.
 
 Even though incremental compilation is deferred, this milestone should make the
 data-shape decisions that keep incremental tooling possible:
@@ -130,7 +132,7 @@ Tasks:
 - add optional JSON diagnostic output for AI/editor integration:
 
 ```bash
-aven check --json examples/hello.av
+aven check --format json examples/hello.av
 ```
 
 - add diagnostic explanation docs and a lookup command:
@@ -549,7 +551,7 @@ Resolver and name analysis keep only their scope-specific `Match`/`Lambda`/
 
 ## Milestone 7: Type Skeleton
 
-Status: in progress
+Status: done
 
 Goal: introduce types in a way that powers tooling early. This is a semantics
 milestone, not a syntax one: Milestone 4d already parses type annotations as
@@ -610,7 +612,8 @@ position as type variables, reports `type.unknown-name`, and owns the two
 deferred M4d checks for lowercase variant tags in variant type annotations and
 type-only record entries in value records. `aven check` and the LSP now publish
 these diagnostics, and LSP hover shows the written annotation for annotated
-top-level bindings and lambda parameters.
+top-level bindings and lambda parameters. M7 is complete without normalized or
+computed hover output; those belong to inference and comptime work.
 
 ## Milestone 8: Test Harness And Fixtures
 
@@ -828,8 +831,10 @@ Completed parser groundwork:
 
 The next few queued changes should be:
 
-1. add fixture/protocol coverage for hover if needed, then mark M7 done unless
-   normalized/computed hover output becomes necessary before inference
+1. add a small LSP protocol smoke test once the test harness has a clean way to
+   drive `tower-lsp` requests end-to-end
+2. continue M1 source identity work: stable `FileId`s and shared line indexes
+   for CLI/LSP span conversion
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.
