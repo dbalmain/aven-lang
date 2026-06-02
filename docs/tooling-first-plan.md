@@ -107,9 +107,11 @@ Milestone 8 setup. The "tests assert structured diagnostics, not terminal
 snapshots" done-when is satisfied. `aven check --format json` now emits
 machine-readable diagnostics with severity, code, message, labels, byte spans,
 and notes, so tools do not need to scrape terminal output. `aven-core` now owns
-the shared `LineIndex` used by the LSP for offset/range conversion, and each
-parsed LSP document caches one instead of rescanning the source for every
-request.
+the shared `LineIndex` stored on `SourceFile`; the LSP uses that structural
+source/index pair for offset/range conversion instead of rescanning the source
+for every request. Parser output now carries a `FileId`, and `parse_source`
+threads the id from `SourceFile` into `ParseOutput`; LSP documents keep stable
+file ids across edits to the same URI.
 
 Even though incremental compilation is deferred, this milestone should make the
 data-shape decisions that keep incremental tooling possible:
@@ -836,8 +838,8 @@ The next few queued changes should be:
 
 1. add a small LSP protocol smoke test once the test harness has a clean way to
    drive `tower-lsp` requests end-to-end
-2. continue M1 source identity work: stable `FileId`s through parser output and
-   CLI/LSP diagnostics
+2. continue M1 source identity work: attach `FileId` directly to diagnostics or
+   introduce a diagnostic-report wrapper for multi-file rendering
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.

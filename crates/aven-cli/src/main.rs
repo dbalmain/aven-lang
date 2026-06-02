@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use ariadne::{Config as AriadneConfig, Label as AriadneLabel, Report, ReportKind, Source};
-use aven_core::{Diagnostic as AvenDiagnostic, Severity};
+use aven_core::{Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
@@ -80,7 +80,13 @@ async fn main() -> Result<()> {
 fn check(path: &Path, format: OutputFormat) -> Result<()> {
     let source =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let output = aven_parser::parse_module(&source);
+    let file = SourceFile::new(
+        FileId(0),
+        path.display().to_string(),
+        Some(path.to_path_buf()),
+        source,
+    );
+    let output = aven_parser::parse_source(&file);
     let mut diagnostics = output.diagnostics.clone();
 
     if !diagnostics.iter().any(AvenDiagnostic::is_error) {
@@ -97,10 +103,10 @@ fn check(path: &Path, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Text => {
             if !diagnostics.is_empty() {
-                print_diagnostics(path, &source, &diagnostics)?;
+                print_diagnostics(path, file.source(), &diagnostics)?;
             }
         }
-        OutputFormat::Json => print_json_diagnostics(path, &diagnostics)?,
+        OutputFormat::Json => print_json_diagnostics(&file, &diagnostics)?,
     }
 
     if diagnostics.iter().any(AvenDiagnostic::is_error) {
@@ -126,9 +132,11 @@ fn diagnostic_sort_key(diagnostic: &AvenDiagnostic) -> (usize, usize) {
         })
 }
 
-fn print_json_diagnostics(path: &Path, diagnostics: &[AvenDiagnostic]) -> Result<()> {
+fn print_json_diagnostics(file: &SourceFile, diagnostics: &[AvenDiagnostic]) -> Result<()> {
     let output = json!({
-        "path": path.display().to_string(),
+        "fileId": file.id.0,
+        "path": file.path.as_ref().map(|path| path.display().to_string()),
+        "name": file.name.as_str(),
         "ok": !diagnostics.iter().any(AvenDiagnostic::is_error),
         "diagnostics": diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
     });

@@ -25,10 +25,10 @@ pub struct LineIndex {
 impl LineIndex {
     /// Build byte-to-position indexes for `source`.
     ///
-    /// Call conversion methods with the same source text used here. The next
-    /// SourceFile/FileId slice should make that pairing structural by storing
-    /// the index with the source. Line starts are detected from `\n` bytes;
-    /// CRLF normalization remains a lexer/source-loading concern for now.
+    /// Call conversion methods with the same source text used here. Prefer
+    /// using the `LineIndex` stored on `SourceFile`, where that pairing is
+    /// structural. Line starts are detected from `\n` bytes; CRLF normalization
+    /// remains a lexer/source-loading concern for now.
     pub fn new(source: &str) -> Self {
         let mut line_starts = vec![0];
 
@@ -96,7 +96,36 @@ pub struct SourceFile {
     pub id: FileId,
     pub path: Option<PathBuf>,
     pub name: String,
-    pub source: String,
+    source: String,
+    line_index: LineIndex,
+}
+
+impl SourceFile {
+    pub fn new(
+        id: FileId,
+        name: impl Into<String>,
+        path: Option<PathBuf>,
+        source: impl Into<String>,
+    ) -> Self {
+        let source = source.into();
+        let line_index = LineIndex::new(&source);
+
+        Self {
+            id,
+            path,
+            name: name.into(),
+            source,
+            line_index,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn line_index(&self) -> &LineIndex {
+        &self.line_index
+    }
 }
 
 #[derive(Debug, Default)]
@@ -116,12 +145,7 @@ impl SourceMap {
         source: impl Into<String>,
     ) -> FileId {
         let id = FileId(self.files.len());
-        self.files.push(SourceFile {
-            id,
-            path,
-            name: name.into(),
-            source: source.into(),
-        });
+        self.files.push(SourceFile::new(id, name, path, source));
         id
     }
 

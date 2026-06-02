@@ -19,7 +19,7 @@ pub use lexer::{
 pub use names::{NameAnalysis, analyze_names};
 pub use parser::{
     Binding, Expr, ExprKind, Item, Literal, MatchArm, Module, Param, ParseOutput, PropagationMode,
-    RecordEntry, Signature, parse_module,
+    RecordEntry, Signature, parse_module, parse_source,
 };
 pub use resolve::{annotation_for_definition, render_annotation};
 pub use resolve::{resolve_local_definition, resolve_local_references};

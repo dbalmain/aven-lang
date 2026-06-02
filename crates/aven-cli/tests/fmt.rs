@@ -110,6 +110,7 @@ fn check_json_reports_structured_diagnostics() {
         serde_json::from_slice(&output.stdout).expect("expected valid JSON diagnostics");
 
     assert_eq!(json["ok"], false);
+    assert_eq!(json["fileId"], 0);
     assert_eq!(json["diagnostics"][0]["severity"], "error");
     assert_eq!(json["diagnostics"][0]["code"], "type.unknown-name");
     assert_eq!(

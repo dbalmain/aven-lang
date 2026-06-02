@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aven_core::{Diagnostic as AvenDiagnostic, LineIndex, Severity, SourcePosition, Span};
+use aven_core::{Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile, SourcePosition, Span};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
@@ -21,6 +21,7 @@ pub async fn run_stdio() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
         documents: Arc::default(),
+        file_ids: Arc::default(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -30,12 +31,29 @@ pub async fn run_stdio() {
 struct Backend {
     client: Client,
     documents: Arc<std::sync::Mutex<HashMap<Url, Arc<ParsedDocument>>>>,
+    file_ids: Arc<std::sync::Mutex<FileIdRegistry>>,
+}
+
+#[derive(Debug, Default)]
+struct FileIdRegistry {
+    ids: HashMap<Url, FileId>,
+}
+
+impl FileIdRegistry {
+    fn file_id_for(&mut self, uri: &Url) -> FileId {
+        if let Some(file_id) = self.ids.get(uri) {
+            return *file_id;
+        }
+
+        let file_id = FileId(self.ids.len());
+        self.ids.insert(uri.clone(), file_id);
+        file_id
+    }
 }
 
 #[derive(Debug)]
 struct ParsedDocument {
-    source: String,
-    line_index: LineIndex,
+    file: SourceFile,
     parse: aven_parser::ParseOutput,
     name_diagnostics: Vec<AvenDiagnostic>,
     check_diagnostics: Vec<AvenDiagnostic>,
@@ -43,8 +61,14 @@ struct ParsedDocument {
 }
 
 impl ParsedDocument {
+    #[cfg(test)]
     fn new(source: String) -> Self {
-        let parse = aven_parser::parse_module(&source);
+        Self::with_file_id(FileId(0), source)
+    }
+
+    fn with_file_id(file_id: FileId, source: String) -> Self {
+        let file = SourceFile::new(file_id, format!("lsp:{}", file_id.0), None, source);
+        let parse = aven_parser::parse_source(&file);
         let (declarations, name_diagnostics, check_diagnostics) =
             if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
                 // Keep the first name-analysis pass off recovered parse trees.
@@ -65,13 +89,16 @@ impl ParsedDocument {
             };
 
         Self {
-            line_index: LineIndex::new(&source),
-            source,
+            file,
             parse,
             name_diagnostics,
             check_diagnostics,
             declarations,
         }
+    }
+
+    fn source(&self) -> &str {
+        self.file.source()
     }
 }
 
@@ -129,11 +156,11 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let Ok(formatted) = aven_fmt::format_source(&document.source) else {
+        let Ok(formatted) = aven_fmt::format_source(document.source()) else {
             return Ok(None);
         };
 
-        if formatted == document.source {
+        if formatted == document.source() {
             return Ok(Some(Vec::new()));
         }
 
@@ -197,9 +224,19 @@ impl LanguageServer for Backend {
 
 impl Backend {
     fn set_document(&self, uri: Url, text: String) {
+        let file_id = self.file_id_for(&uri);
+
         if let Ok(mut documents) = self.documents.lock() {
-            documents.insert(uri, Arc::new(ParsedDocument::new(text)));
+            documents.insert(uri, Arc::new(ParsedDocument::with_file_id(file_id, text)));
         }
+    }
+
+    fn file_id_for(&self, uri: &Url) -> FileId {
+        let Ok(mut file_ids) = self.file_ids.lock() else {
+            return FileId(0);
+        };
+
+        file_ids.file_id_for(uri)
     }
 
     fn document(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
@@ -389,7 +426,7 @@ fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Ho
     })?;
 
     let annotation = aven_parser::annotation_for_definition(&document.parse.module, definition)?;
-    let rendered = aven_parser::render_annotation(&document.source, annotation);
+    let rendered = aven_parser::render_annotation(document.source(), annotation);
 
     if rendered.is_empty() {
         return None;
@@ -433,7 +470,10 @@ fn identifier_at_position(
 }
 
 fn span_to_range(document: &ParsedDocument, span: Span) -> Range {
-    let (start, end) = document.line_index.span_to_range(&document.source, span);
+    let (start, end) = document
+        .file
+        .line_index()
+        .span_to_range(document.source(), span);
 
     Range {
         start: to_lsp_position(start),
@@ -442,8 +482,8 @@ fn span_to_range(document: &ParsedDocument, span: Span) -> Range {
 }
 
 fn position_to_offset(document: &ParsedDocument, target: Position) -> Option<usize> {
-    document.line_index.position_to_offset(
-        &document.source,
+    document.file.line_index().position_to_offset(
+        document.source(),
         SourcePosition::new(target.line, target.character),
     )
 }
@@ -456,8 +496,9 @@ fn full_document_range(document: &ParsedDocument) -> Range {
         },
         end: to_lsp_position(
             document
-                .line_index
-                .offset_to_position(&document.source, document.source.len()),
+                .file
+                .line_index()
+                .offset_to_position(document.source(), document.source().len()),
         ),
     }
 }
@@ -538,6 +579,34 @@ mod tests {
             document.check_diagnostics[0].code.as_deref(),
             Some("type.unknown-name")
         );
+    }
+
+    #[test]
+    fn parsed_documents_thread_file_ids_into_parse_output() {
+        let document = ParsedDocument::with_file_id(FileId(7), "value = 1\n".to_owned());
+
+        assert_eq!(document.file.id, FileId(7));
+        assert_eq!(document.parse.file_id, FileId(7));
+    }
+
+    #[test]
+    fn file_id_registry_reuses_ids_for_the_same_uri() {
+        let mut registry = FileIdRegistry::default();
+        let uri = test_uri();
+
+        assert_eq!(registry.file_id_for(&uri), FileId(0));
+        assert_eq!(registry.file_id_for(&uri), FileId(0));
+    }
+
+    #[test]
+    fn file_id_registry_allocates_distinct_ids_for_distinct_uris() {
+        let mut registry = FileIdRegistry::default();
+        let first = test_uri();
+        let second = Url::parse("file:///second.av").expect("valid test URI");
+
+        assert_eq!(registry.file_id_for(&first), FileId(0));
+        assert_eq!(registry.file_id_for(&second), FileId(1));
+        assert_eq!(registry.file_id_for(&first), FileId(0));
     }
 
     #[test]

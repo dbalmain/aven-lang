@@ -1,4 +1,4 @@
-use aven_core::{Diagnostic, Label, Span};
+use aven_core::{Diagnostic, FileId, Label, SourceFile, Span};
 
 use crate::{Token, TokenKind, lex_then_layout};
 
@@ -181,6 +181,7 @@ pub enum Literal {
 
 #[derive(Debug, Clone)]
 pub struct ParseOutput {
+    pub file_id: FileId,
     /// Raw lexer tokens, including comments and raw newline/indent trivia.
     ///
     /// The formatter can use this stream to preserve source trivia without
@@ -194,6 +195,14 @@ pub struct ParseOutput {
 }
 
 pub fn parse_module(source: &str) -> ParseOutput {
+    parse_module_with_file_id(FileId(0), source)
+}
+
+pub fn parse_source(file: &SourceFile) -> ParseOutput {
+    parse_module_with_file_id(file.id, file.source())
+}
+
+fn parse_module_with_file_id(file_id: FileId, source: &str) -> ParseOutput {
     let (raw_tokens, mut layout) = lex_then_layout(source);
     let layout_tokens = layout.tokens;
     let mut diagnostics = std::mem::take(&mut layout.diagnostics);
@@ -210,6 +219,7 @@ pub fn parse_module(source: &str) -> ParseOutput {
     };
 
     ParseOutput {
+        file_id,
         raw_tokens,
         layout_tokens,
         module,
@@ -1940,7 +1950,12 @@ fn delimiter_text(kind: &TokenKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExprKind, Item, Literal, ParseOutput, PropagationMode, RecordEntry, parse_module};
+    use aven_core::{FileId, SourceFile};
+
+    use super::{
+        ExprKind, Item, Literal, ParseOutput, PropagationMode, RecordEntry, parse_module,
+        parse_source,
+    };
     use crate::TokenKind;
 
     #[test]
@@ -1988,6 +2003,15 @@ mod tests {
                 .iter()
                 .any(|token| matches!(token.kind, TokenKind::DocComment(_)))
         );
+    }
+
+    #[test]
+    fn parse_source_preserves_file_id() {
+        let file = SourceFile::new(FileId(42), "test.av", None, "value = 1\n");
+        let output = parse_source(&file);
+
+        assert_eq!(output.file_id, FileId(42));
+        assert!(output.diagnostics.is_empty());
     }
 
     #[test]
