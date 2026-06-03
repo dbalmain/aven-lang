@@ -16,3 +16,7 @@ aven-fmt.workspace = true
 aven-parser.workspace = true
 tokio.workspace = true
 tower-lsp.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tower.workspace = true

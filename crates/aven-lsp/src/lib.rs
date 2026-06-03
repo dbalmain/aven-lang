@@ -20,7 +20,7 @@ pub async fn run_stdio() {
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
-        documents: Arc::default(),
+        store: Arc::default(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -29,7 +29,7 @@ pub async fn run_stdio() {
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    documents: Arc<std::sync::Mutex<DocumentStore>>,
+    store: Arc<std::sync::Mutex<DocumentStore>>,
 }
 
 #[derive(Debug, Default)]
@@ -243,17 +243,14 @@ impl LanguageServer for Backend {
 
 impl Backend {
     fn set_document(&self, uri: Url, text: String) {
-        if let Ok(mut documents) = self.documents.lock() {
-            documents.set_document(uri, text);
+        if let Ok(mut store) = self.store.lock() {
+            store.set_document(uri, text);
         }
     }
 
     fn document(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
         // A poisoned mutex degrades to "document missing" rather than crashing the LSP.
-        self.documents
-            .lock()
-            .ok()
-            .and_then(|documents| documents.document(uri))
+        self.store.lock().ok().and_then(|store| store.document(uri))
     }
 
     async fn publish_diagnostics(&self, uri: Url) {
@@ -517,7 +514,82 @@ fn to_lsp_position(position: SourcePosition) -> Position {
 
 #[cfg(test)]
 mod tests {
+    use std::future;
+
+    use serde_json::json;
+    use tower::Service;
+    use tower_lsp::jsonrpc::{Request, Response};
+
     use super::*;
+
+    async fn call_service(service: &mut LspService<Backend>, request: Request) -> Option<Response> {
+        let ready = future::poll_fn(|cx| service.poll_ready(cx)).await;
+        let Ok(()) = ready else {
+            panic!("expected LSP service to be ready");
+        };
+        let response = service.call(request).await;
+        let Ok(response) = response else {
+            panic!("expected LSP service call to succeed");
+        };
+        response
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn protocol_smoke_opens_document_and_returns_symbols() {
+        let (mut service, _) = LspService::new(|client| Backend {
+            client,
+            store: Arc::default(),
+        });
+        let uri = test_uri();
+        let uri_text = uri.to_string();
+
+        let initialize = Request::build("initialize")
+            .params(json!({"capabilities": {}}))
+            .id(1)
+            .finish();
+        let Some(response) = call_service(&mut service, initialize).await else {
+            panic!("expected initialize response");
+        };
+        assert!(response.is_ok());
+
+        let did_open = Request::build("textDocument/didOpen")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text.clone(),
+                    "languageId": "aven",
+                    "version": 1,
+                    "text": "User = { name = Text }\nvalue = 1\n"
+                }
+            }))
+            .finish();
+        assert!(call_service(&mut service, did_open).await.is_none());
+
+        let document_symbol = Request::build("textDocument/documentSymbol")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text
+                }
+            }))
+            .id(2)
+            .finish();
+        let Some(response) = call_service(&mut service, document_symbol).await else {
+            panic!("expected documentSymbol response");
+        };
+        let (_id, body) = response.into_parts();
+        let Ok(value) = body else {
+            panic!("expected successful documentSymbol response");
+        };
+        let symbols = match serde_json::from_value::<Vec<DocumentSymbol>>(value) {
+            Ok(symbols) => symbols,
+            Err(error) => panic!("expected document symbols response: {error}"),
+        };
+
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "User");
+        assert_eq!(symbols[0].kind, SymbolKind::STRUCT);
+        assert_eq!(symbols[1].name, "value");
+        assert_eq!(symbols[1].kind, SymbolKind::VARIABLE);
+    }
 
     #[test]
     fn document_symbols_include_top_level_bindings() {

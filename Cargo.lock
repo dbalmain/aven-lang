@@ -134,7 +134,9 @@ dependencies = [
  "aven-core",
  "aven-fmt",
  "aven-parser",
+ "serde_json",
  "tokio",
+ "tower",
  "tower-lsp",
 ]
 

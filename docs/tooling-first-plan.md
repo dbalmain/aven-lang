@@ -845,11 +845,12 @@ Completed parser groundwork:
   targets. Top-level and cross-file rename are deferred.
 - LSP document storage is consolidated behind one `DocumentStore` mutex, with
   stable URI-to-`FileId` allocation and parsed documents owning their sources
+- an LSP protocol smoke test drives `initialize`, `textDocument/didOpen`, and
+  `textDocument/documentSymbol` through `tower-lsp`, covering service
+  registration and cached document state
 
-The next few queued changes should be:
-
-1. add a small LSP protocol smoke test once the test harness has a clean way to
-   drive `tower-lsp` requests end-to-end
+No small near-term tooling skeleton item is currently queued. The next phase
+should be chosen explicitly rather than inferred from this list.
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.
