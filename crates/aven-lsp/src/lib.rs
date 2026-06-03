@@ -21,7 +21,6 @@ pub async fn run_stdio() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
         documents: Arc::default(),
-        file_ids: Arc::default(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -30,25 +29,43 @@ pub async fn run_stdio() {
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    documents: Arc<std::sync::Mutex<HashMap<Url, Arc<ParsedDocument>>>>,
-    file_ids: Arc<std::sync::Mutex<FileIdRegistry>>,
+    documents: Arc<std::sync::Mutex<DocumentStore>>,
 }
 
 #[derive(Debug, Default)]
-struct FileIdRegistry {
-    ids: HashMap<Url, FileId>,
+struct DocumentStore {
+    file_ids: HashMap<Url, FileId>,
+    documents: HashMap<Url, Arc<ParsedDocument>>,
 }
 
-impl FileIdRegistry {
-    fn file_id_for(&mut self, uri: &Url) -> FileId {
-        if let Some(file_id) = self.ids.get(uri) {
-            return *file_id;
-        }
-
-        let file_id = FileId(self.ids.len());
-        self.ids.insert(uri.clone(), file_id);
+impl DocumentStore {
+    fn set_document(&mut self, uri: Url, text: String) -> FileId {
+        let file_id = self.file_id_for(&uri);
+        let file = SourceFile::new(file_id, source_name(&uri), uri.to_file_path().ok(), text);
+        self.documents
+            .insert(uri, Arc::new(ParsedDocument::from_file(file)));
         file_id
     }
+
+    fn document(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
+        self.documents.get(uri).cloned()
+    }
+
+    fn file_id_for(&mut self, uri: &Url) -> FileId {
+        if let Some(id) = self.file_ids.get(uri).copied() {
+            return id;
+        }
+
+        let id = FileId(self.file_ids.len());
+        self.file_ids.insert(uri.clone(), id);
+        id
+    }
+}
+
+fn source_name(uri: &Url) -> String {
+    uri.to_file_path()
+        .ok()
+        .map_or_else(|| uri.to_string(), |path| path.display().to_string())
 }
 
 #[derive(Debug)]
@@ -65,8 +82,13 @@ impl ParsedDocument {
         Self::with_file_id(FileId(0), source)
     }
 
+    #[cfg(test)]
     fn with_file_id(file_id: FileId, source: String) -> Self {
         let file = SourceFile::new(file_id, format!("lsp:{}", file_id.0), None, source);
+        Self::from_file(file)
+    }
+
+    fn from_file(file: SourceFile) -> Self {
         let parse = aven_parser::parse_source(&file);
         let mut diagnostics = parse.diagnostics.clone();
         let declarations = if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
@@ -221,19 +243,9 @@ impl LanguageServer for Backend {
 
 impl Backend {
     fn set_document(&self, uri: Url, text: String) {
-        let file_id = self.file_id_for(&uri);
-
         if let Ok(mut documents) = self.documents.lock() {
-            documents.insert(uri, Arc::new(ParsedDocument::with_file_id(file_id, text)));
+            documents.set_document(uri, text);
         }
-    }
-
-    fn file_id_for(&self, uri: &Url) -> FileId {
-        let Ok(mut file_ids) = self.file_ids.lock() else {
-            return FileId(0);
-        };
-
-        file_ids.file_id_for(uri)
     }
 
     fn document(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
@@ -241,7 +253,7 @@ impl Backend {
         self.documents
             .lock()
             .ok()
-            .and_then(|documents| documents.get(uri).cloned())
+            .and_then(|documents| documents.document(uri))
     }
 
     async fn publish_diagnostics(&self, uri: Url) {
@@ -597,23 +609,41 @@ mod tests {
     }
 
     #[test]
-    fn file_id_registry_reuses_ids_for_the_same_uri() {
-        let mut registry = FileIdRegistry::default();
+    fn document_store_reuses_ids_for_the_same_uri() {
+        let mut store = DocumentStore::default();
         let uri = test_uri();
 
-        assert_eq!(registry.file_id_for(&uri), FileId(0));
-        assert_eq!(registry.file_id_for(&uri), FileId(0));
+        assert_eq!(
+            store.set_document(uri.clone(), "value = 1\n".to_owned()),
+            FileId(0)
+        );
+        assert_eq!(
+            store.set_document(uri.clone(), "value = 2\n".to_owned()),
+            FileId(0)
+        );
+
+        let Some(document) = store.document(&uri) else {
+            panic!("expected stored document");
+        };
+        assert_eq!(document.file.id, FileId(0));
+        assert_eq!(document.source(), "value = 2\n");
     }
 
     #[test]
-    fn file_id_registry_allocates_distinct_ids_for_distinct_uris() {
-        let mut registry = FileIdRegistry::default();
+    fn document_store_allocates_distinct_ids_for_distinct_uris() {
+        let mut store = DocumentStore::default();
         let first = test_uri();
         let second = Url::parse("file:///second.av").expect("valid test URI");
 
-        assert_eq!(registry.file_id_for(&first), FileId(0));
-        assert_eq!(registry.file_id_for(&second), FileId(1));
-        assert_eq!(registry.file_id_for(&first), FileId(0));
+        assert_eq!(
+            store.set_document(first.clone(), "one = 1\n".to_owned()),
+            FileId(0)
+        );
+        assert_eq!(
+            store.set_document(second, "two = 2\n".to_owned()),
+            FileId(1)
+        );
+        assert_eq!(store.set_document(first, "one = 3\n".to_owned()), FileId(0));
     }
 
     #[test]

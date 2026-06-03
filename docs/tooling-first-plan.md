@@ -115,6 +115,12 @@ file ids across edits to the same URI. Diagnostics stay file-agnostic while
 they are produced; `DiagnosticReport` attaches the stable `FileId` at the CLI
 rendering boundary, while the LSP stores a merged diagnostics vector on each
 parsed document and publishes it by URI without per-publish cloning.
+The LSP now uses a single `DocumentStore` mutex that keeps a URI-to-`FileId`
+table and parsed documents; each `ParsedDocument` owns its `SourceFile`.
+`SourceMap` remains core infrastructure for future multi-file work, but the
+single-file CLI and Arc-per-document LSP path do not store sources in it yet.
+Lexer and layout stay string/token utilities; `parse_source(&SourceFile)` is the
+file-aware parser entry point.
 
 Even though incremental compilation is deferred, this milestone should make the
 data-shape decisions that keep incremental tooling possible:
@@ -127,7 +133,8 @@ data-shape decisions that keep incremental tooling possible:
 
 Tasks:
 
-- finish `SourceMap` integration in CLI and LSP paths
+- defer full `SourceMap` integration until multi-file parsing needs shared
+  source ownership
 - add stable `FileId` handling to parser output
 - define diagnostic categories:
   - lexer
@@ -836,14 +843,13 @@ Completed parser groundwork:
   the same name-analysis run has errors, keeping recovery noise low.
 - LSP rename edits cover same-file local bindings and reject invalid identifier
   targets. Top-level and cross-file rename are deferred.
+- LSP document storage is consolidated behind one `DocumentStore` mutex, with
+  stable URI-to-`FileId` allocation and parsed documents owning their sources
 
 The next few queued changes should be:
 
 1. add a small LSP protocol smoke test once the test harness has a clean way to
    drive `tower-lsp` requests end-to-end
-2. continue M1 source identity work: use `SourceMap` in CLI/LSP paths. The CLI
-   now has a `load_source_file` seam where single-file `SourceFile::new` can be
-   replaced with `SourceMap::add`.
 
 This keeps tooling ahead of semantics without spending too long on temporary
 parser code.
