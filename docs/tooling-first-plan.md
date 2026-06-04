@@ -767,7 +767,9 @@ formatting now calls `aven_fmt::format_parsed_source` with the cached
 `format_source`. The second M9 slice split cheap `parse.diagnostics` from
 expensive `semantic_diagnostics`; LSP publishing still streams the combined
 diagnostics, but later debounce/cancellation can now skip or delay semantic
-work without changing the parse cache shape.
+work without changing the parse cache shape. The third M9 slice added
+`aven check --timings`, which reports parse/name/check/total timings in text
+mode and a `timingsMs` object in JSON mode.
 
 ## Phase 2 Scope
 

@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use ariadne::{Config as AriadneConfig, Label as AriadneLabel, Report, ReportKind, Source};
@@ -27,6 +28,10 @@ enum Command {
         /// Diagnostic output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+
+        /// Print parse/name/check timings.
+        #[arg(long)]
+        timings: bool,
     },
 
     /// Print lexer tokens for debugging parser work.
@@ -66,7 +71,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { path, format } => check(&path, format),
+        Command::Check {
+            path,
+            format,
+            timings,
+        } => check(&path, format, timings),
         Command::Tokens { path } => tokens(&path),
         Command::Layout { path } => layout(&path),
         Command::Fmt { check, path } => fmt(&path, check),
@@ -77,19 +86,35 @@ async fn main() -> Result<()> {
     }
 }
 
-fn check(path: &Path, format: OutputFormat) -> Result<()> {
+fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
     let file = load_source_file(path)?;
-    let output = aven_parser::parse_source(&file);
+    let total_start = Instant::now();
+
+    let (output, parse_duration) = timed(|| aven_parser::parse_source(&file));
+
     let mut diagnostics = output.diagnostics.clone();
+    let mut name_duration = None;
+    let mut check_duration = None;
 
     if !diagnostics.iter().any(AvenDiagnostic::is_error) {
         // Name analysis intentionally waits for a clean parse in the first pass.
         // Analyzing recovered `Missing` trees is a later diagnostics-recovery task.
-        let name_analysis = aven_parser::analyze_names(&output.module);
-        let check_output = aven_check::check_module(&output.module);
+        let (name_analysis, duration) = timed(|| aven_parser::analyze_names(&output.module));
+        name_duration = Some(duration);
+
+        let (check_output, duration) = timed(|| aven_check::check_module(&output.module));
+        check_duration = Some(duration);
+
         diagnostics.extend(name_analysis.diagnostics);
         diagnostics.extend(check_output.diagnostics);
     }
+
+    let timings = CheckTimings {
+        parse: parse_duration,
+        name: name_duration,
+        check: check_duration,
+        total: total_start.elapsed(),
+    };
 
     let mut report = DiagnosticReport::new(output.file_id, diagnostics);
     report.sort_by_primary_span();
@@ -99,8 +124,13 @@ fn check(path: &Path, format: OutputFormat) -> Result<()> {
             if !report.is_empty() {
                 print_diagnostics(&file, &report)?;
             }
+            if show_timings {
+                print_timings(timings);
+            }
         }
-        OutputFormat::Json => print_json_diagnostics(&file, &report)?,
+        OutputFormat::Json => {
+            print_json_diagnostics(&file, &report, show_timings.then_some(timings))?
+        }
     }
 
     if report.has_errors() {
@@ -117,10 +147,43 @@ fn check(path: &Path, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn print_json_diagnostics(file: &SourceFile, report: &DiagnosticReport) -> Result<()> {
+#[derive(Debug, Clone, Copy)]
+struct CheckTimings {
+    parse: Duration,
+    name: Option<Duration>,
+    check: Option<Duration>,
+    total: Duration,
+}
+
+fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
+    let start = Instant::now();
+    let value = f();
+    (value, start.elapsed())
+}
+
+fn print_timings(timings: CheckTimings) {
+    eprintln!("timings:");
+    eprintln!("  parse: {:.3} ms", duration_ms(timings.parse));
+    print_timing_line("name", timings.name);
+    print_timing_line("check", timings.check);
+    eprintln!("  total: {:.3} ms", duration_ms(timings.total));
+}
+
+fn print_timing_line(name: &str, duration: Option<Duration>) {
+    match duration {
+        Some(duration) => eprintln!("  {name}: {:.3} ms", duration_ms(duration)),
+        None => eprintln!("  {name}: skipped"),
+    }
+}
+
+fn print_json_diagnostics(
+    file: &SourceFile,
+    report: &DiagnosticReport,
+    timings: Option<CheckTimings>,
+) -> Result<()> {
     debug_assert_eq!(file.id, report.file_id);
 
-    let output = json!({
+    let mut output = json!({
         "fileId": report.file_id.0,
         "path": file.path.as_ref().map(|path| path.display().to_string()),
         "name": file.name.as_str(),
@@ -128,8 +191,25 @@ fn print_json_diagnostics(file: &SourceFile, report: &DiagnosticReport) -> Resul
         "diagnostics": report.diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
     });
 
+    if let Some(timings) = timings {
+        output["timingsMs"] = timings_json(timings);
+    }
+
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+fn timings_json(timings: CheckTimings) -> serde_json::Value {
+    json!({
+        "parse": duration_ms(timings.parse),
+        "name": timings.name.map(duration_ms),
+        "check": timings.check.map(duration_ms),
+        "total": duration_ms(timings.total),
+    })
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
 }
 
 fn diagnostic_json(diagnostic: &AvenDiagnostic) -> serde_json::Value {

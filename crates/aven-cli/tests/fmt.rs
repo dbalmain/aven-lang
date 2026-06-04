@@ -83,6 +83,28 @@ fn check_accepts_valid_source() {
 }
 
 #[test]
+fn check_timings_reports_text_timings() {
+    let file = TempFile::new("check-timings", "value = 1\n");
+
+    let output = run_aven(["check", "--timings"], file.path());
+
+    assert_success(&output);
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("timings:"),
+        "expected timings header, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("parse:"),
+        "expected parse timing, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("check:"),
+        "expected check timing, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn check_reports_name_diagnostics() {
     let source = "value = 1\nvalue = 2\n";
     let file = TempFile::new("name-error", source);
@@ -133,6 +155,40 @@ fn check_json_reports_structured_diagnostics() {
     );
     assert_eq!(json["diagnostics"][0]["labels"][0]["span"]["start"], 8);
     assert_eq!(json["diagnostics"][0]["labels"][0]["span"]["end"], 15);
+}
+
+#[test]
+fn check_json_timings_reports_structured_timings() {
+    let file = TempFile::new("json-timings", "value = 1\n");
+
+    let output = run_aven(["check", "--format", "json", "--timings"], file.path());
+
+    assert_success(&output);
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("expected valid JSON diagnostics");
+
+    assert_eq!(json["ok"], true);
+    assert!(json["timingsMs"]["parse"].is_number());
+    assert!(json["timingsMs"]["name"].is_number());
+    assert!(json["timingsMs"]["check"].is_number());
+    assert!(json["timingsMs"]["total"].is_number());
+}
+
+#[test]
+fn check_json_timings_marks_skipped_semantic_phases() {
+    let file = TempFile::new("json-skipped-timings", "value = )\n");
+
+    let output = run_aven(["check", "--format", "json", "--timings"], file.path());
+
+    assert_failure(&output);
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("expected valid JSON diagnostics");
+
+    assert_eq!(json["ok"], false);
+    assert!(json["timingsMs"]["parse"].is_number());
+    assert!(json["timingsMs"]["name"].is_null());
+    assert!(json["timingsMs"]["check"].is_null());
+    assert!(json["timingsMs"]["total"].is_number());
 }
 
 #[test]
