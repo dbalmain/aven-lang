@@ -769,7 +769,11 @@ expensive `semantic_diagnostics`; LSP publishing still streams the combined
 diagnostics, but later debounce/cancellation can now skip or delay semantic
 work without changing the parse cache shape. The third M9 slice added
 `aven check --timings`, which reports parse/name/check/total timings in text
-mode and a `timingsMs` object in JSON mode.
+mode and a `timingsMs` object in JSON mode. The fourth M9 slice made LSP
+documents parse-first: `didOpen`/`didChange` publish parse diagnostics
+immediately, schedule semantic diagnostics behind a short debounce, abort the
+previous pending semantic task for the same URI, and reject stale semantic
+results by document version before publishing.
 
 ## Phase 2 Scope
 

@@ -1,7 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use aven_core::{Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile, SourcePosition, Span};
+use tokio::task::JoinHandle;
+use tokio::time::sleep;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
@@ -21,6 +24,7 @@ pub async fn run_stdio() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
         store: Arc::default(),
+        pending_semantic: Arc::default(),
     });
 
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -29,8 +33,11 @@ pub async fn run_stdio() {
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    store: Arc<std::sync::Mutex<DocumentStore>>,
+    store: Arc<Mutex<DocumentStore>>,
+    pending_semantic: Arc<Mutex<HashMap<Url, JoinHandle<()>>>>,
 }
+
+const SEMANTIC_DEBOUNCE: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Default)]
 struct DocumentStore {
@@ -58,6 +65,27 @@ impl DocumentStore {
         self.documents.get(uri).cloned()
     }
 
+    fn set_semantic_diagnostics(
+        &mut self,
+        uri: &Url,
+        version: i32,
+        diagnostics: Vec<AvenDiagnostic>,
+    ) -> bool {
+        let Some(document) = self.documents.get(uri) else {
+            return false;
+        };
+
+        if document.version != version {
+            return false;
+        }
+
+        self.documents.insert(
+            uri.clone(),
+            Arc::new(document.with_semantic_diagnostics(diagnostics)),
+        );
+        true
+    }
+
     fn file_id_for(&mut self, uri: &Url) -> FileId {
         if let Some(id) = self.file_ids.get(uri).copied() {
             return id;
@@ -79,7 +107,7 @@ fn source_name(uri: &Url) -> String {
 struct ParsedDocument {
     version: i32,
     file: SourceFile,
-    parse: aven_parser::ParseOutput,
+    parse: Arc<aven_parser::ParseOutput>,
     semantic_diagnostics: Vec<AvenDiagnostic>,
     declarations: Vec<aven_parser::Declaration>,
 }
@@ -101,33 +129,32 @@ impl ParsedDocument {
         Self::from_file(version, file)
     }
 
+    #[cfg(test)]
+    fn with_semantics(source: String) -> Self {
+        let document = Self::new(source);
+        document.with_semantic_diagnostics(semantic_diagnostics_for_parse(&document.parse))
+    }
+
     fn from_file(version: i32, file: SourceFile) -> Self {
         let parse = aven_parser::parse_source(&file);
-        let (declarations, semantic_diagnostics) =
-            if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
-                (
-                    // Keep the first name-analysis pass off recovered parse trees.
-                    // Partial-tree analysis can be added once recovery semantics are clearer.
-                    aven_parser::collect_declarations(&parse.module),
-                    Vec::new(),
-                )
-            } else {
-                let analysis = aven_parser::analyze_names(&parse.module);
-                let check = aven_check::check_module(&parse.module);
-                let diagnostics = analysis
-                    .diagnostics
-                    .into_iter()
-                    .chain(check.diagnostics)
-                    .collect();
-                (analysis.declarations, diagnostics)
-            };
+        let declarations = aven_parser::collect_declarations(&parse.module);
 
         Self {
             version,
             file,
-            parse,
-            semantic_diagnostics,
+            parse: Arc::new(parse),
+            semantic_diagnostics: Vec::new(),
             declarations,
+        }
+    }
+
+    fn with_semantic_diagnostics(&self, semantic_diagnostics: Vec<AvenDiagnostic>) -> Self {
+        Self {
+            version: self.version,
+            file: self.file.clone(),
+            parse: Arc::clone(&self.parse),
+            semantic_diagnostics,
+            declarations: self.declarations.clone(),
         }
     }
 
@@ -146,6 +173,22 @@ impl ParsedDocument {
     fn diagnostic_report(&self) -> aven_core::DiagnosticReport {
         aven_core::DiagnosticReport::new(self.file.id, self.diagnostics().cloned().collect())
     }
+}
+
+fn semantic_diagnostics_for_parse(parse: &aven_parser::ParseOutput) -> Vec<AvenDiagnostic> {
+    if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
+        // Keep the first name-analysis pass off recovered parse trees.
+        // Partial-tree analysis can be added once recovery semantics are clearer.
+        return Vec::new();
+    }
+
+    let analysis = aven_parser::analyze_names(&parse.module);
+    let check = aven_check::check_module(&parse.module);
+    analysis
+        .diagnostics
+        .into_iter()
+        .chain(check.diagnostics)
+        .collect()
 }
 
 #[tower_lsp::async_trait]
@@ -183,7 +226,8 @@ impl LanguageServer for Backend {
         let text = params.text_document.text;
 
         self.set_document(uri.clone(), version, text);
-        self.publish_diagnostics(uri).await;
+        self.publish_diagnostics(uri.clone()).await;
+        self.schedule_semantic_diagnostics(uri, version);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -196,7 +240,8 @@ impl LanguageServer for Backend {
         let text = change.text;
 
         self.set_document(uri.clone(), version, text);
-        self.publish_diagnostics(uri).await;
+        self.publish_diagnostics(uri.clone()).await;
+        self.schedule_semantic_diagnostics(uri, version);
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
@@ -283,19 +328,90 @@ impl Backend {
         self.store.lock().ok().and_then(|store| store.document(uri))
     }
 
+    fn schedule_semantic_diagnostics(&self, uri: Url, version: i32) {
+        self.cancel_pending_semantic_diagnostics(&uri);
+
+        let Some(document) = self.document(&uri) else {
+            return;
+        };
+
+        if document
+            .parse
+            .diagnostics
+            .iter()
+            .any(AvenDiagnostic::is_error)
+        {
+            return;
+        }
+
+        let client = self.client.clone();
+        let store = Arc::clone(&self.store);
+        let task_uri = uri.clone();
+        let handle = tokio::spawn(async move {
+            sleep(SEMANTIC_DEBOUNCE).await;
+            publish_semantic_diagnostics(client, store, task_uri, version).await;
+        });
+
+        if let Ok(mut pending) = self.pending_semantic.lock() {
+            pending.insert(uri, handle);
+        }
+    }
+
+    fn cancel_pending_semantic_diagnostics(&self, uri: &Url) {
+        if let Ok(mut pending) = self.pending_semantic.lock()
+            && let Some(previous) = pending.remove(uri)
+        {
+            previous.abort();
+        }
+    }
+
     async fn publish_diagnostics(&self, uri: Url) {
         let Some(document) = self.document(&uri) else {
             return;
         };
-        let diagnostics = document
-            .diagnostics()
-            .map(|diagnostic| to_lsp_diagnostic(&document, diagnostic))
-            .collect();
+        let version = document.version;
 
         self.client
-            .publish_diagnostics(uri, diagnostics, None)
+            .publish_diagnostics(uri, document_diagnostics(&document), Some(version))
             .await;
     }
+}
+
+async fn publish_semantic_diagnostics(
+    client: Client,
+    store: Arc<Mutex<DocumentStore>>,
+    uri: Url,
+    version: i32,
+) {
+    let Some(document) = store.lock().ok().and_then(|store| store.document(&uri)) else {
+        return;
+    };
+
+    if document.version != version {
+        return;
+    }
+
+    let diagnostics = semantic_diagnostics_for_parse(&document.parse);
+    let Some(document) = store.lock().ok().and_then(|mut store| {
+        if !store.set_semantic_diagnostics(&uri, version, diagnostics) {
+            return None;
+        }
+
+        store.document(&uri)
+    }) else {
+        return;
+    };
+
+    client
+        .publish_diagnostics(uri, document_diagnostics(&document), Some(version))
+        .await;
+}
+
+fn document_diagnostics(document: &ParsedDocument) -> Vec<Diagnostic> {
+    document
+        .diagnostics()
+        .map(|diagnostic| to_lsp_diagnostic(document, diagnostic))
+        .collect()
 }
 
 fn to_lsp_diagnostic(document: &ParsedDocument, diagnostic: &AvenDiagnostic) -> Diagnostic {
@@ -545,9 +661,12 @@ fn to_lsp_position(position: SourcePosition) -> Position {
 mod tests {
     use std::future;
 
+    use futures_util::StreamExt;
     use serde_json::json;
+    use tokio::time::advance;
     use tower::Service;
     use tower_lsp::jsonrpc::{Request, Response};
+    use tower_lsp::lsp_types::{NumberOrString, PublishDiagnosticsParams};
 
     use super::*;
 
@@ -563,12 +682,32 @@ mod tests {
         response
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn protocol_smoke_opens_document_and_returns_symbols() {
-        let (mut service, _) = LspService::new(|client| Backend {
+    async fn next_publish_diagnostics(
+        socket: &mut tower_lsp::ClientSocket,
+    ) -> PublishDiagnosticsParams {
+        let Some(request) = socket.next().await else {
+            panic!("expected publishDiagnostics notification");
+        };
+        assert_eq!(request.method(), "textDocument/publishDiagnostics");
+
+        let Some(params) = request.params().cloned() else {
+            panic!("expected publishDiagnostics params");
+        };
+
+        serde_json::from_value(params).expect("expected valid publishDiagnostics params")
+    }
+
+    fn test_backend(client: Client) -> Backend {
+        Backend {
             client,
             store: Arc::default(),
-        });
+            pending_semantic: Arc::default(),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn protocol_smoke_opens_document_and_returns_symbols() {
+        let (mut service, _) = LspService::new(test_backend);
         let uri = test_uri();
         let uri_text = uri.to_string();
 
@@ -620,6 +759,88 @@ mod tests {
         assert_eq!(symbols[1].kind, SymbolKind::VARIABLE);
     }
 
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn semantic_diagnostics_are_debounced_and_stale_results_are_cancelled() {
+        let (mut service, mut socket) = LspService::new(test_backend);
+        let uri = test_uri();
+        let uri_text = uri.to_string();
+
+        let initialize = Request::build("initialize")
+            .params(json!({"capabilities": {}}))
+            .id(1)
+            .finish();
+        let Some(response) = call_service(&mut service, initialize).await else {
+            panic!("expected initialize response");
+        };
+        assert!(response.is_ok());
+
+        let did_open = Request::build("textDocument/didOpen")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text.clone(),
+                    "languageId": "aven",
+                    "version": 1,
+                    "text": "value : Missing = value\n"
+                }
+            }))
+            .finish();
+        assert!(call_service(&mut service, did_open).await.is_none());
+
+        let first = next_publish_diagnostics(&mut socket).await;
+        assert_eq!(first.version, Some(1));
+        assert!(first.diagnostics.is_empty());
+
+        advance(SEMANTIC_DEBOUNCE + Duration::from_millis(1)).await;
+
+        let semantic = next_publish_diagnostics(&mut socket).await;
+        assert_eq!(semantic.version, Some(1));
+        assert_eq!(semantic.diagnostics.len(), 1);
+        assert!(matches!(
+            semantic.diagnostics[0].code.as_ref(),
+            Some(NumberOrString::String(code)) if code == "type.unknown-name"
+        ));
+
+        let did_change_error = Request::build("textDocument/didChange")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text.clone(),
+                    "version": 2
+                },
+                "contentChanges": [
+                    { "text": "value : Missing = value\n" }
+                ]
+            }))
+            .finish();
+        assert!(call_service(&mut service, did_change_error).await.is_none());
+
+        let parse_only = next_publish_diagnostics(&mut socket).await;
+        assert_eq!(parse_only.version, Some(2));
+        assert!(parse_only.diagnostics.is_empty());
+
+        let did_change_clean = Request::build("textDocument/didChange")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text,
+                    "version": 3
+                },
+                "contentChanges": [
+                    { "text": "value = 1\n" }
+                ]
+            }))
+            .finish();
+        assert!(call_service(&mut service, did_change_clean).await.is_none());
+
+        let clean_parse = next_publish_diagnostics(&mut socket).await;
+        assert_eq!(clean_parse.version, Some(3));
+        assert!(clean_parse.diagnostics.is_empty());
+
+        advance(SEMANTIC_DEBOUNCE + Duration::from_millis(1)).await;
+
+        let clean_semantic = next_publish_diagnostics(&mut socket).await;
+        assert_eq!(clean_semantic.version, Some(3));
+        assert!(clean_semantic.diagnostics.is_empty());
+    }
+
     #[test]
     fn document_symbols_include_top_level_bindings() {
         let document = ParsedDocument::new(
@@ -667,7 +888,7 @@ mod tests {
 
     #[test]
     fn parsed_documents_include_name_diagnostics() {
-        let document = ParsedDocument::new("value = 1\nvalue = 2\n".to_owned());
+        let document = ParsedDocument::with_semantics("value = 1\nvalue = 2\n".to_owned());
 
         assert!(document.parse.diagnostics.is_empty());
         assert_eq!(document.semantic_diagnostics.len(), 1);
@@ -679,7 +900,7 @@ mod tests {
 
     #[test]
     fn parsed_documents_include_check_diagnostics() {
-        let document = ParsedDocument::new("value : Missing = value\n".to_owned());
+        let document = ParsedDocument::with_semantics("value : Missing = value\n".to_owned());
 
         assert!(document.parse.diagnostics.is_empty());
         assert_eq!(document.semantic_diagnostics.len(), 1);
@@ -702,6 +923,15 @@ mod tests {
     }
 
     #[test]
+    fn parsed_documents_start_without_semantic_diagnostics() {
+        let document = ParsedDocument::new("value : Missing = value\n".to_owned());
+
+        assert!(document.parse.diagnostics.is_empty());
+        assert!(document.semantic_diagnostics.is_empty());
+        assert_eq!(document.declarations.len(), 1);
+    }
+
+    #[test]
     fn parsed_documents_thread_file_ids_into_parse_output() {
         let document = ParsedDocument::with_file_id(FileId(7), "value = 1\n".to_owned());
 
@@ -713,6 +943,8 @@ mod tests {
     fn parsed_document_diagnostic_report_uses_file_id() {
         let document =
             ParsedDocument::with_file_id(FileId(7), "value : Missing = value\n".to_owned());
+        let document =
+            document.with_semantic_diagnostics(semantic_diagnostics_for_parse(&document.parse));
         let report = document.diagnostic_report();
 
         assert_eq!(report.file_id, FileId(7));
@@ -800,6 +1032,48 @@ mod tests {
             store.set_document(first, 2, "one = 3\n".to_owned()),
             FileId(0)
         );
+    }
+
+    #[test]
+    fn document_store_accepts_current_semantic_diagnostics() {
+        let mut store = DocumentStore::default();
+        let uri = test_uri();
+        store.set_document(uri.clone(), 1, "value = 1\n".to_owned());
+
+        assert!(store.set_semantic_diagnostics(
+            &uri,
+            1,
+            vec![AvenDiagnostic::error("semantic diagnostic")]
+        ));
+
+        let Some(document) = store.document(&uri) else {
+            panic!("expected stored document");
+        };
+        assert_eq!(document.semantic_diagnostics.len(), 1);
+        assert_eq!(
+            document.semantic_diagnostics[0].message,
+            "semantic diagnostic"
+        );
+    }
+
+    #[test]
+    fn document_store_rejects_stale_semantic_diagnostics() {
+        let mut store = DocumentStore::default();
+        let uri = test_uri();
+        store.set_document(uri.clone(), 1, "value = 1\n".to_owned());
+        store.set_document(uri.clone(), 2, "value = 2\n".to_owned());
+
+        assert!(!store.set_semantic_diagnostics(
+            &uri,
+            1,
+            vec![AvenDiagnostic::error("stale diagnostic")]
+        ));
+
+        let Some(document) = store.document(&uri) else {
+            panic!("expected stored document");
+        };
+        assert_eq!(document.version, 2);
+        assert!(document.semantic_diagnostics.is_empty());
     }
 
     #[test]

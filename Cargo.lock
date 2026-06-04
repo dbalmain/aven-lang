@@ -134,6 +134,7 @@ dependencies = [
  "aven-core",
  "aven-fmt",
  "aven-parser",
+ "futures-util",
  "serde_json",
  "tokio",
  "tower",
