@@ -39,11 +39,18 @@ struct DocumentStore {
 }
 
 impl DocumentStore {
-    fn set_document(&mut self, uri: Url, text: String) -> FileId {
+    fn set_document(&mut self, uri: Url, version: i32, text: String) -> FileId {
         let file_id = self.file_id_for(&uri);
+        if let Some(document) = self.documents.get(&uri)
+            && document.version == version
+            && document.source() == text
+        {
+            return file_id;
+        }
+
         let file = SourceFile::new(file_id, source_name(&uri), uri.to_file_path().ok(), text);
         self.documents
-            .insert(uri, Arc::new(ParsedDocument::from_file(file)));
+            .insert(uri, Arc::new(ParsedDocument::from_file(version, file)));
         file_id
     }
 
@@ -70,6 +77,7 @@ fn source_name(uri: &Url) -> String {
 
 #[derive(Debug)]
 struct ParsedDocument {
+    version: i32,
     file: SourceFile,
     parse: aven_parser::ParseOutput,
     diagnostics: Vec<AvenDiagnostic>,
@@ -84,11 +92,16 @@ impl ParsedDocument {
 
     #[cfg(test)]
     fn with_file_id(file_id: FileId, source: String) -> Self {
-        let file = SourceFile::new(file_id, format!("lsp:{}", file_id.0), None, source);
-        Self::from_file(file)
+        Self::with_file_id_and_version(file_id, 0, source)
     }
 
-    fn from_file(file: SourceFile) -> Self {
+    #[cfg(test)]
+    fn with_file_id_and_version(file_id: FileId, version: i32, source: String) -> Self {
+        let file = SourceFile::new(file_id, format!("lsp:{}", file_id.0), None, source);
+        Self::from_file(version, file)
+    }
+
+    fn from_file(version: i32, file: SourceFile) -> Self {
         let parse = aven_parser::parse_source(&file);
         let mut diagnostics = parse.diagnostics.clone();
         let declarations = if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
@@ -104,6 +117,7 @@ impl ParsedDocument {
         };
 
         Self {
+            version,
             file,
             parse,
             diagnostics,
@@ -152,9 +166,10 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
+        let version = params.text_document.version;
         let text = params.text_document.text;
 
-        self.set_document(uri.clone(), text);
+        self.set_document(uri.clone(), version, text);
         self.publish_diagnostics(uri).await;
     }
 
@@ -164,9 +179,10 @@ impl LanguageServer for Backend {
         };
 
         let uri = params.text_document.uri;
+        let version = params.text_document.version;
         let text = change.text;
 
-        self.set_document(uri.clone(), text);
+        self.set_document(uri.clone(), version, text);
         self.publish_diagnostics(uri).await;
     }
 
@@ -175,7 +191,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let Ok(formatted) = aven_fmt::format_source(document.source()) else {
+        let Ok(formatted) = aven_fmt::format_parsed_source(document.source(), &document.parse)
+        else {
             return Ok(None);
         };
 
@@ -242,9 +259,9 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
-    fn set_document(&self, uri: Url, text: String) {
+    fn set_document(&self, uri: Url, version: i32, text: String) {
         if let Ok(mut store) = self.store.lock() {
-            store.set_document(uri, text);
+            store.set_document(uri, version, text);
         }
     }
 
@@ -686,11 +703,11 @@ mod tests {
         let uri = test_uri();
 
         assert_eq!(
-            store.set_document(uri.clone(), "value = 1\n".to_owned()),
+            store.set_document(uri.clone(), 1, "value = 1\n".to_owned()),
             FileId(0)
         );
         assert_eq!(
-            store.set_document(uri.clone(), "value = 2\n".to_owned()),
+            store.set_document(uri.clone(), 2, "value = 2\n".to_owned()),
             FileId(0)
         );
 
@@ -702,20 +719,61 @@ mod tests {
     }
 
     #[test]
+    fn document_store_reuses_cached_documents_for_the_same_version() {
+        let mut store = DocumentStore::default();
+        let uri = test_uri();
+
+        store.set_document(uri.clone(), 1, "value = 1\n".to_owned());
+        let Some(first) = store.document(&uri) else {
+            panic!("expected first stored document");
+        };
+
+        store.set_document(uri.clone(), 1, "value = 1\n".to_owned());
+        let Some(second) = store.document(&uri) else {
+            panic!("expected second stored document");
+        };
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn document_store_replaces_documents_for_new_versions() {
+        let mut store = DocumentStore::default();
+        let uri = test_uri();
+
+        store.set_document(uri.clone(), 1, "value = 1\n".to_owned());
+        let Some(first) = store.document(&uri) else {
+            panic!("expected first stored document");
+        };
+
+        store.set_document(uri.clone(), 2, "value = 2\n".to_owned());
+        let Some(second) = store.document(&uri) else {
+            panic!("expected second stored document");
+        };
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(second.version, 2);
+        assert_eq!(second.source(), "value = 2\n");
+    }
+
+    #[test]
     fn document_store_allocates_distinct_ids_for_distinct_uris() {
         let mut store = DocumentStore::default();
         let first = test_uri();
         let second = Url::parse("file:///second.av").expect("valid test URI");
 
         assert_eq!(
-            store.set_document(first.clone(), "one = 1\n".to_owned()),
+            store.set_document(first.clone(), 1, "one = 1\n".to_owned()),
             FileId(0)
         );
         assert_eq!(
-            store.set_document(second, "two = 2\n".to_owned()),
+            store.set_document(second, 1, "two = 2\n".to_owned()),
             FileId(1)
         );
-        assert_eq!(store.set_document(first, "one = 3\n".to_owned()), FileId(0));
+        assert_eq!(
+            store.set_document(first, 2, "one = 3\n".to_owned()),
+            FileId(0)
+        );
     }
 
     #[test]

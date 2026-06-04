@@ -1,12 +1,16 @@
 use aven_core::Diagnostic;
-use aven_parser::{Token, TokenKind, parse_module};
+use aven_parser::{ParseOutput, Token, TokenKind, parse_module};
 
 const INDENT_WIDTH: usize = 2;
 
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let parse = parse_module(source);
+    format_parsed_source(source, &parse)
+}
+
+pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String, Vec<Diagnostic>> {
     if parse.diagnostics.iter().any(Diagnostic::is_error) {
-        return Err(parse.diagnostics);
+        return Err(parse.diagnostics.clone());
     }
 
     let line_count = source.lines().count();
@@ -318,6 +322,17 @@ mod tests {
         assert_eq!(
             format_source("x =\n  y =\n    z = 2\t\n"),
             Ok("x =\n  y =\n    z = 2\n".to_owned())
+        );
+    }
+
+    #[test]
+    fn formats_from_existing_parse_output() {
+        let source = "x =\n    y = 1   \n";
+        let parse = aven_parser::parse_module(source);
+
+        assert_eq!(
+            format_parsed_source(source, &parse),
+            Ok("x =\n  y = 1\n".to_owned())
         );
     }
 

@@ -673,7 +673,7 @@ has a protocol smoke test that drives `initialize`, `textDocument/didOpen`, and
 
 ## Milestone 9: Incremental Tooling
 
-Status: later
+Status: in progress
 
 Goal: prepare for fast editor feedback.
 
@@ -758,6 +758,13 @@ Done when:
 - LSP does not rederive every intermediate artifact by hand
 - a single parse backs every per-document request
 - parse/check latency is visible and measurable
+
+Progress: the first M9 slice made the LSP document cache version-aware. Repeated
+updates for the same URI, version, and text reuse the existing `ParsedDocument`;
+new versions replace it while preserving the URI's stable `FileId`. LSP
+formatting now calls `aven_fmt::format_parsed_source` with the cached
+`ParseOutput`, so formatting no longer reparses the document through
+`format_source`.
 
 ## Phase 2 Scope
 
