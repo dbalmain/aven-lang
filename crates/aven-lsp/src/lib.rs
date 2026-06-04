@@ -80,7 +80,7 @@ struct ParsedDocument {
     version: i32,
     file: SourceFile,
     parse: aven_parser::ParseOutput,
-    diagnostics: Vec<AvenDiagnostic>,
+    semantic_diagnostics: Vec<AvenDiagnostic>,
     declarations: Vec<aven_parser::Declaration>,
 }
 
@@ -103,24 +103,30 @@ impl ParsedDocument {
 
     fn from_file(version: i32, file: SourceFile) -> Self {
         let parse = aven_parser::parse_source(&file);
-        let mut diagnostics = parse.diagnostics.clone();
-        let declarations = if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
-            // Keep the first name-analysis pass off recovered parse trees.
-            // Partial-tree analysis can be added once recovery semantics are clearer.
-            aven_parser::collect_declarations(&parse.module)
-        } else {
-            let analysis = aven_parser::analyze_names(&parse.module);
-            let check = aven_check::check_module(&parse.module);
-            diagnostics.extend(analysis.diagnostics);
-            diagnostics.extend(check.diagnostics);
-            analysis.declarations
-        };
+        let (declarations, semantic_diagnostics) =
+            if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
+                (
+                    // Keep the first name-analysis pass off recovered parse trees.
+                    // Partial-tree analysis can be added once recovery semantics are clearer.
+                    aven_parser::collect_declarations(&parse.module),
+                    Vec::new(),
+                )
+            } else {
+                let analysis = aven_parser::analyze_names(&parse.module);
+                let check = aven_check::check_module(&parse.module);
+                let diagnostics = analysis
+                    .diagnostics
+                    .into_iter()
+                    .chain(check.diagnostics)
+                    .collect();
+                (analysis.declarations, diagnostics)
+            };
 
         Self {
             version,
             file,
             parse,
-            diagnostics,
+            semantic_diagnostics,
             declarations,
         }
     }
@@ -129,9 +135,16 @@ impl ParsedDocument {
         self.file.source()
     }
 
+    fn diagnostics(&self) -> impl Iterator<Item = &AvenDiagnostic> {
+        self.parse
+            .diagnostics
+            .iter()
+            .chain(self.semantic_diagnostics.iter())
+    }
+
     #[cfg(test)]
     fn diagnostic_report(&self) -> aven_core::DiagnosticReport {
-        aven_core::DiagnosticReport::new(self.file.id, self.diagnostics.clone())
+        aven_core::DiagnosticReport::new(self.file.id, self.diagnostics().cloned().collect())
     }
 }
 
@@ -275,8 +288,7 @@ impl Backend {
             return;
         };
         let diagnostics = document
-            .diagnostics
-            .iter()
+            .diagnostics()
             .map(|diagnostic| to_lsp_diagnostic(&document, diagnostic))
             .collect();
 
@@ -657,9 +669,10 @@ mod tests {
     fn parsed_documents_include_name_diagnostics() {
         let document = ParsedDocument::new("value = 1\nvalue = 2\n".to_owned());
 
-        assert_eq!(document.diagnostics.len(), 1);
+        assert!(document.parse.diagnostics.is_empty());
+        assert_eq!(document.semantic_diagnostics.len(), 1);
         assert_eq!(
-            document.diagnostics[0].code.as_deref(),
+            document.semantic_diagnostics[0].code.as_deref(),
             Some("name.duplicate-declaration")
         );
     }
@@ -668,10 +681,23 @@ mod tests {
     fn parsed_documents_include_check_diagnostics() {
         let document = ParsedDocument::new("value : Missing = value\n".to_owned());
 
-        assert_eq!(document.diagnostics.len(), 1);
+        assert!(document.parse.diagnostics.is_empty());
+        assert_eq!(document.semantic_diagnostics.len(), 1);
         assert_eq!(
-            document.diagnostics[0].code.as_deref(),
+            document.semantic_diagnostics[0].code.as_deref(),
             Some("type.unknown-name")
+        );
+    }
+
+    #[test]
+    fn parsed_documents_keep_parse_diagnostics_separate() {
+        let document = ParsedDocument::new("value = )\n".to_owned());
+
+        assert_eq!(document.parse.diagnostics.len(), 1);
+        assert!(document.semantic_diagnostics.is_empty());
+        assert_eq!(
+            document.parse.diagnostics[0].code.as_deref(),
+            Some("parse.unexpected-delimiter")
         );
     }
 

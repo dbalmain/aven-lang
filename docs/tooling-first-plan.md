@@ -764,7 +764,10 @@ updates for the same URI, version, and text reuse the existing `ParsedDocument`;
 new versions replace it while preserving the URI's stable `FileId`. LSP
 formatting now calls `aven_fmt::format_parsed_source` with the cached
 `ParseOutput`, so formatting no longer reparses the document through
-`format_source`.
+`format_source`. The second M9 slice split cheap `parse.diagnostics` from
+expensive `semantic_diagnostics`; LSP publishing still streams the combined
+diagnostics, but later debounce/cancellation can now skip or delay semantic
+work without changing the parse cache shape.
 
 ## Phase 2 Scope
 
