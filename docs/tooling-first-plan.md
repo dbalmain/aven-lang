@@ -632,7 +632,7 @@ computed hover output; those belong to inference and comptime work.
 
 ## Milestone 8: Test Harness And Fixtures
 
-Status: in progress
+Status: done
 
 Goal: make syntax and diagnostic changes reviewable.
 
@@ -663,6 +663,13 @@ Done when:
 
 - syntax changes require updating intentional fixtures
 - diagnostics are stable enough for AI agents to rely on codes
+
+Progress: M8 has fixture-driven coverage for parser diagnostics, AST summaries,
+lexer streams, layout streams, formatter output, declarations, name analysis,
+and semantic check diagnostics. CLI integration tests cover `check`, `fmt`,
+`tokens`, `layout`, JSON diagnostic output, and write/no-write behavior. The LSP
+has a protocol smoke test that drives `initialize`, `textDocument/didOpen`, and
+`textDocument/documentSymbol` through `tower-lsp`.
 
 ## Milestone 9: Incremental Tooling
 

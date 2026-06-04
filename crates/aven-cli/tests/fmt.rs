@@ -69,6 +69,20 @@ fn fmt_refuses_parse_errors_without_writing() {
 }
 
 #[test]
+fn check_accepts_valid_source() {
+    let file = TempFile::new("check-ok", "value = 1\n");
+
+    let output = run_aven(["check"], file.path());
+
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("ok (parse, name, and annotation checks only"),
+        "expected success message, got:\n{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn check_reports_name_diagnostics() {
     let source = "value = 1\nvalue = 2\n";
     let file = TempFile::new("name-error", source);
@@ -119,6 +133,46 @@ fn check_json_reports_structured_diagnostics() {
     );
     assert_eq!(json["diagnostics"][0]["labels"][0]["span"]["start"], 8);
     assert_eq!(json["diagnostics"][0]["labels"][0]["span"]["end"], 15);
+}
+
+#[test]
+fn tokens_prints_lexer_stream() {
+    let file = TempFile::new("tokens", "value = 1\n");
+
+    let output = run_aven(["tokens"], file.path());
+
+    assert_success(&output);
+    let stdout = stdout(&output);
+    assert!(
+        stdout.contains("identifier `value`"),
+        "expected identifier token, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("operator `=`"),
+        "expected operator token, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("number `1`"),
+        "expected number token, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn layout_prints_layout_stream() {
+    let file = TempFile::new("layout", "value =\n  item = 1\n");
+
+    let output = run_aven(["layout"], file.path());
+
+    assert_success(&output);
+    let stdout = stdout(&output);
+    assert!(
+        stdout.contains("layout indent"),
+        "expected layout indent token, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("layout dedent"),
+        "expected layout dedent token, got:\n{stdout}"
+    );
 }
 
 fn run_aven<const N: usize>(args: [&str; N], path: &Path) -> Output {
