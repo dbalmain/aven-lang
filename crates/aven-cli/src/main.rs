@@ -34,6 +34,12 @@ enum Command {
         timings: bool,
     },
 
+    /// Explain a diagnostic code.
+    Explain {
+        /// Diagnostic code to explain.
+        code: String,
+    },
+
     /// Print lexer tokens for debugging parser work.
     Tokens {
         /// Source file to tokenize.
@@ -76,6 +82,7 @@ async fn main() -> Result<()> {
             format,
             timings,
         } => check(&path, format, timings),
+        Command::Explain { code } => explain(&code),
         Command::Tokens { path } => tokens(&path),
         Command::Layout { path } => layout(&path),
         Command::Fmt { check, path } => fmt(&path, check),
@@ -84,6 +91,17 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn explain(code: &str) -> Result<()> {
+    let Some(explanation) = aven_core::explain(code) else {
+        bail!("no explanation found for diagnostic code `{code}`");
+    };
+
+    println!("{}", explanation.code);
+    println!();
+    println!("{}", explanation.text);
+    Ok(())
 }
 
 fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {

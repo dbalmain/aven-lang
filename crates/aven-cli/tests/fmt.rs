@@ -210,6 +210,34 @@ fn check_json_timings_marks_skipped_semantic_phases() {
 }
 
 #[test]
+fn explain_prints_diagnostic_explanations() {
+    let output = run_aven_without_path(["explain", "parse.unclosed-delimiter"]);
+
+    assert_success(&output);
+    let stdout = stdout(&output);
+    assert!(
+        stdout.contains("parse.unclosed-delimiter"),
+        "expected diagnostic code, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("opened but not closed"),
+        "expected explanation text, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn explain_rejects_unknown_diagnostic_codes() {
+    let output = run_aven_without_path(["explain", "parse.not-real"]);
+
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("no explanation found"),
+        "expected unknown-code error, got:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn tokens_prints_lexer_stream() {
     let file = TempFile::new("tokens", "value = 1\n");
 
@@ -253,6 +281,13 @@ fn run_aven<const N: usize>(args: [&str; N], path: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_aven"))
         .args(args)
         .arg(path)
+        .output()
+        .expect("failed to run aven")
+}
+
+fn run_aven_without_path<const N: usize>(args: [&str; N]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_aven"))
+        .args(args)
         .output()
         .expect("failed to run aven")
 }

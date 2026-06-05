@@ -98,7 +98,7 @@ belongs to the lexer/layout/parser milestones.
 
 ## Milestone 1: Source And Diagnostic Infrastructure
 
-Status: in progress
+Status: done
 
 Goal: make source files and diagnostics robust enough for parser work.
 
@@ -120,7 +120,9 @@ table and parsed documents; each `ParsedDocument` owns its `SourceFile`.
 `SourceMap` remains core infrastructure for future multi-file work, but the
 single-file CLI and Arc-per-document LSP path do not store sources in it yet.
 Lexer and layout stay string/token utilities; `parse_source(&SourceFile)` is the
-file-aware parser entry point.
+file-aware parser entry point. `aven explain <code>` looks up a short
+diagnostic explanation from the shared core table, so humans and AI agents can
+get repair context without scraping terminal output.
 
 Even though incremental compilation is deferred, this milestone should make the
 data-shape decisions that keep incremental tooling possible:

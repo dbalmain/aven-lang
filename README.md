@@ -14,6 +14,7 @@ language runtime; it is a tight toolchain loop:
 
 ```bash
 cargo run -p aven -- check examples/hello.av
+cargo run -p aven -- explain parse.unclosed-delimiter
 cargo run -p aven -- fmt --check examples/hello.av
 cargo run -p aven -- lsp
 ```
