@@ -1,4 +1,4 @@
-use aven_core::{Diagnostic, Label, Span};
+use aven_core::{Diagnostic, Label, Span, codes};
 
 use crate::declarations::{CallableShape, Declaration, DeclarationShape, collect_declarations};
 use crate::items::{MergedItem, merged_items};
@@ -70,7 +70,7 @@ fn duplicate_top_level_diagnostics(declarations: &[Declaration]) -> Vec<Diagnost
 
         diagnostics.push(
             Diagnostic::error(format!("duplicate declaration `{}`", declaration.name))
-                .with_code("name.duplicate-declaration")
+                .with_code(codes::name::DUPLICATE_DECLARATION)
                 .with_label(Label::primary(
                     declaration.name_span,
                     "declaration repeated here",
@@ -260,7 +260,7 @@ fn diagnose_uppercase_runtime_name(name: &str, span: Span, diagnostics: &mut Vec
         Diagnostic::error(format!(
             "uppercase parameter `{name}` cannot bind a runtime argument"
         ))
-        .with_code("name.uppercase-runtime-binding")
+        .with_code(codes::name::UPPERCASE_RUNTIME_BINDING)
         .with_label(Label::primary(span, "runtime binding introduced here"))
         .with_note("runtime values use lowercase names; uppercase names are reserved for comptime identifiers"),
     );
@@ -297,7 +297,7 @@ impl ScopeStack {
         if let Some(previous) = self.find_current(name) {
             diagnostics.push(
                 Diagnostic::error(format!("duplicate local binding `{name}`"))
-                    .with_code("name.duplicate-local")
+                    .with_code(codes::name::DUPLICATE_LOCAL)
                     .with_label(Label::primary(span, "binding repeated here"))
                     .with_label(Label::primary(
                         previous.span,
@@ -310,7 +310,7 @@ impl ScopeStack {
         } else if let Some(previous) = self.find_visible(name) {
             diagnostics.push(
                 Diagnostic::error(format!("accidental shadowing of `{name}`"))
-                    .with_code("name.accidental-shadowing")
+                    .with_code(codes::name::ACCIDENTAL_SHADOWING)
                     .with_label(Label::primary(span, "new binding shadows this name"))
                     .with_label(Label::primary(
                         previous.span,
@@ -393,7 +393,7 @@ fn unused_binding_diagnostic(binding: &ScopeBinding) -> Diagnostic {
     };
 
     Diagnostic::warning(message)
-        .with_code("name.unused-binding")
+        .with_code(codes::name::UNUSED_BINDING)
         .with_label(Label::primary(binding.span, label))
         .with_note(note)
 }

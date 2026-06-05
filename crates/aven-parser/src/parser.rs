@@ -1,4 +1,4 @@
-use aven_core::{Diagnostic, FileId, Label, SourceFile, Span};
+use aven_core::{Diagnostic, FileId, Label, SourceFile, Span, codes};
 
 use crate::{Token, TokenKind, lex_then_layout};
 
@@ -345,7 +345,7 @@ impl Parser<'_> {
             let span = self.tokens[equals].span;
             self.diagnostics.push(
                 Diagnostic::error("binding is missing a name")
-                    .with_code("parse.missing-binding-name")
+                    .with_code(codes::parse::MISSING_BINDING_NAME)
                     .with_label(Label::primary(Span::point(span.start), "expected a name"))
                     .with_note("add a name before `=`, for example `name = expr`"),
             );
@@ -638,7 +638,7 @@ impl Parser<'_> {
                 Some(token) => {
                     self.diagnostics.push(
                         Diagnostic::error("expected lambda parameter")
-                            .with_code("parse.expected-parameter")
+                            .with_code(codes::parse::EXPECTED_PARAMETER)
                             .with_label(Label::primary(token.span, "expected a parameter name"))
                             .with_note("use an identifier like `x`, or `_` to ignore an argument"),
                     );
@@ -997,7 +997,7 @@ impl Parser<'_> {
             _ => {
                 self.diagnostics.push(
                     Diagnostic::error("expected expression")
-                        .with_code("parse.expected-expression")
+                        .with_code(codes::parse::EXPECTED_EXPRESSION)
                         .with_label(Label::primary(token.span, "expected an expression here"))
                         .with_note("expressions are literals, identifiers, function calls, lambdas, or collection literals"),
                 );
@@ -1420,7 +1420,7 @@ impl Parser<'_> {
     fn report_invalid_binding_name(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("invalid binding name")
-                .with_code("parse.invalid-binding-name")
+                .with_code(codes::parse::INVALID_BINDING_NAME)
                 .with_label(Label::primary(
                     span,
                     "binding names must be a single identifier",
@@ -1433,7 +1433,7 @@ impl Parser<'_> {
         let span = Span::point(offset);
         self.diagnostics.push(
             Diagnostic::error("binding is missing a value")
-                .with_code("parse.missing-binding-value")
+                .with_code(codes::parse::MISSING_BINDING_VALUE)
                 .with_label(Label::primary(span, "expected an expression after `=`"))
                 .with_note(
                     "add an expression after `=`, or use an indented block on the next line",
@@ -1446,7 +1446,7 @@ impl Parser<'_> {
         let span = Span::point(offset);
         self.diagnostics.push(
             Diagnostic::error("lambda is missing a body")
-                .with_code("parse.missing-lambda-body")
+                .with_code(codes::parse::MISSING_LAMBDA_BODY)
                 .with_label(Label::primary(
                     span,
                     "expected an expression or indented block after `=>`",
@@ -1460,7 +1460,7 @@ impl Parser<'_> {
         let span = Span::point(offset);
         self.diagnostics.push(
             Diagnostic::error("match expression is missing arms")
-                .with_code("parse.missing-match-arms")
+                .with_code(codes::parse::MISSING_MATCH_ARMS)
                 .with_label(Label::primary(
                     span,
                     "expected an indented block of match arms after `?>`",
@@ -1472,7 +1472,7 @@ impl Parser<'_> {
     fn report_inline_match_arms(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("match arms must start on the next line, indented")
-                .with_code("parse.inline-match-arms")
+                .with_code(codes::parse::INLINE_MATCH_ARMS)
                 .with_label(Label::primary(span, "move these arms to an indented block"))
                 .with_note("write one arm per line, indented under `?>`, for example:\n  result ?>\n    Ok(value) => value"),
         );
@@ -1481,7 +1481,7 @@ impl Parser<'_> {
     fn report_expected_match_arrow(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("expected match arm arrow")
-                .with_code("parse.expected-match-arrow")
+                .with_code(codes::parse::EXPECTED_MATCH_ARROW)
                 .with_label(Label::primary(span, "expected `=>` after this pattern"))
                 .with_note("match arms use `pattern => expression`"),
         );
@@ -1491,7 +1491,7 @@ impl Parser<'_> {
         let span = Span::point(offset);
         self.diagnostics.push(
             Diagnostic::error("match arm is missing a body")
-                .with_code("parse.missing-match-body")
+                .with_code(codes::parse::MISSING_MATCH_BODY)
                 .with_label(Label::primary(
                     span,
                     "expected an expression or indented block after `=>`",
@@ -1504,7 +1504,7 @@ impl Parser<'_> {
     fn report_expected_pattern(&mut self, span: Span) -> Expr {
         self.diagnostics.push(
             Diagnostic::error("expected pattern")
-                .with_code("parse.expected-pattern")
+                .with_code(codes::parse::EXPECTED_PATTERN)
                 .with_label(Label::primary(span, "expected a pattern here"))
                 .with_note("patterns can be `_`, names, literals, tuples, records, or constructors like `Ok(value)`"),
         );
@@ -1514,7 +1514,7 @@ impl Parser<'_> {
     fn report_single_item_tuple(&mut self, comma_span: Span) {
         self.diagnostics.push(
             Diagnostic::error("anonymous 1-tuples are not supported")
-                .with_code("parse.single-item-tuple")
+                .with_code(codes::parse::SINGLE_ITEM_TUPLE)
                 .with_label(Label::primary(
                     comma_span,
                     "this comma creates an anonymous 1-tuple",
@@ -1527,7 +1527,7 @@ impl Parser<'_> {
         let span = Span::point(offset);
         self.diagnostics.push(
             Diagnostic::error("expected type")
-                .with_code("parse.expected-type")
+                .with_code(codes::parse::EXPECTED_TYPE)
                 .with_label(Label::primary(span, "expected a type here"))
                 .with_note("types include names like `Text`, variables like `a`, functions like `a -> b`, records, variants, and applications like `Array[a]`"),
         );
@@ -1537,7 +1537,7 @@ impl Parser<'_> {
     fn report_expected_record_entry(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("expected record entry")
-                .with_code("parse.expected-record-entry")
+                .with_code(codes::parse::EXPECTED_RECORD_ENTRY)
                 .with_label(Label::primary(span, "expected a record field or transform"))
                 .with_note("record entries are fields, shorthands, spreads, deletes, or renames"),
         );
@@ -1546,7 +1546,7 @@ impl Parser<'_> {
     fn report_expected_record_label(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("expected record label")
-                .with_code("parse.expected-record-label")
+                .with_code(codes::parse::EXPECTED_RECORD_LABEL)
                 .with_label(Label::primary(span, "expected a field name here"))
                 .with_note("use a bare field name such as `password` or `fullName`"),
         );
@@ -1555,7 +1555,7 @@ impl Parser<'_> {
     fn report_expected_field_name(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("expected field name")
-                .with_code("parse.expected-field-name")
+                .with_code(codes::parse::EXPECTED_FIELD_NAME)
                 .with_label(Label::primary(
                     span,
                     "expected a field name after this access",
@@ -1567,7 +1567,7 @@ impl Parser<'_> {
     fn report_unexpected_separator(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("unexpected separator")
-                .with_code("parse.unexpected-separator")
+                .with_code(codes::parse::UNEXPECTED_SEPARATOR)
                 .with_label(Label::primary(span, "extra separator"))
                 .with_note("remove the extra `,` or `;`"),
         );
@@ -1577,7 +1577,7 @@ impl Parser<'_> {
         let span = self.current_span();
         self.diagnostics.push(
             Diagnostic::error("unexpected indentation")
-                .with_code("parse.unexpected-indentation")
+                .with_code(codes::parse::UNEXPECTED_INDENTATION)
                 .with_label(Label::primary(span, "top-level items cannot be indented"))
                 .with_note("remove the indentation or place the item inside a block"),
         );
@@ -1599,7 +1599,7 @@ impl Parser<'_> {
 
         self.diagnostics.push(
             Diagnostic::error("unsupported expression syntax")
-                .with_code("parse.unsupported-syntax")
+                .with_code(codes::parse::UNSUPPORTED_SYNTAX)
                 .with_label(Label::primary(
                     token.span,
                     "this syntax is not supported by the core parser yet",
@@ -1884,7 +1884,7 @@ fn scan_delimiters(tokens: &[Token]) -> Vec<Diagnostic> {
     for (delimiter, span) in stack {
         diagnostics.push(
             Diagnostic::error(format!("unclosed `{}`", delimiter_text(&delimiter)))
-                .with_code("parse.unclosed-delimiter")
+                .with_code(codes::parse::UNCLOSED_DELIMITER)
                 .with_label(Label::primary(span, "opened here")),
         );
     }
@@ -1900,7 +1900,7 @@ fn close_delimiter(
     let Some((open, span)) = stack.pop() else {
         diagnostics.push(
             Diagnostic::error(format!("unexpected `{}`", delimiter_text(&close.kind)))
-                .with_code("parse.unexpected-delimiter")
+                .with_code(codes::parse::UNEXPECTED_DELIMITER)
                 .with_label(Label::primary(close.span, "unexpected here")),
         );
         return;
@@ -1915,7 +1915,7 @@ fn close_delimiter(
             "mismatched delimiter `{}`",
             delimiter_text(&close.kind)
         ))
-        .with_code("parse.mismatched-delimiter")
+        .with_code(codes::parse::MISMATCHED_DELIMITER)
         .with_label(Label::primary(
             span,
             format!("opened with `{}`", delimiter_text(&open)),

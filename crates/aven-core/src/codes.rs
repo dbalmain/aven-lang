@@ -1,0 +1,100 @@
+//! Stable diagnostic code constants — the single source of truth for every
+//! `category.what-went-wrong` code the toolchain emits.
+//!
+//! When adding a diagnostic: define its constant here, reference it at the
+//! emission site through `with_code`, list it in [`ALL`], and add a matching
+//! entry to `explain::EXPLANATIONS`. The `explanation_table_*` test keeps the
+//! explanation table and [`ALL`] in sync; keeping [`ALL`] complete as new
+//! constants are added is the manual step the compiler cannot check.
+
+pub mod layout {
+    pub const INCONSISTENT_INDENTATION: &str = "layout.inconsistent-indentation";
+}
+
+pub mod lex {
+    pub const LEADING_BOM: &str = "lex.leading-bom";
+    pub const RESERVED_OPERATOR: &str = "lex.reserved-operator";
+    pub const TAB_INDENTATION: &str = "lex.tab-indentation";
+    pub const UNEXPECTED_CHARACTER: &str = "lex.unexpected-character";
+    pub const UNTERMINATED_REGEX: &str = "lex.unterminated-regex";
+    pub const UNTERMINATED_STRING: &str = "lex.unterminated-string";
+}
+
+pub mod name {
+    pub const ACCIDENTAL_SHADOWING: &str = "name.accidental-shadowing";
+    pub const DUPLICATE_DECLARATION: &str = "name.duplicate-declaration";
+    pub const DUPLICATE_LOCAL: &str = "name.duplicate-local";
+    pub const UNUSED_BINDING: &str = "name.unused-binding";
+    pub const UPPERCASE_RUNTIME_BINDING: &str = "name.uppercase-runtime-binding";
+}
+
+pub mod parse {
+    pub const EXPECTED_EXPRESSION: &str = "parse.expected-expression";
+    pub const EXPECTED_FIELD_NAME: &str = "parse.expected-field-name";
+    pub const EXPECTED_MATCH_ARROW: &str = "parse.expected-match-arrow";
+    pub const EXPECTED_PARAMETER: &str = "parse.expected-parameter";
+    pub const EXPECTED_PATTERN: &str = "parse.expected-pattern";
+    pub const EXPECTED_RECORD_ENTRY: &str = "parse.expected-record-entry";
+    pub const EXPECTED_RECORD_LABEL: &str = "parse.expected-record-label";
+    pub const EXPECTED_TYPE: &str = "parse.expected-type";
+    pub const INLINE_MATCH_ARMS: &str = "parse.inline-match-arms";
+    pub const INVALID_BINDING_NAME: &str = "parse.invalid-binding-name";
+    pub const MISMATCHED_DELIMITER: &str = "parse.mismatched-delimiter";
+    pub const MISSING_BINDING_NAME: &str = "parse.missing-binding-name";
+    pub const MISSING_BINDING_VALUE: &str = "parse.missing-binding-value";
+    pub const MISSING_LAMBDA_BODY: &str = "parse.missing-lambda-body";
+    pub const MISSING_MATCH_ARMS: &str = "parse.missing-match-arms";
+    pub const MISSING_MATCH_BODY: &str = "parse.missing-match-body";
+    pub const SINGLE_ITEM_TUPLE: &str = "parse.single-item-tuple";
+    pub const UNCLOSED_DELIMITER: &str = "parse.unclosed-delimiter";
+    pub const UNEXPECTED_DELIMITER: &str = "parse.unexpected-delimiter";
+    pub const UNEXPECTED_INDENTATION: &str = "parse.unexpected-indentation";
+    pub const UNEXPECTED_SEPARATOR: &str = "parse.unexpected-separator";
+    pub const UNSUPPORTED_SYNTAX: &str = "parse.unsupported-syntax";
+}
+
+pub mod ty {
+    pub const LOWERCASE_VARIANT_TAG: &str = "type.lowercase-variant-tag";
+    pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
+    pub const UNKNOWN_NAME: &str = "type.unknown-name";
+}
+
+pub const ALL: &[&str] = &[
+    layout::INCONSISTENT_INDENTATION,
+    lex::LEADING_BOM,
+    lex::RESERVED_OPERATOR,
+    lex::TAB_INDENTATION,
+    lex::UNEXPECTED_CHARACTER,
+    lex::UNTERMINATED_REGEX,
+    lex::UNTERMINATED_STRING,
+    name::ACCIDENTAL_SHADOWING,
+    name::DUPLICATE_DECLARATION,
+    name::DUPLICATE_LOCAL,
+    name::UNUSED_BINDING,
+    name::UPPERCASE_RUNTIME_BINDING,
+    parse::EXPECTED_EXPRESSION,
+    parse::EXPECTED_FIELD_NAME,
+    parse::EXPECTED_MATCH_ARROW,
+    parse::EXPECTED_PARAMETER,
+    parse::EXPECTED_PATTERN,
+    parse::EXPECTED_RECORD_ENTRY,
+    parse::EXPECTED_RECORD_LABEL,
+    parse::EXPECTED_TYPE,
+    parse::INLINE_MATCH_ARMS,
+    parse::INVALID_BINDING_NAME,
+    parse::MISMATCHED_DELIMITER,
+    parse::MISSING_BINDING_NAME,
+    parse::MISSING_BINDING_VALUE,
+    parse::MISSING_LAMBDA_BODY,
+    parse::MISSING_MATCH_ARMS,
+    parse::MISSING_MATCH_BODY,
+    parse::SINGLE_ITEM_TUPLE,
+    parse::UNCLOSED_DELIMITER,
+    parse::UNEXPECTED_DELIMITER,
+    parse::UNEXPECTED_INDENTATION,
+    parse::UNEXPECTED_SEPARATOR,
+    parse::UNSUPPORTED_SYNTAX,
+    ty::LOWERCASE_VARIANT_TAG,
+    ty::TYPE_ONLY_RECORD_ENTRY,
+    ty::UNKNOWN_NAME,
+];

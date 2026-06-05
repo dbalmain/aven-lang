@@ -1,4 +1,4 @@
-use aven_core::{Diagnostic, Label, Span};
+use aven_core::{Diagnostic, Label, Span, codes};
 
 use crate::{LexOutput, Token, TokenKind, lex_source};
 
@@ -131,7 +131,7 @@ impl LayoutBuilder {
 
         self.diagnostics.push(
             Diagnostic::error("inconsistent indentation")
-                .with_code("layout.inconsistent-indentation")
+                .with_code(codes::layout::INCONSISTENT_INDENTATION)
                 .with_label(Label::primary(
                     span,
                     format!("this line is indented to {}", spaces_text(target)),

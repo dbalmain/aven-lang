@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use aven_core::{Diagnostic, Label, Span};
+use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
     Binding, DeclarationPhase, Expr, ExprKind, Item, MatchArm, Module, Param, RecordEntry,
     Signature, collect_declarations, walk_expr_children,
@@ -121,7 +121,7 @@ impl Checker {
                             Diagnostic::error(
                                 "optional record fields are only valid in type position",
                             )
-                            .with_code("type.type-only-record-entry")
+                            .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
                             .with_label(Label::primary(*name_span, "optional field marker here"))
                             .with_note("remove `?` in value records; use `field = Nil` when the value is absent"),
                         );
@@ -131,7 +131,7 @@ impl Checker {
                 RecordEntry::Open { span } => {
                     self.diagnostics.push(
                         Diagnostic::error("open row markers are only valid in type position")
-                            .with_code("type.type-only-record-entry")
+                            .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
                             .with_label(Label::primary(*span, "open row marker here"))
                             .with_note("remove `.._` from value records"),
                     );
@@ -252,7 +252,7 @@ impl Checker {
 
         self.diagnostics.push(
             Diagnostic::error(format!("unknown type name `{name}`"))
-                .with_code("type.unknown-name")
+                .with_code(codes::ty::UNKNOWN_NAME)
                 .with_label(Label::primary(span, "type name not found"))
                 .with_note("define the type, import it, or use a lowercase type variable for a generic type"),
         );
@@ -261,7 +261,7 @@ impl Checker {
     fn report_lowercase_variant_tag(&mut self, name: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("variant tag `{name}` must start with uppercase"))
-                .with_code("type.lowercase-variant-tag")
+                .with_code(codes::ty::LOWERCASE_VARIANT_TAG)
                 .with_label(Label::primary(span, "lowercase variant tag"))
                 .with_note("variant tags use uppercase names, for example `Ok` or `Err`"),
         );

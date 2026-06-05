@@ -1,4 +1,4 @@
-use aven_core::{Diagnostic, Label, Span};
+use aven_core::{Diagnostic, Label, Span, codes};
 
 #[derive(Debug, Clone)]
 pub struct LexOutput {
@@ -171,7 +171,7 @@ impl Lexer<'_> {
         let end = '\u{feff}'.len_utf8();
         self.diagnostics.push(
             Diagnostic::error("leading byte order mark is not supported")
-                .with_code("lex.leading-bom")
+                .with_code(codes::lex::LEADING_BOM)
                 .with_label(Label::primary(
                     Span::new(0, end),
                     "remove this byte order mark",
@@ -195,7 +195,7 @@ impl Lexer<'_> {
                     self.offset += 1;
                     self.diagnostics.push(
                         Diagnostic::error("tabs are not allowed in indentation")
-                            .with_code("lex.tab-indentation")
+                            .with_code(codes::lex::TAB_INDENTATION)
                             .with_label(Label::primary(
                                 Span::new(tab_start, self.offset),
                                 "use spaces for indentation",
@@ -354,7 +354,7 @@ impl Lexer<'_> {
     fn push_unterminated_string(&mut self, start: usize) {
         self.diagnostics.push(
             Diagnostic::error("unterminated string literal")
-                .with_code("lex.unterminated-string")
+                .with_code(codes::lex::UNTERMINATED_STRING)
                 .with_label(Label::primary(
                     Span::new(start, self.offset),
                     "string starts here",
@@ -467,7 +467,7 @@ impl Lexer<'_> {
 
         self.diagnostics.push(
             Diagnostic::error("unterminated regex literal")
-                .with_code("lex.unterminated-regex")
+                .with_code(codes::lex::UNTERMINATED_REGEX)
                 .with_label(Label::primary(
                     Span::new(start, self.offset),
                     "regex starts here",
@@ -585,7 +585,7 @@ impl Lexer<'_> {
     fn push_reserved_operator_diagnostic(&mut self, start: usize, prefix: &str) {
         self.diagnostics.push(
             Diagnostic::error(format!("reserved `{prefix}` operator"))
-                .with_code("lex.reserved-operator")
+                .with_code(codes::lex::RESERVED_OPERATOR)
                 .with_label(Label::primary(
                     Span::new(start, self.offset),
                     "this operator namespace is reserved by the language",
@@ -627,7 +627,7 @@ impl Lexer<'_> {
 
         self.diagnostics.push(
             Diagnostic::error(format!("unexpected character `{ch}`"))
-                .with_code("lex.unexpected-character")
+                .with_code(codes::lex::UNEXPECTED_CHARACTER)
                 .with_label(Label::primary(
                     Span::new(start, self.offset),
                     "this character is not valid syntax",

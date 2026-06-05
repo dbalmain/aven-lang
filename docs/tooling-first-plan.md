@@ -122,7 +122,9 @@ single-file CLI and Arc-per-document LSP path do not store sources in it yet.
 Lexer and layout stay string/token utilities; `parse_source(&SourceFile)` is the
 file-aware parser entry point. `aven explain <code>` looks up a short
 diagnostic explanation from the shared core table, so humans and AI agents can
-get repair context without scraping terminal output.
+get repair context without scraping terminal output. Emitted diagnostic codes
+now come from an `aven-core` registry, and the explanation table has a coverage
+test against that registry.
 
 Even though incremental compilation is deferred, this milestone should make the
 data-shape decisions that keep incremental tooling possible:
