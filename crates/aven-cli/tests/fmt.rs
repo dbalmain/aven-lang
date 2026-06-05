@@ -105,6 +105,24 @@ fn check_timings_reports_text_timings() {
 }
 
 #[test]
+fn check_timings_marks_skipped_semantic_phases() {
+    let file = TempFile::new("skipped-timings", "value = )\n");
+
+    let output = run_aven(["check", "--timings"], file.path());
+
+    assert_failure(&output);
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("name: skipped"),
+        "expected skipped name timing, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("check: skipped"),
+        "expected skipped check timing, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn check_reports_name_diagnostics() {
     let source = "value = 1\nvalue = 2\n";
     let file = TempFile::new("name-error", source);

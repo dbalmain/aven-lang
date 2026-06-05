@@ -1,0 +1,15 @@
+[package]
+name = "aven-compiler"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aven-check.workspace = true
+aven-core.workspace = true
+aven-parser.workspace = true

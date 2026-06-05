@@ -42,27 +42,24 @@ const SEMANTIC_DEBOUNCE: Duration = Duration::from_millis(150);
 #[derive(Debug, Default)]
 struct DocumentStore {
     file_ids: HashMap<Url, FileId>,
-    documents: HashMap<Url, Arc<ParsedDocument>>,
+    database: aven_compiler::CompilerDatabase<Url>,
 }
 
 impl DocumentStore {
     fn set_document(&mut self, uri: Url, version: i32, text: String) -> FileId {
         let file_id = self.file_id_for(&uri);
-        if let Some(document) = self.documents.get(&uri)
-            && document.version == version
-            && document.source() == text
-        {
-            return file_id;
+        let revision = aven_compiler::Revision::from(version);
+
+        if self.database.needs_update(&uri, revision, &text) {
+            let file = SourceFile::new(file_id, source_name(&uri), uri.to_file_path().ok(), text);
+            self.database.set_document(uri, revision, file);
         }
 
-        let file = SourceFile::new(file_id, source_name(&uri), uri.to_file_path().ok(), text);
-        self.documents
-            .insert(uri, Arc::new(ParsedDocument::from_file(version, file)));
         file_id
     }
 
     fn document(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
-        self.documents.get(uri).cloned()
+        self.database.document(uri)
     }
 
     fn set_semantic_diagnostics(
@@ -71,19 +68,9 @@ impl DocumentStore {
         version: i32,
         diagnostics: Vec<AvenDiagnostic>,
     ) -> bool {
-        let Some(document) = self.documents.get(uri) else {
-            return false;
-        };
-
-        if document.version != version {
-            return false;
-        }
-
-        self.documents.insert(
-            uri.clone(),
-            Arc::new(document.with_semantic_diagnostics(diagnostics)),
-        );
-        true
+        self.database
+            .set_semantic_diagnostics(uri, aven_compiler::Revision::from(version), diagnostics)
+            .is_some()
     }
 
     fn file_id_for(&mut self, uri: &Url) -> FileId {
@@ -103,93 +90,7 @@ fn source_name(uri: &Url) -> String {
         .map_or_else(|| uri.to_string(), |path| path.display().to_string())
 }
 
-#[derive(Debug)]
-struct ParsedDocument {
-    version: i32,
-    file: SourceFile,
-    parse: Arc<aven_parser::ParseOutput>,
-    semantic_diagnostics: Vec<AvenDiagnostic>,
-    declarations: Vec<aven_parser::Declaration>,
-}
-
-impl ParsedDocument {
-    #[cfg(test)]
-    fn new(source: String) -> Self {
-        Self::with_file_id(FileId(0), source)
-    }
-
-    #[cfg(test)]
-    fn with_file_id(file_id: FileId, source: String) -> Self {
-        Self::with_file_id_and_version(file_id, 0, source)
-    }
-
-    #[cfg(test)]
-    fn with_file_id_and_version(file_id: FileId, version: i32, source: String) -> Self {
-        let file = SourceFile::new(file_id, format!("lsp:{}", file_id.0), None, source);
-        Self::from_file(version, file)
-    }
-
-    #[cfg(test)]
-    fn with_semantics(source: String) -> Self {
-        let document = Self::new(source);
-        document.with_semantic_diagnostics(semantic_diagnostics_for_parse(&document.parse))
-    }
-
-    fn from_file(version: i32, file: SourceFile) -> Self {
-        let parse = aven_parser::parse_source(&file);
-        let declarations = aven_parser::collect_declarations(&parse.module);
-
-        Self {
-            version,
-            file,
-            parse: Arc::new(parse),
-            semantic_diagnostics: Vec::new(),
-            declarations,
-        }
-    }
-
-    fn with_semantic_diagnostics(&self, semantic_diagnostics: Vec<AvenDiagnostic>) -> Self {
-        Self {
-            version: self.version,
-            file: self.file.clone(),
-            parse: Arc::clone(&self.parse),
-            semantic_diagnostics,
-            declarations: self.declarations.clone(),
-        }
-    }
-
-    fn source(&self) -> &str {
-        self.file.source()
-    }
-
-    fn diagnostics(&self) -> impl Iterator<Item = &AvenDiagnostic> {
-        self.parse
-            .diagnostics
-            .iter()
-            .chain(self.semantic_diagnostics.iter())
-    }
-
-    #[cfg(test)]
-    fn diagnostic_report(&self) -> aven_core::DiagnosticReport {
-        aven_core::DiagnosticReport::new(self.file.id, self.diagnostics().cloned().collect())
-    }
-}
-
-fn semantic_diagnostics_for_parse(parse: &aven_parser::ParseOutput) -> Vec<AvenDiagnostic> {
-    if parse.diagnostics.iter().any(AvenDiagnostic::is_error) {
-        // Keep the first name-analysis pass off recovered parse trees.
-        // Partial-tree analysis can be added once recovery semantics are clearer.
-        return Vec::new();
-    }
-
-    let analysis = aven_parser::analyze_names(&parse.module);
-    let check = aven_check::check_module(&parse.module);
-    analysis
-        .diagnostics
-        .into_iter()
-        .chain(check.diagnostics)
-        .collect()
-}
+type ParsedDocument = aven_compiler::DocumentSnapshot;
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
@@ -249,7 +150,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let Ok(formatted) = aven_fmt::format_parsed_source(document.source(), &document.parse)
+        let Ok(formatted) =
+            aven_fmt::format_parsed_source(document.source(), document.parse_output())
         else {
             return Ok(None);
         };
@@ -336,8 +238,7 @@ impl Backend {
         };
 
         if document
-            .parse
-            .diagnostics
+            .parse_diagnostics()
             .iter()
             .any(AvenDiagnostic::is_error)
         {
@@ -369,7 +270,7 @@ impl Backend {
         let Some(document) = self.document(&uri) else {
             return;
         };
-        let version = document.version;
+        let version = document.revision().as_i32();
 
         self.client
             .publish_diagnostics(uri, document_diagnostics(&document), Some(version))
@@ -387,11 +288,11 @@ async fn publish_semantic_diagnostics(
         return;
     };
 
-    if document.version != version {
+    if document.revision() != aven_compiler::Revision::from(version) {
         return;
     }
 
-    let diagnostics = semantic_diagnostics_for_parse(&document.parse);
+    let diagnostics = aven_compiler::analyze_semantics(document.parse_output()).diagnostics;
     let Some(document) = store.lock().ok().and_then(|mut store| {
         if !store.set_semantic_diagnostics(&uri, version, diagnostics) {
             return None;
@@ -443,7 +344,7 @@ fn to_lsp_diagnostic(document: &ParsedDocument, diagnostic: &AvenDiagnostic) -> 
 
 fn document_symbols(document: &ParsedDocument) -> Vec<DocumentSymbol> {
     document
-        .declarations
+        .declarations()
         .iter()
         .map(|declaration| declaration_symbol(document, declaration))
         .collect()
@@ -499,7 +400,7 @@ fn definition_location(
     let identifier = identifier_at_position(document, position)?;
 
     if let Some(span) = aven_parser::resolve_local_definition(
-        &document.parse.module,
+        &document.parse_output().module,
         &identifier.name,
         identifier.span,
     ) {
@@ -507,7 +408,7 @@ fn definition_location(
     }
 
     let declaration = document
-        .declarations
+        .declarations()
         .iter()
         .find(|declaration| declaration.name == identifier.name)?;
 
@@ -536,8 +437,8 @@ fn rename_workspace_edit(
     }
 
     let spans = aven_parser::resolve_local_references(
-        &document.parse.module,
-        &document.parse.raw_tokens,
+        &document.parse_output().module,
+        &document.parse_output().raw_tokens,
         &identifier.name,
         identifier.span,
     )?;
@@ -560,19 +461,20 @@ fn rename_workspace_edit(
 fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Hover> {
     let identifier = identifier_at_position(document, position)?;
     let definition = aven_parser::resolve_local_definition(
-        &document.parse.module,
+        &document.parse_output().module,
         &identifier.name,
         identifier.span,
     )
     .or_else(|| {
         document
-            .declarations
+            .declarations()
             .iter()
             .find(|declaration| declaration.name == identifier.name)
             .map(|declaration| declaration.name_span)
     })?;
 
-    let annotation = aven_parser::annotation_for_definition(&document.parse.module, definition)?;
+    let annotation =
+        aven_parser::annotation_for_definition(&document.parse_output().module, definition)?;
     let rendered = aven_parser::render_annotation(document.source(), annotation);
 
     if rendered.is_empty() {
@@ -600,7 +502,7 @@ fn identifier_at_position(
 ) -> Option<IdentifierAtPosition> {
     let offset = position_to_offset(document, position)?;
 
-    document.parse.raw_tokens.iter().find_map(|token| {
+    document.parse_output().raw_tokens.iter().find_map(|token| {
         if offset < token.span.start || offset >= token.span.end {
             return None;
         }
@@ -618,7 +520,7 @@ fn identifier_at_position(
 
 fn span_to_range(document: &ParsedDocument, span: Span) -> Range {
     let (start, end) = document
-        .file
+        .file()
         .line_index()
         .span_to_range(document.source(), span);
 
@@ -629,7 +531,7 @@ fn span_to_range(document: &ParsedDocument, span: Span) -> Range {
 }
 
 fn position_to_offset(document: &ParsedDocument, target: Position) -> Option<usize> {
-    document.file.line_index().position_to_offset(
+    document.file().line_index().position_to_offset(
         document.source(),
         SourcePosition::new(target.line, target.character),
     )
@@ -643,7 +545,7 @@ fn full_document_range(document: &ParsedDocument) -> Range {
         },
         end: to_lsp_position(
             document
-                .file
+                .file()
                 .line_index()
                 .offset_to_position(document.source(), document.source().len()),
         ),
@@ -703,6 +605,21 @@ mod tests {
             store: Arc::default(),
             pending_semantic: Arc::default(),
         }
+    }
+
+    fn parsed_document(source: impl Into<String>) -> ParsedDocument {
+        parsed_document_with_file_id(FileId(0), source)
+    }
+
+    fn parsed_document_with_file_id(file_id: FileId, source: impl Into<String>) -> ParsedDocument {
+        let file = SourceFile::new(file_id, format!("lsp:{}", file_id.0), None, source);
+        aven_compiler::DocumentSnapshot::parse(aven_compiler::Revision::default(), file)
+    }
+
+    fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
+        let document = parsed_document(source);
+        let diagnostics = aven_compiler::analyze_semantics(document.parse_output()).diagnostics;
+        document.with_semantic_diagnostics(diagnostics)
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -843,9 +760,8 @@ mod tests {
 
     #[test]
     fn document_symbols_include_top_level_bindings() {
-        let document = ParsedDocument::new(
-            "User = { name = Text }\ndouble = (x) => x\nvalue = 1\n".to_owned(),
-        );
+        let document =
+            parsed_document("User = { name = Text }\ndouble = (x) => x\nvalue = 1\n".to_owned());
         let symbols = document_symbols(&document);
 
         assert_eq!(symbols.len(), 3);
@@ -859,7 +775,7 @@ mod tests {
 
     #[test]
     fn document_symbols_merge_adjacent_signature_and_binding() {
-        let document = ParsedDocument::new("double : (Int) -> Int\ndouble = (x) => x\n".to_owned());
+        let document = parsed_document("double : (Int) -> Int\ndouble = (x) => x\n".to_owned());
         let symbols = document_symbols(&document);
 
         assert_eq!(symbols.len(), 1);
@@ -875,7 +791,7 @@ mod tests {
 
     #[test]
     fn document_symbols_keep_unmatched_signatures() {
-        let document = ParsedDocument::new("value : Int\nother = 1\n".to_owned());
+        let document = parsed_document("value : Int\nother = 1\n".to_owned());
         let symbols = document_symbols(&document);
 
         assert_eq!(symbols.len(), 2);
@@ -888,63 +804,64 @@ mod tests {
 
     #[test]
     fn parsed_documents_include_name_diagnostics() {
-        let document = ParsedDocument::with_semantics("value = 1\nvalue = 2\n".to_owned());
+        let document = parsed_document_with_semantics("value = 1\nvalue = 2\n".to_owned());
 
-        assert!(document.parse.diagnostics.is_empty());
-        assert_eq!(document.semantic_diagnostics.len(), 1);
+        assert!(document.parse_diagnostics().is_empty());
+        assert_eq!(document.semantic_diagnostics().len(), 1);
         assert_eq!(
-            document.semantic_diagnostics[0].code.as_deref(),
+            document.semantic_diagnostics()[0].code.as_deref(),
             Some("name.duplicate-declaration")
         );
     }
 
     #[test]
     fn parsed_documents_include_check_diagnostics() {
-        let document = ParsedDocument::with_semantics("value : Missing = value\n".to_owned());
+        let document = parsed_document_with_semantics("value : Missing = value\n".to_owned());
 
-        assert!(document.parse.diagnostics.is_empty());
-        assert_eq!(document.semantic_diagnostics.len(), 1);
+        assert!(document.parse_diagnostics().is_empty());
+        assert_eq!(document.semantic_diagnostics().len(), 1);
         assert_eq!(
-            document.semantic_diagnostics[0].code.as_deref(),
+            document.semantic_diagnostics()[0].code.as_deref(),
             Some("type.unknown-name")
         );
     }
 
     #[test]
     fn parsed_documents_keep_parse_diagnostics_separate() {
-        let document = ParsedDocument::new("value = )\n".to_owned());
+        let document = parsed_document("value = )\n".to_owned());
 
-        assert_eq!(document.parse.diagnostics.len(), 1);
-        assert!(document.semantic_diagnostics.is_empty());
+        assert_eq!(document.parse_diagnostics().len(), 1);
+        assert!(document.semantic_diagnostics().is_empty());
         assert_eq!(
-            document.parse.diagnostics[0].code.as_deref(),
+            document.parse_diagnostics()[0].code.as_deref(),
             Some("parse.unexpected-delimiter")
         );
     }
 
     #[test]
     fn parsed_documents_start_without_semantic_diagnostics() {
-        let document = ParsedDocument::new("value : Missing = value\n".to_owned());
+        let document = parsed_document("value : Missing = value\n".to_owned());
 
-        assert!(document.parse.diagnostics.is_empty());
-        assert!(document.semantic_diagnostics.is_empty());
-        assert_eq!(document.declarations.len(), 1);
+        assert!(document.parse_diagnostics().is_empty());
+        assert!(document.semantic_diagnostics().is_empty());
+        assert_eq!(document.declarations().len(), 1);
     }
 
     #[test]
     fn parsed_documents_thread_file_ids_into_parse_output() {
-        let document = ParsedDocument::with_file_id(FileId(7), "value = 1\n".to_owned());
+        let document = parsed_document_with_file_id(FileId(7), "value = 1\n".to_owned());
 
-        assert_eq!(document.file.id, FileId(7));
-        assert_eq!(document.parse.file_id, FileId(7));
+        assert_eq!(document.file().id, FileId(7));
+        assert_eq!(document.parse_output().file_id, FileId(7));
     }
 
     #[test]
     fn parsed_document_diagnostic_report_uses_file_id() {
         let document =
-            ParsedDocument::with_file_id(FileId(7), "value : Missing = value\n".to_owned());
-        let document =
-            document.with_semantic_diagnostics(semantic_diagnostics_for_parse(&document.parse));
+            parsed_document_with_file_id(FileId(7), "value : Missing = value\n".to_owned());
+        let document = document.with_semantic_diagnostics(
+            aven_compiler::analyze_semantics(document.parse_output()).diagnostics,
+        );
         let report = document.diagnostic_report();
 
         assert_eq!(report.file_id, FileId(7));
@@ -972,7 +889,7 @@ mod tests {
         let Some(document) = store.document(&uri) else {
             panic!("expected stored document");
         };
-        assert_eq!(document.file.id, FileId(0));
+        assert_eq!(document.file().id, FileId(0));
         assert_eq!(document.source(), "value = 2\n");
     }
 
@@ -1010,7 +927,7 @@ mod tests {
         };
 
         assert!(!Arc::ptr_eq(&first, &second));
-        assert_eq!(second.version, 2);
+        assert_eq!(second.revision().as_i32(), 2);
         assert_eq!(second.source(), "value = 2\n");
     }
 
@@ -1049,9 +966,9 @@ mod tests {
         let Some(document) = store.document(&uri) else {
             panic!("expected stored document");
         };
-        assert_eq!(document.semantic_diagnostics.len(), 1);
+        assert_eq!(document.semantic_diagnostics().len(), 1);
         assert_eq!(
-            document.semantic_diagnostics[0].message,
+            document.semantic_diagnostics()[0].message,
             "semantic diagnostic"
         );
     }
@@ -1072,13 +989,13 @@ mod tests {
         let Some(document) = store.document(&uri) else {
             panic!("expected stored document");
         };
-        assert_eq!(document.version, 2);
-        assert!(document.semantic_diagnostics.is_empty());
+        assert_eq!(document.revision().as_i32(), 2);
+        assert!(document.semantic_diagnostics().is_empty());
     }
 
     #[test]
     fn definition_location_finds_top_level_runtime_bindings() {
-        let document = ParsedDocument::new("value = 1\nother = value\n".to_owned());
+        let document = parsed_document("value = 1\nother = value\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(1, 9)) else {
             panic!("expected definition location");
         };
@@ -1089,7 +1006,7 @@ mod tests {
 
     #[test]
     fn definition_location_finds_top_level_comptime_bindings() {
-        let document = ParsedDocument::new("User = { name = Text }\nvalue = User\n".to_owned());
+        let document = parsed_document("User = { name = Text }\nvalue = User\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(1, 9)) else {
             panic!("expected definition location");
         };
@@ -1100,7 +1017,7 @@ mod tests {
 
     #[test]
     fn definition_location_prefers_lambda_parameters_over_top_level_bindings() {
-        let document = ParsedDocument::new("x = 1\nf = (x) => x\n".to_owned());
+        let document = parsed_document("x = 1\nf = (x) => x\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(1, 11)) else {
             panic!("expected definition location");
         };
@@ -1111,7 +1028,7 @@ mod tests {
 
     #[test]
     fn definition_location_uses_nearest_lambda_parameter() {
-        let document = ParsedDocument::new("x = 1\nf = (x) => (x) => x\n".to_owned());
+        let document = parsed_document("x = 1\nf = (x) => (x) => x\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(1, 18)) else {
             panic!("expected definition location");
         };
@@ -1122,7 +1039,7 @@ mod tests {
 
     #[test]
     fn definition_location_finds_block_bindings() {
-        let document = ParsedDocument::new("f = () =>\n  x = 1\n  y = x\n".to_owned());
+        let document = parsed_document("f = () =>\n  x = 1\n  y = x\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(2, 6)) else {
             panic!("expected definition location");
         };
@@ -1133,9 +1050,8 @@ mod tests {
 
     #[test]
     fn definition_location_finds_match_pattern_binders() {
-        let document = ParsedDocument::new(
-            "f = (result) =>\n  result ?>\n    Ok(value) => value\n".to_owned(),
-        );
+        let document =
+            parsed_document("f = (result) =>\n  result ?>\n    Ok(value) => value\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(2, 17)) else {
             panic!("expected definition location");
         };
@@ -1146,7 +1062,7 @@ mod tests {
 
     #[test]
     fn rename_workspace_edit_renames_nearest_local_binding() {
-        let document = ParsedDocument::new("x = 1\nf = (x) => (x) => x\n".to_owned());
+        let document = parsed_document("x = 1\nf = (x) => (x) => x\n".to_owned());
         let Some(edit) =
             rename_workspace_edit(&document, test_uri(), position(1, 18), "item".to_owned())
         else {
@@ -1170,7 +1086,7 @@ mod tests {
 
     #[test]
     fn rename_workspace_edit_skips_top_level_bindings() {
-        let document = ParsedDocument::new("x = 1\nvalue = x\n".to_owned());
+        let document = parsed_document("x = 1\nvalue = x\n".to_owned());
         let edit = rename_workspace_edit(&document, test_uri(), position(1, 8), "item".to_owned());
 
         assert!(edit.is_none());
@@ -1178,7 +1094,7 @@ mod tests {
 
     #[test]
     fn rename_workspace_edit_rejects_invalid_identifiers() {
-        let document = ParsedDocument::new("f = (x) => x\n".to_owned());
+        let document = parsed_document("f = (x) => x\n".to_owned());
         let edit = rename_workspace_edit(&document, test_uri(), position(0, 10), "1x".to_owned());
 
         assert!(edit.is_none());
@@ -1186,7 +1102,7 @@ mod tests {
 
     #[test]
     fn rename_workspace_edit_rejects_phase_class_changes() {
-        let document = ParsedDocument::new("f = (x) => x\n".to_owned());
+        let document = parsed_document("f = (x) => x\n".to_owned());
         let edit = rename_workspace_edit(&document, test_uri(), position(0, 10), "Name".to_owned());
 
         assert!(edit.is_none());
@@ -1194,7 +1110,7 @@ mod tests {
 
     #[test]
     fn hover_at_position_shows_top_level_signature() {
-        let document = ParsedDocument::new("double : (Int) -> Int\ndouble = (x) => x\n".to_owned());
+        let document = parsed_document("double : (Int) -> Int\ndouble = (x) => x\n".to_owned());
         let Some(hover) = hover_at_position(&document, position(1, 1)) else {
             panic!("expected hover");
         };
@@ -1204,7 +1120,7 @@ mod tests {
 
     #[test]
     fn hover_at_position_shows_lambda_parameter_annotation() {
-        let document = ParsedDocument::new("id = (value : Text) => value\n".to_owned());
+        let document = parsed_document("id = (value : Text) => value\n".to_owned());
         let Some(hover) = hover_at_position(&document, position(0, 24)) else {
             panic!("expected hover");
         };
@@ -1214,7 +1130,7 @@ mod tests {
 
     #[test]
     fn hover_at_position_returns_none_for_unannotated_bindings() {
-        let document = ParsedDocument::new("value = 1\nother = value\n".to_owned());
+        let document = parsed_document("value = 1\nother = value\n".to_owned());
         let hover = hover_at_position(&document, position(1, 9));
 
         assert!(hover.is_none());

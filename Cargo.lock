@@ -96,7 +96,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ariadne",
- "aven-check",
+ "aven-compiler",
  "aven-core",
  "aven-fmt",
  "aven-lsp",
@@ -110,6 +110,15 @@ dependencies = [
 name = "aven-check"
 version = "0.1.0"
 dependencies = [
+ "aven-core",
+ "aven-parser",
+]
+
+[[package]]
+name = "aven-compiler"
+version = "0.1.0"
+dependencies = [
+ "aven-check",
  "aven-core",
  "aven-parser",
 ]
@@ -130,7 +139,7 @@ dependencies = [
 name = "aven-lsp"
 version = "0.1.0"
 dependencies = [
- "aven-check",
+ "aven-compiler",
  "aven-core",
  "aven-fmt",
  "aven-parser",

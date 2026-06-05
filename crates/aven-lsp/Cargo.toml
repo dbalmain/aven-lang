@@ -10,7 +10,7 @@ version.workspace = true
 workspace = true
 
 [dependencies]
-aven-check.workspace = true
+aven-compiler.workspace = true
 aven-core.workspace = true
 aven-fmt.workspace = true
 aven-parser.workspace = true

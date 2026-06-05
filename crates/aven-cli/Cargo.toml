@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 ariadne.workspace = true
-aven-check.workspace = true
+aven-compiler.workspace = true
 aven-core.workspace = true
 aven-fmt.workspace = true
 aven-lsp.workspace = true

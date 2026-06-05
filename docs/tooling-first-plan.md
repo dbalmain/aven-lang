@@ -774,6 +774,11 @@ documents parse-first: `didOpen`/`didChange` publish parse diagnostics
 immediately, schedule semantic diagnostics behind a short debounce, abort the
 previous pending semantic task for the same URI, and reject stale semantic
 results by document version before publishing.
+The fifth M9 slice introduced `aven-compiler` as the thin compiler database
+boundary: it owns immutable `DocumentSnapshot`s, parse/name/check timing,
+semantic diagnostic analysis, and a generic revision-keyed document cache. The
+CLI and LSP now consume that API instead of each reassembling the
+parse/name/check pipeline.
 
 ## Phase 2 Scope
 
