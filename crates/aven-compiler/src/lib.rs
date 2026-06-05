@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aven_core::{Diagnostic, DiagnosticReport, SourceFile};
-use aven_parser::{Declaration, ParseOutput};
+use aven_parser::{Declaration, DeclarationPhase, ParseOutput};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Revision(i32);
@@ -25,12 +27,39 @@ impl From<i32> for Revision {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DeclarationKey {
+    pub name: String,
+    pub phase: DeclarationPhase,
+    pub ordinal: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DeclarationFingerprint(u64);
+
+#[derive(Debug, Clone)]
+pub struct DeclarationArtifact {
+    key: DeclarationKey,
+    fingerprint: DeclarationFingerprint,
+}
+
+impl DeclarationArtifact {
+    pub fn key(&self) -> &DeclarationKey {
+        &self.key
+    }
+
+    pub fn fingerprint(&self) -> DeclarationFingerprint {
+        self.fingerprint
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DocumentSnapshot {
     revision: Revision,
     file: SourceFile,
     parse: Arc<ParseOutput>,
     declarations: Vec<Declaration>,
+    declaration_artifacts: Vec<Arc<DeclarationArtifact>>,
     semantic_diagnostics: Vec<Diagnostic>,
 }
 
@@ -41,13 +70,25 @@ impl DocumentSnapshot {
     }
 
     pub fn from_parse(revision: Revision, file: SourceFile, parse: ParseOutput) -> Self {
+        Self::from_parse_reusing(revision, file, parse, None)
+    }
+
+    fn from_parse_reusing(
+        revision: Revision,
+        file: SourceFile,
+        parse: ParseOutput,
+        previous: Option<&Self>,
+    ) -> Self {
         let declarations = aven_parser::collect_declarations(&parse.module);
+        let declaration_artifacts =
+            collect_declaration_artifacts(file.source(), &declarations, previous);
 
         Self {
             revision,
             file,
             parse: Arc::new(parse),
             declarations,
+            declaration_artifacts,
             semantic_diagnostics: Vec::new(),
         }
     }
@@ -58,6 +99,7 @@ impl DocumentSnapshot {
             file: self.file.clone(),
             parse: Arc::clone(&self.parse),
             declarations: self.declarations.clone(),
+            declaration_artifacts: self.declaration_artifacts.clone(),
             semantic_diagnostics,
         }
     }
@@ -82,6 +124,12 @@ impl DocumentSnapshot {
         &self.declarations
     }
 
+    pub fn declaration_artifacts(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &DeclarationArtifact> + '_ {
+        self.declaration_artifacts.iter().map(Arc::as_ref)
+    }
+
     pub fn parse_diagnostics(&self) -> &[Diagnostic] {
         &self.parse.diagnostics
     }
@@ -104,6 +152,64 @@ impl DocumentSnapshot {
     fn matches(&self, revision: Revision, source: &str) -> bool {
         self.revision == revision && self.source() == source
     }
+}
+
+fn collect_declaration_artifacts(
+    source: &str,
+    declarations: &[Declaration],
+    previous: Option<&DocumentSnapshot>,
+) -> Vec<Arc<DeclarationArtifact>> {
+    let previous_by_key: HashMap<_, _> = previous
+        .into_iter()
+        .flat_map(|document| document.declaration_artifacts.iter())
+        .map(|artifact| (artifact.key.clone(), Arc::clone(artifact)))
+        .collect();
+
+    let mut ordinals = HashMap::new();
+    declarations
+        .iter()
+        .map(|declaration| {
+            let key = declaration_key(declaration, &mut ordinals);
+            let fingerprint = declaration_fingerprint(source, declaration);
+
+            if let Some(previous) = previous_by_key.get(&key)
+                && previous.fingerprint == fingerprint
+            {
+                return Arc::clone(previous);
+            }
+
+            Arc::new(DeclarationArtifact { key, fingerprint })
+        })
+        .collect()
+}
+
+fn declaration_key(
+    declaration: &Declaration,
+    ordinals: &mut HashMap<(String, DeclarationPhase), usize>,
+) -> DeclarationKey {
+    let ordinal_key = (declaration.name.clone(), declaration.phase);
+    let ordinal = ordinals.entry(ordinal_key).or_default();
+    let key = DeclarationKey {
+        name: declaration.name.clone(),
+        phase: declaration.phase,
+        ordinal: *ordinal,
+    };
+    *ordinal += 1;
+    key
+}
+
+fn declaration_fingerprint(source: &str, declaration: &Declaration) -> DeclarationFingerprint {
+    let range = declaration.span.start..declaration.span.end;
+    let source_text = source.get(range);
+    debug_assert!(
+        source_text.is_some(),
+        "declaration span must be in-bounds and on a char boundary"
+    );
+    let source_text = source_text.unwrap_or_default();
+
+    let mut hasher = DefaultHasher::new();
+    source_text.hash(&mut hasher);
+    DeclarationFingerprint(hasher.finish())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -196,13 +302,20 @@ where
         revision: Revision,
         file: SourceFile,
     ) -> Arc<DocumentSnapshot> {
-        if let Some(document) = self.documents.get(&key)
+        let previous = self.documents.get(&key);
+        if let Some(document) = previous
             && document.matches(revision, file.source())
         {
             return Arc::clone(document);
         }
 
-        let document = Arc::new(DocumentSnapshot::parse(revision, file));
+        let parse = aven_parser::parse_source(&file);
+        let document = Arc::new(DocumentSnapshot::from_parse_reusing(
+            revision,
+            file,
+            parse,
+            previous.map(Arc::as_ref),
+        ));
         self.documents.insert(key, Arc::clone(&document));
         document
     }
@@ -247,7 +360,7 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
 
 #[cfg(test)]
 mod tests {
-    use aven_core::{FileId, SourceFile};
+    use aven_core::{FileId, SourceFile, codes};
 
     use super::*;
 
@@ -264,6 +377,26 @@ mod tests {
         assert!(document.parse_diagnostics().is_empty());
         assert!(document.semantic_diagnostics().is_empty());
         assert_eq!(document.declarations().len(), 1);
+        assert_eq!(document.declaration_artifacts().len(), 1);
+    }
+
+    #[test]
+    fn declaration_artifacts_record_stable_keys() {
+        let document = DocumentSnapshot::parse(
+            Revision::new(1),
+            source_file("value = 1\nvalue = 2\nTypeValue = 3\n"),
+        );
+        let artifacts = &document.declaration_artifacts;
+
+        assert_eq!(artifacts[0].key().name, "value");
+        assert_eq!(artifacts[0].key().phase, DeclarationPhase::Runtime);
+        assert_eq!(artifacts[0].key().ordinal, 0);
+        assert_eq!(artifacts[1].key().name, "value");
+        assert_eq!(artifacts[1].key().phase, DeclarationPhase::Runtime);
+        assert_eq!(artifacts[1].key().ordinal, 1);
+        assert_eq!(artifacts[2].key().name, "TypeValue");
+        assert_eq!(artifacts[2].key().phase, DeclarationPhase::Comptime);
+        assert_eq!(artifacts[2].key().ordinal, 0);
     }
 
     #[test]
@@ -274,7 +407,7 @@ mod tests {
         assert_eq!(checked.document.semantic_diagnostics().len(), 1);
         assert_eq!(
             checked.document.semantic_diagnostics()[0].code.as_deref(),
-            Some("type.unknown-name")
+            Some(codes::ty::UNKNOWN_NAME)
         );
         assert!(checked.timings.name.is_some());
         assert!(checked.timings.check.is_some());
@@ -310,6 +443,33 @@ mod tests {
         assert!(!database.needs_update(&"file", Revision::new(1), "value = 1\n"));
         assert!(database.needs_update(&"file", Revision::new(2), "value = 1\n"));
         assert!(database.needs_update(&"file", Revision::new(1), "value = 2\n"));
+    }
+
+    #[test]
+    fn database_reuses_unchanged_declaration_artifacts_across_revisions() {
+        let mut database = CompilerDatabase::default();
+        let first = database.set_document(
+            "file",
+            Revision::new(1),
+            source_file("first = 1\nsecond = 2\n"),
+        );
+        let first_artifact = Arc::clone(&first.declaration_artifacts[0]);
+        let second_artifact = Arc::clone(&first.declaration_artifacts[1]);
+
+        let second = database.set_document(
+            "file",
+            Revision::new(2),
+            source_file("inserted = 0\nfirst = 1\nsecond = 3\n"),
+        );
+
+        assert!(Arc::ptr_eq(
+            &first_artifact,
+            &second.declaration_artifacts[1]
+        ));
+        assert!(!Arc::ptr_eq(
+            &second_artifact,
+            &second.declaration_artifacts[2]
+        ));
     }
 
     #[test]

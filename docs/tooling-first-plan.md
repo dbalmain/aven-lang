@@ -782,7 +782,16 @@ The fifth M9 slice introduced `aven-compiler` as the thin compiler database
 boundary: it owns immutable `DocumentSnapshot`s, parse/name/check timing,
 semantic diagnostic analysis, and a generic revision-keyed document cache. The
 CLI and LSP now consume that API instead of each reassembling the
-parse/name/check pipeline.
+parse/name/check pipeline. The sixth M9 slice added declaration-keyed artifacts:
+each top-level declaration now has a stable name/phase/ordinal key and a source
+fingerprint, and the compiler database reuses unchanged artifacts across
+document revisions. Whole-module semantic diagnostics still run as before; this
+only establishes the invalidation unit future inference/comptime caches can use.
+The fingerprint captures only a declaration's own source, so it is a sound
+change-detection unit but not a sufficient cache key on its own: before any
+slice reuses a declaration's semantic result, the artifact must also track
+dependency edges. Fingerprint equality alone would falsely reuse a declaration
+whose dependency changed.
 
 ## Phase 2 Scope
 
