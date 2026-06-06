@@ -676,6 +676,24 @@ mod tests {
     }
 
     #[test]
+    fn declaration_dependencies_capture_references_in_nested_scopes() {
+        let document = DocumentSnapshot::parse(
+            Revision::new(1),
+            source_file("helper = 1\nvalue = () =>\n  local = helper\n  local\n"),
+        );
+        let artifacts = &document.declaration_artifacts;
+
+        assert_eq!(
+            artifacts[1].dependencies(),
+            &[DeclarationKey {
+                name: "helper".to_owned(),
+                phase: DeclarationPhase::Runtime,
+                ordinal: 0,
+            }]
+        );
+    }
+
+    #[test]
     fn checked_documents_include_semantic_diagnostics() {
         let checked = check_source_file(source_file("value : Missing = value\n"));
 
