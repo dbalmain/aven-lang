@@ -795,12 +795,49 @@ use. The closure is still not a recomputation order or a complete semantic cache
 key: future slices that reuse declaration-level semantic results must account for
 the invalidated set and compute an explicit dependency-aware schedule.
 
-## Phase 2 Scope
+## Milestone 10: Type IR And Annotation Lowering
+
+Status: in progress
+
+Goal: introduce the first real semantic type representation without starting
+unification yet. Milestone 7 deliberately kept annotations as parser `Expr`
+terms because hover and simple diagnostics did not need a semantic `Type`. The
+inference phase does need one, so the next step is to lower written annotations
+into a compact `Type` IR while continuing to validate the original syntax through
+the same path.
+
+Tasks:
+
+- define a semantic `Type` model for named types, type variables, type
+  application, function types, nullable types, tuples, record rows, and variant
+  rows
+- lower annotation `Expr` terms into `Type` values without introducing a
+  separate syntactic type parser
+- keep diagnostics behavior stable: unknown type names, lowercase variant tags,
+  and value/type record-entry errors should still surface through `aven check`
+- leave computable/comptime type expressions as deferred nodes until comptime
+  evaluation exists
+- add unit coverage for the lowered shapes before inference consumes them
+
+Done when:
+
+- written annotations have a semantic representation usable by inference
+- `check_module` and standalone annotation lowering share one implementation
+- existing CLI, fixture, and LSP diagnostics stay unchanged
+
+Progress: the first M10 slice added `Type`, `TypeRowEntry`, and `TypeLowering`
+to `aven-check`. Annotation validation now flows through lowering, records and
+variants share one row-entry representation, and tests lock lowered
+function/application/nullable, record-row, and variant-row shapes. Inference,
+unification variables, and normalization are still deferred.
+
+## Remaining Phase 2 Scope
 
 Status: later
 
-This plan is Phase 1: the toolchain skeleton. It deliberately stops before the
-hard semantic system.
+The tooling skeleton is in place, and the semantic type IR has started. The
+remaining hard semantic systems are still deliberately out of scope for this
+plan.
 
 Phase 2 work not planned here:
 
@@ -891,9 +928,10 @@ Completed parser groundwork:
 - an LSP protocol smoke test drives `initialize`, `textDocument/didOpen`, and
   `textDocument/documentSymbol` through `tower-lsp`, covering service
   registration and cached document state
+- Milestone 10 has started the semantic phase by lowering written annotation
+  expressions into an `aven-check::Type` IR. The likely next slice is to store
+  lowered annotation types on declaration/check artifacts before adding
+  unification variables.
 
-No small near-term tooling skeleton item is currently queued. The next phase
-should be chosen explicitly rather than inferred from this list.
-
-This keeps tooling ahead of semantics without spending too long on temporary
-parser code.
+The tooling skeleton is far enough ahead of semantics for now; avoid spending
+more time on temporary parser/tooling code unless a new semantic slice needs it.
