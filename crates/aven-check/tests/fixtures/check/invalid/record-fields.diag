@@ -1,0 +1,6 @@
+error type.missing-field: missing field `age`
+  label 39..53: this record is missing a required field
+  note: add `age = ...`, or make the field optional with `age?` in the type
+error type.unexpected-field: unexpected field `extra`
+  label 94..99: this field is not in the record type
+  note: remove the field, or open the record type with `.._` to allow extra fields

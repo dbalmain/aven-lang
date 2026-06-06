@@ -159,8 +159,16 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A literal binding value cannot satisfy its declared scalar annotation. Change the value or change the annotation so they agree.",
     },
     DiagnosticExplanation {
+        code: codes::ty::MISSING_FIELD,
+        text: "A record value is missing a field required by its declared record type. Add the field or make the type field optional.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::TYPE_ONLY_RECORD_ENTRY,
         text: "This record entry form is only meaningful in type position. Use it inside an annotation or replace it with a value-level record entry.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::UNEXPECTED_FIELD,
+        text: "A closed record value contains a field that is not present in its declared type. Remove the field or open the record type with .._.",
     },
     DiagnosticExplanation {
         code: codes::ty::UNKNOWN_NAME,

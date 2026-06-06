@@ -856,15 +856,14 @@ instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
 types, and nullable values are accepted when they are `Nil` or satisfy the inner
 type. Identifiers, rows, applications, inference, and unification variables
-remain deferred. Record and variant value arms are the next structural checking
-step. The open/closed rule is already fixed by the spec (records are closed by
-default; `.._` opens them, lowered to `TypeRowEntry::Open`); what the record arm
-must draw is the row-transform deferral boundary: rows of only fields and the
-open marker are checkable now, while rows carrying spreads, deletes, or renames
-need row computation and should defer like `opaque(...)` until the row engine
-lands. Full row unification and the inference direction pair with the inference
-pass. Transparent
-comptime aliases are now normalized
+remain deferred. Literal record value checking now covers rows of only fields
+and the open marker: wrong field types, missing required fields, and unexpected
+fields on closed records. The open/closed rule is fixed by the spec (records are
+closed by default; `.._` opens them, lowered to `TypeRowEntry::Open`). Rows
+carrying spreads, deletes, renames, or overwrites defer until row computation,
+and checking explicit fields through a value spread is a follow-up. Variant
+value arms are also deferred. Full row unification and the inference direction
+pair with the inference pass. Transparent comptime aliases are now normalized
 before value checking, including alias chains and nested aliases. `opaque(...)`
 lowers to an irreducible deferred type until comptime evaluation and
 module-aware opacity exist. Cyclic aliases terminate silently for now; reporting

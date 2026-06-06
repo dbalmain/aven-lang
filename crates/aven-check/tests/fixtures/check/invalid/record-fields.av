@@ -1,0 +1,2 @@
+missing : { name = Text, age = Int } = { name = "x" }
+extra : { name = Text } = { name = "x", extra = 1 }

@@ -409,7 +409,51 @@ impl Checker {
                     }
                 }
             }
+            (ExprKind::Record(value_entries), Type::Record(type_entries)) => {
+                self.check_record_value_against(type_entries, value_entries, value.span);
+            }
             _ => {}
+        }
+    }
+
+    fn check_record_value_against(
+        &mut self,
+        type_entries: &[TypeRowEntry],
+        value_entries: &[RecordEntry],
+        value_span: Span,
+    ) {
+        let Some(expected) = literal_record_type(type_entries) else {
+            return;
+        };
+        let Some(actual) = literal_record_value(value_entries, value_span) else {
+            return;
+        };
+
+        let value_fields: HashMap<_, _> = actual
+            .fields
+            .iter()
+            .map(|field| (field.name, field.value))
+            .collect();
+        let expected_field_names: HashSet<_> =
+            expected.fields.iter().map(|field| field.name).collect();
+
+        for field in &expected.fields {
+            match value_fields.get(field.name) {
+                Some(Some(value)) => self.check_value_against(field.ty, value),
+                Some(None) => {}
+                None if field.optional => {}
+                None => self.report_missing_field(field.name, actual.span),
+            }
+        }
+
+        if expected.open {
+            return;
+        }
+
+        for field in &actual.fields {
+            if !expected_field_names.contains(field.name) {
+                self.report_unexpected_field(field.name, field.name_span);
+            }
         }
     }
 
@@ -704,6 +748,126 @@ impl Checker {
             .with_note("add or remove tuple elements to match the annotation"),
         );
     }
+
+    fn report_missing_field(&mut self, name: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("missing field `{name}`"))
+                .with_code(codes::ty::MISSING_FIELD)
+                .with_label(Label::primary(
+                    span,
+                    "this record is missing a required field",
+                ))
+                .with_note(format!(
+                    "add `{name} = ...`, or make the field optional with `{name}?` in the type"
+                )),
+        );
+    }
+
+    fn report_unexpected_field(&mut self, name: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("unexpected field `{name}`"))
+                .with_code(codes::ty::UNEXPECTED_FIELD)
+                .with_label(Label::primary(span, "this field is not in the record type"))
+                .with_note(
+                    "remove the field, or open the record type with `.._` to allow extra fields",
+                ),
+        );
+    }
+}
+
+#[derive(Debug)]
+struct ExpectedRecordShape<'a> {
+    fields: Vec<ExpectedRecordField<'a>>,
+    open: bool,
+}
+
+#[derive(Debug)]
+struct ExpectedRecordField<'a> {
+    name: &'a str,
+    ty: &'a Type,
+    optional: bool,
+}
+
+#[derive(Debug)]
+struct ValueRecordShape<'a> {
+    fields: Vec<ValueRecordField<'a>>,
+    span: Span,
+}
+
+#[derive(Debug)]
+struct ValueRecordField<'a> {
+    name: &'a str,
+    name_span: Span,
+    value: Option<&'a Expr>,
+}
+
+fn literal_record_type(entries: &[TypeRowEntry]) -> Option<ExpectedRecordShape<'_>> {
+    let mut fields = Vec::new();
+    let mut open = false;
+
+    for entry in entries {
+        match entry {
+            TypeRowEntry::Open => open = true,
+            TypeRowEntry::Field {
+                name,
+                ty,
+                overwrite: false,
+                optional,
+            } => fields.push(ExpectedRecordField {
+                name,
+                ty,
+                optional: *optional,
+            }),
+            TypeRowEntry::Field {
+                overwrite: true, ..
+            }
+            | TypeRowEntry::Tag { .. }
+            | TypeRowEntry::Spread { .. }
+            | TypeRowEntry::Delete(_)
+            | TypeRowEntry::Rename { .. }
+            | TypeRowEntry::Shorthand(_)
+            | TypeRowEntry::Element(_) => return None,
+        }
+    }
+
+    Some(ExpectedRecordShape { fields, open })
+}
+
+fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueRecordShape<'_>> {
+    let mut fields = Vec::new();
+
+    for entry in entries {
+        match entry {
+            RecordEntry::Field {
+                name,
+                name_span,
+                value,
+                overwrite: false,
+                ..
+            } => fields.push(ValueRecordField {
+                name,
+                name_span: *name_span,
+                value: Some(value),
+            }),
+            RecordEntry::Shorthand {
+                name, name_span, ..
+            } => fields.push(ValueRecordField {
+                name,
+                name_span: *name_span,
+                value: None,
+            }),
+            RecordEntry::Field {
+                overwrite: true, ..
+            }
+            | RecordEntry::Spread { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. }
+            | RecordEntry::Element(_) => return None,
+        }
+    }
+
+    Some(ValueRecordShape { fields, span })
 }
 
 fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static str> {
@@ -1060,6 +1224,112 @@ mod tests {
             &check.diagnostics,
             codes::ty::MISMATCH
         ));
+    }
+
+    #[test]
+    fn record_values_accept_exact_literal_record_annotations() {
+        let output = parse_module("value : { name = Text } = { name = \"x\" }\n");
+        let check = check_module(&output.module);
+
+        assert!(check.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn record_values_report_field_value_mismatches() {
+        let output = parse_module("value : { name = Text } = { name = 42 }\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Text`, found a number literal"
+        );
+    }
+
+    #[test]
+    fn record_values_report_missing_required_fields() {
+        let output = parse_module("value : { name = Text, age = Int } = { name = \"x\" }\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+            1
+        );
+    }
+
+    #[test]
+    fn record_values_report_unexpected_fields_in_closed_records() {
+        let output = parse_module("value : { name = Text } = { name = \"x\", extra = 1 }\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::UNEXPECTED_FIELD),
+            1
+        );
+    }
+
+    #[test]
+    fn open_record_types_allow_extra_value_fields() {
+        let output = parse_module("value : { .._, name = Text } = { name = \"x\", extra = 1 }\n");
+        let check = check_module(&output.module);
+
+        assert!(check.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn optional_record_fields_may_be_absent_or_checked_when_present() {
+        let output = parse_module("value : { name = Text, phone? = Text } = { name = \"x\" }\n");
+        let check = check_module(&output.module);
+        assert!(check.diagnostics.is_empty());
+
+        let output = parse_module("value : { phone? = Text } = { phone = 42 }\n");
+        let check = check_module(&output.module);
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn nullable_record_fields_accept_nil() {
+        let output = parse_module("value : { email = Text? } = { email = Nil }\n");
+        let check = check_module(&output.module);
+
+        assert!(check.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn nested_record_values_are_checked_recursively() {
+        let output =
+            parse_module("value : { user = { name = Text } } = { user = { name = 42 } }\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Text`, found a number literal"
+        );
+    }
+
+    #[test]
+    fn record_value_checking_defers_computed_rows() {
+        for source in [
+            "Base = { id = Int }\nvalue : { ..Base, name = Text } = { name = \"x\" }\n",
+            "value : { name = Text } = { ..other, extra = 1 }\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+                "{source} unexpectedly produced type.missing-field"
+            );
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::UNEXPECTED_FIELD),
+                "{source} unexpectedly produced type.unexpected-field"
+            );
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
     }
 
     #[test]
