@@ -386,6 +386,11 @@ impl Checker {
     fn check_value_against(&mut self, expected: &Type, value: &Expr) {
         match (&value.kind, expected) {
             (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
+            (_, Type::Nullable(inner)) => {
+                if !is_nil_value(value) {
+                    self.check_value_against(inner, value);
+                }
+            }
             (ExprKind::Literal(literal), Type::Named(name)) => {
                 if let Some(found) = mismatched_literal_kind(name, literal) {
                     self.report_type_mismatch(name, found, value.span);
@@ -710,6 +715,10 @@ fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static
     }
 }
 
+fn is_nil_value(value: &Expr) -> bool {
+    matches!(&value.kind, ExprKind::ComptimeName(name) if name == "Nil")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1011,6 +1020,46 @@ mod tests {
             check.diagnostics[0].message,
             "expected `Int`, found a text literal"
         );
+    }
+
+    #[test]
+    fn nullable_values_accept_nil_and_matching_inner_values() {
+        for source in [
+            "value : Text? = \"hi\"\n",
+            "value : Text? = Nil\n",
+            "value : Int? = Nil\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn nullable_values_report_inner_mismatches() {
+        let output = parse_module("value : Int? = \"hi\"\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Int`, found a text literal"
+        );
+    }
+
+    #[test]
+    fn nullable_values_defer_names() {
+        let output = parse_module("value : Text? = other\n");
+        let check = check_module(&output.module);
+
+        assert!(!has_diagnostic_code(
+            &check.diagnostics,
+            codes::ty::MISMATCH
+        ));
     }
 
     #[test]

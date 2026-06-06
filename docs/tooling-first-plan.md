@@ -854,8 +854,13 @@ runs at the declaration level, so inline annotations and adjacent
 signature-plus-binding declarations share the same declared annotation lookup
 instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
-types, while identifiers, rows, applications, inference, and unification
-variables remain deferred. Transparent comptime aliases are now normalized
+types, and nullable values are accepted when they are `Nil` or satisfy the inner
+type. Identifiers, rows, applications, inference, and unification variables
+remain deferred. Record and variant value arms are the next structural checking
+step; record checking needs the open/closed-row decision and should pair with
+row-polymorphism work. The inference direction and first unification scaffold
+remain deferred until those language decisions are in place. Transparent
+comptime aliases are now normalized
 before value checking, including alias chains and nested aliases. `opaque(...)`
 lowers to an irreducible deferred type until comptime evaluation and
 module-aware opacity exist. Cyclic aliases terminate silently for now; reporting
