@@ -849,7 +849,10 @@ normalization are still deferred. The third M10 slice opened value/annotation
 agreement checking with a deliberately narrow debounced check: literal binding
 values are compared against bare scalar annotations and report `type.mismatch`
 only on definitive incompatibilities. Numeric literal polymorphism and all
-non-literal inference remain deferred to the full inference pass.
+non-literal inference remain deferred to the full inference pass. That check now
+runs at the declaration level, so inline annotations and adjacent
+signature-plus-binding declarations share the same declared annotation lookup
+instead of drifting by surface syntax.
 
 ## Remaining Phase 2 Scope
 

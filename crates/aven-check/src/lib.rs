@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
-    Binding, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm, Module, Param, RecordEntry,
-    Signature, collect_declarations, walk_expr_children,
+    Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm, Module, Param,
+    RecordEntry, Signature, collect_declarations, walk_expr_children,
 };
 
 const BUILTIN_TYPES: &[&str] = &[
@@ -89,7 +89,7 @@ pub fn check_module(module: &Module) -> CheckOutput {
     let known_types = known_type_names(module);
     let mut checker = Checker::new(known_types);
 
-    checker.check_items(&module.items);
+    checker.check_module(module);
 
     CheckOutput {
         diagnostics: checker.diagnostics,
@@ -183,6 +183,20 @@ fn declared_annotation_for_declaration<'a>(
     None
 }
 
+fn binding_for_declaration<'a>(
+    module: &'a Module,
+    declaration: &Declaration,
+) -> Option<&'a Binding> {
+    module.items.iter().find_map(|item| match item {
+        Item::Binding(binding)
+            if binding.name == declaration.name && declaration.span.contains(binding.span) =>
+        {
+            Some(binding)
+        }
+        Item::Binding(_) | Item::Signature(_) | Item::Expr(_) => None,
+    })
+}
+
 #[derive(Debug)]
 struct Checker {
     known_types: HashSet<String>,
@@ -194,6 +208,36 @@ impl Checker {
         Self {
             known_types,
             diagnostics: Vec::new(),
+        }
+    }
+
+    fn check_module(&mut self, module: &Module) {
+        // Top-level declared annotations go through declarations so inline and
+        // adjacent signature+binding forms share one lookup path.
+        for declaration in collect_declarations(module) {
+            self.check_declaration(module, &declaration);
+        }
+
+        for item in &module.items {
+            if let Item::Expr(expr) = item {
+                self.check_value_expr(expr);
+            }
+        }
+    }
+
+    fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
+        let binding = binding_for_declaration(module, declaration);
+
+        if let Some(source) = declared_annotation_for_declaration(module, declaration) {
+            let declared_type = self.lower_annotation(source.annotation);
+
+            if let Some(binding) = binding {
+                self.check_literal_binding_type(&declared_type, &binding.value);
+            }
+        }
+
+        if let Some(binding) = binding {
+            self.check_value_expr(&binding.value);
         }
     }
 
@@ -725,6 +769,7 @@ mod tests {
         for source in [
             "value : Int = \"hi\"\n",
             "value : Text = 42\n",
+            "value : Text\nvalue = 42\n",
             "value : Bool = \"hi\"\n",
             "value : Nil = 42\n",
             "value : Unit = \"hi\"\n",
@@ -740,8 +785,11 @@ mod tests {
     fn literal_binding_mismatch_defers_non_literals_and_non_scalar_annotations() {
         for source in [
             "value : Int = other\n",
+            "value : Float\nvalue = 42\n",
+            "value : Int\nvalue = other\n",
             "value : { name = Text } = \"hi\"\n",
             "value : Missing = \"hi\"\n",
+            "value : Missing\nvalue = \"hi\"\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
@@ -751,6 +799,14 @@ mod tests {
                 "{source} unexpectedly produced type.mismatch"
             );
         }
+    }
+
+    #[test]
+    fn separate_signature_binding_mismatch_reuses_declared_annotation_lookup() {
+        let output = parse_module("value : Text\nvalue = 42\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
     }
 
     #[test]

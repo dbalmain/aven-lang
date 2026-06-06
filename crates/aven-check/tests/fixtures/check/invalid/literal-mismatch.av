@@ -1,2 +1,4 @@
 asInt : Int = "hi"
 asText : Text = 42
+asSig : Text
+asSig = 42
