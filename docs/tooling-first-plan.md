@@ -718,6 +718,15 @@ Approach, in order:
   file (cheap) but key downstream analysis on individual declarations, so an
   edit to one binding invalidates only that binding's analysis. The
   `collect_declarations` pass is the seam for this.
+- draw the synchronous/debounced line by cost, not by phase. The per-edit
+  (synchronous) path may carry the artifact bookkeeping and *cheap structural*
+  per-declaration results — declaration keys, fingerprints, dependency edges,
+  and declared-annotation `Type` lowering (a structural `Expr -> Type` walk).
+  *Expensive* analysis — name resolution and type inference — stays in the
+  debounced semantic pass and reuses prior results across revisions via the
+  `invalidated_declarations` set. The `DeclarationArtifact` is the invalidation
+  *key*; it is not where expensive analysis runs. Inference is the slice that
+  finally consumes the invalidation closure, in the debounced lane.
 - keep investing in error recovery; recovery quality drives per-keystroke DX
   more than reparse speed
 - only if profiling shows the parse itself is the bottleneck: add incremental
@@ -828,8 +837,15 @@ Done when:
 Progress: the first M10 slice added `Type`, `TypeRowEntry`, and `TypeLowering`
 to `aven-check`. Annotation validation now flows through lowering, records and
 variants share one row-entry representation, and tests lock lowered
-function/application/nullable, record-row, and variant-row shapes. Inference,
-unification variables, and normalization are still deferred.
+function/application/nullable, record-row, and variant-row shapes. The second
+M10 slice made that IR non-inert: `aven-check::AnnotationLowerer` lowers one
+declared annotation on demand, and `aven-compiler` stores those types plus their
+annotation-lowering diagnostics on each `DeclarationArtifact`. The compiler
+builds the lowerer once per module but calls it only for new/recomputed
+artifacts; unchanged artifacts reuse the cached type `Arc` without rerunning
+annotation lowering. Dependency-resolution changes rebuild the artifact and
+refresh annotation diagnostics. Inference, unification variables, and
+normalization are still deferred.
 
 ## Remaining Phase 2 Scope
 
@@ -929,9 +945,10 @@ Completed parser groundwork:
   `textDocument/documentSymbol` through `tower-lsp`, covering service
   registration and cached document state
 - Milestone 10 has started the semantic phase by lowering written annotation
-  expressions into an `aven-check::Type` IR. The likely next slice is to store
-  lowered annotation types on declaration/check artifacts before adding
-  unification variables.
+  expressions into an `aven-check::Type` IR and storing declaration-level
+  declared types on compiler artifacts, with unchanged artifacts skipping
+  annotation lowering. The likely next slice is to introduce inference variables
+  and consume artifact invalidation for inferred results.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.

@@ -5,6 +5,7 @@ use std::hash::Hasher;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use aven_check::{AnnotationLowerer, Type};
 use aven_core::{Diagnostic, DiagnosticReport, SourceFile};
 use aven_parser::{
     Declaration, DeclarationPhase, Expr, ExprKind, Item, Module, ParseOutput, RecordEntry,
@@ -45,6 +46,8 @@ pub struct DeclarationArtifact {
     key: DeclarationKey,
     fingerprint: DeclarationFingerprint,
     dependencies: Vec<DeclarationKey>,
+    declared_type: Option<Arc<Type>>,
+    annotation_diagnostics: Vec<Diagnostic>,
 }
 
 impl DeclarationArtifact {
@@ -58,6 +61,14 @@ impl DeclarationArtifact {
 
     pub fn dependencies(&self) -> &[DeclarationKey] {
         &self.dependencies
+    }
+
+    pub fn declared_type(&self) -> Option<&Type> {
+        self.declared_type.as_deref()
+    }
+
+    pub fn annotation_diagnostics(&self) -> &[Diagnostic] {
+        &self.annotation_diagnostics
     }
 }
 
@@ -186,6 +197,7 @@ fn collect_declaration_artifacts(
 
     let keys = declaration_keys(declarations);
     let top_level = top_level_declaration_map(&keys);
+    let annotation_lowerer = AnnotationLowerer::new(module);
     let mut changed = Vec::new();
     let artifacts: Vec<_> = declarations
         .iter()
@@ -202,10 +214,16 @@ fn collect_declaration_artifacts(
             }
 
             changed.push(key.clone());
+            let declared_annotation = annotation_lowerer.lower_declaration(module, declaration);
             Arc::new(DeclarationArtifact {
                 key,
                 fingerprint,
                 dependencies,
+                declared_type: declared_annotation
+                    .as_ref()
+                    .map(|annotation| Arc::new(annotation.ty.clone())),
+                annotation_diagnostics: declared_annotation
+                    .map_or_else(Vec::new, |annotation| annotation.diagnostics),
             })
         })
         .collect();
@@ -694,6 +712,10 @@ mod tests {
             .collect()
     }
 
+    fn named_type(name: &str) -> Type {
+        Type::Named(name.to_owned())
+    }
+
     #[test]
     fn parsed_documents_start_without_semantic_diagnostics() {
         let document =
@@ -705,6 +727,15 @@ mod tests {
         assert_eq!(document.declarations().len(), 1);
         assert_eq!(document.declaration_artifacts().len(), 1);
         assert_eq!(document.invalidated_declarations().len(), 1);
+    }
+
+    #[test]
+    fn declaration_artifacts_store_none_for_unannotated_declarations() {
+        let document = DocumentSnapshot::parse(Revision::new(1), source_file("value = 1\n"));
+        let artifact = &document.declaration_artifacts[0];
+
+        assert!(artifact.declared_type().is_none());
+        assert!(artifact.annotation_diagnostics().is_empty());
     }
 
     #[test]
@@ -762,6 +793,19 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn declaration_artifacts_record_declared_annotation_types() {
+        let document =
+            DocumentSnapshot::parse(Revision::new(1), source_file("value : Text? = name\n"));
+        let artifact = &document.declaration_artifacts[0];
+
+        assert_eq!(
+            artifact.declared_type(),
+            Some(&Type::Nullable(Box::new(named_type("Text"))))
+        );
+        assert!(artifact.annotation_diagnostics().is_empty());
     }
 
     #[test]
@@ -864,6 +908,73 @@ mod tests {
             &second_artifact,
             &second.declaration_artifacts[2]
         ));
+    }
+
+    #[test]
+    fn database_reuses_cached_declared_annotation_types() {
+        let mut database = CompilerDatabase::default();
+        let first = database.set_document(
+            "file",
+            Revision::new(1),
+            source_file("value : Text = name\nother = 1\n"),
+        );
+        let value_artifact = Arc::clone(&first.declaration_artifacts[0]);
+        let declared_type = Arc::clone(
+            value_artifact
+                .declared_type
+                .as_ref()
+                .expect("declared type"),
+        );
+
+        let second = database.set_document(
+            "file",
+            Revision::new(2),
+            source_file("value : Text = name\nother = 2\n"),
+        );
+
+        assert!(Arc::ptr_eq(
+            &value_artifact,
+            &second.declaration_artifacts[0]
+        ));
+        assert!(Arc::ptr_eq(
+            &declared_type,
+            second.declaration_artifacts[0]
+                .declared_type
+                .as_ref()
+                .expect("declared type")
+        ));
+    }
+
+    #[test]
+    fn database_recomputes_declared_annotation_when_type_resolution_changes() {
+        let mut database = CompilerDatabase::default();
+        let first = database.set_document(
+            "file",
+            Revision::new(1),
+            source_file("value : Missing = value\n"),
+        );
+        let value_artifact = Arc::clone(&first.declaration_artifacts[0]);
+
+        assert_eq!(value_artifact.declared_type(), Some(&named_type("Missing")));
+        assert_eq!(value_artifact.annotation_diagnostics().len(), 1);
+        assert_eq!(
+            value_artifact.annotation_diagnostics()[0].code.as_deref(),
+            Some(codes::ty::UNKNOWN_NAME)
+        );
+
+        let second = database.set_document(
+            "file",
+            Revision::new(2),
+            source_file("Missing = Text\nvalue : Missing = value\n"),
+        );
+        let updated_value_artifact = &second.declaration_artifacts[1];
+
+        assert!(!Arc::ptr_eq(&value_artifact, updated_value_artifact));
+        assert_eq!(
+            updated_value_artifact.declared_type(),
+            Some(&named_type("Missing"))
+        );
+        assert!(updated_value_artifact.annotation_diagnostics().is_empty());
     }
 
     #[test]

@@ -24,6 +24,15 @@ pub struct TypeLowering {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredAnnotation {
+    pub name: String,
+    pub declaration_span: Span,
+    pub annotation_span: Span,
+    pub ty: Type,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     /// A type expression that is valid to keep for a later comptime/type phase
     /// but is not part of the core lowered type grammar yet.
@@ -78,10 +87,7 @@ enum RowKind {
 
 pub fn check_module(module: &Module) -> CheckOutput {
     let known_types = known_type_names(module);
-    let mut checker = Checker {
-        known_types,
-        diagnostics: Vec::new(),
-    };
+    let mut checker = Checker::new(known_types);
 
     checker.check_items(&module.items);
 
@@ -92,15 +98,32 @@ pub fn check_module(module: &Module) -> CheckOutput {
 
 pub fn lower_annotation(module: &Module, annotation: &Expr) -> TypeLowering {
     let known_types = known_type_names(module);
-    let mut checker = Checker {
-        known_types,
-        diagnostics: Vec::new(),
-    };
-    let ty = checker.lower_annotation(annotation);
+    let mut checker = Checker::new(known_types);
 
-    TypeLowering {
-        ty,
-        diagnostics: checker.diagnostics,
+    checker.lower_annotation_with_diagnostics(annotation)
+}
+
+#[derive(Debug, Clone)]
+pub struct AnnotationLowerer {
+    known_types: HashSet<String>,
+}
+
+impl AnnotationLowerer {
+    pub fn new(module: &Module) -> Self {
+        Self {
+            known_types: known_type_names(module),
+        }
+    }
+
+    pub fn lower_declaration(
+        &self,
+        module: &Module,
+        declaration: &aven_parser::Declaration,
+    ) -> Option<DeclaredAnnotation> {
+        let source = declared_annotation_for_declaration(module, declaration)?;
+        let mut checker = Checker::new(self.known_types.clone());
+
+        Some(checker.lower_declared_annotation(source))
     }
 }
 
@@ -119,6 +142,47 @@ fn known_type_names(module: &Module) -> HashSet<String> {
     names
 }
 
+#[derive(Debug, Clone)]
+struct DeclaredAnnotationSource<'a> {
+    name: String,
+    declaration_span: Span,
+    annotation: &'a Expr,
+}
+
+fn declared_annotation_for_declaration<'a>(
+    module: &'a Module,
+    declaration: &aven_parser::Declaration,
+) -> Option<DeclaredAnnotationSource<'a>> {
+    for item in &module.items {
+        match item {
+            Item::Signature(signature)
+                if signature.name == declaration.name
+                    && declaration.span.contains(signature.span) =>
+            {
+                return Some(DeclaredAnnotationSource {
+                    name: declaration.name.clone(),
+                    declaration_span: declaration.span,
+                    annotation: &signature.annotation,
+                });
+            }
+            Item::Binding(binding)
+                if binding.name == declaration.name
+                    && declaration.span.contains(binding.span)
+                    && binding.annotation.is_some() =>
+            {
+                return Some(DeclaredAnnotationSource {
+                    name: declaration.name.clone(),
+                    declaration_span: declaration.span,
+                    annotation: binding.annotation.as_ref()?,
+                });
+            }
+            Item::Binding(_) | Item::Signature(_) | Item::Expr(_) => {}
+        }
+    }
+
+    None
+}
+
 #[derive(Debug)]
 struct Checker {
     known_types: HashSet<String>,
@@ -126,6 +190,13 @@ struct Checker {
 }
 
 impl Checker {
+    fn new(known_types: HashSet<String>) -> Self {
+        Self {
+            known_types,
+            diagnostics: Vec::new(),
+        }
+    }
+
     fn check_items(&mut self, items: &[Item]) {
         for item in items {
             match item {
@@ -234,6 +305,29 @@ impl Checker {
                 self.lower_annotation(annotation);
             }
         }
+    }
+
+    fn lower_declared_annotation(
+        &mut self,
+        source: DeclaredAnnotationSource<'_>,
+    ) -> DeclaredAnnotation {
+        let lowering = self.lower_annotation_with_diagnostics(source.annotation);
+
+        DeclaredAnnotation {
+            name: source.name.to_owned(),
+            declaration_span: source.declaration_span,
+            annotation_span: source.annotation.span,
+            ty: lowering.ty,
+            diagnostics: lowering.diagnostics,
+        }
+    }
+
+    fn lower_annotation_with_diagnostics(&mut self, annotation: &Expr) -> TypeLowering {
+        let start = self.diagnostics.len();
+        let ty = self.lower_annotation(annotation);
+        let diagnostics = self.diagnostics[start..].to_vec();
+
+        TypeLowering { ty, diagnostics }
     }
 
     fn lower_annotation(&mut self, annotation: &Expr) -> Type {
@@ -459,6 +553,24 @@ mod tests {
         assert_eq!(
             check.diagnostics[0].code.as_deref(),
             Some("type.unknown-name")
+        );
+    }
+
+    #[test]
+    fn annotation_lowerer_lowers_declaration_annotations() {
+        let output = parse_module("value : Missing? = name\n");
+        let declarations = collect_declarations(&output.module);
+        let lowerer = AnnotationLowerer::new(&output.module);
+        let declared = lowerer
+            .lower_declaration(&output.module, &declarations[0])
+            .expect("declared annotation");
+
+        assert_eq!(declared.name, "value");
+        assert_eq!(declared.ty, nullable(named("Missing")));
+        assert_eq!(declared.diagnostics.len(), 1);
+        assert_eq!(
+            declared.diagnostics[0].code.as_deref(),
+            Some(codes::ty::UNKNOWN_NAME)
         );
     }
 
