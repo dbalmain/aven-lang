@@ -232,7 +232,7 @@ impl Checker {
             let declared_type = self.lower_annotation(source.annotation);
 
             if let Some(binding) = binding {
-                self.check_literal_binding_type(&declared_type, &binding.value);
+                self.check_value_against(&declared_type, &binding.value);
             }
         }
 
@@ -254,7 +254,7 @@ impl Checker {
     fn check_binding(&mut self, binding: &Binding) {
         if let Some(annotation) = &binding.annotation {
             let declared_type = self.lower_annotation(annotation);
-            self.check_literal_binding_type(&declared_type, &binding.value);
+            self.check_value_against(&declared_type, &binding.value);
         }
 
         self.check_value_expr(&binding.value);
@@ -352,18 +352,29 @@ impl Checker {
         }
     }
 
-    fn check_literal_binding_type(&mut self, declared_type: &Type, value: &Expr) {
-        let ExprKind::Literal(literal) = &value.kind else {
-            return;
-        };
-        let Type::Named(expected) = declared_type else {
-            return;
-        };
-        let Some(found) = mismatched_literal_kind(expected, literal) else {
-            return;
-        };
-
-        self.report_type_mismatch(expected, found, value.span);
+    fn check_value_against(&mut self, expected: &Type, value: &Expr) {
+        match (&value.kind, expected) {
+            (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
+            (ExprKind::Literal(literal), Type::Named(name)) => {
+                if let Some(found) = mismatched_literal_kind(name, literal) {
+                    self.report_type_mismatch(name, found, value.span);
+                }
+            }
+            (ExprKind::Tuple(elements), Type::Tuple(element_types)) => {
+                if elements.len() != element_types.len() {
+                    self.report_tuple_arity_mismatch(
+                        element_types.len(),
+                        elements.len(),
+                        value.span,
+                    );
+                } else {
+                    for (element, element_type) in elements.iter().zip(element_types) {
+                        self.check_value_against(element_type, element);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn lower_declared_annotation(
@@ -551,6 +562,20 @@ impl Checker {
                 .with_note(format!(
                     "change the value to produce `{expected}`, or change the annotation to match the literal"
                 )),
+        );
+    }
+
+    fn report_tuple_arity_mismatch(&mut self, expected: usize, found: usize, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "expected a {expected}-element tuple, found a {found}-element tuple"
+            ))
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(
+                span,
+                "tuple length does not match annotation",
+            ))
+            .with_note("add or remove tuple elements to match the annotation"),
         );
     }
 }
@@ -770,6 +795,7 @@ mod tests {
             "value : Int = \"hi\"\n",
             "value : Text = 42\n",
             "value : Text\nvalue = 42\n",
+            "value : Int = (\"hi\")\n",
             "value : Bool = \"hi\"\n",
             "value : Nil = 42\n",
             "value : Unit = \"hi\"\n",
@@ -790,6 +816,7 @@ mod tests {
             "value : { name = Text } = \"hi\"\n",
             "value : Missing = \"hi\"\n",
             "value : Missing\nvalue = \"hi\"\n",
+            "value : (Int, Text) = pair\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
@@ -807,6 +834,74 @@ mod tests {
         let check = check_module(&output.module);
 
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn tuple_values_accept_matching_tuple_annotations() {
+        for source in [
+            "value : (Int, Text) = (1, \"a\")\n",
+            "value : (Int, Float) = (1, 2)\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn tuple_values_report_recursive_element_mismatches() {
+        let output = parse_module("value : (Int, Text) = (1, 2)\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Text`, found a number literal"
+        );
+    }
+
+    #[test]
+    fn tuple_values_report_each_element_mismatch() {
+        let output = parse_module("value : (Int, Text) = (\"a\", 2)\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 2);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Int`, found a text literal"
+        );
+        assert_eq!(
+            check.diagnostics[1].message,
+            "expected `Text`, found a number literal"
+        );
+    }
+
+    #[test]
+    fn parenthesized_values_are_checked_through_groups() {
+        let output = parse_module("value : Int = (\"hi\")\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Int`, found a text literal"
+        );
+    }
+
+    #[test]
+    fn tuple_values_report_arity_mismatches() {
+        let output = parse_module("value : (Int, Text) = (1, \"a\", 3)\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected a 2-element tuple, found a 3-element tuple"
+        );
     }
 
     #[test]
