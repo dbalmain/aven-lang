@@ -857,9 +857,13 @@ checking direction: literals and tuple elements are checked against expected
 types, and nullable values are accepted when they are `Nil` or satisfy the inner
 type. Identifiers, rows, applications, inference, and unification variables
 remain deferred. Record and variant value arms are the next structural checking
-step; record checking needs the open/closed-row decision and should pair with
-row-polymorphism work. The inference direction and first unification scaffold
-remain deferred until those language decisions are in place. Transparent
+step. The open/closed rule is already fixed by the spec (records are closed by
+default; `.._` opens them, lowered to `TypeRowEntry::Open`); what the record arm
+must draw is the row-transform deferral boundary: rows of only fields and the
+open marker are checkable now, while rows carrying spreads, deletes, or renames
+need row computation and should defer like `opaque(...)` until the row engine
+lands. Full row unification and the inference direction pair with the inference
+pass. Transparent
 comptime aliases are now normalized
 before value checking, including alias chains and nested aliases. `opaque(...)`
 lowers to an irreducible deferred type until comptime evaluation and
