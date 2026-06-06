@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aven_core::{Diagnostic, DiagnosticReport, SourceFile};
-use aven_parser::{Declaration, DeclarationPhase, ParseOutput};
+use aven_parser::{
+    Declaration, DeclarationPhase, Expr, ExprKind, Item, Module, ParseOutput, RecordEntry,
+    resolve_local_definition, walk_expr_children,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Revision(i32);
@@ -41,6 +44,7 @@ pub struct DeclarationFingerprint(u64);
 pub struct DeclarationArtifact {
     key: DeclarationKey,
     fingerprint: DeclarationFingerprint,
+    dependencies: Vec<DeclarationKey>,
 }
 
 impl DeclarationArtifact {
@@ -50,6 +54,10 @@ impl DeclarationArtifact {
 
     pub fn fingerprint(&self) -> DeclarationFingerprint {
         self.fingerprint
+    }
+
+    pub fn dependencies(&self) -> &[DeclarationKey] {
+        &self.dependencies
     }
 }
 
@@ -81,7 +89,7 @@ impl DocumentSnapshot {
     ) -> Self {
         let declarations = aven_parser::collect_declarations(&parse.module);
         let declaration_artifacts =
-            collect_declaration_artifacts(file.source(), &declarations, previous);
+            collect_declaration_artifacts(file.source(), &parse.module, &declarations, previous);
 
         Self {
             revision,
@@ -156,6 +164,7 @@ impl DocumentSnapshot {
 
 fn collect_declaration_artifacts(
     source: &str,
+    module: &Module,
     declarations: &[Declaration],
     previous: Option<&DocumentSnapshot>,
 ) -> Vec<Arc<DeclarationArtifact>> {
@@ -165,21 +174,36 @@ fn collect_declaration_artifacts(
         .map(|artifact| (artifact.key.clone(), Arc::clone(artifact)))
         .collect();
 
-    let mut ordinals = HashMap::new();
+    let keys = declaration_keys(declarations);
+    let top_level = top_level_declaration_map(&keys);
     declarations
         .iter()
-        .map(|declaration| {
-            let key = declaration_key(declaration, &mut ordinals);
+        .zip(keys)
+        .map(|(declaration, key)| {
             let fingerprint = declaration_fingerprint(source, declaration);
+            let dependencies = declaration_dependencies(module, declaration, &key, &top_level);
 
             if let Some(previous) = previous_by_key.get(&key)
                 && previous.fingerprint == fingerprint
+                && previous.dependencies == dependencies
             {
                 return Arc::clone(previous);
             }
 
-            Arc::new(DeclarationArtifact { key, fingerprint })
+            Arc::new(DeclarationArtifact {
+                key,
+                fingerprint,
+                dependencies,
+            })
         })
+        .collect()
+}
+
+fn declaration_keys(declarations: &[Declaration]) -> Vec<DeclarationKey> {
+    let mut ordinals = HashMap::new();
+    declarations
+        .iter()
+        .map(|declaration| declaration_key(declaration, &mut ordinals))
         .collect()
 }
 
@@ -196,6 +220,220 @@ fn declaration_key(
     };
     *ordinal += 1;
     key
+}
+
+fn top_level_declaration_map(
+    keys: &[DeclarationKey],
+) -> HashMap<(String, DeclarationPhase), Vec<DeclarationKey>> {
+    let mut top_level: HashMap<_, Vec<_>> = HashMap::new();
+
+    for key in keys {
+        top_level
+            .entry((key.name.clone(), key.phase))
+            .or_default()
+            .push(key.clone());
+    }
+
+    top_level
+}
+
+fn declaration_dependencies(
+    module: &Module,
+    declaration: &Declaration,
+    current: &DeclarationKey,
+    top_level: &HashMap<(String, DeclarationPhase), Vec<DeclarationKey>>,
+) -> Vec<DeclarationKey> {
+    let mut dependencies = Vec::new();
+
+    for reference in declaration_references(module, declaration) {
+        if resolve_local_definition(module, &reference.name, reference.span).is_some() {
+            continue;
+        }
+
+        let Some(keys) = top_level.get(&(reference.name, reference.phase)) else {
+            continue;
+        };
+
+        for key in keys {
+            if key != current && !dependencies.contains(key) {
+                dependencies.push(key.clone());
+            }
+        }
+    }
+
+    dependencies
+}
+
+fn is_declaration_item(item: &Item, declaration: &Declaration) -> bool {
+    match item {
+        Item::Binding(binding) => {
+            binding.name == declaration.name && declaration.span.contains(binding.span)
+        }
+        Item::Signature(signature) => {
+            signature.name == declaration.name && declaration.span.contains(signature.span)
+        }
+        Item::Expr(_) => false,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Reference {
+    name: String,
+    phase: DeclarationPhase,
+    span: aven_core::Span,
+}
+
+fn declaration_references(module: &Module, declaration: &Declaration) -> Vec<Reference> {
+    let mut references = Vec::new();
+
+    for item in &module.items {
+        if is_declaration_item(item, declaration) {
+            collect_item_references(item, &mut references);
+        }
+    }
+
+    references
+}
+
+fn collect_item_references(item: &Item, references: &mut Vec<Reference>) {
+    match item {
+        Item::Binding(binding) => {
+            if let Some(annotation) = &binding.annotation {
+                collect_expr_references(annotation, references);
+            }
+            collect_expr_references(&binding.value, references);
+        }
+        Item::Signature(signature) => collect_expr_references(&signature.annotation, references),
+        Item::Expr(expr) => collect_expr_references(expr, references),
+    }
+}
+
+fn collect_expr_references(expr: &Expr, references: &mut Vec<Reference>) {
+    match &expr.kind {
+        ExprKind::Name(name) => references.push(Reference {
+            name: name.clone(),
+            phase: DeclarationPhase::Runtime,
+            span: expr.span,
+        }),
+        ExprKind::ComptimeName(name) => references.push(Reference {
+            name: name.clone(),
+            phase: DeclarationPhase::Comptime,
+            span: expr.span,
+        }),
+        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+            collect_record_entry_references(entries, references);
+        }
+        ExprKind::Match { subject, arms, .. } => {
+            collect_expr_references(subject, references);
+            for arm in arms {
+                collect_pattern_references(&arm.pattern, references);
+                collect_expr_references_from_exprs(&arm.guards, references);
+                collect_expr_references(&arm.body, references);
+            }
+        }
+        _ => walk_expr_children(expr, &mut |child| {
+            collect_expr_references(child, references)
+        }),
+    }
+}
+
+fn collect_expr_references_from_exprs(exprs: &[Expr], references: &mut Vec<Reference>) {
+    for expr in exprs {
+        collect_expr_references(expr, references);
+    }
+}
+
+fn collect_record_entry_references(entries: &[RecordEntry], references: &mut Vec<Reference>) {
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { value, .. }
+            | RecordEntry::Spread { value, .. }
+            | RecordEntry::Element(value) => collect_expr_references(value, references),
+            RecordEntry::Shorthand {
+                name, name_span, ..
+            } => references.push(Reference {
+                name: name.clone(),
+                phase: DeclarationPhase::Runtime,
+                span: *name_span,
+            }),
+            RecordEntry::Delete { .. } | RecordEntry::Rename { .. } | RecordEntry::Open { .. } => {}
+        }
+    }
+}
+
+fn collect_pattern_references(pattern: &Expr, references: &mut Vec<Reference>) {
+    match &pattern.kind {
+        ExprKind::ComptimeName(name) => references.push(Reference {
+            name: name.clone(),
+            phase: DeclarationPhase::Comptime,
+            span: pattern.span,
+        }),
+        ExprKind::Call { callee, args } | ExprKind::Index { callee, args } => {
+            if matches!(callee.kind, ExprKind::ComptimeName(_)) {
+                collect_expr_references(callee, references);
+            }
+            for arg in args {
+                collect_pattern_references(arg, references);
+            }
+        }
+        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+            collect_pattern_references_from_entries(entries, references);
+        }
+        ExprKind::Group(inner)
+        | ExprKind::Nullable(inner)
+        | ExprKind::Unary { value: inner, .. }
+        | ExprKind::Propagate { value: inner, .. } => collect_pattern_references(inner, references),
+        ExprKind::Tuple(items) | ExprKind::Array(items) => {
+            for item in items {
+                collect_pattern_references(item, references);
+            }
+        }
+        ExprKind::Arrow { params, result } => {
+            for param in params {
+                collect_pattern_references(param, references);
+            }
+            collect_pattern_references(result, references);
+        }
+        ExprKind::FieldAccess { receiver, .. } => collect_pattern_references(receiver, references),
+        ExprKind::Binary { left, right, .. } => {
+            collect_pattern_references(left, references);
+            collect_pattern_references(right, references);
+        }
+        ExprKind::Match { subject, arms, .. } => {
+            collect_pattern_references(subject, references);
+            for arm in arms {
+                collect_pattern_references(&arm.pattern, references);
+                collect_pattern_references(&arm.body, references);
+            }
+        }
+        ExprKind::Lambda { .. }
+        | ExprKind::Block(_)
+        | ExprKind::Missing
+        | ExprKind::Literal(_)
+        | ExprKind::Name(_) => {}
+    }
+}
+
+fn collect_pattern_references_from_entries(
+    entries: &[RecordEntry],
+    references: &mut Vec<Reference>,
+) {
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { value, .. } | RecordEntry::Element(value) => {
+                collect_pattern_references(value, references);
+            }
+            RecordEntry::Spread { value, .. } => {
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    collect_pattern_references(value, references);
+                }
+            }
+            RecordEntry::Shorthand { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. } => {}
+        }
+    }
 }
 
 fn declaration_fingerprint(source: &str, declaration: &Declaration) -> DeclarationFingerprint {
@@ -400,6 +638,44 @@ mod tests {
     }
 
     #[test]
+    fn declaration_artifacts_record_top_level_dependencies() {
+        let document = DocumentSnapshot::parse(
+            Revision::new(1),
+            source_file(
+                "User = Text\nhelper = 1\nvalue : User\nvalue = (input) => helper + input\n",
+            ),
+        );
+        let artifacts = &document.declaration_artifacts;
+
+        assert_eq!(
+            artifacts[2].dependencies(),
+            &[
+                DeclarationKey {
+                    name: "User".to_owned(),
+                    phase: DeclarationPhase::Comptime,
+                    ordinal: 0,
+                },
+                DeclarationKey {
+                    name: "helper".to_owned(),
+                    phase: DeclarationPhase::Runtime,
+                    ordinal: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn declaration_dependencies_ignore_local_binders() {
+        let document = DocumentSnapshot::parse(
+            Revision::new(1),
+            source_file("helper = 1\nvalue = (helper) =>\n  local = helper\n  { local }\n"),
+        );
+        let artifacts = &document.declaration_artifacts;
+
+        assert!(artifacts[1].dependencies().is_empty());
+    }
+
+    #[test]
     fn checked_documents_include_semantic_diagnostics() {
         let checked = check_source_file(source_file("value : Missing = value\n"));
 
@@ -470,6 +746,33 @@ mod tests {
             &second_artifact,
             &second.declaration_artifacts[2]
         ));
+    }
+
+    #[test]
+    fn database_recomputes_artifact_when_dependency_resolution_changes() {
+        let mut database = CompilerDatabase::default();
+        let first =
+            database.set_document("file", Revision::new(1), source_file("value = missing\n"));
+        let value_artifact = Arc::clone(&first.declaration_artifacts[0]);
+
+        let second = database.set_document(
+            "file",
+            Revision::new(2),
+            source_file("missing = 1\nvalue = missing\n"),
+        );
+
+        assert!(!Arc::ptr_eq(
+            &value_artifact,
+            &second.declaration_artifacts[1]
+        ));
+        assert_eq!(
+            second.declaration_artifacts[1].dependencies(),
+            &[DeclarationKey {
+                name: "missing".to_owned(),
+                phase: DeclarationPhase::Runtime,
+                ordinal: 0,
+            }]
+        );
     }
 
     #[test]
