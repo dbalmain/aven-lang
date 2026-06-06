@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
@@ -87,7 +87,8 @@ enum RowKind {
 
 pub fn check_module(module: &Module) -> CheckOutput {
     let known_types = known_type_names(module);
-    let mut checker = Checker::new(known_types);
+    let type_definitions = type_definitions(module, &known_types);
+    let mut checker = Checker::with_type_definitions(known_types, type_definitions);
 
     checker.check_module(module);
 
@@ -140,6 +141,25 @@ fn known_type_names(module: &Module) -> HashSet<String> {
     }
 
     names
+}
+
+fn type_definitions(module: &Module, known_types: &HashSet<String>) -> HashMap<String, Type> {
+    let mut definitions = HashMap::new();
+    let mut checker = Checker::new(known_types.clone());
+
+    for declaration in collect_declarations(module) {
+        if declaration.phase != DeclarationPhase::Comptime {
+            continue;
+        }
+
+        let Some(binding) = binding_for_declaration(module, &declaration) else {
+            continue;
+        };
+
+        definitions.insert(declaration.name, checker.lower_annotation(&binding.value));
+    }
+
+    definitions
 }
 
 #[derive(Debug, Clone)]
@@ -200,13 +220,22 @@ fn binding_for_declaration<'a>(
 #[derive(Debug)]
 struct Checker {
     known_types: HashSet<String>,
+    type_definitions: HashMap<String, Type>,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl Checker {
     fn new(known_types: HashSet<String>) -> Self {
+        Self::with_type_definitions(known_types, HashMap::new())
+    }
+
+    fn with_type_definitions(
+        known_types: HashSet<String>,
+        type_definitions: HashMap<String, Type>,
+    ) -> Self {
         Self {
             known_types,
+            type_definitions,
             diagnostics: Vec::new(),
         }
     }
@@ -230,9 +259,10 @@ impl Checker {
 
         if let Some(source) = declared_annotation_for_declaration(module, declaration) {
             let declared_type = self.lower_annotation(source.annotation);
+            let expected_type = self.normalize(&declared_type);
 
             if let Some(binding) = binding {
-                self.check_value_against(&declared_type, &binding.value);
+                self.check_value_against(&expected_type, &binding.value);
             }
         }
 
@@ -254,7 +284,8 @@ impl Checker {
     fn check_binding(&mut self, binding: &Binding) {
         if let Some(annotation) = &binding.annotation {
             let declared_type = self.lower_annotation(annotation);
-            self.check_value_against(&declared_type, &binding.value);
+            let expected_type = self.normalize(&declared_type);
+            self.check_value_against(&expected_type, &binding.value);
         }
 
         self.check_value_expr(&binding.value);
@@ -398,6 +429,96 @@ impl Checker {
         let diagnostics = self.diagnostics[start..].to_vec();
 
         TypeLowering { ty, diagnostics }
+    }
+
+    fn normalize(&self, ty: &Type) -> Type {
+        self.normalize_with_visited(ty, HashSet::new())
+    }
+
+    fn normalize_with_visited(&self, ty: &Type, visited: HashSet<String>) -> Type {
+        match ty {
+            Type::Named(name) => {
+                let Some(definition) = self.type_definitions.get(name) else {
+                    return Type::Named(name.clone());
+                };
+
+                if visited.contains(name) {
+                    return Type::Named(name.clone());
+                }
+
+                let mut next_visited = visited;
+                next_visited.insert(name.clone());
+                self.normalize_with_visited(definition, next_visited)
+            }
+            Type::Deferred => Type::Deferred,
+            Type::Variable(name) => Type::Variable(name.clone()),
+            Type::Apply { callee, args } => Type::Apply {
+                callee: Box::new(self.normalize_with_visited(callee, visited.clone())),
+                args: self.normalize_types(args, &visited),
+            },
+            Type::Function { params, result } => Type::Function {
+                params: self.normalize_types(params, &visited),
+                result: Box::new(self.normalize_with_visited(result, visited)),
+            },
+            Type::Nullable(inner) => {
+                Type::Nullable(Box::new(self.normalize_with_visited(inner, visited)))
+            }
+            Type::Tuple(items) => Type::Tuple(self.normalize_types(items, &visited)),
+            Type::Record(entries) => Type::Record(self.normalize_row_entries(entries, &visited)),
+            Type::Variant(entries) => Type::Variant(self.normalize_row_entries(entries, &visited)),
+        }
+    }
+
+    fn normalize_types(&self, types: &[Type], visited: &HashSet<String>) -> Vec<Type> {
+        types
+            .iter()
+            .map(|ty| self.normalize_with_visited(ty, visited.clone()))
+            .collect()
+    }
+
+    fn normalize_row_entries(
+        &self,
+        entries: &[TypeRowEntry],
+        visited: &HashSet<String>,
+    ) -> Vec<TypeRowEntry> {
+        entries
+            .iter()
+            .map(|entry| self.normalize_row_entry(entry, visited))
+            .collect()
+    }
+
+    fn normalize_row_entry(&self, entry: &TypeRowEntry, visited: &HashSet<String>) -> TypeRowEntry {
+        match entry {
+            TypeRowEntry::Field {
+                name,
+                ty,
+                overwrite,
+                optional,
+            } => TypeRowEntry::Field {
+                name: name.clone(),
+                ty: self.normalize_with_visited(ty, visited.clone()),
+                overwrite: *overwrite,
+                optional: *optional,
+            },
+            TypeRowEntry::Tag { name, payload } => TypeRowEntry::Tag {
+                name: name.clone(),
+                payload: self.normalize_types(payload, visited),
+            },
+            TypeRowEntry::Spread { ty, overwrite } => TypeRowEntry::Spread {
+                ty: self.normalize_with_visited(ty, visited.clone()),
+                overwrite: *overwrite,
+            },
+            TypeRowEntry::Element(ty) => {
+                TypeRowEntry::Element(self.normalize_with_visited(ty, visited.clone()))
+            }
+            TypeRowEntry::Delete(name) => TypeRowEntry::Delete(name.clone()),
+            TypeRowEntry::Rename { from, to } => TypeRowEntry::Rename {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            TypeRowEntry::Shorthand(name) => TypeRowEntry::Shorthand(name.clone()),
+            TypeRowEntry::Open => TypeRowEntry::Open,
+        }
     }
 
     fn lower_annotation(&mut self, annotation: &Expr) -> Type {
@@ -890,6 +1011,79 @@ mod tests {
             check.diagnostics[0].message,
             "expected `Int`, found a text literal"
         );
+    }
+
+    #[test]
+    fn transparent_scalar_aliases_are_normalized_before_checking() {
+        let output = parse_module("Username = Text\nvalue : Username = 42\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Text`, found a number literal"
+        );
+
+        let output = parse_module("Username = Text\nvalue : Username = \"dave\"\n");
+        let check = check_module(&output.module);
+        assert!(!has_diagnostic_code(
+            &check.diagnostics,
+            codes::ty::MISMATCH
+        ));
+    }
+
+    #[test]
+    fn transparent_tuple_aliases_are_normalized_before_checking() {
+        let output = parse_module("Pair = (Int, Text)\nvalue : Pair = (1, 2)\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Text`, found a number literal"
+        );
+    }
+
+    #[test]
+    fn transparent_alias_chains_are_normalized_before_checking() {
+        let output = parse_module("A = B\nB = Text\nvalue : A = 42\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Text`, found a number literal"
+        );
+    }
+
+    #[test]
+    fn deferred_alias_definitions_do_not_emit_mismatches() {
+        let output = parse_module("Wrapped = opaque(Text)\nvalue : Wrapped = 42\n");
+        let check = check_module(&output.module);
+
+        assert!(!has_diagnostic_code(
+            &check.diagnostics,
+            codes::ty::MISMATCH
+        ));
+    }
+
+    #[test]
+    fn cyclic_alias_normalization_terminates() {
+        let output = parse_module("A = B\nB = A\nvalue : A = 42\n");
+        let check = check_module(&output.module);
+
+        assert!(!has_diagnostic_code(
+            &check.diagnostics,
+            codes::ty::MISMATCH
+        ));
+
+        let output = parse_module("A = (A, Int)\nvalue : A = (1, 2)\n");
+        let check = check_module(&output.module);
+
+        assert!(!has_diagnostic_code(
+            &check.diagnostics,
+            codes::ty::MISMATCH
+        ));
     }
 
     #[test]

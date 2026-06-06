@@ -855,9 +855,11 @@ signature-plus-binding declarations share the same declared annotation lookup
 instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
 types, while identifiers, rows, applications, inference, and unification
-variables remain deferred. The next semantic slice is the inference direction
-and first unification scaffold, which is where declaration invalidation starts
-feeding reusable semantic results.
+variables remain deferred. Transparent comptime aliases are now normalized
+before value checking, including alias chains and nested aliases. `opaque(...)`
+lowers to an irreducible deferred type until comptime evaluation and
+module-aware opacity exist. Cyclic aliases terminate silently for now; reporting
+cycles and validating type-definition bodies are separate follow-up slices.
 
 ## Remaining Phase 2 Scope
 
