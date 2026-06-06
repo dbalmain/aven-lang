@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
@@ -68,6 +68,7 @@ pub struct DocumentSnapshot {
     parse: Arc<ParseOutput>,
     declarations: Vec<Declaration>,
     declaration_artifacts: Vec<Arc<DeclarationArtifact>>,
+    invalidated_declarations: Vec<DeclarationKey>,
     semantic_diagnostics: Vec<Diagnostic>,
 }
 
@@ -96,7 +97,8 @@ impl DocumentSnapshot {
             file,
             parse: Arc::new(parse),
             declarations,
-            declaration_artifacts,
+            declaration_artifacts: declaration_artifacts.artifacts,
+            invalidated_declarations: declaration_artifacts.invalidated,
             semantic_diagnostics: Vec::new(),
         }
     }
@@ -108,6 +110,7 @@ impl DocumentSnapshot {
             parse: Arc::clone(&self.parse),
             declarations: self.declarations.clone(),
             declaration_artifacts: self.declaration_artifacts.clone(),
+            invalidated_declarations: self.invalidated_declarations.clone(),
             semantic_diagnostics,
         }
     }
@@ -136,6 +139,13 @@ impl DocumentSnapshot {
         &self,
     ) -> impl ExactSizeIterator<Item = &DeclarationArtifact> + '_ {
         self.declaration_artifacts.iter().map(Arc::as_ref)
+    }
+
+    /// Declarations whose analysis is stale: changed declarations plus their
+    /// transitive dependents. This is an unordered set; callers must not treat
+    /// the returned order as a recomputation or topological order.
+    pub fn invalidated_declarations(&self) -> &[DeclarationKey] {
+        &self.invalidated_declarations
     }
 
     pub fn parse_diagnostics(&self) -> &[Diagnostic] {
@@ -167,7 +177,7 @@ fn collect_declaration_artifacts(
     module: &Module,
     declarations: &[Declaration],
     previous: Option<&DocumentSnapshot>,
-) -> Vec<Arc<DeclarationArtifact>> {
+) -> DeclarationArtifacts {
     let previous_by_key: HashMap<_, _> = previous
         .into_iter()
         .flat_map(|document| document.declaration_artifacts.iter())
@@ -176,7 +186,8 @@ fn collect_declaration_artifacts(
 
     let keys = declaration_keys(declarations);
     let top_level = top_level_declaration_map(&keys);
-    declarations
+    let mut changed = Vec::new();
+    let artifacts: Vec<_> = declarations
         .iter()
         .zip(keys)
         .map(|(declaration, key)| {
@@ -190,13 +201,68 @@ fn collect_declaration_artifacts(
                 return Arc::clone(previous);
             }
 
+            changed.push(key.clone());
             Arc::new(DeclarationArtifact {
                 key,
                 fingerprint,
                 dependencies,
             })
         })
-        .collect()
+        .collect();
+    let invalidated = invalidation_closure(&artifacts, changed);
+
+    DeclarationArtifacts {
+        artifacts,
+        invalidated,
+    }
+}
+
+struct DeclarationArtifacts {
+    artifacts: Vec<Arc<DeclarationArtifact>>,
+    invalidated: Vec<DeclarationKey>,
+}
+
+fn invalidation_closure(
+    artifacts: &[Arc<DeclarationArtifact>],
+    changed: Vec<DeclarationKey>,
+) -> Vec<DeclarationKey> {
+    let reverse_dependencies = reverse_dependency_map(artifacts);
+    let mut invalidated = Vec::new();
+    let mut seen = HashSet::new();
+    let mut queue = VecDeque::from(changed);
+
+    while let Some(key) = queue.pop_front() {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+
+        invalidated.push(key.clone());
+
+        if let Some(dependents) = reverse_dependencies.get(&key) {
+            for dependent in dependents {
+                queue.push_back(dependent.clone());
+            }
+        }
+    }
+
+    invalidated
+}
+
+fn reverse_dependency_map(
+    artifacts: &[Arc<DeclarationArtifact>],
+) -> HashMap<DeclarationKey, Vec<DeclarationKey>> {
+    let mut reverse_dependencies = HashMap::new();
+
+    for artifact in artifacts {
+        for dependency in &artifact.dependencies {
+            reverse_dependencies
+                .entry(dependency.clone())
+                .or_insert_with(Vec::new)
+                .push(artifact.key.clone());
+        }
+    }
+
+    reverse_dependencies
 }
 
 fn declaration_keys(declarations: &[Declaration]) -> Vec<DeclarationKey> {
@@ -598,12 +664,34 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use aven_core::{FileId, SourceFile, codes};
 
     use super::*;
 
     fn source_file(source: &str) -> SourceFile {
         SourceFile::new(FileId(0), "test.av", None, source)
+    }
+
+    fn runtime_key(name: &str) -> DeclarationKey {
+        DeclarationKey {
+            name: name.to_owned(),
+            phase: DeclarationPhase::Runtime,
+            ordinal: 0,
+        }
+    }
+
+    fn key_set(keys: impl IntoIterator<Item = DeclarationKey>) -> HashSet<DeclarationKey> {
+        keys.into_iter().collect()
+    }
+
+    fn invalidated_set(document: &DocumentSnapshot) -> HashSet<DeclarationKey> {
+        document
+            .invalidated_declarations()
+            .iter()
+            .cloned()
+            .collect()
     }
 
     #[test]
@@ -616,6 +704,18 @@ mod tests {
         assert!(document.semantic_diagnostics().is_empty());
         assert_eq!(document.declarations().len(), 1);
         assert_eq!(document.declaration_artifacts().len(), 1);
+        assert_eq!(document.invalidated_declarations().len(), 1);
+    }
+
+    #[test]
+    fn fresh_documents_invalidate_all_declarations() {
+        let document =
+            DocumentSnapshot::parse(Revision::new(1), source_file("first = 1\nsecond = first\n"));
+
+        assert_eq!(
+            invalidated_set(&document),
+            key_set([runtime_key("first"), runtime_key("second")])
+        );
     }
 
     #[test]
@@ -764,6 +864,57 @@ mod tests {
             &second_artifact,
             &second.declaration_artifacts[2]
         ));
+    }
+
+    #[test]
+    fn database_invalidates_unchanged_dependents_when_dependency_changes() {
+        let mut database = CompilerDatabase::default();
+        let first = database.set_document(
+            "file",
+            Revision::new(1),
+            source_file("helper = 1\nvalue = helper\n"),
+        );
+        let value_artifact = Arc::clone(&first.declaration_artifacts[1]);
+
+        let second = database.set_document(
+            "file",
+            Revision::new(2),
+            source_file("helper = 2\nvalue = helper\n"),
+        );
+
+        assert!(Arc::ptr_eq(
+            &value_artifact,
+            &second.declaration_artifacts[1]
+        ));
+        assert_eq!(
+            invalidated_set(&second),
+            key_set([runtime_key("helper"), runtime_key("value")])
+        );
+    }
+
+    #[test]
+    fn database_invalidates_transitive_dependents() {
+        let mut database = CompilerDatabase::default();
+        database.set_document(
+            "file",
+            Revision::new(1),
+            source_file("base = 1\nmiddle = base\ntop = middle\n"),
+        );
+
+        let document = database.set_document(
+            "file",
+            Revision::new(2),
+            source_file("base = 2\nmiddle = base\ntop = middle\n"),
+        );
+
+        assert_eq!(
+            invalidated_set(&document),
+            key_set([
+                runtime_key("base"),
+                runtime_key("middle"),
+                runtime_key("top"),
+            ])
+        );
     }
 
     #[test]

@@ -787,12 +787,13 @@ each top-level declaration now has a stable name/phase/ordinal key, a source
 fingerprint, and conservative dependency edges to other top-level declarations.
 The compiler database reuses unchanged artifacts across document revisions only
 when both the declaration's source fingerprint and dependency list match.
-Whole-module semantic diagnostics still run as before; this only establishes
-the invalidation unit future inference/comptime caches can use. The fingerprint
-captures only a declaration's own source, so it is not a sufficient semantic
-cache key on its own: before any slice reuses a declaration's semantic result,
-it must also account for changed dependency artifacts, not only fingerprint
-equality on the declaration being analyzed.
+Snapshots also expose the dependency-aware invalidation closure: if a changed
+artifact has unchanged dependents, those dependents are marked invalidated too,
+including transitively. Whole-module semantic diagnostics still run as before;
+this only establishes the invalidation unit future inference/comptime caches can
+use. The closure is still not a recomputation order or a complete semantic cache
+key: future slices that reuse declaration-level semantic results must account for
+the invalidated set and compute an explicit dependency-aware schedule.
 
 ## Phase 2 Scope
 
