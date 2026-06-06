@@ -155,6 +155,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Variant type members must use uppercase tags. Rename the tag to an uppercase marker such as Ok or Error.",
     },
     DiagnosticExplanation {
+        code: codes::ty::MISMATCH,
+        text: "A literal binding value cannot satisfy its declared scalar annotation. Change the value or change the annotation so they agree.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::TYPE_ONLY_RECORD_ENTRY,
         text: "This record entry form is only meaningful in type position. Use it inside an annotation or replace it with a value-level record entry.",
     },

@@ -1,0 +1,2 @@
+asInt : Int = "hi"
+asText : Text = 42

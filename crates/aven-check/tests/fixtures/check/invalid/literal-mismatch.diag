@@ -1,0 +1,6 @@
+error type.mismatch: expected `Int`, found a text literal
+  label 14..18: this is a text literal
+  note: change the value to produce `Int`, or change the annotation to match the literal
+error type.mismatch: expected `Text`, found a number literal
+  label 35..37: this is a number literal
+  note: change the value to produce `Text`, or change the annotation to match the literal

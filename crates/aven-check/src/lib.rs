@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
-    Binding, DeclarationPhase, Expr, ExprKind, Item, MatchArm, Module, Param, RecordEntry,
+    Binding, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm, Module, Param, RecordEntry,
     Signature, collect_declarations, walk_expr_children,
 };
 
@@ -209,7 +209,8 @@ impl Checker {
 
     fn check_binding(&mut self, binding: &Binding) {
         if let Some(annotation) = &binding.annotation {
-            self.lower_annotation(annotation);
+            let declared_type = self.lower_annotation(annotation);
+            self.check_literal_binding_type(&declared_type, &binding.value);
         }
 
         self.check_value_expr(&binding.value);
@@ -305,6 +306,20 @@ impl Checker {
                 self.lower_annotation(annotation);
             }
         }
+    }
+
+    fn check_literal_binding_type(&mut self, declared_type: &Type, value: &Expr) {
+        let ExprKind::Literal(literal) = &value.kind else {
+            return;
+        };
+        let Type::Named(expected) = declared_type else {
+            return;
+        };
+        let Some(found) = mismatched_literal_kind(expected, literal) else {
+            return;
+        };
+
+        self.report_type_mismatch(expected, found, value.span);
     }
 
     fn lower_declared_annotation(
@@ -482,6 +497,26 @@ impl Checker {
                 .with_label(Label::primary(span, "lowercase variant tag"))
                 .with_note("variant tags use uppercase names, for example `Ok` or `Err`"),
         );
+    }
+
+    fn report_type_mismatch(&mut self, expected: &str, found: &'static str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("expected `{expected}`, found a {found}"))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(span, format!("this is a {found}")))
+                .with_note(format!(
+                    "change the value to produce `{expected}`, or change the annotation to match the literal"
+                )),
+        );
+    }
+}
+
+fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static str> {
+    match (expected, literal) {
+        ("Text", Literal::String(_)) | ("Int" | "Float", Literal::Number(_)) => None,
+        ("Int" | "Float" | "Bool" | "Nil" | "Unit", Literal::String(_)) => Some("text literal"),
+        ("Text" | "Bool" | "Nil" | "Unit", Literal::Number(_)) => Some("number literal"),
+        _ => None,
     }
 }
 
@@ -669,6 +704,56 @@ mod tests {
     }
 
     #[test]
+    fn literal_bindings_accept_matching_scalar_annotations() {
+        for source in [
+            "value : Text = \"hi\"\n",
+            "value : Int = 42\n",
+            "value : Float = 42\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_bindings_report_definitive_scalar_mismatches() {
+        for source in [
+            "value : Int = \"hi\"\n",
+            "value : Text = 42\n",
+            "value : Bool = \"hi\"\n",
+            "value : Nil = 42\n",
+            "value : Unit = \"hi\"\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        }
+    }
+
+    #[test]
+    fn literal_binding_mismatch_defers_non_literals_and_non_scalar_annotations() {
+        for source in [
+            "value : Int = other\n",
+            "value : { name = Text } = \"hi\"\n",
+            "value : Missing = \"hi\"\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
     fn check_module_reports_type_only_entries_in_value_records() {
         let output = parse_module("value = { name? = 1 }\n");
         let check = check_module(&output.module);
@@ -678,5 +763,16 @@ mod tests {
             check.diagnostics[0].code.as_deref(),
             Some(codes::ty::TYPE_ONLY_RECORD_ENTRY)
         );
+    }
+
+    fn has_diagnostic_code(diagnostics: &[Diagnostic], code: &str) -> bool {
+        matching_codes(diagnostics, code) > 0
+    }
+
+    fn matching_codes(diagnostics: &[Diagnostic], code: &str) -> usize {
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some(code))
+            .count()
     }
 }

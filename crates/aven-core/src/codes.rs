@@ -55,6 +55,7 @@ pub mod parse {
 
 pub mod ty {
     pub const LOWERCASE_VARIANT_TAG: &str = "type.lowercase-variant-tag";
+    pub const MISMATCH: &str = "type.mismatch";
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
 }
@@ -95,6 +96,7 @@ pub const ALL: &[&str] = &[
     parse::UNEXPECTED_SEPARATOR,
     parse::UNSUPPORTED_SYNTAX,
     ty::LOWERCASE_VARIANT_TAG,
+    ty::MISMATCH,
     ty::TYPE_ONLY_RECORD_ENTRY,
     ty::UNKNOWN_NAME,
 ];

@@ -845,7 +845,11 @@ builds the lowerer once per module but calls it only for new/recomputed
 artifacts; unchanged artifacts reuse the cached type `Arc` without rerunning
 annotation lowering. Dependency-resolution changes rebuild the artifact and
 refresh annotation diagnostics. Inference, unification variables, and
-normalization are still deferred.
+normalization are still deferred. The third M10 slice opened value/annotation
+agreement checking with a deliberately narrow debounced check: literal binding
+values are compared against bare scalar annotations and report `type.mismatch`
+only on definitive incompatibilities. Numeric literal polymorphism and all
+non-literal inference remain deferred to the full inference pass.
 
 ## Remaining Phase 2 Scope
 
