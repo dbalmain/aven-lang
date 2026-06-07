@@ -854,31 +854,37 @@ refresh annotation diagnostics. Inference, unification variables, and
 normalization are still deferred. The third M10 slice opened value/annotation
 agreement checking with a deliberately narrow debounced check: literal binding
 values are compared against bare scalar annotations and report `type.mismatch`
-only on definitive incompatibilities. Numeric literal polymorphism and all
-non-literal inference remain deferred to the full inference pass. That check now
-runs at the declaration level, so inline annotations and adjacent
+only on definitive incompatibilities. Number literals synthesize as `Int` for
+now; inferred `Int` still flows into `Float` contexts because the scalar
+mismatch rule treats `Int`/`Float` as a deferred numeric-promotion case. That
+default is revisable once unification variables and numeric defaulting exist.
+That check now runs at the declaration level, so inline annotations and adjacent
 signature-plus-binding declarations share the same declared annotation lookup
 instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
 types, and nullable values are accepted when they are `Nil` or satisfy the inner
 type. Identifier values are checked when a top-level declaration value
-references another top-level binding with a single clean declared annotation.
-Names referenced inside local scopes (lambda, block, and match bodies) defer, so
-a local binder cannot borrow a same-named top-level declared type. Ambiguous
-overloads, unannotated names, numeric `Int`/`Float` promotion cases, rows,
-applications, inference, and unification variables remain deferred. Literal
-record value checking now covers rows of only fields and the open marker: wrong
-field types, missing required fields, and unexpected fields on closed records.
-The open/closed rule is fixed by the spec (records are closed by default; `.._`
-opens them, lowered to `TypeRowEntry::Open`). Rows carrying spreads, deletes,
-renames, or overwrites defer until row computation, and checking explicit fields
-through a value spread is a follow-up. Variant value arms are also deferred. Full
-row unification and the inference direction pair with the inference pass.
-Transparent comptime aliases are now normalized before value checking, including
-alias chains and nested aliases. `opaque(...)` lowers to an irreducible deferred
-type until comptime evaluation and module-aware opacity exist. Cyclic aliases
-terminate silently for now; reporting cycles and validating type-definition
-bodies are separate follow-up slices.
+references another top-level binding with a single clean declared annotation or
+a synthesized literal/tuple/record type. Names referenced inside local scopes
+(lambda, block, and match bodies) defer, so a local binder cannot borrow a
+same-named top-level declared type. Ambiguous overloads, identifier-valued
+bindings, call-valued bindings, lambda-valued bindings, applications, inference,
+and unification variables remain deferred. Literal record value checking now
+covers rows of only fields and the open marker: wrong field types, missing
+required fields, and unexpected fields on closed records. The open/closed rule
+is fixed by the spec (records are closed by default; `.._` opens them, lowered
+to `TypeRowEntry::Open`). The same field-set comparator handles literal record
+values and record-type comparisons, so a synthesized or declared record type can
+be checked structurally against an expected record type. Rows carrying spreads,
+deletes, renames, or overwrites defer until row computation, and checking
+explicit fields through a value spread is a follow-up. Open actual record types
+and optional-field subtyping also defer until the row engine. Variant value arms
+are deferred. Full row unification and the inference direction pair with the
+inference pass. Transparent comptime aliases are now normalized before value
+checking, including alias chains and nested aliases. `opaque(...)` lowers to an
+irreducible deferred type until comptime evaluation and module-aware opacity
+exist. Cyclic aliases terminate silently for now; reporting cycles and
+validating type-definition bodies are separate follow-up slices.
 
 ## Remaining Phase 2 Scope
 

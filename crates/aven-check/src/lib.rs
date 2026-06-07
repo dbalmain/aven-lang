@@ -189,20 +189,20 @@ fn declared_value_types(
             }
         }
 
-        if binding_for_declaration(module, &declaration).is_none() {
-            continue;
-        }
-
-        let Some(source) = declared_annotation_for_declaration(module, &declaration) else {
+        let Some(binding) = binding_for_declaration(module, &declaration) else {
             continue;
         };
 
-        let lowering = checker.lower_annotation_with_diagnostics(source.annotation);
-        if !lowering.diagnostics.is_empty() {
-            continue;
-        }
+        if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
+            let lowering = checker.lower_annotation_with_diagnostics(source.annotation);
+            if !lowering.diagnostics.is_empty() {
+                continue;
+            }
 
-        types.insert(name, Some(checker.normalize(&lowering.ty)));
+            types.insert(name, Some(checker.normalize(&lowering.ty)));
+        } else if let Some(inferred) = infer_value(&binding.value) {
+            types.insert(name, Some(inferred));
+        }
     }
 
     types
@@ -525,6 +525,23 @@ impl Checker {
                     self.report_tuple_arity_mismatch(expected.len(), 0, span);
                 }
             }
+            (Type::Record(expected), Type::Record(actual)) => {
+                let (Some(expected), Some(actual)) =
+                    (literal_record_type(expected), literal_record_type(actual))
+                else {
+                    return;
+                };
+                if actual.open || actual.fields.iter().any(|field| field.optional) {
+                    return;
+                }
+
+                let actual_fields: Vec<_> = actual
+                    .fields
+                    .iter()
+                    .map(|field| (field.name, span, FieldValue::Type(field.ty)))
+                    .collect();
+                self.compare_record(&expected, &actual_fields, span);
+            }
             _ => {}
         }
     }
@@ -542,20 +559,36 @@ impl Checker {
             return;
         };
 
-        let value_fields: HashMap<_, _> = actual
+        let actual_fields: Vec<_> = actual
             .fields
             .iter()
-            .map(|field| (field.name, field.value))
+            .map(|field| (field.name, field.name_span, FieldValue::Value(field.value)))
+            .collect();
+        self.compare_record(&expected, &actual_fields, actual.span);
+    }
+
+    fn compare_record(
+        &mut self,
+        expected: &ExpectedRecordShape<'_>,
+        actual: &[(&str, Span, FieldValue<'_>)],
+        record_span: Span,
+    ) {
+        let actual_fields: HashMap<_, _> = actual
+            .iter()
+            .map(|(name, _, payload)| (*name, *payload))
             .collect();
         let expected_field_names: HashSet<_> =
             expected.fields.iter().map(|field| field.name).collect();
 
         for field in &expected.fields {
-            match value_fields.get(field.name) {
-                Some(Some(value)) => self.check_value_against(field.ty, value),
-                Some(None) => {}
+            match actual_fields.get(field.name).copied() {
+                Some(FieldValue::Value(Some(value))) => self.check_value_against(field.ty, value),
+                Some(FieldValue::Value(None)) => {}
+                Some(FieldValue::Type(ty)) => {
+                    self.check_type_against_type(field.ty, ty, record_span)
+                }
                 None if field.optional => {}
-                None => self.report_missing_field(field.name, actual.span),
+                None => self.report_missing_field(field.name, record_span),
             }
         }
 
@@ -563,9 +596,9 @@ impl Checker {
             return;
         }
 
-        for field in &actual.fields {
-            if !expected_field_names.contains(field.name) {
-                self.report_unexpected_field(field.name, field.name_span);
+        for (name, blame_span, _) in actual {
+            if !expected_field_names.contains(name) {
+                self.report_unexpected_field(name, *blame_span);
             }
         }
     }
@@ -915,6 +948,12 @@ struct ExpectedRecordField<'a> {
     optional: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FieldValue<'a> {
+    Value(Option<&'a Expr>),
+    Type(&'a Type),
+}
+
 #[derive(Debug)]
 struct ValueRecordShape<'a> {
     fields: Vec<ValueRecordField<'a>>,
@@ -995,6 +1034,52 @@ fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueReco
     }
 
     Some(ValueRecordShape { fields, span })
+}
+
+fn infer_value(value: &Expr) -> Option<Type> {
+    match &value.kind {
+        ExprKind::Literal(Literal::Number(_)) => Some(Type::Named("Int".to_owned())),
+        ExprKind::Literal(Literal::String(_)) => Some(Type::Named("Text".to_owned())),
+        ExprKind::Literal(_) => None,
+        ExprKind::Group(inner) => infer_value(inner),
+        ExprKind::Tuple(elements) => elements
+            .iter()
+            .map(infer_value)
+            .collect::<Option<Vec<_>>>()
+            .map(Type::Tuple),
+        ExprKind::Record(entries) => {
+            let shape = literal_record_value(entries, value.span)?;
+            shape
+                .fields
+                .iter()
+                .map(|field| {
+                    Some(TypeRowEntry::Field {
+                        name: field.name.to_owned(),
+                        ty: infer_value(field.value?)?,
+                        overwrite: false,
+                        optional: false,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()
+                .map(Type::Record)
+        }
+        ExprKind::Missing
+        | ExprKind::Name(_)
+        | ExprKind::ComptimeName(_)
+        | ExprKind::Array(_)
+        | ExprKind::Set(_)
+        | ExprKind::Index { .. }
+        | ExprKind::FieldAccess { .. }
+        | ExprKind::Call { .. }
+        | ExprKind::Nullable(_)
+        | ExprKind::Arrow { .. }
+        | ExprKind::Binary { .. }
+        | ExprKind::Unary { .. }
+        | ExprKind::Propagate { .. }
+        | ExprKind::Match { .. }
+        | ExprKind::Lambda { .. }
+        | ExprKind::Block(_) => None,
+    }
 }
 
 fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static str> {
@@ -1247,8 +1332,6 @@ mod tests {
             "value : { name = Text } = \"hi\"\n",
             "value : Missing = \"hi\"\n",
             "value : Missing\nvalue = \"hi\"\n",
-            "other = 42\nvalue : Int = other\n",
-            "pair = (1, \"a\")\nvalue : (Int, Text) = pair\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
@@ -1266,6 +1349,148 @@ mod tests {
         let check = check_module(&output.module);
 
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn inferred_identifier_values_are_checked_against_expected_types() {
+        for source in [
+            "other = 42\nvalue : Text = other\n",
+            "other = \"hi\"\nvalue : Int = other\n",
+            "other = (1, \"a\")\nvalue : (Text, Text) = other\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn inferred_identifier_values_accept_compatible_types() {
+        for source in [
+            "other = 42\nvalue : Int = other\n",
+            "other = 42\nvalue : Float = other\n",
+            "other = (1, \"a\")\nvalue : (Int, Text) = other\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn infer_value_synthesizes_literal_record_types() {
+        let output = parse_module("other = { id = 1, name = \"Ada\" }\n");
+        let Item::Binding(binding) = &output.module.items[0] else {
+            panic!("expected binding");
+        };
+
+        assert_eq!(
+            infer_value(&binding.value),
+            Some(Type::Record(vec![
+                TypeRowEntry::Field {
+                    name: "id".to_owned(),
+                    ty: named("Int"),
+                    overwrite: false,
+                    optional: false,
+                },
+                TypeRowEntry::Field {
+                    name: "name".to_owned(),
+                    ty: named("Text"),
+                    overwrite: false,
+                    optional: false,
+                },
+            ]))
+        );
+    }
+
+    #[test]
+    fn inferred_record_identifier_values_report_field_type_mismatches() {
+        for source in [
+            "other = { id = 1 }\nvalue : { id = Text } = other\n",
+            "other = { user = { name = 1 } }\nvalue : { user = { name = Text } } = other\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn inferred_record_identifier_values_report_missing_and_unexpected_fields() {
+        let missing =
+            parse_module("other = { id = 1 }\nvalue : { id = Int, name = Text } = other\n");
+        let missing_check = check_module(&missing.module);
+        assert_eq!(
+            matching_codes(&missing_check.diagnostics, codes::ty::MISSING_FIELD),
+            1
+        );
+
+        let unexpected =
+            parse_module("other = { id = 1, name = \"Ada\" }\nvalue : { id = Int } = other\n");
+        let unexpected_check = check_module(&unexpected.module);
+        assert_eq!(
+            matching_codes(&unexpected_check.diagnostics, codes::ty::UNEXPECTED_FIELD),
+            1
+        );
+    }
+
+    #[test]
+    fn inferred_record_identifier_values_accept_compatible_records() {
+        for source in [
+            "other = { id = 1 }\nvalue : { id = Int } = other\n",
+            "other = { id = 1, name = \"Ada\" }\nvalue : { .._, id = Int } = other\n",
+            "other = { name = \"Ada\", id = 1 }\nvalue : { id = Int, name = Text } = other\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+                "{source} unexpectedly produced type.missing-field"
+            );
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::UNEXPECTED_FIELD),
+                "{source} unexpectedly produced type.unexpected-field"
+            );
+        }
+    }
+
+    #[test]
+    fn record_identifier_value_checking_defers_open_actual_types() {
+        let output =
+            parse_module("other : { .._, id = Int } = rec\nvalue : { id = Int } = other\n");
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "open actual record unexpectedly produced type.mismatch"
+        );
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+            "open actual record unexpectedly produced type.missing-field"
+        );
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::UNEXPECTED_FIELD),
+            "open actual record unexpectedly produced type.unexpected-field"
+        );
     }
 
     #[test]
@@ -1307,12 +1532,13 @@ mod tests {
     #[test]
     fn annotated_identifier_value_checking_defers_ambiguous_or_unstable_cases() {
         for source in [
-            "other = 42\nvalue : Text = other\n",
             "other : Int = 1\nvalue : Float = other\n",
             "other : Float = 1\nvalue : Int = other\n",
             "other : Missing = value\nvalue : Text = other\n",
             "other : Text = \"hi\"\nother : Int = 1\nvalue : Int = other\n",
             "User = { name = Text }\nother : User = { name = \"a\" }\nvalue : { name = Text } = other\n",
+            "other = name\nvalue : Int = other\n",
+            "other = f(1)\nvalue : Int = other\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
