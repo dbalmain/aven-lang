@@ -1,0 +1,3 @@
+error type.mismatch: expected `Int`, found `Text`
+  label 34..39: this value has type `Text`
+  note: change the value to produce `Int`, or change the annotation to `Text`

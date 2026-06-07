@@ -861,19 +861,24 @@ signature-plus-binding declarations share the same declared annotation lookup
 instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
 types, and nullable values are accepted when they are `Nil` or satisfy the inner
-type. Identifiers, rows, applications, inference, and unification variables
-remain deferred. Literal record value checking now covers rows of only fields
-and the open marker: wrong field types, missing required fields, and unexpected
-fields on closed records. The open/closed rule is fixed by the spec (records are
-closed by default; `.._` opens them, lowered to `TypeRowEntry::Open`). Rows
-carrying spreads, deletes, renames, or overwrites defer until row computation,
-and checking explicit fields through a value spread is a follow-up. Variant
-value arms are also deferred. Full row unification and the inference direction
-pair with the inference pass. Transparent comptime aliases are now normalized
-before value checking, including alias chains and nested aliases. `opaque(...)`
-lowers to an irreducible deferred type until comptime evaluation and
-module-aware opacity exist. Cyclic aliases terminate silently for now; reporting
-cycles and validating type-definition bodies are separate follow-up slices.
+type. Identifier values are checked when a top-level declaration value
+references another top-level binding with a single clean declared annotation.
+Names referenced inside local scopes (lambda, block, and match bodies) defer, so
+a local binder cannot borrow a same-named top-level declared type. Ambiguous
+overloads, unannotated names, numeric `Int`/`Float` promotion cases, rows,
+applications, inference, and unification variables remain deferred. Literal
+record value checking now covers rows of only fields and the open marker: wrong
+field types, missing required fields, and unexpected fields on closed records.
+The open/closed rule is fixed by the spec (records are closed by default; `.._`
+opens them, lowered to `TypeRowEntry::Open`). Rows carrying spreads, deletes,
+renames, or overwrites defer until row computation, and checking explicit fields
+through a value spread is a follow-up. Variant value arms are also deferred. Full
+row unification and the inference direction pair with the inference pass.
+Transparent comptime aliases are now normalized before value checking, including
+alias chains and nested aliases. `opaque(...)` lowers to an irreducible deferred
+type until comptime evaluation and module-aware opacity exist. Cyclic aliases
+terminate silently for now; reporting cycles and validating type-definition
+bodies are separate follow-up slices.
 
 ## Remaining Phase 2 Scope
 

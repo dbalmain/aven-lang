@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
@@ -11,6 +11,8 @@ const BUILTIN_TYPES: &[&str] = &[
     // Seeded std names until import resolution provides them.
     "Array", "Json", "Result", "Yaml",
 ];
+
+const CHECKED_NAMED_TYPES: &[&str] = &["Bool", "Float", "Int", "Nil", "Text", "Unit"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckOutput {
@@ -88,7 +90,8 @@ enum RowKind {
 pub fn check_module(module: &Module) -> CheckOutput {
     let known_types = known_type_names(module);
     let type_definitions = type_definitions(module, &known_types);
-    let mut checker = Checker::with_type_definitions(known_types, type_definitions);
+    let value_types = declared_value_types(module, &known_types, &type_definitions);
+    let mut checker = Checker::with_type_environment(known_types, type_definitions, value_types);
 
     checker.check_module(module);
 
@@ -162,6 +165,49 @@ fn type_definitions(module: &Module, known_types: &HashSet<String>) -> HashMap<S
     definitions
 }
 
+fn declared_value_types(
+    module: &Module,
+    known_types: &HashSet<String>,
+    type_definitions: &HashMap<String, Type>,
+) -> HashMap<String, Option<Type>> {
+    let mut types = HashMap::new();
+    let mut checker = Checker::with_type_definitions(known_types.clone(), type_definitions.clone());
+
+    for declaration in collect_declarations(module) {
+        if declaration.phase != DeclarationPhase::Runtime {
+            continue;
+        }
+
+        let name = declaration.name.clone();
+        match types.entry(name.clone()) {
+            Entry::Occupied(mut entry) => {
+                entry.insert(None);
+                continue;
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(None);
+            }
+        }
+
+        if binding_for_declaration(module, &declaration).is_none() {
+            continue;
+        }
+
+        let Some(source) = declared_annotation_for_declaration(module, &declaration) else {
+            continue;
+        };
+
+        let lowering = checker.lower_annotation_with_diagnostics(source.annotation);
+        if !lowering.diagnostics.is_empty() {
+            continue;
+        }
+
+        types.insert(name, Some(checker.normalize(&lowering.ty)));
+    }
+
+    types
+}
+
 #[derive(Debug, Clone)]
 struct DeclaredAnnotationSource<'a> {
     name: String,
@@ -221,6 +267,8 @@ fn binding_for_declaration<'a>(
 struct Checker {
     known_types: HashSet<String>,
     type_definitions: HashMap<String, Type>,
+    value_types: HashMap<String, Option<Type>>,
+    scope_depth: usize,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -233,9 +281,19 @@ impl Checker {
         known_types: HashSet<String>,
         type_definitions: HashMap<String, Type>,
     ) -> Self {
+        Self::with_type_environment(known_types, type_definitions, HashMap::new())
+    }
+
+    fn with_type_environment(
+        known_types: HashSet<String>,
+        type_definitions: HashMap<String, Type>,
+        value_types: HashMap<String, Option<Type>>,
+    ) -> Self {
         Self {
             known_types,
             type_definitions,
+            value_types,
+            scope_depth: 0,
             diagnostics: Vec::new(),
         }
     }
@@ -309,10 +367,20 @@ impl Checker {
                 if let Some(annotation) = return_annotation {
                     self.lower_annotation(annotation);
                 }
+                self.scope_depth += 1;
                 self.check_value_expr(body);
+                self.scope_depth -= 1;
             }
-            ExprKind::Block(items) => self.check_items(items),
-            ExprKind::Match { subject, arms, .. } => self.check_match(subject, arms),
+            ExprKind::Block(items) => {
+                self.scope_depth += 1;
+                self.check_items(items);
+                self.scope_depth -= 1;
+            }
+            ExprKind::Match { subject, arms, .. } => {
+                self.scope_depth += 1;
+                self.check_match(subject, arms);
+                self.scope_depth -= 1;
+            }
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Name(_)
@@ -386,6 +454,13 @@ impl Checker {
     fn check_value_against(&mut self, expected: &Type, value: &Expr) {
         match (&value.kind, expected) {
             (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
+            (ExprKind::Name(name), _) => {
+                if self.scope_depth == 0
+                    && let Some(Some(actual)) = self.value_types.get(name).cloned()
+                {
+                    self.check_type_against_type(expected, &actual, value.span);
+                }
+            }
             (_, Type::Nullable(inner)) => {
                 if !is_nil_value(value) {
                     self.check_value_against(inner, value);
@@ -411,6 +486,44 @@ impl Checker {
             }
             (ExprKind::Record(value_entries), Type::Record(type_entries)) => {
                 self.check_record_value_against(type_entries, value_entries, value.span);
+            }
+            _ => {}
+        }
+    }
+
+    fn check_type_against_type(&mut self, expected: &Type, actual: &Type, span: Span) {
+        if expected == actual {
+            return;
+        }
+
+        match (expected, actual) {
+            (Type::Nullable(_), Type::Named(name)) if name == "Nil" => {}
+            (Type::Nullable(inner), _) => self.check_type_against_type(inner, actual, span),
+            (Type::Named(expected), Type::Named(actual)) => {
+                if named_type_mismatch(expected, actual) {
+                    self.report_type_mismatch_between_types(expected, actual, span);
+                }
+            }
+            (Type::Named(expected), Type::Nullable(actual)) => {
+                if let Type::Named(actual) = actual.as_ref()
+                    && (named_type_mismatch(expected, actual) || expected == actual)
+                {
+                    self.report_type_mismatch_between_types(expected, &format!("{actual}?"), span);
+                }
+            }
+            (Type::Tuple(expected), Type::Tuple(actual)) => {
+                if expected.len() != actual.len() {
+                    self.report_tuple_arity_mismatch(expected.len(), actual.len(), span);
+                } else {
+                    for (expected, actual) in expected.iter().zip(actual) {
+                        self.check_type_against_type(expected, actual, span);
+                    }
+                }
+            }
+            (Type::Tuple(expected), Type::Named(actual)) if actual == "Unit" => {
+                if !expected.is_empty() {
+                    self.report_tuple_arity_mismatch(expected.len(), 0, span);
+                }
             }
             _ => {}
         }
@@ -749,6 +862,20 @@ impl Checker {
         );
     }
 
+    fn report_type_mismatch_between_types(&mut self, expected: &str, actual: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("expected `{expected}`, found `{actual}`"))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    span,
+                    format!("this value has type `{actual}`"),
+                ))
+                .with_note(format!(
+                    "change the value to produce `{expected}`, or change the annotation to `{actual}`"
+                )),
+        );
+    }
+
     fn report_missing_field(&mut self, name: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("missing field `{name}`"))
@@ -877,6 +1004,18 @@ fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static
         ("Text" | "Bool" | "Nil" | "Unit", Literal::Number(_)) => Some("number literal"),
         _ => None,
     }
+}
+
+fn named_type_mismatch(expected: &str, actual: &str) -> bool {
+    if !CHECKED_NAMED_TYPES.contains(&expected) || !CHECKED_NAMED_TYPES.contains(&actual) {
+        return false;
+    }
+
+    if matches!((expected, actual), ("Int", "Float") | ("Float", "Int")) {
+        return false;
+    }
+
+    expected != actual
 }
 
 fn is_nil_value(value: &Expr) -> bool {
@@ -1104,13 +1243,12 @@ mod tests {
     #[test]
     fn literal_binding_mismatch_defers_non_literals_and_non_scalar_annotations() {
         for source in [
-            "value : Int = other\n",
             "value : Float\nvalue = 42\n",
-            "value : Int\nvalue = other\n",
             "value : { name = Text } = \"hi\"\n",
             "value : Missing = \"hi\"\n",
             "value : Missing\nvalue = \"hi\"\n",
-            "value : (Int, Text) = pair\n",
+            "other = 42\nvalue : Int = other\n",
+            "pair = (1, \"a\")\nvalue : (Int, Text) = pair\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
@@ -1128,6 +1266,74 @@ mod tests {
         let check = check_module(&output.module);
 
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn annotated_identifier_values_are_checked_against_expected_types() {
+        for source in [
+            "other : Text = \"hi\"\nvalue : Int = other\n",
+            "other : (Int, Text) = (1, \"a\")\nvalue : (Int, Int) = other\n",
+            "other : Text? = Nil\nvalue : Text = other\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn annotated_identifier_values_accept_compatible_declared_types() {
+        for source in [
+            "other : Text = \"hi\"\nvalue : Text = other\n",
+            "other : Text = \"hi\"\nvalue : Text? = other\n",
+            "other : Nil = Nil\nvalue : Text? = other\n",
+            "other : (Int, Text) = (1, \"a\")\nvalue : (Int, Text) = other\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn annotated_identifier_value_checking_defers_ambiguous_or_unstable_cases() {
+        for source in [
+            "other = 42\nvalue : Text = other\n",
+            "other : Int = 1\nvalue : Float = other\n",
+            "other : Float = 1\nvalue : Int = other\n",
+            "other : Missing = value\nvalue : Text = other\n",
+            "other : Text = \"hi\"\nother : Int = 1\nvalue : Int = other\n",
+            "User = { name = Text }\nother : User = { name = \"a\" }\nvalue : { name = Text } = other\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn shadowed_identifier_values_defer() {
+        let output =
+            parse_module("other : Text = \"hi\"\nf = (other : Bool) =>\n  x : Bool = other\n  x\n");
+        let check = check_module(&output.module);
+
+        assert!(!has_diagnostic_code(
+            &check.diagnostics,
+            codes::ty::MISMATCH
+        ));
     }
 
     #[test]

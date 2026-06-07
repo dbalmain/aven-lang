@@ -1,0 +1,2 @@
+other : Text = "hi"
+value : Int = other
