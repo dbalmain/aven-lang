@@ -41,6 +41,10 @@ pub enum Type {
     Deferred,
     Named(String),
     Variable(String),
+    /// A unification variable used only during value inference. It never appears
+    /// in a lowered annotation or any checked output; synthesis resolves it away
+    /// (or defers) before a type reaches `value_types`.
+    Meta(u32),
     Apply {
         callee: Box<Type>,
         args: Vec<Type>,
@@ -172,6 +176,7 @@ fn declared_value_types(
 ) -> HashMap<String, Option<Type>> {
     let mut types = HashMap::new();
     let mut checker = Checker::with_type_definitions(known_types.clone(), type_definitions.clone());
+    let mut inference = Inference::new(module, known_types, type_definitions);
 
     for declaration in collect_declarations(module) {
         if declaration.phase != DeclarationPhase::Runtime {
@@ -189,9 +194,9 @@ fn declared_value_types(
             }
         }
 
-        let Some(binding) = binding_for_declaration(module, &declaration) else {
+        if binding_for_declaration(module, &declaration).is_none() {
             continue;
-        };
+        }
 
         if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
             let lowering = checker.lower_annotation_with_diagnostics(source.annotation);
@@ -200,7 +205,7 @@ fn declared_value_types(
             }
 
             types.insert(name, Some(checker.normalize(&lowering.ty)));
-        } else if let Some(inferred) = infer_value(&binding.value) {
+        } else if let Some(inferred) = inference.infer_top_level_value(&name) {
             types.insert(name, Some(inferred));
         }
     }
@@ -647,6 +652,7 @@ impl Checker {
             }
             Type::Deferred => Type::Deferred,
             Type::Variable(name) => Type::Variable(name.clone()),
+            Type::Meta(id) => Type::Meta(*id),
             Type::Apply { callee, args } => Type::Apply {
                 callee: Box::new(self.normalize_with_visited(callee, visited.clone())),
                 args: self.normalize_types(args, &visited),
@@ -1036,50 +1042,468 @@ fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueReco
     Some(ValueRecordShape { fields, span })
 }
 
-fn infer_value(value: &Expr) -> Option<Type> {
-    match &value.kind {
-        ExprKind::Literal(Literal::Number(_)) => Some(Type::Named("Int".to_owned())),
-        ExprKind::Literal(Literal::String(_)) => Some(Type::Named("Text".to_owned())),
-        ExprKind::Literal(_) => None,
-        ExprKind::Group(inner) => infer_value(inner),
-        ExprKind::Tuple(elements) => elements
-            .iter()
-            .map(infer_value)
-            .collect::<Option<Vec<_>>>()
-            .map(Type::Tuple),
-        ExprKind::Record(entries) => {
-            let shape = literal_record_value(entries, value.span)?;
-            shape
-                .fields
-                .iter()
-                .map(|field| {
-                    Some(TypeRowEntry::Field {
+type TypeEnv = HashMap<String, Type>;
+
+#[derive(Debug, Default)]
+struct Unifier {
+    substitution: Vec<Option<Type>>,
+}
+
+impl Unifier {
+    fn fresh(&mut self) -> Type {
+        let id = self.substitution.len() as u32;
+        self.substitution.push(None);
+        Type::Meta(id)
+    }
+
+    fn resolve(&self, ty: &Type) -> Type {
+        map_type(ty, &mut |node| match node {
+            Type::Meta(id) => match self.substitution.get(*id as usize) {
+                Some(Some(bound)) => Some(self.resolve(bound)),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
+    fn unify(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
+        let snapshot = self.substitution.clone();
+        if self.unify_inner(left, right).is_err() {
+            self.substitution = snapshot;
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn unify_inner(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
+        let left = self.resolve(left);
+        let right = self.resolve(right);
+
+        match (&left, &right) {
+            (Type::Meta(left), Type::Meta(right)) if left == right => Ok(()),
+            (Type::Meta(id), ty) | (ty, Type::Meta(id)) => self.bind(*id, ty),
+            (Type::Named(left), Type::Named(right)) if left == right => Ok(()),
+            (Type::Variable(left), Type::Variable(right)) if left == right => Ok(()),
+            (
+                Type::Apply {
+                    callee: left_callee,
+                    args: left_args,
+                },
+                Type::Apply {
+                    callee: right_callee,
+                    args: right_args,
+                },
+            ) if left_args.len() == right_args.len() => {
+                self.unify_inner(left_callee, right_callee)?;
+                self.unify_many(left_args, right_args)
+            }
+            (
+                Type::Function {
+                    params: left_params,
+                    result: left_result,
+                },
+                Type::Function {
+                    params: right_params,
+                    result: right_result,
+                },
+            ) if left_params.len() == right_params.len() => {
+                self.unify_many(left_params, right_params)?;
+                self.unify_inner(left_result, right_result)
+            }
+            (Type::Nullable(left), Type::Nullable(right)) => self.unify_inner(left, right),
+            (Type::Tuple(left), Type::Tuple(right)) if left.len() == right.len() => {
+                self.unify_many(left, right)
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn unify_many(&mut self, left: &[Type], right: &[Type]) -> Result<(), ()> {
+        for (left, right) in left.iter().zip(right) {
+            self.unify_inner(left, right)?;
+        }
+        Ok(())
+    }
+
+    fn bind(&mut self, id: u32, ty: &Type) -> Result<(), ()> {
+        let ty = self.resolve(ty);
+        if ty == Type::Meta(id) {
+            return Ok(());
+        }
+        if type_contains_meta(&ty, id) {
+            return Err(());
+        }
+
+        let Some(slot) = self.substitution.get_mut(id as usize) else {
+            return Err(());
+        };
+        *slot = Some(ty);
+        Ok(())
+    }
+
+    fn instantiate(&mut self, ty: &Type) -> Type {
+        // Memoized binding types are stored fully resolved, so any `Meta` left
+        // here is a generic placeholder. Replacing each with a fresh meta lets a
+        // top-level binding be applied at more than one type without its generics
+        // leaking between uses.
+        let mut replacements: HashMap<u32, Type> = HashMap::new();
+        map_type(ty, &mut |node| match node {
+            Type::Meta(id) => Some(if let Some(existing) = replacements.get(id) {
+                existing.clone()
+            } else {
+                let fresh = self.fresh();
+                replacements.insert(*id, fresh.clone());
+                fresh
+            }),
+            _ => None,
+        })
+    }
+}
+
+struct Inference<'a> {
+    known_types: HashSet<String>,
+    type_definitions: HashMap<String, Type>,
+    bindings: HashMap<String, Option<&'a Binding>>,
+    annotations: HashMap<String, &'a Expr>,
+    memo: HashMap<String, Type>,
+    in_progress: HashSet<String>,
+    unifier: Unifier,
+}
+
+impl<'a> Inference<'a> {
+    fn new(
+        module: &'a Module,
+        known_types: &HashSet<String>,
+        type_definitions: &HashMap<String, Type>,
+    ) -> Self {
+        let mut bindings = HashMap::new();
+        let mut annotations = HashMap::new();
+
+        for declaration in collect_declarations(module) {
+            if declaration.phase != DeclarationPhase::Runtime {
+                continue;
+            }
+
+            if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
+                annotations.insert(declaration.name.clone(), source.annotation);
+            }
+
+            match bindings.entry(declaration.name.clone()) {
+                Entry::Occupied(mut entry) => {
+                    entry.insert(None);
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(binding_for_declaration(module, &declaration));
+                }
+            }
+        }
+
+        Self {
+            known_types: known_types.clone(),
+            type_definitions: type_definitions.clone(),
+            bindings,
+            annotations,
+            memo: HashMap::new(),
+            in_progress: HashSet::new(),
+            unifier: Unifier::default(),
+        }
+    }
+
+    fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
+        let ty = self.infer_top_level(name)?;
+        let ty = self.unifier.resolve(&ty);
+
+        if is_concrete_type(&ty) {
+            Some(ty)
+        } else {
+            None
+        }
+    }
+
+    fn infer_top_level(&mut self, name: &str) -> Option<Type> {
+        if let Some(ty) = self.memo.get(name).cloned() {
+            return Some(ty);
+        }
+        if self.in_progress.contains(name) {
+            return Some(self.unifier.fresh());
+        }
+
+        let binding = (*self.bindings.get(name)?)?;
+        self.in_progress.insert(name.to_owned());
+
+        let ty = if let Some(annotation) = self.clean_declared_annotation(name) {
+            annotation
+        } else {
+            self.infer(&TypeEnv::new(), &binding.value)
+        };
+        let ty = self.unifier.resolve(&ty);
+
+        self.in_progress.remove(name);
+        self.memo.insert(name.to_owned(), ty.clone());
+        Some(ty)
+    }
+
+    fn clean_declared_annotation(&self, name: &str) -> Option<Type> {
+        let annotation = *self.annotations.get(name)?;
+        let mut checker =
+            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        let lowering = checker.lower_annotation_with_diagnostics(annotation);
+        if lowering.diagnostics.is_empty() {
+            Some(checker.normalize(&lowering.ty))
+        } else {
+            None
+        }
+    }
+
+    fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Number(_)) => Type::Named("Int".to_owned()),
+            ExprKind::Literal(Literal::String(_)) => Type::Named("Text".to_owned()),
+            ExprKind::Group(inner) => self.infer(env, inner),
+            ExprKind::Tuple(elements) => Type::Tuple(
+                elements
+                    .iter()
+                    .map(|element| self.infer(env, element))
+                    .collect(),
+            ),
+            ExprKind::Record(entries) => {
+                let Some(shape) = literal_record_value(entries, expr.span) else {
+                    return self.unifier.fresh();
+                };
+                let mut fields = Vec::new();
+                for field in &shape.fields {
+                    let Some(value) = field.value else {
+                        return self.unifier.fresh();
+                    };
+                    fields.push(TypeRowEntry::Field {
                         name: field.name.to_owned(),
-                        ty: infer_value(field.value?)?,
+                        ty: self.infer(env, value),
                         overwrite: false,
                         optional: false,
-                    })
-                })
-                .collect::<Option<Vec<_>>>()
-                .map(Type::Record)
+                    });
+                }
+                Type::Record(fields)
+            }
+            ExprKind::Name(name) => {
+                if let Some(ty) = env.get(name) {
+                    return ty.clone();
+                }
+                let Some(ty) = self.infer_top_level(name) else {
+                    return self.unifier.fresh();
+                };
+                self.unifier.instantiate(&ty)
+            }
+            ExprKind::Lambda {
+                params,
+                return_annotation,
+                body,
+            } => self.infer_lambda(env, params, return_annotation.as_deref(), body),
+            ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
+            ExprKind::Missing
+            | ExprKind::Literal(_)
+            | ExprKind::ComptimeName(_)
+            | ExprKind::Array(_)
+            | ExprKind::Set(_)
+            | ExprKind::Index { .. }
+            | ExprKind::FieldAccess { .. }
+            | ExprKind::Nullable(_)
+            | ExprKind::Arrow { .. }
+            | ExprKind::Binary { .. }
+            | ExprKind::Unary { .. }
+            | ExprKind::Propagate { .. }
+            | ExprKind::Match { .. }
+            | ExprKind::Block(_) => self.unifier.fresh(),
         }
-        ExprKind::Missing
-        | ExprKind::Name(_)
-        | ExprKind::ComptimeName(_)
-        | ExprKind::Array(_)
-        | ExprKind::Set(_)
-        | ExprKind::Index { .. }
-        | ExprKind::FieldAccess { .. }
-        | ExprKind::Call { .. }
-        | ExprKind::Nullable(_)
-        | ExprKind::Arrow { .. }
-        | ExprKind::Binary { .. }
-        | ExprKind::Unary { .. }
-        | ExprKind::Propagate { .. }
-        | ExprKind::Match { .. }
-        | ExprKind::Lambda { .. }
-        | ExprKind::Block(_) => None,
     }
+
+    fn infer_lambda(
+        &mut self,
+        env: &TypeEnv,
+        params: &[Param],
+        return_annotation: Option<&Expr>,
+        body: &Expr,
+    ) -> Type {
+        let mut next_env = env.clone();
+        let mut param_types = Vec::new();
+
+        for param in params {
+            let ty = if let Some(annotation) = &param.annotation {
+                self.lower_annotation(annotation)
+            } else {
+                self.unifier.fresh()
+            };
+            next_env.insert(param.name.clone(), ty.clone());
+            param_types.push(ty);
+        }
+
+        let body_type = self.infer(&next_env, body);
+        let result_type = if let Some(annotation) = return_annotation {
+            // A body that contradicts its return annotation defers (fresh meta)
+            // rather than reporting here: inference only synthesizes types, and
+            // diagnosing the mismatch is a later return-annotation-checking slice.
+            let expected = self.lower_annotation(annotation);
+            if self.unifier.unify(&body_type, &expected).is_err() {
+                self.unifier.fresh()
+            } else {
+                expected
+            }
+        } else {
+            body_type
+        };
+
+        Type::Function {
+            params: param_types,
+            result: Box::new(result_type),
+        }
+    }
+
+    fn infer_call(&mut self, env: &TypeEnv, callee: &Expr, args: &[Expr]) -> Type {
+        let callee_type = self.infer(env, callee);
+        let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+        let result_type = self.unifier.fresh();
+        let expected_callee = Type::Function {
+            params: arg_types,
+            result: Box::new(result_type.clone()),
+        };
+
+        if self.unifier.unify(&callee_type, &expected_callee).is_err() {
+            self.unifier.fresh()
+        } else {
+            result_type
+        }
+    }
+
+    fn lower_annotation(&self, annotation: &Expr) -> Type {
+        let mut checker =
+            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        let ty = checker.lower_annotation(annotation);
+        checker.normalize(&ty)
+    }
+}
+
+/// Rebuild a type, letting `leaf` replace any node (used for substitution and
+/// instantiation). Returning `None` keeps the node and recurses structurally.
+fn map_type(ty: &Type, leaf: &mut impl FnMut(&Type) -> Option<Type>) -> Type {
+    if let Some(replaced) = leaf(ty) {
+        return replaced;
+    }
+    match ty {
+        Type::Apply { callee, args } => Type::Apply {
+            callee: Box::new(map_type(callee, leaf)),
+            args: args.iter().map(|arg| map_type(arg, leaf)).collect(),
+        },
+        Type::Function { params, result } => Type::Function {
+            params: params.iter().map(|param| map_type(param, leaf)).collect(),
+            result: Box::new(map_type(result, leaf)),
+        },
+        Type::Nullable(inner) => Type::Nullable(Box::new(map_type(inner, leaf))),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(|item| map_type(item, leaf)).collect()),
+        Type::Record(entries) => Type::Record(
+            entries
+                .iter()
+                .map(|entry| map_row_entry(entry, leaf))
+                .collect(),
+        ),
+        Type::Variant(entries) => Type::Variant(
+            entries
+                .iter()
+                .map(|entry| map_row_entry(entry, leaf))
+                .collect(),
+        ),
+        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => ty.clone(),
+    }
+}
+
+fn map_row_entry(
+    entry: &TypeRowEntry,
+    leaf: &mut impl FnMut(&Type) -> Option<Type>,
+) -> TypeRowEntry {
+    match entry {
+        TypeRowEntry::Field {
+            name,
+            ty,
+            overwrite,
+            optional,
+        } => TypeRowEntry::Field {
+            name: name.clone(),
+            ty: map_type(ty, leaf),
+            overwrite: *overwrite,
+            optional: *optional,
+        },
+        TypeRowEntry::Tag { name, payload } => TypeRowEntry::Tag {
+            name: name.clone(),
+            payload: payload.iter().map(|ty| map_type(ty, leaf)).collect(),
+        },
+        TypeRowEntry::Spread { ty, overwrite } => TypeRowEntry::Spread {
+            ty: map_type(ty, leaf),
+            overwrite: *overwrite,
+        },
+        TypeRowEntry::Delete(name) => TypeRowEntry::Delete(name.clone()),
+        TypeRowEntry::Rename { from, to } => TypeRowEntry::Rename {
+            from: from.clone(),
+            to: to.clone(),
+        },
+        TypeRowEntry::Shorthand(name) => TypeRowEntry::Shorthand(name.clone()),
+        TypeRowEntry::Open => TypeRowEntry::Open,
+        TypeRowEntry::Element(ty) => TypeRowEntry::Element(map_type(ty, leaf)),
+    }
+}
+
+/// Visit every nested type in pre-order (used by the structural predicates).
+fn visit_type(ty: &Type, visit: &mut impl FnMut(&Type)) {
+    visit(ty);
+    match ty {
+        Type::Apply { callee, args } => {
+            visit_type(callee, visit);
+            args.iter().for_each(|arg| visit_type(arg, visit));
+        }
+        Type::Function { params, result } => {
+            params.iter().for_each(|param| visit_type(param, visit));
+            visit_type(result, visit);
+        }
+        Type::Nullable(inner) => visit_type(inner, visit),
+        Type::Tuple(items) => items.iter().for_each(|item| visit_type(item, visit)),
+        Type::Record(entries) | Type::Variant(entries) => {
+            entries
+                .iter()
+                .for_each(|entry| visit_row_entry(entry, visit));
+        }
+        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => {}
+    }
+}
+
+fn visit_row_entry(entry: &TypeRowEntry, visit: &mut impl FnMut(&Type)) {
+    match entry {
+        TypeRowEntry::Field { ty, .. }
+        | TypeRowEntry::Spread { ty, .. }
+        | TypeRowEntry::Element(ty) => visit_type(ty, visit),
+        TypeRowEntry::Tag { payload, .. } => payload.iter().for_each(|ty| visit_type(ty, visit)),
+        TypeRowEntry::Delete(_)
+        | TypeRowEntry::Rename { .. }
+        | TypeRowEntry::Shorthand(_)
+        | TypeRowEntry::Open => {}
+    }
+}
+
+fn type_contains_meta(ty: &Type, id: u32) -> bool {
+    let mut found = false;
+    visit_type(ty, &mut |node| {
+        if matches!(node, Type::Meta(candidate) if *candidate == id) {
+            found = true;
+        }
+    });
+    found
+}
+
+fn is_concrete_type(ty: &Type) -> bool {
+    let mut concrete = true;
+    visit_type(ty, &mut |node| {
+        if matches!(node, Type::Deferred | Type::Variable(_) | Type::Meta(_)) {
+            concrete = false;
+        }
+    });
+    concrete
 }
 
 fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static str> {
@@ -1387,14 +1811,70 @@ mod tests {
     }
 
     #[test]
+    fn lambda_application_results_are_inferred_for_identifier_values() {
+        let mismatch = parse_module("f = (x) => x\nresult = f(\"hi\")\nvalue : Int = result\n");
+        let mismatch_check = check_module(&mismatch.module);
+        assert_eq!(
+            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+
+        let accepted = parse_module("f = (x) => x\nresult = f(\"hi\")\nvalue : Text = result\n");
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+            "lambda application result unexpectedly produced type.mismatch"
+        );
+    }
+
+    #[test]
+    fn lambda_application_results_are_instantiated_per_use() {
+        let output =
+            parse_module("f = (x) => x\na = f(1)\nb = f(\"hi\")\nx : Int = a\ny : Text = b\n");
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "generic top-level lambda reused stale inference state"
+        );
+    }
+
+    #[test]
+    fn lambda_application_tuple_results_recurse_through_inferred_types() {
+        let output = parse_module("g = (x) => (x, x)\nr = g(1)\nvalue : (Int, Text) = r\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn lambda_application_inference_defers_unsolved_values() {
+        for source in [
+            "f = (x) => f(x)\nr = f(1)\nvalue : Text = r\n",
+            "h = (x) => x + 1\nr = h(1)\nvalue : Text = r\n",
+            "f = (x) => x\nx = f\nvalue : Text = x\n",
+            "f = (x) => x(x)\nr = f(1)\nvalue : Text = r\n",
+            "f = (x) => x\nvalue : Int = f(\"hi\")\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
     fn infer_value_synthesizes_literal_record_types() {
         let output = parse_module("other = { id = 1, name = \"Ada\" }\n");
-        let Item::Binding(binding) = &output.module.items[0] else {
-            panic!("expected binding");
-        };
+        let known_types = known_type_names(&output.module);
+        let type_definitions = type_definitions(&output.module, &known_types);
+        let mut inference = Inference::new(&output.module, &known_types, &type_definitions);
 
         assert_eq!(
-            infer_value(&binding.value),
+            inference.infer_top_level_value("other"),
             Some(Type::Record(vec![
                 TypeRowEntry::Field {
                     name: "id".to_owned(),

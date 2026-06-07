@@ -812,7 +812,7 @@ the invalidated set and compute an explicit dependency-aware schedule.
 
 ## Milestone 10: Type IR And Annotation Lowering
 
-Status: in progress
+Status: done
 
 Goal: introduce the first real semantic type representation without starting
 unification yet. Milestone 7 deliberately kept annotations as parser `Expr`
@@ -850,53 +850,96 @@ annotation-lowering diagnostics on each `DeclarationArtifact`. The compiler
 builds the lowerer once per module but calls it only for new/recomputed
 artifacts; unchanged artifacts reuse the cached type `Arc` without rerunning
 annotation lowering. Dependency-resolution changes rebuild the artifact and
-refresh annotation diagnostics. Inference, unification variables, and
-normalization are still deferred. The third M10 slice opened value/annotation
+refresh annotation diagnostics. The third M10 slice opened value/annotation
 agreement checking with a deliberately narrow debounced check: literal binding
 values are compared against bare scalar annotations and report `type.mismatch`
 only on definitive incompatibilities. Number literals synthesize as `Int` for
 now; inferred `Int` still flows into `Float` contexts because the scalar
 mismatch rule treats `Int`/`Float` as a deferred numeric-promotion case. That
-default is revisable once unification variables and numeric defaulting exist.
-That check now runs at the declaration level, so inline annotations and adjacent
+default is revisable once numeric metavariable defaulting exists. That check now
+runs at the declaration level, so inline annotations and adjacent
 signature-plus-binding declarations share the same declared annotation lookup
 instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
 types, and nullable values are accepted when they are `Nil` or satisfy the inner
-type. Identifier values are checked when a top-level declaration value
-references another top-level binding with a single clean declared annotation or
-a synthesized literal/tuple/record type. Names referenced inside local scopes
-(lambda, block, and match bodies) defer, so a local binder cannot borrow a
-same-named top-level declared type. Ambiguous overloads, identifier-valued
-bindings, call-valued bindings, lambda-valued bindings, applications, inference,
-and unification variables remain deferred. Literal record value checking now
-covers rows of only fields and the open marker: wrong field types, missing
-required fields, and unexpected fields on closed records. The open/closed rule
-is fixed by the spec (records are closed by default; `.._` opens them, lowered
-to `TypeRowEntry::Open`). The same field-set comparator handles literal record
+type. Identifier values are checked when a top-level
+declaration value references another top-level binding with a single clean
+declared annotation or synthesized concrete type. Names referenced inside local
+scopes (lambda, block, and match bodies) defer in the checking path, so a local
+binder cannot borrow a same-named top-level declared type. Ambiguous overloads,
+unsolved identifier-valued bindings, direct applications under annotations,
+operator/match/block-bodied values, recursive/generic bindings, and full
+unification remain deferred. Literal record value checking now covers rows of
+only fields and the open marker: wrong field types, missing required fields, and
+unexpected fields on closed records. The open/closed rule is fixed by the spec
+(records are closed by default; `.._` opens them, lowered to
+`TypeRowEntry::Open`). The same field-set comparator handles literal record
 values and record-type comparisons, so a synthesized or declared record type can
 be checked structurally against an expected record type. Rows carrying spreads,
 deletes, renames, or overwrites defer until row computation, and checking
 explicit fields through a value spread is a follow-up. Open actual record types
 and optional-field subtyping also defer until the row engine. Variant value arms
-are deferred. Full row unification and the inference direction pair with the
-inference pass. Transparent comptime aliases are now normalized before value
+are deferred. Transparent comptime aliases are now normalized before value
 checking, including alias chains and nested aliases. `opaque(...)` lowers to an
 irreducible deferred type until comptime evaluation and module-aware opacity
 exist. Cyclic aliases terminate silently for now; reporting cycles and
 validating type-definition bodies are separate follow-up slices.
 
+## Milestone 11: Monomorphic Value Inference
+
+Status: in progress
+
+Goal: solve enough value types to feed the existing checking direction without
+committing to full Hindley-Milner. A private unification engine assigns
+metavariables to unknown binders and results, unifies them structurally, and
+hands back a concrete type or defers. Diagnostics still come from the checker
+comparing the synthesized type against an expected annotation; inference itself
+never reports, so an unsolved or unsupported shape stays silent rather than risk
+a false positive.
+
+Tasks:
+
+- add a `Type::Meta` unification variable, distinct from rigid annotation
+  variables, that never escapes a public API or a checked output
+- back top-level value synthesis with a unifier: literals, tuples, literal
+  records, lambdas, and applications infer a concrete type when every meta
+  solves; generic top-level functions instantiate freshly at each use
+- guard recursive references and run an occurs-check so inference always
+  terminates
+- defer (synthesize nothing) for operator/match/block bodies, direct
+  applications under annotations, and anything that leaves an unsolved meta
+
+Done when:
+
+- a binding whose value applies an inferred lambda is checked against its
+  annotation through the shared comparator
+- inference produces no diagnostics and never a false positive on deferred shapes
+- full Hindley-Milner (let-generalization, full row unification, numeric
+  defaulting) remains explicitly deferred to later milestones
+
+Progress: a private unifier now backs monomorphic synthesis for top-level
+declaration values. Literals, tuples, literal records, lambdas, and applications
+infer a concrete type when all metas solve, and top-level inferred functions
+instantiate freshly at each use, so a generic function can be applied at more
+than one type without leaking solutions between uses. Metas never escape into
+`value_types`: synthesis resolves a value to a concrete type or defers. Recursive
+bindings and self-application terminate through an in-progress guard and the
+occurs-check. Operator/match/block bodies, direct applications under annotations,
+and recursive or still-generic results defer. The shared `map_type`/`visit_type`
+traversals back substitution, instantiation, and the occurs/concreteness
+predicates so the engine grows with the `Type` grammar in one place.
+
 ## Remaining Phase 2 Scope
 
 Status: later
 
-The tooling skeleton is in place, and the semantic type IR has started. The
-remaining hard semantic systems are still deliberately out of scope for this
-plan.
+The tooling skeleton is in place, and the semantic type IR plus a monomorphic
+value-inference engine have started (M10, M11). The remaining hard semantic
+systems are still deliberately out of scope for this plan.
 
 Phase 2 work not planned here:
 
-- Hindley-Milner inference
+- full Hindley-Milner inference (let-generalization, numeric defaulting)
 - row-polymorphic record and variant solving
 - comptime evaluation
 - requirement/interface resolution
@@ -983,11 +1026,14 @@ Completed parser groundwork:
 - an LSP protocol smoke test drives `initialize`, `textDocument/didOpen`, and
   `textDocument/documentSymbol` through `tower-lsp`, covering service
   registration and cached document state
-- Milestone 10 has started the semantic phase by lowering written annotation
-  expressions into an `aven-check::Type` IR and storing declaration-level
-  declared types on compiler artifacts, with unchanged artifacts skipping
-  annotation lowering. The likely next slice is to introduce inference variables
-  and consume artifact invalidation for inferred results.
+- Milestone 10 lowered written annotations into an `aven-check::Type` IR and
+  stored declaration-level declared types on compiler artifacts, with unchanged
+  artifacts skipping annotation lowering; it is done. Milestone 11 has started
+  monomorphic value inference: a private unifier synthesizes top-level value
+  types (lambdas and applications included) or defers, feeding the existing
+  checking direction. The likely next slice is to check a direct application
+  written under an annotation and to begin consuming artifact invalidation for
+  inferred results.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.
