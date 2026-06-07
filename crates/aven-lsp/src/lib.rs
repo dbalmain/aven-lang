@@ -12,10 +12,13 @@ use tower_lsp::lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
     MarkupContent, MarkupKind, MessageType, OneOf, Position, Range, RenameParams,
-    ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Url, WorkspaceEdit,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SymbolKind, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+
+mod semantic_tokens;
 
 pub async fn run_stdio() {
     let stdin = tokio::io::stdin();
@@ -105,6 +108,14 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::from(
+                    SemanticTokensOptions {
+                        work_done_progress_options: Default::default(),
+                        legend: semantic_tokens::legend(),
+                        range: None,
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                    },
+                )),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -215,6 +226,19 @@ impl LanguageServer for Backend {
             position,
             params.new_name,
         ))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let Some(document) = self.document(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        Ok(Some(SemanticTokensResult::Tokens(semantic_tokens::tokens(
+            &document,
+        ))))
     }
 }
 
@@ -635,7 +659,22 @@ mod tests {
         let Some(response) = call_service(&mut service, initialize).await else {
             panic!("expected initialize response");
         };
-        assert!(response.is_ok());
+        let (_id, body) = response.into_parts();
+        let Ok(value) = body else {
+            panic!("expected successful initialize response");
+        };
+        let initialize_result = match serde_json::from_value::<InitializeResult>(value) {
+            Ok(result) => result,
+            Err(error) => panic!("expected initialize result: {error}"),
+        };
+        assert!(matches!(
+            initialize_result
+                .capabilities
+                .semantic_tokens_provider
+                .as_ref(),
+            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(options))
+                if matches!(options.full, Some(SemanticTokensFullOptions::Bool(true)))
+        ));
 
         let did_open = Request::build("textDocument/didOpen")
             .params(json!({
@@ -674,6 +713,30 @@ mod tests {
         assert_eq!(symbols[0].kind, SymbolKind::STRUCT);
         assert_eq!(symbols[1].name, "value");
         assert_eq!(symbols[1].kind, SymbolKind::VARIABLE);
+
+        let semantic_tokens = Request::build("textDocument/semanticTokens/full")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text
+                }
+            }))
+            .id(3)
+            .finish();
+        let Some(response) = call_service(&mut service, semantic_tokens).await else {
+            panic!("expected semanticTokens response");
+        };
+        let (_id, body) = response.into_parts();
+        let Ok(value) = body else {
+            panic!("expected successful semanticTokens response");
+        };
+        let semantic_tokens = match serde_json::from_value::<SemanticTokensResult>(value) {
+            Ok(SemanticTokensResult::Tokens(tokens)) => tokens,
+            Ok(SemanticTokensResult::Partial(_)) => {
+                panic!("expected full semantic tokens response")
+            }
+            Err(error) => panic!("expected semantic tokens result: {error}"),
+        };
+        assert!(!semantic_tokens.data.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

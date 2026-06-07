@@ -542,7 +542,12 @@ a clean parse, and local bindings are allowed to shadow top-level declarations;
 both choices are covered by fixtures so they can be revisited deliberately.
 The LSP rename provider now renames same-file local bindings by reusing the
 parser's local-reference resolver; top-level rename is intentionally deferred
-until module/export semantics exist.
+until module/export semantics exist. The LSP now advertises full-document
+semantic tokens and serves them from the cached raw token stream plus a small
+declaration overlay. This first slice highlights comments, literals, paths,
+regexes, labels, operators, runtime names, comptime names, top-level
+definitions, and lambda parameters without adding a Tree-sitter or TextMate
+grammar.
 
 Goal: enable editor features before full type inference.
 
@@ -557,6 +562,7 @@ Tasks:
   - document symbols
   - go-to definition for local bindings
   - rename for local bindings
+  - semantic tokens (syntax highlighting)
 
 Done when:
 
