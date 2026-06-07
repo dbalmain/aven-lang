@@ -1333,6 +1333,18 @@ mod tests {
     }
 
     #[test]
+    fn aliased_record_types_are_normalized_before_field_checking() {
+        let output = parse_module("Rec = { name = Text }\nvalue : Rec = { name = 42 }\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+        assert_eq!(
+            check.diagnostics[0].message,
+            "expected `Text`, found a number literal"
+        );
+    }
+
+    #[test]
     fn transparent_scalar_aliases_are_normalized_before_checking() {
         let output = parse_module("Username = Text\nvalue : Username = 42\n");
         let check = check_module(&output.module);
