@@ -872,8 +872,11 @@ types, and unannotated sequential locals acquire a concrete type when the
 monomorphic inference engine can synthesize one. Unsolved locals, unannotated
 parameters, and match-pattern binders remain explicit unknown entries.
 Nearest-scope lookup can therefore check inferred locals without ever borrowing
-a same-named top-level type. Ambiguous overloads, unsolved identifier-valued
-bindings, operator and match-bodied values, recursive/generic bindings, and full
+a same-named top-level type. Expected function annotations now seed
+unannotated lambda parameters and check lambda bodies against expected return
+types, so `(x) => x` can be checked as `(Int) -> Text` without full
+generalization. Ambiguous overloads, unsolved identifier-valued bindings,
+operator and match-bodied values, recursive/generic bindings, and full
 unification remain deferred. Literal record value checking now covers rows of
 only fields and the open marker: wrong field types, missing required fields, and
 unexpected fields on closed records. The open/closed rule is fixed by the spec
@@ -913,6 +916,9 @@ Tasks:
   annotated locals are checked, concrete unannotated local values are
   synthesized in source order, and every unsolved binder still shadows
   top-level declarations
+- check lambda values contextually against expected function types: seed
+  unannotated params from the expected type, compare explicit param and return
+  annotations, and check the body against the expected result
 - guard recursive references and run an occurs-check so inference always
   terminates
 - defer (synthesize nothing) for operator/match bodies, tag-sets, row-computed
@@ -953,20 +959,20 @@ escape into
 `value_types`: synthesis resolves a value to a concrete type or defers. Direct
 applications written under annotations now use the same synthesis engine and are
 compared against the declared type when the call result is concrete. Direct
-lambda values with concrete parameter/result types are checked against function
-annotations; function comparison is structural, with contravariant parameters
-and covariant results. Applied types compare structurally when their arities
-match, so `Array[Int]` vs `Array[Text]` reports through the same recursive
-comparator that handles tuples and records. Recursive bindings and
+lambda values are checked contextually against function annotations: expected
+parameter types seed unannotated lambda parameters, explicit parameter
+annotations are compared contravariantly, and return annotations plus bodies are
+checked covariantly against the expected result. Function comparison is
+structural, with contravariant parameters and covariant results. Applied types
+compare structurally when their arities match, so `Array[Int]` vs `Array[Text]`
+reports through the same recursive comparator that handles tuples and records.
+Recursive bindings and
 self-application terminate through an in-progress guard and the occurs-check.
 Operator/match bodies, tag-sets, row-computed collections, function arity
-mismatches, and recursive or still-generic results defer. The next checking
-slice can use an expected function type to seed unannotated lambda parameters
-and check the body against the expected return type, extending the same
-bidirectional structure without requiring generalization. The shared
-`map_type`/`visit_type` traversals back substitution, instantiation, and the
-occurs/concreteness predicates so the engine grows with the `Type` grammar in
-one place.
+mismatches, contextual block final-expression checking, and recursive or
+still-generic results defer. The shared `map_type`/`visit_type` traversals back
+substitution, instantiation, and the occurs/concreteness predicates so the
+engine grows with the `Type` grammar in one place.
 
 ## Remaining Phase 2 Scope
 
@@ -1078,10 +1084,11 @@ Completed parser groundwork:
   and inference now share parser-backed scoped known/unknown bindings.
   Unannotated sequential locals acquire concrete synthesized types when
   possible; unresolved locals and pattern binders still block top-level
-  fallback. The likely next slice uses expected function annotations to seed
-  unannotated lambda parameters and check return values. At embedded-script
-  sizes whole-module re-inference is cheap, so consuming artifact invalidation
-  for inferred results stays deferred until profiling shows it pays off.
+  fallback. Expected function annotations seed unannotated lambda parameters and
+  check lambda return values. The likely next slice threads contextual checking
+  through block final expressions. At embedded-script sizes whole-module
+  re-inference is cheap, so consuming artifact invalidation for inferred
+  results stays deferred until profiling shows it pays off.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.

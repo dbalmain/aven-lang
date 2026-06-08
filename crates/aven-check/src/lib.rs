@@ -233,7 +233,7 @@ fn value_environment(
 fn is_inference_only_value(value: &Expr) -> bool {
     match &value.kind {
         ExprKind::Group(inner) => is_inference_only_value(inner),
-        ExprKind::Call { .. } | ExprKind::Block(_) | ExprKind::Lambda { .. } => true,
+        ExprKind::Call { .. } | ExprKind::Block(_) => true,
         _ => false,
     }
 }
@@ -595,6 +595,23 @@ impl Checker {
     fn check_value_against(&mut self, expected: &Type, value: &Expr) {
         match (&value.kind, expected) {
             (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
+            (
+                ExprKind::Lambda {
+                    params,
+                    return_annotation,
+                    body,
+                },
+                Type::Function {
+                    params: expected_params,
+                    result: expected_result,
+                },
+            ) => self.check_lambda_against_function(
+                params,
+                return_annotation.as_deref(),
+                body,
+                expected_params,
+                expected_result,
+            ),
             (ExprKind::Name(name), _) => match self.local_types.get(name).cloned() {
                 Some(LocalValueType::Known(actual)) => {
                     self.check_type_against_type(expected, &actual, value.span);
@@ -658,6 +675,53 @@ impl Checker {
             }
             _ => {}
         }
+    }
+
+    fn check_lambda_against_function(
+        &mut self,
+        params: &[Param],
+        return_annotation: Option<&Expr>,
+        body: &Expr,
+        expected_params: &[Type],
+        expected_result: &Type,
+    ) {
+        if params.len() != expected_params.len() {
+            return;
+        }
+
+        let mut param_types = Vec::new();
+        for (param, expected) in params.iter().zip(expected_params) {
+            let actual = param
+                .annotation
+                .as_ref()
+                .map(|annotation| {
+                    let actual = self.lower_normalized_annotation(annotation);
+                    // Function parameters are contravariant. A lambda's
+                    // explicit parameter annotation is the actual accepted type,
+                    // so compare it in the same swapped direction as
+                    // Function-vs-Function comparison.
+                    self.check_type_against_type(&actual, expected, annotation.span);
+                    actual
+                })
+                .unwrap_or_else(|| expected.clone());
+            param_types.push(actual);
+        }
+
+        let body_expected = if let Some(annotation) = return_annotation {
+            let actual = self.lower_normalized_annotation(annotation);
+            self.check_type_against_type(expected_result, &actual, annotation.span);
+            actual
+        } else {
+            expected_result.clone()
+        };
+
+        self.local_types.push();
+        for (param, ty) in params.iter().zip(param_types) {
+            self.local_types
+                .define(&param.name, LocalValueType::Known(ty));
+        }
+        self.check_value_against(&body_expected, body);
+        self.local_types.pop();
     }
 
     fn check_collection_elements<'a>(
@@ -2144,19 +2208,39 @@ mod tests {
 
     #[test]
     fn annotated_lambdas_are_checked_against_function_annotations() {
-        let accepted = parse_module("f : (Int) -> Int = (x: Int) => x\n");
-        let accepted_check = check_module(&accepted.module);
-        assert!(
-            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
-            "compatible lambda unexpectedly produced type.mismatch"
-        );
+        for source in [
+            "f : (Int) -> Int = (x: Int) => x\n",
+            "f : (Int) -> Int = (x) => x\n",
+            "f : (Int) -> Text = (x) => \"hi\"\n",
+            "f : (Int) -> Int = (x) : Int => x\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
 
-        let mismatch = parse_module("f : (Int) -> Text = (x: Int) => x\n");
-        let mismatch_check = check_module(&mismatch.module);
-        assert_eq!(
-            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
-            1
-        );
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn contextual_lambda_checking_reports_body_param_and_return_mismatches() {
+        for source in [
+            "f : (Int) -> Text = (x: Int) => x\n",
+            "f : (Int) -> Text = (x) => x\n",
+            "f : (Int) -> Int = (x: Text) => 1\n",
+            "f : (Int) -> Text = (x) : Int => x\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
     }
 
     #[test]
@@ -2186,18 +2270,14 @@ mod tests {
 
     #[test]
     fn function_comparison_defers_unsolved_and_arity_mismatch_cases() {
-        for source in [
-            "f : (Int) -> Text = (x) => x\n",
-            "f : (Int, Int) -> Int = (x: Int) => x\n",
-        ] {
-            let output = parse_module(source);
-            let check = check_module(&output.module);
+        let source = "f : (Int, Int) -> Int = (x: Int) => x\n";
+        let output = parse_module(source);
+        let check = check_module(&output.module);
 
-            assert!(
-                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
-                "{source} unexpectedly produced type.mismatch"
-            );
-        }
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} unexpectedly produced type.mismatch"
+        );
     }
 
     #[test]
