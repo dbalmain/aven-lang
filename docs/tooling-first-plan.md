@@ -973,8 +973,11 @@ expression is checked against the expected type. The checker owns the unifier,
 top-level memo, and local known/unknown environment directly, so contextual
 checks and synthesis no longer thread a separate inference object through
 record, block, lambda, call, and collection walks. Match expressions now carry
-the expected result type into each arm body, while pattern binders still enter
-as unknown locals and guards are checked against `Bool`.
+the expected result type into each arm body, and guards are checked against
+`Bool`. When the match subject has a known literal variant row, simple
+constructor patterns such as `Ok(value)` give their payload binders known types
+inside guards, arm bodies, and match-result synthesis; otherwise pattern binders
+still enter as explicit unknown locals.
 Unannotated match expressions also synthesize a result when all arm bodies
 unify to one concrete type, so match-valued bindings can feed later identifier
 checks. Function comparison is structural: arity mismatches report
@@ -990,9 +993,9 @@ Applied types compare structurally when their arities match, so `Array[Int]` vs
 `Array[Text]` reports through the same recursive comparator that handles tuples
 and records. Recursive bindings and
 self-application terminate through an in-progress guard and the occurs-check.
-Custom operators, unsupported operand shapes, match subject/pattern typing,
-mixed or unknown match-arm results, tag-sets, row-computed collections, and
-recursive or still-generic results defer. The shared
+Custom operators, unsupported operand shapes, general match subject/pattern
+typing, mixed or unknown match-arm results, tag-sets, row-computed collections,
+and recursive or still-generic results defer. The shared
 `map_type`/`visit_type` traversals back substitution, instantiation, and the
 occurs/concreteness predicates so the engine grows with the `Type` grammar in
 one place.
@@ -1111,12 +1114,13 @@ Completed parser groundwork:
   fallback. Expected function annotations seed unannotated lambda parameters and
   check lambda return values. Contextual block checking now uses prefix locals
   to check final expressions, including final calls. Contextual match checking
-  now pushes the expected result type into each arm body while leaving pattern
-  binders unknown; guarded match arms check each guard against `Bool`, and
-  unannotated match expressions synthesize a concrete type when their arm body
-  types agree. At embedded-script sizes whole-module re-inference is cheap, so
-  consuming artifact invalidation for inferred results stays deferred until
-  profiling shows it pays off.
+  now pushes the expected result type into each arm body; guarded match arms
+  check each guard against `Bool`. Simple variant patterns use a known literal
+  variant subject type to seed payload binders, and unannotated match
+  expressions synthesize a concrete type when their arm body types agree. At
+  embedded-script sizes whole-module re-inference is cheap, so consuming
+  artifact invalidation for inferred results stays deferred until profiling
+  shows it pays off.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.

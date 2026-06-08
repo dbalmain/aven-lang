@@ -575,12 +575,13 @@ impl<'a> Checker<'a> {
 
     fn check_match_arms(&mut self, subject: &Expr, arms: &[MatchArm], expected: Option<&Type>) {
         self.check_value_expr(subject);
+        let env = self.local_types.inference_env();
+        let subject_type = self.infer_local_value(&env, subject);
 
         for arm in arms {
             self.local_types.push();
-            for binding in pattern_bindings(&arm.pattern) {
-                self.local_types
-                    .define(binding.name, LocalValueType::Unknown);
+            for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
+                self.local_types.define(&name, ty);
             }
             let bool_type = named_builtin("Bool");
             for guard in &arm.guards {
@@ -1417,6 +1418,72 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
         .collect()
 }
 
+fn pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> Vec<(String, LocalValueType)> {
+    let mut known = HashMap::new();
+    if let Some(expected) = expected {
+        collect_known_pattern_types(pattern, expected, &mut known);
+    }
+
+    pattern_bindings(pattern)
+        .into_iter()
+        .map(|binding| {
+            let ty = known
+                .get(binding.name)
+                .cloned()
+                .map(LocalValueType::Known)
+                .unwrap_or(LocalValueType::Unknown);
+            (binding.name.to_owned(), ty)
+        })
+        .collect()
+}
+
+fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut HashMap<String, Type>) {
+    match (&pattern.kind, expected) {
+        (ExprKind::Group(inner), _) => collect_known_pattern_types(inner, expected, known),
+        (ExprKind::Name(name), _) if name != "_" && is_concrete_type(expected) => {
+            known.insert(name.clone(), expected.clone());
+        }
+        (ExprKind::Call { callee, args }, Type::Variant(entries)) => {
+            let ExprKind::ComptimeName(tag) = &callee.kind else {
+                return;
+            };
+            let Some(payload) = literal_variant_payload(entries, tag) else {
+                return;
+            };
+            if payload.len() != args.len() {
+                return;
+            }
+            for (arg, ty) in args.iter().zip(payload) {
+                collect_known_pattern_types(arg, ty, known);
+            }
+        }
+        (ExprKind::ComptimeName(_), Type::Variant(_)) => {}
+        _ => {}
+    }
+}
+
+fn literal_variant_payload<'a>(entries: &'a [TypeRowEntry], tag: &str) -> Option<&'a [Type]> {
+    let mut found = None;
+
+    for entry in entries {
+        match entry {
+            TypeRowEntry::Tag { name, payload } if name == tag => {
+                found = Some(payload.as_slice());
+            }
+            TypeRowEntry::Tag { .. } => {}
+            TypeRowEntry::Field { .. }
+            | TypeRowEntry::Spread { .. }
+            | TypeRowEntry::Delete(_)
+            | TypeRowEntry::Rename { .. }
+            | TypeRowEntry::Shorthand(_)
+            | TypeRowEntry::Open
+            | TypeRowEntry::Element(_) => return None,
+        }
+    }
+
+    found
+}
+
 #[derive(Debug, Default)]
 struct Unifier {
     substitution: Vec<Option<Type>>,
@@ -1660,7 +1727,7 @@ impl<'a> Checker<'a> {
                 operator, value, ..
             } => self.infer_unary(env, operator, value),
             ExprKind::Block(items) => self.infer_block(env, items),
-            ExprKind::Match { arms, .. } => self.infer_match(env, arms),
+            ExprKind::Match { subject, arms, .. } => self.infer_match(env, subject, arms),
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::ComptimeName(_)
@@ -1931,18 +1998,20 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn infer_match(&mut self, env: &TypeEnv, arms: &[MatchArm]) -> Type {
+    fn infer_match(&mut self, env: &TypeEnv, subject: &Expr, arms: &[MatchArm]) -> Type {
         if arms.is_empty() {
             return Type::Deferred;
         }
 
         let snapshot = self.unifier.snapshot();
+        let inferred_subject = self.infer(env, subject);
+        let subject_type = self.resolve_if_concrete(&inferred_subject);
         let result_type = self.unifier.fresh();
 
         for arm in arms {
             let mut arm_env = env.clone();
-            for binding in pattern_bindings(&arm.pattern) {
-                arm_env.insert(binding.name.to_owned(), LocalValueType::Unknown);
+            for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
+                arm_env.insert(name, ty);
             }
 
             let body_type = self.infer(&arm_env, &arm.body);
@@ -2724,6 +2793,37 @@ mod tests {
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "match guard borrowed a top-level type for a pattern binder"
         );
+    }
+
+    #[test]
+    fn variant_match_payload_binders_use_subject_types() {
+        let body = parse_module(
+            "source : @{Ok(Text), Err(Text)} = result\nvalue : Bool = source ?>\n  Ok(item) => item\n  Err(_) => False\n",
+        );
+        let body_check = check_module(&body.module);
+        assert_eq!(
+            matching_codes(&body_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+
+        let guard = parse_module(
+            "source : @{Ok(Text), Err(Text)} = result\nvalue : Text = source ?>\n  Ok(item), item => \"ok\"\n  Err(_) => \"err\"\n",
+        );
+        let guard_check = check_module(&guard.module);
+        assert_eq!(
+            matching_codes(&guard_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+    }
+
+    #[test]
+    fn variant_match_payload_types_feed_result_inference() {
+        let output = parse_module(
+            "source : @{Ok(Text), Err(Text)} = result\nmatched = source ?>\n  Ok(item) => item\n  Err(error) => error\nvalue : Int = matched\n",
+        );
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
     }
 
     #[test]
