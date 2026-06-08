@@ -230,7 +230,7 @@ fn value_environment(
 fn is_inference_only_value(value: &Expr) -> bool {
     match &value.kind {
         ExprKind::Group(inner) => is_inference_only_value(inner),
-        ExprKind::Call { .. } | ExprKind::Block(_) | ExprKind::Array(_) => true,
+        ExprKind::Call { .. } | ExprKind::Block(_) => true,
         _ => false,
     }
 }
@@ -524,6 +524,19 @@ impl Checker {
             }
             (ExprKind::Record(value_entries), Type::Record(type_entries)) => {
                 self.check_record_value_against(type_entries, value_entries, value.span);
+            }
+            (
+                ExprKind::Array(elements),
+                Type::Apply {
+                    callee,
+                    args: element_types,
+                },
+            ) if matches!(callee.as_ref(), Type::Named(name) if name == "Array")
+                && element_types.len() == 1 =>
+            {
+                for element in elements {
+                    self.check_value_against(&element_types[0], element);
+                }
             }
             _ => {}
         }
@@ -2064,7 +2077,7 @@ mod tests {
         let mismatch_check = check_module(&mismatch.module);
         assert_eq!(
             matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
-            1
+            3
         );
     }
 
@@ -2094,19 +2107,22 @@ mod tests {
     }
 
     #[test]
-    fn array_inference_defers_empty_and_heterogeneous_literals() {
-        for source in [
-            "value : Array[Int] = []\n",
-            "value : Array[Int] = [1, \"a\"]\n",
-        ] {
-            let output = parse_module(source);
-            let check = check_module(&output.module);
+    fn array_literals_report_per_element_mismatches() {
+        let output = parse_module("value : Array[Text] = [\"a\", 2, \"b\"]\n");
+        let check = check_module(&output.module);
 
-            assert!(
-                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
-                "{source} unexpectedly produced type.mismatch"
-            );
-        }
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn array_inference_defers_empty_literals() {
+        let output = parse_module("value : Array[Int] = []\n");
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "empty array unexpectedly produced type.mismatch"
+        );
     }
 
     #[test]

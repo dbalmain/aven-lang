@@ -922,13 +922,15 @@ Progress: a private unifier now backs monomorphic synthesis for top-level
 declaration values. Literals, tuples, arrays, literal records, blocks, lambdas,
 and applications infer a concrete type when all metas solve, and top-level
 inferred functions instantiate freshly at each use, so a generic function can be
-applied at more than one type without leaking solutions between uses. Array
-literals synthesize `Array[element]` when every element unifies; empty arrays
-and heterogeneous arrays leave an unsolved meta and defer. Block inference
-extends a local environment in source order and uses the final expression as the
-block type. Block locals are tracked through ordinary bindings only; a block
-that spreads a record into lexical scope is not modeled yet, so the names it
-introduces are unknown and such blocks defer. Metas never escape into
+applied at more than one type without leaking solutions between uses. Direct
+array literals are checked per element against `Array[element]`, giving the same
+per-element recovery as tuples. Array-valued identifiers still compare through
+synthesis plus the applied-type comparator, so empty arrays and heterogeneous
+array bindings leave an unsolved meta and defer. Block inference extends a local
+environment in source order and uses the final expression as the block type.
+Block locals are tracked through ordinary bindings only; a block that spreads a
+record into lexical scope is not modeled yet, so the names it introduces are
+unknown and such blocks defer. Metas never escape into
 `value_types`: synthesis resolves a value to a concrete type or defers. Direct
 applications written under annotations now use the same synthesis engine and are
 compared against the declared type when the call result is concrete. Applied
