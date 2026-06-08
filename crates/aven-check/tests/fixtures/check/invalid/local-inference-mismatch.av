@@ -1,0 +1,4 @@
+f = () =>
+  local = 1
+  value : Text = local
+  value

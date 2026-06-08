@@ -133,7 +133,7 @@ fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
 
     if format == OutputFormat::Text {
         println!(
-            "{}: ok (parse, name, and annotation checks only; inference is not implemented yet)",
+            "{}: ok (parse, name, annotation, and partial monomorphic inference checks)",
             path.display()
         );
     }

@@ -76,7 +76,8 @@ fn check_accepts_valid_source() {
 
     assert_success(&output);
     assert!(
-        stdout(&output).contains("ok (parse, name, and annotation checks only"),
+        stdout(&output)
+            .contains("ok (parse, name, annotation, and partial monomorphic inference checks)"),
         "expected success message, got:\n{}",
         stdout(&output)
     );

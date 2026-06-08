@@ -95,11 +95,12 @@ enum RowKind {
 pub fn check_module(module: &Module) -> CheckOutput {
     let known_types = known_type_names(module);
     let type_definitions = type_definitions(module, &known_types);
-    let (value_types, value_syntheses) = value_environment(module, &known_types, &type_definitions);
+    let mut inference = Inference::new(module, &known_types, &type_definitions);
+    let (value_types, value_syntheses) = value_environment(module, &mut inference);
     let mut checker =
         Checker::with_type_environment(known_types, type_definitions, value_types, value_syntheses);
 
-    checker.check_module(module);
+    checker.check_module(module, &mut inference);
 
     CheckOutput {
         diagnostics: checker.diagnostics,
@@ -178,13 +179,14 @@ fn type_definitions(module: &Module, known_types: &HashSet<String>) -> HashMap<S
 /// annotations.
 fn value_environment(
     module: &Module,
-    known_types: &HashSet<String>,
-    type_definitions: &HashMap<String, Type>,
+    inference: &mut Inference<'_>,
 ) -> (HashMap<String, Option<Type>>, HashMap<String, Type>) {
     let mut types = HashMap::new();
     let mut syntheses = HashMap::new();
-    let mut checker = Checker::with_type_definitions(known_types.clone(), type_definitions.clone());
-    let mut inference = Inference::new(module, known_types, type_definitions);
+    let mut checker = Checker::with_type_definitions(
+        inference.known_types.clone(),
+        inference.type_definitions.clone(),
+    );
 
     for declaration in collect_declarations(module) {
         if declaration.phase != DeclarationPhase::Runtime {
@@ -297,9 +299,11 @@ enum LocalValueType {
     Unknown,
 }
 
+type TypeEnv = HashMap<String, LocalValueType>;
+
 #[derive(Debug, Default)]
 struct LocalTypeScopes {
-    scopes: Vec<HashMap<String, LocalValueType>>,
+    scopes: Vec<TypeEnv>,
 }
 
 impl LocalTypeScopes {
@@ -323,6 +327,14 @@ impl LocalTypeScopes {
 
     fn get(&self, name: &str) -> Option<&LocalValueType> {
         self.scopes.iter().rev().find_map(|scope| scope.get(name))
+    }
+
+    fn inference_env(&self) -> TypeEnv {
+        let mut env = TypeEnv::new();
+        for scope in &self.scopes {
+            env.extend(scope.clone());
+        }
+        env
     }
 }
 
@@ -369,21 +381,26 @@ impl Checker {
         }
     }
 
-    fn check_module(&mut self, module: &Module) {
+    fn check_module(&mut self, module: &Module, inference: &mut Inference<'_>) {
         // Top-level declared annotations go through declarations so inline and
         // adjacent signature+binding forms share one lookup path.
         for declaration in collect_declarations(module) {
-            self.check_declaration(module, &declaration);
+            self.check_declaration(module, &declaration, inference);
         }
 
         for item in &module.items {
             if let Item::Expr(expr) = item {
-                self.check_value_expr(expr);
+                self.check_value_expr(expr, inference);
             }
         }
     }
 
-    fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
+    fn check_declaration(
+        &mut self,
+        module: &Module,
+        declaration: &Declaration,
+        inference: &mut Inference<'_>,
+    ) {
         let binding = binding_for_declaration(module, declaration);
 
         if let Some(source) = declared_annotation_for_declaration(module, declaration) {
@@ -399,31 +416,36 @@ impl Checker {
         }
 
         if let Some(binding) = binding {
-            self.check_value_expr(&binding.value);
+            self.check_value_expr(&binding.value, inference);
         }
     }
 
-    fn check_items(&mut self, items: &[Item]) {
+    fn check_items(&mut self, items: &[Item], inference: &mut Inference<'_>) {
         self.local_types.push();
 
         for item in merged_items(items) {
             match item {
                 MergedItem::Binding { signature, binding } => {
-                    self.check_local_binding(binding, signature);
+                    self.check_local_binding(binding, signature, inference);
                 }
                 MergedItem::Signature(signature) => {
                     let ty = self.lower_normalized_annotation(&signature.annotation);
                     self.local_types
                         .define(&signature.name, LocalValueType::Known(ty));
                 }
-                MergedItem::Expr(expr) => self.check_value_expr(expr),
+                MergedItem::Expr(expr) => self.check_value_expr(expr, inference),
             }
         }
 
         self.local_types.pop();
     }
 
-    fn check_local_binding(&mut self, binding: &Binding, signature: Option<&Signature>) {
+    fn check_local_binding(
+        &mut self,
+        binding: &Binding,
+        signature: Option<&Signature>,
+        inference: &mut Inference<'_>,
+    ) {
         let signature_type =
             signature.map(|signature| self.lower_normalized_annotation(&signature.annotation));
         let binding_type = binding
@@ -436,20 +458,28 @@ impl Checker {
             self.check_value_against(expected, &binding.value);
         }
 
-        self.check_value_expr(&binding.value);
+        let inferred_type = if declared_type.is_none() {
+            let env = self.local_types.inference_env();
+            inference.infer_local_value(&env, &binding.value)
+        } else {
+            None
+        };
+
+        self.check_value_expr(&binding.value, inference);
         self.local_types.define(
             &binding.name,
             declared_type
                 .cloned()
+                .or(inferred_type)
                 .map(LocalValueType::Known)
                 .unwrap_or(LocalValueType::Unknown),
         );
     }
 
-    fn check_value_expr(&mut self, expr: &Expr) {
+    fn check_value_expr(&mut self, expr: &Expr, inference: &mut Inference<'_>) {
         match &expr.kind {
             ExprKind::Record(entries) | ExprKind::Set(entries) => {
-                self.check_value_record_entries(entries);
+                self.check_value_record_entries(entries, inference);
             }
             ExprKind::Lambda {
                 params,
@@ -476,26 +506,34 @@ impl Checker {
                 for (param, ty) in params.iter().zip(param_types) {
                     self.local_types.define(&param.name, ty);
                 }
-                self.check_value_expr(body);
+                self.check_value_expr(body, inference);
                 self.local_types.pop();
             }
-            ExprKind::Block(items) => self.check_items(items),
-            ExprKind::Match { subject, arms, .. } => self.check_match(subject, arms),
+            ExprKind::Block(items) => self.check_items(items, inference),
+            ExprKind::Match { subject, arms, .. } => {
+                self.check_match(subject, arms, inference);
+            }
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Name(_)
             | ExprKind::ComptimeName(_) => {}
-            _ => walk_expr_children(expr, &mut |child| self.check_value_expr(child)),
+            _ => walk_expr_children(expr, &mut |child| {
+                self.check_value_expr(child, inference);
+            }),
         }
     }
 
-    fn check_value_exprs(&mut self, items: &[Expr]) {
+    fn check_value_exprs(&mut self, items: &[Expr], inference: &mut Inference<'_>) {
         for item in items {
-            self.check_value_expr(item);
+            self.check_value_expr(item, inference);
         }
     }
 
-    fn check_value_record_entries(&mut self, entries: &[RecordEntry]) {
+    fn check_value_record_entries(
+        &mut self,
+        entries: &[RecordEntry],
+        inference: &mut Inference<'_>,
+    ) {
         for entry in entries {
             match entry {
                 RecordEntry::Field {
@@ -514,7 +552,7 @@ impl Checker {
                             .with_note("remove `?` in value records; use `field = Nil` when the value is absent"),
                         );
                     }
-                    self.check_value_expr(value);
+                    self.check_value_expr(value, inference);
                 }
                 RecordEntry::Open { span } => {
                     self.diagnostics.push(
@@ -525,7 +563,7 @@ impl Checker {
                     );
                 }
                 RecordEntry::Spread { value, .. } | RecordEntry::Element(value) => {
-                    self.check_value_expr(value);
+                    self.check_value_expr(value, inference);
                 }
                 RecordEntry::Shorthand { .. }
                 | RecordEntry::Delete { .. }
@@ -534,8 +572,8 @@ impl Checker {
         }
     }
 
-    fn check_match(&mut self, subject: &Expr, arms: &[MatchArm]) {
-        self.check_value_expr(subject);
+    fn check_match(&mut self, subject: &Expr, arms: &[MatchArm], inference: &mut Inference<'_>) {
+        self.check_value_expr(subject, inference);
 
         for arm in arms {
             self.local_types.push();
@@ -543,8 +581,8 @@ impl Checker {
                 self.local_types
                     .define(binding.name, LocalValueType::Unknown);
             }
-            self.check_value_exprs(&arm.guards);
-            self.check_value_expr(&arm.body);
+            self.check_value_exprs(&arm.guards, inference);
+            self.check_value_expr(&arm.body, inference);
             self.local_types.pop();
         }
     }
@@ -1226,8 +1264,6 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
         .collect()
 }
 
-type TypeEnv = HashMap<String, Type>;
-
 #[derive(Debug, Default)]
 struct Unifier {
     substitution: Vec<Option<Type>>,
@@ -1400,7 +1436,11 @@ impl<'a> Inference<'a> {
     }
 
     fn infer_value_expr(&mut self, value: &Expr) -> Option<Type> {
-        let ty = self.infer(&TypeEnv::new(), value);
+        self.infer_local_value(&TypeEnv::new(), value)
+    }
+
+    fn infer_local_value(&mut self, env: &TypeEnv, value: &Expr) -> Option<Type> {
+        let ty = self.infer(env, value);
         self.resolve_if_concrete(&ty)
     }
 
@@ -1478,8 +1518,11 @@ impl<'a> Inference<'a> {
                 Type::Record(fields)
             }
             ExprKind::Name(name) => {
-                if let Some(ty) = env.get(name) {
-                    return ty.clone();
+                if let Some(local) = env.get(name) {
+                    return match local {
+                        LocalValueType::Known(ty) => ty.clone(),
+                        LocalValueType::Unknown => self.unifier.fresh(),
+                    };
                 }
                 let Some(ty) = self.infer_top_level(name) else {
                     return self.unifier.fresh();
@@ -1523,7 +1566,7 @@ impl<'a> Inference<'a> {
             } else {
                 self.unifier.fresh()
             };
-            next_env.insert(param.name.clone(), ty.clone());
+            next_env.insert(param.name.clone(), LocalValueType::Known(ty.clone()));
             param_types.push(ty);
         }
 
@@ -1598,14 +1641,25 @@ impl<'a> Inference<'a> {
     fn infer_block(&mut self, env: &TypeEnv, items: &[Item]) -> Type {
         let mut next_env = env.clone();
 
-        for item in items {
-            if let Item::Binding(binding) = item {
-                let ty = if let Some(annotation) = &binding.annotation {
-                    self.lower_annotation(annotation)
-                } else {
-                    self.infer(&next_env, &binding.value)
-                };
-                next_env.insert(binding.name.clone(), ty);
+        for item in merged_items(items) {
+            match item {
+                MergedItem::Binding { signature, binding } => {
+                    let ty = signature
+                        .map(|signature| self.lower_annotation(&signature.annotation))
+                        .or_else(|| {
+                            binding
+                                .annotation
+                                .as_ref()
+                                .map(|annotation| self.lower_annotation(annotation))
+                        })
+                        .unwrap_or_else(|| self.infer(&next_env, &binding.value));
+                    next_env.insert(binding.name.clone(), LocalValueType::Known(ty));
+                }
+                MergedItem::Signature(signature) => {
+                    let ty = self.lower_annotation(&signature.annotation);
+                    next_env.insert(signature.name.clone(), LocalValueType::Known(ty));
+                }
+                MergedItem::Expr(_) => {}
             }
         }
 
@@ -2584,6 +2638,53 @@ mod tests {
     }
 
     #[test]
+    fn unannotated_local_literals_feed_later_checks() {
+        let mismatch = parse_module("f = () =>\n  first = 1\n  second : Text = first\n  second\n");
+        let mismatch_check = check_module(&mismatch.module);
+        assert_eq!(
+            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+
+        let accepted = parse_module("f = () =>\n  first = 1\n  second : Int = first\n  second\n");
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+            "compatible inferred local unexpectedly produced type.mismatch"
+        );
+    }
+
+    #[test]
+    fn unannotated_local_applications_feed_later_checks() {
+        let output = parse_module(
+            "identity = (x) => x\nf = () =>\n  local = identity(\"hi\")\n  value : Int = local\n  value\n",
+        );
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn annotated_parameters_feed_inferred_local_bindings() {
+        let output = parse_module(
+            "f = (input : Int) =>\n  local = input\n  value : Text = local\n  value\n",
+        );
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn inferred_local_types_are_visible_in_nested_scopes() {
+        let output = parse_module(
+            "f = () =>\n  outer = 1\n  g = () =>\n    value : Text = outer\n    value\n  g\n",
+        );
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
     fn adjacent_local_signatures_supply_known_local_types() {
         let output = parse_module(
             "f = () =>\n  first : Int\n  first = 1\n  second : Text = first\n  second\n",
@@ -2608,13 +2709,13 @@ mod tests {
     #[test]
     fn unknown_block_bindings_shadow_top_level_types() {
         let output = parse_module(
-            "other : Text = \"hi\"\nf = () =>\n  other = 1\n  x : Bool = other\n  x\n",
+            "other : Text = \"hi\"\nf = () =>\n  other = missing\n  x : Bool = other\n  x\n",
         );
         let check = check_module(&output.module);
 
         assert!(
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
-            "unannotated block binding borrowed a same-named top-level type"
+            "unsolved block binding borrowed a same-named top-level type"
         );
     }
 
@@ -2628,6 +2729,19 @@ mod tests {
         assert!(
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "pattern binding borrowed a same-named top-level type"
+        );
+    }
+
+    #[test]
+    fn inferred_pattern_dependent_locals_stay_unknown() {
+        let output = parse_module(
+            "item : Text = \"hi\"\nf = (result) =>\n  result ?>\n    Ok(item) =>\n      local = item\n      value : Bool = local\n      value\n",
+        );
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "pattern-dependent local borrowed a top-level type during inference"
         );
     }
 
