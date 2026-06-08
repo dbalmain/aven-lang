@@ -230,7 +230,7 @@ fn value_environment(
 fn is_inference_only_value(value: &Expr) -> bool {
     match &value.kind {
         ExprKind::Group(inner) => is_inference_only_value(inner),
-        ExprKind::Call { .. } | ExprKind::Block(_) => true,
+        ExprKind::Call { .. } | ExprKind::Block(_) | ExprKind::Lambda { .. } => true,
         _ => false,
     }
 }
@@ -575,6 +575,24 @@ impl Checker {
                 if !expected.is_empty() {
                     self.report_tuple_arity_mismatch(expected.len(), 0, span);
                 }
+            }
+            (
+                Type::Function {
+                    params: expected_params,
+                    result: expected_result,
+                },
+                Type::Function {
+                    params: actual_params,
+                    result: actual_result,
+                },
+            ) if expected_params.len() == actual_params.len() => {
+                for (expected, actual) in expected_params.iter().zip(actual_params) {
+                    // Function parameters are contravariant: the actual
+                    // function may accept a wider type than callers of the
+                    // expected function promise to pass.
+                    self.check_type_against_type(actual, expected, span);
+                }
+                self.check_type_against_type(expected_result, actual_result, span);
             }
             (
                 Type::Apply {
@@ -1947,6 +1965,64 @@ mod tests {
         let check = check_module(&output.module);
 
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn annotated_lambdas_are_checked_against_function_annotations() {
+        let accepted = parse_module("f : (Int) -> Int = (x: Int) => x\n");
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+            "compatible lambda unexpectedly produced type.mismatch"
+        );
+
+        let mismatch = parse_module("f : (Int) -> Text = (x: Int) => x\n");
+        let mismatch_check = check_module(&mismatch.module);
+        assert_eq!(
+            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+    }
+
+    #[test]
+    fn function_identifier_values_are_checked_against_function_annotations() {
+        let output = parse_module("g = (x: Int) => x\nh : (Int) -> Text = g\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn function_parameters_are_compared_contravariantly() {
+        let parameter_mismatch = parse_module("f : (Text) -> Int = (x: Int) => x\n");
+        let parameter_mismatch_check = check_module(&parameter_mismatch.module);
+        assert_eq!(
+            matching_codes(&parameter_mismatch_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+
+        let nullable_parameter = parse_module("f : (Int) -> Int = (x: Int?) => 1\n");
+        let nullable_parameter_check = check_module(&nullable_parameter.module);
+        assert!(
+            !has_diagnostic_code(&nullable_parameter_check.diagnostics, codes::ty::MISMATCH),
+            "wider nullable parameter unexpectedly produced type.mismatch"
+        );
+    }
+
+    #[test]
+    fn function_comparison_defers_unsolved_and_arity_mismatch_cases() {
+        for source in [
+            "f : (Int) -> Text = (x) => x\n",
+            "f : (Int, Int) -> Int = (x: Int) => x\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
     }
 
     #[test]

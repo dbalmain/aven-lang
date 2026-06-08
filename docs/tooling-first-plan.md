@@ -933,14 +933,17 @@ record into lexical scope is not modeled yet, so the names it introduces are
 unknown and such blocks defer. Metas never escape into
 `value_types`: synthesis resolves a value to a concrete type or defers. Direct
 applications written under annotations now use the same synthesis engine and are
-compared against the declared type when the call result is concrete. Applied
-types compare structurally when their arities match, so `Array[Int]` vs
-`Array[Text]` reports through the same recursive comparator that handles tuples
-and records. Recursive bindings and self-application terminate through an
-in-progress guard and the occurs-check. Operator/match bodies, sets, and
-recursive or still-generic results defer. The shared `map_type`/`visit_type`
-traversals back substitution, instantiation, and the occurs/concreteness
-predicates so the engine grows with the `Type` grammar in one place.
+compared against the declared type when the call result is concrete. Direct
+lambda values with concrete parameter/result types are checked against function
+annotations; function comparison is structural, with contravariant parameters
+and covariant results. Applied types compare structurally when their arities
+match, so `Array[Int]` vs `Array[Text]` reports through the same recursive
+comparator that handles tuples and records. Recursive bindings and
+self-application terminate through an in-progress guard and the occurs-check.
+Operator/match bodies, sets, function arity mismatches, and recursive or
+still-generic results defer. The shared `map_type`/`visit_type` traversals back
+substitution, instantiation, and the occurs/concreteness predicates so the
+engine grows with the `Type` grammar in one place.
 
 ## Remaining Phase 2 Scope
 
@@ -1046,11 +1049,12 @@ Completed parser groundwork:
   types (arrays, blocks, lambdas, and applications included) or defers, feeding
   the existing checking direction. Direct applications, block-bodied values, and
   array literals written under annotations are checked when synthesis produces a
-  concrete result. Applied types compare structurally when their arities match.
-  The likely next slice continues inference breadth rather than incremental
-  wiring: at embedded-script sizes whole-module re-inference is cheap, so
-  consuming artifact invalidation for inferred results stays deferred until
-  profiling shows it pays off.
+  concrete result. Function types compare structurally with contravariant
+  parameters and covariant results; applied types compare structurally when their
+  arities match. The likely next slice continues inference breadth rather than
+  incremental wiring: at embedded-script sizes whole-module re-inference is
+  cheap, so consuming artifact invalidation for inferred results stays deferred
+  until profiling shows it pays off.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.
