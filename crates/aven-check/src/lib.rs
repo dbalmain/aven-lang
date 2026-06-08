@@ -94,8 +94,9 @@ enum RowKind {
 pub fn check_module(module: &Module) -> CheckOutput {
     let known_types = known_type_names(module);
     let type_definitions = type_definitions(module, &known_types);
-    let value_types = declared_value_types(module, &known_types, &type_definitions);
-    let mut checker = Checker::with_type_environment(known_types, type_definitions, value_types);
+    let (value_types, value_syntheses) = value_environment(module, &known_types, &type_definitions);
+    let mut checker =
+        Checker::with_type_environment(known_types, type_definitions, value_types, value_syntheses);
 
     checker.check_module(module);
 
@@ -169,12 +170,17 @@ fn type_definitions(module: &Module, known_types: &HashSet<String>) -> HashMap<S
     definitions
 }
 
-fn declared_value_types(
+/// Build the two top-level value maps from one inference pass: `value_types`
+/// holds each binding's published type (declared annotation, else synthesized)
+/// for identifier references, and `value_syntheses` holds the synthesized type
+/// of a direct-application value for checking it against its own annotation.
+fn value_environment(
     module: &Module,
     known_types: &HashSet<String>,
     type_definitions: &HashMap<String, Type>,
-) -> HashMap<String, Option<Type>> {
+) -> (HashMap<String, Option<Type>>, HashMap<String, Type>) {
     let mut types = HashMap::new();
+    let mut syntheses = HashMap::new();
     let mut checker = Checker::with_type_definitions(known_types.clone(), type_definitions.clone());
     let mut inference = Inference::new(module, known_types, type_definitions);
 
@@ -186,7 +192,10 @@ fn declared_value_types(
         let name = declaration.name.clone();
         match types.entry(name.clone()) {
             Entry::Occupied(mut entry) => {
+                // A duplicate name is an overload: defer its published type and
+                // drop any direct-application synthesis recorded for it.
                 entry.insert(None);
+                syntheses.remove(&name);
                 continue;
             }
             Entry::Vacant(entry) => {
@@ -194,23 +203,35 @@ fn declared_value_types(
             }
         }
 
-        if binding_for_declaration(module, &declaration).is_none() {
+        let Some(binding) = binding_for_declaration(module, &declaration) else {
             continue;
-        }
+        };
 
         if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
             let lowering = checker.lower_annotation_with_diagnostics(source.annotation);
-            if !lowering.diagnostics.is_empty() {
-                continue;
+            if lowering.diagnostics.is_empty() {
+                types.insert(name.clone(), Some(checker.normalize(&lowering.ty)));
             }
-
-            types.insert(name, Some(checker.normalize(&lowering.ty)));
         } else if let Some(inferred) = inference.infer_top_level_value(&name) {
-            types.insert(name, Some(inferred));
+            types.insert(name.clone(), Some(inferred));
+        }
+
+        if is_inference_only_value(&binding.value)
+            && let Some(ty) = inference.infer_value_expr(&binding.value)
+        {
+            syntheses.insert(name, ty);
         }
     }
 
-    types
+    (types, syntheses)
+}
+
+fn is_inference_only_value(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Group(inner) => is_inference_only_value(inner),
+        ExprKind::Call { .. } => true,
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +294,7 @@ struct Checker {
     known_types: HashSet<String>,
     type_definitions: HashMap<String, Type>,
     value_types: HashMap<String, Option<Type>>,
+    value_syntheses: HashMap<String, Type>,
     scope_depth: usize,
     diagnostics: Vec<Diagnostic>,
 }
@@ -286,18 +308,25 @@ impl Checker {
         known_types: HashSet<String>,
         type_definitions: HashMap<String, Type>,
     ) -> Self {
-        Self::with_type_environment(known_types, type_definitions, HashMap::new())
+        Self::with_type_environment(
+            known_types,
+            type_definitions,
+            HashMap::new(),
+            HashMap::new(),
+        )
     }
 
     fn with_type_environment(
         known_types: HashSet<String>,
         type_definitions: HashMap<String, Type>,
         value_types: HashMap<String, Option<Type>>,
+        value_syntheses: HashMap<String, Type>,
     ) -> Self {
         Self {
             known_types,
             type_definitions,
             value_types,
+            value_syntheses,
             scope_depth: 0,
             diagnostics: Vec::new(),
         }
@@ -326,6 +355,9 @@ impl Checker {
 
             if let Some(binding) = binding {
                 self.check_value_against(&expected_type, &binding.value);
+                if let Some(actual) = self.value_syntheses.get(&declaration.name).cloned() {
+                    self.check_type_against_type(&expected_type, &actual, binding.value.span);
+                }
             }
         }
 
@@ -1212,13 +1244,19 @@ impl<'a> Inference<'a> {
 
     fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
         let ty = self.infer_top_level(name)?;
-        let ty = self.unifier.resolve(&ty);
+        self.resolve_if_concrete(&ty)
+    }
 
-        if is_concrete_type(&ty) {
-            Some(ty)
-        } else {
-            None
-        }
+    fn infer_value_expr(&mut self, value: &Expr) -> Option<Type> {
+        let ty = self.infer(&TypeEnv::new(), value);
+        self.resolve_if_concrete(&ty)
+    }
+
+    /// Fully resolve `ty`; keep it only when no metavariable remains, so a
+    /// synthesized value type never leaks an unsolved meta into checking.
+    fn resolve_if_concrete(&self, ty: &Type) -> Option<Type> {
+        let ty = self.unifier.resolve(ty);
+        is_concrete_type(&ty).then_some(ty)
     }
 
     fn infer_top_level(&mut self, name: &str) -> Option<Type> {
@@ -1848,13 +1886,61 @@ mod tests {
     }
 
     #[test]
+    fn direct_application_under_annotation_is_checked() {
+        let mismatch = parse_module("f = (x) => x\nvalue : Int = f(\"hi\")\n");
+        let mismatch_check = check_module(&mismatch.module);
+        assert_eq!(
+            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+
+        let accepted = parse_module("f = (x) => x\nvalue : Text = f(\"hi\")\n");
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+            "direct application unexpectedly produced type.mismatch"
+        );
+
+        let tuple = parse_module("g = (x) => (x, x)\nvalue : (Int, Text) = g(1)\n");
+        let tuple_check = check_module(&tuple.module);
+        assert_eq!(
+            matching_codes(&tuple_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+    }
+
+    #[test]
+    fn synthesized_application_checks_do_not_duplicate_existing_paths() {
+        for source in ["value : Text = 42\n", "other = 42\nvalue : Text = other\n"] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce exactly one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_application_under_annotation_defers_non_concrete_synthesis() {
+        let output = parse_module("h = (x) => x + 1\nvalue : Text = h(1)\n");
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "unsolved direct application unexpectedly produced type.mismatch"
+        );
+    }
+
+    #[test]
     fn lambda_application_inference_defers_unsolved_values() {
         for source in [
             "f = (x) => f(x)\nr = f(1)\nvalue : Text = r\n",
             "h = (x) => x + 1\nr = h(1)\nvalue : Text = r\n",
             "f = (x) => x\nx = f\nvalue : Text = x\n",
             "f = (x) => x(x)\nr = f(1)\nvalue : Text = r\n",
-            "f = (x) => x\nvalue : Int = f(\"hi\")\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);

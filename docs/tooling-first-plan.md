@@ -862,12 +862,13 @@ signature-plus-binding declarations share the same declared annotation lookup
 instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
 types, and nullable values are accepted when they are `Nil` or satisfy the inner
-type. Identifier values are checked when a top-level
-declaration value references another top-level binding with a single clean
-declared annotation or synthesized concrete type. Names referenced inside local
-scopes (lambda, block, and match bodies) defer in the checking path, so a local
-binder cannot borrow a same-named top-level declared type. Ambiguous overloads,
-unsolved identifier-valued bindings, direct applications under annotations,
+type. Identifier values are checked when a top-level declaration value
+references another top-level binding with a single clean declared annotation or
+synthesized concrete type. Direct applications written under an annotation are
+also synthesized and compared when inference produces a concrete type. Names
+referenced inside local scopes (lambda, block, and match bodies) defer in the
+checking path, so a local binder cannot borrow a same-named top-level declared
+type. Ambiguous overloads, unsolved identifier-valued bindings,
 operator/match/block-bodied values, recursive/generic bindings, and full
 unification remain deferred. Literal record value checking now covers rows of
 only fields and the open marker: wrong field types, missing required fields, and
@@ -906,8 +907,8 @@ Tasks:
   solves; generic top-level functions instantiate freshly at each use
 - guard recursive references and run an occurs-check so inference always
   terminates
-- defer (synthesize nothing) for operator/match/block bodies, direct
-  applications under annotations, and anything that leaves an unsolved meta
+- defer (synthesize nothing) for operator/match/block bodies and anything that
+  leaves an unsolved meta
 
 Done when:
 
@@ -922,12 +923,14 @@ declaration values. Literals, tuples, literal records, lambdas, and applications
 infer a concrete type when all metas solve, and top-level inferred functions
 instantiate freshly at each use, so a generic function can be applied at more
 than one type without leaking solutions between uses. Metas never escape into
-`value_types`: synthesis resolves a value to a concrete type or defers. Recursive
+`value_types`: synthesis resolves a value to a concrete type or defers. Direct
+applications written under annotations now use the same synthesis engine and are
+compared against the declared type when the call result is concrete. Recursive
 bindings and self-application terminate through an in-progress guard and the
-occurs-check. Operator/match/block bodies, direct applications under annotations,
-and recursive or still-generic results defer. The shared `map_type`/`visit_type`
-traversals back substitution, instantiation, and the occurs/concreteness
-predicates so the engine grows with the `Type` grammar in one place.
+occurs-check. Operator/match/block bodies and recursive or still-generic results
+defer. The shared `map_type`/`visit_type` traversals back substitution,
+instantiation, and the occurs/concreteness predicates so the engine grows with
+the `Type` grammar in one place.
 
 ## Remaining Phase 2 Scope
 
@@ -1031,9 +1034,9 @@ Completed parser groundwork:
   artifacts skipping annotation lowering; it is done. Milestone 11 has started
   monomorphic value inference: a private unifier synthesizes top-level value
   types (lambdas and applications included) or defers, feeding the existing
-  checking direction. The likely next slice is to check a direct application
-  written under an annotation and to begin consuming artifact invalidation for
-  inferred results.
+  checking direction. Direct applications written under annotations are checked
+  when synthesis produces a concrete result. The likely next slice is to begin
+  consuming artifact invalidation for inferred results.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.
