@@ -902,13 +902,13 @@ Tasks:
 
 - add a `Type::Meta` unification variable, distinct from rigid annotation
   variables, that never escapes a public API or a checked output
-- back top-level value synthesis with a unifier: literals, tuples, arrays,
+- back top-level value synthesis with a unifier: literals, tuples, arrays, sets,
   literal records, blocks, lambdas, and applications infer a concrete type when
   every meta solves; generic top-level functions instantiate freshly at each use
 - guard recursive references and run an occurs-check so inference always
   terminates
-- defer (synthesize nothing) for operator/match bodies, sets, and anything that
-  leaves an unsolved meta
+- defer (synthesize nothing) for operator/match bodies, tag-sets, row-computed
+  collections, and anything that leaves an unsolved meta
 
 Done when:
 
@@ -919,18 +919,20 @@ Done when:
   defaulting) remains explicitly deferred to later milestones
 
 Progress: a private unifier now backs monomorphic synthesis for top-level
-declaration values. Literals, tuples, arrays, literal records, blocks, lambdas,
-and applications infer a concrete type when all metas solve, and top-level
-inferred functions instantiate freshly at each use, so a generic function can be
-applied at more than one type without leaking solutions between uses. Direct
-array literals are checked per element against `Array[element]`, giving the same
-per-element recovery as tuples. Array-valued identifiers still compare through
-synthesis plus the applied-type comparator, so empty arrays and heterogeneous
-array bindings leave an unsolved meta and defer. Block inference extends a local
-environment in source order and uses the final expression as the block type.
-Block locals are tracked through ordinary bindings only; a block that spreads a
-record into lexical scope is not modeled yet, so the names it introduces are
-unknown and such blocks defer. Metas never escape into
+declaration values. Literals, tuples, arrays, sets, literal records, blocks,
+lambdas, and applications infer a concrete type when all metas solve, and
+top-level inferred functions instantiate freshly at each use, so a generic
+function can be applied at more than one type without leaking solutions between
+uses. Direct array and set literals are checked per element against
+`Array[element]` or `Set[element]`, giving the same per-element recovery as
+tuples. Array- and set-valued identifiers still compare through synthesis plus
+the applied-type comparator, so empty collections, heterogeneous collection
+bindings, tag-sets, and set spreads leave an unsolved meta or row computation
+and defer. `Set` is seeded as a builtin until import resolution exists. Block
+inference extends a local environment in source order and uses the final
+expression as the block type. Block locals are tracked through ordinary bindings
+only; a block that spreads a record into lexical scope is not modeled yet, so
+the names it introduces are unknown and such blocks defer. Metas never escape into
 `value_types`: synthesis resolves a value to a concrete type or defers. Direct
 applications written under annotations now use the same synthesis engine and are
 compared against the declared type when the call result is concrete. Direct
@@ -1046,15 +1048,16 @@ Completed parser groundwork:
   stored declaration-level declared types on compiler artifacts, with unchanged
   artifacts skipping annotation lowering; it is done. Milestone 11 has started
   monomorphic value inference: a private unifier synthesizes top-level value
-  types (arrays, blocks, lambdas, and applications included) or defers, feeding
-  the existing checking direction. Direct applications, block-bodied values, and
-  array literals written under annotations are checked when synthesis produces a
-  concrete result. Function types compare structurally with contravariant
-  parameters and covariant results; applied types compare structurally when their
-  arities match. The likely next slice continues inference breadth rather than
-  incremental wiring: at embedded-script sizes whole-module re-inference is
-  cheap, so consuming artifact invalidation for inferred results stays deferred
-  until profiling shows it pays off.
+  types (arrays, sets, blocks, lambdas, and applications included) or defers,
+  feeding the existing checking direction. Direct applications, block-bodied
+  values, arrays, and sets written under annotations are checked when synthesis
+  or structural literal checking produces a concrete result. Function types
+  compare structurally with contravariant parameters and covariant results;
+  applied types compare structurally when their arities match. The likely next
+  slice continues inference breadth rather than incremental wiring: at
+  embedded-script sizes whole-module re-inference is cheap, so consuming
+  artifact invalidation for inferred results stays deferred until profiling
+  shows it pays off.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.

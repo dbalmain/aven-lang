@@ -9,7 +9,7 @@ use aven_parser::{
 const BUILTIN_TYPES: &[&str] = &[
     "Bool", "Float", "Int", "Nil", "Text", "Unit",
     // Seeded std names until import resolution provides them.
-    "Array", "Json", "Result", "Yaml",
+    "Array", "Json", "Result", "Set", "Yaml",
 ];
 
 const CHECKED_NAMED_TYPES: &[&str] = &["Bool", "Float", "Int", "Nil", "Text", "Unit"];
@@ -534,11 +534,32 @@ impl Checker {
             ) if matches!(callee.as_ref(), Type::Named(name) if name == "Array")
                 && element_types.len() == 1 =>
             {
-                for element in elements {
-                    self.check_value_against(&element_types[0], element);
+                self.check_collection_elements(&element_types[0], elements);
+            }
+            (
+                ExprKind::Set(entries),
+                Type::Apply {
+                    callee,
+                    args: element_types,
+                },
+            ) if matches!(callee.as_ref(), Type::Named(name) if name == "Set")
+                && element_types.len() == 1 =>
+            {
+                if let Some(elements) = literal_set_elements(entries) {
+                    self.check_collection_elements(&element_types[0], elements);
                 }
             }
             _ => {}
+        }
+    }
+
+    fn check_collection_elements<'a>(
+        &mut self,
+        element_type: &Type,
+        elements: impl IntoIterator<Item = &'a Expr>,
+    ) {
+        for element in elements {
+            self.check_value_against(element_type, element);
         }
     }
 
@@ -1121,6 +1142,21 @@ fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueReco
     Some(ValueRecordShape { fields, span })
 }
 
+fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            RecordEntry::Element(value) => Some(value),
+            RecordEntry::Field { .. }
+            | RecordEntry::Shorthand { .. }
+            | RecordEntry::Spread { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. } => None,
+        })
+        .collect()
+}
+
 type TypeEnv = HashMap<String, Type>;
 
 #[derive(Debug, Default)]
@@ -1353,6 +1389,7 @@ impl<'a> Inference<'a> {
                     .collect(),
             ),
             ExprKind::Array(elements) => self.infer_array(env, elements),
+            ExprKind::Set(entries) => self.infer_set(env, entries),
             ExprKind::Record(entries) => {
                 let Some(shape) = literal_record_value(entries, expr.span) else {
                     return self.unifier.fresh();
@@ -1390,7 +1427,6 @@ impl<'a> Inference<'a> {
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::ComptimeName(_)
-            | ExprKind::Set(_)
             | ExprKind::Index { .. }
             | ExprKind::FieldAccess { .. }
             | ExprKind::Nullable(_)
@@ -1460,6 +1496,22 @@ impl<'a> Inference<'a> {
     }
 
     fn infer_array(&mut self, env: &TypeEnv, elements: &[Expr]) -> Type {
+        self.infer_collection(env, elements, "Array")
+    }
+
+    fn infer_set(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
+        let Some(elements) = literal_set_elements(entries) else {
+            return self.unifier.fresh();
+        };
+        self.infer_collection(env, elements, "Set")
+    }
+
+    fn infer_collection<'b>(
+        &mut self,
+        env: &TypeEnv,
+        elements: impl IntoIterator<Item = &'b Expr>,
+        name: &str,
+    ) -> Type {
         let element_type = self.unifier.fresh();
         for element in elements {
             let item_type = self.infer(env, element);
@@ -1469,7 +1521,7 @@ impl<'a> Inference<'a> {
         }
 
         Type::Apply {
-            callee: Box::new(Type::Named("Array".to_owned())),
+            callee: Box::new(Type::Named(name.to_owned())),
             args: vec![element_type],
         }
     }
@@ -2199,6 +2251,56 @@ mod tests {
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "empty array unexpectedly produced type.mismatch"
         );
+    }
+
+    #[test]
+    fn set_literals_are_checked_against_annotations() {
+        let accepted = parse_module("value : Set[Int] = @{1, 2, 3}\n");
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+            "compatible set literal unexpectedly produced type.mismatch"
+        );
+
+        let mismatch = parse_module("value : Set[Text] = @{1, 2, 3}\n");
+        let mismatch_check = check_module(&mismatch.module);
+        assert_eq!(
+            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+            3
+        );
+    }
+
+    #[test]
+    fn inferred_set_identifier_values_are_checked_against_annotations() {
+        let output = parse_module("nums = @{1, 2}\nvalue : Set[Text] = nums\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn set_literals_report_per_element_mismatches() {
+        let output = parse_module("value : Set[Text] = @{\"a\", 2, \"b\"}\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn set_inference_defers_empty_tag_and_spread_literals() {
+        for source in [
+            "value : Set[Int] = @{}\n",
+            "value : Set[Int] = @{Red, Green}\n",
+            "other = @{2}\nvalue : Set[Int] = @{..other, 1}\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
     }
 
     #[test]
