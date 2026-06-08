@@ -865,12 +865,15 @@ types, and nullable values are accepted when they are `Nil` or satisfy the inner
 type. Identifier values are checked when a top-level declaration value
 references another top-level binding with a single clean declared annotation or
 synthesized concrete type. Direct applications written under an annotation are
-also synthesized and compared when inference produces a concrete type. Names
-referenced inside local scopes (lambda, block, and match bodies) defer in the
-checking path, so a local binder cannot borrow a same-named top-level declared
-type. Ambiguous overloads, unsolved identifier-valued bindings, operator and
-match-bodied values, recursive/generic bindings, and full unification remain
-deferred. Literal record value checking now covers rows of
+also synthesized and compared when inference produces a concrete type. Local
+checking uses scoped known/unknown entries instead of a blanket scope-depth
+gate. Annotated lambda parameters and local bindings carry their normalized
+types, while every unannotated local and match-pattern binder is recorded as
+unknown. Nearest-scope lookup can therefore check annotated locals without ever
+borrowing a same-named top-level type. Ambiguous overloads, unsolved
+identifier-valued bindings, operator and match-bodied values, recursive/generic
+bindings, and full unification remain deferred. Literal record value checking
+now covers rows of
 only fields and the open marker: wrong field types, missing required fields, and
 unexpected fields on closed records. The open/closed rule is fixed by the spec
 (records are closed by default; `.._` opens them, lowered to
@@ -905,6 +908,9 @@ Tasks:
 - back top-level value synthesis with a unifier: literals, tuples, arrays, sets,
   literal records, blocks, lambdas, and applications infer a concrete type when
   every meta solves; generic top-level functions instantiate freshly at each use
+- replace blanket local-scope deferral with a scoped known/unknown environment:
+  annotated parameters and local bindings are checked, while every unannotated
+  binder still shadows top-level declarations
 - guard recursive references and run an occurs-check so inference always
   terminates
 - defer (synthesize nothing) for operator/match bodies, tag-sets, row-computed
@@ -930,9 +936,15 @@ the applied-type comparator, so empty collections, heterogeneous collection
 bindings, tag-sets, and set spreads leave an unsolved meta or row computation
 and defer. `Set` is seeded as a builtin until import resolution exists. Block
 inference extends a local environment in source order and uses the final
-expression as the block type. Block locals are tracked through ordinary bindings
-only; a block that spreads a record into lexical scope is not modeled yet, so
-the names it introduces are unknown and such blocks defer. Metas never escape into
+expression as the block type. The checking direction now tracks local scopes
+through the parser's shared `merged_items` and `pattern_bindings` views.
+Annotated lambda parameters, adjacent or inline local annotations, and
+standalone local signatures enter the nearest scope with known normalized
+types; unannotated parameters, bindings, and match-pattern binders enter as
+unknown. This makes local shadowing precise and enables annotated-local
+agreement checks without falling back to same-named top-level declarations.
+Block scope spreads and other destructuring block items are not represented in
+the parser AST yet, so they remain deferred. Metas never escape into
 `value_types`: synthesis resolves a value to a concrete type or defers. Direct
 applications written under annotations now use the same synthesis engine and are
 compared against the declared type when the call result is concrete. Direct
@@ -942,8 +954,11 @@ and covariant results. Applied types compare structurally when their arities
 match, so `Array[Int]` vs `Array[Text]` reports through the same recursive
 comparator that handles tuples and records. Recursive bindings and
 self-application terminate through an in-progress guard and the occurs-check.
-Operator/match bodies, sets, function arity mismatches, and recursive or
-still-generic results defer. The shared `map_type`/`visit_type` traversals back
+Operator/match bodies, tag-sets, row-computed collections, function arity
+mismatches, and recursive or still-generic results defer. The next inference
+slice will connect the checker to a live local inference environment so
+unannotated local binders can move from unknown to inferred without weakening
+the shadowing guarantee. The shared `map_type`/`visit_type` traversals back
 substitution, instantiation, and the occurs/concreteness predicates so the
 engine grows with the `Type` grammar in one place.
 
@@ -1053,11 +1068,13 @@ Completed parser groundwork:
   values, arrays, and sets written under annotations are checked when synthesis
   or structural literal checking produces a concrete result. Function types
   compare structurally with contravariant parameters and covariant results;
-  applied types compare structurally when their arities match. The likely next
-  slice continues inference breadth rather than incremental wiring: at
-  embedded-script sizes whole-module re-inference is cheap, so consuming
-  artifact invalidation for inferred results stays deferred until profiling
-  shows it pays off.
+  applied types compare structurally when their arities match. Local checking
+  now uses parser-backed scoped known/unknown bindings, so annotated locals are
+  checked and every unannotated binder blocks top-level fallback. The likely
+  next slice converges that checker scope with the inference environment so
+  unannotated locals can acquire inferred types. At embedded-script sizes
+  whole-module re-inference is cheap, so consuming artifact invalidation for
+  inferred results stays deferred until profiling shows it pays off.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.

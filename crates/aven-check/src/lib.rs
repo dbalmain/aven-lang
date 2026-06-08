@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
-    Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm, Module, Param,
-    RecordEntry, Signature, collect_declarations, walk_expr_children,
+    Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm, MergedItem,
+    Module, Param, RecordEntry, Signature, collect_declarations, merged_items, pattern_bindings,
+    walk_expr_children,
 };
 
 const BUILTIN_TYPES: &[&str] = &[
@@ -290,13 +291,48 @@ fn binding_for_declaration<'a>(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalValueType {
+    Known(Type),
+    Unknown,
+}
+
+#[derive(Debug, Default)]
+struct LocalTypeScopes {
+    scopes: Vec<HashMap<String, LocalValueType>>,
+}
+
+impl LocalTypeScopes {
+    fn push(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn define(&mut self, name: &str, ty: LocalValueType) {
+        if name == "_" {
+            return;
+        }
+
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_owned(), ty);
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&LocalValueType> {
+        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+    }
+}
+
 #[derive(Debug)]
 struct Checker {
     known_types: HashSet<String>,
     type_definitions: HashMap<String, Type>,
     value_types: HashMap<String, Option<Type>>,
     value_syntheses: HashMap<String, Type>,
-    scope_depth: usize,
+    local_types: LocalTypeScopes,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -328,7 +364,7 @@ impl Checker {
             type_definitions,
             value_types,
             value_syntheses,
-            scope_depth: 0,
+            local_types: LocalTypeScopes::default(),
             diagnostics: Vec::new(),
         }
     }
@@ -368,27 +404,46 @@ impl Checker {
     }
 
     fn check_items(&mut self, items: &[Item]) {
-        for item in items {
+        self.local_types.push();
+
+        for item in merged_items(items) {
             match item {
-                Item::Binding(binding) => self.check_binding(binding),
-                Item::Signature(signature) => self.check_signature(signature),
-                Item::Expr(expr) => self.check_value_expr(expr),
+                MergedItem::Binding { signature, binding } => {
+                    self.check_local_binding(binding, signature);
+                }
+                MergedItem::Signature(signature) => {
+                    let ty = self.lower_normalized_annotation(&signature.annotation);
+                    self.local_types
+                        .define(&signature.name, LocalValueType::Known(ty));
+                }
+                MergedItem::Expr(expr) => self.check_value_expr(expr),
             }
         }
+
+        self.local_types.pop();
     }
 
-    fn check_binding(&mut self, binding: &Binding) {
-        if let Some(annotation) = &binding.annotation {
-            let declared_type = self.lower_annotation(annotation);
-            let expected_type = self.normalize(&declared_type);
-            self.check_value_against(&expected_type, &binding.value);
+    fn check_local_binding(&mut self, binding: &Binding, signature: Option<&Signature>) {
+        let signature_type =
+            signature.map(|signature| self.lower_normalized_annotation(&signature.annotation));
+        let binding_type = binding
+            .annotation
+            .as_ref()
+            .map(|annotation| self.lower_normalized_annotation(annotation));
+        let declared_type = signature_type.as_ref().or(binding_type.as_ref());
+
+        if let Some(expected) = declared_type {
+            self.check_value_against(expected, &binding.value);
         }
 
         self.check_value_expr(&binding.value);
-    }
-
-    fn check_signature(&mut self, signature: &Signature) {
-        self.lower_annotation(&signature.annotation);
+        self.local_types.define(
+            &binding.name,
+            declared_type
+                .cloned()
+                .map(LocalValueType::Known)
+                .unwrap_or(LocalValueType::Unknown),
+        );
     }
 
     fn check_value_expr(&mut self, expr: &Expr) {
@@ -401,24 +456,31 @@ impl Checker {
                 return_annotation,
                 body,
             } => {
-                self.check_params(params);
+                let param_types: Vec<_> = params
+                    .iter()
+                    .map(|param| {
+                        param
+                            .annotation
+                            .as_ref()
+                            .map(|annotation| {
+                                LocalValueType::Known(self.lower_normalized_annotation(annotation))
+                            })
+                            .unwrap_or(LocalValueType::Unknown)
+                    })
+                    .collect();
                 if let Some(annotation) = return_annotation {
                     self.lower_annotation(annotation);
                 }
-                self.scope_depth += 1;
+
+                self.local_types.push();
+                for (param, ty) in params.iter().zip(param_types) {
+                    self.local_types.define(&param.name, ty);
+                }
                 self.check_value_expr(body);
-                self.scope_depth -= 1;
+                self.local_types.pop();
             }
-            ExprKind::Block(items) => {
-                self.scope_depth += 1;
-                self.check_items(items);
-                self.scope_depth -= 1;
-            }
-            ExprKind::Match { subject, arms, .. } => {
-                self.scope_depth += 1;
-                self.check_match(subject, arms);
-                self.scope_depth -= 1;
-            }
+            ExprKind::Block(items) => self.check_items(items),
+            ExprKind::Match { subject, arms, .. } => self.check_match(subject, arms),
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Name(_)
@@ -476,29 +538,36 @@ impl Checker {
         self.check_value_expr(subject);
 
         for arm in arms {
+            self.local_types.push();
+            for binding in pattern_bindings(&arm.pattern) {
+                self.local_types
+                    .define(binding.name, LocalValueType::Unknown);
+            }
             self.check_value_exprs(&arm.guards);
             self.check_value_expr(&arm.body);
+            self.local_types.pop();
         }
     }
 
-    fn check_params(&mut self, params: &[Param]) {
-        for param in params {
-            if let Some(annotation) = &param.annotation {
-                self.lower_annotation(annotation);
-            }
-        }
+    fn lower_normalized_annotation(&mut self, annotation: &Expr) -> Type {
+        let ty = self.lower_annotation(annotation);
+        self.normalize(&ty)
     }
 
     fn check_value_against(&mut self, expected: &Type, value: &Expr) {
         match (&value.kind, expected) {
             (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
-            (ExprKind::Name(name), _) => {
-                if self.scope_depth == 0
-                    && let Some(Some(actual)) = self.value_types.get(name).cloned()
-                {
+            (ExprKind::Name(name), _) => match self.local_types.get(name).cloned() {
+                Some(LocalValueType::Known(actual)) => {
                     self.check_type_against_type(expected, &actual, value.span);
                 }
-            }
+                Some(LocalValueType::Unknown) => {}
+                None => {
+                    if let Some(Some(actual)) = self.value_types.get(name).cloned() {
+                        self.check_type_against_type(expected, &actual, value.span);
+                    }
+                }
+            },
             (_, Type::Nullable(inner)) => {
                 if !is_nil_value(value) {
                     self.check_value_against(inner, value);
@@ -2495,6 +2564,81 @@ mod tests {
             &check.diagnostics,
             codes::ty::MISMATCH
         ));
+    }
+
+    #[test]
+    fn annotated_lambda_parameters_are_checked_in_local_bindings() {
+        let output = parse_module("f = (x : Int) =>\n  y : Text = x\n  y\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn annotated_sequential_locals_are_checked_in_source_order() {
+        let output =
+            parse_module("f = () =>\n  first : Int = 1\n  second : Text = first\n  second\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn adjacent_local_signatures_supply_known_local_types() {
+        let output = parse_module(
+            "f = () =>\n  first : Int\n  first = 1\n  second : Text = first\n  second\n",
+        );
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn unknown_lambda_parameters_shadow_top_level_types() {
+        let output =
+            parse_module("other : Text = \"hi\"\nf = (other) =>\n  x : Bool = other\n  x\n");
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "unannotated parameter borrowed a same-named top-level type"
+        );
+    }
+
+    #[test]
+    fn unknown_block_bindings_shadow_top_level_types() {
+        let output = parse_module(
+            "other : Text = \"hi\"\nf = () =>\n  other = 1\n  x : Bool = other\n  x\n",
+        );
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "unannotated block binding borrowed a same-named top-level type"
+        );
+    }
+
+    #[test]
+    fn match_pattern_bindings_shadow_top_level_types() {
+        let output = parse_module(
+            "item : Text = \"hi\"\nf = (result) =>\n  result ?>\n    Ok(item) =>\n      value : Bool = item\n      value\n",
+        );
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "pattern binding borrowed a same-named top-level type"
+        );
+    }
+
+    #[test]
+    fn nearest_annotated_local_type_wins_in_nested_scopes() {
+        let output = parse_module(
+            "f = (value : Int) =>\n  g = (value : Text) =>\n    result : Int = value\n    result\n  g\n",
+        );
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
     }
 
     #[test]

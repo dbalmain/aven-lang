@@ -6,9 +6,9 @@ use crate::walk::find_map_expr_children;
 use crate::{Token, TokenKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BindingSite<'a> {
-    pub(crate) name: &'a str,
-    pub(crate) span: Span,
+pub struct BindingSite<'a> {
+    pub name: &'a str,
+    pub span: Span,
 }
 
 pub fn resolve_local_definition(module: &Module, name: &str, reference: Span) -> Option<Span> {
@@ -291,7 +291,7 @@ fn exprs_contain(items: &[Expr], reference: Span) -> bool {
     items.iter().any(|item| item.span.contains(reference))
 }
 
-pub(crate) fn pattern_bindings(pattern: &Expr) -> Vec<BindingSite<'_>> {
+pub fn pattern_bindings(pattern: &Expr) -> Vec<BindingSite<'_>> {
     let mut bindings = Vec::new();
     collect_pattern_bindings(pattern, &mut bindings);
     bindings

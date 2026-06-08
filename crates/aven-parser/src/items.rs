@@ -1,7 +1,7 @@
 use crate::parser::{Binding, Expr, Item, Signature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MergedItem<'a> {
+pub enum MergedItem<'a> {
     Binding {
         signature: Option<&'a Signature>,
         binding: &'a Binding,
@@ -10,7 +10,7 @@ pub(crate) enum MergedItem<'a> {
     Expr(&'a Expr),
 }
 
-pub(crate) fn merged_items(items: &[Item]) -> MergedItems<'_> {
+pub fn merged_items(items: &[Item]) -> impl Iterator<Item = MergedItem<'_>> {
     MergedItems { items, index: 0 }
 }
 

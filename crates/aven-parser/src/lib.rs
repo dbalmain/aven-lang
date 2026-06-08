@@ -11,6 +11,7 @@ pub use declarations::{
     CallableShape, Declaration, DeclarationKind, DeclarationPhase, DeclarationShape,
     collect_declarations,
 };
+pub use items::{MergedItem, merged_items};
 pub(crate) use layout::lex_then_layout;
 pub use layout::{LayoutOutput, layout_source, layout_tokens};
 pub use lexer::{
@@ -21,6 +22,6 @@ pub use parser::{
     Binding, Expr, ExprKind, Item, Literal, MatchArm, Module, Param, ParseOutput, PropagationMode,
     RecordEntry, Signature, parse_module, parse_source,
 };
-pub use resolve::{annotation_for_definition, render_annotation};
+pub use resolve::{BindingSite, annotation_for_definition, pattern_bindings, render_annotation};
 pub use resolve::{resolve_local_definition, resolve_local_references};
 pub use walk::{find_map_expr_children, walk_expr_children};
