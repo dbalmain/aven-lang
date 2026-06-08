@@ -230,7 +230,7 @@ fn value_environment(
 fn is_inference_only_value(value: &Expr) -> bool {
     match &value.kind {
         ExprKind::Group(inner) => is_inference_only_value(inner),
-        ExprKind::Call { .. } | ExprKind::Block(_) => true,
+        ExprKind::Call { .. } | ExprKind::Block(_) | ExprKind::Array(_) => true,
         _ => false,
     }
 }
@@ -561,6 +561,21 @@ impl Checker {
             (Type::Tuple(expected), Type::Named(actual)) if actual == "Unit" => {
                 if !expected.is_empty() {
                     self.report_tuple_arity_mismatch(expected.len(), 0, span);
+                }
+            }
+            (
+                Type::Apply {
+                    callee: expected_callee,
+                    args: expected_args,
+                },
+                Type::Apply {
+                    callee: actual_callee,
+                    args: actual_args,
+                },
+            ) if expected_args.len() == actual_args.len() => {
+                self.check_type_against_type(expected_callee, actual_callee, span);
+                for (expected, actual) in expected_args.iter().zip(actual_args) {
+                    self.check_type_against_type(expected, actual, span);
                 }
             }
             (Type::Record(expected), Type::Record(actual)) => {
@@ -1306,6 +1321,7 @@ impl<'a> Inference<'a> {
                     .map(|element| self.infer(env, element))
                     .collect(),
             ),
+            ExprKind::Array(elements) => self.infer_array(env, elements),
             ExprKind::Record(entries) => {
                 let Some(shape) = literal_record_value(entries, expr.span) else {
                     return self.unifier.fresh();
@@ -1343,7 +1359,6 @@ impl<'a> Inference<'a> {
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::ComptimeName(_)
-            | ExprKind::Array(_)
             | ExprKind::Set(_)
             | ExprKind::Index { .. }
             | ExprKind::FieldAccess { .. }
@@ -1410,6 +1425,21 @@ impl<'a> Inference<'a> {
             self.unifier.fresh()
         } else {
             result_type
+        }
+    }
+
+    fn infer_array(&mut self, env: &TypeEnv, elements: &[Expr]) -> Type {
+        let element_type = self.unifier.fresh();
+        for element in elements {
+            let item_type = self.infer(env, element);
+            if self.unifier.unify(&element_type, &item_type).is_err() {
+                return self.unifier.fresh();
+            }
+        }
+
+        Type::Apply {
+            callee: Box::new(Type::Named("Array".to_owned())),
+            args: vec![element_type],
         }
     }
 
@@ -2019,6 +2049,64 @@ mod tests {
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "block local binding did not shadow top-level value during inference"
         );
+    }
+
+    #[test]
+    fn array_literals_are_checked_against_annotations() {
+        let accepted = parse_module("value : Array[Int] = [1, 2, 3]\n");
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+            "compatible array literal unexpectedly produced type.mismatch"
+        );
+
+        let mismatch = parse_module("value : Array[Text] = [1, 2, 3]\n");
+        let mismatch_check = check_module(&mismatch.module);
+        assert_eq!(
+            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+    }
+
+    #[test]
+    fn inferred_array_identifier_values_are_checked_against_annotations() {
+        let output = parse_module("nums = [1, 2]\nvalue : Array[Text] = nums\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn array_element_types_reuse_structural_type_comparison() {
+        let accepted = parse_module("value : Array[(Int, Text)] = [(1, \"a\")]\n");
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+            "compatible nested array literal unexpectedly produced type.mismatch"
+        );
+
+        let mismatch = parse_module("value : Array[(Int, Int)] = [(1, \"a\")]\n");
+        let mismatch_check = check_module(&mismatch.module);
+        assert_eq!(
+            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+    }
+
+    #[test]
+    fn array_inference_defers_empty_and_heterogeneous_literals() {
+        for source in [
+            "value : Array[Int] = []\n",
+            "value : Array[Int] = [1, \"a\"]\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
     }
 
     #[test]
