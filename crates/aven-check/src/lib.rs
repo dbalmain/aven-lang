@@ -1410,10 +1410,20 @@ impl Unifier {
         })
     }
 
+    /// Capture the current substitution so a speculative sequence of
+    /// unifications can be rolled back with [`Unifier::restore`].
+    fn snapshot(&self) -> Vec<Option<Type>> {
+        self.substitution.clone()
+    }
+
+    fn restore(&mut self, snapshot: Vec<Option<Type>>) {
+        self.substitution = snapshot;
+    }
+
     fn unify(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
-        let snapshot = self.substitution.clone();
+        let snapshot = self.snapshot();
         if self.unify_inner(left, right).is_err() {
-            self.substitution = snapshot;
+            self.restore(snapshot);
             Err(())
         } else {
             Ok(())
@@ -1608,6 +1618,7 @@ impl<'a> Checker<'a> {
             } => self.infer_lambda(env, params, return_annotation.as_deref(), body),
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
             ExprKind::Block(items) => self.infer_block(env, items),
+            ExprKind::Match { arms, .. } => self.infer_match(env, arms),
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::ComptimeName(_)
@@ -1617,8 +1628,7 @@ impl<'a> Checker<'a> {
             | ExprKind::Arrow { .. }
             | ExprKind::Binary { .. }
             | ExprKind::Unary { .. }
-            | ExprKind::Propagate { .. }
-            | ExprKind::Match { .. } => self.unifier.fresh(),
+            | ExprKind::Propagate { .. } => self.unifier.fresh(),
         }
     }
 
@@ -1739,6 +1749,30 @@ impl<'a> Checker<'a> {
             Some(Item::Expr(expr)) => self.infer(&next_env, expr),
             _ => self.unifier.fresh(),
         }
+    }
+
+    fn infer_match(&mut self, env: &TypeEnv, arms: &[MatchArm]) -> Type {
+        if arms.is_empty() {
+            return self.unifier.fresh();
+        }
+
+        let snapshot = self.unifier.snapshot();
+        let result_type = self.unifier.fresh();
+
+        for arm in arms {
+            let mut arm_env = env.clone();
+            for binding in pattern_bindings(&arm.pattern) {
+                arm_env.insert(binding.name.to_owned(), LocalValueType::Unknown);
+            }
+
+            let body_type = self.infer(&arm_env, &arm.body);
+            if self.unifier.unify(&result_type, &body_type).is_err() {
+                self.unifier.restore(snapshot);
+                return self.unifier.fresh();
+            }
+        }
+
+        result_type
     }
 
     fn lower_annotation_for_inference(&self, annotation: &Expr) -> Type {
@@ -2430,6 +2464,62 @@ mod tests {
         assert!(
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "contextual match arm borrowed a top-level type for a pattern binder"
+        );
+    }
+
+    #[test]
+    fn match_results_are_inferred_for_identifier_values() {
+        let mismatch = parse_module(
+            "result = source ?>\n  Ok(_) => 1\n  Err(_) => 2\nvalue : Text = result\n",
+        );
+        let mismatch_check = check_module(&mismatch.module);
+        assert_eq!(
+            matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+            1
+        );
+
+        let accepted =
+            parse_module("result = source ?>\n  Ok(_) => 1\n  Err(_) => 2\nvalue : Int = result\n");
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+            "compatible inferred match result unexpectedly produced type.mismatch"
+        );
+    }
+
+    #[test]
+    fn match_result_inference_handles_block_arm_bodies() {
+        let output = parse_module(
+            "result = source ?>\n  Ok(_) =>\n    local = 1\n    local\nvalue : Text = result\n",
+        );
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn match_result_inference_defers_mixed_arm_types() {
+        let output = parse_module(
+            "result = source ?>\n  Ok(_) => 1\n  Err(_) => \"no\"\nvalue : Text = result\n",
+        );
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "mixed match arm types should defer instead of reporting"
+        );
+    }
+
+    #[test]
+    fn match_result_inference_keeps_pattern_binders_unknown() {
+        let output = parse_module(
+            "item : Text = \"hi\"\nresult = source ?>\n  Ok(item) => item\nvalue : Bool = result\n",
+        );
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "inferred match result borrowed a top-level type for a pattern binder"
         );
     }
 
