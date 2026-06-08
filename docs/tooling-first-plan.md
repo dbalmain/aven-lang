@@ -868,9 +868,9 @@ synthesized concrete type. Direct applications written under an annotation are
 also synthesized and compared when inference produces a concrete type. Names
 referenced inside local scopes (lambda, block, and match bodies) defer in the
 checking path, so a local binder cannot borrow a same-named top-level declared
-type. Ambiguous overloads, unsolved identifier-valued bindings,
-operator/match/block-bodied values, recursive/generic bindings, and full
-unification remain deferred. Literal record value checking now covers rows of
+type. Ambiguous overloads, unsolved identifier-valued bindings, operator and
+match-bodied values, recursive/generic bindings, and full unification remain
+deferred. Literal record value checking now covers rows of
 only fields and the open marker: wrong field types, missing required fields, and
 unexpected fields on closed records. The open/closed rule is fixed by the spec
 (records are closed by default; `.._` opens them, lowered to
@@ -903,12 +903,12 @@ Tasks:
 - add a `Type::Meta` unification variable, distinct from rigid annotation
   variables, that never escapes a public API or a checked output
 - back top-level value synthesis with a unifier: literals, tuples, literal
-  records, lambdas, and applications infer a concrete type when every meta
-  solves; generic top-level functions instantiate freshly at each use
+  records, blocks, lambdas, and applications infer a concrete type when every
+  meta solves; generic top-level functions instantiate freshly at each use
 - guard recursive references and run an occurs-check so inference always
   terminates
-- defer (synthesize nothing) for operator/match/block bodies and anything that
-  leaves an unsolved meta
+- defer (synthesize nothing) for operator/match bodies and anything that leaves
+  an unsolved meta
 
 Done when:
 
@@ -919,18 +919,22 @@ Done when:
   defaulting) remains explicitly deferred to later milestones
 
 Progress: a private unifier now backs monomorphic synthesis for top-level
-declaration values. Literals, tuples, literal records, lambdas, and applications
-infer a concrete type when all metas solve, and top-level inferred functions
-instantiate freshly at each use, so a generic function can be applied at more
-than one type without leaking solutions between uses. Metas never escape into
+declaration values. Literals, tuples, literal records, blocks, lambdas, and
+applications infer a concrete type when all metas solve, and top-level inferred
+functions instantiate freshly at each use, so a generic function can be applied
+at more than one type without leaking solutions between uses. Block inference
+extends a local environment in source order and uses the final expression as the
+block type. Block locals are tracked through ordinary bindings only; a block
+that spreads a record into lexical scope is not modeled yet, so the names it
+introduces are unknown and such blocks defer. Metas never escape into
 `value_types`: synthesis resolves a value to a concrete type or defers. Direct
 applications written under annotations now use the same synthesis engine and are
 compared against the declared type when the call result is concrete. Recursive
 bindings and self-application terminate through an in-progress guard and the
-occurs-check. Operator/match/block bodies and recursive or still-generic results
-defer. The shared `map_type`/`visit_type` traversals back substitution,
-instantiation, and the occurs/concreteness predicates so the engine grows with
-the `Type` grammar in one place.
+occurs-check. Operator/match bodies and recursive or still-generic results
+defer. The shared `map_type`/`visit_type`
+traversals back substitution, instantiation, and the occurs/concreteness
+predicates so the engine grows with the `Type` grammar in one place.
 
 ## Remaining Phase 2 Scope
 
@@ -1033,10 +1037,14 @@ Completed parser groundwork:
   stored declaration-level declared types on compiler artifacts, with unchanged
   artifacts skipping annotation lowering; it is done. Milestone 11 has started
   monomorphic value inference: a private unifier synthesizes top-level value
-  types (lambdas and applications included) or defers, feeding the existing
-  checking direction. Direct applications written under annotations are checked
-  when synthesis produces a concrete result. The likely next slice is to begin
-  consuming artifact invalidation for inferred results.
+  types (blocks, lambdas, and applications included) or defers, feeding the
+  existing checking direction. Direct applications and block-bodied values
+  written under annotations are checked when synthesis produces a concrete
+  result. The likely next slice continues inference breadth (array literals plus
+  a general type-application comparison) rather than incremental wiring: at
+  embedded-script sizes whole-module re-inference is cheap, so consuming artifact
+  invalidation for inferred results stays deferred until profiling shows it pays
+  off.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.

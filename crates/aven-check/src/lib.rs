@@ -172,8 +172,9 @@ fn type_definitions(module: &Module, known_types: &HashSet<String>) -> HashMap<S
 
 /// Build the two top-level value maps from one inference pass: `value_types`
 /// holds each binding's published type (declared annotation, else synthesized)
-/// for identifier references, and `value_syntheses` holds the synthesized type
-/// of a direct-application value for checking it against its own annotation.
+/// for identifier references, and `value_syntheses` holds synthesized types for
+/// top-level values that otherwise need synthesis to compare against their own
+/// annotations.
 fn value_environment(
     module: &Module,
     known_types: &HashSet<String>,
@@ -229,7 +230,7 @@ fn value_environment(
 fn is_inference_only_value(value: &Expr) -> bool {
     match &value.kind {
         ExprKind::Group(inner) => is_inference_only_value(inner),
-        ExprKind::Call { .. } => true,
+        ExprKind::Call { .. } | ExprKind::Block(_) => true,
         _ => false,
     }
 }
@@ -1338,6 +1339,7 @@ impl<'a> Inference<'a> {
                 body,
             } => self.infer_lambda(env, params, return_annotation.as_deref(), body),
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
+            ExprKind::Block(items) => self.infer_block(env, items),
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::ComptimeName(_)
@@ -1350,8 +1352,7 @@ impl<'a> Inference<'a> {
             | ExprKind::Binary { .. }
             | ExprKind::Unary { .. }
             | ExprKind::Propagate { .. }
-            | ExprKind::Match { .. }
-            | ExprKind::Block(_) => self.unifier.fresh(),
+            | ExprKind::Match { .. } => self.unifier.fresh(),
         }
     }
 
@@ -1409,6 +1410,26 @@ impl<'a> Inference<'a> {
             self.unifier.fresh()
         } else {
             result_type
+        }
+    }
+
+    fn infer_block(&mut self, env: &TypeEnv, items: &[Item]) -> Type {
+        let mut next_env = env.clone();
+
+        for item in items {
+            if let Item::Binding(binding) = item {
+                let ty = if let Some(annotation) = &binding.annotation {
+                    self.lower_annotation(annotation)
+                } else {
+                    self.infer(&next_env, &binding.value)
+                };
+                next_env.insert(binding.name.clone(), ty);
+            }
+        }
+
+        match items.last() {
+            Some(Item::Expr(expr)) => self.infer(&next_env, expr),
+            _ => self.unifier.fresh(),
         }
     }
 
@@ -1931,6 +1952,72 @@ mod tests {
         assert!(
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "unsolved direct application unexpectedly produced type.mismatch"
+        );
+    }
+
+    #[test]
+    fn block_bodied_values_are_checked_against_annotations() {
+        for source in [
+            "value : (Int, Text) =\n  pair = (1, \"a\")\n  pair\n",
+            "value : Int =\n  x = 1\n  x\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+
+        for source in [
+            "value : (Int, Int) =\n  pair = (1, \"a\")\n  pair\n",
+            "value : Text =\n  x = 1\n  x\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn unannotated_block_values_feed_identifier_checks() {
+        let output = parse_module("data =\n  x = 1\n  (x, x)\nvalue : (Int, Text) = data\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn block_inference_defers_unsolved_values() {
+        for source in [
+            "value : Text =\n  x = 1\n  x + 1\n",
+            "value : Text =\n  x = 1\n",
+            "value : Text =\n  missing(1)\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn block_inference_prefers_local_bindings_over_top_level_bindings() {
+        let output = parse_module("name = 1\nvalue : Text =\n  name = \"hi\"\n  name\n");
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "block local binding did not shadow top-level value during inference"
         );
     }
 
