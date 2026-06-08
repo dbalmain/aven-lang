@@ -919,8 +919,8 @@ Tasks:
 - check lambda values contextually against expected function types: seed
   unannotated params from the expected type, compare explicit param and return
   annotations, and check the body against the expected result
-- check block values contextually against expected types: seed prefix locals
-  without duplicate diagnostics, then check the final expression
+- check block values contextually against expected types: check prefix bindings
+  once while entering them into scope, then check the final expression
 - guard recursive references and run an occurs-check so inference always
   terminates
 - defer (synthesize nothing) for operator/match bodies, tag-sets, row-computed
@@ -964,11 +964,14 @@ compared against the declared type when the call result is concrete. Direct
 lambda values are checked contextually against function annotations: expected
 parameter types seed unannotated lambda parameters, explicit parameter
 annotations are compared contravariantly, and return annotations plus bodies are
-checked covariantly against the expected result. Contextual block checking
-builds a scoped type environment from prefix bindings without emitting duplicate
-prefix diagnostics, then checks the final expression against the expected type;
-final calls synthesize and compare when their result is concrete. Function
-comparison is structural, with contravariant parameters and covariant results.
+checked covariantly against the expected result. Contextual block checking now
+uses the same bidirectional checker path as ordinary local bindings: prefix
+bindings are checked once, entered into the nearest scope, and then the final
+expression is checked against the expected type. The checker owns the unifier,
+top-level memo, and local known/unknown environment directly, so contextual
+checks and synthesis no longer thread a separate inference object through
+record, block, lambda, call, and collection walks. Function comparison is
+structural, with contravariant parameters and covariant results.
 Applied types compare structurally when their arities match, so `Array[Int]` vs
 `Array[Text]` reports through the same recursive comparator that handles tuples
 and records. Recursive bindings and
