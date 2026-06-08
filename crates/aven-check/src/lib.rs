@@ -471,7 +471,7 @@ impl<'a> Checker<'a> {
             } => self.check_lambda_value_expr(params, return_annotation.as_deref(), body),
             ExprKind::Block(items) => self.check_items(items),
             ExprKind::Match { subject, arms, .. } => {
-                self.check_match(subject, arms);
+                self.check_match_arms(subject, arms, None);
             }
             ExprKind::Missing
             | ExprKind::Literal(_)
@@ -573,7 +573,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_match(&mut self, subject: &Expr, arms: &[MatchArm]) {
+    fn check_match_arms(&mut self, subject: &Expr, arms: &[MatchArm], expected: Option<&Type>) {
         self.check_value_expr(subject);
 
         for arm in arms {
@@ -583,7 +583,11 @@ impl<'a> Checker<'a> {
                     .define(binding.name, LocalValueType::Unknown);
             }
             self.check_value_exprs(&arm.guards);
-            self.check_value_expr(&arm.body);
+            if let Some(expected) = expected {
+                self.check_value_against(expected, &arm.body);
+            } else {
+                self.check_value_expr(&arm.body);
+            }
             self.local_types.pop();
         }
     }
@@ -651,6 +655,9 @@ impl<'a> Checker<'a> {
             }
             (ExprKind::Record(value_entries), Type::Record(type_entries)) => {
                 self.check_record_value_against(type_entries, value_entries, value.span);
+            }
+            (ExprKind::Match { subject, arms, .. }, _) => {
+                self.check_match_arms(subject, arms, Some(expected));
             }
             (
                 ExprKind::Array(elements),
@@ -2393,6 +2400,37 @@ mod tests {
         let check = check_module(&output.module);
 
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 2);
+    }
+
+    #[test]
+    fn contextual_matches_check_arm_bodies_against_expected_type() {
+        let output = parse_module("value : Text =\n  result ?>\n    Ok(_) => 1\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn contextual_matches_check_block_arm_bodies_against_expected_type() {
+        let output = parse_module(
+            "value : Text =\n  result ?>\n    Ok(_) =>\n      local = 1\n      local\n",
+        );
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    }
+
+    #[test]
+    fn contextual_matches_keep_pattern_binders_unknown() {
+        let output = parse_module(
+            "item : Text = \"hi\"\nvalue : Bool =\n  result ?>\n    Ok(item) => item\n",
+        );
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "contextual match arm borrowed a top-level type for a pattern binder"
+        );
     }
 
     #[test]
