@@ -876,8 +876,8 @@ a same-named top-level type. Expected function annotations now seed
 unannotated lambda parameters and check lambda bodies against expected return
 types, so `(x) => x` can be checked as `(Int) -> Text` without full
 generalization. Ambiguous overloads, unsolved identifier-valued bindings,
-operator and match-bodied values, recursive/generic bindings, and full
-unification remain deferred. Literal record value checking now covers rows of
+unsupported operator shapes, match-bodied values, recursive/generic bindings,
+and full unification remain deferred. Literal record value checking now covers rows of
 only fields and the open marker: wrong field types, missing required fields, and
 unexpected fields on closed records. The open/closed rule is fixed by the spec
 (records are closed by default; `.._` opens them, lowered to
@@ -923,8 +923,10 @@ Tasks:
   once while entering them into scope, then check the final expression
 - guard recursive references and run an occurs-check so inference always
   terminates
-- defer (synthesize nothing) for operator/match bodies, tag-sets, row-computed
-  collections, and anything that leaves an unsolved meta
+- infer the first built-in operator subset while leaving custom operators and
+  unsupported operand shapes deferred
+- defer (synthesize nothing) for unsupported operator/match bodies, tag-sets,
+  row-computed collections, and anything that leaves an unsolved meta
 
 Done when:
 
@@ -978,13 +980,19 @@ unify to one concrete type, so match-valued bindings can feed later identifier
 checks. Function comparison is structural: arity mismatches report
 `type.mismatch`, parameters compare contravariantly, and results compare
 covariantly.
+The first built-in operator subset now synthesizes concrete results for numeric
+arithmetic, text `+`, numeric comparisons, equality over concrete compatible
+operands, boolean `&&`/`||`, and unary numeric `-`. Unknown operands and
+deliberately unknown binders resolve to deferred types rather than bindable
+metas, so an expression such as `missing + 1` or a match-pattern binder used in
+an operator body cannot fabricate a concrete type.
 Applied types compare structurally when their arities match, so `Array[Int]` vs
 `Array[Text]` reports through the same recursive comparator that handles tuples
 and records. Recursive bindings and
 self-application terminate through an in-progress guard and the occurs-check.
-Operator bodies, match subject/guard/pattern typing, mixed or unknown match-arm
-results, tag-sets, row-computed collections, and recursive or still-generic
-results defer. The shared
+Custom operators, unsupported operand shapes, match subject/guard/pattern
+typing, mixed or unknown match-arm results, tag-sets, row-computed collections,
+and recursive or still-generic results defer. The shared
 `map_type`/`visit_type` traversals back substitution, instantiation, and the
 occurs/concreteness predicates so the engine grows with the `Type` grammar in
 one place.
@@ -1092,10 +1100,11 @@ Completed parser groundwork:
   monomorphic value inference: a private unifier synthesizes top-level value
   types (arrays, sets, blocks, lambdas, and applications included) or defers,
   feeding the existing checking direction. Direct applications, block-bodied
-  values, arrays, and sets written under annotations are checked when synthesis
-  or structural literal checking produces a concrete result. Function types
-  compare structurally with arity diagnostics, contravariant parameters, and
-  covariant results; applied types compare structurally when their arities match. Local checking
+  values, arrays, sets, and supported built-in operator expressions written
+  under annotations are checked when synthesis or structural literal checking
+  produces a concrete result. Function types compare structurally with arity
+  diagnostics, contravariant parameters, and covariant results; applied types
+  compare structurally when their arities match. Local checking
   and inference now share parser-backed scoped known/unknown bindings.
   Unannotated sequential locals acquire concrete synthesized types when
   possible; unresolved locals and pattern binders still block top-level

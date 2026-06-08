@@ -1564,7 +1564,7 @@ impl<'a> Checker<'a> {
             return Some(ty);
         }
         if self.in_progress.contains(name) {
-            return Some(self.unifier.fresh());
+            return Some(Type::Deferred);
         }
 
         let binding = (*self.bindings.get(name)?)?;
@@ -1596,8 +1596,12 @@ impl<'a> Checker<'a> {
 
     fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
         match &expr.kind {
-            ExprKind::Literal(Literal::Number(_)) => Type::Named("Int".to_owned()),
-            ExprKind::Literal(Literal::String(_)) => Type::Named("Text".to_owned()),
+            ExprKind::Literal(Literal::Number(_)) => named_builtin("Int"),
+            ExprKind::Literal(Literal::String(_)) => named_builtin("Text"),
+            ExprKind::ComptimeName(name) if name == "True" || name == "False" => {
+                named_builtin("Bool")
+            }
+            ExprKind::ComptimeName(name) if name == "Nil" => named_builtin("Nil"),
             ExprKind::Group(inner) => self.infer(env, inner),
             ExprKind::Tuple(elements) => Type::Tuple(
                 elements
@@ -1609,12 +1613,12 @@ impl<'a> Checker<'a> {
             ExprKind::Set(entries) => self.infer_set(env, entries),
             ExprKind::Record(entries) => {
                 let Some(shape) = literal_record_value(entries, expr.span) else {
-                    return self.unifier.fresh();
+                    return Type::Deferred;
                 };
                 let mut fields = Vec::new();
                 for field in &shape.fields {
                     let Some(value) = field.value else {
-                        return self.unifier.fresh();
+                        return Type::Deferred;
                     };
                     fields.push(TypeRowEntry::Field {
                         name: field.name.to_owned(),
@@ -1629,11 +1633,11 @@ impl<'a> Checker<'a> {
                 if let Some(local) = env.get(name) {
                     return match local {
                         LocalValueType::Known(ty) => ty.clone(),
-                        LocalValueType::Unknown => self.unifier.fresh(),
+                        LocalValueType::Unknown => Type::Deferred,
                     };
                 }
                 let Some(ty) = self.infer_top_level(name) else {
-                    return self.unifier.fresh();
+                    return Type::Deferred;
                 };
                 self.unifier.instantiate(&ty)
             }
@@ -1643,6 +1647,15 @@ impl<'a> Checker<'a> {
                 body,
             } => self.infer_lambda(env, params, return_annotation.as_deref(), body),
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
+            ExprKind::Binary {
+                left,
+                operator,
+                right,
+                ..
+            } => self.infer_binary(env, left, operator, right),
+            ExprKind::Unary {
+                operator, value, ..
+            } => self.infer_unary(env, operator, value),
             ExprKind::Block(items) => self.infer_block(env, items),
             ExprKind::Match { arms, .. } => self.infer_match(env, arms),
             ExprKind::Missing
@@ -1652,10 +1665,148 @@ impl<'a> Checker<'a> {
             | ExprKind::FieldAccess { .. }
             | ExprKind::Nullable(_)
             | ExprKind::Arrow { .. }
-            | ExprKind::Binary { .. }
-            | ExprKind::Unary { .. }
-            | ExprKind::Propagate { .. } => self.unifier.fresh(),
+            | ExprKind::Propagate { .. } => Type::Deferred,
         }
+    }
+
+    fn infer_binary(&mut self, env: &TypeEnv, left: &Expr, operator: &str, right: &Expr) -> Type {
+        let snapshot = self.unifier.snapshot();
+        let left_type = self.infer(env, left);
+        let right_type = self.infer(env, right);
+
+        if let Some(result) = self.infer_binary_type(operator, &left_type, &right_type) {
+            result
+        } else {
+            self.unifier.restore(snapshot);
+            Type::Deferred
+        }
+    }
+
+    fn infer_binary_type(&mut self, operator: &str, left: &Type, right: &Type) -> Option<Type> {
+        match operator {
+            "+" => self
+                .infer_numeric_binary_type(left, right)
+                .or_else(|| self.infer_same_named_binary_type(left, right, "Text")),
+            "-" | "*" | "/" | "%" | "^" => self.infer_numeric_binary_type(left, right),
+            "<" | "<=" | ">" | ">=" => self.infer_numeric_comparison_type(left, right),
+            "==" | "!=" => self.infer_equality_type(left, right),
+            "&&" | "||" => self.infer_same_named_binary_type(left, right, "Bool"),
+            _ => None,
+        }
+    }
+
+    fn infer_numeric_binary_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
+        let left = self.unifier.resolve(left);
+        let right = self.unifier.resolve(right);
+
+        match (numeric_type_name(&left), numeric_type_name(&right)) {
+            (Some("Float"), Some(_)) | (Some(_), Some("Float")) => Some(named_builtin("Float")),
+            (Some("Int"), Some("Int")) => Some(named_builtin("Int")),
+            (None, Some(right_name)) if is_meta_type(&left) => self
+                .unifier
+                .unify(&left, &named_builtin(right_name))
+                .ok()
+                .map(|()| named_builtin(right_name)),
+            (Some(left_name), None) if is_meta_type(&right) => self
+                .unifier
+                .unify(&right, &named_builtin(left_name))
+                .ok()
+                .map(|()| named_builtin(left_name)),
+            _ => None,
+        }
+    }
+
+    fn infer_numeric_comparison_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
+        self.infer_numeric_binary_type(left, right)
+            .map(|_| named_builtin("Bool"))
+    }
+
+    fn infer_same_named_binary_type(
+        &mut self,
+        left: &Type,
+        right: &Type,
+        name: &'static str,
+    ) -> Option<Type> {
+        let left = self.unifier.resolve(left);
+        let right = self.unifier.resolve(right);
+
+        match (named_type_name(&left), named_type_name(&right)) {
+            (Some(left_name), Some(right_name)) if left_name == name && right_name == name => {
+                Some(named_builtin(name))
+            }
+            (None, Some(right_name)) if right_name == name && is_meta_type(&left) => self
+                .unifier
+                .unify(&left, &named_builtin(name))
+                .ok()
+                .map(|()| named_builtin(name)),
+            (Some(left_name), None) if left_name == name && is_meta_type(&right) => self
+                .unifier
+                .unify(&right, &named_builtin(name))
+                .ok()
+                .map(|()| named_builtin(name)),
+            _ => None,
+        }
+    }
+
+    fn infer_equality_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
+        let left = self.unifier.resolve(left);
+        let right = self.unifier.resolve(right);
+
+        if is_meta_type(&left) && is_meta_type(&right) {
+            return None;
+        }
+
+        if numeric_type_name(&left).is_some() && numeric_type_name(&right).is_some() {
+            return Some(named_builtin("Bool"));
+        }
+
+        if is_meta_type(&left) && is_concrete_type(&right) {
+            return self
+                .unifier
+                .unify(&left, &right)
+                .ok()
+                .map(|()| named_builtin("Bool"));
+        }
+
+        if is_meta_type(&right) && is_concrete_type(&left) {
+            return self
+                .unifier
+                .unify(&right, &left)
+                .ok()
+                .map(|()| named_builtin("Bool"));
+        }
+
+        if is_concrete_type(&left) && is_concrete_type(&right) {
+            return self
+                .unifier
+                .unify(&left, &right)
+                .ok()
+                .map(|()| named_builtin("Bool"));
+        }
+
+        None
+    }
+
+    fn infer_unary(&mut self, env: &TypeEnv, operator: &str, value: &Expr) -> Type {
+        let snapshot = self.unifier.snapshot();
+        let value_type = self.infer(env, value);
+
+        let result = match operator {
+            "-" => self.infer_numeric_unary_type(&value_type),
+            _ => None,
+        };
+
+        if let Some(result) = result {
+            result
+        } else {
+            self.unifier.restore(snapshot);
+            Type::Deferred
+        }
+    }
+
+    fn infer_numeric_unary_type(&mut self, value: &Type) -> Option<Type> {
+        let value = self.unifier.resolve(value);
+        numeric_type_name(&value).map(named_builtin)
     }
 
     fn infer_lambda(
@@ -1680,12 +1831,12 @@ impl<'a> Checker<'a> {
 
         let body_type = self.infer(&next_env, body);
         let result_type = if let Some(annotation) = return_annotation {
-            // A body that contradicts its return annotation defers (fresh meta)
-            // rather than reporting here: inference only synthesizes types, and
-            // diagnosing the mismatch is a later return-annotation-checking slice.
+            // A body that contradicts its return annotation defers rather than
+            // reporting here: inference only synthesizes types, and diagnosing
+            // the mismatch is a later return-annotation-checking slice.
             let expected = self.lower_annotation_for_inference(annotation);
             if self.unifier.unify(&body_type, &expected).is_err() {
-                self.unifier.fresh()
+                Type::Deferred
             } else {
                 expected
             }
@@ -1709,7 +1860,7 @@ impl<'a> Checker<'a> {
         };
 
         if self.unifier.unify(&callee_type, &expected_callee).is_err() {
-            self.unifier.fresh()
+            Type::Deferred
         } else {
             result_type
         }
@@ -1721,7 +1872,7 @@ impl<'a> Checker<'a> {
 
     fn infer_set(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
         let Some(elements) = literal_set_elements(entries) else {
-            return self.unifier.fresh();
+            return Type::Deferred;
         };
         self.infer_collection(env, elements, "Set")
     }
@@ -1736,7 +1887,7 @@ impl<'a> Checker<'a> {
         for element in elements {
             let item_type = self.infer(env, element);
             if self.unifier.unify(&element_type, &item_type).is_err() {
-                return self.unifier.fresh();
+                return Type::Deferred;
             }
         }
 
@@ -1773,13 +1924,13 @@ impl<'a> Checker<'a> {
 
         match items.last() {
             Some(Item::Expr(expr)) => self.infer(&next_env, expr),
-            _ => self.unifier.fresh(),
+            _ => Type::Deferred,
         }
     }
 
     fn infer_match(&mut self, env: &TypeEnv, arms: &[MatchArm]) -> Type {
         if arms.is_empty() {
-            return self.unifier.fresh();
+            return Type::Deferred;
         }
 
         let snapshot = self.unifier.snapshot();
@@ -1794,7 +1945,7 @@ impl<'a> Checker<'a> {
             let body_type = self.infer(&arm_env, &arm.body);
             if self.unifier.unify(&result_type, &body_type).is_err() {
                 self.unifier.restore(snapshot);
-                return self.unifier.fresh();
+                return Type::Deferred;
             }
         }
 
@@ -1931,6 +2082,37 @@ fn is_concrete_type(ty: &Type) -> bool {
         }
     });
     concrete
+}
+
+fn named_builtin(name: &str) -> Type {
+    Type::Named(name.to_owned())
+}
+
+fn named_type_name(ty: &Type) -> Option<&str> {
+    match ty {
+        Type::Named(name) => Some(name),
+        Type::Deferred
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Apply { .. }
+        | Type::Function { .. }
+        | Type::Nullable(_)
+        | Type::Tuple(_)
+        | Type::Record(_)
+        | Type::Variant(_) => None,
+    }
+}
+
+fn numeric_type_name(ty: &Type) -> Option<&'static str> {
+    match named_type_name(ty) {
+        Some("Int") => Some("Int"),
+        Some("Float") => Some("Float"),
+        _ => None,
+    }
+}
+
+fn is_meta_type(ty: &Type) -> bool {
+    matches!(ty, Type::Meta(_))
 }
 
 fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static str> {
@@ -2393,7 +2575,7 @@ mod tests {
 
     #[test]
     fn direct_application_under_annotation_defers_non_concrete_synthesis() {
-        let output = parse_module("h = (x) => x + 1\nvalue : Text = h(1)\n");
+        let output = parse_module("h = (x) => missing(x)\nvalue : Text = h(1)\n");
         let check = check_module(&output.module);
 
         assert!(
@@ -2565,9 +2747,9 @@ mod tests {
     #[test]
     fn block_inference_defers_unsolved_values() {
         for source in [
-            "value : Text =\n  x = 1\n  x + 1\n",
             "value : Text =\n  x = 1\n",
             "value : Text =\n  missing(1)\n",
+            "value : Text =\n  x = missing\n  x + 1\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
@@ -2705,9 +2887,64 @@ mod tests {
     fn lambda_application_inference_defers_unsolved_values() {
         for source in [
             "f = (x) => f(x)\nr = f(1)\nvalue : Text = r\n",
-            "h = (x) => x + 1\nr = h(1)\nvalue : Text = r\n",
             "f = (x) => x\nx = f\nvalue : Text = x\n",
             "f = (x) => x(x)\nr = f(1)\nvalue : Text = r\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_operator_results_are_inferred() {
+        for source in [
+            "value : Int = 1 + 2\n",
+            "value : Text = \"a\" + \"b\"\n",
+            "value : Bool = 1 < 2\n",
+            "left : Bool = True\nright : Bool = False\nvalue : Bool = left && right\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+
+        for source in [
+            "result = 1 + 2\nvalue : Text = result\n",
+            "result = \"a\" + \"b\"\nvalue : Int = result\n",
+            "result = 1 < 2\nvalue : Text = result\n",
+            "left : Bool = True\nright : Bool = False\nresult = left && right\nvalue : Text = result\n",
+            "h = (x) => x + 1\nr = h(1)\nvalue : Text = r\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn operator_inference_defers_unknown_operands() {
+        for source in [
+            "value : Text = missing + 1\n",
+            "result = source ?>\n  Ok(item) => item + 1\nvalue : Text = result\n",
+            "value : Text = unknown && missing\n",
+            // An unsupported sub-expression stays deferred rather than being
+            // constrained into a concrete type by a surrounding operator.
+            "value : Text = (missing + 1) + 2\n",
+            "value : Text = missing[0] + 1\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
