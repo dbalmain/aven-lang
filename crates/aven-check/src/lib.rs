@@ -661,6 +661,17 @@ impl<'a> Checker<'a> {
             (ExprKind::Record(value_entries), Type::Record(type_entries)) => {
                 self.check_record_value_against(type_entries, value_entries, value.span);
             }
+            (ExprKind::ComptimeName(tag), Type::Variant(type_entries)) => {
+                self.check_variant_value_against(type_entries, tag, &[], value.span);
+            }
+            (ExprKind::Call { callee, args }, Type::Variant(type_entries))
+                if matches!(&callee.kind, ExprKind::ComptimeName(_)) =>
+            {
+                let ExprKind::ComptimeName(tag) = &callee.kind else {
+                    return;
+                };
+                self.check_variant_value_against(type_entries, tag, args, value.span);
+            }
             (ExprKind::Match { subject, arms, .. }, _) => {
                 self.check_match_arms(subject, arms, Some(expected));
             }
@@ -887,7 +898,46 @@ impl<'a> Checker<'a> {
                     .collect();
                 self.compare_record(&expected, &actual_fields, span);
             }
+            (Type::Variant(expected), Type::Variant(actual)) => {
+                self.check_variant_type_against_type(expected, actual, span);
+            }
             _ => {}
+        }
+    }
+
+    fn check_variant_type_against_type(
+        &mut self,
+        expected_entries: &[TypeRowEntry],
+        actual_entries: &[TypeRowEntry],
+        span: Span,
+    ) {
+        let Some(actual_tags) = literal_variant_tags(actual_entries) else {
+            return;
+        };
+
+        for tag in actual_tags {
+            let Some(payload) = literal_variant_payload_lookup(expected_entries, tag.name) else {
+                return;
+            };
+
+            let Some(expected_payload) = payload else {
+                self.report_variant_tag_mismatch(tag.name, span);
+                continue;
+            };
+
+            if expected_payload.len() != tag.payload.len() {
+                self.report_variant_payload_arity_mismatch(
+                    tag.name,
+                    expected_payload.len(),
+                    tag.payload.len(),
+                    span,
+                );
+                continue;
+            }
+
+            for (expected, actual) in expected_payload.iter().zip(tag.payload) {
+                self.check_type_against_type(expected, actual, span);
+            }
         }
     }
 
@@ -913,6 +963,40 @@ impl<'a> Checker<'a> {
             .map(|field| (field.name, field.name_span, FieldValue::Value(field.value)))
             .collect();
         self.compare_record(&expected, &actual_fields, actual.span);
+    }
+
+    fn check_variant_value_against(
+        &mut self,
+        type_entries: &[TypeRowEntry],
+        tag: &str,
+        args: &[Expr],
+        value_span: Span,
+    ) {
+        let Some(payload) = literal_variant_payload_lookup(type_entries, tag) else {
+            self.check_value_exprs(args);
+            return;
+        };
+
+        let Some(expected_payload) = payload else {
+            self.report_variant_tag_mismatch(tag, value_span);
+            self.check_value_exprs(args);
+            return;
+        };
+
+        if expected_payload.len() != args.len() {
+            self.report_variant_payload_arity_mismatch(
+                tag,
+                expected_payload.len(),
+                args.len(),
+                value_span,
+            );
+            self.check_value_exprs(args);
+            return;
+        }
+
+        for (arg, expected) in args.iter().zip(expected_payload) {
+            self.check_value_against(expected, arg);
+        }
     }
 
     fn compare_record(
@@ -1262,6 +1346,36 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_variant_tag_mismatch(&mut self, tag: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("unexpected variant tag `{tag}`"))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(span, "this tag is not in the variant type"))
+                .with_note("use a tag listed by the annotation, or change the annotation"),
+        );
+    }
+
+    fn report_variant_payload_arity_mismatch(
+        &mut self,
+        tag: &str,
+        expected: usize,
+        found: usize,
+        span: Span,
+    ) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "expected variant tag `{tag}` with {expected} payload value{}, found {found}",
+                if expected == 1 { "" } else { "s" },
+            ))
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(
+                span,
+                "variant payload count does not match annotation",
+            ))
+            .with_note("add or remove payload values to match the variant annotation"),
+        );
+    }
+
     fn report_type_mismatch_between_types(&mut self, expected: &str, actual: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("expected `{expected}`, found `{actual}`"))
@@ -1332,6 +1446,12 @@ struct ValueRecordField<'a> {
     name: &'a str,
     name_span: Span,
     value: Option<&'a Expr>,
+}
+
+#[derive(Debug)]
+struct VariantTagShape<'a> {
+    name: &'a str,
+    payload: &'a [Type],
 }
 
 fn literal_record_type(entries: &[TypeRowEntry]) -> Option<ExpectedRecordShape<'_>> {
@@ -1463,6 +1583,13 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
 }
 
 fn literal_variant_payload<'a>(entries: &'a [TypeRowEntry], tag: &str) -> Option<&'a [Type]> {
+    literal_variant_payload_lookup(entries, tag).flatten()
+}
+
+fn literal_variant_payload_lookup<'a>(
+    entries: &'a [TypeRowEntry],
+    tag: &str,
+) -> Option<Option<&'a [Type]>> {
     let mut found = None;
 
     for entry in entries {
@@ -1481,7 +1608,29 @@ fn literal_variant_payload<'a>(entries: &'a [TypeRowEntry], tag: &str) -> Option
         }
     }
 
-    found
+    Some(found)
+}
+
+fn literal_variant_tags(entries: &[TypeRowEntry]) -> Option<Vec<VariantTagShape<'_>>> {
+    let mut tags = Vec::new();
+
+    for entry in entries {
+        match entry {
+            TypeRowEntry::Tag { name, payload } => tags.push(VariantTagShape {
+                name,
+                payload: payload.as_slice(),
+            }),
+            TypeRowEntry::Field { .. }
+            | TypeRowEntry::Spread { .. }
+            | TypeRowEntry::Delete(_)
+            | TypeRowEntry::Rename { .. }
+            | TypeRowEntry::Shorthand(_)
+            | TypeRowEntry::Open
+            | TypeRowEntry::Element(_) => return None,
+        }
+    }
+
+    Some(tags)
 }
 
 #[derive(Debug, Default)]
@@ -1672,6 +1821,10 @@ impl<'a> Checker<'a> {
                 named_builtin("Bool")
             }
             ExprKind::ComptimeName(name) if name == "Nil" => named_builtin("Nil"),
+            ExprKind::ComptimeName(name) => Type::Variant(vec![TypeRowEntry::Tag {
+                name: name.clone(),
+                payload: Vec::new(),
+            }]),
             ExprKind::Group(inner) => self.infer(env, inner),
             ExprKind::Tuple(elements) => Type::Tuple(
                 elements
@@ -1730,7 +1883,6 @@ impl<'a> Checker<'a> {
             ExprKind::Match { subject, arms, .. } => self.infer_match(env, subject, arms),
             ExprKind::Missing
             | ExprKind::Literal(_)
-            | ExprKind::ComptimeName(_)
             | ExprKind::Index { .. }
             | ExprKind::FieldAccess { .. }
             | ExprKind::Nullable(_)
@@ -1921,6 +2073,10 @@ impl<'a> Checker<'a> {
     }
 
     fn infer_call(&mut self, env: &TypeEnv, callee: &Expr, args: &[Expr]) -> Type {
+        if let ExprKind::ComptimeName(tag) = &callee.kind {
+            return self.infer_variant_constructor(env, tag, args);
+        }
+
         let callee_type = self.infer(env, callee);
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
         let result_type = self.unifier.fresh();
@@ -1934,6 +2090,24 @@ impl<'a> Checker<'a> {
         } else {
             result_type
         }
+    }
+
+    fn infer_variant_constructor(&mut self, env: &TypeEnv, tag: &str, args: &[Expr]) -> Type {
+        let mut payload = Vec::new();
+
+        for arg in args {
+            let arg_type = self.infer(env, arg);
+            let arg_type = self.unifier.resolve(&arg_type);
+            if !is_concrete_type(&arg_type) {
+                return Type::Deferred;
+            }
+            payload.push(arg_type);
+        }
+
+        Type::Variant(vec![TypeRowEntry::Tag {
+            name: tag.to_owned(),
+            payload,
+        }])
     }
 
     fn infer_array(&mut self, env: &TypeEnv, elements: &[Expr]) -> Type {
@@ -3027,6 +3201,79 @@ mod tests {
                 "{source} unexpectedly produced type.mismatch"
             );
         }
+    }
+
+    #[test]
+    fn variant_values_are_checked_against_annotations() {
+        for source in [
+            "value : @{Ok(Int), Err(Text)} = Ok(1)\n",
+            "value : @{Done} = Done\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+
+        for source in [
+            "value : @{Ok(Text)} = Ok(1)\n",
+            "value : @{Ok(Int)} = Err(1)\n",
+            "value : @{Ok(Int)} = Ok(1, 2)\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn inferred_variant_identifier_values_are_checked_against_annotations() {
+        for source in [
+            "result = Ok(1)\nvalue : @{Ok(Int), Err(Text)} = result\n",
+            "done = Done\nvalue : @{Done} = done\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+
+        for source in [
+            "result = Ok(1)\nvalue : @{Ok(Text), Err(Text)} = result\n",
+            "result = Err(\"no\")\nvalue : @{Ok(Int)} = result\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn variant_value_checking_defers_computed_rows() {
+        let output =
+            parse_module("Error = @{Err(Text)}\nvalue : @{..Error, Ok(Int)} = Ok(\"x\")\n");
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "computed variant row unexpectedly produced type.mismatch"
+        );
     }
 
     #[test]

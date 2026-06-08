@@ -887,11 +887,13 @@ be checked structurally against an expected record type. Rows carrying spreads,
 deletes, renames, or overwrites defer until row computation, and checking
 explicit fields through a value spread is a follow-up. Open actual record types
 and optional-field subtyping also defer until the row engine. Variant value arms
-are deferred. Transparent comptime aliases are now normalized before value
-checking, including alias chains and nested aliases. `opaque(...)` lowers to an
-irreducible deferred type until comptime evaluation and module-aware opacity
-exist. Cyclic aliases terminate silently for now; reporting cycles and
-validating type-definition bodies are separate follow-up slices.
+start in Milestone 11 with direct constructor values against literal variant
+rows; row-computed variants still defer. Transparent comptime aliases are now
+normalized before value checking, including alias chains and nested aliases.
+`opaque(...)` lowers to an irreducible deferred type until comptime evaluation
+and module-aware opacity exist. Cyclic aliases terminate silently for now;
+reporting cycles and validating type-definition bodies are separate follow-up
+slices.
 
 ## Milestone 11: Monomorphic Value Inference
 
@@ -980,9 +982,12 @@ inside guards, arm bodies, and match-result synthesis; otherwise pattern binders
 still enter as explicit unknown locals.
 Unannotated match expressions also synthesize a result when all arm bodies
 unify to one concrete type, so match-valued bindings can feed later identifier
-checks. Function comparison is structural: arity mismatches report
-`type.mismatch`, parameters compare contravariantly, and results compare
-covariantly.
+checks. Direct variant constructor values such as `Ok(1)` and nullary tags such
+as `Done` are checked against literal variant rows, and inferred singleton
+variant constructor types feed the identifier path. Variant rows carrying
+spreads, deletes, renames, or other row computation still defer. Function
+comparison is structural: arity mismatches report `type.mismatch`, parameters
+compare contravariantly, and results compare covariantly.
 The first built-in operator subset now synthesizes concrete results for numeric
 arithmetic, text `+`, numeric comparisons, equality over concrete compatible
 operands, boolean `&&`/`||`, and unary numeric `-`. Unknown operands and
@@ -1116,11 +1121,11 @@ Completed parser groundwork:
   to check final expressions, including final calls. Contextual match checking
   now pushes the expected result type into each arm body; guarded match arms
   check each guard against `Bool`. Simple variant patterns use a known literal
-  variant subject type to seed payload binders, and unannotated match
-  expressions synthesize a concrete type when their arm body types agree. At
-  embedded-script sizes whole-module re-inference is cheap, so consuming
-  artifact invalidation for inferred results stays deferred until profiling
-  shows it pays off.
+  variant subject type to seed payload binders, direct constructor values check
+  against literal variant rows, and unannotated match expressions synthesize a
+  concrete type when their arm body types agree. At embedded-script sizes
+  whole-module re-inference is cheap, so consuming artifact invalidation for
+  inferred results stays deferred until profiling shows it pays off.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.
