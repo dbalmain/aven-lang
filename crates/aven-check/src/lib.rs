@@ -233,7 +233,7 @@ fn value_environment(
 fn is_inference_only_value(value: &Expr) -> bool {
     match &value.kind {
         ExprKind::Group(inner) => is_inference_only_value(inner),
-        ExprKind::Call { .. } | ExprKind::Block(_) => true,
+        ExprKind::Call { .. } => true,
         _ => false,
     }
 }
@@ -408,7 +408,7 @@ impl Checker {
             let expected_type = self.normalize(&declared_type);
 
             if let Some(binding) = binding {
-                self.check_value_against(&expected_type, &binding.value);
+                self.check_value_against(&expected_type, &binding.value, inference);
                 if let Some(actual) = self.value_syntheses.get(&declaration.name).cloned() {
                     self.check_type_against_type(&expected_type, &actual, binding.value.span);
                 }
@@ -455,7 +455,7 @@ impl Checker {
         let declared_type = signature_type.as_ref().or(binding_type.as_ref());
 
         if let Some(expected) = declared_type {
-            self.check_value_against(expected, &binding.value);
+            self.check_value_against(expected, &binding.value, inference);
         }
 
         let inferred_type = if declared_type.is_none() {
@@ -592,9 +592,22 @@ impl Checker {
         self.normalize(&ty)
     }
 
-    fn check_value_against(&mut self, expected: &Type, value: &Expr) {
+    fn lower_normalized_annotation_for_env(&self, annotation: &Expr) -> Type {
+        let mut checker =
+            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        let ty = checker.lower_annotation(annotation);
+        checker.normalize(&ty)
+    }
+
+    fn check_value_against(
+        &mut self,
+        expected: &Type,
+        value: &Expr,
+        inference: &mut Inference<'_>,
+    ) {
         match (&value.kind, expected) {
-            (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
+            (ExprKind::Group(inner), _) => self.check_value_against(expected, inner, inference),
+            (ExprKind::Block(items), _) => self.check_block_against(expected, items, inference),
             (
                 ExprKind::Lambda {
                     params,
@@ -611,6 +624,7 @@ impl Checker {
                 body,
                 expected_params,
                 expected_result,
+                inference,
             ),
             (ExprKind::Name(name), _) => match self.local_types.get(name).cloned() {
                 Some(LocalValueType::Known(actual)) => {
@@ -625,7 +639,7 @@ impl Checker {
             },
             (_, Type::Nullable(inner)) => {
                 if !is_nil_value(value) {
-                    self.check_value_against(inner, value);
+                    self.check_value_against(inner, value, inference);
                 }
             }
             (ExprKind::Literal(literal), Type::Named(name)) => {
@@ -642,12 +656,12 @@ impl Checker {
                     );
                 } else {
                     for (element, element_type) in elements.iter().zip(element_types) {
-                        self.check_value_against(element_type, element);
+                        self.check_value_against(element_type, element, inference);
                     }
                 }
             }
             (ExprKind::Record(value_entries), Type::Record(type_entries)) => {
-                self.check_record_value_against(type_entries, value_entries, value.span);
+                self.check_record_value_against(type_entries, value_entries, value.span, inference);
             }
             (
                 ExprKind::Array(elements),
@@ -658,7 +672,7 @@ impl Checker {
             ) if matches!(callee.as_ref(), Type::Named(name) if name == "Array")
                 && element_types.len() == 1 =>
             {
-                self.check_collection_elements(&element_types[0], elements);
+                self.check_collection_elements(&element_types[0], elements, inference);
             }
             (
                 ExprKind::Set(entries),
@@ -670,11 +684,87 @@ impl Checker {
                 && element_types.len() == 1 =>
             {
                 if let Some(elements) = literal_set_elements(entries) {
-                    self.check_collection_elements(&element_types[0], elements);
+                    self.check_collection_elements(&element_types[0], elements, inference);
                 }
             }
             _ => {}
         }
+    }
+
+    fn check_block_against(
+        &mut self,
+        expected: &Type,
+        items: &[Item],
+        inference: &mut Inference<'_>,
+    ) {
+        self.local_types.push();
+
+        let final_expr = match items.last() {
+            Some(Item::Expr(expr)) => Some(expr),
+            _ => None,
+        };
+        let prefix_len = if final_expr.is_some() {
+            items.len().saturating_sub(1)
+        } else {
+            items.len()
+        };
+
+        for item in merged_items(&items[..prefix_len]) {
+            match item {
+                MergedItem::Binding { signature, binding } => {
+                    self.define_context_local_binding(binding, signature, inference);
+                }
+                MergedItem::Signature(signature) => {
+                    let ty = self.lower_normalized_annotation_for_env(&signature.annotation);
+                    self.local_types
+                        .define(&signature.name, LocalValueType::Known(ty));
+                }
+                MergedItem::Expr(_) => {}
+            }
+        }
+
+        if let Some(expr) = final_expr {
+            self.check_value_against(expected, expr, inference);
+            if is_inference_only_value(expr) {
+                let env = self.local_types.inference_env();
+                if let Some(actual) = inference.infer_local_value(&env, expr) {
+                    self.check_type_against_type(expected, &actual, expr.span);
+                }
+            }
+        }
+
+        self.local_types.pop();
+    }
+
+    fn define_context_local_binding(
+        &mut self,
+        binding: &Binding,
+        signature: Option<&Signature>,
+        inference: &mut Inference<'_>,
+    ) {
+        let signature_type = signature
+            .map(|signature| self.lower_normalized_annotation_for_env(&signature.annotation));
+        let binding_type = binding
+            .annotation
+            .as_ref()
+            .map(|annotation| self.lower_normalized_annotation_for_env(annotation));
+        let declared_type = signature_type.as_ref().or(binding_type.as_ref());
+
+        let inferred_type = if declared_type.is_none() {
+            let env = self.local_types.inference_env();
+            inference.infer_local_value(&env, &binding.value)
+        } else {
+            None
+        };
+
+        self.local_types.define(
+            &binding.name,
+            declared_type
+                .cloned()
+                .or(inferred_type)
+                .map(LocalValueType::Known)
+                .unwrap_or(LocalValueType::Unknown),
+        );
     }
 
     fn check_lambda_against_function(
@@ -684,6 +774,7 @@ impl Checker {
         body: &Expr,
         expected_params: &[Type],
         expected_result: &Type,
+        inference: &mut Inference<'_>,
     ) {
         if params.len() != expected_params.len() {
             return;
@@ -720,7 +811,7 @@ impl Checker {
             self.local_types
                 .define(&param.name, LocalValueType::Known(ty));
         }
-        self.check_value_against(&body_expected, body);
+        self.check_value_against(&body_expected, body, inference);
         self.local_types.pop();
     }
 
@@ -728,9 +819,10 @@ impl Checker {
         &mut self,
         element_type: &Type,
         elements: impl IntoIterator<Item = &'a Expr>,
+        inference: &mut Inference<'_>,
     ) {
         for element in elements {
-            self.check_value_against(element_type, element);
+            self.check_value_against(element_type, element, inference);
         }
     }
 
@@ -816,7 +908,7 @@ impl Checker {
                     .iter()
                     .map(|field| (field.name, span, FieldValue::Type(field.ty)))
                     .collect();
-                self.compare_record(&expected, &actual_fields, span);
+                self.compare_record(&expected, &actual_fields, span, None);
             }
             _ => {}
         }
@@ -827,6 +919,7 @@ impl Checker {
         type_entries: &[TypeRowEntry],
         value_entries: &[RecordEntry],
         value_span: Span,
+        inference: &mut Inference<'_>,
     ) {
         let Some(expected) = literal_record_type(type_entries) else {
             return;
@@ -840,7 +933,7 @@ impl Checker {
             .iter()
             .map(|field| (field.name, field.name_span, FieldValue::Value(field.value)))
             .collect();
-        self.compare_record(&expected, &actual_fields, actual.span);
+        self.compare_record(&expected, &actual_fields, actual.span, Some(inference));
     }
 
     fn compare_record(
@@ -848,6 +941,7 @@ impl Checker {
         expected: &ExpectedRecordShape<'_>,
         actual: &[(&str, Span, FieldValue<'_>)],
         record_span: Span,
+        mut inference: Option<&mut Inference<'_>>,
     ) {
         let actual_fields: HashMap<_, _> = actual
             .iter()
@@ -858,7 +952,11 @@ impl Checker {
 
         for field in &expected.fields {
             match actual_fields.get(field.name).copied() {
-                Some(FieldValue::Value(Some(value))) => self.check_value_against(field.ty, value),
+                Some(FieldValue::Value(Some(value))) => {
+                    if let Some(inference) = inference.as_deref_mut() {
+                        self.check_value_against(field.ty, value, inference);
+                    }
+                }
                 Some(FieldValue::Value(None)) => {}
                 Some(FieldValue::Type(ty)) => {
                     self.check_type_against_type(field.ty, ty, record_span)
@@ -2357,6 +2455,33 @@ mod tests {
                 "{source} should produce one type.mismatch"
             );
         }
+    }
+
+    #[test]
+    fn contextual_blocks_check_final_expressions() {
+        for source in [
+            "value : (Int) -> Text =\n  (x) => x\n",
+            "value : { name = Text } =\n  { name = 1 }\n",
+            "value : Array[Text] =\n  [1]\n",
+            "identity = (x) => x\nvalue : Int =\n  identity(\"hi\")\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one type.mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn contextual_blocks_do_not_duplicate_prefix_diagnostics() {
+        let output = parse_module("value : Text =\n  first : Text = 1\n  first\n");
+        let check = check_module(&output.module);
+
+        assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
     }
 
     #[test]

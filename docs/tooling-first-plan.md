@@ -919,6 +919,8 @@ Tasks:
 - check lambda values contextually against expected function types: seed
   unannotated params from the expected type, compare explicit param and return
   annotations, and check the body against the expected result
+- check block values contextually against expected types: seed prefix locals
+  without duplicate diagnostics, then check the final expression
 - guard recursive references and run an occurs-check so inference always
   terminates
 - defer (synthesize nothing) for operator/match bodies, tag-sets, row-computed
@@ -962,17 +964,20 @@ compared against the declared type when the call result is concrete. Direct
 lambda values are checked contextually against function annotations: expected
 parameter types seed unannotated lambda parameters, explicit parameter
 annotations are compared contravariantly, and return annotations plus bodies are
-checked covariantly against the expected result. Function comparison is
-structural, with contravariant parameters and covariant results. Applied types
-compare structurally when their arities match, so `Array[Int]` vs `Array[Text]`
-reports through the same recursive comparator that handles tuples and records.
-Recursive bindings and
+checked covariantly against the expected result. Contextual block checking
+builds a scoped type environment from prefix bindings without emitting duplicate
+prefix diagnostics, then checks the final expression against the expected type;
+final calls synthesize and compare when their result is concrete. Function
+comparison is structural, with contravariant parameters and covariant results.
+Applied types compare structurally when their arities match, so `Array[Int]` vs
+`Array[Text]` reports through the same recursive comparator that handles tuples
+and records. Recursive bindings and
 self-application terminate through an in-progress guard and the occurs-check.
-Operator/match bodies, tag-sets, row-computed collections, function arity
-mismatches, contextual block final-expression checking, and recursive or
-still-generic results defer. The shared `map_type`/`visit_type` traversals back
-substitution, instantiation, and the occurs/concreteness predicates so the
-engine grows with the `Type` grammar in one place.
+Operator bodies, match bodies, tag-sets, row-computed collections, function
+arity mismatches, and recursive or still-generic results defer. The shared
+`map_type`/`visit_type` traversals back substitution, instantiation, and the
+occurs/concreteness predicates so the engine grows with the `Type` grammar in
+one place.
 
 ## Remaining Phase 2 Scope
 
@@ -1085,10 +1090,11 @@ Completed parser groundwork:
   Unannotated sequential locals acquire concrete synthesized types when
   possible; unresolved locals and pattern binders still block top-level
   fallback. Expected function annotations seed unannotated lambda parameters and
-  check lambda return values. The likely next slice threads contextual checking
-  through block final expressions. At embedded-script sizes whole-module
-  re-inference is cheap, so consuming artifact invalidation for inferred
-  results stays deferred until profiling shows it pays off.
+  check lambda return values. Contextual block checking now uses prefix locals
+  to check final expressions, including final calls. The likely next slice
+  threads contextual checking through match arms. At embedded-script sizes
+  whole-module re-inference is cheap, so consuming artifact invalidation for
+  inferred results stays deferred until profiling shows it pays off.
 
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.
