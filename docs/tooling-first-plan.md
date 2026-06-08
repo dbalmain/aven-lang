@@ -975,14 +975,16 @@ the expected result type into each arm body, while pattern binders still enter
 as unknown locals and guards are checked as ordinary value expressions.
 Unannotated match expressions also synthesize a result when all arm bodies
 unify to one concrete type, so match-valued bindings can feed later identifier
-checks. Function comparison is structural, with contravariant parameters and covariant results.
+checks. Function comparison is structural: arity mismatches report
+`type.mismatch`, parameters compare contravariantly, and results compare
+covariantly.
 Applied types compare structurally when their arities match, so `Array[Int]` vs
 `Array[Text]` reports through the same recursive comparator that handles tuples
 and records. Recursive bindings and
 self-application terminate through an in-progress guard and the occurs-check.
 Operator bodies, match subject/guard/pattern typing, mixed or unknown match-arm
-results, tag-sets, row-computed collections, function arity mismatches, and
-recursive or still-generic results defer. The shared
+results, tag-sets, row-computed collections, and recursive or still-generic
+results defer. The shared
 `map_type`/`visit_type` traversals back substitution, instantiation, and the
 occurs/concreteness predicates so the engine grows with the `Type` grammar in
 one place.
@@ -1092,8 +1094,8 @@ Completed parser groundwork:
   feeding the existing checking direction. Direct applications, block-bodied
   values, arrays, and sets written under annotations are checked when synthesis
   or structural literal checking produces a concrete result. Function types
-  compare structurally with contravariant parameters and covariant results;
-  applied types compare structurally when their arities match. Local checking
+  compare structurally with arity diagnostics, contravariant parameters, and
+  covariant results; applied types compare structurally when their arities match. Local checking
   and inference now share parser-backed scoped known/unknown bindings.
   Unannotated sequential locals acquire concrete synthesized types when
   possible; unresolved locals and pattern binders still block top-level

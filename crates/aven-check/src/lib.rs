@@ -612,6 +612,7 @@ impl<'a> Checker<'a> {
                     result: expected_result,
                 },
             ) => self.check_lambda_against_function(
+                value.span,
                 params,
                 return_annotation.as_deref(),
                 body,
@@ -732,6 +733,7 @@ impl<'a> Checker<'a> {
 
     fn check_lambda_against_function(
         &mut self,
+        lambda_span: Span,
         params: &[Param],
         return_annotation: Option<&Expr>,
         body: &Expr,
@@ -739,6 +741,7 @@ impl<'a> Checker<'a> {
         expected_result: &Type,
     ) {
         if params.len() != expected_params.len() {
+            self.report_function_arity_mismatch(expected_params.len(), params.len(), lambda_span);
             self.check_lambda_value_expr(params, return_annotation, body);
             return;
         }
@@ -831,14 +834,22 @@ impl<'a> Checker<'a> {
                     params: actual_params,
                     result: actual_result,
                 },
-            ) if expected_params.len() == actual_params.len() => {
-                for (expected, actual) in expected_params.iter().zip(actual_params) {
-                    // Function parameters are contravariant: the actual
-                    // function may accept a wider type than callers of the
-                    // expected function promise to pass.
-                    self.check_type_against_type(actual, expected, span);
+            ) => {
+                if expected_params.len() != actual_params.len() {
+                    self.report_function_arity_mismatch(
+                        expected_params.len(),
+                        actual_params.len(),
+                        span,
+                    );
+                } else {
+                    for (expected, actual) in expected_params.iter().zip(actual_params) {
+                        // Function parameters are contravariant: the actual
+                        // function may accept a wider type than callers of the
+                        // expected function promise to pass.
+                        self.check_type_against_type(actual, expected, span);
+                    }
+                    self.check_type_against_type(expected_result, actual_result, span);
                 }
-                self.check_type_against_type(expected_result, actual_result, span);
             }
             (
                 Type::Apply {
@@ -1229,6 +1240,21 @@ impl<'a> Checker<'a> {
                 "tuple length does not match annotation",
             ))
             .with_note("add or remove tuple elements to match the annotation"),
+        );
+    }
+
+    fn report_function_arity_mismatch(&mut self, expected: usize, found: usize, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "expected a function with {expected} parameter{}, found one with {found}",
+                if expected == 1 { "" } else { "s" },
+            ))
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(
+                span,
+                "function parameter count does not match annotation",
+            ))
+            .with_note("add or remove parameters to match the annotation"),
         );
     }
 
@@ -2311,15 +2337,20 @@ mod tests {
     }
 
     #[test]
-    fn function_comparison_defers_unsolved_and_arity_mismatch_cases() {
-        let source = "f : (Int, Int) -> Int = (x: Int) => x\n";
-        let output = parse_module(source);
-        let check = check_module(&output.module);
+    fn function_comparison_reports_arity_mismatches() {
+        for source in [
+            "f : (Int, Int) -> Int = (x: Int) => x\n",
+            "g = (x: Int) => x\nh : (Int, Int) -> Int = g\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
 
-        assert!(
-            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
-            "{source} unexpectedly produced type.mismatch"
-        );
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one function arity mismatch"
+            );
+        }
     }
 
     #[test]
