@@ -582,7 +582,10 @@ impl<'a> Checker<'a> {
                 self.local_types
                     .define(binding.name, LocalValueType::Unknown);
             }
-            self.check_value_exprs(&arm.guards);
+            let bool_type = named_builtin("Bool");
+            for guard in &arm.guards {
+                self.check_value_against(&bool_type, guard);
+            }
             if let Some(expected) = expected {
                 self.check_value_against(expected, &arm.body);
             } else {
@@ -2677,6 +2680,49 @@ mod tests {
         assert!(
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "contextual match arm borrowed a top-level type for a pattern binder"
+        );
+    }
+
+    #[test]
+    fn match_guards_are_checked_as_bool() {
+        for source in [
+            "value : Text =\n  result ?>\n    Ok(_), 1 < 2 => \"ok\"\n",
+            "flag : Bool = True\nvalue : Text =\n  result ?>\n    Ok(_), flag => \"ok\"\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert!(
+                !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+                "{source} unexpectedly produced type.mismatch"
+            );
+        }
+
+        for source in [
+            "value : Text =\n  result ?>\n    Ok(_), 1 => \"ok\"\n",
+            "flag : Text = \"no\"\nvalue : Text =\n  result ?>\n    Ok(_), flag => \"ok\"\n",
+        ] {
+            let output = parse_module(source);
+            let check = check_module(&output.module);
+
+            assert_eq!(
+                matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+                1,
+                "{source} should produce one guard type mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn match_guard_pattern_binders_stay_unknown() {
+        let output = parse_module(
+            "item : Text = \"hi\"\nvalue : Text =\n  result ?>\n    Ok(item), item => \"ok\"\n",
+        );
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "match guard borrowed a top-level type for a pattern binder"
         );
     }
 
