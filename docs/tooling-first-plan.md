@@ -1005,17 +1005,72 @@ and recursive or still-generic results defer. The shared
 occurs/concreteness predicates so the engine grows with the `Type` grammar in
 one place.
 
+## Milestone 12: Hindley-Milner Generalization
+
+Status: in progress
+
+Goal: turn the monomorphic engine from Milestone 11 into real Hindley-Milner
+let-polymorphism. M11 synthesizes a concrete type or defers; its only
+"polymorphism" is the heuristic that any metavariable left in a memoized
+top-level type is treated as generic and freshened at each use, and
+`resolve_if_concrete` then drops anything with a leftover meta — so a polymorphic
+value such as `id = (x) => x` defers instead of being usable. M12 replaces that
+heuristic with principled generalization over type schemes, so polymorphic values
+are accepted and reusable, and adds numeric-literal defaulting so an
+unconstrained number resolves instead of blocking.
+
+Design decisions locked before starting:
+
+- Generalization strategy: free-variable-set generalization, not levels. At
+  embedded-script sizes the `ftv(env)` scan is cheap and far clearer than
+  level-tracking; revisit only if profiling shows generalization dominates.
+- Scheme representation: a `TypeScheme { vars: Vec<u32>, ty: Type }` (quantified
+  metavariable ids), instantiated to fresh metas at each use. `Type` itself gains
+  no quantifier node; quantification lives only in the scheme, so the checker's
+  structural comparators are unchanged.
+- A generalized scheme is "concrete enough" to feed the checking direction even
+  when it has quantified vars: `id = (x) => x` becomes `forall a. (a) -> a` and
+  is usable at `(Int) -> Int` and `(Text) -> Text` instead of deferring.
+- Numeric defaulting: a number literal gets a fresh numeric metavariable that
+  defaults to `Int`; if it unifies with `Float` it becomes `Float`, otherwise it
+  defaults to `Int` at finalization. This is the one place `Int`/`Float` stop
+  being treated as freely interchangeable.
+
+Slices:
+
+- 12.1 — type schemes + top-level generalization: introduce `TypeScheme`,
+  generalize each top-level binding's inferred type over metas not free in the
+  (empty, at top level) environment, instantiate at each use, and accept
+  generalized functions into `value_types`. Replaces the leftover-meta heuristic
+  in `infer_top_level`/`instantiate`. Numbers stay hard `Int`.
+- 12.2 — local let-generalization: generalize unannotated local block bindings
+  over metas not free in the enclosing scope, so a locally-defined polymorphic
+  helper can be used at multiple types within its block.
+- 12.3 — numeric defaulting: numeric metavariables with an `Int` default; number
+  literals stop synthesizing a hard `Int`, unify across `Int`/`Float`, and
+  default at finalization. Removes the M11 "Int flows into Float" special case.
+
+Done when:
+
+- a polymorphic binding (`id = (x) => x`) is inferred as a scheme and checks at
+  two distinct instantiations in the same module without leaking solutions
+- an unannotated local helper generalizes and is reused polymorphically
+- an unconstrained numeric literal defaults instead of deferring, and a literal
+  constrained to `Float` is `Float`; fixtures lock both
+- full row-polymorphic record/variant solving remains deferred to its own
+  milestone; generalization here is over ordinary (non-row) metavariables
+
 ## Remaining Phase 2 Scope
 
 Status: later
 
-The tooling skeleton is in place, and the semantic type IR plus a monomorphic
-value-inference engine have started (M10, M11). The remaining hard semantic
-systems are still deliberately out of scope for this plan.
+The tooling skeleton is in place, and the semantic type IR plus a value-inference
+engine have started (M10, M11); Hindley-Milner generalization is underway (M12).
+The remaining hard semantic systems are still deliberately out of scope for this
+plan.
 
 Phase 2 work not planned here:
 
-- full Hindley-Milner inference (let-generalization, numeric defaulting)
 - row-polymorphic record and variant solving
 - comptime evaluation
 - requirement/interface resolution
