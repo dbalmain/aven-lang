@@ -42,8 +42,12 @@ impl LocalTypeScopes {
         self.scopes.iter().rev().find_map(|scope| scope.get(name))
     }
 
-    pub(crate) fn free_metas(&self) -> Vec<u32> {
-        free_metas_in_local_values(self.scopes.iter().flat_map(|scope| scope.values()))
+    pub(crate) fn free_metas(&self, resolve: impl FnMut(&Type) -> Type) -> Vec<u32> {
+        free_metas_in_local_values(self.scopes.iter().flat_map(|scope| scope.values()), resolve)
+    }
+
+    pub(crate) fn free_row_vars(&self, resolve: impl FnMut(&Type) -> Type) -> Vec<u32> {
+        free_row_vars_in_local_values(self.scopes.iter().flat_map(|scope| scope.values()), resolve)
     }
 
     pub(crate) fn inference_env(&self) -> TypeEnv {
@@ -57,6 +61,7 @@ impl LocalTypeScopes {
 
 pub(crate) fn free_metas_in_local_values<'a>(
     values: impl IntoIterator<Item = &'a LocalValueType>,
+    mut resolve: impl FnMut(&Type) -> Type,
 ) -> Vec<u32> {
     let mut seen = HashSet::new();
     let mut metas = Vec::new();
@@ -68,7 +73,7 @@ pub(crate) fn free_metas_in_local_values<'a>(
             LocalValueType::Unknown => continue,
         };
 
-        for id in ty::free_metas(ty) {
+        for id in ty::free_metas(&resolve(ty)) {
             if !quantified.contains(&id) && seen.insert(id) {
                 metas.push(id);
             }
@@ -76,4 +81,28 @@ pub(crate) fn free_metas_in_local_values<'a>(
     }
 
     metas
+}
+
+pub(crate) fn free_row_vars_in_local_values<'a>(
+    values: impl IntoIterator<Item = &'a LocalValueType>,
+    mut resolve: impl FnMut(&Type) -> Type,
+) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    let mut row_vars = Vec::new();
+
+    for value in values {
+        let (ty, quantified) = match value {
+            LocalValueType::Known(ty) => (ty, &[][..]),
+            LocalValueType::Scheme(scheme) => (&scheme.ty, scheme.row_vars.as_slice()),
+            LocalValueType::Unknown => continue,
+        };
+
+        for id in ty::free_row_vars(&resolve(ty)) {
+            if !quantified.contains(&id) && seen.insert(id) {
+                row_vars.push(id);
+            }
+        }
+    }
+
+    row_vars
 }

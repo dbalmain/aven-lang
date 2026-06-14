@@ -1,10 +1,21 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ty::{Type, TypeScheme, map_type, type_contains_meta};
+use crate::ty::{
+    Row, RowEntry, RowTail, Type, TypeScheme, free_row_vars, map_type, map_type_with_rows,
+    type_contains_meta,
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct Unifier {
     substitution: Vec<Option<Type>>,
+    row_subst: Vec<Option<Row>>,
+    numeric: HashSet<u32>,
+}
+
+#[derive(Clone)]
+pub(crate) struct UnifierSnapshot {
+    substitution: Vec<Option<Type>>,
+    row_subst: Vec<Option<Row>>,
     numeric: HashSet<u32>,
 }
 
@@ -23,14 +34,30 @@ impl Unifier {
         Type::Meta(id)
     }
 
+    pub(crate) fn fresh_row_var(&mut self) -> u32 {
+        let id = self.row_subst.len() as u32;
+        self.row_subst.push(None);
+        id
+    }
+
     pub(crate) fn resolve(&self, ty: &Type) -> Type {
-        map_type(ty, &mut |node| match node {
-            Type::Meta(id) => match self.substitution.get(*id as usize) {
-                Some(Some(bound)) => Some(self.resolve(bound)),
+        map_type_with_rows(
+            ty,
+            &mut |node| match node {
+                Type::Meta(id) => match self.substitution.get(*id as usize) {
+                    Some(Some(bound)) => Some(self.resolve(bound)),
+                    _ => None,
+                },
                 _ => None,
             },
-            _ => None,
-        })
+            &mut |tail| match tail {
+                RowTail::Var(id) => self
+                    .row_subst
+                    .get(id as usize)
+                    .and_then(|bound| bound.clone()),
+                RowTail::Closed | RowTail::Open => None,
+            },
+        )
     }
 
     pub(crate) fn is_numeric_meta(&self, ty: &Type) -> bool {
@@ -47,12 +74,18 @@ impl Unifier {
 
     /// Capture the current substitution so a speculative sequence of
     /// unifications can be rolled back with [`Unifier::restore`].
-    pub(crate) fn snapshot(&self) -> (Vec<Option<Type>>, HashSet<u32>) {
-        (self.substitution.clone(), self.numeric.clone())
+    pub(crate) fn snapshot(&self) -> UnifierSnapshot {
+        UnifierSnapshot {
+            substitution: self.substitution.clone(),
+            row_subst: self.row_subst.clone(),
+            numeric: self.numeric.clone(),
+        }
     }
 
-    pub(crate) fn restore(&mut self, snapshot: (Vec<Option<Type>>, HashSet<u32>)) {
-        (self.substitution, self.numeric) = snapshot;
+    pub(crate) fn restore(&mut self, snapshot: UnifierSnapshot) {
+        self.substitution = snapshot.substitution;
+        self.row_subst = snapshot.row_subst;
+        self.numeric = snapshot.numeric;
     }
 
     pub(crate) fn unify(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
@@ -104,6 +137,7 @@ impl Unifier {
             (Type::Tuple(left), Type::Tuple(right)) if left.len() == right.len() => {
                 self.unify_many(left, right)
             }
+            (Type::Record(left), Type::Record(right)) => self.unify_rows(left, right),
             _ => Err(()),
         }
     }
@@ -141,16 +175,166 @@ impl Unifier {
         Ok(())
     }
 
+    fn unify_rows(&mut self, left: &Row, right: &Row) -> Result<(), ()> {
+        let left = self.resolve_row(left);
+        let right = self.resolve_row(right);
+        let mut right_entries = right.entries;
+        let mut left_only = Vec::new();
+
+        for left_entry in left.entries {
+            let Some(left_name) = record_field_name(&left_entry) else {
+                return Err(());
+            };
+            let Some(position) = right_entries
+                .iter()
+                .position(|entry| record_field_name(entry) == Some(left_name))
+            else {
+                left_only.push(left_entry);
+                continue;
+            };
+
+            let right_entry = right_entries.remove(position);
+            self.unify_row_entries(&left_entry, &right_entry)?;
+        }
+
+        if right_entries
+            .iter()
+            .any(|entry| record_field_name(entry).is_none())
+        {
+            return Err(());
+        }
+
+        let left_remainder = Row {
+            entries: left_only,
+            tail: left.tail,
+        };
+        let right_remainder = Row {
+            entries: right_entries,
+            tail: right.tail,
+        };
+        let resolved_left = self.resolve_row(&left_remainder);
+        let resolved_right = self.resolve_row(&right_remainder);
+
+        if resolved_left != left_remainder || resolved_right != right_remainder {
+            return self.unify_rows(&resolved_left, &resolved_right);
+        }
+
+        let right_tail = self.supply_entries(right_remainder.tail, &left_remainder.entries)?;
+        let left_tail = self.supply_entries(left_remainder.tail, &right_remainder.entries)?;
+        self.unify_row_tails(left_tail, right_tail)
+    }
+
+    fn unify_row_entries(&mut self, left: &RowEntry, right: &RowEntry) -> Result<(), ()> {
+        match (left, right) {
+            (RowEntry::Field { ty: left_type, .. }, RowEntry::Field { ty: right_type, .. }) => {
+                self.unify_inner(left_type, right_type)
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn supply_entries(&mut self, tail: RowTail, entries: &[RowEntry]) -> Result<RowTail, ()> {
+        if entries.is_empty() {
+            return Ok(tail);
+        }
+
+        match tail {
+            RowTail::Closed => Err(()),
+            RowTail::Open => Ok(RowTail::Open),
+            RowTail::Var(id) => {
+                let remainder = self.fresh_row_var();
+                self.bind_row(
+                    id,
+                    &Row {
+                        entries: entries.to_vec(),
+                        tail: RowTail::Var(remainder),
+                    },
+                )?;
+                Ok(RowTail::Var(remainder))
+            }
+        }
+    }
+
+    fn unify_row_tails(&mut self, left: RowTail, right: RowTail) -> Result<(), ()> {
+        match (left, right) {
+            (RowTail::Var(left), RowTail::Var(right)) if left == right => Ok(()),
+            (RowTail::Var(id), RowTail::Var(other)) => self.bind_row(
+                id,
+                &Row {
+                    entries: Vec::new(),
+                    tail: RowTail::Var(other),
+                },
+            ),
+            (RowTail::Var(id), RowTail::Closed) | (RowTail::Closed, RowTail::Var(id)) => self
+                .bind_row(
+                    id,
+                    &Row {
+                        entries: Vec::new(),
+                        tail: RowTail::Closed,
+                    },
+                ),
+            (RowTail::Closed, RowTail::Closed) | (RowTail::Open, _) | (_, RowTail::Open) => Ok(()),
+        }
+    }
+
+    fn bind_row(&mut self, id: u32, row: &Row) -> Result<(), ()> {
+        let row = self.resolve_row(row);
+        if row.entries.is_empty() && row.tail == RowTail::Var(id) {
+            return Ok(());
+        }
+        if free_row_vars(&Type::Record(row.clone())).contains(&id) {
+            return Err(());
+        }
+
+        let Some(slot) = self.row_subst.get_mut(id as usize) else {
+            return Err(());
+        };
+        if slot.is_some() {
+            return Err(());
+        }
+        *slot = Some(row);
+        Ok(())
+    }
+
+    fn resolve_row(&self, row: &Row) -> Row {
+        let Type::Record(row) = self.resolve(&Type::Record(row.clone())) else {
+            unreachable!("record resolution preserves the outer type")
+        };
+        row
+    }
+
     pub(crate) fn instantiate_scheme(&mut self, scheme: &TypeScheme) -> Type {
         let mut replacements: HashMap<u32, Type> = HashMap::new();
         for id in &scheme.vars {
             replacements.insert(*id, self.fresh());
         }
 
-        map_type(&scheme.ty, &mut |node| match node {
-            Type::Meta(id) => replacements.get(id).cloned(),
-            _ => None,
-        })
+        let mut row_replacements: HashMap<u32, u32> = HashMap::new();
+        for id in &scheme.row_vars {
+            row_replacements.insert(*id, self.fresh_row_var());
+        }
+
+        map_type_with_rows(
+            &scheme.ty,
+            &mut |node| match node {
+                Type::Meta(id) => replacements.get(id).cloned(),
+                _ => None,
+            },
+            &mut |tail| match tail {
+                RowTail::Var(id) => row_replacements.get(&id).map(|replacement| Row {
+                    entries: Vec::new(),
+                    tail: RowTail::Var(*replacement),
+                }),
+                RowTail::Closed | RowTail::Open => None,
+            },
+        )
+    }
+}
+
+fn record_field_name(entry: &RowEntry) -> Option<&str> {
+    match entry {
+        RowEntry::Field { name, .. } => Some(name),
+        RowEntry::Tag { .. } => None,
     }
 }
 
@@ -160,6 +344,14 @@ mod tests {
 
     fn named(name: &str) -> Type {
         Type::Named(name.to_owned())
+    }
+
+    fn field(name: &str, ty: Type) -> RowEntry {
+        RowEntry::Field {
+            name: name.to_owned(),
+            ty,
+            optional: false,
+        }
     }
 
     #[test]
@@ -211,5 +403,49 @@ mod tests {
         assert!(unifier.is_numeric_meta(&ordinary));
         assert_eq!(unifier.unify(&ordinary, &named("Float")), Ok(()));
         assert_eq!(unifier.default_numerics(&numeric), named("Float"));
+    }
+
+    #[test]
+    fn record_unification_rewrites_and_closes_a_row_variable() {
+        let mut unifier = Unifier::default();
+        let tail = unifier.fresh_row_var();
+        let required = Type::Record(Row {
+            entries: vec![field("x", named("Int"))],
+            tail: RowTail::Var(tail),
+        });
+        let actual = Type::Record(Row {
+            entries: vec![field("x", named("Int")), field("y", named("Text"))],
+            tail: RowTail::Closed,
+        });
+
+        assert_eq!(unifier.unify(&required, &actual), Ok(()));
+        assert_eq!(
+            unifier.resolve(&required),
+            Type::Record(Row {
+                entries: vec![field("x", named("Int")), field("y", named("Text"))],
+                tail: RowTail::Closed,
+            })
+        );
+    }
+
+    #[test]
+    fn row_occurs_check_rejects_a_recursive_tail_binding() {
+        let mut unifier = Unifier::default();
+        let tail = unifier.fresh_row_var();
+        let recursive_field = Type::Record(Row {
+            entries: Vec::new(),
+            tail: RowTail::Var(tail),
+        });
+        let left = Type::Record(Row {
+            entries: Vec::new(),
+            tail: RowTail::Var(tail),
+        });
+        let right = Type::Record(Row {
+            entries: vec![field("next", recursive_field)],
+            tail: RowTail::Closed,
+        });
+
+        assert_eq!(unifier.unify(&left, &right), Err(()));
+        assert_eq!(unifier.resolve(&left), left);
     }
 }

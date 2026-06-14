@@ -7,7 +7,10 @@ use aven_parser::{
     walk_expr_children,
 };
 
-use crate::env::{LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values};
+use crate::env::{
+    LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values,
+    free_row_vars_in_local_values,
+};
 use crate::lower::{
     DeclaredAnnotation, DeclaredAnnotationSource, TypeLowering, binding_for_declaration,
     declared_annotation_for_declaration,
@@ -195,8 +198,11 @@ impl<'a> Checker<'a> {
             let env = self.local_types.inference_env();
             let inferred = self.infer(&env, &binding.value);
             let resolved = self.resolve_and_default(&inferred);
-            let env_metas = self.local_types.free_metas();
-            let scheme = generalize(resolved, &env_metas);
+            let env_metas = self.local_types.free_metas(|ty| self.unifier.resolve(ty));
+            let env_row_vars = self
+                .local_types
+                .free_row_vars(|ty| self.unifier.resolve(ty));
+            let scheme = generalize(resolved, &env_metas, &env_row_vars);
             self.check_value_expr(&binding.value);
             if type_contains_deferred(&scheme.ty) {
                 LocalValueType::Unknown
@@ -1383,6 +1389,11 @@ impl<'a> Checker<'a> {
         self.resolve_if_concrete(&ty)
     }
 
+    #[cfg(test)]
+    pub(crate) fn infer_top_level_scheme(&mut self, name: &str) -> Option<TypeScheme> {
+        self.infer_top_level(name)
+    }
+
     fn infer_local_value(&mut self, env: &TypeEnv, value: &Expr) -> Option<Type> {
         let ty = self.infer(env, value);
         self.resolve_if_concrete(&ty)
@@ -1415,7 +1426,7 @@ impl<'a> Checker<'a> {
             TypeScheme::mono(annotation)
         } else {
             let ty = self.infer(&TypeEnv::new(), &binding.value);
-            generalize(self.resolve_and_default(&ty), &[])
+            generalize(self.resolve_and_default(&ty), &[], &[])
         };
 
         self.in_progress.remove(name);
@@ -1498,6 +1509,29 @@ impl<'a> Checker<'a> {
                 body,
             } => self.infer_lambda(env, params, return_annotation.as_deref(), body),
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
+            ExprKind::FieldAccess {
+                receiver, field, ..
+            } => {
+                let snapshot = self.unifier.snapshot();
+                let receiver_type = self.infer(env, receiver);
+                let field_type = self.unifier.fresh();
+                let tail = self.unifier.fresh_row_var();
+                let required = Type::Record(Row {
+                    entries: vec![RowEntry::Field {
+                        name: field.clone(),
+                        ty: field_type.clone(),
+                        optional: false,
+                    }],
+                    tail: RowTail::Var(tail),
+                });
+
+                if self.unifier.unify(&receiver_type, &required).is_err() {
+                    self.unifier.restore(snapshot);
+                    Type::Deferred
+                } else {
+                    field_type
+                }
+            }
             ExprKind::Binary {
                 left,
                 operator,
@@ -1512,7 +1546,6 @@ impl<'a> Checker<'a> {
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Index { .. }
-            | ExprKind::FieldAccess { .. }
             | ExprKind::Nullable(_)
             | ExprKind::Arrow { .. }
             | ExprKind::Propagate { .. } => Type::Deferred,
@@ -1812,8 +1845,14 @@ impl<'a> Checker<'a> {
                         .unwrap_or_else(|| {
                             let inferred = self.infer(&next_env, &binding.value);
                             let resolved = self.resolve_and_default(&inferred);
-                            let env_metas = free_metas_in_local_values(next_env.values());
-                            let scheme = generalize(resolved, &env_metas);
+                            let env_metas = free_metas_in_local_values(next_env.values(), |ty| {
+                                self.unifier.resolve(ty)
+                            });
+                            let env_row_vars =
+                                free_row_vars_in_local_values(next_env.values(), |ty| {
+                                    self.unifier.resolve(ty)
+                                });
+                            let scheme = generalize(resolved, &env_metas, &env_row_vars);
                             if type_contains_deferred(&scheme.ty) {
                                 LocalValueType::Unknown
                             } else {

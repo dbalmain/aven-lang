@@ -1077,6 +1077,83 @@ fn infer_value_synthesizes_literal_record_types() {
 }
 
 #[test]
+fn field_access_infers_an_open_record_parameter_and_result_type() {
+    let output = parse_module(
+        "getX = (p) => p.x\n\
+         good : Int = getX({ x: 1, y: 2 })\n\
+         bad : Text = getX({ x: 1, y: 2 })\n",
+    );
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn field_access_row_variables_are_freshened_for_each_use() {
+    let output = parse_module(
+        "getX = (p) => p.x\n\
+         number : Int = getX({ x: 1, y: 2 })\n\
+         text : Text = getX({ x: \"ok\", name: \"Ada\" })\n",
+    );
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn missing_inferred_field_defers_without_a_type_mismatch() {
+    let output = parse_module("getX = (p) => p.x\nvalue = getX({ y: 2 })\n");
+    let check = check_module(&output.module);
+
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::ty::MISMATCH
+    ));
+}
+
+#[test]
+fn inferred_field_access_scheme_contains_a_quantified_row_variable() {
+    let output = parse_module("getX = (p) => p.x\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let scheme = checker
+        .infer_top_level_scheme("getX")
+        .expect("inferred getX scheme");
+
+    assert_eq!(scheme.vars.len(), 1);
+    assert_eq!(scheme.row_vars.len(), 1);
+    let Type::Function { params, result } = &scheme.ty else {
+        panic!("getX should infer a function type");
+    };
+    assert_eq!(params.len(), 1);
+    let Type::Record(row) = &params[0] else {
+        panic!("getX parameter should infer a record type");
+    };
+    assert_eq!(row.tail, RowTail::Var(scheme.row_vars[0]));
+    assert!(matches!(
+        row.entries.as_slice(),
+        [RowEntry::Field {
+            name,
+            ty,
+            optional: false,
+        }] if name == "x" && ty == result.as_ref()
+    ));
+}
+
+#[test]
+fn local_field_access_preserves_enclosing_row_and_field_variables() {
+    let output = parse_module(
+        "readX = (p) =>\n  getX = () => p.x\n  getX()\n\
+         good : Int = readX({ x: 1, y: 2 })\n\
+         bad : Text = readX({ x: 1, y: 2 })\n",
+    );
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
 fn inferred_record_identifier_values_report_field_type_mismatches() {
     for source in [
         "other = { id: 1 }\nvalue : { id: Text } = other\n",
