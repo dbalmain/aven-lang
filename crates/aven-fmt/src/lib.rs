@@ -373,10 +373,10 @@ mod tests {
     fn normalizes_simple_expression_spacing() {
         assert_eq!(
             format_source(
-                "sum=add(1,2)+user . age\njson=users ?. active |>toJson ( )\nshape=@{Red,Ok(1)}\nrecord={name=\"Ada\",age=36}\nnegative=-1\noffset=1 + -2\ncleaned={..user,-password}\n"
+                "sum=add(1,2)+user . age\njson=users ?. active |>toJson ( )\nshape=@{Red,Ok(1)}\nrecord={name:\"Ada\",age:36}\nnegative=-1\noffset=1 + -2\ncleaned={..user,-password}\n"
             ),
             Ok(
-                "sum = add(1, 2) + user.age\njson = users?.active |> toJson()\nshape = @{ Red, Ok(1) }\nrecord = { name = \"Ada\", age = 36 }\nnegative = -1\noffset = 1 + -2\ncleaned = { ..user, -password }\n"
+                "sum = add(1, 2) + user.age\njson = users?.active |> toJson()\nshape = @{ Red, Ok(1) }\nrecord = { name : \"Ada\", age : 36 }\nnegative = -1\noffset = 1 + -2\ncleaned = { ..user, -password }\n"
                     .to_owned()
             )
         );
