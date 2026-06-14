@@ -284,7 +284,6 @@ fn inferred_identifier_values_are_checked_against_expected_types() {
 fn inferred_identifier_values_accept_compatible_types() {
     for source in [
         "other = 42\nvalue : Int = other\n",
-        "other = 42\nvalue : Float = other\n",
         "other = (1, \"a\")\nvalue : (Int, Text) = other\n",
     ] {
         let output = parse_module(source);
@@ -293,6 +292,24 @@ fn inferred_identifier_values_accept_compatible_types() {
         assert!(
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "{source} unexpectedly produced type.mismatch"
+        );
+    }
+}
+
+#[test]
+fn int_and_float_identifier_values_are_not_interchangeable() {
+    for source in [
+        "other = 42\nvalue : Float = other\n",
+        "other : Int = 1\nvalue : Float = other\n",
+        "other : Float = 1\nvalue : Int = other\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+            1,
+            "{source} should produce one type.mismatch"
         );
     }
 }
@@ -949,10 +966,15 @@ fn lambda_application_inference_defers_unsolved_values() {
 #[test]
 fn builtin_operator_results_are_inferred() {
     for source in [
-        "value : Int = 1 + 2\n",
+        "value : Float = 42\n",
+        "value : Int = 1\n",
+        "sum : Int = 1 + 2\n",
         "value : Text = \"a\" + \"b\"\n",
+        "value : Bool = 1 == 2\n",
         "value : Bool = 1 < 2\n",
         "left : Bool = True\nright : Bool = False\nvalue : Bool = left && right\n",
+        "f = (floatParam : Float) =>\n  mix : Float = floatParam + 1\n  mix\n",
+        "f = (intParam : Int) =>\n  sum : Int = intParam + 1\n  sum\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -964,6 +986,7 @@ fn builtin_operator_results_are_inferred() {
     }
 
     for source in [
+        "flo : Float = 1 + 2\n",
         "result = 1 + 2\nvalue : Text = result\n",
         "result = \"a\" + \"b\"\nvalue : Int = result\n",
         "result = 1 < 2\nvalue : Text = result\n",
@@ -979,6 +1002,16 @@ fn builtin_operator_results_are_inferred() {
             "{source} should produce one type.mismatch"
         );
     }
+}
+
+#[test]
+fn numeric_binary_literals_synthesize_int_after_defaulting() {
+    let output = parse_module("n = 1 + 2\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(checker.infer_top_level_value("n"), Some(named("Int")));
 }
 
 #[test]
@@ -1146,8 +1179,6 @@ fn annotated_identifier_values_accept_compatible_declared_types() {
 #[test]
 fn annotated_identifier_value_checking_defers_ambiguous_or_unstable_cases() {
     for source in [
-        "other : Int = 1\nvalue : Float = other\n",
-        "other : Float = 1\nvalue : Int = other\n",
         "other : Missing = value\nvalue : Text = other\n",
         "other : Text = \"hi\"\nother : Int = 1\nvalue : Int = other\n",
         "User = { name: Text }\nother : User = { name: \"a\" }\nvalue : { name: Text } = other\n",

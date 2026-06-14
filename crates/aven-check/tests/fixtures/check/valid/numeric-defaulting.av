@@ -1,0 +1,13 @@
+literalFloat : Float = 42
+literalInt : Int = 1
+sum : Int = 1 + 2
+equal : Bool = 1 == 2
+less : Bool = 1 < 2
+
+floatMath = (floatParam : Float) =>
+  mix : Float = floatParam + 1
+  mix
+
+intMath = (intParam : Int) =>
+  total : Int = intParam + 1
+  total

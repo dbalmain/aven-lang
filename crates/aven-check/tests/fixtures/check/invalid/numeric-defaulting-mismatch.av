@@ -1,0 +1,7 @@
+inferred = 42
+badInferred : Float = inferred
+intValue : Int = 1
+badInt : Float = intValue
+floatValue : Float = 1
+badFloat : Int = floatValue
+badSum : Float = 1 + 2

@@ -1,16 +1,25 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ty::{Type, TypeScheme, map_type, type_contains_meta};
 
 #[derive(Debug, Default)]
 pub(crate) struct Unifier {
     substitution: Vec<Option<Type>>,
+    numeric: HashSet<u32>,
 }
 
 impl Unifier {
     pub(crate) fn fresh(&mut self) -> Type {
         let id = self.substitution.len() as u32;
         self.substitution.push(None);
+        Type::Meta(id)
+    }
+
+    pub(crate) fn fresh_numeric(&mut self) -> Type {
+        let Type::Meta(id) = self.fresh() else {
+            unreachable!("fresh types are metavariables");
+        };
+        self.numeric.insert(id);
         Type::Meta(id)
     }
 
@@ -24,14 +33,26 @@ impl Unifier {
         })
     }
 
-    /// Capture the current substitution so a speculative sequence of
-    /// unifications can be rolled back with [`Unifier::restore`].
-    pub(crate) fn snapshot(&self) -> Vec<Option<Type>> {
-        self.substitution.clone()
+    pub(crate) fn is_numeric_meta(&self, ty: &Type) -> bool {
+        matches!(self.resolve(ty), Type::Meta(id) if self.numeric.contains(&id))
     }
 
-    pub(crate) fn restore(&mut self, snapshot: Vec<Option<Type>>) {
-        self.substitution = snapshot;
+    pub(crate) fn default_numerics(&self, ty: &Type) -> Type {
+        let resolved = self.resolve(ty);
+        map_type(&resolved, &mut |node| match node {
+            Type::Meta(id) if self.numeric.contains(id) => Some(Type::Named("Int".to_owned())),
+            _ => None,
+        })
+    }
+
+    /// Capture the current substitution so a speculative sequence of
+    /// unifications can be rolled back with [`Unifier::restore`].
+    pub(crate) fn snapshot(&self) -> (Vec<Option<Type>>, HashSet<u32>) {
+        (self.substitution.clone(), self.numeric.clone())
+    }
+
+    pub(crate) fn restore(&mut self, snapshot: (Vec<Option<Type>>, HashSet<u32>)) {
+        (self.substitution, self.numeric) = snapshot;
     }
 
     pub(crate) fn unify(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
@@ -103,6 +124,16 @@ impl Unifier {
             return Err(());
         }
 
+        if self.numeric.contains(&id) {
+            match &ty {
+                Type::Named(name) if name == "Int" || name == "Float" => {}
+                Type::Meta(other) => {
+                    self.numeric.insert(*other);
+                }
+                _ => return Err(()),
+            }
+        }
+
         let Some(slot) = self.substitution.get_mut(id as usize) else {
             return Err(());
         };
@@ -120,5 +151,65 @@ impl Unifier {
             Type::Meta(id) => replacements.get(id).cloned(),
             _ => None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn named(name: &str) -> Type {
+        Type::Named(name.to_owned())
+    }
+
+    #[test]
+    fn numeric_metas_unify_in_either_order() {
+        for reverse in [false, true] {
+            let mut unifier = Unifier::default();
+            let left = unifier.fresh_numeric();
+            let right = unifier.fresh_numeric();
+
+            let result = if reverse {
+                unifier.unify(&right, &left)
+            } else {
+                unifier.unify(&left, &right)
+            };
+
+            assert_eq!(result, Ok(()));
+            assert!(unifier.is_numeric_meta(&left));
+            assert!(unifier.is_numeric_meta(&right));
+            assert_eq!(unifier.default_numerics(&left), named("Int"));
+            assert_eq!(unifier.default_numerics(&right), named("Int"));
+        }
+    }
+
+    #[test]
+    fn numeric_meta_rejects_non_numeric_named_types_in_either_order() {
+        for reverse in [false, true] {
+            let mut unifier = Unifier::default();
+            let numeric = unifier.fresh_numeric();
+            let text = named("Text");
+
+            let result = if reverse {
+                unifier.unify(&text, &numeric)
+            } else {
+                unifier.unify(&numeric, &text)
+            };
+
+            assert_eq!(result, Err(()));
+            assert!(unifier.is_numeric_meta(&numeric));
+        }
+    }
+
+    #[test]
+    fn numericness_propagates_to_an_ordinary_meta() {
+        let mut unifier = Unifier::default();
+        let numeric = unifier.fresh_numeric();
+        let ordinary = unifier.fresh();
+
+        assert_eq!(unifier.unify(&numeric, &ordinary), Ok(()));
+        assert!(unifier.is_numeric_meta(&ordinary));
+        assert_eq!(unifier.unify(&ordinary, &named("Float")), Ok(()));
+        assert_eq!(unifier.default_numerics(&numeric), named("Float"));
     }
 }

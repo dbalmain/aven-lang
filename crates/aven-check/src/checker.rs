@@ -13,9 +13,9 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    RowKind, Type, TypeRowEntry, TypeScheme, generalize, is_concrete_type, is_meta_type,
-    is_nil_value, mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
-    numeric_type_name, type_contains_deferred,
+    RowKind, Type, TypeRowEntry, TypeScheme, free_metas, generalize, has_only_meta_unknowns,
+    is_concrete_type, is_meta_type, is_nil_value, mismatched_literal_kind, named_builtin,
+    named_type_mismatch, named_type_name, numeric_type_name, type_contains_deferred,
 };
 use crate::unify::Unifier;
 
@@ -194,7 +194,7 @@ impl<'a> Checker<'a> {
         let inferred_type = if declared_type.is_none() {
             let env = self.local_types.inference_env();
             let inferred = self.infer(&env, &binding.value);
-            let resolved = self.unifier.resolve(&inferred);
+            let resolved = self.resolve_and_default(&inferred);
             let env_metas = self.local_types.free_metas();
             let scheme = generalize(resolved, &env_metas);
             self.check_value_expr(&binding.value);
@@ -1411,8 +1411,13 @@ impl<'a> Checker<'a> {
     /// Fully resolve `ty`; keep it only when no metavariable remains, so a
     /// synthesized value type never leaks an unsolved meta into checking.
     fn resolve_if_concrete(&self, ty: &Type) -> Option<Type> {
-        let ty = self.unifier.resolve(ty);
+        let ty = self.resolve_and_default(ty);
         is_concrete_type(&ty).then_some(ty)
+    }
+
+    fn resolve_and_default(&self, ty: &Type) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        self.unifier.default_numerics(&resolved)
     }
 
     fn infer_top_level(&mut self, name: &str) -> Option<TypeScheme> {
@@ -1430,7 +1435,7 @@ impl<'a> Checker<'a> {
             TypeScheme::mono(annotation)
         } else {
             let ty = self.infer(&TypeEnv::new(), &binding.value);
-            generalize(self.unifier.resolve(&ty), &[])
+            generalize(self.resolve_and_default(&ty), &[])
         };
 
         self.in_progress.remove(name);
@@ -1452,7 +1457,7 @@ impl<'a> Checker<'a> {
 
     fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
         match &expr.kind {
-            ExprKind::Literal(Literal::Number(_)) => named_builtin("Int"),
+            ExprKind::Literal(Literal::Number(_)) => self.unifier.fresh_numeric(),
             ExprKind::Literal(Literal::String(_)) => named_builtin("Text"),
             ExprKind::ComptimeName(name) if name == "True" || name == "False" => {
                 named_builtin("Bool")
@@ -1559,6 +1564,14 @@ impl<'a> Checker<'a> {
         let left = self.unifier.resolve(left);
         let right = self.unifier.resolve(right);
 
+        if is_meta_type(&left)
+            && is_meta_type(&right)
+            && (self.unifier.is_numeric_meta(&left) || self.unifier.is_numeric_meta(&right))
+        {
+            self.unifier.unify(&left, &right).ok()?;
+            return Some(self.unifier.resolve(&left));
+        }
+
         match (numeric_type_name(&left), numeric_type_name(&right)) {
             (Some("Float"), Some(_)) | (Some(_), Some("Float")) => Some(named_builtin("Float")),
             (Some("Int"), Some("Int")) => Some(named_builtin("Int")),
@@ -1613,6 +1626,13 @@ impl<'a> Checker<'a> {
         let right = self.unifier.resolve(right);
 
         if is_meta_type(&left) && is_meta_type(&right) {
+            if self.unifier.is_numeric_meta(&left) || self.unifier.is_numeric_meta(&right) {
+                return self
+                    .unifier
+                    .unify(&left, &right)
+                    .ok()
+                    .map(|()| named_builtin("Bool"));
+            }
             return None;
         }
 
@@ -1666,7 +1686,10 @@ impl<'a> Checker<'a> {
 
     fn infer_numeric_unary_type(&mut self, value: &Type) -> Option<Type> {
         let value = self.unifier.resolve(value);
-        numeric_type_name(&value).map(named_builtin)
+        if let Some(name) = numeric_type_name(&value) {
+            return Some(named_builtin(name));
+        }
+        self.unifier.is_numeric_meta(&value).then_some(value)
     }
 
     fn infer_lambda(
@@ -1736,7 +1759,11 @@ impl<'a> Checker<'a> {
         for arg in args {
             let arg_type = self.infer(env, arg);
             let arg_type = self.unifier.resolve(&arg_type);
-            if !is_concrete_type(&arg_type) {
+            let numeric_metas_only = has_only_meta_unknowns(&arg_type)
+                && free_metas(&arg_type)
+                    .into_iter()
+                    .all(|id| self.unifier.is_numeric_meta(&Type::Meta(id)));
+            if !is_concrete_type(&arg_type) && !numeric_metas_only {
                 return Type::Deferred;
             }
             payload.push(arg_type);
@@ -1796,7 +1823,7 @@ impl<'a> Checker<'a> {
                         .map(LocalValueType::Known)
                         .unwrap_or_else(|| {
                             let inferred = self.infer(&next_env, &binding.value);
-                            let resolved = self.unifier.resolve(&inferred);
+                            let resolved = self.resolve_and_default(&inferred);
                             let env_metas = free_metas_in_local_values(next_env.values());
                             let scheme = generalize(resolved, &env_metas);
                             if type_contains_deferred(&scheme.ty) {

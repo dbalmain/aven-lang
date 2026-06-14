@@ -222,6 +222,16 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
     concrete
 }
 
+pub(crate) fn has_only_meta_unknowns(ty: &Type) -> bool {
+    let mut valid = true;
+    visit_type(ty, &mut |node| {
+        if matches!(node, Type::Deferred | Type::Variable(_)) {
+            valid = false;
+        }
+    });
+    valid
+}
+
 pub(crate) fn type_contains_deferred(ty: &Type) -> bool {
     let mut found = false;
     visit_type(ty, &mut |node| {
@@ -274,10 +284,6 @@ pub(crate) fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Opti
 
 pub(crate) fn named_type_mismatch(expected: &str, actual: &str) -> bool {
     if !CHECKED_NAMED_TYPES.contains(&expected) || !CHECKED_NAMED_TYPES.contains(&actual) {
-        return false;
-    }
-
-    if matches!((expected, actual), ("Int", "Float") | ("Float", "Int")) {
         return false;
     }
 

@@ -1007,7 +1007,7 @@ one place.
 
 ## Milestone 12: Hindley-Milner Generalization
 
-Status: in progress
+Status: complete
 
 Goal: turn the monomorphic engine from Milestone 11 into real Hindley-Milner
 let-polymorphism. M11 synthesizes a concrete type or defers; its only
