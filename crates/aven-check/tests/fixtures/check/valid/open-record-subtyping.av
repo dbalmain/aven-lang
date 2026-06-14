@@ -1,0 +1,2 @@
+ada : { .._, name: Text } = { name: "Ada", age: 36 }
+both : { .._, name: Text, age: Int } = { name: "Ada", age: 36, extra: 1 }
