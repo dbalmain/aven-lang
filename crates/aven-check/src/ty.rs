@@ -25,8 +25,8 @@ pub enum Type {
     },
     Nullable(Box<Type>),
     Tuple(Vec<Type>),
-    Record(Vec<TypeRowEntry>),
-    Variant(Vec<TypeRowEntry>),
+    Record(Row),
+    Variant(Row),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,29 +45,28 @@ impl TypeScheme {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TypeRowEntry {
+pub struct Row {
+    pub entries: Vec<RowEntry>,
+    pub tail: RowTail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowEntry {
     Field {
         name: String,
         ty: Type,
-        overwrite: bool,
         optional: bool,
     },
     Tag {
         name: String,
         payload: Vec<Type>,
     },
-    Spread {
-        ty: Type,
-        overwrite: bool,
-    },
-    Delete(String),
-    Rename {
-        from: String,
-        to: String,
-    },
-    Shorthand(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowTail {
+    Closed,
     Open,
-    Element(Type),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,54 +92,34 @@ pub(crate) fn map_type(ty: &Type, leaf: &mut impl FnMut(&Type) -> Option<Type>) 
         },
         Type::Nullable(inner) => Type::Nullable(Box::new(map_type(inner, leaf))),
         Type::Tuple(items) => Type::Tuple(items.iter().map(|item| map_type(item, leaf)).collect()),
-        Type::Record(entries) => Type::Record(
-            entries
-                .iter()
-                .map(|entry| map_row_entry(entry, leaf))
-                .collect(),
-        ),
-        Type::Variant(entries) => Type::Variant(
-            entries
-                .iter()
-                .map(|entry| map_row_entry(entry, leaf))
-                .collect(),
-        ),
+        Type::Record(row) => Type::Record(map_row(row, leaf)),
+        Type::Variant(row) => Type::Variant(map_row(row, leaf)),
         Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => ty.clone(),
     }
 }
 
-fn map_row_entry(
-    entry: &TypeRowEntry,
-    leaf: &mut impl FnMut(&Type) -> Option<Type>,
-) -> TypeRowEntry {
+fn map_row(row: &Row, leaf: &mut impl FnMut(&Type) -> Option<Type>) -> Row {
+    Row {
+        entries: row
+            .entries
+            .iter()
+            .map(|entry| map_row_entry(entry, leaf))
+            .collect(),
+        tail: row.tail,
+    }
+}
+
+fn map_row_entry(entry: &RowEntry, leaf: &mut impl FnMut(&Type) -> Option<Type>) -> RowEntry {
     match entry {
-        TypeRowEntry::Field {
-            name,
-            ty,
-            overwrite,
-            optional,
-        } => TypeRowEntry::Field {
+        RowEntry::Field { name, ty, optional } => RowEntry::Field {
             name: name.clone(),
             ty: map_type(ty, leaf),
-            overwrite: *overwrite,
             optional: *optional,
         },
-        TypeRowEntry::Tag { name, payload } => TypeRowEntry::Tag {
+        RowEntry::Tag { name, payload } => RowEntry::Tag {
             name: name.clone(),
             payload: payload.iter().map(|ty| map_type(ty, leaf)).collect(),
         },
-        TypeRowEntry::Spread { ty, overwrite } => TypeRowEntry::Spread {
-            ty: map_type(ty, leaf),
-            overwrite: *overwrite,
-        },
-        TypeRowEntry::Delete(name) => TypeRowEntry::Delete(name.clone()),
-        TypeRowEntry::Rename { from, to } => TypeRowEntry::Rename {
-            from: from.clone(),
-            to: to.clone(),
-        },
-        TypeRowEntry::Shorthand(name) => TypeRowEntry::Shorthand(name.clone()),
-        TypeRowEntry::Open => TypeRowEntry::Open,
-        TypeRowEntry::Element(ty) => TypeRowEntry::Element(map_type(ty, leaf)),
     }
 }
 
@@ -158,8 +137,8 @@ fn visit_type(ty: &Type, visit: &mut impl FnMut(&Type)) {
         }
         Type::Nullable(inner) => visit_type(inner, visit),
         Type::Tuple(items) => items.iter().for_each(|item| visit_type(item, visit)),
-        Type::Record(entries) | Type::Variant(entries) => {
-            entries
+        Type::Record(row) | Type::Variant(row) => {
+            row.entries
                 .iter()
                 .for_each(|entry| visit_row_entry(entry, visit));
         }
@@ -167,16 +146,10 @@ fn visit_type(ty: &Type, visit: &mut impl FnMut(&Type)) {
     }
 }
 
-fn visit_row_entry(entry: &TypeRowEntry, visit: &mut impl FnMut(&Type)) {
+fn visit_row_entry(entry: &RowEntry, visit: &mut impl FnMut(&Type)) {
     match entry {
-        TypeRowEntry::Field { ty, .. }
-        | TypeRowEntry::Spread { ty, .. }
-        | TypeRowEntry::Element(ty) => visit_type(ty, visit),
-        TypeRowEntry::Tag { payload, .. } => payload.iter().for_each(|ty| visit_type(ty, visit)),
-        TypeRowEntry::Delete(_)
-        | TypeRowEntry::Rename { .. }
-        | TypeRowEntry::Shorthand(_)
-        | TypeRowEntry::Open => {}
+        RowEntry::Field { ty, .. } => visit_type(ty, visit),
+        RowEntry::Tag { payload, .. } => payload.iter().for_each(|ty| visit_type(ty, visit)),
     }
 }
 

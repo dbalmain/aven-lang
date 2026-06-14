@@ -13,9 +13,9 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    RowKind, Type, TypeRowEntry, TypeScheme, free_metas, generalize, has_only_meta_unknowns,
-    is_concrete_type, is_meta_type, is_nil_value, mismatched_literal_kind, named_builtin,
-    named_type_mismatch, named_type_name, numeric_type_name, type_contains_deferred,
+    Row, RowEntry, RowKind, RowTail, Type, TypeScheme, free_metas, generalize,
+    has_only_meta_unknowns, is_concrete_type, is_meta_type, is_nil_value, mismatched_literal_kind,
+    named_builtin, named_type_mismatch, named_type_name, numeric_type_name, type_contains_deferred,
 };
 use crate::unify::Unifier;
 
@@ -664,18 +664,13 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_variant_type_against_type(
-        &mut self,
-        expected_entries: &[TypeRowEntry],
-        actual_entries: &[TypeRowEntry],
-        span: Span,
-    ) {
-        let Some(actual_tags) = literal_variant_tags(actual_entries) else {
+    fn check_variant_type_against_type(&mut self, expected: &Row, actual: &Row, span: Span) {
+        let Some(actual_tags) = literal_variant_tags(actual) else {
             return;
         };
 
         for tag in actual_tags {
-            let Some(payload) = literal_variant_payload_lookup(expected_entries, tag.name) else {
+            let Some(payload) = literal_variant_payload_lookup(expected, tag.name) else {
                 return;
             };
 
@@ -702,14 +697,14 @@ impl<'a> Checker<'a> {
 
     fn check_record_value_against(
         &mut self,
-        type_entries: &[TypeRowEntry],
+        row: &Row,
         value_entries: &[RecordEntry],
         value_span: Span,
     ) {
         self.report_value_record_markers(value_entries);
 
         let (Some(expected), Some(actual)) = (
-            literal_record_type(type_entries),
+            literal_record_type(row),
             literal_record_value(value_entries, value_span),
         ) else {
             self.walk_value_record_values(value_entries);
@@ -726,12 +721,12 @@ impl<'a> Checker<'a> {
 
     fn check_variant_value_against(
         &mut self,
-        type_entries: &[TypeRowEntry],
+        row: &Row,
         tag: &str,
         args: &[Expr],
         value_span: Span,
     ) {
-        let Some(payload) = literal_variant_payload_lookup(type_entries, tag) else {
+        let Some(payload) = literal_variant_payload_lookup(row, tag) else {
             self.check_value_exprs(args);
             return;
         };
@@ -854,8 +849,8 @@ impl<'a> Checker<'a> {
                 Type::Nullable(Box::new(self.normalize_with_visited(inner, visited)))
             }
             Type::Tuple(items) => Type::Tuple(self.normalize_types(items, &visited)),
-            Type::Record(entries) => Type::Record(self.normalize_row_entries(entries, &visited)),
-            Type::Variant(entries) => Type::Variant(self.normalize_row_entries(entries, &visited)),
+            Type::Record(row) => Type::Record(self.normalize_row(row, &visited)),
+            Type::Variant(row) => Type::Variant(self.normalize_row(row, &visited)),
         }
     }
 
@@ -866,48 +861,28 @@ impl<'a> Checker<'a> {
             .collect()
     }
 
-    fn normalize_row_entries(
-        &self,
-        entries: &[TypeRowEntry],
-        visited: &HashSet<String>,
-    ) -> Vec<TypeRowEntry> {
-        entries
-            .iter()
-            .map(|entry| self.normalize_row_entry(entry, visited))
-            .collect()
+    fn normalize_row(&self, row: &Row, visited: &HashSet<String>) -> Row {
+        Row {
+            entries: row
+                .entries
+                .iter()
+                .map(|entry| self.normalize_row_entry(entry, visited))
+                .collect(),
+            tail: row.tail,
+        }
     }
 
-    fn normalize_row_entry(&self, entry: &TypeRowEntry, visited: &HashSet<String>) -> TypeRowEntry {
+    fn normalize_row_entry(&self, entry: &RowEntry, visited: &HashSet<String>) -> RowEntry {
         match entry {
-            TypeRowEntry::Field {
-                name,
-                ty,
-                overwrite,
-                optional,
-            } => TypeRowEntry::Field {
+            RowEntry::Field { name, ty, optional } => RowEntry::Field {
                 name: name.clone(),
                 ty: self.normalize_with_visited(ty, visited.clone()),
-                overwrite: *overwrite,
                 optional: *optional,
             },
-            TypeRowEntry::Tag { name, payload } => TypeRowEntry::Tag {
+            RowEntry::Tag { name, payload } => RowEntry::Tag {
                 name: name.clone(),
                 payload: self.normalize_types(payload, visited),
             },
-            TypeRowEntry::Spread { ty, overwrite } => TypeRowEntry::Spread {
-                ty: self.normalize_with_visited(ty, visited.clone()),
-                overwrite: *overwrite,
-            },
-            TypeRowEntry::Element(ty) => {
-                TypeRowEntry::Element(self.normalize_with_visited(ty, visited.clone()))
-            }
-            TypeRowEntry::Delete(name) => TypeRowEntry::Delete(name.clone()),
-            TypeRowEntry::Rename { from, to } => TypeRowEntry::Rename {
-                from: from.clone(),
-                to: to.clone(),
-            },
-            TypeRowEntry::Shorthand(name) => TypeRowEntry::Shorthand(name.clone()),
-            TypeRowEntry::Open => TypeRowEntry::Open,
         }
     }
 
@@ -929,12 +904,8 @@ impl<'a> Checker<'a> {
                 result: Box::new(self.lower_annotation(result)),
             },
             ExprKind::Tuple(items) => Type::Tuple(self.lower_annotations(items)),
-            ExprKind::Record(entries) => {
-                Type::Record(self.lower_row_entries(entries, RowKind::Record))
-            }
-            ExprKind::Set(entries) => {
-                Type::Variant(self.lower_row_entries(entries, RowKind::Variant))
-            }
+            ExprKind::Record(entries) => self.lower_row_entries(entries, RowKind::Record),
+            ExprKind::Set(entries) => self.lower_row_entries(entries, RowKind::Variant),
             ExprKind::Missing => Type::Deferred,
             ExprKind::Literal(_)
             | ExprKind::Array(_)
@@ -965,14 +936,38 @@ impl<'a> Checker<'a> {
         });
     }
 
-    fn lower_row_entries(&mut self, entries: &[RecordEntry], kind: RowKind) -> Vec<TypeRowEntry> {
-        entries
-            .iter()
-            .map(|entry| self.lower_row_entry(entry, kind))
-            .collect()
+    fn lower_row_entries(&mut self, entries: &[RecordEntry], kind: RowKind) -> Type {
+        let mut lowered = Vec::new();
+        let mut tail = RowTail::Closed;
+        let mut normalizable = true;
+
+        for entry in entries {
+            match self.lower_row_entry(entry, kind) {
+                Ok(Some(entry)) => lowered.push(entry),
+                Ok(None) => tail = RowTail::Open,
+                Err(()) => normalizable = false,
+            }
+        }
+
+        if !normalizable {
+            return Type::Deferred;
+        }
+
+        let row = Row {
+            entries: lowered,
+            tail,
+        };
+        match kind {
+            RowKind::Record => Type::Record(row),
+            RowKind::Variant => Type::Variant(row),
+        }
     }
 
-    fn lower_row_entry(&mut self, entry: &RecordEntry, kind: RowKind) -> TypeRowEntry {
+    fn lower_row_entry(
+        &mut self,
+        entry: &RecordEntry,
+        kind: RowKind,
+    ) -> Result<Option<RowEntry>, ()> {
         match entry {
             RecordEntry::Field {
                 name,
@@ -980,65 +975,69 @@ impl<'a> Checker<'a> {
                 overwrite,
                 optional,
                 ..
-            } => TypeRowEntry::Field {
-                name: name.clone(),
-                ty: self.lower_annotation(value),
-                overwrite: *overwrite,
-                optional: *optional,
-            },
-            RecordEntry::Shorthand { name, .. } => TypeRowEntry::Shorthand(name.clone()),
-            RecordEntry::Spread {
-                value, overwrite, ..
-            } => TypeRowEntry::Spread {
-                ty: self.lower_annotation(value),
-                overwrite: *overwrite,
-            },
-            RecordEntry::Delete { name, .. } => TypeRowEntry::Delete(name.clone()),
-            RecordEntry::Rename { from, to, .. } => TypeRowEntry::Rename {
-                from: from.clone(),
-                to: to.clone(),
-            },
-            RecordEntry::Open { .. } => TypeRowEntry::Open,
+            } => {
+                let ty = self.lower_annotation(value);
+                if kind == RowKind::Record && !overwrite {
+                    Ok(Some(RowEntry::Field {
+                        name: name.clone(),
+                        ty,
+                        optional: *optional,
+                    }))
+                } else {
+                    Err(())
+                }
+            }
+            RecordEntry::Shorthand { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. } => Err(()),
+            RecordEntry::Spread { value, .. } => {
+                self.lower_annotation(value);
+                Err(())
+            }
+            RecordEntry::Open { .. } => Ok(None),
             RecordEntry::Element(value) => match kind {
-                RowKind::Record => TypeRowEntry::Element(self.lower_annotation(value)),
-                RowKind::Variant => self.lower_variant_tag(value),
+                RowKind::Record => {
+                    self.lower_annotation(value);
+                    Err(())
+                }
+                RowKind::Variant => self.lower_variant_tag(value).map(Some).ok_or(()),
             },
         }
     }
 
-    fn lower_variant_tag(&mut self, tag: &Expr) -> TypeRowEntry {
+    fn lower_variant_tag(&mut self, tag: &Expr) -> Option<RowEntry> {
         match &tag.kind {
-            ExprKind::ComptimeName(name) => TypeRowEntry::Tag {
+            ExprKind::ComptimeName(name) => Some(RowEntry::Tag {
                 name: name.clone(),
                 payload: Vec::new(),
-            },
+            }),
             ExprKind::Name(name) => {
                 self.report_lowercase_variant_tag(name, tag.span);
-                TypeRowEntry::Tag {
+                Some(RowEntry::Tag {
                     name: name.clone(),
                     payload: Vec::new(),
-                }
+                })
             }
             ExprKind::Call { callee, args } => match &callee.kind {
-                ExprKind::ComptimeName(name) => TypeRowEntry::Tag {
+                ExprKind::ComptimeName(name) => Some(RowEntry::Tag {
                     name: name.clone(),
                     payload: self.lower_annotations(args),
-                },
+                }),
                 ExprKind::Name(name) => {
                     self.report_lowercase_variant_tag(name, callee.span);
-                    TypeRowEntry::Tag {
+                    Some(RowEntry::Tag {
                         name: name.clone(),
                         payload: self.lower_annotations(args),
-                    }
+                    })
                 }
                 _ => {
                     self.lower_deferred_annotation(tag);
-                    TypeRowEntry::Element(Type::Deferred)
+                    None
                 }
             },
             _ => {
                 self.lower_deferred_annotation(tag);
-                TypeRowEntry::Element(Type::Deferred)
+                None
             }
         }
     }
@@ -1213,36 +1212,24 @@ struct VariantTagShape<'a> {
     payload: &'a [Type],
 }
 
-fn literal_record_type(entries: &[TypeRowEntry]) -> Option<ExpectedRecordShape<'_>> {
+fn literal_record_type(row: &Row) -> Option<ExpectedRecordShape<'_>> {
     let mut fields = Vec::new();
-    let mut open = false;
 
-    for entry in entries {
+    for entry in &row.entries {
         match entry {
-            TypeRowEntry::Open => open = true,
-            TypeRowEntry::Field {
-                name,
-                ty,
-                overwrite: false,
-                optional,
-            } => fields.push(ExpectedRecordField {
+            RowEntry::Field { name, ty, optional } => fields.push(ExpectedRecordField {
                 name,
                 ty,
                 optional: *optional,
             }),
-            TypeRowEntry::Field {
-                overwrite: true, ..
-            }
-            | TypeRowEntry::Tag { .. }
-            | TypeRowEntry::Spread { .. }
-            | TypeRowEntry::Delete(_)
-            | TypeRowEntry::Rename { .. }
-            | TypeRowEntry::Shorthand(_)
-            | TypeRowEntry::Element(_) => return None,
+            RowEntry::Tag { .. } => return None,
         }
     }
 
-    Some(ExpectedRecordShape { fields, open })
+    Some(ExpectedRecordShape {
+        fields,
+        open: row.tail == RowTail::Open,
+    })
 }
 
 fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueRecordShape<'_>> {
@@ -1341,51 +1328,44 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
     }
 }
 
-fn literal_variant_payload<'a>(entries: &'a [TypeRowEntry], tag: &str) -> Option<&'a [Type]> {
-    literal_variant_payload_lookup(entries, tag).flatten()
+fn literal_variant_payload<'a>(row: &'a Row, tag: &str) -> Option<&'a [Type]> {
+    literal_variant_payload_lookup(row, tag).flatten()
 }
 
-fn literal_variant_payload_lookup<'a>(
-    entries: &'a [TypeRowEntry],
-    tag: &str,
-) -> Option<Option<&'a [Type]>> {
+fn literal_variant_payload_lookup<'a>(row: &'a Row, tag: &str) -> Option<Option<&'a [Type]>> {
+    if row.tail == RowTail::Open {
+        return None;
+    }
+
     let mut found = None;
 
-    for entry in entries {
+    for entry in &row.entries {
         match entry {
-            TypeRowEntry::Tag { name, payload } if name == tag => {
+            RowEntry::Tag { name, payload } if name == tag => {
                 found = Some(payload.as_slice());
             }
-            TypeRowEntry::Tag { .. } => {}
-            TypeRowEntry::Field { .. }
-            | TypeRowEntry::Spread { .. }
-            | TypeRowEntry::Delete(_)
-            | TypeRowEntry::Rename { .. }
-            | TypeRowEntry::Shorthand(_)
-            | TypeRowEntry::Open
-            | TypeRowEntry::Element(_) => return None,
+            RowEntry::Tag { .. } => {}
+            RowEntry::Field { .. } => return None,
         }
     }
 
     Some(found)
 }
 
-fn literal_variant_tags(entries: &[TypeRowEntry]) -> Option<Vec<VariantTagShape<'_>>> {
+fn literal_variant_tags(row: &Row) -> Option<Vec<VariantTagShape<'_>>> {
+    if row.tail == RowTail::Open {
+        return None;
+    }
+
     let mut tags = Vec::new();
 
-    for entry in entries {
+    for entry in &row.entries {
         match entry {
-            TypeRowEntry::Tag { name, payload } => tags.push(VariantTagShape {
+            RowEntry::Tag { name, payload } => tags.push(VariantTagShape {
                 name,
                 payload: payload.as_slice(),
             }),
-            TypeRowEntry::Field { .. }
-            | TypeRowEntry::Spread { .. }
-            | TypeRowEntry::Delete(_)
-            | TypeRowEntry::Rename { .. }
-            | TypeRowEntry::Shorthand(_)
-            | TypeRowEntry::Open
-            | TypeRowEntry::Element(_) => return None,
+            RowEntry::Field { .. } => return None,
         }
     }
 
@@ -1463,10 +1443,13 @@ impl<'a> Checker<'a> {
                 named_builtin("Bool")
             }
             ExprKind::ComptimeName(name) if name == "Nil" => named_builtin("Nil"),
-            ExprKind::ComptimeName(name) => Type::Variant(vec![TypeRowEntry::Tag {
-                name: name.clone(),
-                payload: Vec::new(),
-            }]),
+            ExprKind::ComptimeName(name) => Type::Variant(Row {
+                entries: vec![RowEntry::Tag {
+                    name: name.clone(),
+                    payload: Vec::new(),
+                }],
+                tail: RowTail::Closed,
+            }),
             ExprKind::Group(inner) => self.infer(env, inner),
             ExprKind::Tuple(elements) => Type::Tuple(
                 elements
@@ -1485,14 +1468,16 @@ impl<'a> Checker<'a> {
                     let Some(value) = field.value else {
                         return Type::Deferred;
                     };
-                    fields.push(TypeRowEntry::Field {
+                    fields.push(RowEntry::Field {
                         name: field.name.to_owned(),
                         ty: self.infer(env, value),
-                        overwrite: false,
                         optional: false,
                     });
                 }
-                Type::Record(fields)
+                Type::Record(Row {
+                    entries: fields,
+                    tail: RowTail::Closed,
+                })
             }
             ExprKind::Name(name) => {
                 if let Some(local) = env.get(name).cloned() {
@@ -1769,10 +1754,13 @@ impl<'a> Checker<'a> {
             payload.push(arg_type);
         }
 
-        Type::Variant(vec![TypeRowEntry::Tag {
-            name: tag.to_owned(),
-            payload,
-        }])
+        Type::Variant(Row {
+            entries: vec![RowEntry::Tag {
+                name: tag.to_owned(),
+                payload,
+            }],
+            tail: RowTail::Closed,
+        })
     }
 
     fn infer_array(&mut self, env: &TypeEnv, elements: &[Expr]) -> Type {

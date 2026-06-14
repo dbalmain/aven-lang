@@ -8,7 +8,7 @@ use aven_core::Diagnostic;
 use aven_parser::{Expr, Module};
 
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
-pub use ty::{Type, TypeRowEntry};
+pub use ty::{Row, RowEntry, RowTail, Type};
 
 pub(crate) use checker::Checker;
 pub(crate) use lower::{cyclic_alias_diagnostics, known_type_names, type_definitions};

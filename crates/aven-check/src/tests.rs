@@ -131,73 +131,87 @@ fn lowers_function_application_and_nullable_annotations() {
 }
 
 #[test]
-fn lowers_record_and_variant_annotations() {
+fn lowers_normalized_rows_and_defers_transforms() {
     let output = parse_module(
         "FileError = @{Io}\n\
-             user : { .._, name: Text, email: Text?, phone?: Text, -password } = current\n\
-             error : @{ParseError(Text), NotFound, ..FileError, -Internal} = value\n",
+             user : { .._, name: Text, email: Text?, phone?: Text } = current\n\
+             error : @{ParseError(Text), NotFound} = value\n\
+             transformed_user : { name: Text, -password } = current\n\
+             transformed_error : @{ParseError(Text), ..FileError} = value\n",
     );
 
     let user = lower_annotation(&output.module, annotation(&output.module, "user"));
     let error = lower_annotation(&output.module, annotation(&output.module, "error"));
+    let transformed_user = lower_annotation(
+        &output.module,
+        annotation(&output.module, "transformed_user"),
+    );
+    let transformed_error = lower_annotation(
+        &output.module,
+        annotation(&output.module, "transformed_error"),
+    );
 
     assert_eq!(
         user.ty,
-        Type::Record(vec![
-            TypeRowEntry::Open,
-            TypeRowEntry::Field {
-                name: "name".to_owned(),
-                ty: named("Text"),
-                overwrite: false,
-                optional: false,
-            },
-            TypeRowEntry::Field {
-                name: "email".to_owned(),
-                ty: nullable(named("Text")),
-                overwrite: false,
-                optional: false,
-            },
-            TypeRowEntry::Field {
-                name: "phone".to_owned(),
-                ty: named("Text"),
-                overwrite: false,
-                optional: true,
-            },
-            TypeRowEntry::Delete("password".to_owned()),
-        ])
+        Type::Record(Row {
+            entries: vec![
+                RowEntry::Field {
+                    name: "name".to_owned(),
+                    ty: named("Text"),
+                    optional: false,
+                },
+                RowEntry::Field {
+                    name: "email".to_owned(),
+                    ty: nullable(named("Text")),
+                    optional: false,
+                },
+                RowEntry::Field {
+                    name: "phone".to_owned(),
+                    ty: named("Text"),
+                    optional: true,
+                },
+            ],
+            tail: RowTail::Open,
+        })
     );
     assert!(user.diagnostics.is_empty());
 
     assert_eq!(
         error.ty,
-        Type::Variant(vec![
-            TypeRowEntry::Tag {
-                name: "ParseError".to_owned(),
-                payload: vec![named("Text")],
-            },
-            TypeRowEntry::Tag {
-                name: "NotFound".to_owned(),
-                payload: Vec::new(),
-            },
-            TypeRowEntry::Spread {
-                ty: named("FileError"),
-                overwrite: false,
-            },
-            TypeRowEntry::Delete("Internal".to_owned()),
-        ])
+        Type::Variant(Row {
+            entries: vec![
+                RowEntry::Tag {
+                    name: "ParseError".to_owned(),
+                    payload: vec![named("Text")],
+                },
+                RowEntry::Tag {
+                    name: "NotFound".to_owned(),
+                    payload: Vec::new(),
+                },
+            ],
+            tail: RowTail::Closed,
+        })
     );
     assert!(error.diagnostics.is_empty());
+    assert_eq!(transformed_user.ty, Type::Deferred);
+    assert!(transformed_user.diagnostics.is_empty());
+    assert_eq!(transformed_error.ty, Type::Deferred);
+    assert!(transformed_error.diagnostics.is_empty());
 }
 
 #[test]
-fn lower_annotation_reports_lowercase_variant_tags() {
-    let output = parse_module("value : @{io} = value\n");
+fn deferred_rows_still_report_nested_annotation_diagnostics() {
+    let output = parse_module("value : @{-Internal, io(Missing)} = value\n");
     let lowering = lower_annotation(&output.module, annotation(&output.module, "value"));
 
-    assert_eq!(lowering.diagnostics.len(), 1);
+    assert_eq!(lowering.ty, Type::Deferred);
     assert_eq!(
-        lowering.diagnostics[0].code.as_deref(),
-        Some(codes::ty::LOWERCASE_VARIANT_TAG)
+        lowering
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .collect::<Vec<_>>(),
+        vec![codes::ty::LOWERCASE_VARIANT_TAG, codes::ty::UNKNOWN_NAME]
     );
 }
 
@@ -1044,20 +1058,21 @@ fn infer_value_synthesizes_literal_record_types() {
 
     assert_eq!(
         checker.infer_top_level_value("other"),
-        Some(Type::Record(vec![
-            TypeRowEntry::Field {
-                name: "id".to_owned(),
-                ty: named("Int"),
-                overwrite: false,
-                optional: false,
-            },
-            TypeRowEntry::Field {
-                name: "name".to_owned(),
-                ty: named("Text"),
-                overwrite: false,
-                optional: false,
-            },
-        ]))
+        Some(Type::Record(Row {
+            entries: vec![
+                RowEntry::Field {
+                    name: "id".to_owned(),
+                    ty: named("Int"),
+                    optional: false,
+                },
+                RowEntry::Field {
+                    name: "name".to_owned(),
+                    ty: named("Text"),
+                    optional: false,
+                },
+            ],
+            tail: RowTail::Closed,
+        }))
     );
 }
 
