@@ -1,4 +1,4 @@
-User = { name = Text }
+User = { name: Text }
 
 double : (Int) -> Int
 double = (x) => x

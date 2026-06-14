@@ -137,7 +137,7 @@ pub enum RecordEntry {
         name_span: Span,
         value: Expr,
         overwrite: bool,
-        /// `phone? = Text`: the field is marked optional with a trailing `?`.
+        /// `phone?: Text`: the field is marked optional with a trailing `?`.
         optional: bool,
         span: Span,
     },
@@ -1269,7 +1269,7 @@ impl Parser<'_> {
             });
         }
 
-        // `phone? = Text`: an optional-field marker before the `=`.
+        // `phone?: Text`: an optional-field marker before the separator.
         let optional = self.current_is_operator("?");
         let optional_end = if optional {
             let span = self.current_span();
@@ -1279,8 +1279,27 @@ impl Parser<'_> {
             name_span.end
         };
 
-        if self.current_is_operator("=") || self.current_is_operator(":=") {
-            let overwrite = self.current_is_operator(":=");
+        let separator = if self.current_is_operator(":") {
+            Some((false, false))
+        } else if self.current_is_operator("::") {
+            Some((true, false))
+        } else if self.current_is_operator("=") {
+            Some((false, true))
+        } else if self.current_is_operator(":=") {
+            Some((true, true))
+        } else {
+            None
+        };
+
+        if let Some((overwrite, legacy)) = separator {
+            if legacy {
+                self.report_legacy_record_field_separator(
+                    self.current_span(),
+                    &name,
+                    optional,
+                    overwrite,
+                );
+            }
             self.advance();
             let value = self.parse_expression();
             let span = name_span.merge(value.span);
@@ -1540,6 +1559,40 @@ impl Parser<'_> {
                 .with_code(codes::parse::EXPECTED_RECORD_ENTRY)
                 .with_label(Label::primary(span, "expected a record field or transform"))
                 .with_note("record entries are fields, shorthands, spreads, deletes, or renames"),
+        );
+    }
+
+    fn report_legacy_record_field_separator(
+        &mut self,
+        span: Span,
+        name: &str,
+        optional: bool,
+        overwrite: bool,
+    ) {
+        let label = if optional {
+            format!("{name}?")
+        } else {
+            name.to_owned()
+        };
+        let (message, replacement, example) = if overwrite {
+            (
+                "record replacements use `::`, not `:=`",
+                "replace this marker with `::`",
+                format!("{label} :: value"),
+            )
+        } else {
+            (
+                "record fields use `:`, not `=`",
+                "replace this separator with `:`",
+                format!("{label}: value"),
+            )
+        };
+
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(codes::parse::EXPECTED_RECORD_ENTRY)
+                .with_label(Label::primary(span, replacement))
+                .with_note(format!("write `{example}`")),
         );
     }
 
@@ -2135,7 +2188,7 @@ mod tests {
     #[test]
     fn parses_record_transform_entries_into_ast_nodes() {
         let output = parse_module(
-            "cleaned = { ..user, :..defaults, -password, name -> fullName, active = true }\n",
+            "cleaned = { ..user, :..defaults, -password, name -> fullName, active: true, age :: 37 }\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2143,7 +2196,7 @@ mod tests {
             panic!("expected record expression");
         };
 
-        assert_eq!(entries.len(), 5);
+        assert_eq!(entries.len(), 6);
         assert!(matches!(
             &entries[0],
             RecordEntry::Spread {
@@ -2173,6 +2226,48 @@ mod tests {
                 overwrite: false,
                 ..
             } if name == "active"
+        ));
+        assert!(matches!(
+            &entries[5],
+            RecordEntry::Field {
+                name,
+                overwrite: true,
+                ..
+            } if name == "age"
+        ));
+    }
+
+    #[test]
+    fn reports_legacy_record_separators_and_recovers_fields() {
+        let output = parse_module("user = { name = \"Ada\", age := 36 }\n");
+        let codes: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .collect();
+
+        assert_eq!(
+            codes,
+            vec!["parse.expected-record-entry", "parse.expected-record-entry"]
+        );
+        let ExprKind::Record(entries) = binding_value(&output, 0) else {
+            panic!("expected record expression");
+        };
+        assert!(matches!(
+            &entries[0],
+            RecordEntry::Field {
+                name,
+                overwrite: false,
+                ..
+            } if name == "name"
+        ));
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Field {
+                name,
+                overwrite: true,
+                ..
+            } if name == "age"
         ));
     }
 
@@ -2275,7 +2370,7 @@ mod tests {
     #[test]
     fn parses_record_patterns_and_match_guards() {
         let output = parse_module(
-            "value = user ?>\n  { age }, age >= 18 => \"adult\"\n  { givenName -> firstName, status = Active, ..rest } => firstName\n  { .. } => \"ignored\"\n",
+            "value = user ?>\n  { age }, age >= 18 => \"adult\"\n  { givenName -> firstName, status: Active, ..rest } => firstName\n  { .. } => \"ignored\"\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2469,7 +2564,7 @@ mod tests {
     #[test]
     fn parses_record_type_with_open_optional_and_delete_entries() {
         let output = parse_module(
-            "user : { .._, name = Text, email = Text?, phone? = Text, -password } = current\n",
+            "user : { .._, name: Text, email: Text?, phone?: Text, -password } = current\n",
         );
 
         assert!(output.diagnostics.is_empty());

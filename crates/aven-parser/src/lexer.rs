@@ -536,7 +536,7 @@ impl Lexer<'_> {
         match self.current_byte() {
             Some(b'?') => self.scan_reserved_operator("?", &["?.", "??", "?^", "?!", "?>", "?"]),
             Some(b'=') => self.scan_reserved_operator("=", &["=>", "==", "="]),
-            Some(b':') => self.scan_reserved_operator(":", &[":..", ":=", ":"]),
+            Some(b':') => self.scan_reserved_operator(":", &[":..", "::", ":=", ":"]),
             Some(b'.') => self.scan_reserved_operator(".", &["..", "."]),
             _ => self.scan_custom_operator(),
         }
@@ -747,7 +747,8 @@ fn is_operator_run_byte(byte: u8) -> bool {
 
 fn reserved_operator_continues(prefix: &str, byte: u8) -> bool {
     match prefix {
-        "?" | "@" => is_operator_run_byte(byte),
+        "?" => byte != b':' && is_operator_run_byte(byte),
+        "@" => is_operator_run_byte(byte),
         "=" => byte == b'=',
         ":" => matches!(byte, b':' | b'.' | b'?' | b'='),
         "." => is_custom_operator_continue_byte(byte) || matches!(byte, b'.' | b'?'),

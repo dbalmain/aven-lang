@@ -11,5 +11,5 @@ error lex.reserved-operator: reserved `=` operator
   label 54..57: this operator namespace is reserved by the language
   note: custom operators cannot start with `=`, `:`, `.`, `?`, or `@`
 error lex.reserved-operator: reserved `:` operator
-  label 70..72: this operator namespace is reserved by the language
+  label 70..73: this operator namespace is reserved by the language
   note: custom operators cannot start with `=`, `:`, `.`, `?`, or `@`

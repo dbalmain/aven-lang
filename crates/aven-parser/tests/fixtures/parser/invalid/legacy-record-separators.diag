@@ -1,0 +1,6 @@
+error parse.expected-record-entry: record fields use `:`, not `=`
+  label 15..16: replace this separator with `:`
+  note: write `name: value`
+error parse.expected-record-entry: record replacements use `::`, not `:=`
+  label 28..30: replace this marker with `::`
+  note: write `age :: value`

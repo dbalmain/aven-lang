@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn collects_top_level_declarations() {
-        let output = parse_module("User = { name = Text }\ndouble = (x) => x\nvalue = 1\n");
+        let output = parse_module("User = { name: Text }\ndouble = (x) => x\nvalue = 1\n");
         let declarations = collect_declarations(&output.module);
 
         assert_eq!(declarations.len(), 3);

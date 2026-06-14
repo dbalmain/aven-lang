@@ -443,8 +443,7 @@ mod tests {
 
     #[test]
     fn leaves_type_shaped_uppercase_bindings_to_the_semantic_phase() {
-        let output =
-            parse_module("HttpOk = 200\nUser = { name = Text }\nColor = @{ Red, Green }\n");
+        let output = parse_module("HttpOk = 200\nUser = { name: Text }\nColor = @{ Red, Green }\n");
         let analysis = analyze_names(&output.module);
 
         assert!(analysis.diagnostics.is_empty());

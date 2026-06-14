@@ -1,4 +1,5 @@
 value : Text?,, next
 safe = a?.b
 compare = left <=> right
-entries = {one = 1; two = 2}
+entries = {one: 1; two: 2}
+reserved = :.. :: := :

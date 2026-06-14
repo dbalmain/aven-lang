@@ -1,1 +1,1 @@
-bad = { @std/Text = Foo }
+bad = { @std/Text: Foo }

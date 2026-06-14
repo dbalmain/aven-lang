@@ -22,11 +22,18 @@
 66..67 operator `=`
 68..69 delimiter `{`
 69..72 identifier `one`
-73..74 operator `=`
-75..76 number `1`
-76..77 semicolon
-78..81 identifier `two`
-82..83 operator `=`
-84..85 number `2`
-85..86 delimiter `}`
-86..87 newline
+72..73 operator `:`
+74..75 number `1`
+75..76 semicolon
+77..80 identifier `two`
+80..81 operator `:`
+82..83 number `2`
+83..84 delimiter `}`
+84..85 newline
+85..93 identifier `reserved`
+94..95 operator `=`
+96..99 operator `:..`
+100..102 operator `::`
+103..105 operator `:=`
+106..107 operator `:`
+107..108 newline

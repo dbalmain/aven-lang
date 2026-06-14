@@ -2,4 +2,4 @@ bad = a ?~ b
 also = a @+ b
 range = a ..< b
 strict = a === b
-typed = a :: b
+typed = a ::: b
