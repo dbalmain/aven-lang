@@ -682,7 +682,7 @@ mod tests {
                     "uri": uri_text.clone(),
                     "languageId": "aven",
                     "version": 1,
-                    "text": "User = { name = Text }\nvalue = 1\n"
+                    "text": "User = { name: Text }\nvalue = 1\n"
                 }
             }))
             .finish();
@@ -824,7 +824,7 @@ mod tests {
     #[test]
     fn document_symbols_include_top_level_bindings() {
         let document =
-            parsed_document("User = { name = Text }\ndouble = (x) => x\nvalue = 1\n".to_owned());
+            parsed_document("User = { name: Text }\ndouble = (x) => x\nvalue = 1\n".to_owned());
         let symbols = document_symbols(&document);
 
         assert_eq!(symbols.len(), 3);
@@ -1069,7 +1069,7 @@ mod tests {
 
     #[test]
     fn definition_location_finds_top_level_comptime_bindings() {
-        let document = parsed_document("User = { name = Text }\nvalue = User\n".to_owned());
+        let document = parsed_document("User = { name: Text }\nvalue = User\n".to_owned());
         let Some(location) = definition_location(&document, test_uri(), position(1, 9)) else {
             panic!("expected definition location");
         };

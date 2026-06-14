@@ -346,7 +346,7 @@ mod tests {
     fn semantic_tokens_classify_lexical_and_definition_tokens() {
         let document = parsed_document(
             "## Doc\n\
-             User = { name = Text }\n\
+             User = { name: Text }\n\
              value = (item) => item + 1\n\
              path = ./data.json\n\
              regex = /a+/\n\
@@ -389,7 +389,7 @@ mod tests {
             &tokens,
             DecodedSemanticToken {
                 line: 1,
-                start: 16,
+                start: 15,
                 length: 4,
                 token_type: "type",
                 modifiers: 0,
