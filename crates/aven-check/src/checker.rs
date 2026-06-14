@@ -13,20 +13,20 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    RowKind, Type, TypeRowEntry, is_concrete_type, is_meta_type, is_nil_value,
-    mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
-    numeric_type_name,
+    RowKind, Type, TypeRowEntry, TypeScheme, generalize, is_concrete_type, is_meta_type,
+    is_nil_value, mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
+    numeric_type_name, type_contains_deferred,
 };
 use crate::unify::Unifier;
 
 pub(crate) struct Checker<'a> {
     known_types: HashSet<String>,
     type_definitions: HashMap<String, Type>,
-    value_types: HashMap<String, Option<Type>>,
+    value_types: HashMap<String, Option<TypeScheme>>,
     local_types: LocalTypeScopes,
     bindings: HashMap<String, Option<&'a Binding>>,
     annotations: HashMap<String, &'a Expr>,
-    memo: HashMap<String, Type>,
+    memo: HashMap<String, TypeScheme>,
     in_progress: HashSet<String>,
     unifier: Unifier,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -114,8 +114,10 @@ impl<'a> Checker<'a> {
             }
 
             if let Some(annotation) = self.clean_declared_annotation(&name) {
-                types.insert(name.clone(), Some(annotation));
-            } else if let Some(inferred) = self.infer_top_level_value(&name) {
+                types.insert(name.clone(), Some(TypeScheme::mono(annotation)));
+            } else if let Some(inferred) = self.infer_top_level(&name)
+                && !type_contains_deferred(&inferred.ty)
+            {
                 types.insert(name.clone(), Some(inferred));
             }
         }
@@ -378,7 +380,8 @@ impl<'a> Checker<'a> {
                 }
                 Some(LocalValueType::Unknown) => {}
                 None => {
-                    if let Some(Some(actual)) = self.value_types.get(name).cloned() {
+                    if let Some(Some(scheme)) = self.value_types.get(name).cloned() {
+                        let actual = self.unifier.instantiate_scheme(&scheme);
                         self.check_type_against_type(expected, &actual, value.span);
                     }
                 }
@@ -1383,8 +1386,13 @@ fn literal_variant_tags(entries: &[TypeRowEntry]) -> Option<Vec<VariantTagShape<
 }
 
 impl<'a> Checker<'a> {
+    /// Instantiate and fully resolve a top-level binding's inferred type, used by
+    /// white-box synthesis tests. Production code consumes the generalized scheme
+    /// from `infer_top_level` directly.
+    #[cfg(test)]
     pub(crate) fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
-        let ty = self.infer_top_level(name)?;
+        let scheme = self.infer_top_level(name)?;
+        let ty = self.unifier.instantiate_scheme(&scheme);
         self.resolve_if_concrete(&ty)
     }
 
@@ -1400,27 +1408,27 @@ impl<'a> Checker<'a> {
         is_concrete_type(&ty).then_some(ty)
     }
 
-    fn infer_top_level(&mut self, name: &str) -> Option<Type> {
-        if let Some(ty) = self.memo.get(name).cloned() {
-            return Some(ty);
+    fn infer_top_level(&mut self, name: &str) -> Option<TypeScheme> {
+        if let Some(scheme) = self.memo.get(name).cloned() {
+            return Some(scheme);
         }
         if self.in_progress.contains(name) {
-            return Some(Type::Deferred);
+            return Some(TypeScheme::mono(Type::Deferred));
         }
 
         let binding = (*self.bindings.get(name)?)?;
         self.in_progress.insert(name.to_owned());
 
-        let ty = if let Some(annotation) = self.clean_declared_annotation(name) {
-            annotation
+        let scheme = if let Some(annotation) = self.clean_declared_annotation(name) {
+            TypeScheme::mono(annotation)
         } else {
-            self.infer(&TypeEnv::new(), &binding.value)
+            let ty = self.infer(&TypeEnv::new(), &binding.value);
+            generalize(self.unifier.resolve(&ty), &[])
         };
-        let ty = self.unifier.resolve(&ty);
 
         self.in_progress.remove(name);
-        self.memo.insert(name.to_owned(), ty.clone());
-        Some(ty)
+        self.memo.insert(name.to_owned(), scheme.clone());
+        Some(scheme)
     }
 
     fn clean_declared_annotation(&self, name: &str) -> Option<Type> {
@@ -1481,10 +1489,10 @@ impl<'a> Checker<'a> {
                         LocalValueType::Unknown => Type::Deferred,
                     };
                 }
-                let Some(ty) = self.infer_top_level(name) else {
+                let Some(scheme) = self.infer_top_level(name) else {
                     return Type::Deferred;
                 };
-                self.unifier.instantiate(&ty)
+                self.unifier.instantiate_scheme(&scheme)
             }
             ExprKind::Lambda {
                 params,

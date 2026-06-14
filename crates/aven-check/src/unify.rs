@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ty::{Type, map_type, type_contains_meta};
+use crate::ty::{Type, TypeScheme, map_type, type_contains_meta};
 
 #[derive(Debug, Default)]
 pub(crate) struct Unifier {
@@ -110,20 +110,14 @@ impl Unifier {
         Ok(())
     }
 
-    pub(crate) fn instantiate(&mut self, ty: &Type) -> Type {
-        // Memoized binding types are stored fully resolved, so any `Meta` left
-        // here is a generic placeholder. Replacing each with a fresh meta lets a
-        // top-level binding be applied at more than one type without its generics
-        // leaking between uses.
+    pub(crate) fn instantiate_scheme(&mut self, scheme: &TypeScheme) -> Type {
         let mut replacements: HashMap<u32, Type> = HashMap::new();
-        map_type(ty, &mut |node| match node {
-            Type::Meta(id) => Some(if let Some(existing) = replacements.get(id) {
-                existing.clone()
-            } else {
-                let fresh = self.fresh();
-                replacements.insert(*id, fresh.clone());
-                fresh
-            }),
+        for id in &scheme.vars {
+            replacements.insert(*id, self.fresh());
+        }
+
+        map_type(&scheme.ty, &mut |node| match node {
+            Type::Meta(id) => replacements.get(id).cloned(),
             _ => None,
         })
     }

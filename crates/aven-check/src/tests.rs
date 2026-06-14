@@ -316,12 +316,14 @@ fn lambda_application_results_are_inferred_for_identifier_values() {
 
 #[test]
 fn lambda_application_results_are_instantiated_per_use() {
-    let output = parse_module("f = (x) => x\na = f(1)\nb = f(\"hi\")\nx : Int = a\ny : Text = b\n");
+    let output =
+        parse_module("id = (x) => x\na = id(1)\nb = id(\"hi\")\nuseA : Int = a\nuseB : Text = b\n");
     let check = check_module(&output.module);
 
     assert!(
-        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
-        "generic top-level lambda reused stale inference state"
+        check.diagnostics.is_empty(),
+        "generic top-level lambda reused stale inference state: {:#?}",
+        check.diagnostics
     );
 }
 

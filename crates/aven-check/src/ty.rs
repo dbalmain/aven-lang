@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use aven_parser::{Expr, ExprKind, Literal};
 
 use crate::CHECKED_NAMED_TYPES;
@@ -10,8 +12,8 @@ pub enum Type {
     Named(String),
     Variable(String),
     /// A unification variable used only during value inference. It never appears
-    /// in a lowered annotation or any checked output; synthesis resolves it away
-    /// (or defers) before a type reaches `value_types`.
+    /// in a lowered annotation or checked output; published schemes quantify any
+    /// metas that remain after inference.
     Meta(u32),
     Apply {
         callee: Box<Type>,
@@ -25,6 +27,21 @@ pub enum Type {
     Tuple(Vec<Type>),
     Record(Vec<TypeRowEntry>),
     Variant(Vec<TypeRowEntry>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeScheme {
+    pub(crate) vars: Vec<u32>,
+    pub(crate) ty: Type,
+}
+
+impl TypeScheme {
+    pub(crate) fn mono(ty: Type) -> Self {
+        Self {
+            vars: Vec::new(),
+            ty,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +180,28 @@ fn visit_row_entry(entry: &TypeRowEntry, visit: &mut impl FnMut(&Type)) {
     }
 }
 
+pub(crate) fn free_metas(ty: &Type) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    let mut metas = Vec::new();
+    visit_type(ty, &mut |node| {
+        if let Type::Meta(id) = node
+            && seen.insert(*id)
+        {
+            metas.push(*id);
+        }
+    });
+    metas
+}
+
+pub(crate) fn generalize(resolved: Type, env_metas: &[u32]) -> TypeScheme {
+    let env_metas: HashSet<_> = env_metas.iter().copied().collect();
+    let vars = free_metas(&resolved)
+        .into_iter()
+        .filter(|id| !env_metas.contains(id))
+        .collect();
+    TypeScheme { vars, ty: resolved }
+}
+
 pub(crate) fn type_contains_meta(ty: &Type, id: u32) -> bool {
     let mut found = false;
     visit_type(ty, &mut |node| {
@@ -181,6 +220,16 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
         }
     });
     concrete
+}
+
+pub(crate) fn type_contains_deferred(ty: &Type) -> bool {
+    let mut found = false;
+    visit_type(ty, &mut |node| {
+        if matches!(node, Type::Deferred) {
+            found = true;
+        }
+    });
+    found
 }
 
 pub(crate) fn named_builtin(name: &str) -> Type {
