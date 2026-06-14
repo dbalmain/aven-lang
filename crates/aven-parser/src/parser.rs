@@ -511,11 +511,7 @@ impl Parser<'_> {
 
         let mut left = self.parse_unary();
 
-        loop {
-            let Some(operator) = self.current_infix_operator() else {
-                break;
-            };
-
+        while let Some(operator) = self.current_infix_operator() {
             if operator.left_binding_power < min_binding_power {
                 break;
             }
