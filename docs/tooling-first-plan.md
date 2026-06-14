@@ -1060,18 +1060,80 @@ Done when:
 - full row-polymorphic record/variant solving remains deferred to its own
   milestone; generalization here is over ordinary (non-row) metavariables
 
+## Milestone 13: Row Polymorphism
+
+Status: in progress
+
+Goal: make records and variants row-polymorphic, the language's headline
+differentiator. Follow the chosen design in `docs/row-polymorphism.md`: **Leijen
+scoped labels** (duplicates legal internally, leftmost wins, no `Lacks`
+constraint; surface enforces uniqueness), records and `@{...}` variants as the
+two row domains, Roc-style defaults (record literals closed, record-consuming
+function args open, tag literals open).
+
+Design decisions locked before starting:
+
+- Semantic row representation: introduce a normalized `Row { fields, tail }` in
+  the type IR, where `tail` is `Closed` or a row metavariable `Var(u32)`
+  (distinct from ordinary `Type::Meta`). `Type::Record`/`Type::Variant` carry a
+  `Row`. This replaces the surface-flavoured `Vec<TypeRowEntry>` for *lowered*
+  types; the parser AST and `RecordEntry` are unchanged. Selection, extension,
+  and restriction are primitive on this row; there is no `Lacks` predicate.
+- Lowering normalizes only the simple forms first (plain fields, plus the `.._`
+  open marker producing a fresh row var). Surface transforms (spreads, deletes,
+  renames, overwrites) are *row computation* and are lowered in slice 13.4; until
+  then a transform row lowers to a deferred row tail rather than being silently
+  accepted.
+- Row unification is the Leijen rewrite algorithm: to unify rows, match each
+  field of one against a same-label field of the other (rewriting the other's
+  tail to surface a missing label), then unify the tails. A closed tail unified
+  with a row var binds the var to the remaining fields; two closed rows must have
+  equal field sets.
+- Duplicate surface labels stay a parser/elaborator error (unchanged); the
+  scoped-label leftmost-wins rule only governs the internal solver.
+
+Slices:
+
+- 13.1 — row IR + record-row unification: add `Row`/`RowTail` and a row
+  metavariable to the unifier; lower plain-field record annotations/literals and
+  the `.._` open marker into normalized rows; implement Leijen record-row
+  unification and route record type comparison/checking through it. Observable
+  win: an open record requirement `{ .._, name: Text }` accepts any record with
+  at least `name: Text`, checked by unification rather than deferral. Transforms
+  still defer.
+- 13.2 — open-by-default inference: field access `r.x` constrains `r` to an open
+  row containing `x`; record-consuming function arguments infer an open row, so
+  `length = (p) => sqrt(p.x * p.x + p.y * p.y)` infers a polymorphic open-record
+  parameter. Record literals stay closed.
+- 13.3 — variant rows: the same row machinery for `@{...}` tagged variants — open
+  variant requirements `@{ ..r, Circle(Float), ... }`, constructor checking
+  against open variant rows, and match exhaustiveness that requires a `_` arm on
+  an open variant.
+- 13.4 — record transforms as row computation: lower and solve spreads
+  (`..source`/`:..source`), adds, replaces, deletes (`-field`), and renames
+  (`old -> new`) into rows, plus open field-rest patterns `{ x, ..rest }`,
+  replacing the 13.1 deferral.
+
+Done when:
+
+- an open record requirement accepts a superset record and rejects a record
+  missing a required field, both by unification with structured diagnostics
+- an unannotated function that selects fields infers an open-record parameter
+- open variant requirements check and an open `?>` match requires a default arm
+- record transforms type-check through row computation; fixtures lock each slice
+- duplicate-label and missing-field diagnostics remain structured and recover
+
 ## Remaining Phase 2 Scope
 
 Status: later
 
-The tooling skeleton is in place, and the semantic type IR plus a value-inference
-engine have started (M10, M11); Hindley-Milner generalization is underway (M12).
-The remaining hard semantic systems are still deliberately out of scope for this
-plan.
+The tooling skeleton is in place, the semantic type IR and value-inference engine
+landed (M10, M11), Hindley-Milner generalization is complete (M12), and row
+polymorphism is underway (M13). The remaining hard semantic systems are still
+deliberately out of scope for this plan.
 
 Phase 2 work not planned here:
 
-- row-polymorphic record and variant solving
 - comptime evaluation
 - requirement/interface resolution
 - opaque types
