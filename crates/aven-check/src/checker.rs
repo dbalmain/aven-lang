@@ -7,7 +7,7 @@ use aven_parser::{
     walk_expr_children,
 };
 
-use crate::env::{LocalTypeScopes, LocalValueType, TypeEnv};
+use crate::env::{LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values};
 use crate::lower::{
     DeclaredAnnotation, DeclaredAnnotationSource, TypeLowering, binding_for_declaration,
     declared_annotation_for_declaration,
@@ -193,21 +193,24 @@ impl<'a> Checker<'a> {
 
         let inferred_type = if declared_type.is_none() {
             let env = self.local_types.inference_env();
-            let inferred = self.infer_local_value(&env, &binding.value);
+            let inferred = self.infer(&env, &binding.value);
+            let resolved = self.unifier.resolve(&inferred);
+            let env_metas = self.local_types.free_metas();
+            let scheme = generalize(resolved, &env_metas);
             self.check_value_expr(&binding.value);
-            inferred
+            if type_contains_deferred(&scheme.ty) {
+                LocalValueType::Unknown
+            } else {
+                LocalValueType::Scheme(scheme)
+            }
         } else {
-            None
-        };
-
-        self.local_types.define(
-            &binding.name,
             declared_type
                 .cloned()
-                .or(inferred_type)
                 .map(LocalValueType::Known)
-                .unwrap_or(LocalValueType::Unknown),
-        );
+                .unwrap_or(LocalValueType::Unknown)
+        };
+
+        self.local_types.define(&binding.name, inferred_type);
     }
 
     fn check_value_expr(&mut self, expr: &Expr) {
@@ -376,6 +379,10 @@ impl<'a> Checker<'a> {
             ),
             (ExprKind::Name(name), _) => match self.local_types.get(name).cloned() {
                 Some(LocalValueType::Known(actual)) => {
+                    self.check_type_against_type(expected, &actual, value.span);
+                }
+                Some(LocalValueType::Scheme(scheme)) => {
+                    let actual = self.unifier.instantiate_scheme(&scheme);
                     self.check_type_against_type(expected, &actual, value.span);
                 }
                 Some(LocalValueType::Unknown) => {}
@@ -1483,9 +1490,10 @@ impl<'a> Checker<'a> {
                 Type::Record(fields)
             }
             ExprKind::Name(name) => {
-                if let Some(local) = env.get(name) {
+                if let Some(local) = env.get(name).cloned() {
                     return match local {
-                        LocalValueType::Known(ty) => ty.clone(),
+                        LocalValueType::Known(ty) => ty,
+                        LocalValueType::Scheme(scheme) => self.unifier.instantiate_scheme(&scheme),
                         LocalValueType::Unknown => Type::Deferred,
                     };
                 }
@@ -1777,7 +1785,7 @@ impl<'a> Checker<'a> {
         for item in merged_items(items) {
             match item {
                 MergedItem::Binding { signature, binding } => {
-                    let ty = signature
+                    let local_type = signature
                         .map(|signature| self.lower_annotation_for_inference(&signature.annotation))
                         .or_else(|| {
                             binding
@@ -1785,8 +1793,19 @@ impl<'a> Checker<'a> {
                                 .as_ref()
                                 .map(|annotation| self.lower_annotation_for_inference(annotation))
                         })
-                        .unwrap_or_else(|| self.infer(&next_env, &binding.value));
-                    next_env.insert(binding.name.clone(), LocalValueType::Known(ty));
+                        .map(LocalValueType::Known)
+                        .unwrap_or_else(|| {
+                            let inferred = self.infer(&next_env, &binding.value);
+                            let resolved = self.unifier.resolve(&inferred);
+                            let env_metas = free_metas_in_local_values(next_env.values());
+                            let scheme = generalize(resolved, &env_metas);
+                            if type_contains_deferred(&scheme.ty) {
+                                LocalValueType::Unknown
+                            } else {
+                                LocalValueType::Scheme(scheme)
+                            }
+                        });
+                    next_env.insert(binding.name.clone(), local_type);
                 }
                 MergedItem::Signature(signature) => {
                     let ty = self.lower_annotation_for_inference(&signature.annotation);

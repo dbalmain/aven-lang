@@ -1,0 +1,4 @@
+result : Int =
+  id = (x) => x
+  helper = id(1)
+  id("hi")

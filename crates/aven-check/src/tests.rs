@@ -723,6 +723,30 @@ fn block_inference_prefers_local_bindings_over_top_level_bindings() {
 }
 
 #[test]
+fn polymorphic_local_block_result_reports_a_concrete_mismatch() {
+    let output = parse_module("result : Int =\n  id = (x) => x\n  helper = id(1)\n  id(\"hi\")\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn polymorphic_local_block_result_accepts_each_instantiation() {
+    let output = parse_module("result : Text =\n  id = (x) => x\n  helper = id(1)\n  id(\"hi\")\n");
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn local_generalization_preserves_enclosing_lambda_metas() {
+    let output = parse_module("f = (x) =>\n  get = () => x\n  get()\nresult : Int = f(\"hi\")\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
 fn array_literals_are_checked_against_annotations() {
     let accepted = parse_module("value : Array[Int] = [1, 2, 3]\n");
     let accepted_check = check_module(&accepted.module);

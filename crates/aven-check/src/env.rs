@@ -1,10 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::Type;
+use crate::{
+    Type,
+    ty::{self, TypeScheme},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LocalValueType {
     Known(Type),
+    Scheme(TypeScheme),
     Unknown,
 }
 
@@ -38,6 +42,10 @@ impl LocalTypeScopes {
         self.scopes.iter().rev().find_map(|scope| scope.get(name))
     }
 
+    pub(crate) fn free_metas(&self) -> Vec<u32> {
+        free_metas_in_local_values(self.scopes.iter().flat_map(|scope| scope.values()))
+    }
+
     pub(crate) fn inference_env(&self) -> TypeEnv {
         let mut env = TypeEnv::new();
         for scope in &self.scopes {
@@ -45,4 +53,27 @@ impl LocalTypeScopes {
         }
         env
     }
+}
+
+pub(crate) fn free_metas_in_local_values<'a>(
+    values: impl IntoIterator<Item = &'a LocalValueType>,
+) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    let mut metas = Vec::new();
+
+    for value in values {
+        let (ty, quantified) = match value {
+            LocalValueType::Known(ty) => (ty, &[][..]),
+            LocalValueType::Scheme(scheme) => (&scheme.ty, scheme.vars.as_slice()),
+            LocalValueType::Unknown => continue,
+        };
+
+        for id in ty::free_metas(ty) {
+            if !quantified.contains(&id) && seen.insert(id) {
+                metas.push(id);
+            }
+        }
+    }
+
+    metas
 }
