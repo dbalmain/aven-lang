@@ -1,0 +1,9 @@
+error type.cyclic-alias: type alias `A` is defined as a cycle: A -> A
+  label 0..5: cyclic type alias declared here
+  note: wrap one member in a record or variant to make the recursion well-founded, or remove the alias
+error type.cyclic-alias: type alias `B` is defined as a cycle: B -> C -> B
+  label 6..11: cyclic type alias declared here
+  note: wrap one member in a record or variant to make the recursion well-founded, or remove the alias
+error type.cyclic-alias: type alias `C` is defined as a cycle: C -> B -> C
+  label 12..17: cyclic type alias declared here
+  note: wrap one member in a record or variant to make the recursion well-founded, or remove the alias

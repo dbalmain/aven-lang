@@ -57,6 +57,28 @@ fn top_level_comptime_declarations_are_known_type_names() {
 }
 
 #[test]
+fn reports_cyclic_transparent_type_aliases() {
+    let output = parse_module("A = B\nB = A\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(check.diagnostics.len(), 2);
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::CYCLIC_ALIAS))
+    );
+}
+
+#[test]
+fn allows_constructor_guarded_recursive_types() {
+    let output = parse_module("Tree = { value: Int, children: Tree }\n");
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
 fn reports_unknown_uppercase_type_names() {
     let output = parse_module("value : Missing = value\n");
     let check = check_module(&output.module);

@@ -54,6 +54,7 @@ pub mod parse {
 }
 
 pub mod ty {
+    pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const LOWERCASE_VARIANT_TAG: &str = "type.lowercase-variant-tag";
     pub const MISMATCH: &str = "type.mismatch";
     pub const MISSING_FIELD: &str = "type.missing-field";
@@ -97,6 +98,7 @@ pub const ALL: &[&str] = &[
     parse::UNEXPECTED_INDENTATION,
     parse::UNEXPECTED_SEPARATOR,
     parse::UNSUPPORTED_SYNTAX,
+    ty::CYCLIC_ALIAS,
     ty::LOWERCASE_VARIANT_TAG,
     ty::MISMATCH,
     ty::MISSING_FIELD,

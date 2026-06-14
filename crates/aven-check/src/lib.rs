@@ -11,7 +11,7 @@ pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::{Type, TypeRowEntry};
 
 pub(crate) use checker::Checker;
-pub(crate) use lower::{known_type_names, type_definitions};
+pub(crate) use lower::{cyclic_alias_diagnostics, known_type_names, type_definitions};
 
 const BUILTIN_TYPES: &[&str] = &[
     "Bool", "Float", "Int", "Nil", "Text", "Unit",
@@ -29,8 +29,10 @@ pub struct CheckOutput {
 pub fn check_module(module: &Module) -> CheckOutput {
     let known_types = known_type_names(module);
     let type_definitions = type_definitions(module, &known_types);
+    let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
     let mut checker = Checker::with_module(known_types, type_definitions, module);
 
+    checker.diagnostics.extend(alias_diagnostics);
     checker.check_module(module);
 
     CheckOutput {
