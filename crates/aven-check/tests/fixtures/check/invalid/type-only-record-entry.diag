@@ -1,6 +1,6 @@
 error type.type-only-record-entry: optional record fields are only valid in type position
   label 10..15: optional field marker here
-  note: remove `?` in value records; use `field = Nil` when the value is absent
+  note: remove `?` in value records; use `field: Nil` when the value is absent
 error type.type-only-record-entry: open row markers are only valid in type position
-  label 26..29: open row marker here
+  label 25..28: open row marker here
   note: remove `.._` from value records

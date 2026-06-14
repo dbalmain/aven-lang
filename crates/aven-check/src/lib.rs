@@ -536,7 +536,7 @@ impl<'a> Checker<'a> {
                         Diagnostic::error("optional record fields are only valid in type position")
                             .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
                             .with_label(Label::primary(*name_span, "optional field marker here"))
-                            .with_note("remove `?` in value records; use `field = Nil` when the value is absent"),
+                            .with_note("remove `?` in value records; use `field: Nil` when the value is absent"),
                     );
                 }
                 RecordEntry::Open { span } => {
@@ -1399,7 +1399,7 @@ impl<'a> Checker<'a> {
                     "this record is missing a required field",
                 ))
                 .with_note(format!(
-                    "add `{name} = ...`, or make the field optional with `{name}?` in the type"
+                    "add `{name}: ...`, or make the field optional with `{name}?` in the type"
                 )),
         );
     }
@@ -2439,7 +2439,7 @@ mod tests {
 
     #[test]
     fn top_level_comptime_declarations_are_known_type_names() {
-        let output = parse_module("User = { name = Text }\nvalue : User = user\n");
+        let output = parse_module("User = { name: Text }\nvalue : User = user\n");
         let check = check_module(&output.module);
 
         assert!(check.diagnostics.is_empty());
@@ -2502,7 +2502,7 @@ mod tests {
     fn lowers_record_and_variant_annotations() {
         let output = parse_module(
             "FileError = @{Io}\n\
-             user : { .._, name = Text, email = Text?, phone? = Text, -password } = current\n\
+             user : { .._, name: Text, email: Text?, phone?: Text, -password } = current\n\
              error : @{ParseError(Text), NotFound, ..FileError, -Internal} = value\n",
         );
 
@@ -2608,7 +2608,7 @@ mod tests {
     fn literal_binding_mismatch_defers_non_literals_and_non_scalar_annotations() {
         for source in [
             "value : Float\nvalue = 42\n",
-            "value : { name = Text } = \"hi\"\n",
+            "value : { name: Text } = \"hi\"\n",
             "value : Missing = \"hi\"\n",
             "value : Missing\nvalue = \"hi\"\n",
         ] {
@@ -2864,7 +2864,7 @@ mod tests {
     fn contextual_blocks_check_final_expressions() {
         for source in [
             "value : (Int) -> Text =\n  (x) => x\n",
-            "value : { name = Text } =\n  { name = 1 }\n",
+            "value : { name: Text } =\n  { name: 1 }\n",
             "value : Array[Text] =\n  [1]\n",
             "identity = (x) => x\nvalue : Int =\n  identity(\"hi\")\n",
         ] {
@@ -3351,7 +3351,7 @@ mod tests {
 
     #[test]
     fn infer_value_synthesizes_literal_record_types() {
-        let output = parse_module("other = { id = 1, name = \"Ada\" }\n");
+        let output = parse_module("other = { id: 1, name: \"Ada\" }\n");
         let known_types = known_type_names(&output.module);
         let type_definitions = type_definitions(&output.module, &known_types);
         let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
@@ -3378,8 +3378,8 @@ mod tests {
     #[test]
     fn inferred_record_identifier_values_report_field_type_mismatches() {
         for source in [
-            "other = { id = 1 }\nvalue : { id = Text } = other\n",
-            "other = { user = { name = 1 } }\nvalue : { user = { name = Text } } = other\n",
+            "other = { id: 1 }\nvalue : { id: Text } = other\n",
+            "other = { user: { name: 1 } }\nvalue : { user: { name: Text } } = other\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
@@ -3395,7 +3395,7 @@ mod tests {
     #[test]
     fn inferred_record_identifier_values_report_missing_and_unexpected_fields() {
         let missing =
-            parse_module("other = { id = 1 }\nvalue : { id = Int, name = Text } = other\n");
+            parse_module("other = { id: 1 }\nvalue : { id: Int, name: Text } = other\n");
         let missing_check = check_module(&missing.module);
         assert_eq!(
             matching_codes(&missing_check.diagnostics, codes::ty::MISSING_FIELD),
@@ -3403,7 +3403,7 @@ mod tests {
         );
 
         let unexpected =
-            parse_module("other = { id = 1, name = \"Ada\" }\nvalue : { id = Int } = other\n");
+            parse_module("other = { id: 1, name: \"Ada\" }\nvalue : { id: Int } = other\n");
         let unexpected_check = check_module(&unexpected.module);
         assert_eq!(
             matching_codes(&unexpected_check.diagnostics, codes::ty::UNEXPECTED_FIELD),
@@ -3414,9 +3414,9 @@ mod tests {
     #[test]
     fn inferred_record_identifier_values_accept_compatible_records() {
         for source in [
-            "other = { id = 1 }\nvalue : { id = Int } = other\n",
-            "other = { id = 1, name = \"Ada\" }\nvalue : { .._, id = Int } = other\n",
-            "other = { name = \"Ada\", id = 1 }\nvalue : { id = Int, name = Text } = other\n",
+            "other = { id: 1 }\nvalue : { id: Int } = other\n",
+            "other = { id: 1, name: \"Ada\" }\nvalue : { .._, id: Int } = other\n",
+            "other = { name: \"Ada\", id: 1 }\nvalue : { id: Int, name: Text } = other\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
@@ -3439,7 +3439,7 @@ mod tests {
     #[test]
     fn record_identifier_value_checking_defers_open_actual_types() {
         let output =
-            parse_module("other : { .._, id = Int } = rec\nvalue : { id = Int } = other\n");
+            parse_module("other : { .._, id: Int } = rec\nvalue : { id: Int } = other\n");
         let check = check_module(&output.module);
 
         assert!(
@@ -3499,7 +3499,7 @@ mod tests {
             "other : Float = 1\nvalue : Int = other\n",
             "other : Missing = value\nvalue : Text = other\n",
             "other : Text = \"hi\"\nother : Int = 1\nvalue : Int = other\n",
-            "User = { name = Text }\nother : User = { name = \"a\" }\nvalue : { name = Text } = other\n",
+            "User = { name: Text }\nother : User = { name: \"a\" }\nvalue : { name: Text } = other\n",
             "other = name\nvalue : Int = other\n",
             "other = f(1)\nvalue : Int = other\n",
         ] {
@@ -3758,7 +3758,7 @@ mod tests {
 
     #[test]
     fn record_values_accept_exact_literal_record_annotations() {
-        let output = parse_module("value : { name = Text } = { name = \"x\" }\n");
+        let output = parse_module("value : { name: Text } = { name: \"x\" }\n");
         let check = check_module(&output.module);
 
         assert!(check.diagnostics.is_empty());
@@ -3766,7 +3766,7 @@ mod tests {
 
     #[test]
     fn record_values_report_field_value_mismatches() {
-        let output = parse_module("value : { name = Text } = { name = 42 }\n");
+        let output = parse_module("value : { name: Text } = { name: 42 }\n");
         let check = check_module(&output.module);
 
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -3778,7 +3778,7 @@ mod tests {
 
     #[test]
     fn record_values_report_missing_required_fields() {
-        let output = parse_module("value : { name = Text, age = Int } = { name = \"x\" }\n");
+        let output = parse_module("value : { name: Text, age: Int } = { name: \"x\" }\n");
         let check = check_module(&output.module);
 
         assert_eq!(
@@ -3789,7 +3789,7 @@ mod tests {
 
     #[test]
     fn record_values_report_unexpected_fields_in_closed_records() {
-        let output = parse_module("value : { name = Text } = { name = \"x\", extra = 1 }\n");
+        let output = parse_module("value : { name: Text } = { name: \"x\", extra: 1 }\n");
         let check = check_module(&output.module);
 
         assert_eq!(
@@ -3800,7 +3800,7 @@ mod tests {
 
     #[test]
     fn open_record_types_allow_extra_value_fields() {
-        let output = parse_module("value : { .._, name = Text } = { name = \"x\", extra = 1 }\n");
+        let output = parse_module("value : { .._, name: Text } = { name: \"x\", extra: 1 }\n");
         let check = check_module(&output.module);
 
         assert!(check.diagnostics.is_empty());
@@ -3808,18 +3808,18 @@ mod tests {
 
     #[test]
     fn optional_record_fields_may_be_absent_or_checked_when_present() {
-        let output = parse_module("value : { name = Text, phone? = Text } = { name = \"x\" }\n");
+        let output = parse_module("value : { name: Text, phone?: Text } = { name: \"x\" }\n");
         let check = check_module(&output.module);
         assert!(check.diagnostics.is_empty());
 
-        let output = parse_module("value : { phone? = Text } = { phone = 42 }\n");
+        let output = parse_module("value : { phone?: Text } = { phone: 42 }\n");
         let check = check_module(&output.module);
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
     }
 
     #[test]
     fn nullable_record_fields_accept_nil() {
-        let output = parse_module("value : { email = Text? } = { email = Nil }\n");
+        let output = parse_module("value : { email: Text? } = { email: Nil }\n");
         let check = check_module(&output.module);
 
         assert!(check.diagnostics.is_empty());
@@ -3828,7 +3828,7 @@ mod tests {
     #[test]
     fn nested_record_values_are_checked_recursively() {
         let output =
-            parse_module("value : { user = { name = Text } } = { user = { name = 42 } }\n");
+            parse_module("value : { user: { name: Text } } = { user: { name: 42 } }\n");
         let check = check_module(&output.module);
 
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -3841,7 +3841,7 @@ mod tests {
     #[test]
     fn nested_matched_record_markers_are_reported_once() {
         let output =
-            parse_module("value : { r = { name = Text } } = { r = { name = 1, extra? = 2 } }\n");
+            parse_module("value : { r: { name: Text } } = { r: { name: 1, extra?: 2 } }\n");
         let check = check_module(&output.module);
 
         assert_eq!(
@@ -3852,7 +3852,7 @@ mod tests {
 
     #[test]
     fn set_element_record_markers_are_reported_once() {
-        let output = parse_module("value : Set[{ name = Text }] = @{ { name = 1, extra? = 2 } }\n");
+        let output = parse_module("value : Set[{ name: Text }] = @{ { name: 1, extra?: 2 } }\n");
         let check = check_module(&output.module);
 
         assert_eq!(
@@ -3864,7 +3864,7 @@ mod tests {
     #[test]
     fn extra_field_record_markers_are_reported_once() {
         let output =
-            parse_module("value : { name = Text } = { name = 1, blob = { inner? = 3 } }\n");
+            parse_module("value : { name: Text } = { name: 1, blob: { inner?: 3 } }\n");
         let check = check_module(&output.module);
 
         assert_eq!(
@@ -3876,7 +3876,7 @@ mod tests {
     #[test]
     fn open_extra_field_record_markers_are_reported_once() {
         let output = parse_module(
-            "value : { .._, name = Text } = { name = \"x\", blob = { inner? = 3 } }\n",
+            "value : { .._, name: Text } = { name: \"x\", blob: { inner?: 3 } }\n",
         );
         let check = check_module(&output.module);
 
@@ -3889,8 +3889,8 @@ mod tests {
     #[test]
     fn record_value_checking_defers_computed_rows() {
         for source in [
-            "Base = { id = Int }\nvalue : { ..Base, name = Text } = { name = \"x\" }\n",
-            "value : { name = Text } = { ..other, extra = 1 }\n",
+            "Base = { id: Int }\nvalue : { ..Base, name: Text } = { name: \"x\" }\n",
+            "value : { name: Text } = { ..other, extra: 1 }\n",
         ] {
             let output = parse_module(source);
             let check = check_module(&output.module);
@@ -3912,7 +3912,7 @@ mod tests {
 
     #[test]
     fn aliased_record_types_are_normalized_before_field_checking() {
-        let output = parse_module("Rec = { name = Text }\nvalue : Rec = { name = 42 }\n");
+        let output = parse_module("Rec = { name: Text }\nvalue : Rec = { name: 42 }\n");
         let check = check_module(&output.module);
 
         assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -4009,7 +4009,7 @@ mod tests {
 
     #[test]
     fn check_module_reports_type_only_entries_in_value_records() {
-        let output = parse_module("value = { name? = 1 }\n");
+        let output = parse_module("value = { name?: 1 }\n");
         let check = check_module(&output.module);
 
         assert_eq!(check.diagnostics.len(), 1);

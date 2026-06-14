@@ -1,1 +1,1 @@
-value = { phone? = "123", .._ }
+value = { phone?: "123", .._ }
