@@ -153,6 +153,7 @@ fn needs_space(previous_previous: Option<&Token>, previous: &Token, current: &To
         || is_close_paren_or_bracket(current)
         || is_tight_postfix_operator(current)
         || is_tight_access_operator(current)
+        || is_colon(current)
     {
         return false;
     }
@@ -255,6 +256,13 @@ fn is_binary_operator(token: &Token) -> bool {
 
 fn is_tight_access_operator(token: &Token) -> bool {
     matches!(&token.kind, TokenKind::Operator(operator) if operator == "." || operator == "?.")
+}
+
+/// The annotation/field colon binds tight to the label on its left (`name: T`,
+/// `x: Int`) and keeps a single space after it. The `::` replace marker is a
+/// separate binary operator and stays spaced on both sides.
+fn is_colon(token: &Token) -> bool {
+    matches!(&token.kind, TokenKind::Operator(operator) if operator == ":")
 }
 
 fn is_tight_postfix_operator(token: &Token) -> bool {
@@ -376,7 +384,7 @@ mod tests {
                 "sum=add(1,2)+user . age\njson=users ?. active |>toJson ( )\nshape=@{Red,Ok(1)}\nrecord={name:\"Ada\",age:36}\nnegative=-1\noffset=1 + -2\ncleaned={..user,-password}\n"
             ),
             Ok(
-                "sum = add(1, 2) + user.age\njson = users?.active |> toJson()\nshape = @{ Red, Ok(1) }\nrecord = { name : \"Ada\", age : 36 }\nnegative = -1\noffset = 1 + -2\ncleaned = { ..user, -password }\n"
+                "sum = add(1, 2) + user.age\njson = users?.active |> toJson()\nshape = @{ Red, Ok(1) }\nrecord = { name: \"Ada\", age: 36 }\nnegative = -1\noffset = 1 + -2\ncleaned = { ..user, -password }\n"
                     .to_owned()
             )
         );

@@ -1,0 +1,5 @@
+value:Text=name
+greet=(person:Text):Text=>person
+User={name:Text,age:Int}
+Contact={phone?:Text}
+older={..base,age::37}
