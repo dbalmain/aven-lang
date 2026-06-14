@@ -1094,17 +1094,25 @@ Design decisions locked before starting:
 
 Slices:
 
-- 13.1 — row IR + record-row unification: add `Row`/`RowTail` and a row
-  metavariable to the unifier; lower plain-field record annotations/literals and
-  the `.._` open marker into normalized rows; implement Leijen record-row
-  unification and route record type comparison/checking through it. Observable
-  win: an open record requirement `{ .._, name: Text }` accepts any record with
-  at least `name: Text`, checked by unification rather than deferral. Transforms
-  still defer.
-- 13.2 — open-by-default inference: field access `r.x` constrains `r` to an open
-  row containing `x`; record-consuming function arguments infer an open row, so
-  `length = (p) => sqrt(p.x * p.x + p.y * p.y)` infers a polymorphic open-record
-  parameter. Record literals stay closed.
+- 13.1 — checking-direction open records (done): open-record width subtyping
+  already worked — `compare_record` skips unexpected-field reports when the
+  expected row is open, so `{ .._, name: Text }` accepts any record with at least
+  `name: Text`, while a missing required field and an extra field on a closed
+  record still error. This slice only locked that behavior with fixtures; the
+  row-variable machinery for the *inference* direction is 13.2.
+- 13.2a — structured row IR migration: replace `Type::Record`/`Type::Variant`'s
+  `Vec<TypeRowEntry>` with a normalized `Type::Record(Row)` / `Type::Variant(Row)`
+  where `Row { entries, tail }`, `entries` are labelled `RowEntry::Field`/`Tag`,
+  and `tail` is `Closed` or `Open` (anonymous open marker, preserving today's
+  `open: bool` semantics). Surface transforms (spreads, deletes, renames,
+  overwrites) and any non-normalizable row lower to `Type::Deferred` while still
+  walking children for nested diagnostics — preserving today's behavior exactly.
+  Mechanical, behavior-preserving, guarded by the existing suite.
+- 13.2b — row variable + open-row inference: refine `RowTail::Open` into a row
+  metavariable `Var(u32)` with a row substitution in the unifier; implement Leijen
+  record-row unification; make field access `r.x` constrain `r` to an open row
+  containing `x`, so `length = (p) => sqrt(p.x * p.x + p.y * p.y)` infers a
+  polymorphic open-record parameter. Record literals stay closed.
 - 13.3 — variant rows: the same row machinery for `@{...}` tagged variants — open
   variant requirements `@{ ..r, Circle(Float), ... }`, constructor checking
   against open variant rows, and match exhaustiveness that requires a `_` arm on
