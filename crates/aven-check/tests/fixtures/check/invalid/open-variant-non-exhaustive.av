@@ -1,0 +1,3 @@
+source = A
+result = source ?>
+  A => 1

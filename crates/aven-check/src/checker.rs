@@ -336,7 +336,10 @@ impl<'a> Checker<'a> {
     fn check_match_arms(&mut self, subject: &Expr, arms: &[MatchArm], expected: Option<&Type>) {
         self.check_value_expr(subject);
         let env = self.local_types.inference_env();
-        let subject_type = self.infer_local_value(&env, subject);
+        let inferred_subject = self.infer(&env, subject);
+        let resolved_subject = self.resolve_and_default(&inferred_subject);
+        self.check_match_exhaustiveness(subject, arms, &resolved_subject);
+        let subject_type = is_concrete_type(&resolved_subject).then_some(resolved_subject);
 
         for arm in arms {
             self.local_types.push();
@@ -353,6 +356,62 @@ impl<'a> Checker<'a> {
                 self.check_value_expr(&arm.body);
             }
             self.local_types.pop();
+        }
+    }
+
+    fn check_match_exhaustiveness(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        subject_type: &Type,
+    ) {
+        if type_contains_deferred(subject_type) {
+            return;
+        }
+        let Type::Variant(row) = subject_type else {
+            return;
+        };
+        if row
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, RowEntry::Field { .. }))
+        {
+            return;
+        }
+
+        let has_default = arms
+            .iter()
+            .any(|arm| arm.guards.is_empty() && is_catch_all_pattern(&arm.pattern));
+        if has_default {
+            return;
+        }
+
+        if matches!(row.tail, RowTail::Open | RowTail::Var(_)) {
+            self.report_open_variant_non_exhaustive(subject.span);
+            return;
+        }
+
+        let covered: HashSet<_> = arms
+            .iter()
+            .filter(|arm| arm.guards.is_empty())
+            .filter_map(|arm| variant_pattern_tag(&arm.pattern))
+            .collect();
+        let mut seen = HashSet::new();
+        let missing: Vec<_> = row
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                RowEntry::Tag { name, .. }
+                    if !covered.contains(name.as_str()) && seen.insert(name.as_str()) =>
+                {
+                    Some(name.as_str())
+                }
+                RowEntry::Tag { .. } | RowEntry::Field { .. } => None,
+            })
+            .collect();
+
+        if !missing.is_empty() {
+            self.report_missing_variant_match_tags(&missing, subject.span);
         }
     }
 
@@ -671,6 +730,18 @@ impl<'a> Checker<'a> {
     }
 
     fn check_variant_type_against_type(&mut self, expected: &Row, actual: &Row, span: Span) {
+        if actual.tail != RowTail::Open
+            && self
+                .unifier
+                .unify(
+                    &Type::Variant(expected.clone()),
+                    &Type::Variant(actual.clone()),
+                )
+                .is_ok()
+        {
+            return;
+        }
+
         let Some(actual_tags) = literal_variant_tags(actual) else {
             return;
         };
@@ -1140,6 +1211,41 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_open_variant_non_exhaustive(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("non-exhaustive match on an open variant")
+                .with_code(codes::ty::NON_EXHAUSTIVE_MATCH)
+                .with_label(Label::primary(
+                    span,
+                    "this subject may contain tags beyond those listed",
+                ))
+                .with_note("add a default arm such as `_ => ...`"),
+        );
+    }
+
+    fn report_missing_variant_match_tags(&mut self, missing: &[&str], span: Span) {
+        let tags = missing
+            .iter()
+            .map(|tag| format!("`{tag}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = if missing.len() == 1 {
+            format!("non-exhaustive match; missing tag {tags}")
+        } else {
+            format!("non-exhaustive match; missing tags {tags}")
+        };
+
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(codes::ty::NON_EXHAUSTIVE_MATCH)
+                .with_label(Label::primary(
+                    span,
+                    "this subject has variant tags without matching arms",
+                ))
+                .with_note("add the missing arm(s), or add `_ => ...` as a default"),
+        );
+    }
+
     fn report_type_mismatch_between_types(&mut self, expected: &str, actual: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("expected `{expected}`, found `{actual}`"))
@@ -1378,6 +1484,26 @@ fn literal_variant_tags(row: &Row) -> Option<Vec<VariantTagShape<'_>>> {
     Some(tags)
 }
 
+fn is_catch_all_pattern(pattern: &Expr) -> bool {
+    match &pattern.kind {
+        ExprKind::Group(inner) => is_catch_all_pattern(inner),
+        ExprKind::Name(_) => true,
+        _ => false,
+    }
+}
+
+fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
+    match &pattern.kind {
+        ExprKind::Group(inner) => variant_pattern_tag(inner),
+        ExprKind::ComptimeName(tag) => Some(tag),
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::ComptimeName(tag) => Some(tag),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl<'a> Checker<'a> {
     /// Instantiate and fully resolve a top-level binding's inferred type, used by
     /// white-box synthesis tests. Production code consumes the generalized scheme
@@ -1459,7 +1585,7 @@ impl<'a> Checker<'a> {
                     name: name.clone(),
                     payload: Vec::new(),
                 }],
-                tail: RowTail::Closed,
+                tail: RowTail::Var(self.unifier.fresh_row_var()),
             }),
             ExprKind::Group(inner) => self.infer(env, inner),
             ExprKind::Tuple(elements) => Type::Tuple(
@@ -1792,7 +1918,7 @@ impl<'a> Checker<'a> {
                 name: tag.to_owned(),
                 payload,
             }],
-            tail: RowTail::Closed,
+            tail: RowTail::Var(self.unifier.fresh_row_var()),
         })
     }
 

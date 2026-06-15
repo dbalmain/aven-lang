@@ -138,6 +138,7 @@ impl Unifier {
                 self.unify_many(left, right)
             }
             (Type::Record(left), Type::Record(right)) => self.unify_rows(left, right),
+            (Type::Variant(left), Type::Variant(right)) => self.unify_rows(left, right),
             _ => Err(()),
         }
     }
@@ -182,12 +183,10 @@ impl Unifier {
         let mut left_only = Vec::new();
 
         for left_entry in left.entries {
-            let Some(left_name) = record_field_name(&left_entry) else {
-                return Err(());
-            };
+            let left_name = row_entry_label(&left_entry);
             let Some(position) = right_entries
                 .iter()
-                .position(|entry| record_field_name(entry) == Some(left_name))
+                .position(|entry| row_entry_label(entry) == left_name)
             else {
                 left_only.push(left_entry);
                 continue;
@@ -195,13 +194,6 @@ impl Unifier {
 
             let right_entry = right_entries.remove(position);
             self.unify_row_entries(&left_entry, &right_entry)?;
-        }
-
-        if right_entries
-            .iter()
-            .any(|entry| record_field_name(entry).is_none())
-        {
-            return Err(());
         }
 
         let left_remainder = Row {
@@ -228,6 +220,18 @@ impl Unifier {
         match (left, right) {
             (RowEntry::Field { ty: left_type, .. }, RowEntry::Field { ty: right_type, .. }) => {
                 self.unify_inner(left_type, right_type)
+            }
+            (
+                RowEntry::Tag {
+                    payload: left_payload,
+                    ..
+                },
+                RowEntry::Tag {
+                    payload: right_payload,
+                    ..
+                },
+            ) if left_payload.len() == right_payload.len() => {
+                self.unify_many(left_payload, right_payload)
             }
             _ => Err(()),
         }
@@ -331,10 +335,9 @@ impl Unifier {
     }
 }
 
-fn record_field_name(entry: &RowEntry) -> Option<&str> {
+fn row_entry_label(entry: &RowEntry) -> &str {
     match entry {
-        RowEntry::Field { name, .. } => Some(name),
-        RowEntry::Tag { .. } => None,
+        RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
     }
 }
 
@@ -351,6 +354,13 @@ mod tests {
             name: name.to_owned(),
             ty,
             optional: false,
+        }
+    }
+
+    fn tag(name: &str, payload: Vec<Type>) -> RowEntry {
+        RowEntry::Tag {
+            name: name.to_owned(),
+            payload,
         }
     }
 
@@ -447,5 +457,88 @@ mod tests {
 
         assert_eq!(unifier.unify(&left, &right), Err(()));
         assert_eq!(unifier.resolve(&left), left);
+    }
+
+    #[test]
+    fn variant_unification_merges_open_tag_rows() {
+        let mut unifier = Unifier::default();
+        let left_tail = unifier.fresh_row_var();
+        let right_tail = unifier.fresh_row_var();
+        let left = Type::Variant(Row {
+            entries: vec![tag("Zero", Vec::new())],
+            tail: RowTail::Var(left_tail),
+        });
+        let right = Type::Variant(Row {
+            entries: vec![tag("Pos", Vec::new())],
+            tail: RowTail::Var(right_tail),
+        });
+
+        assert_eq!(unifier.unify(&left, &right), Ok(()));
+        let Type::Variant(resolved) = unifier.resolve(&left) else {
+            panic!("variant resolution should preserve the outer type");
+        };
+        assert!(resolved.entries.contains(&tag("Zero", Vec::new())));
+        assert!(resolved.entries.contains(&tag("Pos", Vec::new())));
+        assert!(matches!(resolved.tail, RowTail::Var(_)));
+    }
+
+    #[test]
+    fn variant_unification_checks_payloads_and_entry_kinds() {
+        let mut unifier = Unifier::default();
+        let int_tag = Type::Variant(Row {
+            entries: vec![tag("Ok", vec![named("Int")])],
+            tail: RowTail::Closed,
+        });
+        let text_tag = Type::Variant(Row {
+            entries: vec![tag("Ok", vec![named("Text")])],
+            tail: RowTail::Closed,
+        });
+        let arity_mismatch = Type::Variant(Row {
+            entries: vec![tag("Ok", vec![named("Int"), named("Text")])],
+            tail: RowTail::Closed,
+        });
+
+        assert_eq!(unifier.unify(&int_tag, &text_tag), Err(()));
+        assert_eq!(unifier.unify(&int_tag, &arity_mismatch), Err(()));
+        assert_eq!(
+            unifier.unify(
+                &Type::Variant(Row {
+                    entries: vec![field("Ok", named("Int"))],
+                    tail: RowTail::Closed,
+                }),
+                &int_tag,
+            ),
+            Err(())
+        );
+    }
+
+    #[test]
+    fn variant_unification_closes_sound_rows_and_rejects_extra_tags() {
+        let mut unifier = Unifier::default();
+        let tail = unifier.fresh_row_var();
+        let open = Type::Variant(Row {
+            entries: vec![tag("Zero", Vec::new()), tag("Pos", Vec::new())],
+            tail: RowTail::Var(tail),
+        });
+        let closed = Type::Variant(Row {
+            entries: vec![tag("Zero", Vec::new()), tag("Pos", Vec::new())],
+            tail: RowTail::Closed,
+        });
+
+        assert_eq!(unifier.unify(&open, &closed), Ok(()));
+        assert_eq!(unifier.resolve(&open), closed);
+
+        let mut unifier = Unifier::default();
+        let tail = unifier.fresh_row_var();
+        let too_wide = Type::Variant(Row {
+            entries: vec![tag("Zero", Vec::new()), tag("Pos", Vec::new())],
+            tail: RowTail::Var(tail),
+        });
+        let only_zero = Type::Variant(Row {
+            entries: vec![tag("Zero", Vec::new())],
+            tail: RowTail::Closed,
+        });
+
+        assert_eq!(unifier.unify(&too_wide, &only_zero), Err(()));
     }
 }

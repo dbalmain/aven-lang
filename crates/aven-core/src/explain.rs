@@ -167,6 +167,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A record value is missing a field required by its declared record type. Add the field or make the type field optional.",
     },
     DiagnosticExplanation {
+        code: codes::ty::NON_EXHAUSTIVE_MATCH,
+        text: "A variant match must cover every tag in a closed row. Matches on open variant rows also need a default arm because additional tags may be present.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::TYPE_ONLY_RECORD_ENTRY,
         text: "This record entry form is only meaningful in type position. Use it inside an annotation or replace it with a value-level record entry.",
     },

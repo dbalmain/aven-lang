@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::*;
 use aven_core::{Diagnostic, codes};
 use aven_parser::{Item, Module, collect_declarations, parse_module};
@@ -679,6 +681,116 @@ fn match_results_are_inferred_for_identifier_values() {
         !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
         "compatible inferred match result unexpectedly produced type.mismatch"
     );
+}
+
+#[test]
+fn match_results_merge_open_variant_rows() {
+    let output = parse_module("classify = (n) =>\n  n ?>\n    0 => Zero\n    _ => Pos\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let scheme = checker
+        .infer_top_level_scheme("classify")
+        .expect("inferred classify scheme");
+    let Type::Function { result, .. } = &scheme.ty else {
+        panic!("classify should infer a function type");
+    };
+    let Type::Variant(row) = result.as_ref() else {
+        panic!("classify should infer a variant result");
+    };
+    let tags: HashSet<_> = row
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            RowEntry::Tag { name, .. } => Some(name.as_str()),
+            RowEntry::Field { .. } => None,
+        })
+        .collect();
+
+    assert_eq!(tags, HashSet::from(["Zero", "Pos"]));
+    assert!(matches!(row.tail, RowTail::Var(_)));
+}
+
+#[test]
+fn tag_literals_and_constructors_infer_open_variant_rows() {
+    let output = parse_module("zero = Zero\nok = Ok(1)\ntruth = True\nnil = Nil\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    for (binding, tag) in [("zero", "Zero"), ("ok", "Ok")] {
+        let scheme = checker
+            .infer_top_level_scheme(binding)
+            .unwrap_or_else(|| panic!("inferred {binding} scheme"));
+        let Type::Variant(row) = &scheme.ty else {
+            panic!("{binding} should infer a variant type");
+        };
+        assert!(matches!(row.tail, RowTail::Var(_)));
+        assert_eq!(scheme.row_vars.len(), 1);
+        assert!(matches!(
+            row.entries.as_slice(),
+            [RowEntry::Tag { name, .. }] if name == tag
+        ));
+    }
+
+    assert_eq!(checker.infer_top_level_value("truth"), Some(named("Bool")));
+    assert_eq!(checker.infer_top_level_value("nil"), Some(named("Nil")));
+}
+
+#[test]
+fn merged_variant_rows_flow_into_closed_annotations() {
+    let accepted = parse_module(
+        "direction = n ?>\n  0 => Zero\n  _ => Pos\nvalue : @{Zero, Pos} = direction\n",
+    );
+    let accepted_check = check_module(&accepted.module);
+    assert!(accepted_check.diagnostics.is_empty());
+
+    let rejected =
+        parse_module("direction = n ?>\n  0 => Zero\n  _ => Pos\nvalue : @{Zero} = direction\n");
+    let rejected_check = check_module(&rejected.module);
+    assert_eq!(
+        matching_codes(&rejected_check.diagnostics, codes::ty::MISMATCH),
+        1
+    );
+}
+
+#[test]
+fn variant_match_exhaustiveness_uses_subject_rows() {
+    let closed_complete =
+        parse_module("source : @{A, B} = value\nresult = source ?>\n  A => 1\n  B => 2\n");
+    assert!(!has_diagnostic_code(
+        &check_module(&closed_complete.module).diagnostics,
+        codes::ty::NON_EXHAUSTIVE_MATCH
+    ));
+
+    let closed_missing = parse_module("source : @{A, B} = value\nresult = source ?>\n  A => 1\n");
+    assert_eq!(
+        matching_codes(
+            &check_module(&closed_missing.module).diagnostics,
+            codes::ty::NON_EXHAUSTIVE_MATCH,
+        ),
+        1
+    );
+
+    let open_missing_default = parse_module("source = A\nresult = source ?>\n  A => 1\n");
+    assert_eq!(
+        matching_codes(
+            &check_module(&open_missing_default.module).diagnostics,
+            codes::ty::NON_EXHAUSTIVE_MATCH,
+        ),
+        1
+    );
+
+    for source in [
+        "source = A\nresult = source ?>\n  _ => 1\n",
+        "source = A\nresult = source ?>\n  other => 1\n",
+    ] {
+        let output = parse_module(source);
+        assert!(!has_diagnostic_code(
+            &check_module(&output.module).diagnostics,
+            codes::ty::NON_EXHAUSTIVE_MATCH
+        ));
+    }
 }
 
 #[test]
