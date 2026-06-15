@@ -304,7 +304,7 @@ impl<'a> Checker<'a> {
                         Diagnostic::error("open row markers are only valid in type position")
                             .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
                             .with_label(Label::primary(*span, "open row marker here"))
-                            .with_note("remove `.._` from value records"),
+                            .with_note("remove `..` from value records"),
                     );
                 }
                 RecordEntry::Field { .. }
@@ -1280,7 +1280,7 @@ impl<'a> Checker<'a> {
                 .with_code(codes::ty::UNEXPECTED_FIELD)
                 .with_label(Label::primary(span, "this field is not in the record type"))
                 .with_note(
-                    "remove the field, or open the record type with `.._` to allow extra fields",
+                    "remove the field, or open the record type with `..` to allow extra fields",
                 ),
         );
     }

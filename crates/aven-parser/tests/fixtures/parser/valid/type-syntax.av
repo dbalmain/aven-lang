@@ -4,5 +4,5 @@ load = (path : Path) : Result[Config, ConfigError] =>
 
 mapper : (Array[a], a -> b) -> Array[b]
 value : Text? = name
-user : { .._, name: Text, email: Text?, phone?: Text, -password } = current
-error : @{ParseError(Text), NotFound, ..FileError, -Internal} = ParseError("bad")
+user : { name: Text, email: Text?, phone?: Text, -password, .. } = current
+error : @{ParseError(Text), NotFound, -Internal, ..FileError} = ParseError("bad")

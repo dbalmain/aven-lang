@@ -163,7 +163,7 @@ pub enum RecordEntry {
         to_span: Span,
         span: Span,
     },
-    /// `.._`: the open-row marker inside a record (type) shape.
+    /// `..`: the open-row marker inside a record (type) shape.
     Open { span: Span },
     /// A bare member of a `@{...}` set/variant shape: `Red`, `Ok(1)`,
     /// `ParseError(Text)`, `NotFound`.
@@ -1186,21 +1186,6 @@ impl Parser<'_> {
             {
                 return Some(RecordEntry::Open {
                     span: operator_span,
-                });
-            }
-
-            // `.._` is the open-row marker, distinct from a spread of `_`.
-            if mode == EntryMode::Record
-                && !overwrite
-                && matches!(
-                    self.current().map(|token| &token.kind),
-                    Some(TokenKind::Identifier(name)) if name == "_"
-                )
-            {
-                let underscore_span = self.current_span();
-                self.advance();
-                return Some(RecordEntry::Open {
-                    span: operator_span.merge(underscore_span),
                 });
             }
 
@@ -2560,7 +2545,7 @@ mod tests {
     #[test]
     fn parses_record_type_with_open_optional_and_delete_entries() {
         let output = parse_module(
-            "user : { .._, name: Text, email: Text?, phone?: Text, -password } = current\n",
+            "user : { name: Text, email: Text?, phone?: Text, -password, .. } = current\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2572,30 +2557,30 @@ mod tests {
             panic!("expected record type annotation");
         };
         assert_eq!(entries.len(), 5);
-        assert!(matches!(&entries[0], RecordEntry::Open { .. }));
         assert!(matches!(
-            &entries[1],
+            &entries[0],
             RecordEntry::Field { name, optional: false, .. } if name == "name"
         ));
         assert!(matches!(
-            &entries[2],
+            &entries[1],
             RecordEntry::Field { name, value, optional: false, .. }
                 if name == "email" && matches!(&value.kind, ExprKind::Nullable(_))
         ));
         assert!(matches!(
-            &entries[3],
+            &entries[2],
             RecordEntry::Field { name, optional: true, .. } if name == "phone"
         ));
         assert!(matches!(
-            &entries[4],
+            &entries[3],
             RecordEntry::Delete { name, .. } if name == "password"
         ));
+        assert!(matches!(&entries[4], RecordEntry::Open { .. }));
     }
 
     #[test]
     fn parses_variant_type_elements_spreads_and_deletes() {
         let output = parse_module(
-            "error : @{ParseError(Text), NotFound, ..FileError, -Internal} = ParseError(\"bad\")\n",
+            "error : @{ParseError(Text), NotFound, -Internal, ..FileError} = ParseError(\"bad\")\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2616,14 +2601,14 @@ mod tests {
             RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::ComptimeName(name) if name == "NotFound")
         ));
         assert!(matches!(
-            &entries[2],
+            &entries[3],
             RecordEntry::Spread {
                 overwrite: false,
                 ..
             }
         ));
         assert!(matches!(
-            &entries[3],
+            &entries[2],
             RecordEntry::Delete { name, .. } if name == "Internal"
         ));
     }

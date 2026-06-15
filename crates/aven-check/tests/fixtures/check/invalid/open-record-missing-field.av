@@ -1,1 +1,1 @@
-missingName : { .._, name: Text } = { age: 36 }
+missingName : { name: Text, .. } = { age: 36 }

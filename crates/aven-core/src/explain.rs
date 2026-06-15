@@ -176,7 +176,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::UNEXPECTED_FIELD,
-        text: "A closed record value contains a field that is not present in its declared type. Remove the field or open the record type with .._.",
+        text: "A closed record value contains a field that is not present in its declared type. Remove the field or open the record type with `..`.",
     },
     DiagnosticExplanation {
         code: codes::ty::UNKNOWN_NAME,

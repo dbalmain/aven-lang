@@ -3,4 +3,4 @@ error type.missing-field: missing field `age`
   note: add `age: ...`, or make the field optional with `age?` in the type
 error type.unexpected-field: unexpected field `extra`
   label 89..94: this field is not in the record type
-  note: remove the field, or open the record type with `.._` to allow extra fields
+  note: remove the field, or open the record type with `..` to allow extra fields

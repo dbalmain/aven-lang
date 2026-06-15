@@ -136,7 +136,7 @@ fn lowers_function_application_and_nullable_annotations() {
 fn lowers_normalized_rows_and_defers_transforms() {
     let output = parse_module(
         "FileError = @{Io}\n\
-             user : { .._, name: Text, email: Text?, phone?: Text } = current\n\
+             user : { name: Text, email: Text?, phone?: Text, .. } = current\n\
              error : @{ParseError(Text), NotFound} = value\n\
              transformed_user : { name: Text, -password } = current\n\
              transformed_error : @{ParseError(Text), ..FileError} = value\n",
@@ -1063,7 +1063,7 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
 
 #[test]
 fn variant_value_checking_defers_computed_rows() {
-    let output = parse_module("Error = @{Err(Text)}\nvalue : @{..Error, Ok(Int)} = Ok(\"x\")\n");
+    let output = parse_module("Error = @{Err(Text)}\nvalue : @{Ok(Int), ..Error} = Ok(\"x\")\n");
     let check = check_module(&output.module);
 
     assert!(
@@ -1304,7 +1304,7 @@ fn inferred_record_identifier_values_report_missing_and_unexpected_fields() {
 fn inferred_record_identifier_values_accept_compatible_records() {
     for source in [
         "other = { id: 1 }\nvalue : { id: Int } = other\n",
-        "other = { id: 1, name: \"Ada\" }\nvalue : { .._, id: Int } = other\n",
+        "other = { id: 1, name: \"Ada\" }\nvalue : { id: Int, .. } = other\n",
         "other = { name: \"Ada\", id: 1 }\nvalue : { id: Int, name: Text } = other\n",
     ] {
         let output = parse_module(source);
@@ -1327,7 +1327,7 @@ fn inferred_record_identifier_values_accept_compatible_records() {
 
 #[test]
 fn record_identifier_value_checking_defers_open_actual_types() {
-    let output = parse_module("other : { .._, id: Int } = rec\nvalue : { id: Int } = other\n");
+    let output = parse_module("other : { id: Int, .. } = rec\nvalue : { id: Int } = other\n");
     let check = check_module(&output.module);
 
     assert!(
@@ -1682,7 +1682,7 @@ fn record_values_report_unexpected_fields_in_closed_records() {
 
 #[test]
 fn open_record_types_allow_extra_value_fields() {
-    let output = parse_module("value : { .._, name: Text } = { name: \"x\", extra: 1 }\n");
+    let output = parse_module("value : { name: Text, .. } = { name: \"x\", extra: 1 }\n");
     let check = check_module(&output.module);
 
     assert!(check.diagnostics.is_empty());
@@ -1755,7 +1755,7 @@ fn extra_field_record_markers_are_reported_once() {
 #[test]
 fn open_extra_field_record_markers_are_reported_once() {
     let output =
-        parse_module("value : { .._, name: Text } = { name: \"x\", blob: { inner?: 3 } }\n");
+        parse_module("value : { name: Text, .. } = { name: \"x\", blob: { inner?: 3 } }\n");
     let check = check_module(&output.module);
 
     assert_eq!(
@@ -1767,7 +1767,7 @@ fn open_extra_field_record_markers_are_reported_once() {
 #[test]
 fn record_value_checking_defers_computed_rows() {
     for source in [
-        "Base = { id: Int }\nvalue : { ..Base, name: Text } = { name: \"x\" }\n",
+        "Base = { id: Int }\nvalue : { name: Text, ..Base } = { name: \"x\" }\n",
         "value : { name: Text } = { ..other, extra: 1 }\n",
     ] {
         let output = parse_module(source);
