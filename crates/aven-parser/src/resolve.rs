@@ -12,10 +12,13 @@ pub struct BindingSite<'a> {
 }
 
 pub fn resolve_local_definition(module: &Module, name: &str, reference: Span) -> Option<Span> {
-    module
-        .items
-        .iter()
-        .find_map(|item| resolve_in_item(item, name, reference))
+    let scope = scope_at_module(module, reference);
+
+    scope
+        .binder_at
+        .filter(|binding| binding.name == name)
+        .map(|binding| binding.span)
+        .or_else(|| find_visible_binding(&scope.visible, name))
 }
 
 pub fn resolve_local_references(
@@ -47,15 +50,7 @@ pub fn resolve_local_references(
 }
 
 pub fn visible_local_bindings(module: &Module, at: Span) -> Vec<BindingSite<'_>> {
-    let visible = Vec::new();
-
-    for item in &module.items {
-        if let Some(found) = visible_bindings_in_item(item, at, &visible) {
-            return found;
-        }
-    }
-
-    visible
+    scope_at_module(module, at).visible
 }
 
 pub fn annotation_for_definition(module: &Module, definition: Span) -> Option<&Expr> {
@@ -141,40 +136,74 @@ fn annotation_for_definition_in_expr(expr: &Expr, definition: Span) -> Option<&E
     }
 }
 
-fn resolve_in_item(item: &Item, name: &str, reference: Span) -> Option<Span> {
-    match item {
-        Item::Binding(binding) => {
-            if !binding.span.contains(reference) {
-                return None;
-            }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScopeAt<'a> {
+    visible: Vec<BindingSite<'a>>,
+    binder_at: Option<BindingSite<'a>>,
+}
 
-            if binding.name == name && binding.name_span.contains(reference) {
-                return Some(binding.name_span);
-            }
-
-            binding
-                .annotation
-                .as_ref()
-                .and_then(|annotation| resolve_in_expr(annotation, name, reference))
-                .or_else(|| resolve_in_expr(&binding.value, name, reference))
+impl<'a> ScopeAt<'a> {
+    fn from_visible(visible: Vec<BindingSite<'a>>) -> Self {
+        Self {
+            visible,
+            binder_at: None,
         }
-        Item::Signature(signature) => {
-            if !signature.span.contains(reference) {
-                return None;
-            }
-
-            if signature.name == name && signature.name_span.contains(reference) {
-                return Some(signature.name_span);
-            }
-
-            resolve_in_expr(&signature.annotation, name, reference)
-        }
-        Item::Expr(expr) => resolve_in_expr(expr, name, reference),
     }
 }
 
-fn resolve_in_expr(expr: &Expr, name: &str, reference: Span) -> Option<Span> {
-    if !expr.span.contains(reference) {
+fn scope_at_module(module: &Module, at: Span) -> ScopeAt<'_> {
+    let visible = Vec::new();
+
+    for item in &module.items {
+        if let Some(found) = scope_at_item(item, at, &visible) {
+            return found;
+        }
+    }
+
+    ScopeAt::from_visible(visible)
+}
+
+fn scope_at_item<'a>(item: &'a Item, at: Span, outer: &[BindingSite<'a>]) -> Option<ScopeAt<'a>> {
+    match item {
+        Item::Binding(binding) => {
+            if !binding.span.contains(at) {
+                return None;
+            }
+
+            let binder_at = binding_site_at(binding.name.as_str(), binding.name_span, at);
+
+            if let Some(annotation) = &binding.annotation
+                && let Some(found) = scope_at_expr(annotation, at, outer)
+            {
+                return Some(found);
+            }
+
+            scope_at_expr(&binding.value, at, outer).or_else(|| {
+                Some(ScopeAt {
+                    visible: outer.to_vec(),
+                    binder_at,
+                })
+            })
+        }
+        Item::Signature(signature) => {
+            if !signature.span.contains(at) {
+                return None;
+            }
+
+            let binder_at = binding_site_at(signature.name.as_str(), signature.name_span, at);
+            scope_at_expr(&signature.annotation, at, outer).or_else(|| {
+                Some(ScopeAt {
+                    visible: outer.to_vec(),
+                    binder_at,
+                })
+            })
+        }
+        Item::Expr(expr) => scope_at_expr(expr, at, outer),
+    }
+}
+
+fn scope_at_expr<'a>(expr: &'a Expr, at: Span, outer: &[BindingSite<'a>]) -> Option<ScopeAt<'a>> {
+    if !expr.span.contains(at) {
         return None;
     }
 
@@ -183,66 +212,128 @@ fn resolve_in_expr(expr: &Expr, name: &str, reference: Span) -> Option<Span> {
             params,
             return_annotation,
             body,
-        } => {
-            if let Some(param) = params
-                .iter()
-                .find(|param| param.name == name && param.name_span.contains(reference))
-            {
-                return Some(param.name_span);
-            }
-
-            if let Some(annotation) = return_annotation
-                && let Some(found) = resolve_in_expr(annotation, name, reference)
-            {
-                return Some(found);
-            }
-
-            if let Some(found) = resolve_in_expr(body, name, reference) {
-                return Some(found);
-            }
-
-            if body.span.contains(reference) {
-                return params
-                    .iter()
-                    .find(|param| param.name == name)
-                    .map(|param| param.name_span);
-            }
-
-            None
+        } => scope_at_lambda(params, return_annotation.as_deref(), body, at, outer),
+        ExprKind::Match { subject, arms, .. } => {
+            scope_at_expr(subject, at, outer).or_else(|| scope_at_match_arms(arms, at, outer))
         }
-        ExprKind::Match { subject, arms, .. } => resolve_in_match(subject, arms, name, reference),
-        ExprKind::Block(items) => resolve_in_block(items, name, reference),
-        ExprKind::Missing
-        | ExprKind::Literal(_)
-        | ExprKind::Name(_)
-        | ExprKind::ComptimeName(_)
-        | ExprKind::Tag(_) => None,
-        _ => find_map_expr_children(expr, |child| resolve_in_expr(child, name, reference)),
+        ExprKind::Block(items) => Some(scope_at_block(items, at, outer)),
+        _ => find_map_expr_children(expr, |child| scope_at_expr(child, at, outer))
+            .or_else(|| Some(ScopeAt::from_visible(outer.to_vec()))),
     }
 }
 
-fn resolve_in_block(items: &[Item], name: &str, reference: Span) -> Option<Span> {
-    let mut visible = Vec::new();
+fn scope_at_lambda<'a>(
+    params: &'a [crate::parser::Param],
+    return_annotation: Option<&'a Expr>,
+    body: &'a Expr,
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<ScopeAt<'a>> {
+    if let Some(param) = params.iter().find(|param| param.name_span.contains(at)) {
+        let binder = BindingSite {
+            name: param.name.as_str(),
+            span: param.name_span,
+        };
+        let mut visible = outer.to_vec();
+        visible.push(binder);
+        return Some(ScopeAt {
+            visible,
+            binder_at: Some(binder),
+        });
+    }
+
+    if let Some(annotation) = return_annotation
+        && let Some(found) = scope_at_expr(annotation, at, outer)
+    {
+        return Some(found);
+    }
+
+    if body.span.contains(at) {
+        let mut visible = outer.to_vec();
+        visible.extend(params.iter().map(|param| BindingSite {
+            name: param.name.as_str(),
+            span: param.name_span,
+        }));
+
+        return scope_at_expr(body, at, &visible).or(Some(ScopeAt::from_visible(visible)));
+    }
+
+    Some(ScopeAt::from_visible(outer.to_vec()))
+}
+
+fn scope_at_block<'a>(items: &'a [Item], at: Span, outer: &[BindingSite<'a>]) -> ScopeAt<'a> {
+    let mut visible = outer.to_vec();
 
     for item in items {
         let span = item_span(item);
 
-        if span.contains(reference) {
-            return resolve_in_item(item, name, reference)
-                .or_else(|| find_visible_binding(&visible, name));
+        if span.contains(at) {
+            return scope_at_item(item, at, &visible)
+                .unwrap_or_else(|| ScopeAt::from_visible(visible));
         }
 
-        if span.end <= reference.start
+        if span.end <= at.start
             && let Item::Binding(binding) = item
         {
             visible.push(BindingSite {
-                name: &binding.name,
+                name: binding.name.as_str(),
                 span: binding.name_span,
             });
         }
     }
 
-    None
+    ScopeAt::from_visible(visible)
+}
+
+fn scope_at_match_arms<'a>(
+    arms: &'a [MatchArm],
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<ScopeAt<'a>> {
+    arms.iter().find_map(|arm| {
+        if !arm.span.contains(at) {
+            return None;
+        }
+
+        let binders = pattern_bindings(&arm.pattern);
+
+        if arm.pattern.span.contains(at) {
+            let mut visible = outer.to_vec();
+            visible.extend(
+                binders
+                    .iter()
+                    .copied()
+                    .filter(|binding| binding.span.contains(at)),
+            );
+            return Some(ScopeAt {
+                visible,
+                binder_at: binding_at_reference(&binders, at),
+            });
+        }
+
+        if exprs_contain(&arm.guards, at) {
+            let mut visible = outer.to_vec();
+            visible.extend(binders);
+            return scope_at_exprs(&arm.guards, at, &visible)
+                .or(Some(ScopeAt::from_visible(visible)));
+        }
+
+        if arm.body.span.contains(at) {
+            let mut visible = outer.to_vec();
+            visible.extend(binders);
+            return scope_at_expr(&arm.body, at, &visible).or(Some(ScopeAt::from_visible(visible)));
+        }
+
+        Some(ScopeAt::from_visible(outer.to_vec()))
+    })
+}
+
+fn scope_at_exprs<'a>(
+    items: &'a [Expr],
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<ScopeAt<'a>> {
+    items.iter().find_map(|item| scope_at_expr(item, at, outer))
 }
 
 fn item_span(item: &Item) -> Span {
@@ -253,51 +344,19 @@ fn item_span(item: &Item) -> Span {
     }
 }
 
-fn resolve_in_match(
-    subject: &Expr,
-    arms: &[MatchArm],
-    name: &str,
-    reference: Span,
-) -> Option<Span> {
-    if let Some(found) = resolve_in_expr(subject, name, reference) {
-        return Some(found);
-    }
-
-    arms.iter().find_map(|arm| {
-        if !arm.span.contains(reference) {
-            return None;
-        }
-
-        let binders = pattern_bindings(&arm.pattern);
-
-        if arm.pattern.span.contains(reference) {
-            return find_binding_at_reference(&binders, name, reference);
-        }
-
-        if let Some(found) = resolve_in_exprs(&arm.guards, name, reference) {
-            return Some(found);
-        }
-
-        if exprs_contain(&arm.guards, reference) {
-            return find_visible_binding(&binders, name);
-        }
-
-        if let Some(found) = resolve_in_expr(&arm.body, name, reference) {
-            return Some(found);
-        }
-
-        if arm.body.span.contains(reference) {
-            return find_visible_binding(&binders, name);
-        }
-
-        None
-    })
+fn binding_site_at<'a>(name: &'a str, span: Span, at: Span) -> Option<BindingSite<'a>> {
+    span.contains(at).then_some(BindingSite { name, span })
 }
 
-fn resolve_in_exprs(items: &[Expr], name: &str, reference: Span) -> Option<Span> {
-    items
+fn binding_at_reference<'a>(
+    bindings: &[BindingSite<'a>],
+    reference: Span,
+) -> Option<BindingSite<'a>> {
+    bindings
         .iter()
-        .find_map(|item| resolve_in_expr(item, name, reference))
+        .rev()
+        .find(|binding| binding.span.contains(reference))
+        .copied()
 }
 
 fn exprs_contain(items: &[Expr], reference: Span) -> bool {
@@ -381,181 +440,12 @@ fn collect_pattern_bindings_from_record_entries<'a>(
     }
 }
 
-fn find_binding_at_reference(
-    bindings: &[BindingSite<'_>],
-    name: &str,
-    reference: Span,
-) -> Option<Span> {
-    bindings
-        .iter()
-        .rev()
-        .find(|binding| binding.name == name && binding.span.contains(reference))
-        .map(|binding| binding.span)
-}
-
 fn find_visible_binding(bindings: &[BindingSite<'_>], name: &str) -> Option<Span> {
     bindings
         .iter()
         .rev()
         .find(|binding| binding.name == name)
         .map(|binding| binding.span)
-}
-
-fn visible_bindings_in_item<'a>(
-    item: &'a Item,
-    at: Span,
-    outer: &[BindingSite<'a>],
-) -> Option<Vec<BindingSite<'a>>> {
-    match item {
-        Item::Binding(binding) => {
-            if !binding.span.contains(at) {
-                return None;
-            }
-
-            if let Some(annotation) = &binding.annotation
-                && let Some(found) = visible_bindings_in_expr(annotation, at, outer)
-            {
-                return Some(found);
-            }
-
-            visible_bindings_in_expr(&binding.value, at, outer).or_else(|| Some(outer.to_vec()))
-        }
-        Item::Signature(signature) => {
-            if !signature.span.contains(at) {
-                return None;
-            }
-
-            visible_bindings_in_expr(&signature.annotation, at, outer)
-                .or_else(|| Some(outer.to_vec()))
-        }
-        Item::Expr(expr) => visible_bindings_in_expr(expr, at, outer),
-    }
-}
-
-fn visible_bindings_in_expr<'a>(
-    expr: &'a Expr,
-    at: Span,
-    outer: &[BindingSite<'a>],
-) -> Option<Vec<BindingSite<'a>>> {
-    if !expr.span.contains(at) {
-        return None;
-    }
-
-    match &expr.kind {
-        ExprKind::Lambda {
-            params,
-            return_annotation,
-            body,
-        } => {
-            if let Some(param) = params.iter().find(|param| param.name_span.contains(at)) {
-                let mut visible = outer.to_vec();
-                visible.push(BindingSite {
-                    name: &param.name,
-                    span: param.name_span,
-                });
-                return Some(visible);
-            }
-
-            if let Some(annotation) = return_annotation
-                && let Some(found) = visible_bindings_in_expr(annotation, at, outer)
-            {
-                return Some(found);
-            }
-
-            if body.span.contains(at) {
-                let mut visible = outer.to_vec();
-                visible.extend(params.iter().map(|param| BindingSite {
-                    name: param.name.as_str(),
-                    span: param.name_span,
-                }));
-
-                return visible_bindings_in_expr(body, at, &visible).or(Some(visible));
-            }
-
-            Some(outer.to_vec())
-        }
-        ExprKind::Match { subject, arms, .. } => visible_bindings_in_expr(subject, at, outer)
-            .or_else(|| visible_bindings_in_match_arms(arms, at, outer)),
-        ExprKind::Block(items) => visible_bindings_in_block(items, at, outer),
-        _ => find_map_expr_children(expr, |child| visible_bindings_in_expr(child, at, outer))
-            .or_else(|| Some(outer.to_vec())),
-    }
-}
-
-fn visible_bindings_in_block<'a>(
-    items: &'a [Item],
-    at: Span,
-    outer: &[BindingSite<'a>],
-) -> Option<Vec<BindingSite<'a>>> {
-    let mut visible = outer.to_vec();
-
-    for item in items {
-        let span = item_span(item);
-
-        if span.contains(at) {
-            return visible_bindings_in_item(item, at, &visible).or(Some(visible));
-        }
-
-        if span.end <= at.start
-            && let Item::Binding(binding) = item
-        {
-            visible.push(BindingSite {
-                name: &binding.name,
-                span: binding.name_span,
-            });
-        }
-    }
-
-    Some(visible)
-}
-
-fn visible_bindings_in_match_arms<'a>(
-    arms: &'a [MatchArm],
-    at: Span,
-    outer: &[BindingSite<'a>],
-) -> Option<Vec<BindingSite<'a>>> {
-    arms.iter().find_map(|arm| {
-        if !arm.span.contains(at) {
-            return None;
-        }
-
-        let binders = pattern_bindings(&arm.pattern);
-
-        if arm.pattern.span.contains(at) {
-            let mut visible = outer.to_vec();
-            visible.extend(
-                binders
-                    .iter()
-                    .copied()
-                    .filter(|binding| binding.span.contains(at)),
-            );
-            return Some(visible);
-        }
-
-        if exprs_contain(&arm.guards, at) {
-            let mut visible = outer.to_vec();
-            visible.extend(binders);
-            return resolve_visible_bindings_in_exprs(&arm.guards, at, &visible).or(Some(visible));
-        }
-
-        if arm.body.span.contains(at) {
-            let mut visible = outer.to_vec();
-            visible.extend(binders);
-            return visible_bindings_in_expr(&arm.body, at, &visible).or(Some(visible));
-        }
-
-        Some(outer.to_vec())
-    })
-}
-
-fn resolve_visible_bindings_in_exprs<'a>(
-    items: &'a [Expr],
-    at: Span,
-    outer: &[BindingSite<'a>],
-) -> Option<Vec<BindingSite<'a>>> {
-    items
-        .iter()
-        .find_map(|item| visible_bindings_in_expr(item, at, outer))
 }
 
 #[cfg(test)]
@@ -690,6 +580,40 @@ mod tests {
         );
 
         assert_eq!(spans, None);
+    }
+
+    #[test]
+    fn local_definition_matches_visible_stack_for_reference_sites() {
+        let cases = [
+            ("x = 1\nf = (x) => x\n", "x", 2),
+            ("x = 1\nvalue = x\n", "x", 1),
+            ("f = () =>\n  x = 1\n  y = x\n", "x", 1),
+            (
+                "f = (result) =>\n  result ?>\n    @Ok(value), value > 0 => value\n",
+                "value",
+                1,
+            ),
+            (
+                "f = (result) =>\n  result ?>\n    @Ok(value), value > 0 => value\n",
+                "value",
+                2,
+            ),
+        ];
+
+        for (source, name, occurrence) in cases {
+            let output = parse_module(source);
+            let reference = nth_span(source, name, occurrence);
+            let expected = visible_local_bindings(&output.module, reference)
+                .iter()
+                .rev()
+                .find(|binding| binding.name == name)
+                .map(|binding| binding.span);
+
+            assert_eq!(
+                resolve_local_definition(&output.module, name, reference),
+                expected
+            );
+        }
     }
 
     #[test]

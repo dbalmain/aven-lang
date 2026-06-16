@@ -1269,6 +1269,9 @@ Completed parser groundwork:
   locals, top-level declarations with inferred-type detail, and builtin type
   names. Type-directed field, record-label, and tag completion remains a later
   slice.
+- Consolidation C6: goto-definition and completion local-scope queries now
+  share one position-scoped traversal that yields visible bindings plus the
+  binder, if any, under the cursor.
 - Consolidation C5: open-variant values narrowed into closed variant annotations
   now diagnose instead of silently passing.
 
