@@ -42,6 +42,20 @@ fn nullable(ty: Type) -> Type {
     Type::Nullable(Box::new(ty))
 }
 
+fn field(name: &str, ty: Type) -> RowEntry {
+    RowEntry::Field {
+        name: name.to_owned(),
+        ty,
+        optional: false,
+    }
+}
+
+fn row_label(entry: &RowEntry) -> &str {
+    match entry {
+        RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
+    }
+}
+
 #[test]
 fn lowercase_type_variables_are_not_unknown_names() {
     let output = parse_module("id : (a) -> a\nid = (value) => value\n");
@@ -1414,6 +1428,160 @@ fn infer_value_synthesizes_literal_record_types() {
             tail: RowTail::Closed,
         }))
     );
+}
+
+#[test]
+fn infer_value_synthesizes_closed_record_transform_types() {
+    let output = parse_module(
+        "base = { x: 1, y: \"yes\", old: True }\n\
+         added = { ..base, z: 2 }\n\
+         replaced = { ..base, y := \"changed\" }\n\
+         deleted = { ..base, -y }\n\
+         renamed = { ..base, old -> flag }\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker.infer_top_level_value("added"),
+        Some(Type::Record(Row {
+            entries: vec![
+                field("x", named("Int")),
+                field("y", named("Text")),
+                field("old", named("Bool")),
+                field("z", named("Int")),
+            ],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert_eq!(
+        checker.infer_top_level_value("replaced"),
+        Some(Type::Record(Row {
+            entries: vec![
+                field("x", named("Int")),
+                field("y", named("Text")),
+                field("old", named("Bool")),
+            ],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert_eq!(
+        checker.infer_top_level_value("deleted"),
+        Some(Type::Record(Row {
+            entries: vec![field("x", named("Int")), field("old", named("Bool"))],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert_eq!(
+        checker.infer_top_level_value("renamed"),
+        Some(Type::Record(Row {
+            entries: vec![
+                field("x", named("Int")),
+                field("y", named("Text")),
+                field("flag", named("Bool")),
+            ],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn infer_value_synthesizes_disjoint_spread_union() {
+    let output = parse_module("a = { x: 1 }\nb = { y: \"ok\" }\nunion = { ..a, ..b }\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker.infer_top_level_value("union"),
+        Some(Type::Record(Row {
+            entries: vec![field("x", named("Int")), field("y", named("Text"))],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn value_spread_conflict_reports_duplicate_label() {
+    let output = parse_module("a = { x: 1 }\nb = { x: 2 }\nconflict = { ..a, ..b }\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::DUPLICATE_SPREAD_LABEL),
+        1
+    );
+}
+
+#[test]
+fn infer_value_record_transforms_absorb_open_sources() {
+    let output = parse_module(
+        "source : { x: Int, .. } = current\n\
+         added = { ..source, y: 1 }\n\
+         updated = { ..source, x := 2 }\n\
+         deleted = { ..source, -x }\n\
+         from_row_var = (p) => { y: p.x, ..p }\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker.infer_top_level_value("added"),
+        Some(Type::Record(Row {
+            entries: vec![field("x", named("Int")), field("y", named("Int"))],
+            tail: RowTail::Open,
+        }))
+    );
+    assert_eq!(
+        checker.infer_top_level_value("updated"),
+        Some(Type::Record(Row {
+            entries: vec![field("x", named("Int"))],
+            tail: RowTail::Open,
+        }))
+    );
+    assert_eq!(
+        checker
+            .infer_top_level_scheme("deleted")
+            .map(|scheme| scheme.ty),
+        Some(Type::Deferred)
+    );
+
+    let row_var_scheme = checker
+        .infer_top_level_scheme("from_row_var")
+        .expect("inferred from_row_var scheme");
+    let Type::Function { result, .. } = &row_var_scheme.ty else {
+        panic!("from_row_var should infer a function type");
+    };
+    let Type::Record(row) = result.as_ref() else {
+        panic!("from_row_var should infer a record result");
+    };
+    let labels: HashSet<_> = row
+        .entries
+        .iter()
+        .map(|entry| row_label(entry).to_owned())
+        .collect();
+    assert_eq!(labels, HashSet::from(["x".to_owned(), "y".to_owned()]));
+    assert_eq!(row.tail, RowTail::Open);
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn infer_value_record_spread_of_non_record_defers_without_diagnostic() {
+    let output = parse_module("base = \"not a record\"\nspread = { ..base, x: 1 }\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker
+            .infer_top_level_scheme("spread")
+            .map(|scheme| scheme.ty),
+        Some(Type::Deferred)
+    );
+    assert!(checker.diagnostics.is_empty());
 }
 
 #[test]

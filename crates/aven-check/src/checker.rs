@@ -771,20 +771,27 @@ impl<'a> Checker<'a> {
     ) {
         self.report_value_record_markers(value_entries);
 
-        let (Some(expected), Some(actual)) = (
-            literal_record_type(row),
-            literal_record_value(value_entries, value_span),
-        ) else {
+        let Some(expected) = literal_record_type(row) else {
             self.walk_value_record_values(value_entries);
             return;
         };
 
-        let actual_fields: Vec<_> = actual
-            .fields
-            .iter()
-            .map(|field| (field.name, field.name_span, FieldValue::Value(field.value)))
-            .collect();
-        self.compare_record(&expected, &actual_fields, actual.span);
+        if let Some(actual) = literal_record_value(value_entries, value_span) {
+            let actual_fields: Vec<_> = actual
+                .fields
+                .iter()
+                .map(|field| (field.name, field.name_span, FieldValue::Value(field.value)))
+                .collect();
+            self.compare_record(&expected, &actual_fields, actual.span);
+            return;
+        }
+
+        let env = self.local_types.inference_env();
+        let actual = self.infer_record_entries(&env, value_entries);
+        if !type_contains_deferred(&actual) {
+            self.check_type_against_type(&Type::Record(row.clone()), &actual, value_span);
+        }
+        self.walk_value_record_values(value_entries);
     }
 
     fn check_variant_value_against(
@@ -1006,7 +1013,7 @@ impl<'a> Checker<'a> {
     }
 
     fn lower_row_entries(&mut self, entries: &[RecordEntry], kind: RowKind) -> Type {
-        let row = match self.fold_row_entries(entries, kind) {
+        let row = match self.fold_row_entries(entries, kind, RowFoldMode::Annotation) {
             Ok(row) => row,
             Err(()) => return Type::Deferred,
         };
@@ -1017,16 +1024,31 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn fold_row_entries(&mut self, entries: &[RecordEntry], kind: RowKind) -> Result<Row, ()> {
+    fn infer_record_entries(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
+        let row = match self.fold_row_entries(entries, RowKind::Record, RowFoldMode::Value { env })
+        {
+            Ok(row) => row,
+            Err(()) => return Type::Deferred,
+        };
+
+        Type::Record(row)
+    }
+
+    fn fold_row_entries(
+        &mut self,
+        entries: &[RecordEntry],
+        kind: RowKind,
+        mode: RowFoldMode<'_>,
+    ) -> Result<Row, ()> {
         let mut row = Row {
             entries: Vec::new(),
             tail: RowTail::Closed,
         };
 
         for (index, entry) in entries.iter().enumerate() {
-            if self.fold_row_entry(entry, kind, &mut row).is_err() {
+            if self.fold_row_entry(entry, kind, mode, &mut row).is_err() {
                 for remaining in &entries[index + 1..] {
-                    self.lower_deferred_row_entry(remaining, kind);
+                    self.fold_deferred_row_entry(remaining, kind, mode);
                 }
                 return Err(());
             }
@@ -1039,6 +1061,7 @@ impl<'a> Checker<'a> {
         &mut self,
         entry: &RecordEntry,
         kind: RowKind,
+        mode: RowFoldMode<'_>,
         row: &mut Row,
     ) -> Result<(), ()> {
         match entry {
@@ -1050,7 +1073,7 @@ impl<'a> Checker<'a> {
                 span,
                 ..
             } => {
-                let ty = self.lower_annotation(value);
+                let ty = self.fold_field_type(value, mode);
                 if kind != RowKind::Record {
                     return Err(());
                 }
@@ -1058,7 +1081,10 @@ impl<'a> Checker<'a> {
                 let entry = RowEntry::Field {
                     name: name.clone(),
                     ty,
-                    optional: *optional,
+                    optional: match mode {
+                        RowFoldMode::Annotation => *optional,
+                        RowFoldMode::Value { .. } => false,
+                    },
                 };
 
                 if *overwrite {
@@ -1075,7 +1101,10 @@ impl<'a> Checker<'a> {
                     self.report_duplicate_row_label(
                         name,
                         *span,
-                        DuplicateRowLabelContext::RecordAdd,
+                        match mode {
+                            RowFoldMode::Annotation => DuplicateRowLabelContext::RecordAdd,
+                            RowFoldMode::Value { .. } => DuplicateRowLabelContext::RecordValueAdd,
+                        },
                     );
                     Err(())
                 } else {
@@ -1119,20 +1148,23 @@ impl<'a> Checker<'a> {
                 overwrite,
                 span,
             } => {
-                let ty = self.lower_annotation(value);
-                let Some(source) = self.row_source(&ty, kind) else {
+                let Some(source) = self.fold_spread_source(value, kind, mode) else {
                     return Err(());
                 };
 
                 self.merge_source_row(row, source, *overwrite, *span)
             }
             RecordEntry::Open { .. } => {
-                row.tail = RowTail::Open;
-                Ok(())
+                if matches!(mode, RowFoldMode::Value { .. }) {
+                    Err(())
+                } else {
+                    row.tail = RowTail::Open;
+                    Ok(())
+                }
             }
             RecordEntry::Element(value) => match kind {
                 RowKind::Record => {
-                    self.lower_annotation(value);
+                    self.fold_expression(value, mode);
                     Err(())
                 }
                 RowKind::Variant => {
@@ -1157,17 +1189,61 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn lower_deferred_row_entry(&mut self, entry: &RecordEntry, kind: RowKind) {
+    fn fold_field_type(&mut self, value: &Expr, mode: RowFoldMode<'_>) -> Type {
+        match mode {
+            RowFoldMode::Annotation => self.lower_annotation(value),
+            RowFoldMode::Value { env } => self.infer(env, value),
+        }
+    }
+
+    fn fold_expression(&mut self, value: &Expr, mode: RowFoldMode<'_>) -> Type {
+        match mode {
+            RowFoldMode::Annotation => self.lower_annotation(value),
+            RowFoldMode::Value { env } => self.infer(env, value),
+        }
+    }
+
+    fn fold_spread_source(
+        &mut self,
+        value: &Expr,
+        kind: RowKind,
+        mode: RowFoldMode<'_>,
+    ) -> Option<RowSource> {
+        match mode {
+            RowFoldMode::Annotation => {
+                let ty = self.lower_annotation(value);
+                self.annotation_row_source(&ty, kind)
+            }
+            RowFoldMode::Value { env } => {
+                if kind != RowKind::Record {
+                    return None;
+                }
+                let ty = self.infer(env, value);
+                self.value_record_source(&ty)
+            }
+        }
+    }
+
+    fn fold_deferred_row_entry(
+        &mut self,
+        entry: &RecordEntry,
+        kind: RowKind,
+        mode: RowFoldMode<'_>,
+    ) {
         match entry {
             RecordEntry::Field { value, .. } | RecordEntry::Spread { value, .. } => {
-                self.lower_annotation(value);
+                self.fold_expression(value, mode);
             }
             RecordEntry::Element(value) => match kind {
                 RowKind::Record => {
-                    self.lower_annotation(value);
+                    self.fold_expression(value, mode);
                 }
                 RowKind::Variant => {
-                    self.lower_variant_tag(value);
+                    if matches!(mode, RowFoldMode::Annotation) {
+                        self.lower_variant_tag(value);
+                    } else {
+                        self.fold_expression(value, mode);
+                    }
                 }
             },
             RecordEntry::Shorthand { .. }
@@ -1177,20 +1253,32 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn row_source(&self, ty: &Type, kind: RowKind) -> Option<RowSource> {
+    fn annotation_row_source(&self, ty: &Type, kind: RowKind) -> Option<RowSource> {
         match (self.normalize(ty), kind) {
             (Type::Record(row), RowKind::Record) | (Type::Variant(row), RowKind::Variant) => {
-                if row.tail == RowTail::Closed {
-                    Some(RowSource::Closed(row))
-                } else {
-                    Some(RowSource::Open(row))
-                }
+                Some(RowSource::from_row(row))
             }
             (Type::Variable(_), _) => Some(RowSource::Open(Row {
                 entries: Vec::new(),
                 tail: RowTail::Open,
             })),
             _ => None,
+        }
+    }
+
+    fn value_record_source(&self, ty: &Type) -> Option<RowSource> {
+        let resolved = self.unifier.resolve(ty);
+        match self.normalize(&resolved) {
+            Type::Record(row) => Some(RowSource::from_row(row)),
+            Type::Deferred
+            | Type::Named(_)
+            | Type::Variable(_)
+            | Type::Meta(_)
+            | Type::Apply { .. }
+            | Type::Function { .. }
+            | Type::Nullable(_)
+            | Type::Tuple(_)
+            | Type::Variant(_) => None,
         }
     }
 
@@ -1458,6 +1546,12 @@ impl<'a> Checker<'a> {
                     "use `{name} :: ...` to replace the existing label, or remove one `{name}` entry"
                 ),
             ),
+            DuplicateRowLabelContext::RecordValueAdd => (
+                "this label is already present in the accumulated row",
+                format!(
+                    "use `{name} := ...` to replace the existing label, or remove one `{name}` entry"
+                ),
+            ),
             DuplicateRowLabelContext::VariantAdd => (
                 "this label is already present in the accumulated row",
                 "use `:..` with a replacement variant source, or remove one of the colliding tags"
@@ -1537,6 +1631,7 @@ impl<'a> Checker<'a> {
 #[derive(Debug, Clone, Copy)]
 enum DuplicateRowLabelContext {
     RecordAdd,
+    RecordValueAdd,
     VariantAdd,
     Spread,
 }
@@ -1545,6 +1640,22 @@ enum DuplicateRowLabelContext {
 enum RowSource {
     Closed(Row),
     Open(Row),
+}
+
+impl RowSource {
+    fn from_row(row: Row) -> Self {
+        if row.tail == RowTail::Closed {
+            Self::Closed(row)
+        } else {
+            Self::Open(row)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RowFoldMode<'a> {
+    Annotation,
+    Value { env: &'a TypeEnv },
 }
 
 #[derive(Debug)]
@@ -1885,24 +1996,25 @@ impl<'a> Checker<'a> {
             ExprKind::Array(elements) => self.infer_array(env, elements),
             ExprKind::Set(entries) => self.infer_set(env, entries),
             ExprKind::Record(entries) => {
-                let Some(shape) = literal_record_value(entries, expr.span) else {
-                    return Type::Deferred;
-                };
-                let mut fields = Vec::new();
-                for field in &shape.fields {
-                    let Some(value) = field.value else {
-                        return Type::Deferred;
-                    };
-                    fields.push(RowEntry::Field {
-                        name: field.name.to_owned(),
-                        ty: self.infer(env, value),
-                        optional: false,
-                    });
+                if let Some(shape) = literal_record_value(entries, expr.span) {
+                    let mut fields = Vec::new();
+                    for field in &shape.fields {
+                        let Some(value) = field.value else {
+                            return Type::Deferred;
+                        };
+                        fields.push(RowEntry::Field {
+                            name: field.name.to_owned(),
+                            ty: self.infer(env, value),
+                            optional: false,
+                        });
+                    }
+                    Type::Record(Row {
+                        entries: fields,
+                        tail: RowTail::Closed,
+                    })
+                } else {
+                    self.infer_record_entries(env, entries)
                 }
-                Type::Record(Row {
-                    entries: fields,
-                    tail: RowTail::Closed,
-                })
             }
             ExprKind::Name(name) => self.infer_name_reference(env, name),
             ExprKind::Lambda {

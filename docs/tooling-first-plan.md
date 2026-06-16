@@ -1123,9 +1123,10 @@ Slices:
   source row is statically known and closed, with structured diagnostics for
   closed-row conflicts. 13.4b adds the A-lite path for extension and update over
   open or row-variable-shaped sources, absorbing the abstract remainder as an
-  open tail. Delete/rename over open rows, value-direction record-literal
-  transform inference, and open field-rest patterns `{ x, ..rest }` remain for
-  later 13.4 slices.
+  open tail. 13.4c adds value-direction record-literal transform inference for
+  closed sources and the same A-lite extension/update behavior for open inferred
+  sources. Open field-rest patterns `{ x, ..rest }` remain for later 13.4
+  slices.
 
 Done when:
 
