@@ -65,14 +65,20 @@ impl DocumentStore {
         self.database.document(uri)
     }
 
-    fn set_semantic_diagnostics(
+    fn set_semantic(
         &mut self,
         uri: &Url,
         version: i32,
         diagnostics: Vec<AvenDiagnostic>,
+        inferred_types: Vec<aven_compiler::InferredType>,
     ) -> bool {
         self.database
-            .set_semantic_diagnostics(uri, aven_compiler::Revision::from(version), diagnostics)
+            .set_semantic(
+                uri,
+                aven_compiler::Revision::from(version),
+                diagnostics,
+                inferred_types,
+            )
             .is_some()
     }
 
@@ -316,9 +322,9 @@ async fn publish_semantic_diagnostics(
         return;
     }
 
-    let diagnostics = aven_compiler::analyze_semantics(document.parse_output()).diagnostics;
+    let semantic = aven_compiler::analyze_semantics(document.parse_output());
     let Some(document) = store.lock().ok().and_then(|mut store| {
-        if !store.set_semantic_diagnostics(&uri, version, diagnostics) {
+        if !store.set_semantic(&uri, version, semantic.diagnostics, semantic.inferred_types) {
             return None;
         }
 
@@ -497,13 +503,17 @@ fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Ho
             .map(|declaration| declaration.name_span)
     })?;
 
-    let annotation =
-        aven_parser::annotation_for_definition(&document.parse_output().module, definition)?;
-    let rendered = aven_parser::render_annotation(document.source(), annotation);
-
-    if rendered.is_empty() {
-        return None;
-    }
+    let rendered = if let Some(annotation) =
+        aven_parser::annotation_for_definition(&document.parse_output().module, definition)
+    {
+        let rendered = aven_parser::render_annotation(document.source(), annotation);
+        if rendered.is_empty() {
+            return None;
+        }
+        rendered
+    } else {
+        document.type_at(definition)?.render()
+    };
 
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -642,8 +652,8 @@ mod tests {
 
     fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
         let document = parsed_document(source);
-        let diagnostics = aven_compiler::analyze_semantics(document.parse_output()).diagnostics;
-        document.with_semantic_diagnostics(diagnostics)
+        let semantic = aven_compiler::analyze_semantics(document.parse_output());
+        document.with_semantic(semantic.diagnostics, semantic.inferred_types)
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -922,9 +932,8 @@ mod tests {
     fn parsed_document_diagnostic_report_uses_file_id() {
         let document =
             parsed_document_with_file_id(FileId(7), "value : Missing = value\n".to_owned());
-        let document = document.with_semantic_diagnostics(
-            aven_compiler::analyze_semantics(document.parse_output()).diagnostics,
-        );
+        let semantic = aven_compiler::analyze_semantics(document.parse_output());
+        let document = document.with_semantic(semantic.diagnostics, semantic.inferred_types);
         let report = document.diagnostic_report();
 
         assert_eq!(report.file_id, FileId(7));
@@ -1020,10 +1029,11 @@ mod tests {
         let uri = test_uri();
         store.set_document(uri.clone(), 1, "value = 1\n".to_owned());
 
-        assert!(store.set_semantic_diagnostics(
+        assert!(store.set_semantic(
             &uri,
             1,
-            vec![AvenDiagnostic::error("semantic diagnostic")]
+            vec![AvenDiagnostic::error("semantic diagnostic")],
+            Vec::new(),
         ));
 
         let Some(document) = store.document(&uri) else {
@@ -1043,10 +1053,11 @@ mod tests {
         store.set_document(uri.clone(), 1, "value = 1\n".to_owned());
         store.set_document(uri.clone(), 2, "value = 2\n".to_owned());
 
-        assert!(!store.set_semantic_diagnostics(
+        assert!(!store.set_semantic(
             &uri,
             1,
-            vec![AvenDiagnostic::error("stale diagnostic")]
+            vec![AvenDiagnostic::error("stale diagnostic")],
+            Vec::new(),
         ));
 
         let Some(document) = store.document(&uri) else {
@@ -1192,9 +1203,41 @@ mod tests {
     }
 
     #[test]
-    fn hover_at_position_returns_none_for_unannotated_bindings() {
-        let document = parsed_document("value = 1\nother = value\n".to_owned());
-        let hover = hover_at_position(&document, position(1, 9));
+    fn hover_at_position_shows_inferred_top_level_type() {
+        let document = parsed_document_with_semantics("value = \"hi\"\n".to_owned());
+        let Some(hover) = hover_at_position(&document, position(0, 1)) else {
+            panic!("expected hover");
+        };
+
+        assert_hover_value(hover, "```aven\nvalue : Text\n```");
+    }
+
+    #[test]
+    fn hover_at_position_shows_inferred_local_type() {
+        let document =
+            parsed_document_with_semantics("value =\n  local = \"hi\"\n  local\n".to_owned());
+        let Some(hover) = hover_at_position(&document, position(2, 3)) else {
+            panic!("expected hover");
+        };
+
+        assert_hover_value(hover, "```aven\nlocal : Text\n```");
+    }
+
+    #[test]
+    fn hover_at_position_prefers_written_annotation() {
+        let document =
+            parsed_document_with_semantics("Alias = Text\nvalue : Alias = \"hi\"\nuse = value\n");
+        let Some(hover) = hover_at_position(&document, position(2, 7)) else {
+            panic!("expected hover");
+        };
+
+        assert_hover_value(hover, "```aven\nvalue : Alias\n```");
+    }
+
+    #[test]
+    fn hover_at_position_returns_none_when_inference_defers() {
+        let document = parsed_document_with_semantics("value = missing\n".to_owned());
+        let hover = hover_at_position(&document, position(0, 1));
 
         assert!(hover.is_none());
     }

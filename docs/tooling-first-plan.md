@@ -1263,6 +1263,8 @@ Completed parser groundwork:
   concrete type when their arm body types agree. At embedded-script sizes
   whole-module re-inference is cheap, so consuming artifact invalidation for
   inferred results stays deferred until profiling shows it pays off.
+- Consolidation C2: LSP hover now shows inferred types for unannotated bindings,
+  sourced from compiler snapshots and building on C1's inferred-types API.
 
 ## To investigate later
 

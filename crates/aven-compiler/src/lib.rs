@@ -5,12 +5,14 @@ use std::hash::Hasher;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aven_check::{AnnotationLowerer, Type};
+use aven_check::AnnotationLowerer;
 use aven_core::{Diagnostic, DiagnosticReport, SourceFile};
 use aven_parser::{
     Declaration, DeclarationPhase, Expr, ExprKind, Item, Module, ParseOutput, RecordEntry,
     resolve_local_definition, walk_expr_children,
 };
+
+pub use aven_check::{InferredType, Type};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Revision(i32);
@@ -81,6 +83,7 @@ pub struct DocumentSnapshot {
     declaration_artifacts: Vec<Arc<DeclarationArtifact>>,
     invalidated_declarations: Vec<DeclarationKey>,
     semantic_diagnostics: Vec<Diagnostic>,
+    inferred_types: Vec<InferredType>,
 }
 
 impl DocumentSnapshot {
@@ -111,10 +114,15 @@ impl DocumentSnapshot {
             declaration_artifacts: declaration_artifacts.artifacts,
             invalidated_declarations: declaration_artifacts.invalidated,
             semantic_diagnostics: Vec::new(),
+            inferred_types: Vec::new(),
         }
     }
 
-    pub fn with_semantic_diagnostics(&self, semantic_diagnostics: Vec<Diagnostic>) -> Self {
+    pub fn with_semantic(
+        &self,
+        semantic_diagnostics: Vec<Diagnostic>,
+        inferred_types: Vec<InferredType>,
+    ) -> Self {
         Self {
             revision: self.revision,
             file: self.file.clone(),
@@ -123,6 +131,7 @@ impl DocumentSnapshot {
             declaration_artifacts: self.declaration_artifacts.clone(),
             invalidated_declarations: self.invalidated_declarations.clone(),
             semantic_diagnostics,
+            inferred_types,
         }
     }
 
@@ -165,6 +174,13 @@ impl DocumentSnapshot {
 
     pub fn semantic_diagnostics(&self) -> &[Diagnostic] {
         &self.semantic_diagnostics
+    }
+
+    pub fn type_at(&self, span: aven_core::Span) -> Option<&Type> {
+        self.inferred_types
+            .iter()
+            .find(|inferred| inferred.name_span.contains(span))
+            .map(|inferred| &inferred.ty)
     }
 
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
@@ -546,6 +562,7 @@ pub struct PhaseTimings {
 #[derive(Debug, Clone)]
 pub struct SemanticOutput {
     pub diagnostics: Vec<Diagnostic>,
+    pub inferred_types: Vec<InferredType>,
     pub name_duration: Option<Duration>,
     pub check_duration: Option<Duration>,
 }
@@ -554,6 +571,7 @@ pub fn analyze_semantics(parse: &ParseOutput) -> SemanticOutput {
     if parse.diagnostics.iter().any(Diagnostic::is_error) {
         return SemanticOutput {
             diagnostics: Vec::new(),
+            inferred_types: Vec::new(),
             name_duration: None,
             check_duration: None,
         };
@@ -561,14 +579,19 @@ pub fn analyze_semantics(parse: &ParseOutput) -> SemanticOutput {
 
     let (name_analysis, name_duration) = timed(|| aven_parser::analyze_names(&parse.module));
     let (check_output, check_duration) = timed(|| aven_check::check_module(&parse.module));
+    let aven_check::CheckOutput {
+        diagnostics: check_diagnostics,
+        inferred_types,
+    } = check_output;
     let diagnostics = name_analysis
         .diagnostics
         .into_iter()
-        .chain(check_output.diagnostics)
+        .chain(check_diagnostics)
         .collect();
 
     SemanticOutput {
         diagnostics,
+        inferred_types,
         name_duration: Some(name_duration),
         check_duration: Some(check_duration),
     }
@@ -589,7 +612,7 @@ fn check_source_file_at(revision: Revision, file: SourceFile) -> CheckedDocument
     let (parse, parse_duration) = timed(|| aven_parser::parse_source(&file));
     let document = DocumentSnapshot::from_parse(revision, file, parse);
     let semantic = analyze_semantics(document.parse_output());
-    let document = document.with_semantic_diagnostics(semantic.diagnostics);
+    let document = document.with_semantic(semantic.diagnostics, semantic.inferred_types);
 
     CheckedDocument {
         document,
@@ -657,11 +680,12 @@ where
         self.documents.get(key).cloned()
     }
 
-    pub fn set_semantic_diagnostics(
+    pub fn set_semantic(
         &mut self,
         key: &K,
         revision: Revision,
         diagnostics: Vec<Diagnostic>,
+        inferred_types: Vec<InferredType>,
     ) -> Option<Arc<DocumentSnapshot>> {
         let document = self.documents.get(key)?;
 
@@ -669,7 +693,7 @@ where
             return None;
         }
 
-        let document = Arc::new(document.with_semantic_diagnostics(diagnostics));
+        let document = Arc::new(document.with_semantic(diagnostics, inferred_types));
         self.documents.insert(key.clone(), Arc::clone(&document));
         Some(document)
     }
@@ -685,7 +709,7 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
 mod tests {
     use std::collections::HashSet;
 
-    use aven_core::{FileId, SourceFile, codes};
+    use aven_core::{FileId, SourceFile, Span, codes};
 
     use super::*;
 
@@ -715,6 +739,15 @@ mod tests {
 
     fn named_type(name: &str) -> Type {
         Type::Named(name.to_owned())
+    }
+
+    fn nth_span(source: &str, needle: &str, occurrence: usize) -> Span {
+        let start = source
+            .match_indices(needle)
+            .nth(occurrence)
+            .map(|(start, _)| start)
+            .unwrap_or_else(|| panic!("expected occurrence {occurrence} of {needle:?}"));
+        Span::new(start, start + needle.len())
     }
 
     #[test]
@@ -860,6 +893,20 @@ mod tests {
         assert!(checked.document.semantic_diagnostics().is_empty());
         assert!(checked.timings.name.is_none());
         assert!(checked.timings.check.is_none());
+    }
+
+    #[test]
+    fn checked_documents_expose_inferred_type_lookup() {
+        let source = "value = \"hi\"\n";
+        let checked = check_source_file(source_file(source));
+
+        assert_eq!(
+            checked
+                .document
+                .type_at(nth_span(source, "value", 0))
+                .map(Type::render),
+            Some("Text".to_owned())
+        );
     }
 
     #[test]
@@ -1064,10 +1111,11 @@ mod tests {
 
         assert!(
             database
-                .set_semantic_diagnostics(
+                .set_semantic(
                     &"file",
                     Revision::new(1),
                     vec![Diagnostic::error("stale diagnostic")],
+                    Vec::new(),
                 )
                 .is_none()
         );
