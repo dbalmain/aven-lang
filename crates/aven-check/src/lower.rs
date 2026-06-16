@@ -25,12 +25,17 @@ pub struct DeclaredAnnotation {
 #[derive(Debug, Clone)]
 pub struct AnnotationLowerer {
     known_types: HashSet<String>,
+    type_definitions: HashMap<String, Type>,
 }
 
 impl AnnotationLowerer {
     pub fn new(module: &Module) -> Self {
+        let known_types = known_type_names(module);
+        let type_definitions = type_definitions(module, &known_types);
+
         Self {
-            known_types: known_type_names(module),
+            known_types,
+            type_definitions,
         }
     }
 
@@ -40,7 +45,8 @@ impl AnnotationLowerer {
         declaration: &aven_parser::Declaration,
     ) -> Option<DeclaredAnnotation> {
         let source = declared_annotation_for_declaration(module, declaration)?;
-        let mut checker = Checker::new(self.known_types.clone());
+        let mut checker =
+            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
 
         Some(checker.lower_declared_annotation(source))
     }
@@ -66,18 +72,31 @@ pub(crate) fn type_definitions(
     known_types: &HashSet<String>,
 ) -> HashMap<String, Type> {
     let mut definitions = HashMap::new();
-    let mut checker = Checker::new(known_types.clone());
+    let declarations: Vec<_> = collect_declarations(module)
+        .into_iter()
+        .filter(|declaration| declaration.phase == DeclarationPhase::Comptime)
+        .collect();
 
-    for declaration in collect_declarations(module) {
-        if declaration.phase != DeclarationPhase::Comptime {
-            continue;
+    for _ in 0..=declarations.len() {
+        let mut checker = Checker::with_type_definitions(known_types.clone(), definitions.clone());
+        let mut next = HashMap::new();
+
+        for declaration in &declarations {
+            let Some(binding) = binding_for_declaration(module, declaration) else {
+                continue;
+            };
+
+            next.insert(
+                declaration.name.clone(),
+                checker.lower_annotation(&binding.value),
+            );
         }
 
-        let Some(binding) = binding_for_declaration(module, &declaration) else {
-            continue;
-        };
+        if next == definitions {
+            break;
+        }
 
-        definitions.insert(declaration.name, checker.lower_annotation(&binding.value));
+        definitions = next;
     }
 
     definitions

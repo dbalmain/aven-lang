@@ -55,10 +55,14 @@ pub mod parse {
 
 pub mod ty {
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
+    pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
+    pub const DUPLICATE_SPREAD_LABEL: &str = "type.duplicate-spread-label";
     pub const LOWERCASE_VARIANT_TAG: &str = "type.lowercase-variant-tag";
     pub const MISMATCH: &str = "type.mismatch";
     pub const MISSING_FIELD: &str = "type.missing-field";
     pub const NON_EXHAUSTIVE_MATCH: &str = "type.non-exhaustive-match";
+    pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
+    pub const REPLACE_ABSENT_FIELD: &str = "type.replace-absent-field";
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
@@ -100,10 +104,14 @@ pub const ALL: &[&str] = &[
     parse::UNEXPECTED_SEPARATOR,
     parse::UNSUPPORTED_SYNTAX,
     ty::CYCLIC_ALIAS,
+    ty::DELETE_ABSENT_FIELD,
+    ty::DUPLICATE_SPREAD_LABEL,
     ty::LOWERCASE_VARIANT_TAG,
     ty::MISMATCH,
     ty::MISSING_FIELD,
     ty::NON_EXHAUSTIVE_MATCH,
+    ty::RENAME_ABSENT_FIELD,
+    ty::REPLACE_ABSENT_FIELD,
     ty::TYPE_ONLY_RECORD_ENTRY,
     ty::UNEXPECTED_FIELD,
     ty::UNKNOWN_NAME,

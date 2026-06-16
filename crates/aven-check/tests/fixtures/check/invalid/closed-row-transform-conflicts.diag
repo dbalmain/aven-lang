@@ -1,0 +1,33 @@
+error type.duplicate-spread-label: duplicate row label `x`
+  label 79..86: this label is already present in the accumulated row
+  note: use `x :: ...` to replace the existing label, or remove one `x` entry
+error type.duplicate-spread-label: duplicate row label `x`
+  label 125..131: this spread collides with a label already in the accumulated row
+  note: use `:..` to overwrite-merge, or remove one of the colliding labels
+error type.replace-absent-field: cannot replace missing label `missing`
+  label 168..183: this replacement has no existing label to replace
+  note: use `missing: ...` to add the label, or spread a closed row containing `missing` first
+error type.delete-absent-field: cannot delete missing label `missing`
+  label 219..227: this delete has no existing label to remove
+  note: spread or add `missing` before deleting it, or remove this delete
+error type.rename-absent-field: cannot rename missing label `missing`
+  label 263..281: this rename has no existing label to rename
+  note: spread or add `missing` before renaming it, or remove this rename
+error type.rename-absent-field: cannot rename `old` to existing label `x`
+  label 317..325: the rename target is already present in the accumulated row
+  note: delete or rename the existing `x` label before renaming `old`
+error type.duplicate-spread-label: duplicate row label `Red`
+  label 371..375: this label is already present in the accumulated row
+  note: use `:..` with a replacement variant source, or remove one of the colliding tags
+error type.duplicate-spread-label: duplicate row label `Red`
+  label 420..427: this spread collides with a label already in the accumulated row
+  note: use `:..` to overwrite-merge, or remove one of the colliding labels
+error type.delete-absent-field: cannot delete missing label `Blue`
+  label 472..478: this delete has no existing label to remove
+  note: spread or add `Blue` before deleting it, or remove this delete
+error type.rename-absent-field: cannot rename missing label `Blue`
+  label 523..537: this rename has no existing label to rename
+  note: spread or add `Blue` before renaming it, or remove this rename
+error type.rename-absent-field: cannot rename `Green` to existing label `Red`
+  label 582..596: the rename target is already present in the accumulated row
+  note: delete or rename the existing `Red` label before renaming `Green`

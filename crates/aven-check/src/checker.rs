@@ -36,11 +36,7 @@ pub(crate) struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
-    pub(crate) fn new(known_types: HashSet<String>) -> Self {
-        Self::with_type_definitions(known_types, HashMap::new())
-    }
-
-    fn with_type_definitions(
+    pub(crate) fn with_type_definitions(
         known_types: HashSet<String>,
         type_definitions: HashMap<String, Type>,
     ) -> Self {
@@ -1010,72 +1006,210 @@ impl<'a> Checker<'a> {
     }
 
     fn lower_row_entries(&mut self, entries: &[RecordEntry], kind: RowKind) -> Type {
-        let mut lowered = Vec::new();
-        let mut tail = RowTail::Closed;
-        let mut normalizable = true;
-
-        for entry in entries {
-            match self.lower_row_entry(entry, kind) {
-                Ok(Some(entry)) => lowered.push(entry),
-                Ok(None) => tail = RowTail::Open,
-                Err(()) => normalizable = false,
-            }
-        }
-
-        if !normalizable {
-            return Type::Deferred;
-        }
-
-        let row = Row {
-            entries: lowered,
-            tail,
+        let row = match self.fold_row_entries(entries, kind) {
+            Ok(row) => row,
+            Err(()) => return Type::Deferred,
         };
+
         match kind {
             RowKind::Record => Type::Record(row),
             RowKind::Variant => Type::Variant(row),
         }
     }
 
-    fn lower_row_entry(
+    fn fold_row_entries(&mut self, entries: &[RecordEntry], kind: RowKind) -> Result<Row, ()> {
+        let mut row = Row {
+            entries: Vec::new(),
+            tail: RowTail::Closed,
+        };
+
+        for (index, entry) in entries.iter().enumerate() {
+            if self.fold_row_entry(entry, kind, &mut row).is_err() {
+                for remaining in &entries[index + 1..] {
+                    self.lower_deferred_row_entry(remaining, kind);
+                }
+                return Err(());
+            }
+        }
+
+        Ok(row)
+    }
+
+    fn fold_row_entry(
         &mut self,
         entry: &RecordEntry,
         kind: RowKind,
-    ) -> Result<Option<RowEntry>, ()> {
+        row: &mut Row,
+    ) -> Result<(), ()> {
         match entry {
             RecordEntry::Field {
                 name,
                 value,
                 overwrite,
                 optional,
+                span,
                 ..
             } => {
                 let ty = self.lower_annotation(value);
-                if kind == RowKind::Record && !overwrite {
-                    Ok(Some(RowEntry::Field {
-                        name: name.clone(),
-                        ty,
-                        optional: *optional,
-                    }))
-                } else {
+                if kind != RowKind::Record {
+                    return Err(());
+                }
+
+                let entry = RowEntry::Field {
+                    name: name.clone(),
+                    ty,
+                    optional: *optional,
+                };
+
+                if *overwrite {
+                    if row.tail != RowTail::Closed {
+                        return Err(());
+                    }
+
+                    let Some(index) = row_entry_index(&row.entries, name) else {
+                        self.report_replace_absent_field(name, *span);
+                        return Err(());
+                    };
+                    row.entries[index] = entry;
+                    Ok(())
+                } else if row_entry_index(&row.entries, name).is_some() {
+                    self.report_duplicate_row_label(
+                        name,
+                        *span,
+                        DuplicateRowLabelContext::RecordAdd,
+                    );
                     Err(())
+                } else {
+                    row.entries.push(entry);
+                    Ok(())
                 }
             }
-            RecordEntry::Shorthand { .. }
-            | RecordEntry::Delete { .. }
-            | RecordEntry::Rename { .. } => Err(()),
-            RecordEntry::Spread { value, .. } => {
-                self.lower_annotation(value);
-                Err(())
+            RecordEntry::Shorthand { .. } => Err(()),
+            RecordEntry::Delete { name, span, .. } => {
+                if row.tail != RowTail::Closed {
+                    return Err(());
+                }
+
+                let Some(index) = row_entry_index(&row.entries, name) else {
+                    self.report_delete_absent_field(name, *span);
+                    return Err(());
+                };
+                row.entries.remove(index);
+                Ok(())
             }
-            RecordEntry::Open { .. } => Ok(None),
+            RecordEntry::Rename { from, to, span, .. } => {
+                if row.tail != RowTail::Closed {
+                    return Err(());
+                }
+
+                let Some(index) = row_entry_index(&row.entries, from) else {
+                    self.report_rename_absent_field(from, *span);
+                    return Err(());
+                };
+
+                if row_entry_index(&row.entries, to).is_some() {
+                    self.report_rename_target_present(from, to, *span);
+                    return Err(());
+                }
+
+                row.entries[index] = relabel_row_entry(&row.entries[index], to);
+                Ok(())
+            }
+            RecordEntry::Spread {
+                value,
+                overwrite,
+                span,
+            } => {
+                let ty = self.lower_annotation(value);
+                let Some(source) = self.closed_row_source(&ty, kind) else {
+                    return Err(());
+                };
+
+                self.merge_source_row(row, source, *overwrite, *span)
+            }
+            RecordEntry::Open { .. } => {
+                row.tail = RowTail::Open;
+                Ok(())
+            }
             RecordEntry::Element(value) => match kind {
                 RowKind::Record => {
                     self.lower_annotation(value);
                     Err(())
                 }
-                RowKind::Variant => self.lower_variant_tag(value).map(Some).ok_or(()),
+                RowKind::Variant => {
+                    let Some(entry) = self.lower_variant_tag(value) else {
+                        return Err(());
+                    };
+
+                    let label = row_entry_label(&entry);
+                    if row_entry_index(&row.entries, label).is_some() {
+                        self.report_duplicate_row_label(
+                            label,
+                            value.span,
+                            DuplicateRowLabelContext::VariantAdd,
+                        );
+                        Err(())
+                    } else {
+                        row.entries.push(entry);
+                        Ok(())
+                    }
+                }
             },
         }
+    }
+
+    fn lower_deferred_row_entry(&mut self, entry: &RecordEntry, kind: RowKind) {
+        match entry {
+            RecordEntry::Field { value, .. } | RecordEntry::Spread { value, .. } => {
+                self.lower_annotation(value);
+            }
+            RecordEntry::Element(value) => match kind {
+                RowKind::Record => {
+                    self.lower_annotation(value);
+                }
+                RowKind::Variant => {
+                    self.lower_variant_tag(value);
+                }
+            },
+            RecordEntry::Shorthand { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. } => {}
+        }
+    }
+
+    fn closed_row_source(&self, ty: &Type, kind: RowKind) -> Option<Row> {
+        match (self.normalize(ty), kind) {
+            (Type::Record(row), RowKind::Record) | (Type::Variant(row), RowKind::Variant)
+                if row.tail == RowTail::Closed =>
+            {
+                Some(row)
+            }
+            _ => None,
+        }
+    }
+
+    fn merge_source_row(
+        &mut self,
+        row: &mut Row,
+        source: Row,
+        overwrite: bool,
+        span: Span,
+    ) -> Result<(), ()> {
+        for entry in source.entries {
+            let label = row_entry_label(&entry).to_owned();
+            if let Some(index) = row_entry_index(&row.entries, &label) {
+                if !overwrite {
+                    self.report_duplicate_row_label(&label, span, DuplicateRowLabelContext::Spread);
+                    return Err(());
+                }
+                row.entries[index] = entry;
+            } else {
+                row.entries.push(entry);
+            }
+        }
+
+        Ok(())
     }
 
     fn lower_variant_tag(&mut self, tag: &Expr) -> Option<RowEntry> {
@@ -1296,6 +1430,101 @@ impl<'a> Checker<'a> {
                 ),
         );
     }
+
+    fn report_duplicate_row_label(
+        &mut self,
+        name: &str,
+        span: Span,
+        context: DuplicateRowLabelContext,
+    ) {
+        let (label, note) = match context {
+            DuplicateRowLabelContext::RecordAdd => (
+                "this label is already present in the accumulated row",
+                format!(
+                    "use `{name} :: ...` to replace the existing label, or remove one `{name}` entry"
+                ),
+            ),
+            DuplicateRowLabelContext::VariantAdd => (
+                "this label is already present in the accumulated row",
+                "use `:..` with a replacement variant source, or remove one of the colliding tags"
+                    .to_owned(),
+            ),
+            DuplicateRowLabelContext::Spread => (
+                "this spread collides with a label already in the accumulated row",
+                "use `:..` to overwrite-merge, or remove one of the colliding labels".to_owned(),
+            ),
+        };
+
+        self.diagnostics.push(
+            Diagnostic::error(format!("duplicate row label `{name}`"))
+                .with_code(codes::ty::DUPLICATE_SPREAD_LABEL)
+                .with_label(Label::primary(span, label))
+                .with_note(note),
+        );
+    }
+
+    fn report_replace_absent_field(&mut self, name: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("cannot replace missing label `{name}`"))
+                .with_code(codes::ty::REPLACE_ABSENT_FIELD)
+                .with_label(Label::primary(
+                    span,
+                    "this replacement has no existing label to replace",
+                ))
+                .with_note(format!(
+                    "use `{name}: ...` to add the label, or spread a closed row containing `{name}` first"
+                )),
+        );
+    }
+
+    fn report_delete_absent_field(&mut self, name: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("cannot delete missing label `{name}`"))
+                .with_code(codes::ty::DELETE_ABSENT_FIELD)
+                .with_label(Label::primary(
+                    span,
+                    "this delete has no existing label to remove",
+                ))
+                .with_note(format!(
+                    "spread or add `{name}` before deleting it, or remove this delete"
+                )),
+        );
+    }
+
+    fn report_rename_absent_field(&mut self, name: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("cannot rename missing label `{name}`"))
+                .with_code(codes::ty::RENAME_ABSENT_FIELD)
+                .with_label(Label::primary(
+                    span,
+                    "this rename has no existing label to rename",
+                ))
+                .with_note(format!(
+                    "spread or add `{name}` before renaming it, or remove this rename"
+                )),
+        );
+    }
+
+    fn report_rename_target_present(&mut self, from: &str, to: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("cannot rename `{from}` to existing label `{to}`"))
+                .with_code(codes::ty::RENAME_ABSENT_FIELD)
+                .with_label(Label::primary(
+                    span,
+                    "the rename target is already present in the accumulated row",
+                ))
+                .with_note(format!(
+                    "delete or rename the existing `{to}` label before renaming `{from}`"
+                )),
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DuplicateRowLabelContext {
+    RecordAdd,
+    VariantAdd,
+    Spread,
 }
 
 #[derive(Debug)]
@@ -1334,6 +1563,32 @@ struct ValueRecordField<'a> {
 struct VariantTagShape<'a> {
     name: &'a str,
     payload: &'a [Type],
+}
+
+fn row_entry_label(entry: &RowEntry) -> &str {
+    match entry {
+        RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
+    }
+}
+
+fn row_entry_index(entries: &[RowEntry], label: &str) -> Option<usize> {
+    entries
+        .iter()
+        .position(|entry| row_entry_label(entry) == label)
+}
+
+fn relabel_row_entry(entry: &RowEntry, label: &str) -> RowEntry {
+    match entry {
+        RowEntry::Field { ty, optional, .. } => RowEntry::Field {
+            name: label.to_owned(),
+            ty: ty.clone(),
+            optional: *optional,
+        },
+        RowEntry::Tag { payload, .. } => RowEntry::Tag {
+            name: label.to_owned(),
+            payload: payload.clone(),
+        },
+    }
 }
 
 fn literal_record_type(row: &Row) -> Option<ExpectedRecordShape<'_>> {

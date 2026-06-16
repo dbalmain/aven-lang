@@ -155,6 +155,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A transparent type alias eventually refers back to itself without passing through a type constructor. Wrap one member in a record or variant to make the recursion well-founded, or remove the alias.",
     },
     DiagnosticExplanation {
+        code: codes::ty::DELETE_ABSENT_FIELD,
+        text: "A row transform tried to delete a record field or variant tag that is not present in the closed row accumulated so far. Spread or add that label first, or remove the delete.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::DUPLICATE_SPREAD_LABEL,
+        text: "A disjoint row spread or add introduced a label that is already present. Use an overwrite form such as `:..source` or `field :: Type` when replacement is intended.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::LOWERCASE_VARIANT_TAG,
         text: "Variant type members must use uppercase `@`-tags. Rename the tag to an uppercase marker such as @Ok or @Error.",
     },
@@ -169,6 +177,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::NON_EXHAUSTIVE_MATCH,
         text: "A variant match must cover every tag in a closed row. Matches on open variant rows also need a default arm because additional tags may be present.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::RENAME_ABSENT_FIELD,
+        text: "A row transform tried to rename a missing label, or rename onto a label that already exists in the closed row accumulated so far. Make the source label present and the target label absent before the rename.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::REPLACE_ABSENT_FIELD,
+        text: "A row transform used replacement syntax for a label that is not present in the closed row accumulated so far. Use an add form or spread a closed row containing that label first.",
     },
     DiagnosticExplanation {
         code: codes::ty::TYPE_ONLY_RECORD_ENTRY,

@@ -133,7 +133,7 @@ fn lowers_function_application_and_nullable_annotations() {
 }
 
 #[test]
-fn lowers_normalized_rows_and_defers_transforms() {
+fn lowers_normalized_rows_and_closed_transforms() {
     let output = parse_module(
         "FileError = @{@Io}\n\
              user : { name: Text, email: Text?, phone?: Text, .. } = current\n\
@@ -196,14 +196,83 @@ fn lowers_normalized_rows_and_defers_transforms() {
     );
     assert!(error.diagnostics.is_empty());
     assert_eq!(transformed_user.ty, Type::Deferred);
-    assert!(transformed_user.diagnostics.is_empty());
-    assert_eq!(transformed_error.ty, Type::Deferred);
+    assert_eq!(
+        transformed_user
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .collect::<Vec<_>>(),
+        vec![codes::ty::DELETE_ABSENT_FIELD]
+    );
+    assert_eq!(
+        transformed_error.ty,
+        Type::Variant(Row {
+            entries: vec![
+                RowEntry::Tag {
+                    name: "ParseError".to_owned(),
+                    payload: vec![named("Text")],
+                },
+                RowEntry::Tag {
+                    name: "Io".to_owned(),
+                    payload: Vec::new(),
+                },
+            ],
+            tail: RowTail::Closed,
+        })
+    );
     assert!(transformed_error.diagnostics.is_empty());
 }
 
 #[test]
+fn type_definitions_compute_closed_transform_aliases() {
+    let output = parse_module(
+        "Base = { x: Int, old: Text }\n\
+         Renamed = { ..Base, old -> name }\n\
+         Color = @{@Red, @Green, @Blue}\n\
+         RedGreen = @{ ..Color, -@Blue }\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("Renamed"),
+        Some(&Type::Record(Row {
+            entries: vec![
+                RowEntry::Field {
+                    name: "x".to_owned(),
+                    ty: named("Int"),
+                    optional: false,
+                },
+                RowEntry::Field {
+                    name: "name".to_owned(),
+                    ty: named("Text"),
+                    optional: false,
+                },
+            ],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert_eq!(
+        definitions.get("RedGreen"),
+        Some(&Type::Variant(Row {
+            entries: vec![
+                RowEntry::Tag {
+                    name: "Red".to_owned(),
+                    payload: Vec::new(),
+                },
+                RowEntry::Tag {
+                    name: "Green".to_owned(),
+                    payload: Vec::new(),
+                },
+            ],
+            tail: RowTail::Closed,
+        }))
+    );
+}
+
+#[test]
 fn deferred_rows_still_report_nested_annotation_diagnostics() {
-    let output = parse_module("value : @{-Internal, io(Missing)} = value\n");
+    let output = parse_module("value : @{..r, io(Missing)} = value\n");
     let lowering = lower_annotation(&output.module, annotation(&output.module, "value"));
 
     assert_eq!(lowering.ty, Type::Deferred);
@@ -1083,7 +1152,7 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
 
 #[test]
 fn variant_value_checking_defers_computed_rows() {
-    let output = parse_module("Error = @{@Err(Text)}\nvalue : @{@Ok(Int), ..Error} = @Ok(\"x\")\n");
+    let output = parse_module("value : @{@Ok(Int), ..error} = @Ok(\"x\")\n");
     let check = check_module(&output.module);
 
     assert!(
@@ -1787,7 +1856,7 @@ fn open_extra_field_record_markers_are_reported_once() {
 #[test]
 fn record_value_checking_defers_computed_rows() {
     for source in [
-        "Base = { id: Int }\nvalue : { name: Text, ..Base } = { name: \"x\" }\n",
+        "value : { name: Text, ..base } = { name: \"x\" }\n",
         "value : { name: Text } = { ..other, extra: 1 }\n",
     ] {
         let output = parse_module(source);

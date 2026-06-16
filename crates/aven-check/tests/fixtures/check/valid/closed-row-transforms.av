@@ -1,0 +1,20 @@
+Base = { x: Int, y: Text, old: Bool }
+RecordAlias = { ..Base, x :: Float, -y, old -> renamed }
+RecordAliasValue : RecordAlias = value
+RecordClosed : { ..Base, x :: Float, -y, old -> renamed, z: Text } = value
+RecordLiteral : { ..{ a: Int }, b: Text } = value
+RecordOverwriteSpread : { a: Int, :..{ a: Text, b: Bool } } = value
+
+Color = @{@Red, @Green, @Blue}
+RedGreenAlias = @{ ..Color, -@Blue }
+MoreColorAlias = @{ ..Color, @Yellow }
+RedGreenAliasValue : RedGreenAlias = value
+MoreColorAliasValue : MoreColorAlias = value
+RedGreen : @{ ..Color, -@Blue } = value
+MoreColor : @{ ..Color, @Yellow } = value
+RenamedColor : @{ ..Color, @Blue -> @Cyan } = value
+VariantLiteral : @{ ..@{@Ok(Int)}, @Err(Text) } = value
+VariantOverwriteSpread : @{ @A(Int), :..@{@A(Text), @B} } = value
+
+DeferredRecord : { ..base, -missing, missing :: Text, missing -> renamed } = value
+DeferredVariant : @{ ..colors, -@Blue, @Blue -> @Cyan } = value

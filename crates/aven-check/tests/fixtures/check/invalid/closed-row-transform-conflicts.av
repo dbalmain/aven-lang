@@ -1,0 +1,15 @@
+Base = { x: Int, old: Text }
+Color = @{@Red, @Green}
+
+duplicateAdd : { ..Base, x: Text } = value
+duplicateSpread : { x: Int, ..Base } = value
+replaceAbsent : { ..Base, missing :: Text } = value
+deleteAbsent : { ..Base, -missing } = value
+renameAbsent : { ..Base, missing -> renamed } = value
+renameTarget : { ..Base, old -> x } = value
+
+variantDuplicateAdd : @{ ..Color, @Red } = value
+variantDuplicateSpread : @{ @Red, ..Color } = value
+variantDeleteAbsent : @{ ..Color, -@Blue } = value
+variantRenameAbsent : @{ ..Color, @Blue -> @Cyan } = value
+variantRenameTarget : @{ ..Color, @Green -> @Red } = value

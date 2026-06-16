@@ -1209,7 +1209,7 @@ impl Parser<'_> {
         if self.current_is_operator("-") {
             let operator_span = self.current_span();
             self.advance();
-            let Some((name, name_span)) = self.parse_label_name() else {
+            let Some((name, name_span)) = self.parse_transform_label_name(mode) else {
                 self.report_expected_record_label(self.current_span());
                 self.recover_record_entry();
                 return None;
@@ -1218,6 +1218,30 @@ impl Parser<'_> {
                 name,
                 name_span,
                 span: operator_span.merge(name_span),
+            });
+        }
+
+        if mode == EntryMode::Set
+            && self.current_is_transform_label_start()
+            && self.next_is_operator("->")
+        {
+            let Some((from, from_span)) = self.parse_transform_label_name(mode) else {
+                self.report_expected_record_label(self.current_span());
+                self.recover_record_entry();
+                return None;
+            };
+            self.advance();
+            let Some((to, to_span)) = self.parse_transform_label_name(mode) else {
+                self.report_expected_record_label(self.current_span());
+                self.recover_record_entry();
+                return None;
+            };
+            return Some(RecordEntry::Rename {
+                from,
+                from_span,
+                to,
+                to_span,
+                span: from_span.merge(to_span),
             });
         }
 
@@ -1318,6 +1342,25 @@ impl Parser<'_> {
             }
             _ => None,
         }
+    }
+
+    fn parse_transform_label_name(&mut self, mode: EntryMode) -> Option<(String, Span)> {
+        let token = self.current()?.clone();
+        if mode == EntryMode::Set
+            && let TokenKind::Tag(name) = token.kind
+        {
+            self.advance();
+            return Some((name, token.span));
+        }
+
+        self.parse_label_name()
+    }
+
+    fn current_is_transform_label_start(&self) -> bool {
+        matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::Identifier(_) | TokenKind::ComptimeIdentifier(_) | TokenKind::Tag(_))
+        )
     }
 
     fn recover_record_entry(&mut self) {
@@ -1694,6 +1737,12 @@ impl Parser<'_> {
 
     fn current_is_operator(&self, expected: &str) -> bool {
         self.current()
+            .is_some_and(|token| token.is_operator(expected))
+    }
+
+    fn next_is_operator(&self, expected: &str) -> bool {
+        self.tokens
+            .get(self.cursor + 1)
             .is_some_and(|token| token.is_operator(expected))
     }
 
@@ -2590,7 +2639,7 @@ mod tests {
     #[test]
     fn parses_variant_type_elements_spreads_and_deletes() {
         let output = parse_module(
-            "error : @{@ParseError(Text), @NotFound, -Internal, ..FileError} = @ParseError(\"bad\")\n",
+            "error : @{@ParseError(Text), @NotFound, -@Internal, @NotFound -> @Missing, ..FileError} = @ParseError(\"bad\")\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2601,7 +2650,7 @@ mod tests {
         let ExprKind::Set(entries) = &annotation.kind else {
             panic!("expected variant set annotation");
         };
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 5);
         assert!(matches!(
             &entries[0],
             RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::Call { .. })
@@ -2611,7 +2660,7 @@ mod tests {
             RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::Tag(name) if name == "NotFound")
         ));
         assert!(matches!(
-            &entries[3],
+            &entries[4],
             RecordEntry::Spread {
                 overwrite: false,
                 ..
@@ -2620,6 +2669,10 @@ mod tests {
         assert!(matches!(
             &entries[2],
             RecordEntry::Delete { name, .. } if name == "Internal"
+        ));
+        assert!(matches!(
+            &entries[3],
+            RecordEntry::Rename { from, to, .. } if from == "NotFound" && to == "Missing"
         ));
     }
 

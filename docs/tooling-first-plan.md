@@ -1117,10 +1117,13 @@ Slices:
   variant requirements `@{ ..r, @Circle(Float), ... }`, constructor checking
   against open variant rows, and match exhaustiveness that requires a `_` arm on
   an open variant.
-- 13.4 — record transforms as row computation: lower and solve spreads
-  (`..source`/`:..source`), adds, replaces, deletes (`-field`), and renames
-  (`old -> new`) into rows, plus open field-rest patterns `{ x, ..rest }`,
-  replacing the 13.1 deferral.
+- 13.4 — record transforms as row computation (partially done): 13.4a lowers
+  closed record and variant row transforms — spreads (`..source`/`:..source`),
+  adds, replaces, deletes (`-field`), and renames (`old -> new`) — when every
+  source row is statically known and closed, with structured diagnostics for
+  closed-row conflicts. Open-tail/row-variable transform semantics,
+  value-direction record-literal transform inference, and open field-rest
+  patterns `{ x, ..rest }` remain for later 13.4 slices.
 
 Done when:
 
