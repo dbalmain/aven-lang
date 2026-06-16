@@ -1833,8 +1833,78 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
                 collect_known_pattern_types(arg, ty, known);
             }
         }
+        (ExprKind::Record(entries), Type::Record(row)) => {
+            collect_known_record_pattern_types(entries, row, known);
+        }
         (ExprKind::Tag(_), Type::Variant(_)) => {}
         _ => {}
+    }
+}
+
+fn collect_known_record_pattern_types(
+    entries: &[RecordEntry],
+    row: &Row,
+    known: &mut HashMap<String, Type>,
+) {
+    let matched_labels: HashSet<_> = entries.iter().filter_map(record_pattern_label).collect();
+
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { name, value, .. } => {
+                if let Some(field_ty) = row_field_type(row, name) {
+                    collect_known_pattern_types(value, field_ty, known);
+                }
+            }
+            RecordEntry::Shorthand { name, .. } => {
+                if let Some(field_ty) = row_field_type(row, name)
+                    && is_concrete_type(field_ty)
+                {
+                    known.insert(name.clone(), field_ty.clone());
+                }
+            }
+            RecordEntry::Spread { value, .. } => {
+                let ExprKind::Name(name) = &value.kind else {
+                    continue;
+                };
+                if name == "_" || row.tail != RowTail::Closed {
+                    continue;
+                }
+
+                let residual = Row {
+                    entries: row
+                        .entries
+                        .iter()
+                        .filter(|entry| !matched_labels.contains(row_entry_label(entry)))
+                        .cloned()
+                        .collect(),
+                    tail: RowTail::Closed,
+                };
+                known.insert(name.clone(), Type::Record(residual));
+            }
+            RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. }
+            | RecordEntry::Element(_) => {}
+        }
+    }
+}
+
+fn record_pattern_label(entry: &RecordEntry) -> Option<&str> {
+    match entry {
+        RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => Some(name),
+        RecordEntry::Spread { .. }
+        | RecordEntry::Delete { .. }
+        | RecordEntry::Rename { .. }
+        | RecordEntry::Open { .. }
+        | RecordEntry::Element(_) => None,
+    }
+}
+
+fn row_field_type<'a>(row: &'a Row, label: &str) -> Option<&'a Type> {
+    let index = row_entry_index(&row.entries, label)?;
+    match &row.entries[index] {
+        RowEntry::Field { ty, .. } => Some(ty),
+        RowEntry::Tag { .. } => None,
     }
 }
 

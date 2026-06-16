@@ -1062,7 +1062,7 @@ Done when:
 
 ## Milestone 13: Row Polymorphism
 
-Status: in progress
+Status: complete
 
 Goal: make records and variants row-polymorphic, the language's headline
 differentiator. Follow the chosen design in `docs/row-polymorphism.md`: **Leijen
@@ -1117,7 +1117,7 @@ Slices:
   variant requirements `@{ ..r, @Circle(Float), ... }`, constructor checking
   against open variant rows, and match exhaustiveness that requires a `_` arm on
   an open variant.
-- 13.4 — record transforms as row computation (partially done): 13.4a lowers
+- 13.4 — record transforms as row computation (done): 13.4a lowers
   closed record and variant row transforms — spreads (`..source`/`:..source`),
   adds, replaces, deletes (`-field`), and renames (`old -> new`) — when every
   source row is statically known and closed, with structured diagnostics for
@@ -1125,8 +1125,11 @@ Slices:
   open or row-variable-shaped sources, absorbing the abstract remainder as an
   open tail. 13.4c adds value-direction record-literal transform inference for
   closed sources and the same A-lite extension/update behavior for open inferred
-  sources. Open field-rest patterns `{ x, ..rest }` remain for later 13.4
-  slices.
+  sources. 13.4d seeds record-pattern binder types from known subject rows,
+  including closed residual records for field-rest patterns like
+  `{ x, ..rest }`. Open-row field-rest restriction remains deferred to the
+  comptime era, so open or row-variable `..rest` binders stay unconstrained
+  without a diagnostic.
 
 Done when:
 
@@ -1134,7 +1137,8 @@ Done when:
   missing a required field, both by unification with structured diagnostics
 - an unannotated function that selects fields infers an open-record parameter
 - open variant requirements check and an open `?>` match requires a default arm
-- record transforms type-check through row computation; fixtures lock each slice
+- record transforms type-check through row computation in both directions, and
+  field-rest patterns bind closed residual records; fixtures lock each slice
 - duplicate-label and missing-field diagnostics remain structured and recover
 
 ## Remaining Phase 2 Scope

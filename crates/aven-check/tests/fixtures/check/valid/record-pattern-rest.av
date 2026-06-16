@@ -1,0 +1,13 @@
+closedPatternSource : { x: Int, y: Text, z: Bool } = value
+closedPatternX : Int = closedPatternSource ?>
+  { x, ..rest } => x
+closedPatternRestY : Text = closedPatternSource ?>
+  { x, ..rest } => rest.y
+
+nestedPatternSource : { outer: { inner: Bool }, other: Int } = value
+nestedPatternInner : Bool = nestedPatternSource ?>
+  { outer: { inner } } => inner
+
+openPatternSource : { x: Int, y: Text, .. } = value
+openPatternRest = openPatternSource ?>
+  { x, ..rest } => rest.y

@@ -887,6 +887,60 @@ fn variant_match_payload_types_feed_result_inference() {
 }
 
 #[test]
+fn record_match_pattern_binders_use_subject_field_and_rest_types() {
+    let output = parse_module(
+        "source : { x: Int, y: Text, z: Bool } = value\n\
+         picked = source ?>\n  { x, ..rest } => x\n\
+         remaining = source ?>\n  { x, ..rest } => rest.y\n\
+         matched_field_removed = source ?>\n  { x, ..rest } => rest.x\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(checker.infer_top_level_value("picked"), Some(named("Int")));
+    assert_eq!(
+        checker.infer_top_level_value("remaining"),
+        Some(named("Text"))
+    );
+    assert_eq!(checker.infer_top_level_value("matched_field_removed"), None);
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn nested_record_match_pattern_binders_use_subject_field_types() {
+    let output = parse_module(
+        "source : { outer: { inner: Bool }, other: Int } = value\n\
+         matched = source ?>\n  { outer: { inner } } => inner\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker.infer_top_level_value("matched"),
+        Some(named("Bool"))
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn open_record_match_rest_binder_stays_unconstrained() {
+    let output = parse_module(
+        "source : { x: Int, y: Text, .. } = value\n\
+         picked = source ?>\n  { x, ..rest } => x\n\
+         remaining = source ?>\n  { x, ..rest } => rest.y\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(checker.infer_top_level_value("picked"), Some(named("Int")));
+    assert_eq!(checker.infer_top_level_value("remaining"), None);
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
 fn match_results_are_inferred_for_identifier_values() {
     let mismatch =
         parse_module("result = source ?>\n  @Ok(_) => 1\n  @Err(_) => 2\nvalue : Text = result\n");
