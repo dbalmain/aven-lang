@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use aven_parser::{Expr, ExprKind, Literal};
 
@@ -27,6 +27,12 @@ pub enum Type {
     Tuple(Vec<Type>),
     Record(Row),
     Variant(Row),
+}
+
+impl Type {
+    pub fn render(&self) -> String {
+        render_type(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,10 +78,167 @@ pub enum RowTail {
     Var(u32),
 }
 
+impl RowTail {
+    fn render(self) -> String {
+        match self {
+            RowTail::Closed => String::new(),
+            RowTail::Open | RowTail::Var(_) => "..".to_owned(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RowKind {
     Record,
     Variant,
+}
+
+pub fn render_type(ty: &Type) -> String {
+    TypeRenderer::default().render_type(ty)
+}
+
+#[derive(Debug, Default)]
+struct TypeRenderer {
+    metas: HashMap<u32, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TypePrecedence {
+    Arrow,
+    Postfix,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowRenderKind {
+    Record,
+    Variant,
+}
+
+impl TypeRenderer {
+    fn render_type(&mut self, ty: &Type) -> String {
+        self.render_type_with_precedence(ty, TypePrecedence::Arrow)
+    }
+
+    fn render_type_with_precedence(&mut self, ty: &Type, parent: TypePrecedence) -> String {
+        match ty {
+            // `?` is intentionally honest: the checker accepted a syntactic
+            // type shape but deferred its real meaning to a later phase.
+            Type::Deferred => "?".to_owned(),
+            Type::Named(name) | Type::Variable(name) => name.clone(),
+            Type::Meta(id) => self.render_meta(*id),
+            Type::Apply { callee, args } => {
+                let rendered_callee =
+                    self.render_type_with_precedence(callee, TypePrecedence::Postfix);
+                let rendered_args = args
+                    .iter()
+                    .map(|arg| self.render_type(arg))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{rendered_callee}[{rendered_args}]")
+            }
+            Type::Function { params, result } => {
+                let rendered_params = match params.as_slice() {
+                    [param] => self.render_function_param(param),
+                    params => format!(
+                        "({})",
+                        params
+                            .iter()
+                            .map(|param| self.render_type(param))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                };
+                let rendered_result = self.render_type(result);
+                let rendered = format!("{rendered_params} -> {rendered_result}");
+                if parent > TypePrecedence::Arrow {
+                    format!("({rendered})")
+                } else {
+                    rendered
+                }
+            }
+            Type::Nullable(inner) => {
+                let rendered_inner = match inner.as_ref() {
+                    Type::Function { .. } => {
+                        format!("({})", self.render_type(inner))
+                    }
+                    _ => self.render_type_with_precedence(inner, TypePrecedence::Postfix),
+                };
+                format!("{rendered_inner}?")
+            }
+            Type::Tuple(items) => format!(
+                "({})",
+                items
+                    .iter()
+                    .map(|item| self.render_type(item))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Type::Record(row) => self.render_row(RowRenderKind::Record, row),
+            Type::Variant(row) => self.render_row(RowRenderKind::Variant, row),
+        }
+    }
+
+    fn render_function_param(&mut self, param: &Type) -> String {
+        match param {
+            Type::Function { .. } => format!("({})", self.render_type(param)),
+            _ => self.render_type(param),
+        }
+    }
+
+    fn render_row(&mut self, kind: RowRenderKind, row: &Row) -> String {
+        let mut parts = row
+            .entries
+            .iter()
+            .map(|entry| self.render_row_entry(entry))
+            .collect::<Vec<_>>();
+
+        if row.tail != RowTail::Closed {
+            parts.push(row.tail.render());
+        }
+
+        match (kind, parts.is_empty()) {
+            (RowRenderKind::Record, true) => "{}".to_owned(),
+            (RowRenderKind::Record, false) => format!("{{ {} }}", parts.join(", ")),
+            (RowRenderKind::Variant, true) => "@{}".to_owned(),
+            (RowRenderKind::Variant, false) => format!("@{{ {} }}", parts.join(", ")),
+        }
+    }
+
+    fn render_row_entry(&mut self, entry: &RowEntry) -> String {
+        match entry {
+            RowEntry::Field { name, ty, optional } => {
+                let optional = if *optional { "?" } else { "" };
+                format!("{name}{optional}: {}", self.render_type(ty))
+            }
+            RowEntry::Tag { name, payload } if payload.is_empty() => format!("@{name}"),
+            RowEntry::Tag { name, payload } => format!(
+                "@{name}({})",
+                payload
+                    .iter()
+                    .map(|ty| self.render_type(ty))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+
+    fn render_meta(&mut self, id: u32) -> String {
+        if let Some(name) = self.metas.get(&id) {
+            return name.clone();
+        }
+
+        let name = meta_name(self.metas.len());
+        self.metas.insert(id, name.clone());
+        name
+    }
+}
+
+fn meta_name(index: usize) -> String {
+    const NAMES: &[u8; 26] = b"abcdefghijklmnopqrstuvwxyz";
+    NAMES
+        .get(index)
+        .map(|byte| char::from(*byte).to_string())
+        .unwrap_or_else(|| "_".to_owned())
 }
 
 /// Rebuild a type, letting `leaf` replace any node (used for substitution and

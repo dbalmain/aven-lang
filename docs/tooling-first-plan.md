@@ -1004,6 +1004,8 @@ and recursive or still-generic results defer. The shared
 `map_type`/`visit_type` traversals back substitution, instantiation, and the
 occurs/concreteness predicates so the engine grows with the `Type` grammar in
 one place.
+Consolidation C1 surfaces per-binder inferred types from `aven-check` and adds a
+stable `Type` renderer, enabling inference-driven LSP hover and completion.
 
 ## Milestone 12: Hindley-Milner Generalization
 

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::*;
-use aven_core::{Diagnostic, codes};
+use aven_core::{Diagnostic, Span, codes};
 use aven_parser::{Item, Module, collect_declarations, parse_module};
 
 fn annotation<'a>(module: &'a Module, name: &str) -> &'a Expr {
@@ -54,6 +54,109 @@ fn row_label(entry: &RowEntry) -> &str {
     match entry {
         RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
     }
+}
+
+fn nth_span(source: &str, needle: &str, occurrence: usize) -> Span {
+    let start = source
+        .match_indices(needle)
+        .nth(occurrence)
+        .map(|(start, _)| start)
+        .unwrap_or_else(|| panic!("expected occurrence {occurrence} of {needle:?}"));
+    Span::new(start, start + needle.len())
+}
+
+#[test]
+fn renders_types_as_surface_syntax() {
+    assert_eq!(
+        Type::Record(Row {
+            entries: vec![
+                field("name", named("Text")),
+                RowEntry::Field {
+                    name: "phone".to_owned(),
+                    ty: nullable(named("Text")),
+                    optional: true,
+                },
+            ],
+            tail: RowTail::Open,
+        })
+        .render(),
+        "{ name: Text, phone?: Text?, .. }"
+    );
+    assert_eq!(
+        Type::Variant(Row {
+            entries: vec![
+                RowEntry::Tag {
+                    name: "Ok".to_owned(),
+                    payload: vec![variable("t")],
+                },
+                RowEntry::Tag {
+                    name: "Err".to_owned(),
+                    payload: vec![variable("e")],
+                },
+                RowEntry::Tag {
+                    name: "Done".to_owned(),
+                    payload: Vec::new(),
+                },
+            ],
+            tail: RowTail::Var(0),
+        })
+        .render(),
+        "@{ @Ok(t), @Err(e), @Done, .. }"
+    );
+    assert_eq!(
+        function(
+            vec![function(vec![named("Int")], named("Text"))],
+            named("Bool")
+        )
+        .render(),
+        "(Int -> Text) -> Bool"
+    );
+    assert_eq!(
+        function(vec![named("Int"), named("Text")], named("Bool")).render(),
+        "(Int, Text) -> Bool"
+    );
+    assert_eq!(
+        nullable(function(vec![named("Int")], named("Text"))).render(),
+        "(Int -> Text)?"
+    );
+    assert_eq!(
+        apply(named("Result"), vec![named("Int"), variable("e")]).render(),
+        "Result[Int, e]"
+    );
+    assert_eq!(
+        Type::Tuple(vec![Type::Meta(10), Type::Meta(10), Type::Deferred]).render(),
+        "(a, a, ?)"
+    );
+}
+
+#[test]
+fn check_output_records_unannotated_local_inferred_types() {
+    let source = "value =\n  local = \"hi\"\n  local\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty());
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "local", 0))
+            .map(Type::render),
+        Some("Text".to_owned())
+    );
+}
+
+#[test]
+fn check_output_records_annotated_declared_types() {
+    let source = "person : { name: Text, .. } = current\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty());
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "person", 0))
+            .map(Type::render),
+        Some("{ name: Text, .. }".to_owned())
+    );
 }
 
 #[test]

@@ -7,6 +7,7 @@ use aven_parser::{
     walk_expr_children,
 };
 
+use crate::InferredType;
 use crate::env::{
     LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values,
     free_row_vars_in_local_values,
@@ -33,6 +34,7 @@ pub(crate) struct Checker<'a> {
     in_progress: HashSet<String>,
     unifier: Unifier,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) inferred_types: Vec<InferredType>,
 }
 
 impl<'a> Checker<'a> {
@@ -51,6 +53,7 @@ impl<'a> Checker<'a> {
             in_progress: HashSet::new(),
             unifier: Unifier::default(),
             diagnostics: Vec::new(),
+            inferred_types: Vec::new(),
         }
     }
 
@@ -137,11 +140,14 @@ impl<'a> Checker<'a> {
         if let Some(source) = declared_annotation_for_declaration(module, declaration) {
             let declared_type = self.lower_annotation(source.annotation);
             let expected_type = self.normalize(&declared_type);
+            self.record_inferred_type(declaration.name_span, expected_type.clone());
 
             if let Some(binding) = binding {
                 self.check_value_against(&expected_type, &binding.value);
                 checked_value = true;
             }
+        } else if let Some(Some(scheme)) = self.value_types.get(&declaration.name).cloned() {
+            self.record_inferred_type(declaration.name_span, scheme.ty);
         }
 
         if !checked_value && let Some(binding) = binding {
@@ -204,7 +210,26 @@ impl<'a> Checker<'a> {
                 .unwrap_or(LocalValueType::Unknown)
         };
 
+        self.record_local_value_type(binding.name_span, &inferred_type);
         self.local_types.define(&binding.name, inferred_type);
+    }
+
+    fn record_local_value_type(&mut self, name_span: Span, value_type: &LocalValueType) {
+        match value_type {
+            LocalValueType::Known(ty) => self.record_inferred_type(name_span, ty.clone()),
+            LocalValueType::Scheme(scheme) => {
+                self.record_inferred_type(name_span, scheme.ty.clone());
+            }
+            LocalValueType::Unknown => {}
+        }
+    }
+
+    fn record_inferred_type(&mut self, name_span: Span, ty: Type) {
+        if type_contains_deferred(&ty) {
+            return;
+        }
+
+        self.inferred_types.push(InferredType { name_span, ty });
     }
 
     fn check_value_expr(&mut self, expr: &Expr) {
@@ -256,6 +281,7 @@ impl<'a> Checker<'a> {
 
         self.local_types.push();
         for (param, ty) in params.iter().zip(param_types) {
+            self.record_local_value_type(param.name_span, &ty);
             self.local_types.define(&param.name, ty);
         }
         self.check_value_expr(body);
@@ -604,6 +630,7 @@ impl<'a> Checker<'a> {
 
         self.local_types.push();
         for (param, ty) in params.iter().zip(param_types) {
+            self.record_inferred_type(param.name_span, ty.clone());
             self.local_types
                 .define(&param.name, LocalValueType::Known(ty));
         }
