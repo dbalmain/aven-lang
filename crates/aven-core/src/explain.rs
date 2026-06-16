@@ -179,6 +179,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A variant match must cover every tag in a closed row. Matches on open variant rows also need a default arm because additional tags may be present.",
     },
     DiagnosticExplanation {
+        code: codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE,
+        text: "An inferred variant with an open row tail may carry tags not listed in a closed annotation. Make the annotation open with `..` or constrain the value to a closed variant row before assigning it.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::RENAME_ABSENT_FIELD,
         text: "A row transform tried to rename a missing label, or rename onto a label that already exists in the closed row accumulated so far. Make the source label present and the target label absent before the rename.",
     },
@@ -210,6 +214,11 @@ mod tests {
 
         assert_eq!(explanation.code, codes::parse::UNCLOSED_DELIMITER);
         assert!(explanation.text.contains("opened but not closed"));
+
+        let explanation = explain(codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE)
+            .expect("expected open variant explanation");
+        assert_eq!(explanation.code, codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE);
+        assert!(explanation.text.contains("open row tail"));
     }
 
     #[test]

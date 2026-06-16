@@ -748,6 +748,14 @@ impl<'a> Checker<'a> {
     }
 
     fn check_variant_type_against_type(&mut self, expected: &Row, actual: &Row, span: Span) {
+        let expected = self.resolve_variant_row(expected);
+        let actual = self.resolve_variant_row(actual);
+
+        if expected.tail == RowTail::Closed && actual.tail != RowTail::Closed {
+            self.report_open_variant_not_assignable(span);
+            return;
+        }
+
         if actual.tail != RowTail::Open
             && self
                 .unifier
@@ -760,12 +768,12 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        let Some(actual_tags) = literal_variant_tags(actual) else {
+        let Some(actual_tags) = literal_variant_tags(&actual) else {
             return;
         };
 
         for tag in actual_tags {
-            let Some(payload) = literal_variant_payload_lookup(expected, tag.name) else {
+            let Some(payload) = literal_variant_payload_lookup(&expected, tag.name) else {
                 return;
             };
 
@@ -788,6 +796,13 @@ impl<'a> Checker<'a> {
                 self.check_type_against_type(expected, actual, span);
             }
         }
+    }
+
+    fn resolve_variant_row(&self, row: &Row) -> Row {
+        let Type::Variant(row) = self.unifier.resolve(&Type::Variant(row.clone())) else {
+            unreachable!("variant resolution preserves the outer type")
+        };
+        row
     }
 
     fn check_record_value_against(
@@ -1483,6 +1498,17 @@ impl<'a> Checker<'a> {
                 "variant payload count does not match annotation",
             ))
             .with_note("add or remove payload values to match the variant annotation"),
+        );
+    }
+
+    fn report_open_variant_not_assignable(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("open variant may contain tags not allowed by the annotation")
+                .with_code(codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE)
+                .with_label(Label::primary(span, "this value has an open variant type"))
+                .with_note(
+                    "make the annotation open with `..`, or close the value's variant type before assigning it",
+                ),
         );
     }
 

@@ -1136,18 +1136,22 @@ fn bare_uppercase_values_do_not_infer_tags() {
 }
 
 #[test]
-fn merged_variant_rows_flow_into_closed_annotations() {
+fn merged_variant_rows_flow_into_open_annotations_and_reject_closed_annotations() {
     let accepted = parse_module(
-        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos} = direction\n",
+        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos, ..} = direction\n",
     );
     let accepted_check = check_module(&accepted.module);
     assert!(accepted_check.diagnostics.is_empty());
 
-    let rejected =
-        parse_module("direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero} = direction\n");
+    let rejected = parse_module(
+        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos} = direction\n",
+    );
     let rejected_check = check_module(&rejected.module);
     assert_eq!(
-        matching_codes(&rejected_check.diagnostics, codes::ty::MISMATCH),
+        matching_codes(
+            &rejected_check.diagnostics,
+            codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE
+        ),
         1
     );
 }
@@ -1433,21 +1437,24 @@ fn variant_values_are_checked_against_annotations() {
 #[test]
 fn inferred_variant_identifier_values_are_checked_against_annotations() {
     for source in [
-        "result = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text)} = result\n",
-        "done = @Done\nvalue : @{@Done} = done\n",
+        "result = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text), ..} = result\n",
+        "done = @Done\nvalue : @{@Done, ..} = done\n",
+        "result : @{@Ok(Int)} = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text)} = result\n",
+        "done : @{@Done} = @Done\nvalue : @{@Done, @Other} = done\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
 
         assert!(
-            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
-            "{source} unexpectedly produced type.mismatch"
+            check.diagnostics.is_empty(),
+            "{source} unexpectedly produced diagnostics: {:?}",
+            check.diagnostics
         );
     }
 
     for source in [
-        "result = @Ok(1)\nvalue : @{@Ok(Text), @Err(Text)} = result\n",
-        "result = @Err(\"no\")\nvalue : @{@Ok(Int)} = result\n",
+        "result : @{@Ok(Int)} = @Ok(1)\nvalue : @{@Ok(Text), @Err(Text)} = result\n",
+        "result : @{@Err(Text)} = @Err(\"no\")\nvalue : @{@Ok(Int)} = result\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1456,6 +1463,20 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
             matching_codes(&check.diagnostics, codes::ty::MISMATCH),
             1,
             "{source} should produce one type.mismatch"
+        );
+    }
+
+    for source in [
+        "result = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text)} = result\n",
+        "done = @Done\nvalue : @{@Done} = done\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE),
+            1,
+            "{source} should produce one type.open-variant-not-assignable"
         );
     }
 }

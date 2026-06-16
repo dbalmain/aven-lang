@@ -61,6 +61,7 @@ pub mod ty {
     pub const MISMATCH: &str = "type.mismatch";
     pub const MISSING_FIELD: &str = "type.missing-field";
     pub const NON_EXHAUSTIVE_MATCH: &str = "type.non-exhaustive-match";
+    pub const OPEN_VARIANT_NOT_ASSIGNABLE: &str = "type.open-variant-not-assignable";
     pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
     pub const REPLACE_ABSENT_FIELD: &str = "type.replace-absent-field";
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
@@ -110,6 +111,7 @@ pub const ALL: &[&str] = &[
     ty::MISMATCH,
     ty::MISSING_FIELD,
     ty::NON_EXHAUSTIVE_MATCH,
+    ty::OPEN_VARIANT_NOT_ASSIGNABLE,
     ty::RENAME_ABSENT_FIELD,
     ty::REPLACE_ABSENT_FIELD,
     ty::TYPE_ONLY_RECORD_ENTRY,

@@ -1269,6 +1269,8 @@ Completed parser groundwork:
   locals, top-level declarations with inferred-type detail, and builtin type
   names. Type-directed field, record-label, and tag completion remains a later
   slice.
+- Consolidation C5: open-variant values narrowed into closed variant annotations
+  now diagnose instead of silently passing.
 
 ## To investigate later
 

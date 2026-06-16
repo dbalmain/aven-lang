@@ -1,0 +1,5 @@
+openVariantValue : @{@Ok(Int), ..} = value
+openTarget : @{@Ok(Int), @Err(Text), ..} = openVariantValue
+
+closedOk : @{@Ok(Int)} = @Ok(1)
+closedTarget : @{@Ok(Int), @Err(Text)} = closedOk
