@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
@@ -114,6 +115,10 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: None,
+                    ..CompletionOptions::default()
+                }),
                 semantic_tokens_provider: Some(SemanticTokensServerCapabilities::from(
                     SemanticTokensOptions {
                         work_done_progress_options: Default::default(),
@@ -217,6 +222,18 @@ impl LanguageServer for Backend {
         };
 
         Ok(hover_at_position(&document, position))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some(document) = self.document(&uri) else {
+            return Ok(None);
+        };
+
+        Ok(Some(CompletionResponse::Array(completion_at_position(
+            &document, position,
+        ))))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -421,6 +438,113 @@ fn symbol_kind(declaration: &aven_parser::Declaration) -> SymbolKind {
         aven_parser::DeclarationKind::Binding => SymbolKind::VARIABLE,
     }
 }
+
+fn completion_at_position(document: &ParsedDocument, position: Position) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(offset) = position_to_offset(document, position) {
+        for binding in aven_parser::visible_local_bindings(
+            &document.parse_output().module,
+            Span::point(offset),
+        )
+        .into_iter()
+        .rev()
+        {
+            push_completion_item(
+                &mut items,
+                &mut seen,
+                completion_item_for_binding(document, binding.name, binding.span),
+            );
+        }
+    }
+
+    for declaration in document.declarations() {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            completion_item_for_declaration(document, declaration),
+        );
+    }
+
+    for name in BUILTIN_TYPE_NAMES {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            CompletionItem {
+                label: (*name).to_owned(),
+                kind: Some(CompletionItemKind::CLASS),
+                ..CompletionItem::default()
+            },
+        );
+    }
+
+    items
+}
+
+fn push_completion_item(
+    items: &mut Vec<CompletionItem>,
+    seen: &mut HashSet<String>,
+    item: CompletionItem,
+) {
+    if seen.insert(item.label.clone()) {
+        items.push(item);
+    }
+}
+
+fn completion_item_for_declaration(
+    document: &ParsedDocument,
+    declaration: &aven_parser::Declaration,
+) -> CompletionItem {
+    CompletionItem {
+        label: declaration.name.clone(),
+        kind: Some(completion_kind_for_declaration(document, declaration)),
+        detail: document
+            .type_at(declaration.name_span)
+            .map(aven_compiler::Type::render),
+        ..CompletionItem::default()
+    }
+}
+
+fn completion_item_for_binding(
+    document: &ParsedDocument,
+    name: &str,
+    name_span: Span,
+) -> CompletionItem {
+    CompletionItem {
+        label: name.to_owned(),
+        kind: Some(completion_kind_for_type(document.type_at(name_span))),
+        detail: document.type_at(name_span).map(aven_compiler::Type::render),
+        ..CompletionItem::default()
+    }
+}
+
+fn completion_kind_for_declaration(
+    document: &ParsedDocument,
+    declaration: &aven_parser::Declaration,
+) -> CompletionItemKind {
+    if declaration.phase == aven_parser::DeclarationPhase::Comptime {
+        // Uppercase/comptime declarations are type-like in the parser's phase
+        // split, so completion presents them with the same class icon as builtins.
+        return CompletionItemKind::CLASS;
+    }
+
+    completion_kind_for_type(document.type_at(declaration.name_span))
+}
+
+fn completion_kind_for_type(ty: Option<&aven_compiler::Type>) -> CompletionItemKind {
+    if matches!(ty, Some(aven_compiler::Type::Function { .. })) {
+        return CompletionItemKind::FUNCTION;
+    }
+
+    CompletionItemKind::VARIABLE
+}
+
+// Hardcoded with reference to aven-check's private BUILTIN_TYPES/CHECKED_NAMED_TYPES
+// rather than adding an LSP dependency on the checker just for completion.
+const BUILTIN_TYPE_NAMES: &[&str] = &[
+    "Array", "Bool", "Float", "Int", "Json", "Nil", "Result", "Set", "Text", "U8", "Unit", "Yaml",
+];
 
 fn definition_location(
     document: &ParsedDocument,
@@ -685,6 +809,7 @@ mod tests {
             Some(SemanticTokensServerCapabilities::SemanticTokensOptions(options))
                 if matches!(options.full, Some(SemanticTokensFullOptions::Bool(true)))
         ));
+        assert!(initialize_result.capabilities.completion_provider.is_some());
 
         let did_open = Request::build("textDocument/didOpen")
             .params(json!({
@@ -698,13 +823,39 @@ mod tests {
             .finish();
         assert!(call_service(&mut service, did_open).await.is_none());
 
+        let completion = Request::build("textDocument/completion")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text.clone()
+                },
+                "position": {
+                    "line": 1,
+                    "character": 3
+                }
+            }))
+            .id(2)
+            .finish();
+        let Some(response) = call_service(&mut service, completion).await else {
+            panic!("expected completion response");
+        };
+        let (_id, body) = response.into_parts();
+        let Ok(value) = body else {
+            panic!("expected successful completion response");
+        };
+        let completions = match serde_json::from_value::<Vec<CompletionItem>>(value) {
+            Ok(completions) => completions,
+            Err(error) => panic!("expected completion response: {error}"),
+        };
+        assert!(completion_item(&completions, "value").is_some());
+        assert!(completion_item(&completions, "Text").is_some());
+
         let document_symbol = Request::build("textDocument/documentSymbol")
             .params(json!({
                 "textDocument": {
                     "uri": uri_text
                 }
             }))
-            .id(2)
+            .id(3)
             .finish();
         let Some(response) = call_service(&mut service, document_symbol).await else {
             panic!("expected documentSymbol response");
@@ -730,7 +881,7 @@ mod tests {
                     "uri": uri_text
                 }
             }))
-            .id(3)
+            .id(4)
             .finish();
         let Some(response) = call_service(&mut service, semantic_tokens).await else {
             panic!("expected semanticTokens response");
@@ -873,6 +1024,75 @@ mod tests {
         assert_eq!(symbols[0].detail.as_deref(), Some("signature"));
         assert_eq!(symbols[1].name, "other");
         assert_eq!(symbols[1].kind, SymbolKind::VARIABLE);
+    }
+
+    #[test]
+    fn completion_at_position_includes_top_level_bindings_with_types() {
+        let document = parsed_document_with_semantics(
+            "format : (Int) -> Text = (value) => \"ok\"\ncount = 1\n",
+        );
+        let completions = completion_at_position(&document, position(1, 8));
+        let Some(format) = completion_item(&completions, "format") else {
+            panic!("expected format completion");
+        };
+        let Some(count) = completion_item(&completions, "count") else {
+            panic!("expected count completion");
+        };
+
+        assert_eq!(format.detail.as_deref(), Some("Int -> Text"));
+        assert_eq!(format.kind, Some(CompletionItemKind::FUNCTION));
+        assert_eq!(count.detail.as_deref(), Some("Int"));
+        assert_eq!(count.kind, Some(CompletionItemKind::VARIABLE));
+    }
+
+    #[test]
+    fn completion_at_position_includes_builtin_type_names() {
+        let document = parsed_document_with_semantics("value = 1\n");
+        let completions = completion_at_position(&document, position(0, 8));
+
+        for name in ["Bool", "Float", "Int", "Nil", "Text", "U8", "Unit"] {
+            let Some(item) = completion_item(&completions, name) else {
+                panic!("expected builtin completion for {name}");
+            };
+
+            assert_eq!(item.kind, Some(CompletionItemKind::CLASS));
+        }
+    }
+
+    #[test]
+    fn completion_at_position_includes_visible_local_bindings() {
+        let document =
+            parsed_document_with_semantics("value =\n  local = \"hi\"\n  local\nother = 1\n");
+        let completions = completion_at_position(&document, position(2, 3));
+        let Some(local) = completion_item(&completions, "local") else {
+            panic!("expected local completion");
+        };
+
+        assert_eq!(local.detail.as_deref(), Some("Text"));
+        assert_eq!(local.kind, Some(CompletionItemKind::VARIABLE));
+    }
+
+    #[test]
+    fn completion_at_position_excludes_out_of_scope_local_bindings() {
+        let document =
+            parsed_document_with_semantics("value =\n  local = \"hi\"\n  local\nother = 1\n");
+        let completions = completion_at_position(&document, position(3, 8));
+
+        assert!(completion_item(&completions, "local").is_none());
+    }
+
+    #[test]
+    fn completion_at_position_prefers_local_shadowing_top_level() {
+        let document =
+            parsed_document_with_semantics("value = 1\nresult =\n  value = \"hi\"\n  value\n");
+        let completions = completion_at_position(&document, position(3, 3));
+        let value_items = completions
+            .iter()
+            .filter(|item| item.label == "value")
+            .collect::<Vec<_>>();
+
+        assert_eq!(value_items.len(), 1);
+        assert_eq!(value_items[0].detail.as_deref(), Some("Text"));
     }
 
     #[test]
@@ -1252,6 +1472,10 @@ mod tests {
         };
 
         assert_eq!(markup.value, expected);
+    }
+
+    fn completion_item<'a>(items: &'a [CompletionItem], label: &str) -> Option<&'a CompletionItem> {
+        items.iter().find(|item| item.label == label)
     }
 
     fn test_uri() -> Url {

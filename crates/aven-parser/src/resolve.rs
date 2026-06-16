@@ -46,6 +46,18 @@ pub fn resolve_local_references(
     Some(references)
 }
 
+pub fn visible_local_bindings(module: &Module, at: Span) -> Vec<BindingSite<'_>> {
+    let visible = Vec::new();
+
+    for item in &module.items {
+        if let Some(found) = visible_bindings_in_item(item, at, &visible) {
+            return found;
+        }
+    }
+
+    visible
+}
+
 pub fn annotation_for_definition(module: &Module, definition: Span) -> Option<&Expr> {
     annotation_for_definition_in_items(&module.items, definition)
 }
@@ -389,6 +401,163 @@ fn find_visible_binding(bindings: &[BindingSite<'_>], name: &str) -> Option<Span
         .map(|binding| binding.span)
 }
 
+fn visible_bindings_in_item<'a>(
+    item: &'a Item,
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<Vec<BindingSite<'a>>> {
+    match item {
+        Item::Binding(binding) => {
+            if !binding.span.contains(at) {
+                return None;
+            }
+
+            if let Some(annotation) = &binding.annotation
+                && let Some(found) = visible_bindings_in_expr(annotation, at, outer)
+            {
+                return Some(found);
+            }
+
+            visible_bindings_in_expr(&binding.value, at, outer).or_else(|| Some(outer.to_vec()))
+        }
+        Item::Signature(signature) => {
+            if !signature.span.contains(at) {
+                return None;
+            }
+
+            visible_bindings_in_expr(&signature.annotation, at, outer)
+                .or_else(|| Some(outer.to_vec()))
+        }
+        Item::Expr(expr) => visible_bindings_in_expr(expr, at, outer),
+    }
+}
+
+fn visible_bindings_in_expr<'a>(
+    expr: &'a Expr,
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<Vec<BindingSite<'a>>> {
+    if !expr.span.contains(at) {
+        return None;
+    }
+
+    match &expr.kind {
+        ExprKind::Lambda {
+            params,
+            return_annotation,
+            body,
+        } => {
+            if let Some(param) = params.iter().find(|param| param.name_span.contains(at)) {
+                let mut visible = outer.to_vec();
+                visible.push(BindingSite {
+                    name: &param.name,
+                    span: param.name_span,
+                });
+                return Some(visible);
+            }
+
+            if let Some(annotation) = return_annotation
+                && let Some(found) = visible_bindings_in_expr(annotation, at, outer)
+            {
+                return Some(found);
+            }
+
+            if body.span.contains(at) {
+                let mut visible = outer.to_vec();
+                visible.extend(params.iter().map(|param| BindingSite {
+                    name: param.name.as_str(),
+                    span: param.name_span,
+                }));
+
+                return visible_bindings_in_expr(body, at, &visible).or(Some(visible));
+            }
+
+            Some(outer.to_vec())
+        }
+        ExprKind::Match { subject, arms, .. } => visible_bindings_in_expr(subject, at, outer)
+            .or_else(|| visible_bindings_in_match_arms(arms, at, outer)),
+        ExprKind::Block(items) => visible_bindings_in_block(items, at, outer),
+        _ => find_map_expr_children(expr, |child| visible_bindings_in_expr(child, at, outer))
+            .or_else(|| Some(outer.to_vec())),
+    }
+}
+
+fn visible_bindings_in_block<'a>(
+    items: &'a [Item],
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<Vec<BindingSite<'a>>> {
+    let mut visible = outer.to_vec();
+
+    for item in items {
+        let span = item_span(item);
+
+        if span.contains(at) {
+            return visible_bindings_in_item(item, at, &visible).or(Some(visible));
+        }
+
+        if span.end <= at.start
+            && let Item::Binding(binding) = item
+        {
+            visible.push(BindingSite {
+                name: &binding.name,
+                span: binding.name_span,
+            });
+        }
+    }
+
+    Some(visible)
+}
+
+fn visible_bindings_in_match_arms<'a>(
+    arms: &'a [MatchArm],
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<Vec<BindingSite<'a>>> {
+    arms.iter().find_map(|arm| {
+        if !arm.span.contains(at) {
+            return None;
+        }
+
+        let binders = pattern_bindings(&arm.pattern);
+
+        if arm.pattern.span.contains(at) {
+            let mut visible = outer.to_vec();
+            visible.extend(
+                binders
+                    .iter()
+                    .copied()
+                    .filter(|binding| binding.span.contains(at)),
+            );
+            return Some(visible);
+        }
+
+        if exprs_contain(&arm.guards, at) {
+            let mut visible = outer.to_vec();
+            visible.extend(binders);
+            return resolve_visible_bindings_in_exprs(&arm.guards, at, &visible).or(Some(visible));
+        }
+
+        if arm.body.span.contains(at) {
+            let mut visible = outer.to_vec();
+            visible.extend(binders);
+            return visible_bindings_in_expr(&arm.body, at, &visible).or(Some(visible));
+        }
+
+        Some(outer.to_vec())
+    })
+}
+
+fn resolve_visible_bindings_in_exprs<'a>(
+    items: &'a [Expr],
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<Vec<BindingSite<'a>>> {
+    items
+        .iter()
+        .find_map(|item| visible_bindings_in_expr(item, at, outer))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +716,48 @@ mod tests {
     }
 
     #[test]
+    fn visible_local_bindings_include_lambda_parameters() {
+        let source = "f = (x) => x\n";
+        let output = parse_module(source);
+        let bindings = visible_binding_pairs(&output.module, nth_span(source, "x", 1));
+
+        assert_eq!(bindings, vec![("x", nth_span(source, "x", 0))]);
+    }
+
+    #[test]
+    fn visible_local_bindings_include_previous_block_bindings() {
+        let source = "f = () =>\n  x = 1\n  y = x\n";
+        let output = parse_module(source);
+        let bindings = visible_binding_pairs(&output.module, nth_span(source, "x", 1));
+
+        assert_eq!(bindings, vec![("x", nth_span(source, "x", 0))]);
+    }
+
+    #[test]
+    fn visible_local_bindings_exclude_later_block_bindings() {
+        let source = "f = () =>\n  x = y\n  y = 1\n";
+        let output = parse_module(source);
+        let bindings = visible_binding_pairs(&output.module, nth_span(source, "y", 0));
+
+        assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn visible_local_bindings_include_match_pattern_binders_in_body() {
+        let source = "f = (result) =>\n  result ?>\n    @Ok(value) => value\n";
+        let output = parse_module(source);
+        let bindings = visible_binding_pairs(&output.module, nth_span(source, "value", 1));
+
+        assert_eq!(
+            bindings,
+            vec![
+                ("result", nth_span(source, "result", 0)),
+                ("value", nth_span(source, "value", 0)),
+            ]
+        );
+    }
+
+    #[test]
     fn finds_signature_annotation_for_binding_definition() {
         let source = "double : (Int) -> Int\ndouble = (value) => value\n";
         let output = parse_module(source);
@@ -578,5 +789,12 @@ mod tests {
         };
 
         Span::new(start, start + needle.len())
+    }
+
+    fn visible_binding_pairs(module: &Module, at: Span) -> Vec<(&str, Span)> {
+        visible_local_bindings(module, at)
+            .into_iter()
+            .map(|binding| (binding.name, binding.span))
+            .collect()
     }
 }

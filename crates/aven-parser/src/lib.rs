@@ -23,5 +23,5 @@ pub use parser::{
     RecordEntry, Signature, parse_module, parse_source,
 };
 pub use resolve::{BindingSite, annotation_for_definition, pattern_bindings, render_annotation};
-pub use resolve::{resolve_local_definition, resolve_local_references};
+pub use resolve::{resolve_local_definition, resolve_local_references, visible_local_bindings};
 pub use walk::{find_map_expr_children, walk_expr_children};

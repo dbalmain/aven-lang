@@ -1265,6 +1265,10 @@ Completed parser groundwork:
   inferred results stays deferred until profiling shows it pays off.
 - Consolidation C2: LSP hover now shows inferred types for unannotated bindings,
   sourced from compiler snapshots and building on C1's inferred-types API.
+- Consolidation C3: LSP completion now offers identifier names from in-scope
+  locals, top-level declarations with inferred-type detail, and builtin type
+  names. Type-directed field, record-label, and tag completion remains a later
+  slice.
 
 ## To investigate later
 
