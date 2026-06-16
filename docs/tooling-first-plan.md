@@ -1252,5 +1252,23 @@ Completed parser groundwork:
   whole-module re-inference is cheap, so consuming artifact invalidation for
   inferred results stays deferred until profiling shows it pays off.
 
+## To investigate later
+
+- **Braceless multiline set/record literals.** Allow dropping the braces on
+  multiline shapes using a trailing sigil that opens a layout block: `@>` for
+  sets/variants and `{>` for records, e.g.
+
+  ```aven
+  Result[t, e] = @>
+    @Ok(t)
+    @Err(e)
+  ```
+
+  Purely additive surface syntax over the existing `@{...}`/`{...}` forms (no
+  change to the tag representation), so it carries no lock-in and can land
+  whenever `@{...}` becomes tedious. Scope when picked up: a layout-block opener
+  after `@>`/`{>` in the parser plus the matching `fmt` rendering; assess
+  whether the layout pass needs a dedicated open/close pairing.
+
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.
