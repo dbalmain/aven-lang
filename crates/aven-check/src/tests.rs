@@ -224,6 +224,145 @@ fn lowers_normalized_rows_and_closed_transforms() {
 }
 
 #[test]
+fn lowers_open_row_extension_and_update_transforms() {
+    let output = parse_module(
+        "OpenBase = { host: Text, .. }\n\
+         OpenColor = @{@Red, ..}\n\
+         from_var_add : { ..r, timeout: Int } = value\n\
+         from_var_update : { ..r, x :: Float } = value\n\
+         from_marker_update : { x: Int, .., y :: Text } = value\n\
+         from_open_alias : { ..OpenBase, timeout: Int } = value\n\
+         variant_from_var : @{ ..r, @Extra } = value\n\
+         variant_from_open_alias : @{ ..OpenColor, @Extra } = value\n\
+         deferred_delete : { ..r, -x } = value\n",
+    );
+
+    let from_var_add = lower_annotation(&output.module, annotation(&output.module, "from_var_add"));
+    let from_var_update = lower_annotation(
+        &output.module,
+        annotation(&output.module, "from_var_update"),
+    );
+    let from_marker_update = lower_annotation(
+        &output.module,
+        annotation(&output.module, "from_marker_update"),
+    );
+    let from_open_alias = lower_annotation(
+        &output.module,
+        annotation(&output.module, "from_open_alias"),
+    );
+    let variant_from_var = lower_annotation(
+        &output.module,
+        annotation(&output.module, "variant_from_var"),
+    );
+    let variant_from_open_alias = lower_annotation(
+        &output.module,
+        annotation(&output.module, "variant_from_open_alias"),
+    );
+    let deferred_delete = lower_annotation(
+        &output.module,
+        annotation(&output.module, "deferred_delete"),
+    );
+
+    assert_eq!(
+        from_var_add.ty,
+        Type::Record(Row {
+            entries: vec![RowEntry::Field {
+                name: "timeout".to_owned(),
+                ty: named("Int"),
+                optional: false,
+            }],
+            tail: RowTail::Open,
+        })
+    );
+    assert!(from_var_add.diagnostics.is_empty());
+
+    assert_eq!(
+        from_var_update.ty,
+        Type::Record(Row {
+            entries: vec![RowEntry::Field {
+                name: "x".to_owned(),
+                ty: named("Float"),
+                optional: false,
+            }],
+            tail: RowTail::Open,
+        })
+    );
+    assert!(from_var_update.diagnostics.is_empty());
+
+    assert_eq!(
+        from_marker_update.ty,
+        Type::Record(Row {
+            entries: vec![
+                RowEntry::Field {
+                    name: "x".to_owned(),
+                    ty: named("Int"),
+                    optional: false,
+                },
+                RowEntry::Field {
+                    name: "y".to_owned(),
+                    ty: named("Text"),
+                    optional: false,
+                },
+            ],
+            tail: RowTail::Open,
+        })
+    );
+    assert!(from_marker_update.diagnostics.is_empty());
+
+    assert_eq!(
+        from_open_alias.ty,
+        Type::Record(Row {
+            entries: vec![
+                RowEntry::Field {
+                    name: "host".to_owned(),
+                    ty: named("Text"),
+                    optional: false,
+                },
+                RowEntry::Field {
+                    name: "timeout".to_owned(),
+                    ty: named("Int"),
+                    optional: false,
+                },
+            ],
+            tail: RowTail::Open,
+        })
+    );
+    assert!(from_open_alias.diagnostics.is_empty());
+
+    assert_eq!(
+        variant_from_var.ty,
+        Type::Variant(Row {
+            entries: vec![RowEntry::Tag {
+                name: "Extra".to_owned(),
+                payload: Vec::new(),
+            }],
+            tail: RowTail::Open,
+        })
+    );
+    assert!(variant_from_var.diagnostics.is_empty());
+
+    assert_eq!(
+        variant_from_open_alias.ty,
+        Type::Variant(Row {
+            entries: vec![
+                RowEntry::Tag {
+                    name: "Red".to_owned(),
+                    payload: Vec::new(),
+                },
+                RowEntry::Tag {
+                    name: "Extra".to_owned(),
+                    payload: Vec::new(),
+                },
+            ],
+            tail: RowTail::Open,
+        })
+    );
+    assert!(variant_from_open_alias.diagnostics.is_empty());
+    assert_eq!(deferred_delete.ty, Type::Deferred);
+    assert!(deferred_delete.diagnostics.is_empty());
+}
+
+#[test]
 fn type_definitions_compute_closed_transform_aliases() {
     let output = parse_module(
         "Base = { x: Int, old: Text }\n\
@@ -272,7 +411,7 @@ fn type_definitions_compute_closed_transform_aliases() {
 
 #[test]
 fn deferred_rows_still_report_nested_annotation_diagnostics() {
-    let output = parse_module("value : @{..r, io(Missing)} = value\n");
+    let output = parse_module("value : @{..Text, io(Missing)} = value\n");
     let lowering = lower_annotation(&output.module, annotation(&output.module, "value"));
 
     assert_eq!(lowering.ty, Type::Deferred);

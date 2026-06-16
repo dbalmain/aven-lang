@@ -1,0 +1,8 @@
+RecordOpenSpreadAdd : { ..r, timeout: Int } = value
+RecordOpenSpreadUpdate : { ..r, x :: Float } = value
+RecordOpenMarkerUpdate : { x: Int, .., y :: Text } = value
+
+VariantOpenSpreadAdd : @{ ..r, @Extra } = value
+
+DeferredOpenDelete : { ..r, -x } = value
+DeferredOpenRename : { ..r, x -> y } = value

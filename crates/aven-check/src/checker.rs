@@ -1062,15 +1062,14 @@ impl<'a> Checker<'a> {
                 };
 
                 if *overwrite {
-                    if row.tail != RowTail::Closed {
-                        return Err(());
-                    }
-
-                    let Some(index) = row_entry_index(&row.entries, name) else {
+                    if let Some(index) = row_entry_index(&row.entries, name) {
+                        row.entries[index] = entry;
+                    } else if row.tail == RowTail::Closed {
                         self.report_replace_absent_field(name, *span);
                         return Err(());
-                    };
-                    row.entries[index] = entry;
+                    } else {
+                        row.entries.push(entry);
+                    }
                     Ok(())
                 } else if row_entry_index(&row.entries, name).is_some() {
                     self.report_duplicate_row_label(
@@ -1121,7 +1120,7 @@ impl<'a> Checker<'a> {
                 span,
             } => {
                 let ty = self.lower_annotation(value);
-                let Some(source) = self.closed_row_source(&ty, kind) else {
+                let Some(source) = self.row_source(&ty, kind) else {
                     return Err(());
                 };
 
@@ -1178,13 +1177,19 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn closed_row_source(&self, ty: &Type, kind: RowKind) -> Option<Row> {
+    fn row_source(&self, ty: &Type, kind: RowKind) -> Option<RowSource> {
         match (self.normalize(ty), kind) {
-            (Type::Record(row), RowKind::Record) | (Type::Variant(row), RowKind::Variant)
-                if row.tail == RowTail::Closed =>
-            {
-                Some(row)
+            (Type::Record(row), RowKind::Record) | (Type::Variant(row), RowKind::Variant) => {
+                if row.tail == RowTail::Closed {
+                    Some(RowSource::Closed(row))
+                } else {
+                    Some(RowSource::Open(row))
+                }
             }
+            (Type::Variable(_), _) => Some(RowSource::Open(Row {
+                entries: Vec::new(),
+                tail: RowTail::Open,
+            })),
             _ => None,
         }
     }
@@ -1192,10 +1197,15 @@ impl<'a> Checker<'a> {
     fn merge_source_row(
         &mut self,
         row: &mut Row,
-        source: Row,
+        source: RowSource,
         overwrite: bool,
         span: Span,
     ) -> Result<(), ()> {
+        let (source, source_is_open) = match source {
+            RowSource::Closed(row) => (row, false),
+            RowSource::Open(row) => (row, true),
+        };
+
         for entry in source.entries {
             let label = row_entry_label(&entry).to_owned();
             if let Some(index) = row_entry_index(&row.entries, &label) {
@@ -1207,6 +1217,10 @@ impl<'a> Checker<'a> {
             } else {
                 row.entries.push(entry);
             }
+        }
+
+        if source_is_open {
+            row.tail = RowTail::Open;
         }
 
         Ok(())
@@ -1525,6 +1539,12 @@ enum DuplicateRowLabelContext {
     RecordAdd,
     VariantAdd,
     Spread,
+}
+
+#[derive(Debug)]
+enum RowSource {
+    Closed(Row),
+    Open(Row),
 }
 
 #[derive(Debug)]
