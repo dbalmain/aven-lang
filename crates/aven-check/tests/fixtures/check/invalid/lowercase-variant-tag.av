@@ -1,1 +1,1 @@
-value : @{ ok(Int), Err(Text) } = value
+value : @{ @ok(Int), @Err(Text) } = value

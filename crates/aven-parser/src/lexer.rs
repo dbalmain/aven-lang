@@ -34,6 +34,7 @@ pub enum TokenKind {
     RegexLiteral(String),
     PathLiteral(String),
     LabelPath(String),
+    Tag(String),
     Operator(String),
     OpenParen,
     CloseParen,
@@ -62,6 +63,7 @@ impl TokenKind {
             Self::RegexLiteral(regex) => format!("regex `{regex}`"),
             Self::PathLiteral(path) => format!("path `{path}`"),
             Self::LabelPath(path) => format!("label `{path}`"),
+            Self::Tag(name) => format!("tag `@{name}`"),
             Self::Operator(operator) => format!("operator `{operator}`"),
             Self::OpenParen => "delimiter `(`".to_owned(),
             Self::CloseParen => "delimiter `)`".to_owned(),
@@ -392,6 +394,14 @@ impl Lexer<'_> {
 
         self.offset += 1;
         self.scan_label_segment();
+
+        if self.source.as_bytes()[start + 1].is_ascii_uppercase() {
+            self.push(
+                TokenKind::Tag(self.source[start + 1..self.offset].to_owned()),
+                Span::new(start, self.offset),
+            );
+            return;
+        }
 
         while self.current_byte() == Some(b'/')
             && self.peek_byte(1).is_some_and(is_identifier_start_byte)

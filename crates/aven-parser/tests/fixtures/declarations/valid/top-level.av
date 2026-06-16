@@ -6,4 +6,4 @@ double = (x) => x
 value : Int
 other = value
 
-Color = @{ Red, Green }
+Color = @{ @Red, @Green }

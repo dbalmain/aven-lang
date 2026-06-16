@@ -1,8 +1,8 @@
-closed : @{A, B} = value
+closed : @{@A, @B} = value
 closedResult = closed ?>
-  A => 1
-  B => 2
+  @A => 1
+  @B => 2
 
-open = A
+open = @A
 openResult = open ?>
   _ => 1

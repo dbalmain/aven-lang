@@ -1,3 +1,3 @@
-error type.lowercase-variant-tag: variant tag `ok` must start with uppercase
-  label 11..13: lowercase variant tag
-  note: variant tags use uppercase names, for example `Ok` or `Err`
+error type.lowercase-variant-tag: variant tag `ok` must be an uppercase `@`-tag
+  label 11..14: lowercase variant tag
+  note: variant tags use uppercase names, for example `@Ok` or `@Err`

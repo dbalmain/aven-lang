@@ -128,7 +128,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::parse::SINGLE_ITEM_TUPLE,
-        text: "Anonymous one-item tuples are not allowed. Remove the comma for grouping, or use a tagged one-item tuple such as Ok(value).",
+        text: "Anonymous one-item tuples are not allowed. Remove the comma for grouping, or use a tagged one-item tuple such as @Ok(value).",
     },
     DiagnosticExplanation {
         code: codes::parse::UNCLOSED_DELIMITER,
@@ -156,7 +156,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::LOWERCASE_VARIANT_TAG,
-        text: "Variant type members must use uppercase tags. Rename the tag to an uppercase marker such as Ok or Error.",
+        text: "Variant type members must use uppercase `@`-tags. Rename the tag to an uppercase marker such as @Ok or @Error.",
     },
     DiagnosticExplanation {
         code: codes::ty::MISMATCH,

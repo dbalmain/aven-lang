@@ -1,3 +1,3 @@
 error type.non-exhaustive-match: non-exhaustive match on an open variant
-  label 20..26: this subject may contain tags beyond those listed
+  label 21..27: this subject may contain tags beyond those listed
   note: add a default arm such as `_ => ...`

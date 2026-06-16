@@ -262,7 +262,7 @@ fn semantic_style_for_token(kind: &aven_parser::TokenKind) -> Option<SemanticSty
             TOKEN_STRING
         }
         aven_parser::TokenKind::RegexLiteral(_) => TOKEN_REGEXP,
-        aven_parser::TokenKind::LabelPath(_) => TOKEN_PROPERTY,
+        aven_parser::TokenKind::LabelPath(_) | aven_parser::TokenKind::Tag(_) => TOKEN_PROPERTY,
         aven_parser::TokenKind::Operator(_) => TOKEN_OPERATOR,
         aven_parser::TokenKind::Comment(_) => TOKEN_COMMENT,
         aven_parser::TokenKind::DocComment(_) => TOKEN_COMMENT,

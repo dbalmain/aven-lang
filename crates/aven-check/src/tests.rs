@@ -135,11 +135,11 @@ fn lowers_function_application_and_nullable_annotations() {
 #[test]
 fn lowers_normalized_rows_and_defers_transforms() {
     let output = parse_module(
-        "FileError = @{Io}\n\
+        "FileError = @{@Io}\n\
              user : { name: Text, email: Text?, phone?: Text, .. } = current\n\
-             error : @{ParseError(Text), NotFound} = value\n\
+             error : @{@ParseError(Text), @NotFound} = value\n\
              transformed_user : { name: Text, -password } = current\n\
-             transformed_error : @{ParseError(Text), ..FileError} = value\n",
+             transformed_error : @{@ParseError(Text), ..FileError} = value\n",
     );
 
     let user = lower_annotation(&output.module, annotation(&output.module, "user"));
@@ -563,7 +563,7 @@ fn contextual_block_prefix_bindings_see_seeded_lambda_params() {
 
 #[test]
 fn contextual_matches_check_arm_bodies_against_expected_type() {
-    let output = parse_module("value : Text =\n  result ?>\n    Ok(_) => 1\n");
+    let output = parse_module("value : Text =\n  result ?>\n    @Ok(_) => 1\n");
     let check = check_module(&output.module);
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -572,7 +572,7 @@ fn contextual_matches_check_arm_bodies_against_expected_type() {
 #[test]
 fn contextual_matches_check_block_arm_bodies_against_expected_type() {
     let output =
-        parse_module("value : Text =\n  result ?>\n    Ok(_) =>\n      local = 1\n      local\n");
+        parse_module("value : Text =\n  result ?>\n    @Ok(_) =>\n      local = 1\n      local\n");
     let check = check_module(&output.module);
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -581,7 +581,7 @@ fn contextual_matches_check_block_arm_bodies_against_expected_type() {
 #[test]
 fn contextual_matches_keep_pattern_binders_unknown() {
     let output =
-        parse_module("item : Text = \"hi\"\nvalue : Bool =\n  result ?>\n    Ok(item) => item\n");
+        parse_module("item : Text = \"hi\"\nvalue : Bool =\n  result ?>\n    @Ok(item) => item\n");
     let check = check_module(&output.module);
 
     assert!(
@@ -593,8 +593,8 @@ fn contextual_matches_keep_pattern_binders_unknown() {
 #[test]
 fn match_guards_are_checked_as_bool() {
     for source in [
-        "value : Text =\n  result ?>\n    Ok(_), 1 < 2 => \"ok\"\n",
-        "flag : Bool = True\nvalue : Text =\n  result ?>\n    Ok(_), flag => \"ok\"\n",
+        "value : Text =\n  result ?>\n    @Ok(_), 1 < 2 => \"ok\"\n",
+        "flag : Bool = True\nvalue : Text =\n  result ?>\n    @Ok(_), flag => \"ok\"\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -606,8 +606,8 @@ fn match_guards_are_checked_as_bool() {
     }
 
     for source in [
-        "value : Text =\n  result ?>\n    Ok(_), 1 => \"ok\"\n",
-        "flag : Text = \"no\"\nvalue : Text =\n  result ?>\n    Ok(_), flag => \"ok\"\n",
+        "value : Text =\n  result ?>\n    @Ok(_), 1 => \"ok\"\n",
+        "flag : Text = \"no\"\nvalue : Text =\n  result ?>\n    @Ok(_), flag => \"ok\"\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -623,7 +623,7 @@ fn match_guards_are_checked_as_bool() {
 #[test]
 fn match_guard_pattern_binders_stay_unknown() {
     let output = parse_module(
-        "item : Text = \"hi\"\nvalue : Text =\n  result ?>\n    Ok(item), item => \"ok\"\n",
+        "item : Text = \"hi\"\nvalue : Text =\n  result ?>\n    @Ok(item), item => \"ok\"\n",
     );
     let check = check_module(&output.module);
 
@@ -636,7 +636,7 @@ fn match_guard_pattern_binders_stay_unknown() {
 #[test]
 fn variant_match_payload_binders_use_subject_types() {
     let body = parse_module(
-        "source : @{Ok(Text), Err(Text)} = result\nvalue : Bool = source ?>\n  Ok(item) => item\n  Err(_) => False\n",
+        "source : @{@Ok(Text), @Err(Text)} = result\nvalue : Bool = source ?>\n  @Ok(item) => item\n  @Err(_) => False\n",
     );
     let body_check = check_module(&body.module);
     assert_eq!(
@@ -645,7 +645,7 @@ fn variant_match_payload_binders_use_subject_types() {
     );
 
     let guard = parse_module(
-        "source : @{Ok(Text), Err(Text)} = result\nvalue : Text = source ?>\n  Ok(item), item => \"ok\"\n  Err(_) => \"err\"\n",
+        "source : @{@Ok(Text), @Err(Text)} = result\nvalue : Text = source ?>\n  @Ok(item), item => \"ok\"\n  @Err(_) => \"err\"\n",
     );
     let guard_check = check_module(&guard.module);
     assert_eq!(
@@ -657,7 +657,7 @@ fn variant_match_payload_binders_use_subject_types() {
 #[test]
 fn variant_match_payload_types_feed_result_inference() {
     let output = parse_module(
-        "source : @{Ok(Text), Err(Text)} = result\nmatched = source ?>\n  Ok(item) => item\n  Err(error) => error\nvalue : Int = matched\n",
+        "source : @{@Ok(Text), @Err(Text)} = result\nmatched = source ?>\n  @Ok(item) => item\n  @Err(error) => error\nvalue : Int = matched\n",
     );
     let check = check_module(&output.module);
 
@@ -667,7 +667,7 @@ fn variant_match_payload_types_feed_result_inference() {
 #[test]
 fn match_results_are_inferred_for_identifier_values() {
     let mismatch =
-        parse_module("result = source ?>\n  Ok(_) => 1\n  Err(_) => 2\nvalue : Text = result\n");
+        parse_module("result = source ?>\n  @Ok(_) => 1\n  @Err(_) => 2\nvalue : Text = result\n");
     let mismatch_check = check_module(&mismatch.module);
     assert_eq!(
         matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
@@ -675,7 +675,7 @@ fn match_results_are_inferred_for_identifier_values() {
     );
 
     let accepted =
-        parse_module("result = source ?>\n  Ok(_) => 1\n  Err(_) => 2\nvalue : Int = result\n");
+        parse_module("result = source ?>\n  @Ok(_) => 1\n  @Err(_) => 2\nvalue : Int = result\n");
     let accepted_check = check_module(&accepted.module);
     assert!(
         !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
@@ -685,7 +685,7 @@ fn match_results_are_inferred_for_identifier_values() {
 
 #[test]
 fn match_results_merge_open_variant_rows() {
-    let output = parse_module("classify = (n) =>\n  n ?>\n    0 => Zero\n    _ => Pos\n");
+    let output = parse_module("classify = (n) =>\n  n ?>\n    0 => @Zero\n    _ => @Pos\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
@@ -713,7 +713,7 @@ fn match_results_merge_open_variant_rows() {
 
 #[test]
 fn tag_literals_and_constructors_infer_open_variant_rows() {
-    let output = parse_module("zero = Zero\nok = Ok(1)\ntruth = True\nnil = Nil\n");
+    let output = parse_module("zero = @Zero\nok = @Ok(1)\ntruth = True\nnil = Nil\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
@@ -738,15 +738,34 @@ fn tag_literals_and_constructors_infer_open_variant_rows() {
 }
 
 #[test]
+fn bare_uppercase_values_do_not_infer_tags() {
+    let output = parse_module("Answer = 42\nresolved = Answer\nmissing = Missing\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker.infer_top_level_value("resolved"),
+        Some(named("Int"))
+    );
+    assert_eq!(
+        checker
+            .infer_top_level_scheme("missing")
+            .map(|scheme| scheme.ty),
+        Some(Type::Deferred)
+    );
+}
+
+#[test]
 fn merged_variant_rows_flow_into_closed_annotations() {
     let accepted = parse_module(
-        "direction = n ?>\n  0 => Zero\n  _ => Pos\nvalue : @{Zero, Pos} = direction\n",
+        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos} = direction\n",
     );
     let accepted_check = check_module(&accepted.module);
     assert!(accepted_check.diagnostics.is_empty());
 
     let rejected =
-        parse_module("direction = n ?>\n  0 => Zero\n  _ => Pos\nvalue : @{Zero} = direction\n");
+        parse_module("direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero} = direction\n");
     let rejected_check = check_module(&rejected.module);
     assert_eq!(
         matching_codes(&rejected_check.diagnostics, codes::ty::MISMATCH),
@@ -757,13 +776,14 @@ fn merged_variant_rows_flow_into_closed_annotations() {
 #[test]
 fn variant_match_exhaustiveness_uses_subject_rows() {
     let closed_complete =
-        parse_module("source : @{A, B} = value\nresult = source ?>\n  A => 1\n  B => 2\n");
+        parse_module("source : @{@A, @B} = value\nresult = source ?>\n  @A => 1\n  @B => 2\n");
     assert!(!has_diagnostic_code(
         &check_module(&closed_complete.module).diagnostics,
         codes::ty::NON_EXHAUSTIVE_MATCH
     ));
 
-    let closed_missing = parse_module("source : @{A, B} = value\nresult = source ?>\n  A => 1\n");
+    let closed_missing =
+        parse_module("source : @{@A, @B} = value\nresult = source ?>\n  @A => 1\n");
     assert_eq!(
         matching_codes(
             &check_module(&closed_missing.module).diagnostics,
@@ -772,7 +792,7 @@ fn variant_match_exhaustiveness_uses_subject_rows() {
         1
     );
 
-    let open_missing_default = parse_module("source = A\nresult = source ?>\n  A => 1\n");
+    let open_missing_default = parse_module("source = @A\nresult = source ?>\n  @A => 1\n");
     assert_eq!(
         matching_codes(
             &check_module(&open_missing_default.module).diagnostics,
@@ -796,7 +816,7 @@ fn variant_match_exhaustiveness_uses_subject_rows() {
 #[test]
 fn match_result_inference_handles_block_arm_bodies() {
     let output = parse_module(
-        "result = source ?>\n  Ok(_) =>\n    local = 1\n    local\nvalue : Text = result\n",
+        "result = source ?>\n  @Ok(_) =>\n    local = 1\n    local\nvalue : Text = result\n",
     );
     let check = check_module(&output.module);
 
@@ -806,7 +826,7 @@ fn match_result_inference_handles_block_arm_bodies() {
 #[test]
 fn match_result_inference_defers_mixed_arm_types() {
     let output = parse_module(
-        "result = source ?>\n  Ok(_) => 1\n  Err(_) => \"no\"\nvalue : Text = result\n",
+        "result = source ?>\n  @Ok(_) => 1\n  @Err(_) => \"no\"\nvalue : Text = result\n",
     );
     let check = check_module(&output.module);
 
@@ -819,7 +839,7 @@ fn match_result_inference_defers_mixed_arm_types() {
 #[test]
 fn match_result_inference_keeps_pattern_binders_unknown() {
     let output = parse_module(
-        "item : Text = \"hi\"\nresult = source ?>\n  Ok(item) => item\nvalue : Bool = result\n",
+        "item : Text = \"hi\"\nresult = source ?>\n  @Ok(item) => item\nvalue : Bool = result\n",
     );
     let check = check_module(&output.module);
 
@@ -987,7 +1007,7 @@ fn set_literals_report_per_element_mismatches() {
 fn set_inference_defers_empty_tag_and_spread_literals() {
     for source in [
         "value : Set[Int] = @{}\n",
-        "value : Set[Int] = @{Red, Green}\n",
+        "value : Set[Int] = @{@Red, @Green}\n",
         "other = @{2}\nvalue : Set[Int] = @{..other, 1}\n",
     ] {
         let output = parse_module(source);
@@ -1003,8 +1023,8 @@ fn set_inference_defers_empty_tag_and_spread_literals() {
 #[test]
 fn variant_values_are_checked_against_annotations() {
     for source in [
-        "value : @{Ok(Int), Err(Text)} = Ok(1)\n",
-        "value : @{Done} = Done\n",
+        "value : @{@Ok(Int), @Err(Text)} = @Ok(1)\n",
+        "value : @{@Done} = @Done\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1016,9 +1036,9 @@ fn variant_values_are_checked_against_annotations() {
     }
 
     for source in [
-        "value : @{Ok(Text)} = Ok(1)\n",
-        "value : @{Ok(Int)} = Err(1)\n",
-        "value : @{Ok(Int)} = Ok(1, 2)\n",
+        "value : @{@Ok(Text)} = @Ok(1)\n",
+        "value : @{@Ok(Int)} = @Err(1)\n",
+        "value : @{@Ok(Int)} = @Ok(1, 2)\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1034,8 +1054,8 @@ fn variant_values_are_checked_against_annotations() {
 #[test]
 fn inferred_variant_identifier_values_are_checked_against_annotations() {
     for source in [
-        "result = Ok(1)\nvalue : @{Ok(Int), Err(Text)} = result\n",
-        "done = Done\nvalue : @{Done} = done\n",
+        "result = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text)} = result\n",
+        "done = @Done\nvalue : @{@Done} = done\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1047,8 +1067,8 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
     }
 
     for source in [
-        "result = Ok(1)\nvalue : @{Ok(Text), Err(Text)} = result\n",
-        "result = Err(\"no\")\nvalue : @{Ok(Int)} = result\n",
+        "result = @Ok(1)\nvalue : @{@Ok(Text), @Err(Text)} = result\n",
+        "result = @Err(\"no\")\nvalue : @{@Ok(Int)} = result\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1063,7 +1083,7 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
 
 #[test]
 fn variant_value_checking_defers_computed_rows() {
-    let output = parse_module("Error = @{Err(Text)}\nvalue : @{Ok(Int), ..Error} = Ok(\"x\")\n");
+    let output = parse_module("Error = @{@Err(Text)}\nvalue : @{@Ok(Int), ..Error} = @Ok(\"x\")\n");
     let check = check_module(&output.module);
 
     assert!(
@@ -1144,7 +1164,7 @@ fn numeric_binary_literals_synthesize_int_after_defaulting() {
 fn operator_inference_defers_unknown_operands() {
     for source in [
         "value : Text = missing + 1\n",
-        "result = source ?>\n  Ok(item) => item + 1\nvalue : Text = result\n",
+        "result = source ?>\n  @Ok(item) => item + 1\nvalue : Text = result\n",
         "value : Text = unknown && missing\n",
         // An unsupported sub-expression stays deferred rather than being
         // constrained into a concrete type by a surrounding operator.
@@ -1509,7 +1529,7 @@ fn unknown_block_bindings_shadow_top_level_types() {
 #[test]
 fn match_pattern_bindings_shadow_top_level_types() {
     let output = parse_module(
-        "item : Text = \"hi\"\nf = (result) =>\n  result ?>\n    Ok(item) =>\n      value : Bool = item\n      value\n",
+        "item : Text = \"hi\"\nf = (result) =>\n  result ?>\n    @Ok(item) =>\n      value : Bool = item\n      value\n",
     );
     let check = check_module(&output.module);
 
@@ -1522,7 +1542,7 @@ fn match_pattern_bindings_shadow_top_level_types() {
 #[test]
 fn inferred_pattern_dependent_locals_stay_unknown() {
     let output = parse_module(
-        "item : Text = \"hi\"\nf = (result) =>\n  result ?>\n    Ok(item) =>\n      local = item\n      value : Bool = local\n      value\n",
+        "item : Text = \"hi\"\nf = (result) =>\n  result ?>\n    @Ok(item) =>\n      local = item\n      value : Bool = local\n      value\n",
     );
     let check = check_module(&output.module);
 

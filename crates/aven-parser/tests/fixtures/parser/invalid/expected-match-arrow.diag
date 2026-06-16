@@ -1,3 +1,3 @@
 error parse.expected-match-arrow: expected match arm arrow
-  label 30..35: expected `=>` after this pattern
+  label 31..36: expected `=>` after this pattern
   note: match arms use `pattern => expression`

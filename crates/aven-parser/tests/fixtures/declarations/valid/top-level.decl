@@ -2,4 +2,4 @@ binding User phase=comptime annotated=false shape=value span=0..21 name=0..4
 function double phase=runtime annotated=true shape=fn(typed)->typed span=23..62 name=45..51
 signature value phase=runtime annotated=false shape=value span=64..75 name=64..69
 binding other phase=runtime annotated=false shape=value span=76..89 name=76..81
-binding Color phase=comptime annotated=false shape=value span=91..114 name=91..96
+binding Color phase=comptime annotated=false shape=value span=91..116 name=91..96

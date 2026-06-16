@@ -153,7 +153,7 @@ fn analyze_expr(expr: &Expr, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
         ExprKind::Record(entries) | ExprKind::Set(entries) => {
             analyze_record_entries(entries, scopes, diagnostics);
         }
-        ExprKind::Missing | ExprKind::Literal(_) => {}
+        ExprKind::Missing | ExprKind::Literal(_) | ExprKind::Tag(_) => {}
         _ => walk_expr_children(expr, &mut |child| {
             analyze_expr(child, scopes, diagnostics);
         }),
@@ -443,7 +443,8 @@ mod tests {
 
     #[test]
     fn leaves_type_shaped_uppercase_bindings_to_the_semantic_phase() {
-        let output = parse_module("HttpOk = 200\nUser = { name: Text }\nColor = @{ Red, Green }\n");
+        let output =
+            parse_module("HttpOk = 200\nUser = { name: Text }\nColor = @{ @Red, @Green }\n");
         let analysis = analyze_names(&output.module);
 
         assert!(analysis.diagnostics.is_empty());

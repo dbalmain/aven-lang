@@ -44,8 +44,8 @@ sets/variants, selected by an `EntryMode { Record, Set }` flag. The union:
 - `Shorthand`, `Spread { overwrite }`, `Delete`, `Rename` — unchanged.
 - `Open { span }` — **new**, the `.._` open-row marker (record mode only; `:.._`
   and `.._` of any other term remain spreads).
-- `Element(Expr)` — **new**, a bare member of `@{...}` (`Red`, `Ok(1)`,
-  `ParseError(Text)`, `NotFound`); parsed with the full expression entry point.
+- `Element(Expr)` — **new**, a bare member of `@{...}` (`@Red`, `@Ok(1)`,
+  `@ParseError(Text)`, `@NotFound`); parsed with the full expression entry point.
 
 `->` is overloaded inside brace entries: after reading a label, a `Rename`
 (`name -> to`) is checked **before** any field value is parsed, so the
@@ -89,14 +89,14 @@ Because the ambiguity is gone, two diagnostics now fire **unambiguously** from
 - `parse.missing-match-arms` — `?>` followed by a newline without an indented
   block, or by a boundary/EOF (e.g. `value = result ?>`).
 - `parse.inline-match-arms` (**new**) — arms written on the same line as `?>`
-  (e.g. `result ?> Ok(x) => x`); message "match arms must start on the next
+  (e.g. `result ?> @Ok(x) => x`); message "match arms must start on the next
   line, indented", then recover to the next line. The old bare-`?` design could
-  not give this precisely because `result ? Ok(x)` was a valid nullable-then-call
+  not give this precisely because `result ? @Ok(x)` was a valid nullable-then-call
   reading.
 
 Verified by unit tests: `value : Text? = name` parses `Nullable(ComptimeName)`
 and stops at `=`; `value = result ?` parses `Nullable(Name)` with no diagnostics;
-`result ?>\n  Ok(x) => x` parses a `Match`; `result ?>` with no block reports
+`result ?>\n  @Ok(x) => x` parses a `Match`; `result ?>` with no block reports
 `parse.missing-match-arms`.
 
 > **Spec follow-up:** the shared language spec was updated to use `?>` for match
@@ -109,7 +109,7 @@ lambda head.
 ## Diagnostics moved to the semantic phase
 
 - **uppercase variant-tag enforcement** (reference `expected-variant-tag`,
-  `@{ok(Text)}`): under the fold, `ok(Text)` is a perfectly well-formed `Call`
+  `@{@ok(Text)}`): under the fold, `@ok(Text)` is a perfectly well-formed `Call`
   element, so this is **not** a parse error. The "tags must be uppercase" rule
   is semantic (name resolution) and there is no semantic phase yet, so no
   equivalent fixture exists here. (The reference's invalid fixture lives in the
@@ -173,7 +173,7 @@ no-match branch is `unreachable!`. Consequence: `Text?,` lexes as `Text` `?`
 
 ### `?` → `?>` match-operator change
 
-- Added: `parser/invalid/inline-match-arms.{av,diag}` — `value = result ?> Ok(x)
+- Added: `parser/invalid/inline-match-arms.{av,diag}` — `value = result ?> @Ok(x)
   => x`, the new `parse.inline-match-arms` diagnostic.
 - Restored: `parser/invalid/missing-match-arms.{av,diag}` — `value = result ?>`
   with no arm block (see deviation 1).

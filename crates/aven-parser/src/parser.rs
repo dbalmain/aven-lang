@@ -54,6 +54,7 @@ pub enum ExprKind {
     Literal(Literal),
     Name(String),
     ComptimeName(String),
+    Tag(String),
     Group(Box<Expr>),
     Tuple(Vec<Expr>),
     Array(Vec<Expr>),
@@ -165,8 +166,8 @@ pub enum RecordEntry {
     },
     /// `..`: the open-row marker inside a record (type) shape.
     Open { span: Span },
-    /// A bare member of a `@{...}` set/variant shape: `Red`, `Ok(1)`,
-    /// `ParseError(Text)`, `NotFound`.
+    /// A bare member of a `@{...}` set/variant shape: `@Red`, `@Ok(1)`,
+    /// `@ParseError(Text)`, `@NotFound`.
     Element(Expr),
 }
 
@@ -803,7 +804,7 @@ impl Parser<'_> {
             self.report_missing_match_arms(operator_span.end);
             Vec::new()
         } else {
-            // Tokens follow `?>` on the same line, e.g. `result ?> Ok(x) => x`.
+            // Tokens follow `?>` on the same line, e.g. `result ?> @Ok(x) => x`.
             self.report_inline_match_arms(self.current_span());
             self.recover_to_next_line();
             Vec::new()
@@ -955,6 +956,13 @@ impl Parser<'_> {
                 self.advance();
                 Expr {
                     kind: ExprKind::ComptimeName(name),
+                    span: token.span,
+                }
+            }
+            TokenKind::Tag(name) => {
+                self.advance();
+                Expr {
+                    kind: ExprKind::Tag(name),
                     span: token.span,
                 }
             }
@@ -1213,8 +1221,8 @@ impl Parser<'_> {
             });
         }
 
-        // In a set/variant shape, a bare term is an element (`Red`, `Ok(1)`,
-        // `ParseError(Text)`). The element parser covers calls and other terms,
+        // In a set/variant shape, a bare term is an element (`@Red`, `@Ok(1)`,
+        // `@ParseError(Text)`). The element parser covers calls and other terms,
         // so labels do not get the record-only treatment below.
         if mode == EntryMode::Set {
             let term = self.parse_expression();
@@ -1465,7 +1473,7 @@ impl Parser<'_> {
                     span,
                     "expected an indented block of match arms after `?>`",
                 ))
-                .with_note("write one arm per line, for example `Ok(value) => value`"),
+                .with_note("write one arm per line, for example `@Ok(value) => value`"),
         );
     }
 
@@ -1474,7 +1482,7 @@ impl Parser<'_> {
             Diagnostic::error("match arms must start on the next line, indented")
                 .with_code(codes::parse::INLINE_MATCH_ARMS)
                 .with_label(Label::primary(span, "move these arms to an indented block"))
-                .with_note("write one arm per line, indented under `?>`, for example:\n  result ?>\n    Ok(value) => value"),
+                .with_note("write one arm per line, indented under `?>`, for example:\n  result ?>\n    @Ok(value) => value"),
         );
     }
 
@@ -1506,7 +1514,7 @@ impl Parser<'_> {
             Diagnostic::error("expected pattern")
                 .with_code(codes::parse::EXPECTED_PATTERN)
                 .with_label(Label::primary(span, "expected a pattern here"))
-                .with_note("patterns can be `_`, names, literals, tuples, records, or constructors like `Ok(value)`"),
+                .with_note("patterns can be `_`, names, literals, tuples, records, or constructors like `@Ok(value)`"),
         );
         missing_expr(span)
     }
@@ -1519,7 +1527,9 @@ impl Parser<'_> {
                     comma_span,
                     "this comma creates an anonymous 1-tuple",
                 ))
-                .with_note("remove the comma for grouping, or use a tagged tuple like `Ok(value)`"),
+                .with_note(
+                    "remove the comma for grouping, or use a tagged tuple like `@Ok(value)`",
+                ),
         );
     }
 
@@ -2147,7 +2157,7 @@ mod tests {
     #[test]
     fn parses_structural_literals_into_ast_nodes() {
         let output =
-            parse_module("items = [1, \"two\"]\npair = (1, \"two\")\ncolors = @{ Red, Ok(1) }\n");
+            parse_module("items = [1, \"two\"]\npair = (1, \"two\")\ncolors = @{ @Red, @Ok(1) }\n");
 
         assert!(output.diagnostics.is_empty());
         assert!(matches!(binding_value(&output, 0), ExprKind::Array(items) if items.len() == 2));
@@ -2158,7 +2168,7 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(matches!(
             &entries[0],
-            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::ComptimeName(name) if name == "Red")
+            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::Tag(name) if name == "Red")
         ));
         assert!(matches!(
             &entries[1],
@@ -2325,7 +2335,7 @@ mod tests {
     #[test]
     fn parses_match_operator_into_ast_nodes() {
         let output =
-            parse_module("value = result ?>\n  Ok(x) => x\n  Err(error) => fallback(error)\n");
+            parse_module("value = result ?>\n  @Ok(x) => x\n  @Err(error) => fallback(error)\n");
 
         assert!(output.diagnostics.is_empty());
         let ExprKind::Match { subject, arms, .. } = binding_value(&output, 0) else {
@@ -2337,13 +2347,13 @@ mod tests {
         assert!(matches!(
             &arms[0].pattern.kind,
             ExprKind::Call { callee, args }
-                if matches!(&callee.kind, ExprKind::ComptimeName(name) if name == "Ok")
+                if matches!(&callee.kind, ExprKind::Tag(name) if name == "Ok")
                     && args.len() == 1
         ));
         assert!(matches!(
             &arms[1].pattern.kind,
             ExprKind::Call { callee, args }
-                if matches!(&callee.kind, ExprKind::ComptimeName(name) if name == "Err")
+                if matches!(&callee.kind, ExprKind::Tag(name) if name == "Err")
                     && args.len() == 1
         ));
     }
@@ -2351,7 +2361,7 @@ mod tests {
     #[test]
     fn parses_record_patterns_and_match_guards() {
         let output = parse_module(
-            "value = user ?>\n  { age }, age >= 18 => \"adult\"\n  { givenName -> firstName, status: Active, ..rest } => firstName\n  { .. } => \"ignored\"\n",
+            "value = user ?>\n  { age }, age >= 18 => \"adult\"\n  { givenName -> firstName, status: @Active, ..rest } => firstName\n  { .. } => \"ignored\"\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2385,7 +2395,7 @@ mod tests {
                         &entries[1],
                         RecordEntry::Field { name, value, .. }
                             if name == "status"
-                                && matches!(&value.kind, ExprKind::ComptimeName(name) if name == "Active")
+                                && matches!(&value.kind, ExprKind::Tag(name) if name == "Active")
                     )
                     && matches!(
                         &entries[2],
@@ -2402,7 +2412,7 @@ mod tests {
 
     #[test]
     fn parses_parenthesized_patterns_as_grouping() {
-        let output = parse_module("value = result ?>\n  (Ok(x)) => x\n");
+        let output = parse_module("value = result ?>\n  (@Ok(x)) => x\n");
 
         assert!(output.diagnostics.is_empty());
         let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
@@ -2416,7 +2426,7 @@ mod tests {
                 if matches!(
                     &inner.kind,
                     ExprKind::Call { callee, args }
-                        if matches!(&callee.kind, ExprKind::ComptimeName(name) if name == "Ok")
+                        if matches!(&callee.kind, ExprKind::Tag(name) if name == "Ok")
                             && args.len() == 1
                 )
         ));
@@ -2488,7 +2498,7 @@ mod tests {
 
     #[test]
     fn match_operator_followed_by_indented_block_parses_match() {
-        let output = parse_module("value = result ?>\n  Ok(x) => x\n");
+        let output = parse_module("value = result ?>\n  @Ok(x) => x\n");
 
         assert!(output.diagnostics.is_empty());
         assert!(matches!(binding_value(&output, 0), ExprKind::Match { .. }));
@@ -2580,7 +2590,7 @@ mod tests {
     #[test]
     fn parses_variant_type_elements_spreads_and_deletes() {
         let output = parse_module(
-            "error : @{ParseError(Text), NotFound, -Internal, ..FileError} = ParseError(\"bad\")\n",
+            "error : @{@ParseError(Text), @NotFound, -Internal, ..FileError} = @ParseError(\"bad\")\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2598,7 +2608,7 @@ mod tests {
         ));
         assert!(matches!(
             &entries[1],
-            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::ComptimeName(name) if name == "NotFound")
+            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::Tag(name) if name == "NotFound")
         ));
         assert!(matches!(
             &entries[3],

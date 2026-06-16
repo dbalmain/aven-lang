@@ -22,7 +22,7 @@ module
               record
                 rename givenName -> firstName
                 field status optional=false overwrite=false
-                  comptime Active
+                  tag Active
                 spread overwrite=false
                   name rest
             body

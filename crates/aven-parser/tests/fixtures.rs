@@ -406,6 +406,10 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             write_indent(output, indent);
             let _ = writeln!(output, "comptime {name}");
         }
+        ExprKind::Tag(name) => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "tag {name}");
+        }
         ExprKind::Group(inner) => {
             write_indent(output, indent);
             let _ = writeln!(output, "group");

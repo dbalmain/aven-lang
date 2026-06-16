@@ -1114,13 +1114,13 @@ mod tests {
     #[test]
     fn definition_location_finds_match_pattern_binders() {
         let document =
-            parsed_document("f = (result) =>\n  result ?>\n    Ok(value) => value\n".to_owned());
-        let Some(location) = definition_location(&document, test_uri(), position(2, 17)) else {
+            parsed_document("f = (result) =>\n  result ?>\n    @Ok(value) => value\n".to_owned());
+        let Some(location) = definition_location(&document, test_uri(), position(2, 18)) else {
             panic!("expected definition location");
         };
 
-        assert_eq!(location.range.start, position(2, 7));
-        assert_eq!(location.range.end, position(2, 12));
+        assert_eq!(location.range.start, position(2, 8));
+        assert_eq!(location.range.end, position(2, 13));
     }
 
     #[test]

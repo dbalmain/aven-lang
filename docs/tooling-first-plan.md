@@ -407,7 +407,7 @@ phase exists yet), because the unified grammar accepts them as well-formed
 syntax. The difference is handled by context in evaluation, not at the parser
 level:
 
-- uppercase-tag enforcement for variant members: `@{ok(Text)}` parses without
+- uppercase-tag enforcement for variant members: `@{@ok(Text)}` parses without
   error; a lowercase tag is a resolver-phase error, not a parser error.
 - type-vs-value legality of record entries: an `optional` field marker or the
   `.._` open-row marker is syntactically accepted in any record context; whether
@@ -977,13 +977,13 @@ checks and synthesis no longer thread a separate inference object through
 record, block, lambda, call, and collection walks. Match expressions now carry
 the expected result type into each arm body, and guards are checked against
 `Bool`. When the match subject has a known literal variant row, simple
-constructor patterns such as `Ok(value)` give their payload binders known types
+constructor patterns such as `@Ok(value)` give their payload binders known types
 inside guards, arm bodies, and match-result synthesis; otherwise pattern binders
 still enter as explicit unknown locals.
 Unannotated match expressions also synthesize a result when all arm bodies
 unify to one concrete type, so match-valued bindings can feed later identifier
-checks. Direct variant constructor values such as `Ok(1)` and nullary tags such
-as `Done` are checked against literal variant rows, and inferred singleton
+checks. Direct variant constructor values such as `@Ok(1)` and nullary tags such
+as `@Done` are checked against literal variant rows, and inferred singleton
 variant constructor types feed the identifier path. Variant rows carrying
 spreads, deletes, renames, or other row computation still defer. Function
 comparison is structural: arity mismatches report `type.mismatch`, parameters
@@ -1114,7 +1114,7 @@ Slices:
   containing `x`, so `length = (p) => sqrt(p.x * p.x + p.y * p.y)` infers a
   polymorphic open-record parameter. Record literals stay closed.
 - 13.3 — variant rows: the same row machinery for `@{...}` tagged variants — open
-  variant requirements `@{ ..r, Circle(Float), ... }`, constructor checking
+  variant requirements `@{ ..r, @Circle(Float), ... }`, constructor checking
   against open variant rows, and match exhaustiveness that requires a `_` arm on
   an open variant.
 - 13.4 — record transforms as row computation: lower and solve spreads

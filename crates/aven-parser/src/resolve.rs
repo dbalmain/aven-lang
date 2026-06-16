@@ -203,7 +203,8 @@ fn resolve_in_expr(expr: &Expr, name: &str, reference: Span) -> Option<Span> {
         ExprKind::Missing
         | ExprKind::Literal(_)
         | ExprKind::Name(_)
-        | ExprKind::ComptimeName(_) => None,
+        | ExprKind::ComptimeName(_)
+        | ExprKind::Tag(_) => None,
         _ => find_map_expr_children(expr, |child| resolve_in_expr(child, name, reference)),
     }
 }
@@ -309,10 +310,7 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
             collect_pattern_bindings_from_record_entries(entries, bindings);
         }
         ExprKind::Index { callee, args } | ExprKind::Call { callee, args } => {
-            // `Ok(value)` treats uppercase `Ok` as a constructor tag, not a
-            // binder. A lowercase callee is still collected so semantic
-            // diagnostics can reject or interpret it later.
-            if !matches!(callee.kind, ExprKind::ComptimeName(_)) {
+            if !matches!(callee.kind, ExprKind::Tag(_)) {
                 collect_pattern_bindings(callee, bindings);
             }
             collect_pattern_bindings_from_exprs(args, bindings);
@@ -321,7 +319,8 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
         ExprKind::Missing
         | ExprKind::Literal(_)
         | ExprKind::Name(_)
-        | ExprKind::ComptimeName(_) => {}
+        | ExprKind::ComptimeName(_)
+        | ExprKind::Tag(_) => {}
         _ => {
             crate::walk::walk_expr_children(pattern, &mut |child| {
                 collect_pattern_bindings(child, bindings);
@@ -454,7 +453,7 @@ mod tests {
 
     #[test]
     fn resolves_constructor_pattern_binders_in_match_bodies() {
-        let source = "f = (result) =>\n  result ?>\n    Ok(value) => value\n";
+        let source = "f = (result) =>\n  result ?>\n    @Ok(value) => value\n";
         let output = parse_module(source);
         let span = resolve_local_definition(&output.module, "value", nth_span(source, "value", 1));
 
@@ -463,7 +462,7 @@ mod tests {
 
     #[test]
     fn resolves_pattern_binders_in_match_guards() {
-        let source = "f = (result) =>\n  result ?>\n    Ok(value), value > 0 => value\n";
+        let source = "f = (result) =>\n  result ?>\n    @Ok(value), value > 0 => value\n";
         let output = parse_module(source);
         let span = resolve_local_definition(&output.module, "value", nth_span(source, "value", 1));
 

@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
-    Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm, MergedItem,
-    Module, Param, RecordEntry, Signature, collect_declarations, merged_items, pattern_bindings,
+    Binding, Declaration, Expr, ExprKind, Item, Literal, MatchArm, MergedItem, Module, Param,
+    RecordEntry, Signature, collect_declarations, merged_items, pattern_bindings,
     walk_expr_children,
 };
 
@@ -71,10 +71,6 @@ impl<'a> Checker<'a> {
 
     fn collect_top_level_environment(&mut self, module: &'a Module) {
         for declaration in collect_declarations(module) {
-            if declaration.phase != DeclarationPhase::Runtime {
-                continue;
-            }
-
             if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
                 self.annotations
                     .insert(declaration.name.clone(), source.annotation);
@@ -95,10 +91,6 @@ impl<'a> Checker<'a> {
         let mut types = HashMap::new();
 
         for declaration in collect_declarations(module) {
-            if declaration.phase != DeclarationPhase::Runtime {
-                continue;
-            }
-
             let name = declaration.name.clone();
             match types.entry(name.clone()) {
                 Entry::Occupied(mut entry) => {
@@ -236,7 +228,8 @@ impl<'a> Checker<'a> {
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Name(_)
-            | ExprKind::ComptimeName(_) => {}
+            | ExprKind::ComptimeName(_)
+            | ExprKind::Tag(_) => {}
             _ => walk_expr_children(expr, &mut |child| {
                 self.check_value_expr(child);
             }),
@@ -442,22 +435,24 @@ impl<'a> Checker<'a> {
                 expected_params,
                 expected_result,
             ),
-            (ExprKind::Name(name), _) => match self.local_types.get(name).cloned() {
-                Some(LocalValueType::Known(actual)) => {
-                    self.check_type_against_type(expected, &actual, value.span);
-                }
-                Some(LocalValueType::Scheme(scheme)) => {
-                    let actual = self.unifier.instantiate_scheme(&scheme);
-                    self.check_type_against_type(expected, &actual, value.span);
-                }
-                Some(LocalValueType::Unknown) => {}
-                None => {
-                    if let Some(Some(scheme)) = self.value_types.get(name).cloned() {
+            (ExprKind::Name(name) | ExprKind::ComptimeName(name), _) => {
+                match self.local_types.get(name).cloned() {
+                    Some(LocalValueType::Known(actual)) => {
+                        self.check_type_against_type(expected, &actual, value.span);
+                    }
+                    Some(LocalValueType::Scheme(scheme)) => {
                         let actual = self.unifier.instantiate_scheme(&scheme);
                         self.check_type_against_type(expected, &actual, value.span);
                     }
+                    Some(LocalValueType::Unknown) => {}
+                    None => {
+                        if let Some(Some(scheme)) = self.value_types.get(name).cloned() {
+                            let actual = self.unifier.instantiate_scheme(&scheme);
+                            self.check_type_against_type(expected, &actual, value.span);
+                        }
+                    }
                 }
-            },
+            }
             (_, Type::Nullable(inner)) => {
                 if !is_nil_value(value) {
                     self.check_value_against(inner, value);
@@ -485,13 +480,13 @@ impl<'a> Checker<'a> {
             (ExprKind::Record(value_entries), Type::Record(type_entries)) => {
                 self.check_record_value_against(type_entries, value_entries, value.span);
             }
-            (ExprKind::ComptimeName(tag), Type::Variant(type_entries)) => {
+            (ExprKind::Tag(tag), Type::Variant(type_entries)) => {
                 self.check_variant_value_against(type_entries, tag, &[], value.span);
             }
             (ExprKind::Call { callee, args }, Type::Variant(type_entries))
-                if matches!(&callee.kind, ExprKind::ComptimeName(_)) =>
+                if matches!(&callee.kind, ExprKind::Tag(_)) =>
             {
-                let ExprKind::ComptimeName(tag) = &callee.kind else {
+                let ExprKind::Tag(tag) = &callee.kind else {
                     return;
                 };
                 self.check_variant_value_against(type_entries, tag, args, value.span);
@@ -985,6 +980,7 @@ impl<'a> Checker<'a> {
             ExprKind::Set(entries) => self.lower_row_entries(entries, RowKind::Variant),
             ExprKind::Missing => Type::Deferred,
             ExprKind::Literal(_)
+            | ExprKind::Tag(_)
             | ExprKind::Array(_)
             | ExprKind::FieldAccess { .. }
             | ExprKind::Call { .. }
@@ -1084,10 +1080,18 @@ impl<'a> Checker<'a> {
 
     fn lower_variant_tag(&mut self, tag: &Expr) -> Option<RowEntry> {
         match &tag.kind {
-            ExprKind::ComptimeName(name) => Some(RowEntry::Tag {
+            ExprKind::Tag(name) => Some(RowEntry::Tag {
                 name: name.clone(),
                 payload: Vec::new(),
             }),
+            ExprKind::Literal(Literal::Label(label)) => {
+                let name = label.strip_prefix('@').unwrap_or(label);
+                self.report_lowercase_variant_tag(name, tag.span);
+                Some(RowEntry::Tag {
+                    name: name.to_owned(),
+                    payload: Vec::new(),
+                })
+            }
             ExprKind::Name(name) => {
                 self.report_lowercase_variant_tag(name, tag.span);
                 Some(RowEntry::Tag {
@@ -1096,10 +1100,18 @@ impl<'a> Checker<'a> {
                 })
             }
             ExprKind::Call { callee, args } => match &callee.kind {
-                ExprKind::ComptimeName(name) => Some(RowEntry::Tag {
+                ExprKind::Tag(name) => Some(RowEntry::Tag {
                     name: name.clone(),
                     payload: self.lower_annotations(args),
                 }),
+                ExprKind::Literal(Literal::Label(label)) => {
+                    let name = label.strip_prefix('@').unwrap_or(label);
+                    self.report_lowercase_variant_tag(name, callee.span);
+                    Some(RowEntry::Tag {
+                        name: name.to_owned(),
+                        payload: self.lower_annotations(args),
+                    })
+                }
                 ExprKind::Name(name) => {
                     self.report_lowercase_variant_tag(name, callee.span);
                     Some(RowEntry::Tag {
@@ -1134,10 +1146,10 @@ impl<'a> Checker<'a> {
 
     fn report_lowercase_variant_tag(&mut self, name: &str, span: Span) {
         self.diagnostics.push(
-            Diagnostic::error(format!("variant tag `{name}` must start with uppercase"))
+            Diagnostic::error(format!("variant tag `{name}` must be an uppercase `@`-tag"))
                 .with_code(codes::ty::LOWERCASE_VARIANT_TAG)
                 .with_label(Label::primary(span, "lowercase variant tag"))
-                .with_note("variant tags use uppercase names, for example `Ok` or `Err`"),
+                .with_note("variant tags use uppercase names, for example `@Ok` or `@Err`"),
         );
     }
 
@@ -1422,7 +1434,7 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
             known.insert(name.clone(), expected.clone());
         }
         (ExprKind::Call { callee, args }, Type::Variant(entries)) => {
-            let ExprKind::ComptimeName(tag) = &callee.kind else {
+            let ExprKind::Tag(tag) = &callee.kind else {
                 return;
             };
             let Some(payload) = literal_variant_payload(entries, tag) else {
@@ -1435,7 +1447,7 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
                 collect_known_pattern_types(arg, ty, known);
             }
         }
-        (ExprKind::ComptimeName(_), Type::Variant(_)) => {}
+        (ExprKind::Tag(_), Type::Variant(_)) => {}
         _ => {}
     }
 }
@@ -1495,9 +1507,9 @@ fn is_catch_all_pattern(pattern: &Expr) -> bool {
 fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
     match &pattern.kind {
         ExprKind::Group(inner) => variant_pattern_tag(inner),
-        ExprKind::ComptimeName(tag) => Some(tag),
+        ExprKind::Tag(tag) => Some(tag),
         ExprKind::Call { callee, .. } => match &callee.kind {
-            ExprKind::ComptimeName(tag) => Some(tag),
+            ExprKind::Tag(tag) => Some(tag),
             _ => None,
         },
         _ => None,
@@ -1580,13 +1592,14 @@ impl<'a> Checker<'a> {
                 named_builtin("Bool")
             }
             ExprKind::ComptimeName(name) if name == "Nil" => named_builtin("Nil"),
-            ExprKind::ComptimeName(name) => Type::Variant(Row {
+            ExprKind::Tag(name) => Type::Variant(Row {
                 entries: vec![RowEntry::Tag {
                     name: name.clone(),
                     payload: Vec::new(),
                 }],
                 tail: RowTail::Var(self.unifier.fresh_row_var()),
             }),
+            ExprKind::ComptimeName(name) => self.infer_name_reference(env, name),
             ExprKind::Group(inner) => self.infer(env, inner),
             ExprKind::Tuple(elements) => Type::Tuple(
                 elements
@@ -1616,19 +1629,7 @@ impl<'a> Checker<'a> {
                     tail: RowTail::Closed,
                 })
             }
-            ExprKind::Name(name) => {
-                if let Some(local) = env.get(name).cloned() {
-                    return match local {
-                        LocalValueType::Known(ty) => ty,
-                        LocalValueType::Scheme(scheme) => self.unifier.instantiate_scheme(&scheme),
-                        LocalValueType::Unknown => Type::Deferred,
-                    };
-                }
-                let Some(scheme) = self.infer_top_level(name) else {
-                    return Type::Deferred;
-                };
-                self.unifier.instantiate_scheme(&scheme)
-            }
+            ExprKind::Name(name) => self.infer_name_reference(env, name),
             ExprKind::Lambda {
                 params,
                 return_annotation,
@@ -1878,7 +1879,7 @@ impl<'a> Checker<'a> {
     }
 
     fn infer_call(&mut self, env: &TypeEnv, callee: &Expr, args: &[Expr]) -> Type {
-        if let ExprKind::ComptimeName(tag) = &callee.kind {
+        if let ExprKind::Tag(tag) = &callee.kind {
             return self.infer_variant_constructor(env, tag, args);
         }
 
@@ -1895,6 +1896,21 @@ impl<'a> Checker<'a> {
         } else {
             result_type
         }
+    }
+
+    fn infer_name_reference(&mut self, env: &TypeEnv, name: &str) -> Type {
+        if let Some(local) = env.get(name).cloned() {
+            return match local {
+                LocalValueType::Known(ty) => ty,
+                LocalValueType::Scheme(scheme) => self.unifier.instantiate_scheme(&scheme),
+                LocalValueType::Unknown => Type::Deferred,
+            };
+        }
+
+        let Some(scheme) = self.infer_top_level(name) else {
+            return Type::Deferred;
+        };
+        self.unifier.instantiate_scheme(&scheme)
     }
 
     fn infer_variant_constructor(&mut self, env: &TypeEnv, tag: &str, args: &[Expr]) -> Type {

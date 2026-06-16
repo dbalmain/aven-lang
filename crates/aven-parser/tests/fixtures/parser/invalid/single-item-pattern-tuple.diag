@@ -1,3 +1,3 @@
 error parse.single-item-tuple: anonymous 1-tuples are not supported
-  label 30..31: this comma creates an anonymous 1-tuple
-  note: remove the comma for grouping, or use a tagged tuple like `Ok(value)`
+  label 31..32: this comma creates an anonymous 1-tuple
+  note: remove the comma for grouping, or use a tagged tuple like `@Ok(value)`

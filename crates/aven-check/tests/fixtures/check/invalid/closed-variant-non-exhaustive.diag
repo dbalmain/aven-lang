@@ -1,3 +1,3 @@
 error type.non-exhaustive-match: non-exhaustive match; missing tag `B`
-  label 34..40: this subject has variant tags without matching arms
+  label 36..42: this subject has variant tags without matching arms
   note: add the missing arm(s), or add `_ => ...` as a default
