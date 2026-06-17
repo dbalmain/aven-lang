@@ -1,5 +1,15 @@
 openVariantValue : @{@Ok(Int), ..} = value
 openTarget : @{@Ok(Int), @Err(Text), ..} = openVariantValue
 
+result = @Ok(1)
+wideResult : @{@Ok(Int), @Err(Text)} = result
+
 closedOk : @{@Ok(Int)} = @Ok(1)
 closedTarget : @{@Ok(Int), @Err(Text)} = closedOk
+
+direction = n ?>
+  0 => @Zero
+  _ => @Pos
+
+closedDirection : @{@Zero, @Pos} = direction
+openDirection : @{@Zero, @Pos, ..} = direction

@@ -1272,12 +1272,16 @@ Completed parser groundwork:
 - Consolidation C6: goto-definition and completion local-scope queries now
   share one position-scoped traversal that yields visible bindings plus the
   binder, if any, under the cursor.
-- Consolidation C5: open-variant values narrowed into closed variant annotations
-  now diagnose instead of silently passing.
+- Consolidation C5: variant constructors now infer closed singleton rows, match
+  expressions infer the closed union of variant-valued arms, and variant
+  assignment widens by requiring the actual tags to be a subset of the expected
+  row; superset values and genuinely open values assigned into closed
+  annotations now diagnose instead of silently passing.
 - Record expected-type boundaries now use width subtyping: bound/computed record
   values may have extra fields, while fresh record literals assigned directly to
-  closed annotations keep the excess-property check. Variant widening plus
-  closed-constructor checking is the companion follow-up slice.
+  closed annotations keep the excess-property check. The variant half of
+  boundary subtyping is now covered by closed constructors, match row-union, and
+  widening at assignment boundaries.
 
 ## To investigate later
 

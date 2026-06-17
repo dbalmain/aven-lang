@@ -768,17 +768,19 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        let Some(actual_tags) = literal_variant_tags(&actual) else {
+        let Some(actual_tags) = variant_tags(&actual) else {
             return;
         };
 
         for tag in actual_tags {
-            let Some(payload) = literal_variant_payload_lookup(&expected, tag.name) else {
+            let Some(payload) = variant_payload_lookup(&expected, tag.name) else {
                 return;
             };
 
             let Some(expected_payload) = payload else {
-                self.report_variant_tag_mismatch(tag.name, span);
+                if expected.tail == RowTail::Closed {
+                    self.report_variant_tag_mismatch(tag.name, span);
+                }
                 continue;
             };
 
@@ -843,13 +845,15 @@ impl<'a> Checker<'a> {
         args: &[Expr],
         value_span: Span,
     ) {
-        let Some(payload) = literal_variant_payload_lookup(row, tag) else {
+        let Some(payload) = variant_payload_lookup(row, tag) else {
             self.check_value_exprs(args);
             return;
         };
 
         let Some(expected_payload) = payload else {
-            self.report_variant_tag_mismatch(tag, value_span);
+            if row.tail == RowTail::Closed {
+                self.report_variant_tag_mismatch(tag, value_span);
+            }
             self.check_value_exprs(args);
             return;
         };
@@ -1973,10 +1977,16 @@ fn literal_variant_payload<'a>(row: &'a Row, tag: &str) -> Option<&'a [Type]> {
 }
 
 fn literal_variant_payload_lookup<'a>(row: &'a Row, tag: &str) -> Option<Option<&'a [Type]>> {
+    // Like `variant_payload_lookup`, but a closed-row-only view: an open tail
+    // means the row is not a literal variant, so callers should defer.
     if row.tail == RowTail::Open {
         return None;
     }
 
+    variant_payload_lookup(row, tag)
+}
+
+fn variant_payload_lookup<'a>(row: &'a Row, tag: &str) -> Option<Option<&'a [Type]>> {
     let mut found = None;
 
     for entry in &row.entries {
@@ -1992,11 +2002,7 @@ fn literal_variant_payload_lookup<'a>(row: &'a Row, tag: &str) -> Option<Option<
     Some(found)
 }
 
-fn literal_variant_tags(row: &Row) -> Option<Vec<VariantTagShape<'_>>> {
-    if row.tail == RowTail::Open {
-        return None;
-    }
-
+fn variant_tags(row: &Row) -> Option<Vec<VariantTagShape<'_>>> {
     let mut tags = Vec::new();
 
     for entry in &row.entries {
@@ -2113,7 +2119,7 @@ impl<'a> Checker<'a> {
                     name: name.clone(),
                     payload: Vec::new(),
                 }],
-                tail: RowTail::Var(self.unifier.fresh_row_var()),
+                tail: RowTail::Closed,
             }),
             ExprKind::ComptimeName(name) => self.infer_name_reference(env, name),
             ExprKind::Group(inner) => self.infer(env, inner),
@@ -2451,7 +2457,7 @@ impl<'a> Checker<'a> {
                 name: tag.to_owned(),
                 payload,
             }],
-            tail: RowTail::Var(self.unifier.fresh_row_var()),
+            tail: RowTail::Closed,
         })
     }
 
@@ -2542,7 +2548,7 @@ impl<'a> Checker<'a> {
         let snapshot = self.unifier.snapshot();
         let inferred_subject = self.infer(env, subject);
         let subject_type = self.resolve_if_concrete(&inferred_subject);
-        let result_type = self.unifier.fresh();
+        let mut body_types = Vec::new();
 
         for arm in arms {
             let mut arm_env = env.clone();
@@ -2550,7 +2556,21 @@ impl<'a> Checker<'a> {
                 arm_env.insert(name, ty);
             }
 
-            let body_type = self.infer(&arm_env, &arm.body);
+            body_types.push(self.infer(&arm_env, &arm.body));
+        }
+
+        if let Some(result) = self.union_match_variant_arms(&body_types) {
+            return match result {
+                Ok(result_type) => result_type,
+                Err(()) => {
+                    self.unifier.restore(snapshot);
+                    Type::Deferred
+                }
+            };
+        }
+
+        let result_type = self.unifier.fresh();
+        for body_type in body_types {
             if self.unifier.unify(&result_type, &body_type).is_err() {
                 self.unifier.restore(snapshot);
                 return Type::Deferred;
@@ -2558,6 +2578,54 @@ impl<'a> Checker<'a> {
         }
 
         result_type
+    }
+
+    fn union_match_variant_arms(&mut self, body_types: &[Type]) -> Option<Result<Type, ()>> {
+        let mut entries = Vec::new();
+        let mut open = false;
+
+        for body_type in body_types {
+            let Type::Variant(row) = self.unifier.resolve(body_type) else {
+                return None;
+            };
+
+            if row.tail != RowTail::Closed {
+                open = true;
+            }
+
+            for entry in row.entries {
+                let RowEntry::Tag { name, payload } = entry else {
+                    return Some(Err(()));
+                };
+
+                let Some(index) = row_entry_index(&entries, &name) else {
+                    entries.push(RowEntry::Tag { name, payload });
+                    continue;
+                };
+
+                let RowEntry::Tag {
+                    payload: existing, ..
+                } = &entries[index]
+                else {
+                    return Some(Err(()));
+                };
+                if existing.len() != payload.len() {
+                    return Some(Err(()));
+                }
+
+                for (expected, actual) in existing.iter().zip(&payload) {
+                    if self.unifier.unify(expected, actual).is_err() {
+                        return Some(Err(()));
+                    }
+                }
+            }
+        }
+
+        let result = Type::Variant(Row {
+            entries,
+            tail: if open { RowTail::Open } else { RowTail::Closed },
+        });
+        Some(Ok(self.unifier.resolve(&result)))
     }
 
     fn lower_annotation_for_inference(&self, annotation: &Expr) -> Type {

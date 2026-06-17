@@ -1,0 +1,3 @@
+error type.mismatch: unexpected variant tag `Pos`
+  label 61..70: this tag is not in the variant type
+  note: use a tag listed by the annotation, or change the annotation

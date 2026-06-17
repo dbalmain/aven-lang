@@ -1063,7 +1063,7 @@ fn match_results_are_inferred_for_identifier_values() {
 }
 
 #[test]
-fn match_results_merge_open_variant_rows() {
+fn match_results_merge_closed_variant_rows() {
     let output = parse_module("classify = (n) =>\n  n ?>\n    0 => @Zero\n    _ => @Pos\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
@@ -1087,11 +1087,41 @@ fn match_results_merge_open_variant_rows() {
         .collect();
 
     assert_eq!(tags, HashSet::from(["Zero", "Pos"]));
-    assert!(matches!(row.tail, RowTail::Var(_)));
+    assert_eq!(row.tail, RowTail::Closed);
 }
 
 #[test]
-fn tag_literals_and_constructors_infer_open_variant_rows() {
+fn match_results_merge_open_variant_rows_when_an_arm_is_open() {
+    let output = parse_module(
+        "open : @{@Zero, ..} = value\nclassify = (n) =>\n  n ?>\n    0 => open\n    _ => @Pos\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let scheme = checker
+        .infer_top_level_scheme("classify")
+        .expect("inferred classify scheme");
+    let Type::Function { result, .. } = &scheme.ty else {
+        panic!("classify should infer a function type");
+    };
+    let Type::Variant(row) = result.as_ref() else {
+        panic!("classify should infer a variant result");
+    };
+    let tags: HashSet<_> = row
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            RowEntry::Tag { name, .. } => Some(name.as_str()),
+            RowEntry::Field { .. } => None,
+        })
+        .collect();
+
+    assert_eq!(tags, HashSet::from(["Zero", "Pos"]));
+    assert_eq!(row.tail, RowTail::Open);
+}
+
+#[test]
+fn tag_literals_and_constructors_infer_closed_variant_rows() {
     let output = parse_module("zero = @Zero\nok = @Ok(1)\ntruth = True\nnil = Nil\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
@@ -1104,8 +1134,8 @@ fn tag_literals_and_constructors_infer_open_variant_rows() {
         let Type::Variant(row) = &scheme.ty else {
             panic!("{binding} should infer a variant type");
         };
-        assert!(matches!(row.tail, RowTail::Var(_)));
-        assert_eq!(scheme.row_vars.len(), 1);
+        assert_eq!(row.tail, RowTail::Closed);
+        assert!(scheme.row_vars.is_empty());
         assert!(matches!(
             row.entries.as_slice(),
             [RowEntry::Tag { name, .. }] if name == tag
@@ -1136,22 +1166,25 @@ fn bare_uppercase_values_do_not_infer_tags() {
 }
 
 #[test]
-fn merged_variant_rows_flow_into_open_annotations_and_reject_closed_annotations() {
-    let accepted = parse_module(
-        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos, ..} = direction\n",
-    );
-    let accepted_check = check_module(&accepted.module);
-    assert!(accepted_check.diagnostics.is_empty());
-
-    let rejected = parse_module(
+fn merged_variant_rows_widen_into_open_and_closed_annotations() {
+    for source in [
         "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos} = direction\n",
-    );
+        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos, ..} = direction\n",
+    ] {
+        let accepted = parse_module(source);
+        let accepted_check = check_module(&accepted.module);
+        assert!(
+            accepted_check.diagnostics.is_empty(),
+            "{source} unexpectedly produced diagnostics: {:?}",
+            accepted_check.diagnostics
+        );
+    }
+
+    let rejected =
+        parse_module("direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero} = direction\n");
     let rejected_check = check_module(&rejected.module);
     assert_eq!(
-        matching_codes(
-            &rejected_check.diagnostics,
-            codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE
-        ),
+        matching_codes(&rejected_check.diagnostics, codes::ty::MISMATCH),
         1
     );
 }
@@ -1175,7 +1208,8 @@ fn variant_match_exhaustiveness_uses_subject_rows() {
         1
     );
 
-    let open_missing_default = parse_module("source = @A\nresult = source ?>\n  @A => 1\n");
+    let open_missing_default =
+        parse_module("source : @{@A, ..} = value\nresult = source ?>\n  @A => 1\n");
     assert_eq!(
         matching_codes(
             &check_module(&open_missing_default.module).diagnostics,
@@ -1420,6 +1454,7 @@ fn variant_values_are_checked_against_annotations() {
 
     for source in [
         "value : @{@Ok(Text)} = @Ok(1)\n",
+        "value : @{@Ok(Text), ..} = @Ok(1)\n",
         "value : @{@Ok(Int)} = @Err(1)\n",
         "value : @{@Ok(Int)} = @Ok(1, 2)\n",
     ] {
@@ -1439,6 +1474,8 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
     for source in [
         "result = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text), ..} = result\n",
         "done = @Done\nvalue : @{@Done, ..} = done\n",
+        "result = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text)} = result\n",
+        "done = @Done\nvalue : @{@Done, @Other} = done\n",
         "result : @{@Ok(Int)} = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text)} = result\n",
         "done : @{@Done} = @Done\nvalue : @{@Done, @Other} = done\n",
     ] {
@@ -1454,7 +1491,9 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
 
     for source in [
         "result : @{@Ok(Int)} = @Ok(1)\nvalue : @{@Ok(Text), @Err(Text)} = result\n",
+        "result : @{@Ok(Int), ..} = @Ok(1)\nvalue : @{@Ok(Text), ..} = result\n",
         "result : @{@Err(Text)} = @Err(\"no\")\nvalue : @{@Ok(Int)} = result\n",
+        "result = @Ok(1)\nvalue : @{@Err(Text)} = result\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1467,8 +1506,8 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
     }
 
     for source in [
-        "result = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text)} = result\n",
-        "done = @Done\nvalue : @{@Done} = done\n",
+        "result : @{@Ok(Int), ..} = @Ok(1)\nvalue : @{@Ok(Int), @Err(Text)} = result\n",
+        "done : @{@Done, ..} = @Done\nvalue : @{@Done} = done\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1482,13 +1521,13 @@ fn inferred_variant_identifier_values_are_checked_against_annotations() {
 }
 
 #[test]
-fn variant_value_checking_defers_computed_rows() {
-    let output = parse_module("value : @{@Ok(Int), ..error} = @Ok(\"x\")\n");
+fn variant_value_checking_allows_open_row_extra_tags() {
+    let output = parse_module("value : @{@Ok(Int), ..error} = @Err(\"x\")\n");
     let check = check_module(&output.module);
 
     assert!(
         !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
-        "computed variant row unexpectedly produced type.mismatch"
+        "open variant row extra tag unexpectedly produced type.mismatch"
     );
 }
 
