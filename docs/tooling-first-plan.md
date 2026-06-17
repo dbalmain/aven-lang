@@ -1301,5 +1301,16 @@ Completed parser groundwork:
   after `@>`/`{>` in the parser plus the matching `fmt` rendering; assess
   whether the layout pass needs a dedicated open/close pairing.
 
+- **Warn on inert record `..` (comptime era).** A record parameter open marker
+  (`{ x: Int, .. }` / `{ x: Int, ..r }`) requests comptime specialisation so the
+  body can inspect/forward the caller's extra fields. When the body never
+  performs a whole-row operation on that parameter (reflection, `{ ..val, ... }`
+  spread, or forwarding to another row-generic), the marker is inert and the
+  parameter is equivalent to its closed form — emit a warning. Requires the
+  comptime specialisation machinery to exist (today every record `..` is inert,
+  so the check would be universal noise); the "rest is observed" analysis falls
+  out of detecting whether specialisation is observable. See
+  `../../docs/language-spec.md` → Assignment and subtyping.
+
 The tooling skeleton is far enough ahead of semantics for now; avoid spending
 more time on temporary parser/tooling code unless a new semantic slice needs it.
