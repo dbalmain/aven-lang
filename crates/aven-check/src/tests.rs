@@ -1857,19 +1857,11 @@ fn inferred_record_identifier_values_report_field_type_mismatches() {
 }
 
 #[test]
-fn inferred_record_identifier_values_report_missing_and_unexpected_fields() {
+fn inferred_record_identifier_values_report_missing_fields() {
     let missing = parse_module("other = { id: 1 }\nvalue : { id: Int, name: Text } = other\n");
     let missing_check = check_module(&missing.module);
     assert_eq!(
         matching_codes(&missing_check.diagnostics, codes::ty::MISSING_FIELD),
-        1
-    );
-
-    let unexpected =
-        parse_module("other = { id: 1, name: \"Ada\" }\nvalue : { id: Int } = other\n");
-    let unexpected_check = check_module(&unexpected.module);
-    assert_eq!(
-        matching_codes(&unexpected_check.diagnostics, codes::ty::UNEXPECTED_FIELD),
         1
     );
 }
@@ -1878,6 +1870,8 @@ fn inferred_record_identifier_values_report_missing_and_unexpected_fields() {
 fn inferred_record_identifier_values_accept_compatible_records() {
     for source in [
         "other = { id: 1 }\nvalue : { id: Int } = other\n",
+        "other = { id: 1, name: \"Ada\" }\nvalue : { id: Int } = other\n",
+        "other = { user: { id: 1, name: \"Ada\" } }\nvalue : { user: { id: Int } } = other\n",
         "other = { id: 1, name: \"Ada\" }\nvalue : { id: Int, .. } = other\n",
         "other = { name: \"Ada\", id: 1 }\nvalue : { id: Int, name: Text } = other\n",
     ] {

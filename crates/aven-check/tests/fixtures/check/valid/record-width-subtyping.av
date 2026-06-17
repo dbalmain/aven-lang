@@ -1,0 +1,5 @@
+value = { x: 1, y: 2 }
+narrow : { x: Int } = value
+
+nested = { outer: { x: 1, y: 2 } }
+nestedNarrow : { outer: { x: Int } } = nested

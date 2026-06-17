@@ -738,7 +738,7 @@ impl<'a> Checker<'a> {
                     .iter()
                     .map(|field| (field.name, span, FieldValue::Type(field.ty)))
                     .collect();
-                self.compare_record(&expected, &actual_fields, span);
+                self.compare_record(&expected, &actual_fields, ExtraFields::Allow, span);
             }
             (Type::Variant(expected), Type::Variant(actual)) => {
                 self.check_variant_type_against_type(expected, actual, span);
@@ -824,7 +824,7 @@ impl<'a> Checker<'a> {
                 .iter()
                 .map(|field| (field.name, field.name_span, FieldValue::Value(field.value)))
                 .collect();
-            self.compare_record(&expected, &actual_fields, actual.span);
+            self.compare_record(&expected, &actual_fields, ExtraFields::Reject, actual.span);
             return;
         }
 
@@ -874,6 +874,7 @@ impl<'a> Checker<'a> {
         &mut self,
         expected: &ExpectedRecordShape<'_>,
         actual: &[(&str, Span, FieldValue<'_>)],
+        extra_fields: ExtraFields,
         record_span: Span,
     ) {
         let actual_fields: HashMap<_, _> = actual
@@ -899,7 +900,7 @@ impl<'a> Checker<'a> {
 
         for (name, blame_span, payload) in actual {
             if !expected_field_names.contains(name) {
-                if !expected.open {
+                if !expected.open && matches!(extra_fields, ExtraFields::Reject) {
                     self.report_unexpected_field(name, *blame_span);
                 }
                 if let FieldValue::Value(Some(value)) = payload {
@@ -1728,6 +1729,12 @@ struct ExpectedRecordField<'a> {
 enum FieldValue<'a> {
     Value(Option<&'a Expr>),
     Type(&'a Type),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ExtraFields {
+    Reject,
+    Allow,
 }
 
 #[derive(Debug)]

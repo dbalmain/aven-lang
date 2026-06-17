@@ -1274,6 +1274,10 @@ Completed parser groundwork:
   binder, if any, under the cursor.
 - Consolidation C5: open-variant values narrowed into closed variant annotations
   now diagnose instead of silently passing.
+- Record expected-type boundaries now use width subtyping: bound/computed record
+  values may have extra fields, while fresh record literals assigned directly to
+  closed annotations keep the excess-property check. Variant widening plus
+  closed-constructor checking is the companion follow-up slice.
 
 ## To investigate later
 
