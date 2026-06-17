@@ -165,6 +165,12 @@ impl<'a> Checker<'a> {
             self.check_runtime_binding_liftability(&binding.value);
         }
 
+        if declaration.phase == DeclarationPhase::Comptime
+            && let Some(binding) = binding
+        {
+            self.check_comptime_binding_evaluation_support(&binding.value);
+        }
+
         if let Some(source) = declared_annotation_for_declaration(module, declaration) {
             let declared_type = self.lower_annotation(source.annotation);
             let expected_type = self.normalize(&declared_type);
@@ -248,6 +254,17 @@ impl<'a> Checker<'a> {
         let mut visiting = HashSet::new();
         if self.runtime_rhs_is_artifact(value, &mut visiting) {
             self.report_non_liftable_into_runtime(value.span);
+        }
+    }
+
+    fn check_comptime_binding_evaluation_support(&mut self, value: &Expr) {
+        if !comptime_rhs_needs_evaluation(value) {
+            return;
+        }
+
+        let lowering = self.lower_annotation_with_diagnostics(value);
+        if lowering.diagnostics.is_empty() {
+            self.report_comptime_evaluation_unsupported(value.span);
         }
     }
 
@@ -1616,6 +1633,22 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_comptime_evaluation_unsupported(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(
+                "comptime evaluation is not supported yet, so this comptime binding's value cannot be computed",
+            )
+            .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
+            .with_label(Label::primary(
+                span,
+                "this comptime binding needs evaluation",
+            ))
+            .with_note(
+                "the comptime evaluator is planned for Milestone 14; write a literal type or value here, or move the computation to a lowercase runtime binding if the result is a runtime value",
+            ),
+        );
+    }
+
     fn report_type_mismatch(&mut self, expected: &str, found: &'static str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("expected `{expected}`, found a {found}"))
@@ -2230,6 +2263,25 @@ fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
         },
         _ => None,
     }
+}
+
+pub(crate) fn comptime_rhs_needs_evaluation(value: &Expr) -> bool {
+    let mut value = value;
+    while let ExprKind::Group(inner) = &value.kind {
+        value = inner;
+    }
+
+    matches!(
+        &value.kind,
+        ExprKind::Call { .. }
+            | ExprKind::Binary { .. }
+            | ExprKind::Unary { .. }
+            | ExprKind::FieldAccess { .. }
+            | ExprKind::Propagate { .. }
+            | ExprKind::Match { .. }
+            | ExprKind::Block(_)
+            | ExprKind::Lambda { .. }
+    )
 }
 
 impl<'a> Checker<'a> {

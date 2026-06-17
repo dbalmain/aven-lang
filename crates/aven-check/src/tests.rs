@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::checker::comptime_rhs_needs_evaluation;
 use crate::*;
 use aven_core::{Diagnostic, Span, codes};
 use aven_parser::{Item, Module, collect_declarations, parse_module};
@@ -14,6 +15,25 @@ fn annotation<'a>(module: &'a Module, name: &str) -> &'a Expr {
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected annotation for {name}"))
+}
+
+fn binding_value(source: &str) -> Expr {
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics for {source:?}: {:?}",
+        output.diagnostics
+    );
+
+    output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Binding(binding) => Some(binding.value.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected binding for {source:?}"))
 }
 
 fn named(name: &str) -> Type {
@@ -213,6 +233,63 @@ fn detects_comptime_rhs_artifacts_without_evaluation() {
     assert!(!checker.comptime_rhs_is_non_liftable_artifact("Config"));
     assert!(!checker.comptime_rhs_is_non_liftable_artifact("Computed"));
     assert!(!checker.comptime_rhs_is_non_liftable_artifact("ok"));
+}
+
+#[test]
+fn comptime_rhs_evaluation_check_is_shallow_and_group_unwrapped() {
+    for source in [
+        "Value = make()\n",
+        "Value = base + 1\n",
+        "Value = -base\n",
+        "Value = user.name\n",
+        "Value = read(path)?^\n",
+        "Value = result ?>\n  @Ok => 1\n",
+        "Value =\n  temp = base\n  temp\n",
+        "Value = (item) => item\n",
+        "Value = (make())\n",
+    ] {
+        let value = binding_value(source);
+        assert!(
+            comptime_rhs_needs_evaluation(&value),
+            "expected evaluation trigger for {source:?}"
+        );
+    }
+
+    for source in [
+        "Value = 1\n",
+        "Value = @Ok\n",
+        "Value = runtimeValue\n",
+        "Value = User\n",
+        "Value = { name: Text }\n",
+        "Value = @{@Red, @Green}\n",
+        "Value = [1, 2]\n",
+        "Value = (Int, Text)\n",
+        "Value = Text -> Text\n",
+        "Value = Text?\n",
+        "Value = Array[Int]\n",
+        "Value = (User)\n",
+    ] {
+        let value = binding_value(source);
+        assert!(
+            !comptime_rhs_needs_evaluation(&value),
+            "did not expect evaluation trigger for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn comptime_rhs_evaluation_diagnostic_is_suppressed_after_child_diagnostic() {
+    let output = parse_module("Value = Missing + 1\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+        0
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::UNKNOWN_NAME),
+        1
+    );
 }
 
 #[test]

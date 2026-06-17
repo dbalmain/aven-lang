@@ -1180,6 +1180,10 @@ Slices:
   bindings whose RHS needs evaluation (rather than a structural type/value)
   produce an honest "comptime evaluation not yet supported" diagnostic with a
   Milestone 14 reference, instead of silently passing.
+  Done: `aven-check` now emits `comptime.evaluation-unsupported` for top-level
+  comptime RHS computation forms; nested computations inside aggregate literals
+  such as `{ port: getPort() }` are a deliberate follow-up gap outside this
+  shallow trigger.
 - 14.3 — comptime utility-type *terms*: parse `Pick`/`Omit`/`Merge`/`Partial`
   applications as ordinary type terms (the unified grammar already parses the
   application shape) and lower them to `Type::Deferred` with a structured

@@ -8,6 +8,7 @@
 //! constants are added is the manual step the compiler cannot check.
 
 pub mod comptime {
+    pub const EVALUATION_UNSUPPORTED: &str = "comptime.evaluation-unsupported";
     pub const NON_LIFTABLE_INTO_RUNTIME: &str = "comptime.non-liftable-into-runtime";
 }
 
@@ -74,6 +75,7 @@ pub mod ty {
 }
 
 pub const ALL: &[&str] = &[
+    comptime::EVALUATION_UNSUPPORTED,
     comptime::NON_LIFTABLE_INTO_RUNTIME,
     layout::INCONSISTENT_INDENTATION,
     lex::LEADING_BOM,

@@ -1,0 +1,3 @@
+error comptime.evaluation-unsupported: comptime evaluation is not supported yet, so this comptime binding's value cannot be computed
+  label 17..25: this comptime binding needs evaluation
+  note: the comptime evaluator is planned for Milestone 14; write a literal type or value here, or move the computation to a lowercase runtime binding if the result is a runtime value

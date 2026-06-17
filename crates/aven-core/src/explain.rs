@@ -15,6 +15,10 @@ pub fn explain(code: &str) -> Option<DiagnosticExplanation> {
 
 const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
+        code: codes::comptime::EVALUATION_UNSUPPORTED,
+        text: "A compile-time binding has a right-hand side that must be evaluated, but the compile-time evaluator is not implemented yet. Use a literal type or value, or move runtime computations to lowercase bindings.",
+    },
+    DiagnosticExplanation {
         code: codes::comptime::NON_LIFTABLE_INTO_RUNTIME,
         text: "A lowercase runtime binding tried to store a compile-time-only artifact such as a type. Keep type artifacts under capitalized names, or compute a runtime-representable value instead.",
     },
