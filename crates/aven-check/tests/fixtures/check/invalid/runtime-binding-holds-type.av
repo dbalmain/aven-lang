@@ -1,0 +1,3 @@
+User = { name: Text }
+config = User
+userType = User

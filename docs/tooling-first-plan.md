@@ -1143,18 +1143,72 @@ Done when:
   field-rest patterns bind closed residual records; fixtures lock each slice
 - duplicate-label and missing-field diagnostics remain structured and recover
 
+## Milestone 14: Comptime (Tooling-First Slices)
+
+Status: in progress
+
+Goal: advance the comptime surface *without* committing the evaluation engine.
+Comptime evaluation proper (a staged compile-time interpreter, types as
+first-class values) is the architectural keystone and stays deferred until these
+low-lock-in slices land and the evaluation model is reviewed separately. Each
+slice here is design-neutral on staging: it classifies, diagnoses, or parses
+comptime surface that the eventual evaluator will reuse, and defers (no
+false-positive) anything that genuinely needs evaluation — matching M11's
+"synthesize or defer, never guess" discipline.
+
+Design context: `../../docs/language-spec.md` → "Type and Comptime Bindings"
+(non-liftable comptime artifacts; the Zig-style "only runtime-representable
+values cross into runtime" rule). The full liftable-value lattice is deferred
+until the evaluator exists.
+
+Slices:
+
+- 14.1 — comptime RHS artifact detection: detect when a capitalized
+  (comptime) binding's right-hand side certainly denotes a **non-liftable
+  comptime artifact** (record/variant *types*, type aliases, modules), and
+  treat everything else as unknown until evaluation exists. Use the artifact
+  result to diagnose the liftability errors the spec specifies — a lowercase
+  runtime binding cannot hold a non-liftable artifact (`config = User`,
+  `userType = User`) — while runtime bindings initialized from non-artifact or
+  deferred comptime values remain accepted (`httpOk = HttpOk`). No evaluator:
+  detection is structural plus alias-following across top-level comptime
+  bindings; ambiguous RHSs defer silently.
+  Done: `aven-check` detects non-liftable comptime artifacts and emits
+  `comptime.non-liftable-into-runtime` for lowercase runtime bindings holding
+  type artifacts. The liftable-value lattice is deferred to the evaluator.
+- 14.2 — comptime-binding surface + honest diagnostics: ensure capitalized
+  bindings whose RHS needs evaluation (rather than a structural type/value)
+  produce an honest "comptime evaluation not yet supported" diagnostic with a
+  Milestone 14 reference, instead of silently passing.
+- 14.3 — comptime utility-type *terms*: parse `Pick`/`Omit`/`Merge`/`Partial`
+  applications as ordinary type terms (the unified grammar already parses the
+  application shape) and lower them to `Type::Deferred` with a structured
+  "evaluated once comptime lands" note — locking the surface and diagnostics
+  before the evaluator exists.
+
+Done when:
+
+- a lowercase runtime binding holding a non-liftable comptime artifact is
+  diagnosed with a structured code; non-artifact/deferred comptime RHSs do not
+  produce this diagnostic; fixtures lock both directions
+- comptime RHSs requiring evaluation produce an honest deferred diagnostic, not
+  silent acceptance
+- the full staged evaluator remains explicitly deferred to a later milestone
+
 ## Remaining Phase 2 Scope
 
 Status: later
 
 The tooling skeleton is in place, the semantic type IR and value-inference engine
-landed (M10, M11), Hindley-Milner generalization is complete (M12), and row
-polymorphism is underway (M13). The remaining hard semantic systems are still
-deliberately out of scope for this plan.
+landed (M10, M11), Hindley-Milner generalization is complete (M12), row
+polymorphism is complete (M13), and comptime tooling-first slices are underway
+(M14). The remaining hard semantic systems are still deliberately out of scope
+for this plan.
 
 Phase 2 work not planned here:
 
-- comptime evaluation
+- comptime evaluation *engine* (the staged interpreter; M14 covers only the
+  tooling-first surface/classification slices ahead of it)
 - requirement/interface resolution
 - opaque types
 - modules and imports

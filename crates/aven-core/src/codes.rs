@@ -7,6 +7,10 @@
 //! explanation table and [`ALL`] in sync; keeping [`ALL`] complete as new
 //! constants are added is the manual step the compiler cannot check.
 
+pub mod comptime {
+    pub const NON_LIFTABLE_INTO_RUNTIME: &str = "comptime.non-liftable-into-runtime";
+}
+
 pub mod layout {
     pub const INCONSISTENT_INDENTATION: &str = "layout.inconsistent-indentation";
 }
@@ -70,6 +74,7 @@ pub mod ty {
 }
 
 pub const ALL: &[&str] = &[
+    comptime::NON_LIFTABLE_INTO_RUNTIME,
     layout::INCONSISTENT_INDENTATION,
     lex::LEADING_BOM,
     lex::RESERVED_OPERATOR,

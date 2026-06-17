@@ -190,6 +190,32 @@ fn reports_cyclic_transparent_type_aliases() {
 }
 
 #[test]
+fn detects_comptime_rhs_artifacts_without_evaluation() {
+    let output = parse_module(
+        "User = { name: Text }\n\
+         UserAlias = User\n\
+         Color = @{@Red, @Green}\n\
+         HttpOk = 200\n\
+         HttpOkAlias = HttpOk\n\
+         Config = { status: HttpOk }\n\
+         Computed = HttpOk + 1\n\
+         ok = 200\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert!(checker.comptime_rhs_is_non_liftable_artifact("User"));
+    assert!(checker.comptime_rhs_is_non_liftable_artifact("UserAlias"));
+    assert!(checker.comptime_rhs_is_non_liftable_artifact("Color"));
+    assert!(!checker.comptime_rhs_is_non_liftable_artifact("HttpOk"));
+    assert!(!checker.comptime_rhs_is_non_liftable_artifact("HttpOkAlias"));
+    assert!(!checker.comptime_rhs_is_non_liftable_artifact("Config"));
+    assert!(!checker.comptime_rhs_is_non_liftable_artifact("Computed"));
+    assert!(!checker.comptime_rhs_is_non_liftable_artifact("ok"));
+}
+
+#[test]
 fn allows_constructor_guarded_recursive_types() {
     let output = parse_module("Tree = { value: Int, children: Tree }\n");
     let check = check_module(&output.module);

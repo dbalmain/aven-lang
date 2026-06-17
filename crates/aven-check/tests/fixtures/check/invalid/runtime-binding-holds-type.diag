@@ -1,0 +1,6 @@
+error comptime.non-liftable-into-runtime: runtime binding cannot hold a non-liftable comptime artifact
+  label 31..35: this is a non-liftable comptime artifact
+  note: types are compile-time artifacts; bind them with a capitalized name, or compute a runtime value here
+error comptime.non-liftable-into-runtime: runtime binding cannot hold a non-liftable comptime artifact
+  label 47..51: this is a non-liftable comptime artifact
+  note: types are compile-time artifacts; bind them with a capitalized name, or compute a runtime value here

@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
-    Binding, Declaration, Expr, ExprKind, Item, Literal, MatchArm, MergedItem, Module, Param,
-    RecordEntry, Signature, collect_declarations, merged_items, pattern_bindings,
+    Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm, MergedItem,
+    Module, Param, RecordEntry, Signature, collect_declarations, merged_items, pattern_bindings,
     walk_expr_children,
 };
 
@@ -27,6 +27,8 @@ pub(crate) struct Checker<'a> {
     known_types: HashSet<String>,
     type_definitions: HashMap<String, Type>,
     value_types: HashMap<String, Option<TypeScheme>>,
+    comptime_bindings: HashSet<String>,
+    comptime_artifacts: HashMap<String, bool>,
     local_types: LocalTypeScopes,
     bindings: HashMap<String, Option<&'a Binding>>,
     annotations: HashMap<String, &'a Expr>,
@@ -46,6 +48,8 @@ impl<'a> Checker<'a> {
             known_types,
             type_definitions,
             value_types: HashMap::new(),
+            comptime_bindings: HashSet::new(),
+            comptime_artifacts: HashMap::new(),
             local_types: LocalTypeScopes::default(),
             bindings: HashMap::new(),
             annotations: HashMap::new(),
@@ -65,6 +69,7 @@ impl<'a> Checker<'a> {
         let mut checker = Self::with_type_definitions(known_types, type_definitions);
         checker.collect_top_level_environment(module);
         checker.build_value_types(module);
+        checker.build_comptime_artifacts(module);
         checker
     }
 
@@ -73,6 +78,10 @@ impl<'a> Checker<'a> {
             if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
                 self.annotations
                     .insert(declaration.name.clone(), source.annotation);
+            }
+
+            if declaration.phase == DeclarationPhase::Comptime {
+                self.comptime_bindings.insert(declaration.name.clone());
             }
 
             match self.bindings.entry(declaration.name.clone()) {
@@ -119,6 +128,19 @@ impl<'a> Checker<'a> {
         self.value_types = types;
     }
 
+    fn build_comptime_artifacts(&mut self, module: &Module) {
+        let names: Vec<_> = collect_declarations(module)
+            .into_iter()
+            .filter(|declaration| declaration.phase == DeclarationPhase::Comptime)
+            .map(|declaration| declaration.name)
+            .collect();
+
+        for name in names {
+            let mut visiting = HashSet::new();
+            self.comptime_binding_is_artifact(&name, &mut visiting);
+        }
+    }
+
     pub(crate) fn check_module(&mut self, module: &Module) {
         // Top-level declared annotations go through declarations so inline and
         // adjacent signature+binding forms share one lookup path.
@@ -136,6 +158,12 @@ impl<'a> Checker<'a> {
     fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
         let binding = binding_for_declaration(module, declaration);
         let mut checked_value = false;
+
+        if declaration.phase == DeclarationPhase::Runtime
+            && let Some(binding) = binding
+        {
+            self.check_runtime_binding_liftability(&binding.value);
+        }
 
         if let Some(source) = declared_annotation_for_declaration(module, declaration) {
             let declared_type = self.lower_annotation(source.annotation);
@@ -176,6 +204,8 @@ impl<'a> Checker<'a> {
     }
 
     fn check_local_binding(&mut self, binding: &Binding, signature: Option<&Signature>) {
+        self.check_runtime_binding_liftability(&binding.value);
+
         let signature_type =
             signature.map(|signature| self.lower_normalized_annotation(&signature.annotation));
         let binding_type = binding
@@ -212,6 +242,142 @@ impl<'a> Checker<'a> {
 
         self.record_local_value_type(binding.name_span, &inferred_type);
         self.local_types.define(&binding.name, inferred_type);
+    }
+
+    fn check_runtime_binding_liftability(&mut self, value: &Expr) {
+        let mut visiting = HashSet::new();
+        if self.runtime_rhs_is_artifact(value, &mut visiting) {
+            self.report_non_liftable_into_runtime(value.span);
+        }
+    }
+
+    fn comptime_binding_is_artifact(&mut self, name: &str, visiting: &mut HashSet<String>) -> bool {
+        if let Some(is_artifact) = self.comptime_artifacts.get(name).copied() {
+            return is_artifact;
+        }
+
+        if !self.comptime_bindings.contains(name) {
+            return false;
+        }
+
+        if !visiting.insert(name.to_owned()) {
+            return false;
+        }
+
+        let binding = self.bindings.get(name).and_then(|binding| *binding);
+        let is_artifact = binding
+            .is_some_and(|binding| self.rhs_is_non_liftable_artifact(&binding.value, visiting));
+
+        visiting.remove(name);
+        self.comptime_artifacts.insert(name.to_owned(), is_artifact);
+        is_artifact
+    }
+
+    fn runtime_rhs_is_artifact(&mut self, value: &Expr, visiting: &mut HashSet<String>) -> bool {
+        match &value.kind {
+            ExprKind::Group(inner) => self.runtime_rhs_is_artifact(inner, visiting),
+            ExprKind::ComptimeName(name) => self.comptime_reference_is_artifact(name, visiting),
+            ExprKind::Name(_) => false,
+            _ => self.rhs_is_non_liftable_artifact(value, visiting),
+        }
+    }
+
+    fn comptime_reference_is_artifact(
+        &mut self,
+        name: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        if matches!(name, "True" | "False" | "Nil") {
+            return false;
+        }
+
+        if self.comptime_bindings.contains(name) {
+            return self.comptime_binding_is_artifact(name, visiting);
+        }
+
+        self.known_types.contains(name)
+    }
+
+    fn rhs_is_non_liftable_artifact(
+        &mut self,
+        value: &Expr,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        match &value.kind {
+            ExprKind::Group(inner) => {
+                return self.rhs_is_non_liftable_artifact(inner, visiting);
+            }
+            ExprKind::ComptimeName(name) => {
+                return self.comptime_reference_is_artifact(name, visiting);
+            }
+            ExprKind::Name(name) if self.is_runtime_value_reference(name) => {
+                return false;
+            }
+            _ => {}
+        }
+
+        if self.expr_contains_runtime_value_reference(value)
+            || self.expr_contains_unknown_comptime_reference(value, visiting)
+        {
+            return false;
+        }
+
+        let Some(ty) = self.lower_clean_normalized_type(value) else {
+            return false;
+        };
+
+        !type_contains_deferred(&ty) && is_non_liftable_artifact_type(&ty)
+    }
+
+    fn lower_clean_normalized_type(&self, value: &Expr) -> Option<Type> {
+        let mut checker =
+            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        let lowering = checker.lower_annotation_with_diagnostics(value);
+        lowering
+            .diagnostics
+            .is_empty()
+            .then(|| checker.normalize(&lowering.ty))
+    }
+
+    fn expr_contains_runtime_value_reference(&self, value: &Expr) -> bool {
+        if let ExprKind::Name(name) = &value.kind
+            && self.is_runtime_value_reference(name)
+        {
+            return true;
+        }
+
+        let mut found = false;
+        walk_expr_children(value, &mut |child| {
+            if !found && self.expr_contains_runtime_value_reference(child) {
+                found = true;
+            }
+        });
+        found
+    }
+
+    fn expr_contains_unknown_comptime_reference(
+        &mut self,
+        value: &Expr,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        if let ExprKind::ComptimeName(name) = &value.kind
+            && !self.comptime_reference_is_artifact(name, visiting)
+        {
+            return true;
+        }
+
+        let mut found = false;
+        walk_expr_children(value, &mut |child| {
+            if !found && self.expr_contains_unknown_comptime_reference(child, visiting) {
+                found = true;
+            }
+        });
+        found
+    }
+
+    fn is_runtime_value_reference(&self, name: &str) -> bool {
+        self.local_types.get(name).is_some()
+            || (self.bindings.contains_key(name) && !self.comptime_bindings.contains(name))
     }
 
     fn record_local_value_type(&mut self, name_span: Span, value_type: &LocalValueType) {
@@ -1436,6 +1602,20 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_non_liftable_into_runtime(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("runtime binding cannot hold a non-liftable comptime artifact")
+                .with_code(codes::comptime::NON_LIFTABLE_INTO_RUNTIME)
+                .with_label(Label::primary(
+                    span,
+                    "this is a non-liftable comptime artifact",
+                ))
+                .with_note(
+                    "types are compile-time artifacts; bind them with a capitalized name, or compute a runtime value here",
+                ),
+        );
+    }
+
     fn report_type_mismatch(&mut self, expected: &str, found: &'static str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("expected `{expected}`, found a {found}"))
@@ -1760,6 +1940,20 @@ struct VariantTagShape<'a> {
     payload: &'a [Type],
 }
 
+fn is_non_liftable_artifact_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Named(_)
+            | Type::Variable(_)
+            | Type::Apply { .. }
+            | Type::Function { .. }
+            | Type::Nullable(_)
+            | Type::Tuple(_)
+            | Type::Record(_)
+            | Type::Variant(_)
+    )
+}
+
 fn row_entry_label(entry: &RowEntry) -> &str {
     match entry {
         RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
@@ -2042,6 +2236,11 @@ impl<'a> Checker<'a> {
     /// Instantiate and fully resolve a top-level binding's inferred type, used by
     /// white-box synthesis tests. Production code consumes the generalized scheme
     /// from `infer_top_level` directly.
+    #[cfg(test)]
+    pub(crate) fn comptime_rhs_is_non_liftable_artifact(&self, name: &str) -> bool {
+        self.comptime_artifacts.get(name).copied().unwrap_or(false)
+    }
+
     #[cfg(test)]
     pub(crate) fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
         let scheme = self.infer_top_level(name)?;

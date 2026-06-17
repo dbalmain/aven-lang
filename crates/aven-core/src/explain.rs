@@ -15,6 +15,10 @@ pub fn explain(code: &str) -> Option<DiagnosticExplanation> {
 
 const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
+        code: codes::comptime::NON_LIFTABLE_INTO_RUNTIME,
+        text: "A lowercase runtime binding tried to store a compile-time-only artifact such as a type. Keep type artifacts under capitalized names, or compute a runtime-representable value instead.",
+    },
+    DiagnosticExplanation {
         code: codes::layout::INCONSISTENT_INDENTATION,
         text: "A line dedented to a column that does not match an open layout block. Align it with an existing block level or change the surrounding indentation.",
     },
