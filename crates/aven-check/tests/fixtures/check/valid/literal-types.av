@@ -1,0 +1,13 @@
+Status = @{"waiting", "running"}
+Waiting = @{"waiting"}
+Codes = @{0, 1, 2}
+ZeroOne = @{0, 1}
+
+status : Status = "waiting"
+code : Codes = 1
+
+waiting : Waiting = "waiting"
+wideStatus : Status = waiting
+
+zeroOne : ZeroOne = 0
+wideCode : Codes = zeroOne

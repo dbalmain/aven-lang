@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::checker::comptime_rhs_needs_evaluation;
 use crate::*;
 use aven_core::{Diagnostic, Span, codes};
-use aven_parser::{Item, Module, collect_declarations, parse_module};
+use aven_parser::{Item, Literal, Module, collect_declarations, parse_module};
 
 fn annotation<'a>(module: &'a Module, name: &str) -> &'a Expr {
     module
@@ -70,9 +70,28 @@ fn field(name: &str, ty: Type) -> RowEntry {
     }
 }
 
+fn literal_string(raw: &str) -> RowEntry {
+    RowEntry::Literal {
+        value: Literal::String(raw.to_owned()),
+    }
+}
+
+fn literal_number(raw: &str) -> RowEntry {
+    RowEntry::Literal {
+        value: Literal::Number(raw.to_owned()),
+    }
+}
+
 fn row_label(entry: &RowEntry) -> &str {
     match entry {
         RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
+        RowEntry::Literal { value } => match value {
+            Literal::Number(value)
+            | Literal::String(value)
+            | Literal::Regex(value)
+            | Literal::Path(value)
+            | Literal::Label(value) => value,
+        },
     }
 }
 
@@ -122,6 +141,26 @@ fn renders_types_as_surface_syntax() {
         })
         .render(),
         "@{ @Ok(t), @Err(e), @Done, .. }"
+    );
+    assert_eq!(
+        Type::Variant(Row {
+            entries: vec![literal_string("\"waiting\""), literal_string("\"running\"")],
+            tail: RowTail::Closed,
+        })
+        .render(),
+        "@{ \"waiting\", \"running\" }"
+    );
+    assert_eq!(
+        Type::Variant(Row {
+            entries: vec![
+                literal_number("0"),
+                literal_number("1"),
+                literal_number("2"),
+            ],
+            tail: RowTail::Closed,
+        })
+        .render(),
+        "@{ 0, 1, 2 }"
     );
     assert_eq!(
         function(
@@ -441,6 +480,38 @@ fn lowers_normalized_rows_and_closed_transforms() {
         })
     );
     assert!(transformed_error.diagnostics.is_empty());
+}
+
+#[test]
+fn lowers_literal_variant_entries() {
+    let output = parse_module(
+        "status : @{\"waiting\", \"running\"} = value\n\
+         code : @{0, 1, 2} = value\n",
+    );
+
+    let status = lower_annotation(&output.module, annotation(&output.module, "status"));
+    let code = lower_annotation(&output.module, annotation(&output.module, "code"));
+
+    assert_eq!(
+        status.ty,
+        Type::Variant(Row {
+            entries: vec![literal_string("\"waiting\""), literal_string("\"running\"")],
+            tail: RowTail::Closed,
+        })
+    );
+    assert!(status.diagnostics.is_empty());
+    assert_eq!(
+        code.ty,
+        Type::Variant(Row {
+            entries: vec![
+                literal_number("0"),
+                literal_number("1"),
+                literal_number("2"),
+            ],
+            tail: RowTail::Closed,
+        })
+    );
+    assert!(code.diagnostics.is_empty());
 }
 
 #[test]
@@ -914,6 +985,37 @@ fn synthesized_application_checks_do_not_duplicate_existing_paths() {
 }
 
 #[test]
+fn fresh_literals_check_against_literal_unions_by_membership() {
+    let accepted = parse_module(
+        "status : @{\"waiting\", \"running\"} = \"waiting\"\n\
+         code : @{0, 1, 2} = 1\n",
+    );
+    let accepted_check = check_module(&accepted.module);
+    assert!(accepted_check.diagnostics.is_empty());
+
+    let rejected = parse_module(
+        "status : @{\"waiting\", \"running\"} = \"stopped\"\n\
+         code : @{0, 1, 2} = 3\n",
+    );
+    let rejected_check = check_module(&rejected.module);
+    assert_eq!(
+        matching_codes(&rejected_check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        2
+    );
+}
+
+#[test]
+fn bare_literals_still_infer_base_types() {
+    let output = parse_module("x = 200\ns = \"hi\"\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(checker.infer_top_level_value("x"), Some(named("Int")));
+    assert_eq!(checker.infer_top_level_value("s"), Some(named("Text")));
+}
+
+#[test]
 fn direct_application_under_annotation_defers_non_concrete_synthesis() {
     let output = parse_module("h = (x) => missing(x)\nvalue : Text = h(1)\n");
     let check = check_module(&output.module);
@@ -1185,7 +1287,7 @@ fn match_results_merge_closed_variant_rows() {
         .iter()
         .filter_map(|entry| match entry {
             RowEntry::Tag { name, .. } => Some(name.as_str()),
-            RowEntry::Field { .. } => None,
+            RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
         })
         .collect();
 
@@ -1215,7 +1317,7 @@ fn match_results_merge_open_variant_rows_when_an_arm_is_open() {
         .iter()
         .filter_map(|entry| match entry {
             RowEntry::Tag { name, .. } => Some(name.as_str()),
-            RowEntry::Field { .. } => None,
+            RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
         })
         .collect();
 

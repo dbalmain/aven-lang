@@ -171,6 +171,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A disjoint row spread or add introduced a label that is already present. Use an overwrite form such as `:..source` or `field :: Type` when replacement is intended.",
     },
     DiagnosticExplanation {
+        code: codes::ty::LITERAL_NOT_IN_UNION,
+        text: "A fresh literal value or literal-union type contains a member that is not listed by the expected closed literal union. Use one of the listed literal values or widen the annotation.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::LOWERCASE_VARIANT_TAG,
         text: "Variant type members must use uppercase `@`-tags. Rename the tag to an uppercase marker such as @Ok or @Error.",
     },
@@ -181,6 +185,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::MISSING_FIELD,
         text: "A record value is missing a field required by its declared record type. Add the field or make the type field optional.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::MIXED_VARIANT_ENTRIES,
+        text: "A variant row mixes tag entries and literal entries. This slice keeps rows homogeneous: use either variant tags or literal values in one row.",
     },
     DiagnosticExplanation {
         code: codes::ty::NON_EXHAUSTIVE_MATCH,
@@ -209,6 +217,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::UNKNOWN_NAME,
         text: "A type annotation references an uppercase name that is not a known builtin or in-scope compile-time declaration. Define it or correct the spelling.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::WIDE_VALUE_INTO_LITERAL_UNION,
+        text: "A value with a base type such as Text or Int may contain values outside a narrower literal union. Keep the value at the literal-union type or use a fresh literal at the expected-type boundary.",
     },
 ];
 

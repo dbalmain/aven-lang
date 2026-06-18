@@ -69,6 +69,9 @@ pub enum RowEntry {
         name: String,
         payload: Vec<Type>,
     },
+    Literal {
+        value: Literal,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +222,7 @@ impl TypeRenderer {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            RowEntry::Literal { value } => render_literal_value(value).to_owned(),
         }
     }
 
@@ -323,6 +327,9 @@ fn map_row_entry(
                 .map(|ty| map_type_with_rows(ty, leaf, tail))
                 .collect(),
         },
+        RowEntry::Literal { value } => RowEntry::Literal {
+            value: value.clone(),
+        },
     }
 }
 
@@ -373,6 +380,7 @@ fn visit_row_entry(
         RowEntry::Tag { payload, .. } => payload
             .iter()
             .for_each(|ty| visit_type_with_rows(ty, visit, visit_tail)),
+        RowEntry::Literal { .. } => {}
     }
 }
 
@@ -480,6 +488,16 @@ pub(crate) fn type_contains_deferred(ty: &Type) -> bool {
 
 pub(crate) fn named_builtin(name: &str) -> Type {
     Type::Named(name.to_owned())
+}
+
+pub(crate) fn render_literal_value(literal: &Literal) -> &str {
+    match literal {
+        Literal::Number(value)
+        | Literal::String(value)
+        | Literal::Regex(value)
+        | Literal::Path(value)
+        | Literal::Label(value) => value,
+    }
 }
 
 pub(crate) fn named_type_name(ty: &Type) -> Option<&str> {

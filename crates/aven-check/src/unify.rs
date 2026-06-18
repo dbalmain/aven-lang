@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ty::{
     Row, RowEntry, RowTail, Type, TypeScheme, free_row_vars, map_type, map_type_with_rows,
-    type_contains_meta,
+    render_literal_value, type_contains_meta,
 };
 
 #[derive(Debug, Default)]
@@ -233,6 +233,11 @@ impl Unifier {
             ) if left_payload.len() == right_payload.len() => {
                 self.unify_many(left_payload, right_payload)
             }
+            (RowEntry::Literal { value: left }, RowEntry::Literal { value: right })
+                if left == right =>
+            {
+                Ok(())
+            }
             _ => Err(()),
         }
     }
@@ -338,6 +343,7 @@ impl Unifier {
 fn row_entry_label(entry: &RowEntry) -> &str {
     match entry {
         RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
+        RowEntry::Literal { value } => render_literal_value(value),
     }
 }
 

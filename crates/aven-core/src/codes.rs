@@ -62,9 +62,11 @@ pub mod ty {
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
     pub const DUPLICATE_SPREAD_LABEL: &str = "type.duplicate-spread-label";
+    pub const LITERAL_NOT_IN_UNION: &str = "type.literal-not-in-union";
     pub const LOWERCASE_VARIANT_TAG: &str = "type.lowercase-variant-tag";
     pub const MISMATCH: &str = "type.mismatch";
     pub const MISSING_FIELD: &str = "type.missing-field";
+    pub const MIXED_VARIANT_ENTRIES: &str = "type.mixed-variant-entries";
     pub const NON_EXHAUSTIVE_MATCH: &str = "type.non-exhaustive-match";
     pub const OPEN_VARIANT_NOT_ASSIGNABLE: &str = "type.open-variant-not-assignable";
     pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
@@ -72,6 +74,7 @@ pub mod ty {
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
+    pub const WIDE_VALUE_INTO_LITERAL_UNION: &str = "type.wide-value-into-literal-union";
 }
 
 pub const ALL: &[&str] = &[
@@ -114,9 +117,11 @@ pub const ALL: &[&str] = &[
     ty::CYCLIC_ALIAS,
     ty::DELETE_ABSENT_FIELD,
     ty::DUPLICATE_SPREAD_LABEL,
+    ty::LITERAL_NOT_IN_UNION,
     ty::LOWERCASE_VARIANT_TAG,
     ty::MISMATCH,
     ty::MISSING_FIELD,
+    ty::MIXED_VARIANT_ENTRIES,
     ty::NON_EXHAUSTIVE_MATCH,
     ty::OPEN_VARIANT_NOT_ASSIGNABLE,
     ty::RENAME_ABSENT_FIELD,
@@ -124,4 +129,5 @@ pub const ALL: &[&str] = &[
     ty::TYPE_ONLY_RECORD_ENTRY,
     ty::UNEXPECTED_FIELD,
     ty::UNKNOWN_NAME,
+    ty::WIDE_VALUE_INTO_LITERAL_UNION,
 ];

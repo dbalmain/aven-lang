@@ -1199,15 +1199,52 @@ Done when:
   silent acceptance
 - the full staged evaluator remains explicitly deferred to a later milestone
 
+## Milestone 15: Literal Types
+
+Status: in progress
+
+Goal: string and number literal types (`@{'waiting', 'running'}`, `@{0, 1, 2}`)
+reusing the **variant-row machinery** — closed singleton rows that widen by the
+same boundary-subtyping rule as tags (see `../../docs/language-spec.md` →
+"Comptime, literal types, and labels" and "Assignment and subtyping"). A new row
+*entry kind*, not a new type system; only tags carry payloads.
+
+Scope decision: this milestone covers the **type/annotation and checking
+directions only**. Number/text literal *value* inference stays at the base type
+(`Int`/`Text`) — making a bare literal infer its singleton would break ordinary
+arithmetic and reimport TypeScript's widening rules. Literal-union types arise
+from annotations; a fresh literal value checks against them by membership. Value
+inference producing literal singletons is deferred (it only matters once
+`keysOf`/comptime lands).
+
+Slices:
+
+- 15.1 — literal-union types + checking: lower `@{ <string/number literals> }` in
+  type position to a `Type::Variant` row of literal entries (closed); a fresh
+  literal value checks against a literal-union annotation by **membership**
+  (reusing the fresh-literal path), and literal-union vs literal-union widens by
+  **subset** (reusing variant widening). A wide base-typed value (`Text`/`Int`)
+  into a narrower literal union is rejected with a structured diagnostic. Mixed
+  tag+literal entries in one set get an honest diagnostic (homogeneous for now).
+  Bare-literal value inference is unchanged.
+
+Done when:
+
+- a binding annotated with a literal union accepts a member literal and rejects a
+  non-member literal and a wide base-typed value, all with structured diagnostics
+- a narrower literal union widens into a wider one at a boundary; fixtures lock
+  each direction
+- bare number/text literal inference still yields `Int`/`Text` (no singletons)
+
 ## Remaining Phase 2 Scope
 
 Status: later
 
 The tooling skeleton is in place, the semantic type IR and value-inference engine
 landed (M10, M11), Hindley-Milner generalization is complete (M12), row
-polymorphism is complete (M13), and comptime tooling-first slices are underway
-(M14). The remaining hard semantic systems are still deliberately out of scope
-for this plan.
+polymorphism is complete (M13), comptime tooling-first slices are underway (M14),
+and literal types are underway (M15). The remaining hard semantic systems are
+still deliberately out of scope for this plan.
 
 Phase 2 work not planned here:
 
@@ -1340,6 +1377,12 @@ Completed parser groundwork:
   closed annotations keep the excess-property check. The variant half of
   boundary subtyping is now covered by closed constructors, match row-union, and
   widening at assignment boundaries.
+- Milestone 15.1 done: string and number literal-union annotations lower to
+  literal entries in the variant row, fresh literals check by membership,
+  literal-union rows widen by subset at boundaries, wide `Text`/`Int` values are
+  rejected against narrower literal unions, and mixed tag/literal rows diagnose
+  as unsupported for now. Bare string/number literal inference remains `Text` and
+  `Int`.
 
 ## To investigate later
 

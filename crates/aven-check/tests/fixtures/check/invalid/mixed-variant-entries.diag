@@ -1,0 +1,3 @@
+error type.mixed-variant-entries: variant rows cannot mix tags and literal members
+  label 18..27: this literal member is mixed with tag members
+  note: use either variant tags or literal values in one row for now

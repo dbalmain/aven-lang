@@ -1,0 +1,6 @@
+error type.literal-not-in-union: literal "stopped" is not one of "waiting" | "running"
+  label 35..44: this literal is not allowed by the annotation
+  note: use one of "waiting" | "running", or change the literal-union annotation
+error type.literal-not-in-union: literal 3 is not one of 0 | 1 | 2
+  label 65..66: this literal is not allowed by the annotation
+  note: use one of 0 | 1 | 2, or change the literal-union annotation

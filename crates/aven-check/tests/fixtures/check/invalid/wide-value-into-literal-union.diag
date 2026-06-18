@@ -1,0 +1,6 @@
+error type.wide-value-into-literal-union: expected literal union `@{ "waiting", "running" }`, found `Text`
+  label 64..68: this value has the wider `Text` type
+  note: a bound value may be any value of its base type; use a fresh member literal here, or keep the narrower literal-union type on the value
+error type.wide-value-into-literal-union: expected literal union `@{ 0, 1, 2 }`, found `Int`
+  label 89..95: this value has the wider `Int` type
+  note: a bound value may be any value of its base type; use a fresh member literal here, or keep the narrower literal-union type on the value

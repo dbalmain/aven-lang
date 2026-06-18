@@ -19,7 +19,8 @@ use crate::lower::{
 use crate::ty::{
     Row, RowEntry, RowKind, RowTail, Type, TypeScheme, free_metas, generalize,
     has_only_meta_unknowns, is_concrete_type, is_meta_type, is_nil_value, mismatched_literal_kind,
-    named_builtin, named_type_mismatch, named_type_name, numeric_type_name, type_contains_deferred,
+    named_builtin, named_type_mismatch, named_type_name, numeric_type_name, render_literal_value,
+    type_contains_deferred,
 };
 use crate::unify::Unifier;
 
@@ -572,7 +573,7 @@ impl<'a> Checker<'a> {
         if row
             .entries
             .iter()
-            .any(|entry| matches!(entry, RowEntry::Field { .. }))
+            .any(|entry| !matches!(entry, RowEntry::Tag { .. }))
         {
             return;
         }
@@ -604,7 +605,7 @@ impl<'a> Checker<'a> {
                 {
                     Some(name.as_str())
                 }
-                RowEntry::Tag { .. } | RowEntry::Field { .. } => None,
+                RowEntry::Tag { .. } | RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
             })
             .collect();
 
@@ -667,6 +668,12 @@ impl<'a> Checker<'a> {
                 if let Some(found) = mismatched_literal_kind(name, literal) {
                     self.report_type_mismatch(name, found, value.span);
                 }
+            }
+            (
+                ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))),
+                Type::Variant(row),
+            ) => {
+                self.check_literal_value_against_variant(row, literal, value.span);
             }
             (ExprKind::Tuple(elements), Type::Tuple(element_types)) => {
                 if elements.len() != element_types.len() {
@@ -906,6 +913,9 @@ impl<'a> Checker<'a> {
                     self.check_type_against_type(expected, actual, span);
                 }
             }
+            (Type::Variant(expected), Type::Named(actual)) => {
+                self.check_named_type_against_variant(expected, actual, span);
+            }
             (Type::Record(expected), Type::Record(actual)) => {
                 let (Some(expected), Some(actual)) =
                     (literal_record_type(expected), literal_record_type(actual))
@@ -951,12 +961,40 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        if row_has_literal_entries(&actual) {
+            let Some(actual_literals) = literal_variant_members(&actual) else {
+                return;
+            };
+            let Some(expected_literals) = literal_variant_members(&expected) else {
+                self.report_variant_entry_kind_mismatch(
+                    &Type::Variant(expected.clone()),
+                    &Type::Variant(actual.clone()),
+                    span,
+                );
+                return;
+            };
+
+            for literal in actual_literals {
+                if expected.tail == RowTail::Closed && !expected_literals.contains(&literal) {
+                    self.report_literal_not_in_union(literal, &expected_literals, span);
+                }
+            }
+            return;
+        }
+
         let Some(actual_tags) = variant_tags(&actual) else {
             return;
         };
 
         for tag in actual_tags {
             let Some(payload) = variant_payload_lookup(&expected, tag.name) else {
+                if row_has_literal_entries(&expected) {
+                    self.report_variant_entry_kind_mismatch(
+                        &Type::Variant(expected.clone()),
+                        &Type::Variant(actual.clone()),
+                        span,
+                    );
+                }
                 return;
             };
 
@@ -988,6 +1026,38 @@ impl<'a> Checker<'a> {
             unreachable!("variant resolution preserves the outer type")
         };
         row
+    }
+
+    fn check_named_type_against_variant(&mut self, expected: &Row, actual: &str, span: Span) {
+        let expected = self.resolve_variant_row(expected);
+        let Some(literals) = literal_variant_members(&expected) else {
+            return;
+        };
+
+        let rendered_expected = Type::Variant(expected.clone()).render();
+        if literal_union_accepts_base_type(&literals, actual) {
+            self.report_wide_value_into_literal_union(&rendered_expected, actual, span);
+        } else {
+            self.report_type_mismatch_between_types(&rendered_expected, actual, span);
+        }
+    }
+
+    fn check_literal_value_against_variant(&mut self, row: &Row, literal: &Literal, span: Span) {
+        let row = self.resolve_variant_row(row);
+        let Some(literals) = literal_variant_members(&row) else {
+            self.report_type_mismatch(
+                &Type::Variant(row).render(),
+                literal_kind_name(literal),
+                span,
+            );
+            return;
+        };
+
+        if row.tail != RowTail::Closed || literals.contains(&literal) {
+            return;
+        }
+
+        self.report_literal_not_in_union(literal, &literals, span);
     }
 
     fn check_record_value_against(
@@ -1029,6 +1099,19 @@ impl<'a> Checker<'a> {
         value_span: Span,
     ) {
         let Some(payload) = variant_payload_lookup(row, tag) else {
+            if row_has_literal_entries(row) {
+                self.report_variant_entry_kind_mismatch(
+                    &Type::Variant(row.clone()),
+                    &Type::Variant(Row {
+                        entries: vec![RowEntry::Tag {
+                            name: tag.to_owned(),
+                            payload: Vec::new(),
+                        }],
+                        tail: RowTail::Closed,
+                    }),
+                    value_span,
+                );
+            }
             self.check_value_exprs(args);
             return;
         };
@@ -1187,6 +1270,9 @@ impl<'a> Checker<'a> {
             RowEntry::Tag { name, payload } => RowEntry::Tag {
                 name: name.clone(),
                 payload: self.normalize_types(payload, visited),
+            },
+            RowEntry::Literal { value } => RowEntry::Literal {
+                value: value.clone(),
             },
         }
     }
@@ -1382,7 +1468,7 @@ impl<'a> Checker<'a> {
                     return Err(());
                 };
 
-                self.merge_source_row(row, source, *overwrite, *span)
+                self.merge_source_row(row, source, *overwrite, *span, kind)
             }
             RecordEntry::Open { .. } => {
                 if matches!(mode, RowFoldMode::Value { .. }) {
@@ -1401,6 +1487,8 @@ impl<'a> Checker<'a> {
                     let Some(entry) = self.lower_variant_tag(value) else {
                         return Err(());
                     };
+
+                    self.check_homogeneous_variant_entry(&row.entries, &entry, value.span)?;
 
                     let label = row_entry_label(&entry);
                     if row_entry_index(&row.entries, label).is_some() {
@@ -1518,6 +1606,7 @@ impl<'a> Checker<'a> {
         source: RowSource,
         overwrite: bool,
         span: Span,
+        kind: RowKind,
     ) -> Result<(), ()> {
         let (source, source_is_open) = match source {
             RowSource::Closed(row) => (row, false),
@@ -1525,6 +1614,10 @@ impl<'a> Checker<'a> {
         };
 
         for entry in source.entries {
+            if kind == RowKind::Variant {
+                self.check_homogeneous_variant_entry(&row.entries, &entry, span)?;
+            }
+
             let label = row_entry_label(&entry).to_owned();
             if let Some(index) = row_entry_index(&row.entries, &label) {
                 if !overwrite {
@@ -1544,12 +1637,37 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    fn check_homogeneous_variant_entry(
+        &mut self,
+        existing_entries: &[RowEntry],
+        incoming: &RowEntry,
+        span: Span,
+    ) -> Result<(), ()> {
+        let Some(existing) = variant_entry_kind(existing_entries) else {
+            return Ok(());
+        };
+        let Some(incoming) = row_entry_variant_kind(incoming) else {
+            return Ok(());
+        };
+        if existing == incoming {
+            return Ok(());
+        }
+
+        self.report_mixed_variant_entries(incoming, span);
+        Err(())
+    }
+
     fn lower_variant_tag(&mut self, tag: &Expr) -> Option<RowEntry> {
         match &tag.kind {
             ExprKind::Tag(name) => Some(RowEntry::Tag {
                 name: name.clone(),
                 payload: Vec::new(),
             }),
+            ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
+                Some(RowEntry::Literal {
+                    value: literal.clone(),
+                })
+            }
             ExprKind::Literal(Literal::Label(label)) => {
                 let name = label.strip_prefix('@').unwrap_or(label);
                 self.report_lowercase_variant_tag(name, tag.span);
@@ -1616,6 +1734,20 @@ impl<'a> Checker<'a> {
                 .with_code(codes::ty::LOWERCASE_VARIANT_TAG)
                 .with_label(Label::primary(span, "lowercase variant tag"))
                 .with_note("variant tags use uppercase names, for example `@Ok` or `@Err`"),
+        );
+    }
+
+    fn report_mixed_variant_entries(&mut self, incoming: VariantEntryKind, span: Span) {
+        let label = match incoming {
+            VariantEntryKind::Tag => "this tag member is mixed with literal members",
+            VariantEntryKind::Literal => "this literal member is mixed with tag members",
+        };
+
+        self.diagnostics.push(
+            Diagnostic::error("variant rows cannot mix tags and literal members")
+                .with_code(codes::ty::MIXED_VARIANT_ENTRIES)
+                .with_label(Label::primary(span, label))
+                .with_note("use either variant tags or literal values in one row for now"),
         );
     }
 
@@ -1695,6 +1827,58 @@ impl<'a> Checker<'a> {
                 .with_code(codes::ty::MISMATCH)
                 .with_label(Label::primary(span, "this tag is not in the variant type"))
                 .with_note("use a tag listed by the annotation, or change the annotation"),
+        );
+    }
+
+    fn report_literal_not_in_union(
+        &mut self,
+        literal: &Literal,
+        expected: &[&Literal],
+        span: Span,
+    ) {
+        let literal = render_literal_value(literal);
+        let expected = render_literal_union(expected);
+
+        self.diagnostics.push(
+            Diagnostic::error(format!("literal {literal} is not one of {expected}"))
+                .with_code(codes::ty::LITERAL_NOT_IN_UNION)
+                .with_label(Label::primary(
+                    span,
+                    "this literal is not allowed by the annotation",
+                ))
+                .with_note(format!(
+                    "use one of {expected}, or change the literal-union annotation"
+                )),
+        );
+    }
+
+    fn report_wide_value_into_literal_union(&mut self, expected: &str, actual: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("expected literal union `{expected}`, found `{actual}`"))
+                .with_code(codes::ty::WIDE_VALUE_INTO_LITERAL_UNION)
+                .with_label(Label::primary(
+                    span,
+                    format!("this value has the wider `{actual}` type"),
+                ))
+                .with_note(
+                    "a bound value may be any value of its base type; use a fresh member literal here, or keep the narrower literal-union type on the value",
+                ),
+        );
+    }
+
+    fn report_variant_entry_kind_mismatch(&mut self, expected: &Type, actual: &Type, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "expected `{}`, found `{}`",
+                expected.render(),
+                actual.render()
+            ))
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(
+                span,
+                "variant row member kinds do not match",
+            ))
+            .with_note("use tag variants with tag variants, or literal unions with literal unions"),
         );
     }
 
@@ -1973,6 +2157,12 @@ struct VariantTagShape<'a> {
     payload: &'a [Type],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VariantEntryKind {
+    Tag,
+    Literal,
+}
+
 fn is_non_liftable_artifact_type(ty: &Type) -> bool {
     matches!(
         ty,
@@ -1990,6 +2180,7 @@ fn is_non_liftable_artifact_type(ty: &Type) -> bool {
 fn row_entry_label(entry: &RowEntry) -> &str {
     match entry {
         RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
+        RowEntry::Literal { value } => render_literal_value(value),
     }
 }
 
@@ -2010,6 +2201,9 @@ fn relabel_row_entry(entry: &RowEntry, label: &str) -> RowEntry {
             name: label.to_owned(),
             payload: payload.clone(),
         },
+        RowEntry::Literal { value } => RowEntry::Literal {
+            value: value.clone(),
+        },
     }
 }
 
@@ -2023,7 +2217,7 @@ fn literal_record_type(row: &Row) -> Option<ExpectedRecordShape<'_>> {
                 ty,
                 optional: *optional,
             }),
-            RowEntry::Tag { .. } => return None,
+            RowEntry::Tag { .. } | RowEntry::Literal { .. } => return None,
         }
     }
 
@@ -2195,7 +2389,7 @@ fn row_field_type<'a>(row: &'a Row, label: &str) -> Option<&'a Type> {
     let index = row_entry_index(&row.entries, label)?;
     match &row.entries[index] {
         RowEntry::Field { ty, .. } => Some(ty),
-        RowEntry::Tag { .. } => None,
+        RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
     }
 }
 
@@ -2222,7 +2416,7 @@ fn variant_payload_lookup<'a>(row: &'a Row, tag: &str) -> Option<Option<&'a [Typ
                 found = Some(payload.as_slice());
             }
             RowEntry::Tag { .. } => {}
-            RowEntry::Field { .. } => return None,
+            RowEntry::Field { .. } | RowEntry::Literal { .. } => return None,
         }
     }
 
@@ -2238,11 +2432,73 @@ fn variant_tags(row: &Row) -> Option<Vec<VariantTagShape<'_>>> {
                 name,
                 payload: payload.as_slice(),
             }),
-            RowEntry::Field { .. } => return None,
+            RowEntry::Field { .. } | RowEntry::Literal { .. } => return None,
         }
     }
 
     Some(tags)
+}
+
+fn literal_variant_members(row: &Row) -> Option<Vec<&Literal>> {
+    let mut literals = Vec::new();
+
+    for entry in &row.entries {
+        match entry {
+            RowEntry::Literal { value } => literals.push(value),
+            RowEntry::Field { .. } | RowEntry::Tag { .. } => return None,
+        }
+    }
+
+    Some(literals)
+}
+
+fn row_has_literal_entries(row: &Row) -> bool {
+    row.entries
+        .iter()
+        .any(|entry| matches!(entry, RowEntry::Literal { .. }))
+}
+
+fn variant_entry_kind(entries: &[RowEntry]) -> Option<VariantEntryKind> {
+    entries.iter().find_map(row_entry_variant_kind)
+}
+
+fn row_entry_variant_kind(entry: &RowEntry) -> Option<VariantEntryKind> {
+    match entry {
+        RowEntry::Tag { .. } => Some(VariantEntryKind::Tag),
+        RowEntry::Literal { .. } => Some(VariantEntryKind::Literal),
+        RowEntry::Field { .. } => None,
+    }
+}
+
+fn literal_union_accepts_base_type(literals: &[&Literal], base: &str) -> bool {
+    literals.iter().any(|literal| {
+        matches!(
+            (literal, base),
+            (Literal::String(_), "Text") | (Literal::Number(_), "Int" | "Float")
+        )
+    })
+}
+
+fn literal_kind_name(literal: &Literal) -> &'static str {
+    match literal {
+        Literal::String(_) => "text literal",
+        Literal::Number(_) => "number literal",
+        Literal::Regex(_) => "regex literal",
+        Literal::Path(_) => "path literal",
+        Literal::Label(_) => "label literal",
+    }
+}
+
+fn render_literal_union(literals: &[&Literal]) -> String {
+    if literals.is_empty() {
+        return "an empty literal union".to_owned();
+    }
+
+    literals
+        .iter()
+        .map(|literal| render_literal_value(literal))
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn is_catch_all_pattern(pattern: &Expr) -> bool {
