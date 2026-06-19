@@ -213,8 +213,8 @@ where
             ExprKind::Call { callee, args } => {
                 self.evaluate_application(expr.span, callee, args, env)
             }
-            ExprKind::Index { .. }
-            | ExprKind::Nullable(_)
+            ExprKind::Index { callee, args } => self.evaluate_index_type(callee, args, env),
+            ExprKind::Nullable(_)
             | ExprKind::Arrow { .. }
             | ExprKind::Tuple(_)
             | ExprKind::Record(_)
@@ -232,6 +232,79 @@ where
             | ExprKind::Lambda { .. }
             | ExprKind::Block(_) => EvaluationResult::unsupported(),
         }
+    }
+
+    fn evaluate_index_type(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        env: &Environment,
+    ) -> EvaluationResult {
+        let callee = match self.evaluate_expr(callee, env) {
+            EvaluationResult {
+                evaluation: Evaluation::Evaluated(value),
+                diagnostics,
+            } => {
+                if let Some(ty) = value.reify_type_position().into_reified_type() {
+                    if !diagnostics.is_empty() {
+                        return EvaluationResult::deferred_with_diagnostics(diagnostics);
+                    }
+                    ty
+                } else {
+                    return EvaluationResult::deferred_with_diagnostics(diagnostics);
+                }
+            }
+            EvaluationResult {
+                evaluation: Evaluation::Deferred,
+                diagnostics,
+            } => return EvaluationResult::deferred_with_diagnostics(diagnostics),
+            EvaluationResult {
+                evaluation: Evaluation::Unsupported,
+                diagnostics,
+            } => {
+                return EvaluationResult {
+                    evaluation: Evaluation::Unsupported,
+                    diagnostics,
+                };
+            }
+        };
+
+        let mut arg_types = Vec::new();
+        for arg in args {
+            match self.evaluate_expr(arg, env) {
+                EvaluationResult {
+                    evaluation: Evaluation::Evaluated(value),
+                    diagnostics,
+                } => {
+                    if let Some(ty) = value.reify_type_position().into_reified_type() {
+                        if !diagnostics.is_empty() {
+                            return EvaluationResult::deferred_with_diagnostics(diagnostics);
+                        }
+                        arg_types.push(ty);
+                    } else {
+                        return EvaluationResult::deferred_with_diagnostics(diagnostics);
+                    }
+                }
+                EvaluationResult {
+                    evaluation: Evaluation::Deferred,
+                    diagnostics,
+                } => return EvaluationResult::deferred_with_diagnostics(diagnostics),
+                EvaluationResult {
+                    evaluation: Evaluation::Unsupported,
+                    diagnostics,
+                } => {
+                    return EvaluationResult {
+                        evaluation: Evaluation::Unsupported,
+                        diagnostics,
+                    };
+                }
+            }
+        }
+
+        EvaluationResult::evaluated(ComptimeValue::ReifiedType(Type::Apply {
+            callee: Box::new(callee),
+            args: arg_types,
+        }))
     }
 
     fn consume_fuel(&mut self, span: Span) -> Result<(), EvaluationResult> {

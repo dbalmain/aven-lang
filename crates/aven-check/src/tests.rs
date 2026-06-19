@@ -2260,6 +2260,50 @@ fn computed_value_index_with_non_record_receiver_defers_without_diagnostic() {
 }
 
 #[test]
+fn comptime_pick_unrolls_key_set_to_closed_record_type() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+         pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }\n\
+         result = pick(user, {\"name\", \"email\"})\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker.infer_top_level_value("result"),
+        Some(Type::Record(Row {
+            entries: vec![field("name", named("Text")), field("email", named("Text"))],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_pick_with_non_concrete_key_set_defers_without_diagnostic() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+         keys = {\"name\", \"email\"}\n\
+         pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }\n\
+         result = pick(user, keys)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker
+            .infer_top_level_scheme("result")
+            .map(|scheme| scheme.ty),
+        Some(Type::Deferred)
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
 fn missing_inferred_field_defers_without_a_type_mismatch() {
     let output = parse_module("getX = (p) => p.x\nvalue = getX({ y: 2 })\n");
     let check = check_module(&output.module);

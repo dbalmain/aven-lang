@@ -1,0 +1,16 @@
+module
+  binding value
+    value
+      record
+        iteration k
+          source
+            name keys
+          body
+            element
+              tuple
+                name k
+                index
+                  callee
+                    name o
+                  args
+                    name k

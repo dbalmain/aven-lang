@@ -181,6 +181,10 @@ impl StyleCollector {
             token_type: TOKEN_PROPERTY,
             modifiers: 0,
         };
+        let binder = SemanticStyle {
+            token_type: TOKEN_PARAMETER,
+            modifiers: MODIFIER_DEFINITION,
+        };
 
         for entry in entries {
             match entry {
@@ -194,6 +198,12 @@ impl StyleCollector {
                 } => {
                     self.styles.insert(*from_span, property);
                     self.styles.insert(*to_span, property);
+                }
+                aven_parser::RecordEntry::Iteration {
+                    binder_span, body, ..
+                } => {
+                    self.styles.insert(*binder_span, binder);
+                    self.collect_record_entries(body);
                 }
                 aven_parser::RecordEntry::Spread { .. }
                 | aven_parser::RecordEntry::Open { .. }

@@ -599,6 +599,21 @@ fn render_record_entry_ast(output: &mut String, entry: &RecordEntry, indent: usi
             write_indent(output, indent);
             let _ = writeln!(output, "rename {from} -> {to}");
         }
+        RecordEntry::Iteration {
+            source,
+            binder,
+            body,
+            ..
+        } => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "iteration {binder}");
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "source");
+            render_expr_ast(output, source, indent + 2);
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "body");
+            render_record_entries_ast(output, body, indent + 2);
+        }
         RecordEntry::Open { .. } => {
             write_indent(output, indent);
             let _ = writeln!(output, "open");

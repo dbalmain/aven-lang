@@ -1,0 +1,1 @@
+pick = (o, keys) => { keys -> k; (k, o[k]) }

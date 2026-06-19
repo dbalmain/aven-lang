@@ -529,6 +529,7 @@ impl<'a> Checker<'a> {
                 | RecordEntry::Spread { .. }
                 | RecordEntry::Delete { .. }
                 | RecordEntry::Rename { .. }
+                | RecordEntry::Iteration { .. }
                 | RecordEntry::Element(_) => {}
             }
         }
@@ -541,6 +542,10 @@ impl<'a> Checker<'a> {
                 | RecordEntry::Spread { value, .. }
                 | RecordEntry::Element(value) => {
                     self.check_value_expr(value);
+                }
+                RecordEntry::Iteration { source, body, .. } => {
+                    self.check_value_expr(source);
+                    self.walk_value_record_values(body);
                 }
                 RecordEntry::Shorthand { .. }
                 | RecordEntry::Delete { .. }
@@ -1599,11 +1604,9 @@ impl<'a> Checker<'a> {
                     Ok(())
                 }
             }
+            RecordEntry::Iteration { .. } => self.fold_iteration_entry(entry, kind, mode, row),
             RecordEntry::Element(value) => match kind {
-                RowKind::Record => {
-                    self.fold_expression(value, mode);
-                    Err(())
-                }
+                RowKind::Record => self.fold_record_element(value, mode, row),
                 RowKind::Variant => {
                     let Some(entry) = self.lower_variant_tag(value) else {
                         return Err(());
@@ -1625,6 +1628,126 @@ impl<'a> Checker<'a> {
                     }
                 }
             },
+        }
+    }
+
+    fn fold_iteration_entry(
+        &mut self,
+        entry: &RecordEntry,
+        kind: RowKind,
+        mode: RowFoldMode<'_>,
+        row: &mut Row,
+    ) -> Result<(), ()> {
+        let RecordEntry::Iteration {
+            source,
+            binder,
+            body,
+            ..
+        } = entry
+        else {
+            unreachable!("fold_iteration_entry called for non-iteration entry");
+        };
+
+        let RowFoldMode::Value { env } = mode else {
+            self.fold_expression(source, mode);
+            for entry in body {
+                self.fold_deferred_row_entry(entry, kind, mode);
+            }
+            return Err(());
+        };
+
+        if kind != RowKind::Record {
+            self.fold_expression(source, mode);
+            for entry in body {
+                self.fold_deferred_row_entry(entry, kind, mode);
+            }
+            return Err(());
+        }
+
+        let Some(labels) = self.comptime_known_label_set(source) else {
+            self.fold_expression(source, mode);
+            return Err(());
+        };
+
+        for label in labels {
+            let literal = label_literal(&label);
+            let mut body_env = env.clone();
+            body_env.insert(
+                binder.clone(),
+                LocalValueType::Known(literal_type(literal.clone())),
+            );
+
+            let mut scope = HashMap::new();
+            scope.insert(
+                binder.clone(),
+                comptime::ComptimeValue::Literal(literal.clone()),
+            );
+            self.local_comptime_values.push(scope);
+
+            for (index, body_entry) in body.iter().enumerate() {
+                if self
+                    .fold_row_entry(body_entry, kind, RowFoldMode::Value { env: &body_env }, row)
+                    .is_err()
+                {
+                    for remaining in &body[index + 1..] {
+                        self.fold_deferred_row_entry(
+                            remaining,
+                            kind,
+                            RowFoldMode::Value { env: &body_env },
+                        );
+                    }
+                    self.local_comptime_values.pop();
+                    return Err(());
+                }
+            }
+
+            self.local_comptime_values.pop();
+        }
+
+        Ok(())
+    }
+
+    fn fold_record_element(
+        &mut self,
+        value: &Expr,
+        mode: RowFoldMode<'_>,
+        row: &mut Row,
+    ) -> Result<(), ()> {
+        let ExprKind::Tuple(items) = &ungroup_expr(value).kind else {
+            self.fold_expression(value, mode);
+            return Err(());
+        };
+        let [key, field_value] = items.as_slice() else {
+            self.fold_expression(value, mode);
+            return Err(());
+        };
+
+        let RowFoldMode::Value { env } = mode else {
+            self.fold_expression(value, mode);
+            return Err(());
+        };
+
+        let Some(label) = self.comptime_known_label(key) else {
+            self.fold_expression(value, mode);
+            return Err(());
+        };
+
+        let entry = RowEntry::Field {
+            name: label.clone(),
+            ty: self.infer(env, field_value),
+            optional: false,
+        };
+
+        if row_entry_index(&row.entries, &label).is_some() {
+            self.report_duplicate_row_label(
+                &label,
+                value.span,
+                DuplicateRowLabelContext::RecordValueAdd,
+            );
+            Err(())
+        } else {
+            row.entries.push(entry);
+            Ok(())
         }
     }
 
@@ -1685,6 +1808,12 @@ impl<'a> Checker<'a> {
                     }
                 }
             },
+            RecordEntry::Iteration { source, body, .. } => {
+                self.fold_expression(source, mode);
+                for entry in body {
+                    self.fold_deferred_row_entry(entry, kind, mode);
+                }
+            }
             RecordEntry::Shorthand { .. }
             | RecordEntry::Delete { .. }
             | RecordEntry::Rename { .. }
@@ -2287,6 +2416,17 @@ enum RowFoldMode<'a> {
     Value { env: &'a TypeEnv },
 }
 
+struct ComptimeArgument {
+    value: comptime::ComptimeValue,
+    label_set_members: Option<Vec<LabelSetMember>>,
+}
+
+struct LabelSetMember {
+    label: String,
+    literal: Literal,
+    span: Span,
+}
+
 #[derive(Debug)]
 struct ExpectedRecordShape<'a> {
     fields: Vec<ExpectedRecordField<'a>>,
@@ -2430,6 +2570,7 @@ fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueReco
             | RecordEntry::Spread { .. }
             | RecordEntry::Delete { .. }
             | RecordEntry::Rename { .. }
+            | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. }
             | RecordEntry::Element(_) => return None,
         }
@@ -2448,6 +2589,7 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
             | RecordEntry::Spread { .. }
             | RecordEntry::Delete { .. }
             | RecordEntry::Rename { .. }
+            | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. } => None,
         })
         .collect()
@@ -2542,6 +2684,7 @@ fn collect_known_record_pattern_types(
             }
             RecordEntry::Delete { .. }
             | RecordEntry::Rename { .. }
+            | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. }
             | RecordEntry::Element(_) => {}
         }
@@ -2554,6 +2697,7 @@ fn record_pattern_label(entry: &RecordEntry) -> Option<&str> {
         RecordEntry::Spread { .. }
         | RecordEntry::Delete { .. }
         | RecordEntry::Rename { .. }
+        | RecordEntry::Iteration { .. }
         | RecordEntry::Open { .. }
         | RecordEntry::Element(_) => None,
     }
@@ -2641,6 +2785,7 @@ fn collect_record_comptime_type_bindings(
             RecordEntry::Shorthand { .. }
             | RecordEntry::Delete { .. }
             | RecordEntry::Rename { .. }
+            | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. }
             | RecordEntry::Element(_) => {}
         }
@@ -2668,6 +2813,35 @@ fn comptime_value_label(value: &comptime::ComptimeValue) -> Option<String> {
         return None;
     };
     string_literal_label(text)
+}
+
+fn comptime_value_label_set(value: &comptime::ComptimeValue) -> Option<Vec<String>> {
+    match value {
+        comptime::ComptimeValue::LabelSet(labels) => Some(labels.clone()),
+        comptime::ComptimeValue::ReifiedType(_) | comptime::ComptimeValue::Literal(_) => None,
+    }
+}
+
+fn label_literal(label: &str) -> Literal {
+    Literal::String(format!("\"{label}\""))
+}
+
+fn literal_type(literal: Literal) -> Type {
+    Type::Variant(Row {
+        entries: vec![RowEntry::Literal { value: literal }],
+        tail: RowTail::Closed,
+    })
+}
+
+fn literal_union_domain_row(domain: &Type) -> Option<&Row> {
+    match domain {
+        Type::Variant(row) => Some(row),
+        Type::Apply { callee, args } if args.is_empty() => match callee.as_ref() {
+            Type::Variant(row) => Some(row),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn string_literal_label(text: &str) -> Option<String> {
@@ -3257,18 +3431,40 @@ impl<'a> Checker<'a> {
         let mut body_comptime_values = HashMap::new();
 
         for (param, arg) in params.iter().zip(args).filter(|(param, _)| param.comptime) {
-            let value =
-                match comptime::evaluate_runtime_value(arg, &runtime_value_bindings).evaluation {
-                    Evaluation::Evaluated(value) => value,
-                    Evaluation::Deferred | Evaluation::Unsupported => return Some(Type::Deferred),
-                };
+            let Some(argument) =
+                self.evaluate_comptime_param_argument(arg, &runtime_value_bindings)
+            else {
+                return Some(Type::Deferred);
+            };
+            let value = argument.value.clone();
 
             let domain = param.annotation.as_ref().and_then(|annotation| {
                 self.evaluate_comptime_param_domain(annotation, &type_bindings)
             });
 
-            if let (Some(Type::Variant(row)), Some(literal)) = (&domain, value.as_literal()) {
-                self.check_literal_value_against_variant(row, literal, arg.span);
+            if let Some(row) = domain.as_ref().and_then(literal_union_domain_row) {
+                match &value {
+                    comptime::ComptimeValue::Literal(literal) => {
+                        self.check_literal_value_against_variant(row, literal, arg.span);
+                    }
+                    comptime::ComptimeValue::LabelSet(labels) => {
+                        if let Some(members) = &argument.label_set_members {
+                            for member in members {
+                                self.check_literal_value_against_variant(
+                                    row,
+                                    &member.literal,
+                                    member.span,
+                                );
+                            }
+                        } else {
+                            for label in labels {
+                                let literal = label_literal(label);
+                                self.check_literal_value_against_variant(row, &literal, arg.span);
+                            }
+                        }
+                    }
+                    comptime::ComptimeValue::ReifiedType(_) => {}
+                }
             }
 
             let value_type = value
@@ -3287,6 +3483,29 @@ impl<'a> Checker<'a> {
         self.local_comptime_values.pop();
 
         Some(self.resolve_and_default(&result))
+    }
+
+    fn evaluate_comptime_param_argument(
+        &self,
+        arg: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<ComptimeArgument> {
+        match comptime::evaluate_runtime_value(arg, bindings).evaluation {
+            Evaluation::Evaluated(value) => {
+                return Some(ComptimeArgument {
+                    value,
+                    label_set_members: None,
+                });
+            }
+            Evaluation::Deferred | Evaluation::Unsupported => {}
+        }
+
+        let members = self.concrete_label_set_members(arg, bindings)?;
+        let labels = members.iter().map(|member| member.label.clone()).collect();
+        Some(ComptimeArgument {
+            value: comptime::ComptimeValue::LabelSet(labels),
+            label_set_members: Some(members),
+        })
     }
 
     fn comptime_param_function(&self, callee: &Expr) -> Option<(&'a [Param], &'a Expr)> {
@@ -3347,6 +3566,20 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn comptime_known_label_set(&self, expr: &Expr) -> Option<Vec<String>> {
+        match &ungroup_expr(expr).kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => self
+                .lookup_comptime_value(name)
+                .and_then(comptime_value_label_set),
+            ExprKind::Record(_) => {
+                let bindings = self.current_comptime_value_bindings();
+                self.concrete_label_set_members(expr, &bindings)
+                    .map(|members| members.into_iter().map(|member| member.label).collect())
+            }
+            _ => None,
+        }
+    }
+
     fn lookup_comptime_value(&self, name: &str) -> Option<&comptime::ComptimeValue> {
         self.local_comptime_values
             .iter()
@@ -3360,6 +3593,37 @@ impl<'a> Checker<'a> {
             bindings.extend(scope.clone());
         }
         bindings
+    }
+
+    fn concrete_label_set_members(
+        &self,
+        expr: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<Vec<LabelSetMember>> {
+        let ExprKind::Record(entries) = &ungroup_expr(expr).kind else {
+            return None;
+        };
+        let elements = literal_set_elements(entries)?;
+        let mut members = Vec::new();
+
+        for element in elements {
+            let Evaluation::Evaluated(comptime::ComptimeValue::Literal(literal)) =
+                comptime::evaluate_runtime_value(element, bindings).evaluation
+            else {
+                return None;
+            };
+            let Literal::String(text) = &literal else {
+                return None;
+            };
+            let label = string_literal_label(text)?;
+            members.push(LabelSetMember {
+                label,
+                literal,
+                span: element.span,
+            });
+        }
+
+        Some(members)
     }
 
     fn infer_name_reference(&mut self, env: &TypeEnv, name: &str) -> Type {

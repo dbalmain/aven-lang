@@ -217,6 +217,10 @@ fn scope_at_expr<'a>(expr: &'a Expr, at: Span, outer: &[BindingSite<'a>]) -> Opt
             scope_at_expr(subject, at, outer).or_else(|| scope_at_match_arms(arms, at, outer))
         }
         ExprKind::Block(items) => Some(scope_at_block(items, at, outer)),
+        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+            scope_at_record_entries(entries, at, outer)
+                .or_else(|| Some(ScopeAt::from_visible(outer.to_vec())))
+        }
         _ => find_map_expr_children(expr, |child| scope_at_expr(child, at, outer))
             .or_else(|| Some(ScopeAt::from_visible(outer.to_vec()))),
     }
@@ -336,6 +340,65 @@ fn scope_at_exprs<'a>(
     items.iter().find_map(|item| scope_at_expr(item, at, outer))
 }
 
+fn scope_at_record_entries<'a>(
+    entries: &'a [RecordEntry],
+    at: Span,
+    outer: &[BindingSite<'a>],
+) -> Option<ScopeAt<'a>> {
+    entries.iter().find_map(|entry| {
+        if !record_entry_span(entry).contains(at) {
+            return None;
+        }
+
+        match entry {
+            RecordEntry::Field { value, .. }
+            | RecordEntry::Spread { value, .. }
+            | RecordEntry::Element(value) => scope_at_expr(value, at, outer)
+                .or_else(|| Some(ScopeAt::from_visible(outer.to_vec()))),
+            RecordEntry::Iteration {
+                source,
+                binder,
+                binder_span,
+                body,
+                ..
+            } => {
+                if source.span.contains(at) {
+                    return scope_at_expr(source, at, outer)
+                        .or_else(|| Some(ScopeAt::from_visible(outer.to_vec())));
+                }
+
+                let binder_site = BindingSite {
+                    name: binder.as_str(),
+                    span: *binder_span,
+                };
+                let mut visible = outer.to_vec();
+                visible.push(binder_site);
+
+                if binder_span.contains(at) {
+                    return Some(ScopeAt {
+                        visible,
+                        binder_at: Some(binder_site),
+                    });
+                }
+
+                if body
+                    .iter()
+                    .any(|entry| record_entry_span(entry).contains(at))
+                {
+                    return scope_at_record_entries(body, at, &visible)
+                        .or_else(|| Some(ScopeAt::from_visible(visible)));
+                }
+
+                Some(ScopeAt::from_visible(outer.to_vec()))
+            }
+            RecordEntry::Shorthand { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. } => Some(ScopeAt::from_visible(outer.to_vec())),
+        }
+    })
+}
+
 fn item_span(item: &Item) -> Span {
     match item {
         Item::Binding(binding) => binding.span,
@@ -357,6 +420,19 @@ fn binding_at_reference<'a>(
         .rev()
         .find(|binding| binding.span.contains(reference))
         .copied()
+}
+
+fn record_entry_span(entry: &RecordEntry) -> Span {
+    match entry {
+        RecordEntry::Field { span, .. }
+        | RecordEntry::Shorthand { span, .. }
+        | RecordEntry::Spread { span, .. }
+        | RecordEntry::Delete { span, .. }
+        | RecordEntry::Rename { span, .. }
+        | RecordEntry::Iteration { span, .. }
+        | RecordEntry::Open { span } => *span,
+        RecordEntry::Element(expr) => expr.span,
+    }
 }
 
 fn exprs_contain(items: &[Expr], reference: Span) -> bool {
@@ -435,6 +511,9 @@ fn collect_pattern_bindings_from_record_entries<'a>(
                 name: to,
                 span: *to_span,
             }),
+            RecordEntry::Iteration { body, .. } => {
+                collect_pattern_bindings_from_record_entries(body, bindings);
+            }
             RecordEntry::Delete { .. } | RecordEntry::Open { .. } => {}
         }
     }
@@ -540,6 +619,18 @@ mod tests {
 
         assert_eq!(name_span, Some(nth_span(source, "name", 0)));
         assert_eq!(years_span, Some(nth_span(source, "years", 0)));
+    }
+
+    #[test]
+    fn resolves_record_iteration_binder_in_body() {
+        let source = "f = (keys, o) => { keys -> k; (k, o[k]) }\n";
+        let output = parse_module(source);
+
+        let tuple_key = resolve_local_definition(&output.module, "k", nth_span(source, "k", 3));
+        let index_key = resolve_local_definition(&output.module, "k", nth_span(source, "k", 4));
+
+        assert_eq!(tuple_key, Some(nth_span(source, "k", 2)));
+        assert_eq!(index_key, Some(nth_span(source, "k", 2)));
     }
 
     #[test]

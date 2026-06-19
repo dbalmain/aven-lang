@@ -198,6 +198,10 @@ fn needs_space(previous_previous: Option<&Token>, previous: &Token, current: &To
 }
 
 fn needs_space_before_open_delimiter(previous: &Token, current: &Token) -> bool {
+    if is_separator(previous) {
+        return true;
+    }
+
     if is_open_brace(current) {
         return !is_at_set_marker(previous, Some(current));
     }

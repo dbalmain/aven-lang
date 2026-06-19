@@ -456,6 +456,10 @@ fn collect_record_entry_references(entries: &[RecordEntry], references: &mut Vec
                 phase: DeclarationPhase::Runtime,
                 span: *name_span,
             }),
+            RecordEntry::Iteration { source, body, .. } => {
+                collect_expr_references(source, references);
+                collect_record_entry_references(body, references);
+            }
             RecordEntry::Delete { .. } | RecordEntry::Rename { .. } | RecordEntry::Open { .. } => {}
         }
     }
@@ -528,6 +532,9 @@ fn collect_pattern_references_from_entries(
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     collect_pattern_references(value, references);
                 }
+            }
+            RecordEntry::Iteration { body, .. } => {
+                collect_pattern_references_from_entries(body, references);
             }
             RecordEntry::Shorthand { .. }
             | RecordEntry::Delete { .. }

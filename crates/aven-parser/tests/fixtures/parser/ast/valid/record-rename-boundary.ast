@@ -1,0 +1,5 @@
+module
+  binding value
+    value
+      record
+        rename a -> b

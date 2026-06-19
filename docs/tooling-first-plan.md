@@ -1381,6 +1381,14 @@ Slices:
     (`!keys.has(k)`); tuple/destructuring binders (`object -> (k, v)`); set
     comprehensions; key-union / runtime-`Text`-key access; other reflection.
 
+  Done: `aven-parser` now parses `source -> binder; body` as
+  `RecordEntry::Iteration` while preserving bare `a -> b` renames, `aven-fmt`
+  round-trips the comprehension form, and `aven-check` accepts concrete
+  label-set comptime arguments for `keysOf(r)[]`, checks each member against the
+  literal-union domain, and unrolls record iterations so `pick(user,
+  {"name", "email"})` infers `{ name: Text, email: Text }` while non-concrete
+  key sets defer.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field

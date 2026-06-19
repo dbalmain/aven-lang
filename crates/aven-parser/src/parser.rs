@@ -165,6 +165,13 @@ pub enum RecordEntry {
         to_span: Span,
         span: Span,
     },
+    Iteration {
+        source: Expr,
+        binder: String,
+        binder_span: Span,
+        body: Vec<RecordEntry>,
+        span: Span,
+    },
     /// `..`: the open-row marker inside a record (type) shape.
     Open { span: Span },
     /// A bare member of a `@{...}` set/variant shape: `@Red`, `@Ok(1)`,
@@ -1265,6 +1272,37 @@ impl Parser<'_> {
             });
         }
 
+        if mode == EntryMode::Record && self.iteration_arrow_follows() {
+            let source = self.parse_binary_expression(0, true);
+            self.consume_operator("->");
+            let Some((binder, binder_span)) = self.parse_iteration_binder() else {
+                self.report_expected_record_label(self.current_span());
+                self.recover_record_entry();
+                return None;
+            };
+            let semicolon_span = self.current_span();
+            if !self.current_is(TokenKind::Semicolon) {
+                self.report_expected_record_entry(self.current_span());
+                self.recover_record_entry();
+                return None;
+            }
+            self.advance();
+
+            let body = self.parse_entry_list(mode);
+            let end = body
+                .last()
+                .map(record_entry_span)
+                .unwrap_or(semicolon_span)
+                .end;
+            return Some(RecordEntry::Iteration {
+                span: Span::new(source.span.start, end),
+                source,
+                binder,
+                binder_span,
+                body,
+            });
+        }
+
         if mode == EntryMode::Set
             && self.current_is_transform_label_start()
             && self.next_is_operator("->")
@@ -1293,6 +1331,21 @@ impl Parser<'_> {
         // `@ParseError(Text)`). The element parser covers calls and other terms,
         // so labels do not get the record-only treatment below.
         if mode == EntryMode::Set {
+            let term = self.parse_expression();
+            if matches!(term.kind, ExprKind::Missing) {
+                self.report_expected_record_entry(term.span);
+                self.recover_record_entry();
+                return None;
+            }
+            return Some(RecordEntry::Element(term));
+        }
+
+        if self.current_is(TokenKind::OpenParen)
+            || matches!(
+                self.current().map(|token| &token.kind),
+                Some(TokenKind::StringLiteral(_))
+            )
+        {
             let term = self.parse_expression();
             if matches!(term.kind, ExprKind::Missing) {
                 self.report_expected_record_entry(term.span);
@@ -1375,6 +1428,79 @@ impl Parser<'_> {
             name_span,
             span: Span::new(name_span.start, optional_end),
         })
+    }
+
+    fn parse_iteration_binder(&mut self) -> Option<(String, Span)> {
+        let token = self.current()?.clone();
+        let TokenKind::Identifier(name) = token.kind else {
+            return None;
+        };
+        self.advance();
+        Some((name, token.span))
+    }
+
+    fn iteration_arrow_follows(&self) -> bool {
+        let mut depth = 0usize;
+        let mut index = self.cursor;
+
+        while let Some(token) = self.tokens.get(index) {
+            match &token.kind {
+                TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
+                    depth += 1;
+                }
+                TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                TokenKind::Operator(operator) if operator == "->" && depth == 0 => {
+                    let binder = self.skip_collection_trivia_from(index + 1);
+                    let Some(Token {
+                        kind: TokenKind::Identifier(_),
+                        ..
+                    }) = self.tokens.get(binder)
+                    else {
+                        return false;
+                    };
+                    let after_binder = self.skip_collection_trivia_from(binder + 1);
+                    return self
+                        .tokens
+                        .get(after_binder)
+                        .is_some_and(|token| token.kind == TokenKind::Semicolon);
+                }
+                TokenKind::Newline
+                | TokenKind::Indent
+                | TokenKind::Dedent
+                | TokenKind::Comma
+                | TokenKind::Semicolon
+                    if depth == 0 =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+
+            index += 1;
+        }
+
+        false
+    }
+
+    fn skip_collection_trivia_from(&self, mut index: usize) -> usize {
+        while self.tokens.get(index).is_some_and(|token| {
+            matches!(
+                token.kind,
+                TokenKind::Newline
+                    | TokenKind::Indent
+                    | TokenKind::Dedent
+                    | TokenKind::DocComment(_)
+            )
+        }) {
+            index += 1;
+        }
+
+        index
     }
 
     fn parse_label_name(&mut self) -> Option<(String, Span)> {
@@ -1992,6 +2118,19 @@ fn missing_expr(span: Span) -> Expr {
     Expr {
         kind: ExprKind::Missing,
         span,
+    }
+}
+
+fn record_entry_span(entry: &RecordEntry) -> Span {
+    match entry {
+        RecordEntry::Field { span, .. }
+        | RecordEntry::Shorthand { span, .. }
+        | RecordEntry::Spread { span, .. }
+        | RecordEntry::Delete { span, .. }
+        | RecordEntry::Rename { span, .. }
+        | RecordEntry::Iteration { span, .. }
+        | RecordEntry::Open { span } => *span,
+        RecordEntry::Element(expr) => expr.span,
     }
 }
 

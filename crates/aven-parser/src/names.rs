@@ -208,6 +208,19 @@ fn analyze_record_entries(
             | RecordEntry::Spread { value, .. }
             | RecordEntry::Element(value) => analyze_expr(value, scopes, diagnostics),
             RecordEntry::Shorthand { name, .. } => scopes.mark_used(name),
+            RecordEntry::Iteration {
+                source,
+                binder,
+                binder_span,
+                body,
+                ..
+            } => {
+                analyze_expr(source, scopes, diagnostics);
+                scopes.push();
+                scopes.define(binder, *binder_span, BindingKind::Local, diagnostics);
+                analyze_record_entries(body, scopes, diagnostics);
+                scopes.pop(diagnostics);
+            }
             RecordEntry::Delete { .. } | RecordEntry::Rename { .. } | RecordEntry::Open { .. } => {}
         }
     }

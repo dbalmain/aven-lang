@@ -93,6 +93,10 @@ fn walk_record_entry_exprs<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMu
             RecordEntry::Field { value, .. }
             | RecordEntry::Spread { value, .. }
             | RecordEntry::Element(value) => visit(value),
+            RecordEntry::Iteration { source, body, .. } => {
+                visit(source);
+                walk_record_entry_exprs(body, visit);
+            }
             RecordEntry::Shorthand { .. }
             | RecordEntry::Delete { .. }
             | RecordEntry::Rename { .. }
