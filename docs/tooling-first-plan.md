@@ -1312,6 +1312,39 @@ Slices:
   with `comptime.evaluation-cycle` / `comptime.evaluation-limit`, and reifies
   `keyUnion(User)`-style results to concrete literal unions.
 
+- 16.3 — `@param` marker + runtime-position specialization (single computed-key
+  access): the first **runtime-position** comptime slice. Thinnest end-to-end
+  target:
+  ```
+  get = (o: {..r}, @key: keysOf(r)) => o[key]
+  get(user, "name")    # result type: the type of user's `name` field
+  get(user, "phone")   # error: "phone" is not a key of r
+  ```
+  Pieces:
+  - **Parser (`aven-parser`):** lex `@<lowercase>` in parameter position as a
+    comptime-param marker (repurposing the now-dead `@lowercase` `LabelPath`
+    label-literal production; `@` outside a parameter declaration is a
+    diagnostic, not a silent label). Add a `comptime` flag to `Param` set when
+    `@` prefixes the name. Body references stay ordinary names (`@` is
+    **declaration-only**, decided 2026-06-20). Update `walk`/`resolve`/`fmt` for
+    the flag — `aven-fmt` prints `@` before a comptime param.
+  - **Checker (`aven-check`):** at a call to a function with comptime params,
+    evaluate each `@param` argument to a `ComptimeValue` and **check it against
+    its declared (specialized) `@param` type**, reusing M15.1 literal-union
+    membership (`"name" ∈ keysOf(r)`); out-of-domain reports a structured
+    diagnostic. **Specialize** the call per comptime-arg tuple (reuse the M16.2
+    `SpecializationKey` machinery) to compute the result type. Handle
+    `ExprKind::Index` in **value** position (`o[k]`) where the callee infers to a
+    concrete record and the single arg is a **comptime-known label** → that
+    field's type; defer otherwise (do not disturb the type-position `Array[Int]`
+    `Type::Apply` meaning of the same node). The result type flows into inference
+    (M11). Membership guarantees the field exists, so access is exact (no
+    nullability in this slice).
+  - Out of scope (later slices): record comprehensions (`{ keys -> k; ... }`),
+    `pick`/`omit`, key-**union** access (`o[k]` over a key set → field-type
+    union), runtime-`Text`-key access (→ nullable), computed transforms
+    (`[k]=v`, `-[k]`, `[k]->[k2]`), other reflection functions.
+
 Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field
@@ -1328,6 +1361,13 @@ Done when:
   diagnostic; a self- or mutually-recursive comptime function that cannot resolve
   is bounded and reports `comptime.evaluation-cycle` (or
   `comptime.evaluation-limit`); fixtures lock both
+- `@key` parses as a declaration-only comptime parameter (a `Param` comptime
+  flag), `aven-fmt` round-trips it, and `@` outside a parameter declaration
+  diagnoses; fixtures lock parse + fmt
+- `get = (o: {..r}, @key: keysOf(r)) => o[key]` with `get(user, "name")` types as
+  the `name` field's type; `get(user, "phone")` reports the out-of-domain
+  membership diagnostic; `o[k]` for a comptime-known label on a concrete record
+  yields the field type and defers otherwise; fixtures lock each
 
 ## Remaining Phase 2 Scope
 
