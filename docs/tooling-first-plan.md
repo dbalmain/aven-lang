@@ -1247,6 +1247,49 @@ Done when:
   a `_` is covered; an out-of-union literal arm is reported unreachable; fixtures
   lock both
 
+## Milestone 16: Comptime Evaluator
+
+Status: in progress
+
+Goal: the comptime evaluator that M14.2's `comptime.evaluation-unsupported`
+diagnostic stands in for — the engine that resolves `Type::Deferred` sites by
+running comptime-position expressions at check time. Design: `../../docs/
+language-spec.md` → "Comptime, literal types, and labels" and the
+`comptime-evaluator-design` notes (two-stage staging; `ComptimeValue` domain
+whose liftable arm is `Value`; types reify as the checker's `crate::ty::Type`
+IR — no second representation; camelCase reflection `typeOf`/`keysOf`/`fieldsOf`/
+`tagsOf`; specialization-time/demand-driven evaluation reusing `Deferred`). The
+evaluator lives as a module **inside `aven-check`** (checker → evaluator →
+checker for types) until it earns its own crate.
+
+Built tooling-first as the smallest honest engine first, growing one comptime
+position at a time. No `@param` specialization or monomorphization in the first
+slice.
+
+Slices:
+
+- 16.1 — thinnest reflection slice: resolve the simplest `Type::Deferred` /
+  `comptime.evaluation-unsupported` case — a **capitalized binding whose RHS is a
+  reflection call on a concrete type**, starting with `keysOf` on a record. The
+  evaluator runs `keysOf` at check time, reads the record's field labels, and
+  reifies the result as a literal-union `Type::Variant` (the type-position face
+  of a comptime label set), so the binding gets a concrete type with no
+  `Deferred` and no unsupported diagnostic. A new `ComptimeValue` domain
+  (minimal: enough for a label set and a reified `Type`) and an evaluator module
+  in `aven-check`. `keysOf` on a non-record concrete type is a structured
+  diagnostic; a non-concrete argument defers (M11 discipline). No `@param`, no
+  specialization, no other reflection functions yet.
+
+Done when:
+
+- `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field
+  names, usable as a type, with no `Deferred` and no
+  `comptime.evaluation-unsupported`; a fixture locks it
+- `keysOf` on a concrete non-record type produces a structured diagnostic; a
+  `keysOf` call whose argument is not yet concrete defers without diagnostic
+- the evaluator is a self-contained module in `aven-check`; reified types are
+  the checker's own `Type` IR (no parallel representation)
+
 ## Remaining Phase 2 Scope
 
 Status: later
