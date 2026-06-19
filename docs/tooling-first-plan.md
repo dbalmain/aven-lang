@@ -1351,6 +1351,36 @@ Slices:
 	  membership for out-of-domain keys, and infers exact field types for
 	  single computed-key record access when the key is comptime-known.
 
+- 16.4 — record comprehension + comptime unrolling (thinnest: `pick`): the first
+  comprehension slice. Thinnest end-to-end target:
+  ```
+  pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }
+  pick(user, {"name", "email"})    # result type: { name: Text, email: Text }
+  ```
+  Pieces:
+  - **Parser (`aven-parser`):** add a record-body **iteration** item
+    `source -> binder; body` as `RecordEntry::Iteration { source, binder, body:
+    Vec<RecordEntry> }` — `body` reuses `RecordEntry` recursively (iteration
+    repeats sub-items; no parallel tree). Disambiguate from the existing rename
+    `from -> to`: a trailing `;` (with sub-items) marks iteration, bare `a -> b`
+    stays a rename. A `(k, v)` tuple in a record/comprehension body is an
+    **add-entry** item (reuse the tuple `Element`; the checker interprets a
+    2-tuple as add-field). Thread `walk`/`resolve`/`names` (the binder is an
+    ordinary binder) and `aven-fmt` (round-trip the iteration form).
+  - **Checker (`aven-check`):** extend `@param` to a key **set/array**
+    (`@keys: keysOf(r)[]`): the comptime argument is a set literal
+    (`{"name","email"}`) → a `LabelSet`, each member checked against the domain
+    by literal-union membership (reuse M15.1/M16.3). **Comptime-unroll** the
+    iteration over the comptime key set: bind the binder to each member and
+    evaluate the body items; a `(k, v)` add-entry contributes a field named by
+    `k`'s comptime label (reuse `comptime_known_label`) with the type of `v`
+    (reusing M16.3 `o[k]` for `o[k]`). Build the result **record type** and feed
+    it to inference (M11). Non-concrete key set → defer (no diagnostic).
+  - Out of scope (later slices): `omit` and the `[k]` computed-key **syntax**
+    (`-[k]`, `[k]=v`, `[k]->[k2]`); comprehension **guards/filters**
+    (`!keys.has(k)`); tuple/destructuring binders (`object -> (k, v)`); set
+    comprehensions; key-union / runtime-`Text`-key access; other reflection.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field
@@ -1374,6 +1404,13 @@ Slices:
   the `name` field's type; `get(user, "phone")` reports the out-of-domain
   membership diagnostic; `o[k]` for a comptime-known label on a concrete record
   yields the field type and defers otherwise; fixtures lock each
+- a record-body iteration `source -> binder; body` parses to
+  `RecordEntry::Iteration` (distinct from rename), `aven-fmt` round-trips it, and
+  the binder resolves as an ordinary binder; fixtures lock parse + fmt
+- `pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }` with
+  `pick(user, {"name", "email"})` types as `{ name: Text, email: Text }`; an
+  out-of-domain key in the set reports the membership diagnostic; a non-concrete
+  key set defers; fixtures lock each
 
 ## Remaining Phase 2 Scope
 
