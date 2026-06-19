@@ -1355,7 +1355,7 @@ Slices:
   comprehension slice. Thinnest end-to-end target:
   ```
   pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }
-  pick(user, {"name", "email"})    # result type: { name: Text, email: Text }
+  pick(user, @{"name", "email"})    # result type: { name: Text, email: Text }
   ```
   Pieces:
   - **Parser (`aven-parser`):** add a record-body **iteration** item
@@ -1369,7 +1369,7 @@ Slices:
     ordinary binder) and `aven-fmt` (round-trip the iteration form).
   - **Checker (`aven-check`):** extend `@param` to a key **set/array**
     (`@keys: keysOf(r)[]`): the comptime argument is a set literal
-    (`{"name","email"}`) → a `LabelSet`, each member checked against the domain
+    (`@{"name","email"}`) → a `LabelSet`, each member checked against the domain
     by literal-union membership (reuse M15.1/M16.3). **Comptime-unroll** the
     iteration over the comptime key set: bind the binder to each member and
     evaluate the body items; a `(k, v)` add-entry contributes a field named by
@@ -1386,7 +1386,7 @@ Slices:
   round-trips the comprehension form, and `aven-check` accepts concrete
   label-set comptime arguments for `keysOf(r)[]`, checks each member against the
   literal-union domain, and unrolls record iterations so `pick(user,
-  {"name", "email"})` infers `{ name: Text, email: Text }` while non-concrete
+  @{"name", "email"})` infers `{ name: Text, email: Text }` while non-concrete
   key sets defer.
 
 	Done when:
@@ -1416,7 +1416,7 @@ Slices:
   `RecordEntry::Iteration` (distinct from rename), `aven-fmt` round-trips it, and
   the binder resolves as an ordinary binder; fixtures lock parse + fmt
 - `pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }` with
-  `pick(user, {"name", "email"})` types as `{ name: Text, email: Text }`; an
+  `pick(user, @{"name", "email"})` types as `{ name: Text, email: Text }`; an
   out-of-domain key in the set reports the membership diagnostic; a non-concrete
   key set defers; fixtures lock each
 

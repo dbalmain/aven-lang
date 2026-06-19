@@ -1340,12 +1340,8 @@ impl Parser<'_> {
             return Some(RecordEntry::Element(term));
         }
 
-        if self.current_is(TokenKind::OpenParen)
-            || matches!(
-                self.current().map(|token| &token.kind),
-                Some(TokenKind::StringLiteral(_))
-            )
-        {
+        // A `(k, v)` tuple in a record/comprehension body is an add-entry item.
+        if self.current_is(TokenKind::OpenParen) {
             let term = self.parse_expression();
             if matches!(term.kind, ExprKind::Missing) {
                 self.report_expected_record_entry(term.span);

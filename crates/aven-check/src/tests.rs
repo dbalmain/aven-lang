@@ -2265,7 +2265,7 @@ fn comptime_pick_unrolls_key_set_to_closed_record_type() {
         "User = { name: Text, email: Text }\n\
          user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
          pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }\n\
-         result = pick(user, {\"name\", \"email\"})\n",
+         result = pick(user, @{\"name\", \"email\"})\n",
     );
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
@@ -2286,7 +2286,7 @@ fn comptime_pick_with_non_concrete_key_set_defers_without_diagnostic() {
     let output = parse_module(
         "User = { name: Text, email: Text }\n\
          user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
-         keys = {\"name\", \"email\"}\n\
+         keys = @{\"name\", \"email\"}\n\
          pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }\n\
          result = pick(user, keys)\n",
     );

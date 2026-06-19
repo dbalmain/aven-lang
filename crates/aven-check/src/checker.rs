@@ -3571,7 +3571,7 @@ impl<'a> Checker<'a> {
             ExprKind::Name(name) | ExprKind::ComptimeName(name) => self
                 .lookup_comptime_value(name)
                 .and_then(comptime_value_label_set),
-            ExprKind::Record(_) => {
+            ExprKind::Set(_) => {
                 let bindings = self.current_comptime_value_bindings();
                 self.concrete_label_set_members(expr, &bindings)
                     .map(|members| members.into_iter().map(|member| member.label).collect())
@@ -3600,7 +3600,7 @@ impl<'a> Checker<'a> {
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
     ) -> Option<Vec<LabelSetMember>> {
-        let ExprKind::Record(entries) = &ungroup_expr(expr).kind else {
+        let ExprKind::Set(entries) = &ungroup_expr(expr).kind else {
             return None;
         };
         let elements = literal_set_elements(entries)?;
