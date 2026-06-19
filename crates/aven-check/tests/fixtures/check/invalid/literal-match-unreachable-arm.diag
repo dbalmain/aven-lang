@@ -1,0 +1,3 @@
+error type.unreachable-match-arm: unreachable match arm for literal "stopped"
+  label 83..92: this literal pattern cannot match the subject
+  note: literal "stopped" is not a possible value of the subject

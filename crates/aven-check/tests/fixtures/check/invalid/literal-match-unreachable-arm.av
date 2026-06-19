@@ -1,0 +1,5 @@
+status : @{"waiting", "running"} = "waiting"
+result = status ?>
+  "waiting" => 1
+  "stopped" => 2
+  "running" => 3

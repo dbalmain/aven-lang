@@ -1,0 +1,11 @@
+Status = @{"waiting", "running", "done"}
+
+status : Status = "waiting"
+result = status ?>
+  "waiting" => 1
+  "running" => 2
+  "done" => 3
+
+withDefault = status ?>
+  "waiting" => 1
+  _ => 0

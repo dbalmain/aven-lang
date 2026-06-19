@@ -74,6 +74,7 @@ pub mod ty {
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
+    pub const UNREACHABLE_MATCH_ARM: &str = "type.unreachable-match-arm";
     pub const WIDE_VALUE_INTO_LITERAL_UNION: &str = "type.wide-value-into-literal-union";
 }
 
@@ -129,5 +130,6 @@ pub const ALL: &[&str] = &[
     ty::TYPE_ONLY_RECORD_ENTRY,
     ty::UNEXPECTED_FIELD,
     ty::UNKNOWN_NAME,
+    ty::UNREACHABLE_MATCH_ARM,
     ty::WIDE_VALUE_INTO_LITERAL_UNION,
 ];

@@ -219,6 +219,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A type annotation references an uppercase name that is not a known builtin or in-scope compile-time declaration. Define it or correct the spelling.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNREACHABLE_MATCH_ARM,
+        text: "A match arm can never run because its pattern is outside the statically known subject values. Remove the arm or change the subject type to include that value.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::WIDE_VALUE_INTO_LITERAL_UNION,
         text: "A value with a base type such as Text or Int may contain values outside a narrower literal union. Keep the value at the literal-union type or use a fresh literal at the expected-type boundary.",
     },

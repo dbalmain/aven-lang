@@ -1436,6 +1436,97 @@ fn variant_match_exhaustiveness_uses_subject_rows() {
 }
 
 #[test]
+fn literal_union_match_exhaustiveness_uses_subject_members() {
+    let closed_complete = parse_module(concat!(
+        "Status = @{\"waiting\", \"running\", \"done\"}\n",
+        "source : Status = \"waiting\"\n",
+        "result = source ?>\n",
+        "  \"waiting\" => 1\n",
+        "  \"running\" => 2\n",
+        "  \"done\" => 3\n",
+    ));
+    let closed_complete_check = check_module(&closed_complete.module);
+    assert!(
+        !has_diagnostic_code(
+            &closed_complete_check.diagnostics,
+            codes::ty::NON_EXHAUSTIVE_MATCH
+        ),
+        "complete literal-union match produced diagnostics: {:?}",
+        closed_complete_check.diagnostics
+    );
+
+    let closed_with_default = parse_module(concat!(
+        "Status = @{\"waiting\", \"running\", \"done\"}\n",
+        "source : Status = \"waiting\"\n",
+        "result = source ?>\n",
+        "  \"waiting\" => 1\n",
+        "  _ => 2\n",
+    ));
+    let closed_with_default_check = check_module(&closed_with_default.module);
+    assert!(
+        !has_diagnostic_code(
+            &closed_with_default_check.diagnostics,
+            codes::ty::NON_EXHAUSTIVE_MATCH
+        ),
+        "defaulted literal-union match produced diagnostics: {:?}",
+        closed_with_default_check.diagnostics
+    );
+
+    let closed_missing = parse_module(concat!(
+        "Status = @{\"waiting\", \"running\", \"done\"}\n",
+        "source : Status = \"waiting\"\n",
+        "result = source ?>\n",
+        "  \"waiting\" => 1\n",
+        "  \"running\" => 2\n",
+    ));
+    assert_eq!(
+        matching_codes(
+            &check_module(&closed_missing.module).diagnostics,
+            codes::ty::NON_EXHAUSTIVE_MATCH,
+        ),
+        1
+    );
+
+    let open_missing_default = parse_module(concat!(
+        "Status = @{\"waiting\", ..}\n",
+        "source : Status = \"waiting\"\n",
+        "result = source ?>\n",
+        "  \"waiting\" => 1\n",
+    ));
+    assert_eq!(
+        matching_codes(
+            &check_module(&open_missing_default.module).diagnostics,
+            codes::ty::NON_EXHAUSTIVE_MATCH,
+        ),
+        1
+    );
+}
+
+#[test]
+fn literal_union_match_reports_unreachable_literal_arms() {
+    let output = parse_module(concat!(
+        "Status = @{\"waiting\", \"running\"}\n",
+        "source : Status = \"waiting\"\n",
+        "result = source ?>\n",
+        "  \"waiting\" => 1\n",
+        "  \"stopped\" => 2\n",
+        "  \"running\" => 3\n",
+    ));
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::UNREACHABLE_MATCH_ARM),
+        1,
+        "unreachable literal-arm diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::ty::NON_EXHAUSTIVE_MATCH
+    ));
+}
+
+#[test]
 fn match_result_inference_handles_block_arm_bodies() {
     let output = parse_module(
         "result = source ?>\n  @Ok(_) =>\n    local = 1\n    local\nvalue : Text = result\n",

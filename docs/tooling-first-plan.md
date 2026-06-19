@@ -1394,6 +1394,10 @@ Completed parser groundwork:
   rejected against narrower literal unions, and mixed tag/literal rows diagnose
   as unsupported for now. Bare string/number literal inference remains `Text` and
   `Int`.
+- Milestone 15.2 done: closed literal-union matches reuse the variant
+  exhaustiveness path, literal arms cover matching members, open literal unions
+  require a default arm, and out-of-union literal arms report
+  `type.unreachable-match-arm`.
 
 ## To investigate later
 

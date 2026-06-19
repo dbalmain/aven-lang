@@ -570,12 +570,25 @@ impl<'a> Checker<'a> {
         let Type::Variant(row) = subject_type else {
             return;
         };
-        if row
+
+        let entry_kind = if row
             .entries
             .iter()
-            .any(|entry| !matches!(entry, RowEntry::Tag { .. }))
+            .all(|entry| matches!(entry, RowEntry::Tag { .. }))
         {
+            VariantEntryKind::Tag
+        } else if row
+            .entries
+            .iter()
+            .all(|entry| matches!(entry, RowEntry::Literal { .. }))
+        {
+            VariantEntryKind::Literal
+        } else {
             return;
+        };
+
+        if entry_kind == VariantEntryKind::Literal && row.tail == RowTail::Closed {
+            self.report_unreachable_literal_match_arms(row, arms);
         }
 
         let has_default = arms
@@ -590,27 +603,55 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        let covered: HashSet<_> = arms
-            .iter()
-            .filter(|arm| arm.guards.is_empty())
-            .filter_map(|arm| variant_pattern_tag(&arm.pattern))
-            .collect();
-        let mut seen = HashSet::new();
-        let missing: Vec<_> = row
-            .entries
-            .iter()
-            .filter_map(|entry| match entry {
-                RowEntry::Tag { name, .. }
-                    if !covered.contains(name.as_str()) && seen.insert(name.as_str()) =>
-                {
-                    Some(name.as_str())
-                }
-                RowEntry::Tag { .. } | RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
-            })
-            .collect();
+        match entry_kind {
+            VariantEntryKind::Tag => {
+                let covered: HashSet<_> = arms
+                    .iter()
+                    .filter(|arm| arm.guards.is_empty())
+                    .filter_map(|arm| variant_pattern_tag(&arm.pattern))
+                    .collect();
+                let mut seen = HashSet::new();
+                let missing: Vec<_> = row
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        RowEntry::Tag { name, .. }
+                            if !covered.contains(name.as_str()) && seen.insert(name.as_str()) =>
+                        {
+                            Some(name.as_str())
+                        }
+                        RowEntry::Tag { .. }
+                        | RowEntry::Field { .. }
+                        | RowEntry::Literal { .. } => None,
+                    })
+                    .collect();
 
-        if !missing.is_empty() {
-            self.report_missing_variant_match_tags(&missing, subject.span);
+                if !missing.is_empty() {
+                    self.report_missing_variant_match_tags(&missing, subject.span);
+                }
+            }
+            VariantEntryKind::Literal => {
+                let covered: Vec<_> = arms
+                    .iter()
+                    .filter(|arm| arm.guards.is_empty())
+                    .filter_map(|arm| {
+                        literal_pattern_value(&arm.pattern).map(|(literal, _)| literal)
+                    })
+                    .collect();
+                let mut missing = Vec::new();
+                for entry in &row.entries {
+                    let RowEntry::Literal { value } = entry else {
+                        continue;
+                    };
+                    if !covered.contains(&value) && !missing.contains(&value) {
+                        missing.push(value);
+                    }
+                }
+
+                if !missing.is_empty() {
+                    self.report_missing_literal_match_members(&missing, subject.span);
+                }
+            }
         }
     }
 
@@ -1926,6 +1967,36 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_unreachable_literal_match_arms(&mut self, row: &Row, arms: &[MatchArm]) {
+        let Some(members) = literal_variant_members(row) else {
+            return;
+        };
+
+        for arm in arms {
+            let Some((literal, span)) = literal_pattern_value(&arm.pattern) else {
+                continue;
+            };
+            if !members.contains(&literal) {
+                self.report_unreachable_literal_match_arm(literal, span);
+            }
+        }
+    }
+
+    fn report_unreachable_literal_match_arm(&mut self, literal: &Literal, span: Span) {
+        let literal = render_literal_value(literal);
+        self.diagnostics.push(
+            Diagnostic::error(format!("unreachable match arm for literal {literal}"))
+                .with_code(codes::ty::UNREACHABLE_MATCH_ARM)
+                .with_label(Label::primary(
+                    span,
+                    "this literal pattern cannot match the subject",
+                ))
+                .with_note(format!(
+                    "literal {literal} is not a possible value of the subject"
+                )),
+        );
+    }
+
     fn report_missing_variant_match_tags(&mut self, missing: &[&str], span: Span) {
         let tags = missing
             .iter()
@@ -1944,6 +2015,29 @@ impl<'a> Checker<'a> {
                 .with_label(Label::primary(
                     span,
                     "this subject has variant tags without matching arms",
+                ))
+                .with_note("add the missing arm(s), or add `_ => ...` as a default"),
+        );
+    }
+
+    fn report_missing_literal_match_members(&mut self, missing: &[&Literal], span: Span) {
+        let literals = missing
+            .iter()
+            .map(|literal| render_literal_value(literal))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = if missing.len() == 1 {
+            format!("non-exhaustive match; missing literal {literals}")
+        } else {
+            format!("non-exhaustive match; missing literals {literals}")
+        };
+
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(codes::ty::NON_EXHAUSTIVE_MATCH)
+                .with_label(Label::primary(
+                    span,
+                    "this subject has literal values without matching arms",
                 ))
                 .with_note("add the missing arm(s), or add `_ => ...` as a default"),
         );
@@ -2517,6 +2611,16 @@ fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
             ExprKind::Tag(tag) => Some(tag),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+fn literal_pattern_value(pattern: &Expr) -> Option<(&Literal, Span)> {
+    match &pattern.kind {
+        ExprKind::Group(inner) => literal_pattern_value(inner),
+        ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
+            Some((literal, pattern.span))
+        }
         _ => None,
     }
 }
