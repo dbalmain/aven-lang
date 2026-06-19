@@ -1,0 +1,4 @@
+User = { name: Text, email: Text }
+user : User = { name: "Ada", email: "ada@x.dev" }
+get = (o: {..r}, @key: keysOf(r)) => o[key]
+result : Text = get(user, "name")

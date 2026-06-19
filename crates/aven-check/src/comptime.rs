@@ -12,6 +12,7 @@ const DEFAULT_EVALUATION_FUEL: usize = 128;
 pub(crate) enum ComptimeValue {
     ReifiedType(Type),
     LabelSet(Vec<String>),
+    Literal(Literal),
 }
 
 impl ComptimeValue {
@@ -19,13 +20,21 @@ impl ComptimeValue {
         match self {
             ComptimeValue::ReifiedType(ty) => ComptimeValue::ReifiedType(ty),
             ComptimeValue::LabelSet(labels) => ComptimeValue::ReifiedType(label_set_type(labels)),
+            ComptimeValue::Literal(literal) => ComptimeValue::ReifiedType(literal_type(literal)),
         }
     }
 
     pub(crate) fn into_reified_type(self) -> Option<Type> {
         match self {
             ComptimeValue::ReifiedType(ty) => Some(ty),
-            ComptimeValue::LabelSet(_) => None,
+            ComptimeValue::LabelSet(_) | ComptimeValue::Literal(_) => None,
+        }
+    }
+
+    pub(crate) fn as_literal(&self) -> Option<&Literal> {
+        match self {
+            ComptimeValue::Literal(literal) => Some(literal),
+            ComptimeValue::ReifiedType(_) | ComptimeValue::LabelSet(_) => None,
         }
     }
 }
@@ -87,7 +96,7 @@ pub(crate) struct SpecializationKey {
 }
 
 impl SpecializationKey {
-    fn new(function: &str, args: &[ComptimeValue]) -> Self {
+    pub(crate) fn new(function: &str, args: &[ComptimeValue]) -> Self {
         Self {
             function: function.to_owned(),
             args: args.to_vec(),
@@ -120,13 +129,57 @@ pub(crate) fn evaluate_type_position<'a>(
     context: &mut impl EvalContext<'a>,
     expr: &Expr,
 ) -> EvaluationResult {
+    evaluate_type_position_with_bindings(context, expr, &HashMap::new())
+}
+
+pub(crate) fn evaluate_type_position_with_bindings<'a>(
+    context: &mut impl EvalContext<'a>,
+    expr: &Expr,
+    bindings: &HashMap<String, ComptimeValue>,
+) -> EvaluationResult {
     let mut evaluator = Evaluator {
         context,
         visited: HashSet::new(),
         fuel: DEFAULT_EVALUATION_FUEL,
         module: PhantomData,
     };
-    evaluator.evaluate_expr(expr, &Environment::default())
+    evaluator.evaluate_expr(expr, &Environment::from_bindings(bindings))
+}
+
+pub(crate) fn evaluate_runtime_value(
+    expr: &Expr,
+    bindings: &HashMap<String, ComptimeValue>,
+) -> EvaluationResult {
+    let expr = ungroup(expr);
+    match &expr.kind {
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => bindings
+            .get(name)
+            .cloned()
+            .map(EvaluationResult::evaluated)
+            .unwrap_or_else(EvaluationResult::unsupported),
+        ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
+            EvaluationResult::evaluated(ComptimeValue::Literal(literal.clone()))
+        }
+        ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
+        ExprKind::Missing
+        | ExprKind::Literal(_)
+        | ExprKind::Tag(_)
+        | ExprKind::Array(_)
+        | ExprKind::Tuple(_)
+        | ExprKind::Record(_)
+        | ExprKind::Set(_)
+        | ExprKind::Index { .. }
+        | ExprKind::Nullable(_)
+        | ExprKind::Arrow { .. }
+        | ExprKind::FieldAccess { .. }
+        | ExprKind::Call { .. }
+        | ExprKind::Binary { .. }
+        | ExprKind::Unary { .. }
+        | ExprKind::Propagate { .. }
+        | ExprKind::Match { .. }
+        | ExprKind::Lambda { .. }
+        | ExprKind::Block(_) => EvaluationResult::unsupported(),
+    }
 }
 
 struct Evaluator<'ctx, 'a, C>
@@ -364,6 +417,13 @@ fn label_set_type(labels: Vec<String>) -> Type {
     })
 }
 
+fn literal_type(literal: Literal) -> Type {
+    Type::Variant(Row {
+        entries: vec![RowEntry::Literal { value: literal }],
+        tail: RowTail::Closed,
+    })
+}
+
 fn reflection_type_mismatch(span: Span) -> Diagnostic {
     Diagnostic::error("reflection function `keysOf` expected a record type")
         .with_code(codes::comptime::REFLECTION_TYPE_MISMATCH)
@@ -401,6 +461,12 @@ struct Environment {
 }
 
 impl Environment {
+    fn from_bindings(bindings: &HashMap<String, ComptimeValue>) -> Self {
+        Self {
+            bindings: bindings.clone(),
+        }
+    }
+
     fn from_params(params: &[Param], values: Vec<ComptimeValue>) -> Self {
         let bindings = params
             .iter()

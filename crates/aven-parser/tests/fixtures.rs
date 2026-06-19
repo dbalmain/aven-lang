@@ -629,7 +629,7 @@ fn render_match_arm_ast(output: &mut String, arm: &MatchArm, indent: usize) {
 
 fn render_param_ast(output: &mut String, param: &Param, indent: usize) {
     write_indent(output, indent);
-    let _ = writeln!(output, "param {}", param.name);
+    let _ = writeln!(output, "param {} comptime={}", param.name, param.comptime);
     if let Some(annotation) = &param.annotation {
         write_indent(output, indent + 1);
         let _ = writeln!(output, "annotation");

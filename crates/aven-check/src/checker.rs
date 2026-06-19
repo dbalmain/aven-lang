@@ -34,6 +34,7 @@ pub(crate) struct Checker<'a> {
     comptime_artifacts: HashMap<String, bool>,
     comptime_specializations: HashMap<comptime::SpecializationKey, comptime::EvaluationResult>,
     local_types: LocalTypeScopes,
+    local_comptime_values: Vec<HashMap<String, comptime::ComptimeValue>>,
     bindings: HashMap<String, Option<&'a Binding>>,
     annotations: HashMap<String, &'a Expr>,
     memo: HashMap<String, TypeScheme>,
@@ -56,6 +57,7 @@ impl<'a> Checker<'a> {
             comptime_artifacts: HashMap::new(),
             comptime_specializations: HashMap::new(),
             local_types: LocalTypeScopes::default(),
+            local_comptime_values: Vec::new(),
             bindings: HashMap::new(),
             annotations: HashMap::new(),
             memo: HashMap::new(),
@@ -1385,6 +1387,7 @@ impl<'a> Checker<'a> {
         checker.comptime_bindings = self.comptime_bindings.clone();
         checker.comptime_artifacts = self.comptime_artifacts.clone();
         checker.comptime_specializations = self.comptime_specializations.clone();
+        checker.local_comptime_values = self.local_comptime_values.clone();
         checker.bindings = self.bindings.clone();
         checker.annotations = self.annotations.clone();
         checker
@@ -2564,6 +2567,115 @@ fn row_field_type<'a>(row: &'a Row, label: &str) -> Option<&'a Type> {
     }
 }
 
+fn collect_comptime_type_bindings(
+    annotation: &Expr,
+    actual: &Type,
+    bindings: &mut HashMap<String, comptime::ComptimeValue>,
+) {
+    match (&ungroup_expr(annotation).kind, actual) {
+        (ExprKind::Name(name), actual) => {
+            bindings.insert(
+                name.clone(),
+                comptime::ComptimeValue::ReifiedType(actual.clone()),
+            );
+        }
+        (
+            ExprKind::Index { callee, args },
+            Type::Apply {
+                callee: actual_callee,
+                args: actual_args,
+            },
+        ) if args.len() == actual_args.len() => {
+            collect_comptime_type_bindings(callee, actual_callee, bindings);
+            for (arg, actual_arg) in args.iter().zip(actual_args) {
+                collect_comptime_type_bindings(arg, actual_arg, bindings);
+            }
+        }
+        (ExprKind::Nullable(inner), Type::Nullable(actual_inner)) => {
+            collect_comptime_type_bindings(inner, actual_inner, bindings);
+        }
+        (ExprKind::Tuple(items), Type::Tuple(actual_items))
+            if items.len() == actual_items.len() =>
+        {
+            for (item, actual_item) in items.iter().zip(actual_items) {
+                collect_comptime_type_bindings(item, actual_item, bindings);
+            }
+        }
+        (
+            ExprKind::Arrow { params, result },
+            Type::Function {
+                params: actual_params,
+                result: actual_result,
+            },
+        ) if params.len() == actual_params.len() => {
+            for (param, actual_param) in params.iter().zip(actual_params) {
+                collect_comptime_type_bindings(param, actual_param, bindings);
+            }
+            collect_comptime_type_bindings(result, actual_result, bindings);
+        }
+        (ExprKind::Record(entries), Type::Record(row)) => {
+            collect_record_comptime_type_bindings(entries, row, bindings);
+        }
+        (ExprKind::Set(entries), Type::Variant(row)) => {
+            collect_variant_comptime_type_bindings(entries, row, bindings);
+        }
+        _ => {}
+    }
+}
+
+fn collect_record_comptime_type_bindings(
+    entries: &[RecordEntry],
+    row: &Row,
+    bindings: &mut HashMap<String, comptime::ComptimeValue>,
+) {
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { name, value, .. } => {
+                if let Some(field_ty) = row_field_type(row, name) {
+                    collect_comptime_type_bindings(value, field_ty, bindings);
+                }
+            }
+            RecordEntry::Spread { value, .. } => {
+                collect_comptime_type_bindings(value, &Type::Record(row.clone()), bindings);
+            }
+            RecordEntry::Shorthand { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. }
+            | RecordEntry::Element(_) => {}
+        }
+    }
+}
+
+fn collect_variant_comptime_type_bindings(
+    entries: &[RecordEntry],
+    row: &Row,
+    bindings: &mut HashMap<String, comptime::ComptimeValue>,
+) {
+    for (entry, row_entry) in entries.iter().zip(&row.entries) {
+        if let (RecordEntry::Element(expr), RowEntry::Tag { payload, .. }) = (entry, row_entry)
+            && let ExprKind::Call { args, .. } = &expr.kind
+        {
+            for (arg, actual) in args.iter().zip(payload) {
+                collect_comptime_type_bindings(arg, actual, bindings);
+            }
+        }
+    }
+}
+
+fn comptime_value_label(value: &comptime::ComptimeValue) -> Option<String> {
+    let Literal::String(text) = value.as_literal()? else {
+        return None;
+    };
+    string_literal_label(text)
+}
+
+fn string_literal_label(text: &str) -> Option<String> {
+    text.strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .map(str::to_owned)
+}
+
 fn literal_variant_payload<'a>(row: &'a Row, tag: &str) -> Option<&'a [Type]> {
     literal_variant_payload_lookup(row, tag).flatten()
 }
@@ -2846,6 +2958,7 @@ impl<'a> Checker<'a> {
                 body,
             } => self.infer_lambda(env, params, return_annotation.as_deref(), body),
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
+            ExprKind::Index { callee, args } => self.infer_value_index(env, callee, args),
             ExprKind::FieldAccess {
                 receiver, field, ..
             } => {
@@ -2882,7 +2995,6 @@ impl<'a> Checker<'a> {
             ExprKind::Match { subject, arms, .. } => self.infer_match(env, subject, arms),
             ExprKind::Missing
             | ExprKind::Literal(_)
-            | ExprKind::Index { .. }
             | ExprKind::Nullable(_)
             | ExprKind::Arrow { .. }
             | ExprKind::Propagate { .. } => Type::Deferred,
@@ -3093,6 +3205,10 @@ impl<'a> Checker<'a> {
             return self.infer_variant_constructor(env, tag, args);
         }
 
+        if let Some(result) = self.infer_comptime_param_call(env, callee, args) {
+            return result;
+        }
+
         let callee_type = self.infer(env, callee);
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
         let result_type = self.unifier.fresh();
@@ -3106,6 +3222,144 @@ impl<'a> Checker<'a> {
         } else {
             result_type
         }
+    }
+
+    fn infer_comptime_param_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let (params, body) = self.comptime_param_function(callee)?;
+        if params.len() != args.len() {
+            return Some(Type::Deferred);
+        }
+
+        let mut type_bindings = HashMap::new();
+        let mut body_env = TypeEnv::new();
+
+        for (param, arg) in params.iter().zip(args).filter(|(param, _)| !param.comptime) {
+            let inferred = self.infer(env, arg);
+            let actual = self.normalize(&self.resolve_and_default(&inferred));
+
+            if let Some(annotation) = &param.annotation {
+                collect_comptime_type_bindings(annotation, &actual, &mut type_bindings);
+                let expected = self.lower_annotation_for_inference(annotation);
+                if self.unifier.unify(&expected, &actual).is_err() {
+                    return Some(Type::Deferred);
+                }
+            }
+
+            body_env.insert(param.name.clone(), LocalValueType::Known(actual));
+        }
+
+        let runtime_value_bindings = self.current_comptime_value_bindings();
+        let mut body_comptime_values = HashMap::new();
+
+        for (param, arg) in params.iter().zip(args).filter(|(param, _)| param.comptime) {
+            let value =
+                match comptime::evaluate_runtime_value(arg, &runtime_value_bindings).evaluation {
+                    Evaluation::Evaluated(value) => value,
+                    Evaluation::Deferred | Evaluation::Unsupported => return Some(Type::Deferred),
+                };
+
+            let domain = param.annotation.as_ref().and_then(|annotation| {
+                self.evaluate_comptime_param_domain(annotation, &type_bindings)
+            });
+
+            if let (Some(Type::Variant(row)), Some(literal)) = (&domain, value.as_literal()) {
+                self.check_literal_value_against_variant(row, literal, arg.span);
+            }
+
+            let value_type = value
+                .clone()
+                .reify_type_position()
+                .into_reified_type()
+                .or(domain)
+                .unwrap_or(Type::Deferred);
+
+            body_env.insert(param.name.clone(), LocalValueType::Known(value_type));
+            body_comptime_values.insert(param.name.clone(), value.clone());
+        }
+
+        self.local_comptime_values.push(body_comptime_values);
+        let result = self.infer(&body_env, body);
+        self.local_comptime_values.pop();
+
+        Some(self.resolve_and_default(&result))
+    }
+
+    fn comptime_param_function(&self, callee: &Expr) -> Option<(&'a [Param], &'a Expr)> {
+        let name = expr_name(callee)?;
+        let binding = (*self.bindings.get(name)?)?;
+        let (params, body) = lambda_parts(&binding.value)?;
+        params
+            .iter()
+            .any(|param| param.comptime)
+            .then_some((params, body))
+    }
+
+    fn evaluate_comptime_param_domain(
+        &mut self,
+        annotation: &Expr,
+        type_bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<Type> {
+        let evaluation =
+            comptime::evaluate_type_position_with_bindings(self, annotation, type_bindings);
+        self.diagnostics.extend(evaluation.diagnostics);
+
+        match evaluation.evaluation {
+            Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
+            Evaluation::Deferred | Evaluation::Unsupported => None,
+        }
+    }
+
+    fn infer_value_index(&mut self, env: &TypeEnv, callee: &Expr, args: &[Expr]) -> Type {
+        let [arg] = args else {
+            return Type::Deferred;
+        };
+
+        let callee_type = self.infer(env, callee);
+        let callee_type = self.normalize(&self.unifier.resolve(&callee_type));
+        let Type::Record(row) = callee_type else {
+            return Type::Deferred;
+        };
+        if row.tail != RowTail::Closed {
+            return Type::Deferred;
+        }
+
+        let Some(label) = self.comptime_known_label(arg) else {
+            return Type::Deferred;
+        };
+
+        row_field_type(&row, &label)
+            .cloned()
+            .unwrap_or(Type::Deferred)
+    }
+
+    fn comptime_known_label(&self, expr: &Expr) -> Option<String> {
+        match &ungroup_expr(expr).kind {
+            ExprKind::Literal(Literal::String(text)) => string_literal_label(text),
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => self
+                .lookup_comptime_value(name)
+                .and_then(comptime_value_label),
+            _ => None,
+        }
+    }
+
+    fn lookup_comptime_value(&self, name: &str) -> Option<&comptime::ComptimeValue> {
+        self.local_comptime_values
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+    }
+
+    fn current_comptime_value_bindings(&self) -> HashMap<String, comptime::ComptimeValue> {
+        let mut bindings = HashMap::new();
+        for scope in &self.local_comptime_values {
+            bindings.extend(scope.clone());
+        }
+        bindings
     }
 
     fn infer_name_reference(&mut self, env: &TypeEnv, name: &str) -> Type {
@@ -3368,6 +3622,13 @@ impl<'a> comptime::EvalContext<'a> for Checker<'a> {
 fn lambda_parts(expr: &Expr) -> Option<(&[Param], &Expr)> {
     match &ungroup_expr(expr).kind {
         ExprKind::Lambda { params, body, .. } => Some((params, body)),
+        _ => None,
+    }
+}
+
+fn expr_name(expr: &Expr) -> Option<&str> {
+    match &ungroup_expr(expr).kind {
+        ExprKind::Name(name) => Some(name),
         _ => None,
     }
 }

@@ -55,6 +55,7 @@ pub mod parse {
     pub const MISSING_MATCH_BODY: &str = "parse.missing-match-body";
     pub const SINGLE_ITEM_TUPLE: &str = "parse.single-item-tuple";
     pub const UNCLOSED_DELIMITER: &str = "parse.unclosed-delimiter";
+    pub const UNEXPECTED_COMPTIME_MARKER: &str = "parse.unexpected-comptime-marker";
     pub const UNEXPECTED_DELIMITER: &str = "parse.unexpected-delimiter";
     pub const UNEXPECTED_INDENTATION: &str = "parse.unexpected-indentation";
     pub const UNEXPECTED_SEPARATOR: &str = "parse.unexpected-separator";
@@ -117,6 +118,7 @@ pub const ALL: &[&str] = &[
     parse::MISSING_MATCH_BODY,
     parse::SINGLE_ITEM_TUPLE,
     parse::UNCLOSED_DELIMITER,
+    parse::UNEXPECTED_COMPTIME_MARKER,
     parse::UNEXPECTED_DELIMITER,
     parse::UNEXPECTED_INDENTATION,
     parse::UNEXPECTED_SEPARATOR,

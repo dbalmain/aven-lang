@@ -1,0 +1,3 @@
+error parse.unexpected-comptime-marker: unexpected comptime parameter marker
+  label 8..12: `@` marker used outside a parameter declaration
+  note: comptime markers belong on lambda parameter declarations, for example `(@key: Keys) => key`

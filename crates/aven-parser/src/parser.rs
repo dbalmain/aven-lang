@@ -37,6 +37,7 @@ pub struct Signature {
 pub struct Param {
     pub name: String,
     pub name_span: Span,
+    pub comptime: bool,
     /// Optional `: type` ascription, parsed as an ordinary expression.
     pub annotation: Option<Expr>,
     pub span: Span,
@@ -628,6 +629,35 @@ impl Parser<'_> {
                     params.push(Param {
                         name,
                         name_span,
+                        comptime: false,
+                        annotation,
+                        span,
+                    });
+                }
+                Some(Token {
+                    kind: TokenKind::ComptimeParamMarker(name),
+                    span,
+                }) => {
+                    let name = name.clone();
+                    let marker_span = *span;
+                    let name_span = Span::new(marker_span.start + 1, marker_span.end);
+                    self.advance();
+
+                    let annotation = if self.current_is_operator(":") {
+                        self.advance();
+                        Some(self.parse_annotation_term())
+                    } else {
+                        None
+                    };
+
+                    let span = annotation
+                        .as_ref()
+                        .map_or(marker_span, |term| marker_span.merge(term.span));
+
+                    params.push(Param {
+                        name,
+                        name_span,
+                        comptime: true,
                         annotation,
                         span,
                     });
@@ -959,6 +989,11 @@ impl Parser<'_> {
                     span: token.span,
                 }
             }
+            TokenKind::ComptimeParamMarker(_) => {
+                self.report_unexpected_comptime_marker(token.span);
+                self.advance();
+                missing_expr(token.span)
+            }
             TokenKind::Tag(name) => {
                 self.advance();
                 Expr {
@@ -1168,6 +1203,15 @@ impl Parser<'_> {
     }
 
     fn parse_record_entry(&mut self, mode: EntryMode) -> Option<RecordEntry> {
+        if matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::ComptimeParamMarker(_))
+        ) {
+            self.report_unexpected_comptime_marker(self.current_span());
+            self.recover_record_entry();
+            return None;
+        }
+
         if mode == EntryMode::Record
             && matches!(
                 self.current().map(|token| &token.kind),
@@ -1657,6 +1701,15 @@ impl Parser<'_> {
                 .with_code(codes::parse::UNEXPECTED_SEPARATOR)
                 .with_label(Label::primary(span, "extra separator"))
                 .with_note("remove the extra `,` or `;`"),
+        );
+    }
+
+    fn report_unexpected_comptime_marker(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("unexpected comptime parameter marker")
+                .with_code(codes::parse::UNEXPECTED_COMPTIME_MARKER)
+                .with_label(Label::primary(span, "`@` marker used outside a parameter declaration"))
+                .with_note("comptime markers belong on lambda parameter declarations, for example `(@key: Keys) => key`"),
         );
     }
 

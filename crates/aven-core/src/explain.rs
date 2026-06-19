@@ -155,6 +155,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A delimiter such as (, [, {, or @{ was opened but not closed. Add the matching closing delimiter.",
     },
     DiagnosticExplanation {
+        code: codes::parse::UNEXPECTED_COMPTIME_MARKER,
+        text: "The @ comptime marker is declaration-only. Use it only before a lowercase parameter name in a lambda parameter list, and refer to that parameter by its ordinary name in the body.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::UNEXPECTED_DELIMITER,
         text: "A closing delimiter appeared where no matching opener was active. Remove it or add the missing opener.",
     },

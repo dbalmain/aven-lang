@@ -10,7 +10,7 @@
 36..37 newline
 37..43 doc_comment ` doc`
 43..44 newline
-44..53 label `@std/Text`
-53..54 newline
-54..57 tag `@Ok`
-57..58 newline
+44..48 comptime_param `@key`
+48..49 newline
+49..52 tag `@Ok`
+52..53 newline

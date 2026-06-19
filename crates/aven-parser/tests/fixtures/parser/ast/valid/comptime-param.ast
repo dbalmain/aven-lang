@@ -1,0 +1,23 @@
+module
+  binding get
+    value
+      lambda
+        params
+          param o comptime=false
+            annotation
+              record
+                spread overwrite=false
+                  name r
+          param key comptime=true
+            annotation
+              call
+                callee
+                  name keysOf
+                args
+                  name r
+        body
+          index
+            callee
+              name o
+            args
+              name key

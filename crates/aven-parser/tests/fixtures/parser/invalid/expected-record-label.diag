@@ -1,3 +1,3 @@
 error parse.expected-record-label: expected record label
-  label 8..17: expected a field name here
+  label 16..17: expected a field name here
   note: use a bare field name such as `password` or `fullName`

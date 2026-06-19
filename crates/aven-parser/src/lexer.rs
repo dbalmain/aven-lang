@@ -29,6 +29,7 @@ impl Token {
 pub enum TokenKind {
     Identifier(String),
     ComptimeIdentifier(String),
+    ComptimeParamMarker(String),
     Number(String),
     StringLiteral(String),
     RegexLiteral(String),
@@ -58,6 +59,7 @@ impl TokenKind {
         match self {
             Self::Identifier(name) => format!("identifier `{name}`"),
             Self::ComptimeIdentifier(name) => format!("comptime_identifier `{name}`"),
+            Self::ComptimeParamMarker(name) => format!("comptime_param `@{name}`"),
             Self::Number(number) => format!("number `{number}`"),
             Self::StringLiteral(text) => format!("string `{text}`"),
             Self::RegexLiteral(regex) => format!("regex `{regex}`"),
@@ -403,11 +405,12 @@ impl Lexer<'_> {
             return;
         }
 
-        while self.current_byte() == Some(b'/')
-            && self.peek_byte(1).is_some_and(is_identifier_start_byte)
-        {
-            self.offset += 1;
-            self.scan_label_segment();
+        if self.source.as_bytes()[start + 1].is_ascii_lowercase() {
+            self.push(
+                TokenKind::ComptimeParamMarker(self.source[start + 1..self.offset].to_owned()),
+                Span::new(start, self.offset),
+            );
+            return;
         }
 
         self.push(

@@ -255,7 +255,9 @@ fn signature_semantic_style(signature: &aven_parser::Signature) -> SemanticStyle
 
 fn semantic_style_for_token(kind: &aven_parser::TokenKind) -> Option<SemanticStyle> {
     let token_type = match kind {
-        aven_parser::TokenKind::Identifier(_) => TOKEN_VARIABLE,
+        aven_parser::TokenKind::Identifier(_) | aven_parser::TokenKind::ComptimeParamMarker(_) => {
+            TOKEN_VARIABLE
+        }
         aven_parser::TokenKind::ComptimeIdentifier(_) => TOKEN_TYPE,
         aven_parser::TokenKind::Number(_) => TOKEN_NUMBER,
         aven_parser::TokenKind::StringLiteral(_) | aven_parser::TokenKind::PathLiteral(_) => {
@@ -350,7 +352,7 @@ mod tests {
              value = (item) => item + 1\n\
              path = ./data.json\n\
              regex = /a+/\n\
-             label = @std/Text\n"
+             tag = @Ok\n"
                 .to_owned(),
         );
         let tokens = decoded_semantic_tokens(&document);
@@ -459,8 +461,8 @@ mod tests {
             &tokens,
             DecodedSemanticToken {
                 line: 5,
-                start: 8,
-                length: 9,
+                start: 6,
+                length: 3,
                 token_type: "property",
                 modifiers: 0,
             },

@@ -2217,6 +2217,49 @@ fn field_access_row_variables_are_freshened_for_each_use() {
 }
 
 #[test]
+fn computed_value_index_with_literal_key_infers_concrete_record_field_type() {
+    let output = parse_module("user = { name: \"Ada\", age: 36 }\nname = user[\"name\"]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(checker.infer_top_level_value("name"), Some(named("Text")));
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn computed_value_index_with_runtime_key_defers_without_diagnostic() {
+    let output = parse_module("user = { name: \"Ada\" }\nkey = \"name\"\nvalue = user[key]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker
+            .infer_top_level_scheme("value")
+            .map(|scheme| scheme.ty),
+        Some(Type::Deferred)
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn computed_value_index_with_non_record_receiver_defers_without_diagnostic() {
+    let output = parse_module("text = \"Ada\"\nvalue = text[\"name\"]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker
+            .infer_top_level_scheme("value")
+            .map(|scheme| scheme.ty),
+        Some(Type::Deferred)
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
 fn missing_inferred_field_defers_without_a_type_mismatch() {
     let output = parse_module("getX = (p) => p.x\nvalue = getX({ y: 2 })\n");
     let check = check_module(&output.module);

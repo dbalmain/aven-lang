@@ -1340,12 +1340,18 @@ Slices:
     `Type::Apply` meaning of the same node). The result type flows into inference
     (M11). Membership guarantees the field exists, so access is exact (no
     nullability in this slice).
-  - Out of scope (later slices): record comprehensions (`{ keys -> k; ... }`),
-    `pick`/`omit`, key-**union** access (`o[k]` over a key set → field-type
-    union), runtime-`Text`-key access (→ nullable), computed transforms
-    (`[k]=v`, `-[k]`, `[k]->[k2]`), other reflection functions.
+	  - Out of scope (later slices): record comprehensions (`{ keys -> k; ... }`),
+	    `pick`/`omit`, key-**union** access (`o[k]` over a key set → field-type
+	    union), runtime-`Text`-key access (→ nullable), computed transforms
+	    (`[k]=v`, `-[k]`, `[k]->[k2]`), other reflection functions.
+	  Done: `aven-parser` now treats `@lowercase` as a declaration-only comptime
+	  parameter marker with structured recovery, `aven-fmt` round-trips `@key`,
+	  and `aven-check` evaluates literal comptime arguments, specializes
+	  `keysOf(r)` domains from runtime argument types, reuses literal-union
+	  membership for out-of-domain keys, and infers exact field types for
+	  single computed-key record access when the key is comptime-known.
 
-Done when:
+	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field
   names, usable as a type, with no `Deferred` and no
