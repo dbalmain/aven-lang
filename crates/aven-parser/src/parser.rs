@@ -171,7 +171,7 @@ pub enum RecordEntry {
     Element(Expr),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Literal {
     Number(String),
     String(String),

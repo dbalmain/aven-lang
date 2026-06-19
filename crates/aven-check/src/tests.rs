@@ -380,6 +380,53 @@ fn comptime_keysof_non_concrete_subject_defers_without_diagnostic() {
 }
 
 #[test]
+fn comptime_function_application_reifies_sorted_literal_union() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\nkeyUnion = (r) => keysOf(r)\nKeys = keyUnion(User)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("Keys"),
+        Some(&Type::Variant(Row {
+            entries: vec![literal_string("\"email\""), literal_string("\"name\"")],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_function_application_non_concrete_argument_defers_without_diagnostic() {
+    let output = parse_module("keyUnion = (r) => keysOf(r)\nKeys = keyUnion(t)\n");
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(definitions.get("Keys"), Some(&Type::Deferred));
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_function_application_reports_recursion_cycle() {
+    let output = parse_module("loop = (r) => loop(r)\nUser = { name: Text }\nKeys = loop(User)\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_CYCLE),
+        1
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+        0
+    );
+}
+
+#[test]
 fn allows_constructor_guarded_recursive_types() {
     let output = parse_module("Tree = { value: Int, children: Tree }\n");
     let check = check_module(&output.module);

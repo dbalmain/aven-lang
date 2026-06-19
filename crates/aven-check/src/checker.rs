@@ -32,6 +32,7 @@ pub(crate) struct Checker<'a> {
     value_types: HashMap<String, Option<TypeScheme>>,
     comptime_bindings: HashSet<String>,
     comptime_artifacts: HashMap<String, bool>,
+    comptime_specializations: HashMap<comptime::SpecializationKey, comptime::EvaluationResult>,
     local_types: LocalTypeScopes,
     bindings: HashMap<String, Option<&'a Binding>>,
     annotations: HashMap<String, &'a Expr>,
@@ -53,6 +54,7 @@ impl<'a> Checker<'a> {
             value_types: HashMap::new(),
             comptime_bindings: HashSet::new(),
             comptime_artifacts: HashMap::new(),
+            comptime_specializations: HashMap::new(),
             local_types: LocalTypeScopes::default(),
             bindings: HashMap::new(),
             annotations: HashMap::new(),
@@ -64,13 +66,22 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(crate) fn with_module(
+    pub(crate) fn with_module_environment(
         known_types: HashSet<String>,
         type_definitions: HashMap<String, Type>,
         module: &'a Module,
     ) -> Self {
         let mut checker = Self::with_type_definitions(known_types, type_definitions);
         checker.collect_top_level_environment(module);
+        checker
+    }
+
+    pub(crate) fn with_module(
+        known_types: HashSet<String>,
+        type_definitions: HashMap<String, Type>,
+        module: &'a Module,
+    ) -> Self {
+        let mut checker = Self::with_module_environment(known_types, type_definitions, module);
         checker.build_value_types(module);
         checker.build_comptime_artifacts(module);
         checker
@@ -354,8 +365,7 @@ impl<'a> Checker<'a> {
     }
 
     fn lower_clean_normalized_type(&self, value: &Expr) -> Option<Type> {
-        let mut checker =
-            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        let mut checker = self.fork_annotation_checker();
         let lowering = checker.lower_annotation_with_diagnostics(value);
         lowering
             .diagnostics
@@ -1251,24 +1261,13 @@ impl<'a> Checker<'a> {
     }
 
     fn try_lower_comptime_annotation(&mut self, annotation: &Expr) -> Option<Type> {
-        let arg = comptime::keys_of_argument(annotation)?;
-        let start = self.diagnostics.len();
-        let subject = self.lower_annotation(arg);
-        if self.diagnostics.len() > start {
-            return Some(Type::Deferred);
-        }
-
-        let subject = self.normalize(&subject);
-        let evaluation = comptime::evaluate_keys_of(
-            &subject,
-            arg.span,
-            self.reflection_subject_is_unresolved(&subject),
-        );
+        let evaluation = comptime::evaluate_type_position(self, annotation);
         self.diagnostics.extend(evaluation.diagnostics);
 
         match evaluation.evaluation {
             Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
             Evaluation::Deferred => Some(Type::Deferred),
+            Evaluation::Unsupported => None,
         }
     }
 
@@ -1378,6 +1377,17 @@ impl<'a> Checker<'a> {
                 value: value.clone(),
             },
         }
+    }
+
+    fn fork_annotation_checker(&self) -> Checker<'a> {
+        let mut checker =
+            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        checker.comptime_bindings = self.comptime_bindings.clone();
+        checker.comptime_artifacts = self.comptime_artifacts.clone();
+        checker.comptime_specializations = self.comptime_specializations.clone();
+        checker.bindings = self.bindings.clone();
+        checker.annotations = self.annotations.clone();
+        checker
     }
 
     pub(crate) fn lower_annotation(&mut self, annotation: &Expr) -> Type {
@@ -2774,8 +2784,7 @@ impl<'a> Checker<'a> {
 
     fn clean_declared_annotation(&self, name: &str) -> Option<Type> {
         let annotation = *self.annotations.get(name)?;
-        let mut checker =
-            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        let mut checker = self.fork_annotation_checker();
         let lowering = checker.lower_annotation_with_diagnostics(annotation);
         if lowering.diagnostics.is_empty() {
             Some(checker.normalize(&lowering.ty))
@@ -3307,9 +3316,65 @@ impl<'a> Checker<'a> {
     }
 
     fn lower_annotation_for_inference(&self, annotation: &Expr) -> Type {
-        let mut checker =
-            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        let mut checker = self.fork_annotation_checker();
         let ty = checker.lower_annotation(annotation);
         checker.normalize(&ty)
     }
+}
+
+impl<'a> comptime::EvalContext<'a> for Checker<'a> {
+    fn lower_comptime_type(&mut self, expr: &Expr) -> comptime::LoweredType {
+        let start = self.diagnostics.len();
+        let ty = self.lower_annotation(expr);
+        let diagnostics = self.diagnostics.split_off(start);
+
+        comptime::LoweredType {
+            ty: self.normalize(&ty),
+            diagnostics,
+        }
+    }
+
+    fn lookup_comptime_function(&self, name: &str) -> Option<comptime::ComptimeFunction<'a>> {
+        let binding = (*self.bindings.get(name)?)?;
+        let (params, body) = lambda_parts(&binding.value)?;
+
+        Some(comptime::ComptimeFunction {
+            name: &binding.name,
+            params,
+            body,
+        })
+    }
+
+    fn cached_specialization(
+        &self,
+        key: &comptime::SpecializationKey,
+    ) -> Option<comptime::EvaluationResult> {
+        self.comptime_specializations.get(key).cloned()
+    }
+
+    fn cache_specialization(
+        &mut self,
+        key: comptime::SpecializationKey,
+        result: comptime::EvaluationResult,
+    ) {
+        self.comptime_specializations.insert(key, result);
+    }
+
+    fn type_is_unresolved(&self, ty: &Type) -> bool {
+        self.reflection_subject_is_unresolved(ty)
+    }
+}
+
+fn lambda_parts(expr: &Expr) -> Option<(&[Param], &Expr)> {
+    match &ungroup_expr(expr).kind {
+        ExprKind::Lambda { params, body, .. } => Some((params, body)),
+        _ => None,
+    }
+}
+
+fn ungroup_expr(mut expr: &Expr) -> &Expr {
+    while let ExprKind::Group(inner) = &expr.kind {
+        expr = inner;
+    }
+    expr
 }

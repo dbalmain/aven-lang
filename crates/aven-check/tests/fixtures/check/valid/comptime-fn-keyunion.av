@@ -1,0 +1,4 @@
+User = { name: Text, email: Text }
+keyUnion = (r) => keysOf(r)
+Keys = keyUnion(User)
+k : Keys = "name"

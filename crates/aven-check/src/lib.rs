@@ -67,7 +67,7 @@ pub fn check_module(module: &Module) -> CheckOutput {
 pub fn lower_annotation(module: &Module, annotation: &Expr) -> TypeLowering {
     let known_types = known_type_names(module);
     let type_definitions = type_definitions(module, &known_types);
-    let mut checker = Checker::with_type_definitions(known_types, type_definitions);
+    let mut checker = Checker::with_module_environment(known_types, type_definitions, module);
 
     checker.lower_annotation_with_diagnostics(annotation)
 }

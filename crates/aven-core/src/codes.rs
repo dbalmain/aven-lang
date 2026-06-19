@@ -8,6 +8,8 @@
 //! constants are added is the manual step the compiler cannot check.
 
 pub mod comptime {
+    pub const EVALUATION_CYCLE: &str = "comptime.evaluation-cycle";
+    pub const EVALUATION_LIMIT: &str = "comptime.evaluation-limit";
     pub const EVALUATION_UNSUPPORTED: &str = "comptime.evaluation-unsupported";
     pub const NON_LIFTABLE_INTO_RUNTIME: &str = "comptime.non-liftable-into-runtime";
     pub const REFLECTION_TYPE_MISMATCH: &str = "comptime.reflection-type-mismatch";
@@ -80,6 +82,8 @@ pub mod ty {
 }
 
 pub const ALL: &[&str] = &[
+    comptime::EVALUATION_CYCLE,
+    comptime::EVALUATION_LIMIT,
     comptime::EVALUATION_UNSUPPORTED,
     comptime::NON_LIFTABLE_INTO_RUNTIME,
     comptime::REFLECTION_TYPE_MISMATCH,

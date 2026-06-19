@@ -1,0 +1,3 @@
+error comptime.evaluation-cycle: comptime evaluation cycle while specializing `loop`
+  label 14..21: this comptime specialization recursively depends on itself
+  note: comptime function specialization is memoized by function and comptime argument tuple; recursive specializations must bottom out before repeating the same tuple

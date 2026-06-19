@@ -4,7 +4,7 @@ use aven_parser::{Expr, ExprKind, Literal};
 
 use crate::CHECKED_NAMED_TYPES;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     /// A type expression that is valid to keep for a later comptime/type phase
     /// but is not part of the core lowered type grammar yet.
@@ -52,13 +52,13 @@ impl TypeScheme {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Row {
     pub entries: Vec<RowEntry>,
     pub tail: RowTail,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RowEntry {
     Field {
         name: String,
@@ -74,7 +74,7 @@ pub enum RowEntry {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RowTail {
     Closed,
     Open,

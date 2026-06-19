@@ -15,6 +15,14 @@ pub fn explain(code: &str) -> Option<DiagnosticExplanation> {
 
 const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
+        code: codes::comptime::EVALUATION_CYCLE,
+        text: "A compile-time function specialization recursively depends on the same function and compile-time argument tuple while that result is still being evaluated. Rewrite the function so recursive specializations bottom out before repeating the same tuple.",
+    },
+    DiagnosticExplanation {
+        code: codes::comptime::EVALUATION_LIMIT,
+        text: "Compile-time evaluation exceeded the evaluator's fuel budget. Simplify the compile-time computation or make recursion terminate in fewer specialization steps.",
+    },
+    DiagnosticExplanation {
         code: codes::comptime::EVALUATION_UNSUPPORTED,
         text: "A compile-time binding has a right-hand side that must be evaluated, but the compile-time evaluator is not implemented yet. Use a literal type or value, or move runtime computations to lowercase bindings.",
     },

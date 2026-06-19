@@ -45,8 +45,11 @@ impl AnnotationLowerer {
         declaration: &aven_parser::Declaration,
     ) -> Option<DeclaredAnnotation> {
         let source = declared_annotation_for_declaration(module, declaration)?;
-        let mut checker =
-            Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
+        let mut checker = Checker::with_module_environment(
+            self.known_types.clone(),
+            self.type_definitions.clone(),
+            module,
+        );
 
         Some(checker.lower_declared_annotation(source))
     }
@@ -78,7 +81,8 @@ pub(crate) fn type_definitions(
         .collect();
 
     for _ in 0..=declarations.len() {
-        let mut checker = Checker::with_type_definitions(known_types.clone(), definitions.clone());
+        let mut checker =
+            Checker::with_module_environment(known_types.clone(), definitions.clone(), module);
         let mut next = HashMap::new();
 
         for declaration in &declarations {

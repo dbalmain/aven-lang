@@ -1306,6 +1306,11 @@ Slices:
   `reify_type_position`). Out of scope: `@param` marker, parser changes,
   runtime-position specialization, computed keys, comprehensions, general
   value-parameter specialization (all → M16.3).
+  Done: `aven-check` now specializes top-level lambda bindings in type-position
+  calls, threads a minimal comptime parameter environment through bodies,
+  memoizes by function and comptime argument tuple, reports bounded recursion
+  with `comptime.evaluation-cycle` / `comptime.evaluation-limit`, and reifies
+  `keyUnion(User)`-style results to concrete literal unions.
 
 Done when:
 
