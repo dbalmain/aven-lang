@@ -1,0 +1,3 @@
+error comptime.reflection-type-mismatch: reflection function `keysOf` expected a record type
+  label 13..16: this type is not a record
+  note: `keysOf` needs a record type

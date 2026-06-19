@@ -1,4 +1,5 @@
 mod checker;
+mod comptime;
 mod env;
 mod lower;
 mod ty;

@@ -1,0 +1,3 @@
+error type.literal-not-in-union: literal "phone" is not one of "email" | "name"
+  label 74..81: this literal is not allowed by the annotation
+  note: use one of "email" | "name", or change the literal-union annotation

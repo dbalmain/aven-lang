@@ -1,0 +1,3 @@
+User = { name: Text, email: Text }
+UserKey = keysOf(User)
+k : UserKey = "name"

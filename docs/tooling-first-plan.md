@@ -1279,6 +1279,10 @@ Slices:
   in `aven-check`. `keysOf` on a non-record concrete type is a structured
   diagnostic; a non-concrete argument defers (M11 discipline). No `@param`, no
   specialization, no other reflection functions yet.
+  Done: `aven-check` now evaluates `keysOf(<closed record type>)` in comptime
+  type position, reifies the sorted field-name set as a closed literal-union
+  variant, defers non-concrete subjects without diagnostics, and reports
+  `comptime.reflection-type-mismatch` for concrete non-record subjects.
 
 Done when:
 

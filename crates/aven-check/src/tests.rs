@@ -332,6 +332,54 @@ fn comptime_rhs_evaluation_diagnostic_is_suppressed_after_child_diagnostic() {
 }
 
 #[test]
+fn comptime_keysof_record_reifies_sorted_literal_union() {
+    let output = parse_module("User = { name: Text, email: Text }\nUserKey = keysOf(User)\n");
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("UserKey"),
+        Some(&Type::Variant(Row {
+            entries: vec![literal_string("\"email\""), literal_string("\"name\"")],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_keysof_non_record_reports_reflection_mismatch() {
+    let output = parse_module("Key = keysOf(Int)\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(
+            &check.diagnostics,
+            codes::comptime::REFLECTION_TYPE_MISMATCH
+        ),
+        1
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+        0
+    );
+}
+
+#[test]
+fn comptime_keysof_non_concrete_subject_defers_without_diagnostic() {
+    let output = parse_module("Key = keysOf(r)\n");
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(definitions.get("Key"), Some(&Type::Deferred));
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
 fn allows_constructor_guarded_recursive_types() {
     let output = parse_module("Tree = { value: Int, children: Tree }\n");
     let check = check_module(&output.module);

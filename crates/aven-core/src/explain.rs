@@ -23,6 +23,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A lowercase runtime binding tried to store a compile-time-only artifact such as a type. Keep type artifacts under capitalized names, or compute a runtime-representable value instead.",
     },
     DiagnosticExplanation {
+        code: codes::comptime::REFLECTION_TYPE_MISMATCH,
+        text: "A compile-time reflection function was applied to a concrete type it cannot inspect. Pass the kind of type the reflection function expects, or leave the expression deferred until the subject type is known.",
+    },
+    DiagnosticExplanation {
         code: codes::layout::INCONSISTENT_INDENTATION,
         text: "A line dedented to a column that does not match an open layout block. Align it with an existing block level or change the surrounding indentation.",
     },

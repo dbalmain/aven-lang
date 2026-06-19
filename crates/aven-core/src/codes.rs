@@ -10,6 +10,7 @@
 pub mod comptime {
     pub const EVALUATION_UNSUPPORTED: &str = "comptime.evaluation-unsupported";
     pub const NON_LIFTABLE_INTO_RUNTIME: &str = "comptime.non-liftable-into-runtime";
+    pub const REFLECTION_TYPE_MISMATCH: &str = "comptime.reflection-type-mismatch";
 }
 
 pub mod layout {
@@ -81,6 +82,7 @@ pub mod ty {
 pub const ALL: &[&str] = &[
     comptime::EVALUATION_UNSUPPORTED,
     comptime::NON_LIFTABLE_INTO_RUNTIME,
+    comptime::REFLECTION_TYPE_MISMATCH,
     layout::INCONSISTENT_INDENTATION,
     lex::LEADING_BOM,
     lex::RESERVED_OPERATOR,

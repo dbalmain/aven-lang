@@ -7,7 +7,9 @@ use aven_parser::{
     walk_expr_children,
 };
 
+use crate::BUILTIN_TYPES;
 use crate::InferredType;
+use crate::comptime::{self, Evaluation};
 use crate::env::{
     LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values,
     free_row_vars_in_local_values,
@@ -260,6 +262,10 @@ impl<'a> Checker<'a> {
 
     fn check_comptime_binding_evaluation_support(&mut self, value: &Expr) {
         if !comptime_rhs_needs_evaluation(value) {
+            return;
+        }
+
+        if self.try_lower_comptime_annotation(value).is_some() {
             return;
         }
 
@@ -1244,6 +1250,62 @@ impl<'a> Checker<'a> {
         TypeLowering { ty, diagnostics }
     }
 
+    fn try_lower_comptime_annotation(&mut self, annotation: &Expr) -> Option<Type> {
+        let arg = comptime::keys_of_argument(annotation)?;
+        let start = self.diagnostics.len();
+        let subject = self.lower_annotation(arg);
+        if self.diagnostics.len() > start {
+            return Some(Type::Deferred);
+        }
+
+        let subject = self.normalize(&subject);
+        let evaluation = comptime::evaluate_keys_of(
+            &subject,
+            arg.span,
+            self.reflection_subject_is_unresolved(&subject),
+        );
+        self.diagnostics.extend(evaluation.diagnostics);
+
+        match evaluation.evaluation {
+            Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
+            Evaluation::Deferred => Some(Type::Deferred),
+        }
+    }
+
+    fn reflection_subject_is_unresolved(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
+            Type::Named(name) => !BUILTIN_TYPES.contains(&name.as_str()),
+            Type::Apply { callee, args } => {
+                self.reflection_subject_is_unresolved(callee)
+                    || args
+                        .iter()
+                        .any(|arg| self.reflection_subject_is_unresolved(arg))
+            }
+            Type::Function { params, result } => {
+                params
+                    .iter()
+                    .any(|param| self.reflection_subject_is_unresolved(param))
+                    || self.reflection_subject_is_unresolved(result)
+            }
+            Type::Nullable(inner) => self.reflection_subject_is_unresolved(inner),
+            Type::Tuple(items) => items
+                .iter()
+                .any(|item| self.reflection_subject_is_unresolved(item)),
+            Type::Record(row) => row.tail != RowTail::Closed,
+            Type::Variant(row) => {
+                row.tail != RowTail::Closed
+                    || row.entries.iter().any(|entry| match entry {
+                        RowEntry::Tag { payload, .. } => payload
+                            .iter()
+                            .any(|ty| self.reflection_subject_is_unresolved(ty)),
+                        RowEntry::Field { ty, .. } => self.reflection_subject_is_unresolved(ty),
+                        RowEntry::Literal { .. } => false,
+                    })
+            }
+        }
+    }
+
     fn normalize(&self, ty: &Type) -> Type {
         self.normalize_with_visited(ty, HashSet::new())
     }
@@ -1338,12 +1400,17 @@ impl<'a> Checker<'a> {
             ExprKind::Tuple(items) => Type::Tuple(self.lower_annotations(items)),
             ExprKind::Record(entries) => self.lower_row_entries(entries, RowKind::Record),
             ExprKind::Set(entries) => self.lower_row_entries(entries, RowKind::Variant),
+            ExprKind::Call { .. } => self
+                .try_lower_comptime_annotation(annotation)
+                .unwrap_or_else(|| {
+                    self.lower_deferred_annotation(annotation);
+                    Type::Deferred
+                }),
             ExprKind::Missing => Type::Deferred,
             ExprKind::Literal(_)
             | ExprKind::Tag(_)
             | ExprKind::Array(_)
             | ExprKind::FieldAccess { .. }
-            | ExprKind::Call { .. }
             | ExprKind::Binary { .. }
             | ExprKind::Unary { .. }
             | ExprKind::Propagate { .. }
