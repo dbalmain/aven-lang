@@ -1228,6 +1228,14 @@ Slices:
   tag+literal entries in one set get an honest diagnostic (homogeneous for now).
   Bare-literal value inference is unchanged.
 
+- 15.2 — literal-union match exhaustiveness: when a `?>` match subject has a
+  closed literal-union type, require each member literal to be covered by a
+  literal-pattern arm or a `_` catch-all, reusing the existing closed-variant
+  exhaustiveness path (`type.non-exhaustive-match`). A literal-pattern arm covers
+  its member; an arm matching a literal outside the subject union is reported as
+  unreachable. Open literal unions require `_` (same as open variants). Scope is
+  exhaustiveness/coverage only — no new inference.
+
 Done when:
 
 - a binding annotated with a literal union accepts a member literal and rejects a
@@ -1235,6 +1243,9 @@ Done when:
 - a narrower literal union widens into a wider one at a boundary; fixtures lock
   each direction
 - bare number/text literal inference still yields `Int`/`Text` (no singletons)
+- a `?>` match on a closed literal union is non-exhaustive unless every member or
+  a `_` is covered; an out-of-union literal arm is reported unreachable; fixtures
+  lock both
 
 ## Remaining Phase 2 Scope
 
