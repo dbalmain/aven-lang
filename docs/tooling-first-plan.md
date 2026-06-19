@@ -1284,6 +1284,29 @@ Slices:
   variant, defers non-concrete subjects without diagnostics, and reports
   `comptime.reflection-type-mismatch` for concrete non-record subjects.
 
+- 16.2 — comptime function application + specialization (type position only):
+  extend the evaluator from the built-in `keysOf` to **user-defined comptime
+  functions applied in a type position**, leaning on positional comptime (a call
+  in a type position is comptime; **no `@param` syntax, no parser changes**).
+  This is where the specialization machinery lands. When a type-position call's
+  callee resolves to a user-defined function binding (a lambda), evaluate it by
+  binding parameters to the evaluated comptime arguments and evaluating the body
+  in that environment. Supported arguments: a **type** (e.g. `User` → reified
+  `Type`); non-concrete arguments defer (M11 discipline). The body grammar is
+  small and honest — a parameter reference, a reflection built-in call (`keysOf`)
+  on an in-scope value, a nested comptime-function call, or a literal type term;
+  anything else flows to the existing deferred / `comptime.evaluation-unsupported`
+  path. **Specialize (memoize) per distinct `(function, comptime-arg-tuple)`** —
+  the monomorphization point and the cycle key. Recursion is bounded two ways: a
+  visited-set over `(fn, args)` catches a specialization that depends on its own
+  in-progress result (`comptime.evaluation-cycle`), and a fuel budget bounds
+  deep-but-finite evaluation (`comptime.evaluation-limit`); either reports a
+  structured diagnostic and recovers by treating the site as `Deferred`. The
+  body's `ComptimeValue` reifies into `crate::ty::Type` (reuse
+  `reify_type_position`). Out of scope: `@param` marker, parser changes,
+  runtime-position specialization, computed keys, comprehensions, general
+  value-parameter specialization (all → M16.3).
+
 Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field
@@ -1293,6 +1316,13 @@ Done when:
   `keysOf` call whose argument is not yet concrete defers without diagnostic
 - the evaluator is a self-contained module in `aven-check`; reified types are
   the checker's own `Type` IR (no parallel representation)
+- `keyUnion = (r) => keysOf(r)` with `Keys = keyUnion(User)` lowers `Keys` to the
+  literal union of `User`'s field names, usable as a type, with no `Deferred` and
+  no `comptime.evaluation-unsupported`; a fixture locks it
+- a comptime function applied to a non-concrete type argument defers without a
+  diagnostic; a self- or mutually-recursive comptime function that cannot resolve
+  is bounded and reports `comptime.evaluation-cycle` (or
+  `comptime.evaluation-limit`); fixtures lock both
 
 ## Remaining Phase 2 Scope
 
