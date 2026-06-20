@@ -70,6 +70,14 @@ fn field(name: &str, ty: Type) -> RowEntry {
     }
 }
 
+fn optional_field(name: &str, ty: Type) -> RowEntry {
+    RowEntry::Field {
+        name: name.to_owned(),
+        ty,
+        optional: true,
+    }
+}
+
 fn literal_string(raw: &str) -> RowEntry {
     RowEntry::Literal {
         value: Literal::String(raw.to_owned()),
@@ -421,6 +429,40 @@ fn comptime_type_position_record_comprehension_reifies_record_type() {
     let known_types = known_type_names(&output.module);
     let definitions = type_definitions(&output.module, &known_types);
 
+    assert_eq!(
+        definitions.get("Cloned"),
+        Some(&Type::Record(Row {
+            entries: vec![field("email", named("Text")), field("name", named("Text"))],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_type_position_computed_field_add_sets_optional_flags() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         partial = (object) => { keysOf(object) -> k; [k]?: object[k] }\n\
+         clone = (object) => { keysOf(object) -> k; [k]: object[k] }\n\
+         Partial = partial(User)\n\
+         Cloned = clone(User)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("Partial"),
+        Some(&Type::Record(Row {
+            entries: vec![
+                optional_field("email", named("Text")),
+                optional_field("name", named("Text"))
+            ],
+            tail: RowTail::Closed,
+        }))
+    );
     assert_eq!(
         definitions.get("Cloned"),
         Some(&Type::Record(Row {

@@ -94,6 +94,10 @@ fn walk_record_entry_exprs<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMu
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => visit(value),
+            RecordEntry::FieldComputed { key, value, .. } => {
+                visit(key);
+                visit(value);
+            }
             RecordEntry::Iteration {
                 source,
                 guard,

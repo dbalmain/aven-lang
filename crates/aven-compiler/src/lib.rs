@@ -450,6 +450,10 @@ fn collect_record_entry_references(entries: &[RecordEntry], references: &mut Vec
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => collect_expr_references(value, references),
+            RecordEntry::FieldComputed { key, value, .. } => {
+                collect_expr_references(key, references);
+                collect_expr_references(value, references);
+            }
             RecordEntry::Shorthand {
                 name, name_span, ..
             } => references.push(Reference {
@@ -535,6 +539,10 @@ fn collect_pattern_references_from_entries(
     for entry in entries {
         match entry {
             RecordEntry::Field { value, .. } | RecordEntry::Element(value) => {
+                collect_pattern_references(value, references);
+            }
+            RecordEntry::FieldComputed { key, value, .. } => {
+                collect_pattern_references(key, references);
                 collect_pattern_references(value, references);
             }
             RecordEntry::Spread { value, .. } => {

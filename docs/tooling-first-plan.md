@@ -1445,6 +1445,22 @@ Slices:
   non-record `keysOf` subjects reuse the existing reflection type-mismatch
   diagnostic.
 
+- 16.10 — optional computed field-add `[k]?: v` to support `partial`:
+  record entries can now add fields with computed keys via `[k]: v` and mark
+  those adds optional in type position via `[k]?: v`. Parser, formatter,
+  reference/name/scope walkers, LSP token handling, compiler references, and
+  checker row folding all thread `RecordEntry::FieldComputed`; in annotation
+  mode the checker resolves the computed key with `comptime_known_label`, folds
+  `object[k]` through the M16.9 type-position index path, and preserves optional
+  flags, while value mode forces computed adds to required fields.
+
+  Done: `partial = (object) => { keysOf(object) -> k; [k]?: object[k] }`
+  applied to `{ name: Text, email: Text }` lowers to a closed record with both
+  fields optional, so `{ name: "Ada" }` checks against `partial(User)`. The
+  non-optional `[k]: object[k]` form lowers to required fields, parser and
+  formatter fixtures round-trip both spellings, and optional fields produced by
+  `partial` are still checked when present.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field

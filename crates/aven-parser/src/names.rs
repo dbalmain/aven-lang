@@ -208,6 +208,10 @@ fn analyze_record_entries(
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => analyze_expr(value, scopes, diagnostics),
+            RecordEntry::FieldComputed { key, value, .. } => {
+                analyze_expr(key, scopes, diagnostics);
+                analyze_expr(value, scopes, diagnostics);
+            }
             RecordEntry::Shorthand { name, .. } => scopes.mark_used(name),
             RecordEntry::Iteration {
                 source,

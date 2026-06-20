@@ -580,6 +580,21 @@ fn render_record_entry_ast(output: &mut String, entry: &RecordEntry, indent: usi
             );
             render_expr_ast(output, value, indent + 1);
         }
+        RecordEntry::FieldComputed {
+            key,
+            value,
+            optional,
+            ..
+        } => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "field computed optional={optional}");
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "key");
+            render_expr_ast(output, key, indent + 2);
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "value");
+            render_expr_ast(output, value, indent + 2);
+        }
         RecordEntry::Shorthand { name, .. } => {
             write_indent(output, indent);
             let _ = writeln!(output, "shorthand {name}");

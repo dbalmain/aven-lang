@@ -1,0 +1,18 @@
+module
+  binding value
+    value
+      record
+        field computed optional=false
+          key
+            name k
+          value
+            name v
+        field computed optional=true
+          key
+            name k
+          value
+            index
+              callee
+                name object
+              args
+                name k

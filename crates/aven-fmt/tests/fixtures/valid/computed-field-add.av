@@ -1,0 +1,2 @@
+partial=(object)=>{keysOf(object)->k;[k]?:object[k]}
+clone=(object)=>{keysOf(object)->k;[k]:object[k]}

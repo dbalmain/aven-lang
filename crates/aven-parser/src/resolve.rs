@@ -356,6 +356,17 @@ fn scope_at_record_entries<'a>(
             | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => scope_at_expr(value, at, outer)
                 .or_else(|| Some(ScopeAt::from_visible(outer.to_vec()))),
+            RecordEntry::FieldComputed { key, value, .. } => {
+                if key.span.contains(at) {
+                    return scope_at_expr(key, at, outer)
+                        .or_else(|| Some(ScopeAt::from_visible(outer.to_vec())));
+                }
+                if value.span.contains(at) {
+                    return scope_at_expr(value, at, outer)
+                        .or_else(|| Some(ScopeAt::from_visible(outer.to_vec())));
+                }
+                Some(ScopeAt::from_visible(outer.to_vec()))
+            }
             RecordEntry::Iteration {
                 source,
                 binder,
@@ -434,6 +445,7 @@ fn binding_at_reference<'a>(
 fn record_entry_span(entry: &RecordEntry) -> Span {
     match entry {
         RecordEntry::Field { span, .. }
+        | RecordEntry::FieldComputed { span, .. }
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }
         | RecordEntry::Delete { span, .. }
@@ -498,7 +510,9 @@ fn collect_pattern_bindings_from_record_entries<'a>(
 ) {
     for entry in entries {
         match entry {
-            RecordEntry::Field { value, .. } | RecordEntry::Element(value) => {
+            RecordEntry::Field { value, .. }
+            | RecordEntry::FieldComputed { value, .. }
+            | RecordEntry::Element(value) => {
                 collect_pattern_bindings(value, bindings);
             }
             RecordEntry::Shorthand {

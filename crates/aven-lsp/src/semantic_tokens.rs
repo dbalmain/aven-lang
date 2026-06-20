@@ -206,6 +206,7 @@ impl StyleCollector {
                     self.collect_record_entries(body);
                 }
                 aven_parser::RecordEntry::Spread { .. }
+                | aven_parser::RecordEntry::FieldComputed { .. }
                 | aven_parser::RecordEntry::DeleteComputed { .. }
                 | aven_parser::RecordEntry::Open { .. }
                 | aven_parser::RecordEntry::Element(_) => {}

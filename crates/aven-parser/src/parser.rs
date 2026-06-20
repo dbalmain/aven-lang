@@ -143,6 +143,12 @@ pub enum RecordEntry {
         optional: bool,
         span: Span,
     },
+    FieldComputed {
+        key: Expr,
+        value: Expr,
+        optional: bool,
+        span: Span,
+    },
     Shorthand {
         name: String,
         name_span: Span,
@@ -1329,6 +1335,34 @@ impl Parser<'_> {
             });
         }
 
+        if self.current_is(TokenKind::OpenBracket) {
+            let Some((key, bracket_span)) = self.parse_bracketed_key() else {
+                self.recover_record_entry();
+                return None;
+            };
+
+            let optional = self.current_is_operator("?");
+            if optional {
+                self.advance();
+            }
+
+            if !self.current_is_operator(":") {
+                self.report_expected_record_entry(self.current_span());
+                self.recover_record_entry();
+                return None;
+            }
+            self.advance();
+
+            let value = self.parse_expression();
+            let span = bracket_span.merge(value.span);
+            return Some(RecordEntry::FieldComputed {
+                key,
+                value,
+                optional,
+                span,
+            });
+        }
+
         if mode == EntryMode::Record && self.iteration_arrow_follows() {
             let source = self.parse_binary_expression(0, true);
             self.consume_operator("->");
@@ -2261,6 +2295,7 @@ fn missing_expr(span: Span) -> Expr {
 fn record_entry_span(entry: &RecordEntry) -> Span {
     match entry {
         RecordEntry::Field { span, .. }
+        | RecordEntry::FieldComputed { span, .. }
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }
         | RecordEntry::Delete { span, .. }
@@ -2558,7 +2593,7 @@ mod tests {
     #[test]
     fn parses_record_transform_entries_into_ast_nodes() {
         let output = parse_module(
-            "cleaned = { ..user, :..defaults, -password, -[key], name -> fullName, active: true, age :: 37 }\n",
+            "cleaned = { ..user, :..defaults, -password, -[key], [key]: value, [key]?: maybe, name -> fullName, active: true, age :: 37 }\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2566,7 +2601,7 @@ mod tests {
             panic!("expected record expression");
         };
 
-        assert_eq!(entries.len(), 7);
+        assert_eq!(entries.len(), 9);
         assert!(matches!(
             &entries[0],
             RecordEntry::Spread {
@@ -2592,10 +2627,26 @@ mod tests {
         ));
         assert!(matches!(
             &entries[4],
-            RecordEntry::Rename { from, to, .. } if from == "name" && to == "fullName"
+            RecordEntry::FieldComputed {
+                key,
+                optional: false,
+                ..
+            } if matches!(&key.kind, ExprKind::Name(name) if name == "key")
         ));
         assert!(matches!(
             &entries[5],
+            RecordEntry::FieldComputed {
+                key,
+                optional: true,
+                ..
+            } if matches!(&key.kind, ExprKind::Name(name) if name == "key")
+        ));
+        assert!(matches!(
+            &entries[6],
+            RecordEntry::Rename { from, to, .. } if from == "name" && to == "fullName"
+        ));
+        assert!(matches!(
+            &entries[7],
             RecordEntry::Field {
                 name,
                 overwrite: false,
@@ -2603,7 +2654,7 @@ mod tests {
             } if name == "active"
         ));
         assert!(matches!(
-            &entries[6],
+            &entries[8],
             RecordEntry::Field {
                 name,
                 overwrite: true,

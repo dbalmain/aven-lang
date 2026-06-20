@@ -516,6 +516,18 @@ impl<'a> Checker<'a> {
                             .with_note("remove `?` in value records; use `field: Nil` when the value is absent"),
                     );
                 }
+                RecordEntry::FieldComputed {
+                    optional: true,
+                    span,
+                    ..
+                } => {
+                    self.diagnostics.push(
+                        Diagnostic::error("optional record fields are only valid in type position")
+                            .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
+                            .with_label(Label::primary(*span, "optional field marker here"))
+                            .with_note("remove `?` in value records; use `field: Nil` when the value is absent"),
+                    );
+                }
                 RecordEntry::Open { span } => {
                     self.diagnostics.push(
                         Diagnostic::error("open row markers are only valid in type position")
@@ -525,6 +537,7 @@ impl<'a> Checker<'a> {
                     );
                 }
                 RecordEntry::Field { .. }
+                | RecordEntry::FieldComputed { .. }
                 | RecordEntry::Shorthand { .. }
                 | RecordEntry::Spread { .. }
                 | RecordEntry::Delete { .. }
@@ -543,6 +556,10 @@ impl<'a> Checker<'a> {
                 | RecordEntry::Spread { value, .. }
                 | RecordEntry::DeleteComputed { key: value, .. }
                 | RecordEntry::Element(value) => {
+                    self.check_value_expr(value);
+                }
+                RecordEntry::FieldComputed { key, value, .. } => {
+                    self.check_value_expr(key);
                     self.check_value_expr(value);
                 }
                 RecordEntry::Iteration {
@@ -1616,6 +1633,46 @@ impl<'a> Checker<'a> {
                     Ok(())
                 }
             }
+            RecordEntry::FieldComputed {
+                key,
+                value,
+                optional,
+                span,
+            } => {
+                let Some(label) = self.comptime_known_label(key) else {
+                    self.fold_deferred_row_entry(entry, kind, mode);
+                    return Err(());
+                };
+
+                let ty = self.fold_field_type(value, mode);
+                if kind != RowKind::Record {
+                    return Err(());
+                }
+
+                let entry = RowEntry::Field {
+                    name: label.clone(),
+                    ty,
+                    optional: match mode {
+                        RowFoldMode::Annotation => *optional,
+                        RowFoldMode::Value { .. } => false,
+                    },
+                };
+
+                if row_entry_index(&row.entries, &label).is_some() {
+                    self.report_duplicate_row_label(
+                        &label,
+                        *span,
+                        match mode {
+                            RowFoldMode::Annotation => DuplicateRowLabelContext::RecordAdd,
+                            RowFoldMode::Value { .. } => DuplicateRowLabelContext::RecordValueAdd,
+                        },
+                    );
+                    Err(())
+                } else {
+                    row.entries.push(entry);
+                    Ok(())
+                }
+            }
             RecordEntry::Shorthand { .. } => Err(()),
             RecordEntry::Delete { name, span, .. } => {
                 if row.tail != RowTail::Closed {
@@ -1941,6 +1998,10 @@ impl<'a> Checker<'a> {
             RecordEntry::Field { value, .. }
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. } => {
+                self.fold_expression(value, mode);
+            }
+            RecordEntry::FieldComputed { key, value, .. } => {
+                self.fold_expression(key, mode);
                 self.fold_expression(value, mode);
             }
             RecordEntry::Element(value) => match kind {
@@ -2722,6 +2783,7 @@ fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueReco
             RecordEntry::Field {
                 overwrite: true, ..
             }
+            | RecordEntry::FieldComputed { .. }
             | RecordEntry::Spread { .. }
             | RecordEntry::Delete { .. }
             | RecordEntry::DeleteComputed { .. }
@@ -2741,6 +2803,7 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
         .map(|entry| match entry {
             RecordEntry::Element(value) => Some(value),
             RecordEntry::Field { .. }
+            | RecordEntry::FieldComputed { .. }
             | RecordEntry::Shorthand { .. }
             | RecordEntry::Spread { .. }
             | RecordEntry::Delete { .. }
@@ -2840,6 +2903,7 @@ fn collect_known_record_pattern_types(
                 known.insert(name.clone(), Type::Record(residual));
             }
             RecordEntry::Delete { .. }
+            | RecordEntry::FieldComputed { .. }
             | RecordEntry::DeleteComputed { .. }
             | RecordEntry::Rename { .. }
             | RecordEntry::Iteration { .. }
@@ -2854,6 +2918,7 @@ fn record_pattern_label(entry: &RecordEntry) -> Option<&str> {
         RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => Some(name),
         RecordEntry::Spread { .. }
         | RecordEntry::Delete { .. }
+        | RecordEntry::FieldComputed { .. }
         | RecordEntry::DeleteComputed { .. }
         | RecordEntry::Rename { .. }
         | RecordEntry::Iteration { .. }
@@ -2943,6 +3008,7 @@ fn collect_record_comptime_type_bindings(
             }
             RecordEntry::Shorthand { .. }
             | RecordEntry::Delete { .. }
+            | RecordEntry::FieldComputed { .. }
             | RecordEntry::DeleteComputed { .. }
             | RecordEntry::Rename { .. }
             | RecordEntry::Iteration { .. }
