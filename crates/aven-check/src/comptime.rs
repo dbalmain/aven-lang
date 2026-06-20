@@ -426,8 +426,8 @@ where
             return EvaluationResult::unsupported();
         };
 
-        if name == "keysOf" {
-            return self.evaluate_keys_of_application(args, env);
+        if let Some(kind) = ReflectionKind::from_name(name) {
+            return self.evaluate_reflection_application(args, env, kind);
         }
 
         let Some(function) = self.context.lookup_comptime_function(name) else {
@@ -437,10 +437,11 @@ where
         self.evaluate_function_application(function, call_span, args, env)
     }
 
-    fn evaluate_keys_of_application(
+    fn evaluate_reflection_application(
         &mut self,
         args: &[Expr],
         env: &Environment,
+        kind: ReflectionKind,
     ) -> EvaluationResult {
         let [arg] = args else {
             return EvaluationResult::unsupported();
@@ -463,7 +464,7 @@ where
             return EvaluationResult::deferred();
         };
 
-        evaluate_keys_of(
+        kind.evaluate(
             &subject,
             arg.span,
             self.context.type_is_unresolved(&subject),
@@ -558,7 +559,9 @@ pub(crate) fn evaluate_keys_of(
     }
 
     let Type::Record(row) = subject else {
-        return EvaluationResult::diagnostic(reflection_type_mismatch(arg_span));
+        return EvaluationResult::diagnostic(reflection_type_mismatch(
+            arg_span, "keysOf", "record",
+        ));
     };
 
     if row.tail != RowTail::Closed {
@@ -568,6 +571,37 @@ pub(crate) fn evaluate_keys_of(
     let mut labels = Vec::new();
     for entry in &row.entries {
         let RowEntry::Field { name, .. } = entry else {
+            return EvaluationResult::deferred();
+        };
+        labels.push(name.clone());
+    }
+    labels.sort();
+
+    EvaluationResult::evaluated(ComptimeValue::LabelSet(labels))
+}
+
+pub(crate) fn evaluate_tags_of(
+    subject: &Type,
+    arg_span: Span,
+    subject_is_unresolved: bool,
+) -> EvaluationResult {
+    if subject_is_unresolved || !is_concrete_type(subject) {
+        return EvaluationResult::deferred();
+    }
+
+    let Type::Variant(row) = subject else {
+        return EvaluationResult::diagnostic(reflection_type_mismatch(
+            arg_span, "tagsOf", "variant",
+        ));
+    };
+
+    if row.tail != RowTail::Closed {
+        return EvaluationResult::deferred();
+    }
+
+    let mut labels = Vec::new();
+    for entry in &row.entries {
+        let RowEntry::Tag { name, .. } = entry else {
             return EvaluationResult::deferred();
         };
         labels.push(name.clone());
@@ -602,11 +636,44 @@ fn literal_type(literal: Literal) -> Type {
     })
 }
 
-fn reflection_type_mismatch(span: Span) -> Diagnostic {
-    Diagnostic::error("reflection function `keysOf` expected a record type")
-        .with_code(codes::comptime::REFLECTION_TYPE_MISMATCH)
-        .with_label(Label::primary(span, "this type is not a record"))
-        .with_note("`keysOf` needs a record type")
+#[derive(Debug, Clone, Copy)]
+enum ReflectionKind {
+    KeysOf,
+    TagsOf,
+}
+
+impl ReflectionKind {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "keysOf" => Some(Self::KeysOf),
+            "tagsOf" => Some(Self::TagsOf),
+            _ => None,
+        }
+    }
+
+    fn evaluate(
+        self,
+        subject: &Type,
+        arg_span: Span,
+        subject_is_unresolved: bool,
+    ) -> EvaluationResult {
+        match self {
+            Self::KeysOf => evaluate_keys_of(subject, arg_span, subject_is_unresolved),
+            Self::TagsOf => evaluate_tags_of(subject, arg_span, subject_is_unresolved),
+        }
+    }
+}
+
+fn reflection_type_mismatch(span: Span, function: &str, expected_kind: &str) -> Diagnostic {
+    Diagnostic::error(format!(
+        "reflection function `{function}` expected a {expected_kind} type"
+    ))
+    .with_code(codes::comptime::REFLECTION_TYPE_MISMATCH)
+    .with_label(Label::primary(
+        span,
+        format!("this type is not a {expected_kind}"),
+    ))
+    .with_note(format!("`{function}` needs a {expected_kind} type"))
 }
 
 fn evaluation_cycle(span: Span, function: &str) -> Diagnostic {

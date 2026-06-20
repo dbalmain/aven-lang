@@ -78,6 +78,13 @@ fn optional_field(name: &str, ty: Type) -> RowEntry {
     }
 }
 
+fn tag(name: &str, payload: Vec<Type>) -> RowEntry {
+    RowEntry::Tag {
+        name: name.to_owned(),
+        payload,
+    }
+}
+
 fn literal_string(raw: &str) -> RowEntry {
     RowEntry::Literal {
         value: Literal::String(raw.to_owned()),
@@ -349,6 +356,51 @@ fn comptime_keysof_record_reifies_sorted_literal_union() {
         definitions.get("UserKey"),
         Some(&Type::Variant(Row {
             entries: vec![literal_string("\"email\""), literal_string("\"name\"")],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_tagsof_variant_evaluates_sorted_label_set() {
+    let subject = Type::Variant(Row {
+        entries: vec![
+            tag("Red", Vec::new()),
+            tag("Green", Vec::new()),
+            tag("Blue", Vec::new()),
+        ],
+        tail: RowTail::Closed,
+    });
+    let result = comptime::evaluate_tags_of(&subject, Span::new(0, 0), false);
+
+    assert_eq!(
+        result.evaluation,
+        comptime::Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(vec![
+            "Blue".to_owned(),
+            "Green".to_owned(),
+            "Red".to_owned(),
+        ]))
+    );
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_tagsof_variant_reifies_sorted_literal_union() {
+    let output = parse_module("Color = @{ @Red, @Green, @Blue }\nTags = tagsOf(Color)\n");
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("Tags"),
+        Some(&Type::Variant(Row {
+            entries: vec![
+                literal_string("\"Blue\""),
+                literal_string("\"Green\""),
+                literal_string("\"Red\"")
+            ],
             tail: RowTail::Closed,
         }))
     );

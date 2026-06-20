@@ -2632,6 +2632,34 @@ enum RowFoldMode<'a> {
     Value { env: &'a TypeEnv },
 }
 
+#[derive(Debug, Clone, Copy)]
+enum LabelReflection {
+    KeysOf,
+    TagsOf,
+}
+
+impl LabelReflection {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "keysOf" => Some(Self::KeysOf),
+            "tagsOf" => Some(Self::TagsOf),
+            _ => None,
+        }
+    }
+
+    fn evaluate(
+        self,
+        subject: &Type,
+        arg_span: Span,
+        subject_is_unresolved: bool,
+    ) -> comptime::EvaluationResult {
+        match self {
+            Self::KeysOf => comptime::evaluate_keys_of(subject, arg_span, subject_is_unresolved),
+            Self::TagsOf => comptime::evaluate_tags_of(subject, arg_span, subject_is_unresolved),
+        }
+    }
+}
+
 struct ComptimeArgument {
     value: comptime::ComptimeValue,
     label_set_members: Option<Vec<LabelSetMember>>,
@@ -3822,18 +3850,16 @@ impl<'a> Checker<'a> {
         mode: RowFoldMode<'_>,
     ) -> Option<Vec<String>> {
         self.comptime_known_label_set(expr).or_else(|| match mode {
-            RowFoldMode::Annotation => self.comptime_known_keys_of_reified_type(expr),
-            RowFoldMode::Value { env } => self.comptime_known_keys_of_value(expr, env),
+            RowFoldMode::Annotation => self.comptime_known_reflection_reified_type(expr),
+            RowFoldMode::Value { env } => self.comptime_known_reflection_value(expr, env),
         })
     }
 
-    fn comptime_known_keys_of_reified_type(&self, expr: &Expr) -> Option<Vec<String>> {
+    fn comptime_known_reflection_reified_type(&self, expr: &Expr) -> Option<Vec<String>> {
         let ExprKind::Call { callee, args } = &ungroup_expr(expr).kind else {
             return None;
         };
-        if expr_name(callee)? != "keysOf" {
-            return None;
-        }
+        let reflection = LabelReflection::from_name(expr_name(callee)?)?;
 
         let [arg] = args.as_slice() else {
             return None;
@@ -3841,8 +3867,8 @@ impl<'a> Checker<'a> {
         let subject = self.lookup_comptime_reified_type_expr(arg)?;
         let subject = self.normalize(&subject);
 
-        let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) =
-            comptime::evaluate_keys_of(
+        let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) = reflection
+            .evaluate(
                 &subject,
                 arg.span,
                 self.reflection_subject_is_unresolved(&subject),
@@ -3855,13 +3881,11 @@ impl<'a> Checker<'a> {
         Some(labels)
     }
 
-    fn comptime_known_keys_of_value(&self, expr: &Expr, env: &TypeEnv) -> Option<Vec<String>> {
+    fn comptime_known_reflection_value(&self, expr: &Expr, env: &TypeEnv) -> Option<Vec<String>> {
         let ExprKind::Call { callee, args } = &ungroup_expr(expr).kind else {
             return None;
         };
-        if expr_name(callee)? != "keysOf" {
-            return None;
-        }
+        let reflection = LabelReflection::from_name(expr_name(callee)?)?;
 
         let [arg] = args.as_slice() else {
             return None;
@@ -3872,8 +3896,8 @@ impl<'a> Checker<'a> {
         };
         let subject = self.normalize(&self.unifier.resolve(subject));
 
-        let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) =
-            comptime::evaluate_keys_of(
+        let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) = reflection
+            .evaluate(
                 &subject,
                 arg.span,
                 self.reflection_subject_is_unresolved(&subject),

@@ -1,0 +1,4 @@
+Color = @{ @Red, @Green, @Blue }
+color : Color = @Red
+select = (variant: v, @tags: tagsOf(v)@{}) => tags
+selected = select(color, @{"Red", "Blue"})

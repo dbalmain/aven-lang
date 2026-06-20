@@ -1,0 +1,3 @@
+Color = @{ @Red, @Green, @Blue }
+Tags = tagsOf(Color)
+bad : Tags = "Purple"

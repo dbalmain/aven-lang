@@ -1,0 +1,9 @@
+Color = @{ @Red, @Green, @Blue }
+Tags = tagsOf(Color)
+tagRecord = (variant) => { tagsOf(variant) -> t; (t, Text) }
+Names = tagRecord(Color)
+names : Names = { Red: "Red", Green: "Green", Blue: "Blue" }
+color : Color = @Red
+tagNames = (variant) => { tagsOf(variant) -> t; (t, t) }
+nameRecord = tagNames(color)
+red : Tags = nameRecord.Red

@@ -1472,6 +1472,18 @@ Slices:
   fields required, and the normal missing-field diagnostic fires when a restored
   value omits a field.
 
+- 16.12 — `tagsOf` reflection for variant constructor tags:
+  `tagsOf(variant)` mirrors `keysOf(record)`, reflecting a closed variant type's
+  constructor tag names into the same comptime label-set value so it works in
+  type-position bindings, `@param` domains, and record-comprehension iteration
+  sources.
+
+  Done: `aven-check` now evaluates `tagsOf(<closed tag variant type>)` through
+  the shared comptime label-set machinery, reifies it as a sorted closed
+  string-literal union, dispatches `tagsOf` alongside `keysOf` for iteration
+  sources, and reuses the existing reflection type-mismatch diagnostic with
+  variant-specific wording for concrete non-variant subjects.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field
