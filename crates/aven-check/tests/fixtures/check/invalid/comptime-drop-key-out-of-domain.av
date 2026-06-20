@@ -1,0 +1,4 @@
+User = { name: Text, email: Text }
+user : User = { name: "Ada", email: "ada@x.dev" }
+dropKey = (object: {..r}, @key: keysOf(r)) => { ..object, -[key] }
+result : { email: Text } = dropKey(user, "phone")

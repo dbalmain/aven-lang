@@ -353,6 +353,7 @@ fn scope_at_record_entries<'a>(
         match entry {
             RecordEntry::Field { value, .. }
             | RecordEntry::Spread { value, .. }
+            | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => scope_at_expr(value, at, outer)
                 .or_else(|| Some(ScopeAt::from_visible(outer.to_vec()))),
             RecordEntry::Iteration {
@@ -428,6 +429,7 @@ fn record_entry_span(entry: &RecordEntry) -> Span {
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }
         | RecordEntry::Delete { span, .. }
+        | RecordEntry::DeleteComputed { span, .. }
         | RecordEntry::Rename { span, .. }
         | RecordEntry::Iteration { span, .. }
         | RecordEntry::Open { span } => *span,
@@ -514,7 +516,9 @@ fn collect_pattern_bindings_from_record_entries<'a>(
             RecordEntry::Iteration { body, .. } => {
                 collect_pattern_bindings_from_record_entries(body, bindings);
             }
-            RecordEntry::Delete { .. } | RecordEntry::Open { .. } => {}
+            RecordEntry::Delete { .. }
+            | RecordEntry::DeleteComputed { .. }
+            | RecordEntry::Open { .. } => {}
         }
     }
 }

@@ -169,6 +169,10 @@ fn needs_space(
         return !is_open_brace(previous);
     }
 
+    if is_prefix_minus(previous, previous_previous) {
+        return false;
+    }
+
     if is_open_delimiter(current) {
         return needs_space_before_open_delimiter(previous, current);
     }
@@ -185,15 +189,15 @@ fn needs_space(
         return true;
     }
 
+    if is_prefix_minus(previous, previous_previous) {
+        return false;
+    }
+
     if is_tight_access_operator(previous)
         || is_tight_postfix_operator(previous)
         || is_tight_prefix_operator(previous, Some(current))
         || is_at_set_marker(previous, Some(current))
     {
-        return false;
-    }
-
-    if is_prefix_minus(previous, previous_previous) {
         return false;
     }
 

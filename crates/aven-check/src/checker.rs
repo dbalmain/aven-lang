@@ -528,6 +528,7 @@ impl<'a> Checker<'a> {
                 | RecordEntry::Shorthand { .. }
                 | RecordEntry::Spread { .. }
                 | RecordEntry::Delete { .. }
+                | RecordEntry::DeleteComputed { .. }
                 | RecordEntry::Rename { .. }
                 | RecordEntry::Iteration { .. }
                 | RecordEntry::Element(_) => {}
@@ -540,6 +541,7 @@ impl<'a> Checker<'a> {
             match entry {
                 RecordEntry::Field { value, .. }
                 | RecordEntry::Spread { value, .. }
+                | RecordEntry::DeleteComputed { key: value, .. }
                 | RecordEntry::Element(value) => {
                     self.check_value_expr(value);
                 }
@@ -1583,12 +1585,20 @@ impl<'a> Checker<'a> {
                     return Ok(());
                 }
 
-                let Some(index) = row_entry_index(&row.entries, name) else {
-                    self.report_delete_absent_field(name, *span);
+                self.delete_closed_row_label(row, name, *span)
+            }
+            RecordEntry::DeleteComputed { key, span } => {
+                if row.tail != RowTail::Closed {
+                    self.fold_deferred_row_entry(entry, kind, mode);
+                    return Err(());
+                }
+
+                let Some(label) = self.comptime_known_label(key) else {
+                    self.fold_deferred_row_entry(entry, kind, mode);
                     return Err(());
                 };
-                row.entries.remove(index);
-                Ok(())
+
+                self.delete_closed_row_label(row, &label, *span)
             }
             RecordEntry::Rename { from, to, span, .. } => {
                 if row.tail != RowTail::Closed {
@@ -1652,6 +1662,21 @@ impl<'a> Checker<'a> {
                 }
             },
         }
+    }
+
+    fn delete_closed_row_label(
+        &mut self,
+        row: &mut Row,
+        label: &str,
+        span: Span,
+    ) -> Result<(), ()> {
+        let Some(index) = row_entry_index(&row.entries, label) else {
+            self.report_delete_absent_field(label, span);
+            return Err(());
+        };
+
+        row.entries.remove(index);
+        Ok(())
     }
 
     fn fold_iteration_entry(
@@ -1816,7 +1841,9 @@ impl<'a> Checker<'a> {
         mode: RowFoldMode<'_>,
     ) {
         match entry {
-            RecordEntry::Field { value, .. } | RecordEntry::Spread { value, .. } => {
+            RecordEntry::Field { value, .. }
+            | RecordEntry::Spread { value, .. }
+            | RecordEntry::DeleteComputed { key: value, .. } => {
                 self.fold_expression(value, mode);
             }
             RecordEntry::Element(value) => match kind {
@@ -2592,6 +2619,7 @@ fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueReco
             }
             | RecordEntry::Spread { .. }
             | RecordEntry::Delete { .. }
+            | RecordEntry::DeleteComputed { .. }
             | RecordEntry::Rename { .. }
             | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. }
@@ -2611,6 +2639,7 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
             | RecordEntry::Shorthand { .. }
             | RecordEntry::Spread { .. }
             | RecordEntry::Delete { .. }
+            | RecordEntry::DeleteComputed { .. }
             | RecordEntry::Rename { .. }
             | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. } => None,
@@ -2706,6 +2735,7 @@ fn collect_known_record_pattern_types(
                 known.insert(name.clone(), Type::Record(residual));
             }
             RecordEntry::Delete { .. }
+            | RecordEntry::DeleteComputed { .. }
             | RecordEntry::Rename { .. }
             | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. }
@@ -2719,6 +2749,7 @@ fn record_pattern_label(entry: &RecordEntry) -> Option<&str> {
         RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => Some(name),
         RecordEntry::Spread { .. }
         | RecordEntry::Delete { .. }
+        | RecordEntry::DeleteComputed { .. }
         | RecordEntry::Rename { .. }
         | RecordEntry::Iteration { .. }
         | RecordEntry::Open { .. }
@@ -2807,6 +2838,7 @@ fn collect_record_comptime_type_bindings(
             }
             RecordEntry::Shorthand { .. }
             | RecordEntry::Delete { .. }
+            | RecordEntry::DeleteComputed { .. }
             | RecordEntry::Rename { .. }
             | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. }

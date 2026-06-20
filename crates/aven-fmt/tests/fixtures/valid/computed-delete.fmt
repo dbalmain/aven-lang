@@ -1,0 +1,1 @@
+dropKey = (object: { ..r }, @key: keysOf(r)) => { ..object, -[key] }

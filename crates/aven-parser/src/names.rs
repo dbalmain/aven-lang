@@ -206,6 +206,7 @@ fn analyze_record_entries(
         match entry {
             RecordEntry::Field { value, .. }
             | RecordEntry::Spread { value, .. }
+            | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => analyze_expr(value, scopes, diagnostics),
             RecordEntry::Shorthand { name, .. } => scopes.mark_used(name),
             RecordEntry::Iteration {

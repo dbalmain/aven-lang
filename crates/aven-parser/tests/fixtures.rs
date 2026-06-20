@@ -595,6 +595,11 @@ fn render_record_entry_ast(output: &mut String, entry: &RecordEntry, indent: usi
             write_indent(output, indent);
             let _ = writeln!(output, "delete {name}");
         }
+        RecordEntry::DeleteComputed { key, .. } => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "delete computed");
+            render_expr_ast(output, key, indent + 1);
+        }
         RecordEntry::Rename { from, to, .. } => {
             write_indent(output, indent);
             let _ = writeln!(output, "rename {from} -> {to}");

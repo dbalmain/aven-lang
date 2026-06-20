@@ -1448,6 +1448,10 @@ Slices:
   `pick(user, @{"name", "email"})` types as `{ name: Text, email: Text }`; an
   out-of-domain key in the set reports the membership diagnostic; a non-concrete
   key set defers; fixtures lock each
+- `dropKey = (object: {..r}, @key: keysOf(r)) => { ..object, -[key] }` with
+  `dropKey(user, "name")` types as `{ email: Text }`; out-of-domain single
+  labels reuse the literal-union membership diagnostic and defer the result;
+  parser, formatter, checker fixture, and focused unit coverage lock M16.7
 
 ## Remaining Phase 2 Scope
 

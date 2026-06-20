@@ -1,0 +1,9 @@
+module
+  binding value
+    value
+      record
+        spread overwrite=false
+          name object
+        delete name
+        delete computed
+          name k

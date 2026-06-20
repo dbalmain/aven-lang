@@ -158,6 +158,10 @@ pub enum RecordEntry {
         name_span: Span,
         span: Span,
     },
+    DeleteComputed {
+        key: Expr,
+        span: Span,
+    },
     Rename {
         from: String,
         from_span: Span,
@@ -173,7 +177,9 @@ pub enum RecordEntry {
         span: Span,
     },
     /// `..`: the open-row marker inside a record (type) shape.
-    Open { span: Span },
+    Open {
+        span: Span,
+    },
     /// A bare member of a `@{...}` set/variant shape: `@Red`, `@Ok(1)`,
     /// `@ParseError(Text)`, `@NotFound`.
     Element(Expr),
@@ -741,18 +747,10 @@ impl Parser<'_> {
 
     fn finish_index(&mut self, callee: Expr) -> Expr {
         let start = callee.span.start;
-        let open_span = self.current_span();
-        self.advance();
-        let args = self.parse_expression_list(TokenKind::CloseBracket);
-        let end = self.consume_close(TokenKind::CloseBracket);
+        let (bracket_span, args) = self.parse_bracketed_expressions();
 
         if args.is_empty() {
-            return collection_type_application(
-                "Array",
-                open_span.merge(Span::point(end)),
-                callee,
-                end,
-            );
+            return collection_type_application("Array", bracket_span, callee, bracket_span.end);
         }
 
         Expr {
@@ -760,8 +758,27 @@ impl Parser<'_> {
                 callee: Box::new(callee),
                 args,
             },
-            span: Span::new(start, end),
+            span: Span::new(start, bracket_span.end),
         }
+    }
+
+    fn parse_bracketed_expressions(&mut self) -> (Span, Vec<Expr>) {
+        let open_span = self.current_span();
+        self.advance();
+        let args = self.parse_expression_list(TokenKind::CloseBracket);
+        let end = self.consume_close(TokenKind::CloseBracket);
+
+        (Span::new(open_span.start, end), args)
+    }
+
+    fn parse_bracketed_key(&mut self) -> Option<(Expr, Span)> {
+        let (span, mut args) = self.parse_bracketed_expressions();
+        if args.len() != 1 {
+            self.report_expected_record_label(span);
+            return None;
+        }
+
+        Some((args.remove(0), span))
     }
 
     fn finish_set_type_postfix(&mut self, element: Expr) -> Expr {
@@ -1285,6 +1302,17 @@ impl Parser<'_> {
         if self.current_is_operator("-") {
             let operator_span = self.current_span();
             self.advance();
+            if self.current_is(TokenKind::OpenBracket) {
+                let Some((key, bracket_span)) = self.parse_bracketed_key() else {
+                    self.recover_record_entry();
+                    return None;
+                };
+                return Some(RecordEntry::DeleteComputed {
+                    key,
+                    span: operator_span.merge(bracket_span),
+                });
+            }
+
             let Some((name, name_span)) = self.parse_transform_label_name(mode) else {
                 self.report_expected_record_label(self.current_span());
                 self.recover_record_entry();
@@ -2186,6 +2214,7 @@ fn record_entry_span(entry: &RecordEntry) -> Span {
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }
         | RecordEntry::Delete { span, .. }
+        | RecordEntry::DeleteComputed { span, .. }
         | RecordEntry::Rename { span, .. }
         | RecordEntry::Iteration { span, .. }
         | RecordEntry::Open { span } => *span,
@@ -2479,7 +2508,7 @@ mod tests {
     #[test]
     fn parses_record_transform_entries_into_ast_nodes() {
         let output = parse_module(
-            "cleaned = { ..user, :..defaults, -password, name -> fullName, active: true, age :: 37 }\n",
+            "cleaned = { ..user, :..defaults, -password, -[key], name -> fullName, active: true, age :: 37 }\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2487,7 +2516,7 @@ mod tests {
             panic!("expected record expression");
         };
 
-        assert_eq!(entries.len(), 6);
+        assert_eq!(entries.len(), 7);
         assert!(matches!(
             &entries[0],
             RecordEntry::Spread {
@@ -2508,10 +2537,15 @@ mod tests {
         ));
         assert!(matches!(
             &entries[3],
-            RecordEntry::Rename { from, to, .. } if from == "name" && to == "fullName"
+            RecordEntry::DeleteComputed { key, .. }
+                if matches!(&key.kind, ExprKind::Name(name) if name == "key")
         ));
         assert!(matches!(
             &entries[4],
+            RecordEntry::Rename { from, to, .. } if from == "name" && to == "fullName"
+        ));
+        assert!(matches!(
+            &entries[5],
             RecordEntry::Field {
                 name,
                 overwrite: false,
@@ -2519,7 +2553,7 @@ mod tests {
             } if name == "active"
         ));
         assert!(matches!(
-            &entries[5],
+            &entries[6],
             RecordEntry::Field {
                 name,
                 overwrite: true,
