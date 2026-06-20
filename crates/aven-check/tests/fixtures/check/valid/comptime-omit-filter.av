@@ -1,0 +1,4 @@
+User = { name: Text, email: Text }
+user : User = { name: "Ada", email: "ada@x.dev" }
+omit2 = (o: {..r}, @drop: keysOf(r)@{}) => { keysOf(o) -> k, !drop.has(k); (k, o[k]) }
+result : { email: Text } = omit2(user, @{"name"})

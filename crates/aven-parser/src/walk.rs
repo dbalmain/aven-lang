@@ -94,8 +94,16 @@ fn walk_record_entry_exprs<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMu
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => visit(value),
-            RecordEntry::Iteration { source, body, .. } => {
+            RecordEntry::Iteration {
+                source,
+                guard,
+                body,
+                ..
+            } => {
                 visit(source);
+                if let Some(guard) = guard {
+                    visit(guard);
+                }
                 walk_record_entry_exprs(body, visit);
             }
             RecordEntry::Shorthand { .. }

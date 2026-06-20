@@ -360,6 +360,7 @@ fn scope_at_record_entries<'a>(
                 source,
                 binder,
                 binder_span,
+                guard,
                 body,
                 ..
             } => {
@@ -380,6 +381,13 @@ fn scope_at_record_entries<'a>(
                         visible,
                         binder_at: Some(binder_site),
                     });
+                }
+
+                if let Some(guard) = guard
+                    && guard.span.contains(at)
+                {
+                    return scope_at_expr(guard, at, &visible)
+                        .or_else(|| Some(ScopeAt::from_visible(visible)));
                 }
 
                 if body

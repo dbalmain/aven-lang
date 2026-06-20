@@ -213,12 +213,16 @@ fn analyze_record_entries(
                 source,
                 binder,
                 binder_span,
+                guard,
                 body,
                 ..
             } => {
                 analyze_expr(source, scopes, diagnostics);
                 scopes.push();
                 scopes.define(binder, *binder_span, BindingKind::Local, diagnostics);
+                if let Some(guard) = guard {
+                    analyze_expr(guard, scopes, diagnostics);
+                }
                 analyze_record_entries(body, scopes, diagnostics);
                 scopes.pop(diagnostics);
             }

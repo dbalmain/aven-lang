@@ -173,6 +173,7 @@ pub enum RecordEntry {
         source: Expr,
         binder: String,
         binder_span: Span,
+        guard: Option<Expr>,
         body: Vec<RecordEntry>,
         span: Span,
     },
@@ -550,8 +551,11 @@ impl Parser<'_> {
     }
 
     fn parse_unary(&mut self) -> Expr {
-        if self.current_is_operator("-") {
+        if self.current_is_operator("-") || self.current_is_operator("!") {
             let Some(operator) = self.current().cloned() else {
+                return self.parse_postfix();
+            };
+            let TokenKind::Operator(operator_text) = operator.kind else {
                 return self.parse_postfix();
             };
             self.advance();
@@ -560,7 +564,7 @@ impl Parser<'_> {
 
             return Expr {
                 kind: ExprKind::Unary {
-                    operator: "-".to_owned(),
+                    operator: operator_text,
                     operator_span: operator.span,
                     value: Box::new(value),
                 },
@@ -1333,6 +1337,14 @@ impl Parser<'_> {
                 self.recover_record_entry();
                 return None;
             };
+
+            let guard = if self.current_is(TokenKind::Comma) {
+                self.advance();
+                Some(self.parse_binary_expression(0, true))
+            } else {
+                None
+            };
+
             let semicolon_span = self.current_span();
             if !self.current_is(TokenKind::Semicolon) {
                 self.report_expected_record_entry(self.current_span());
@@ -1352,6 +1364,7 @@ impl Parser<'_> {
                 source,
                 binder,
                 binder_span,
+                guard,
                 body,
             });
         }
@@ -1513,16 +1526,53 @@ impl Parser<'_> {
                         return false;
                     };
                     let after_binder = self.skip_collection_trivia_from(binder + 1);
-                    return self
-                        .tokens
-                        .get(after_binder)
-                        .is_some_and(|token| token.kind == TokenKind::Semicolon);
+                    return match self.tokens.get(after_binder) {
+                        Some(Token {
+                            kind: TokenKind::Semicolon,
+                            ..
+                        }) => true,
+                        Some(Token {
+                            kind: TokenKind::Comma,
+                            ..
+                        }) => self.guard_semicolon_follows(after_binder + 1),
+                        _ => false,
+                    };
                 }
                 TokenKind::Newline
                 | TokenKind::Indent
                 | TokenKind::Dedent
                 | TokenKind::Comma
                 | TokenKind::Semicolon
+                    if depth == 0 =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+
+            index += 1;
+        }
+
+        false
+    }
+
+    fn guard_semicolon_follows(&self, start: usize) -> bool {
+        let mut depth = 0usize;
+        let mut index = self.skip_collection_trivia_from(start);
+
+        while let Some(token) = self.tokens.get(index) {
+            match &token.kind {
+                TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
+                    depth += 1;
+                }
+                TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                TokenKind::Semicolon if depth == 0 => return true,
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Comma
                     if depth == 0 =>
                 {
                     return false;

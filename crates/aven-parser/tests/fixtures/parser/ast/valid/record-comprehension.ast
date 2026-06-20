@@ -5,6 +5,32 @@ module
         iteration k
           source
             name keys
+          guard
+            none
+          body
+            element
+              tuple
+                name k
+                index
+                  callee
+                    name o
+                  args
+                    name k
+  binding filtered
+    value
+      record
+        iteration k
+          source
+            name keys
+          guard
+            unary !
+              call
+                callee
+                  field-access has null_safe=false
+                    receiver
+                      name drop
+                args
+                  name k
           body
             element
               tuple

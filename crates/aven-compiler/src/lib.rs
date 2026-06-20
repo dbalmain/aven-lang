@@ -457,8 +457,16 @@ fn collect_record_entry_references(entries: &[RecordEntry], references: &mut Vec
                 phase: DeclarationPhase::Runtime,
                 span: *name_span,
             }),
-            RecordEntry::Iteration { source, body, .. } => {
+            RecordEntry::Iteration {
+                source,
+                guard,
+                body,
+                ..
+            } => {
                 collect_expr_references(source, references);
+                if let Some(guard) = guard {
+                    collect_expr_references(guard, references);
+                }
                 collect_record_entry_references(body, references);
             }
             RecordEntry::Delete { .. } | RecordEntry::Rename { .. } | RecordEntry::Open { .. } => {}

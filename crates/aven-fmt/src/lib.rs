@@ -285,7 +285,7 @@ fn is_tight_postfix_operator(token: &Token) -> bool {
 }
 
 fn is_tight_prefix_operator(token: &Token, next: Option<&Token>) -> bool {
-    matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), ".." | ":.."))
+    matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), "!" | ".." | ":.."))
         || is_at_set_marker(token, next)
 }
 

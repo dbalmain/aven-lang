@@ -607,6 +607,7 @@ fn render_record_entry_ast(output: &mut String, entry: &RecordEntry, indent: usi
         RecordEntry::Iteration {
             source,
             binder,
+            guard,
             body,
             ..
         } => {
@@ -615,6 +616,14 @@ fn render_record_entry_ast(output: &mut String, entry: &RecordEntry, indent: usi
             write_indent(output, indent + 1);
             let _ = writeln!(output, "source");
             render_expr_ast(output, source, indent + 2);
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "guard");
+            if let Some(guard) = guard {
+                render_expr_ast(output, guard, indent + 2);
+            } else {
+                write_indent(output, indent + 2);
+                let _ = writeln!(output, "none");
+            }
             write_indent(output, indent + 1);
             let _ = writeln!(output, "body");
             render_record_entries_ast(output, body, indent + 2);

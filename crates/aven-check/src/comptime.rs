@@ -13,6 +13,7 @@ pub(crate) enum ComptimeValue {
     ReifiedType(Type),
     LabelSet(Vec<String>),
     Literal(Literal),
+    Bool(bool),
 }
 
 impl ComptimeValue {
@@ -21,20 +22,23 @@ impl ComptimeValue {
             ComptimeValue::ReifiedType(ty) => ComptimeValue::ReifiedType(ty),
             ComptimeValue::LabelSet(labels) => ComptimeValue::ReifiedType(label_set_type(labels)),
             ComptimeValue::Literal(literal) => ComptimeValue::ReifiedType(literal_type(literal)),
+            ComptimeValue::Bool(value) => ComptimeValue::Bool(value),
         }
     }
 
     pub(crate) fn into_reified_type(self) -> Option<Type> {
         match self {
             ComptimeValue::ReifiedType(ty) => Some(ty),
-            ComptimeValue::LabelSet(_) | ComptimeValue::Literal(_) => None,
+            ComptimeValue::LabelSet(_) | ComptimeValue::Literal(_) | ComptimeValue::Bool(_) => None,
         }
     }
 
     pub(crate) fn as_literal(&self) -> Option<&Literal> {
         match self {
             ComptimeValue::Literal(literal) => Some(literal),
-            ComptimeValue::ReifiedType(_) | ComptimeValue::LabelSet(_) => None,
+            ComptimeValue::ReifiedType(_) | ComptimeValue::LabelSet(_) | ComptimeValue::Bool(_) => {
+                None
+            }
         }
     }
 }
@@ -160,6 +164,24 @@ pub(crate) fn evaluate_runtime_value(
         ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
             EvaluationResult::evaluated(ComptimeValue::Literal(literal.clone()))
         }
+        ExprKind::Call { callee, args } => evaluate_runtime_call(callee, args, bindings),
+        ExprKind::Unary {
+            operator, value, ..
+        } if operator == "!" => match evaluate_runtime_value(value, bindings).evaluation {
+            Evaluation::Evaluated(ComptimeValue::Bool(value)) => {
+                EvaluationResult::evaluated(ComptimeValue::Bool(!value))
+            }
+            Evaluation::Deferred => EvaluationResult::deferred(),
+            Evaluation::Evaluated(_) | Evaluation::Unsupported => EvaluationResult::unsupported(),
+        },
+        ExprKind::Binary {
+            left,
+            operator,
+            right,
+            ..
+        } if operator == "&&" || operator == "||" => {
+            evaluate_runtime_bool_binary(left, operator, right, bindings)
+        }
         ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
         ExprKind::Missing
         | ExprKind::Literal(_)
@@ -172,7 +194,6 @@ pub(crate) fn evaluate_runtime_value(
         | ExprKind::Nullable(_)
         | ExprKind::Arrow { .. }
         | ExprKind::FieldAccess { .. }
-        | ExprKind::Call { .. }
         | ExprKind::Binary { .. }
         | ExprKind::Unary { .. }
         | ExprKind::Propagate { .. }
@@ -180,6 +201,80 @@ pub(crate) fn evaluate_runtime_value(
         | ExprKind::Lambda { .. }
         | ExprKind::Block(_) => EvaluationResult::unsupported(),
     }
+}
+
+fn evaluate_runtime_call(
+    callee: &Expr,
+    args: &[Expr],
+    bindings: &HashMap<String, ComptimeValue>,
+) -> EvaluationResult {
+    let ExprKind::FieldAccess {
+        receiver, field, ..
+    } = &ungroup(callee).kind
+    else {
+        return EvaluationResult::unsupported();
+    };
+
+    if field != "has" {
+        return EvaluationResult::unsupported();
+    }
+
+    let [arg] = args else {
+        return EvaluationResult::unsupported();
+    };
+
+    let receiver = match evaluate_runtime_value(receiver, bindings).evaluation {
+        Evaluation::Evaluated(ComptimeValue::LabelSet(labels)) => labels,
+        Evaluation::Deferred => return EvaluationResult::deferred(),
+        Evaluation::Evaluated(_) | Evaluation::Unsupported => {
+            return EvaluationResult::unsupported();
+        }
+    };
+
+    let label = match evaluate_runtime_value(arg, bindings).evaluation {
+        Evaluation::Evaluated(ComptimeValue::Literal(Literal::String(text))) => {
+            string_literal_label(&text)
+        }
+        Evaluation::Deferred => return EvaluationResult::deferred(),
+        Evaluation::Evaluated(_) | Evaluation::Unsupported => {
+            return EvaluationResult::unsupported();
+        }
+    };
+    let Some(label) = label else {
+        return EvaluationResult::unsupported();
+    };
+
+    EvaluationResult::evaluated(ComptimeValue::Bool(receiver.contains(&label)))
+}
+
+fn evaluate_runtime_bool_binary(
+    left: &Expr,
+    operator: &str,
+    right: &Expr,
+    bindings: &HashMap<String, ComptimeValue>,
+) -> EvaluationResult {
+    let left = match evaluate_runtime_value(left, bindings).evaluation {
+        Evaluation::Evaluated(ComptimeValue::Bool(value)) => value,
+        Evaluation::Deferred => return EvaluationResult::deferred(),
+        Evaluation::Evaluated(_) | Evaluation::Unsupported => {
+            return EvaluationResult::unsupported();
+        }
+    };
+    let right = match evaluate_runtime_value(right, bindings).evaluation {
+        Evaluation::Evaluated(ComptimeValue::Bool(value)) => value,
+        Evaluation::Deferred => return EvaluationResult::deferred(),
+        Evaluation::Evaluated(_) | Evaluation::Unsupported => {
+            return EvaluationResult::unsupported();
+        }
+    };
+
+    let value = match operator {
+        "&&" => left && right,
+        "||" => left || right,
+        _ => return EvaluationResult::unsupported(),
+    };
+
+    EvaluationResult::evaluated(ComptimeValue::Bool(value))
 }
 
 struct Evaluator<'ctx, 'a, C>
@@ -488,6 +583,12 @@ fn label_set_type(labels: Vec<String>) -> Type {
             .collect(),
         tail: RowTail::Closed,
     })
+}
+
+fn string_literal_label(text: &str) -> Option<String> {
+    text.strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .map(str::to_owned)
 }
 
 fn literal_type(literal: Literal) -> Type {

@@ -1,3 +1,4 @@
 pick=(o:{..r},@keys:keysOf(r)@{})=>{keys->k;(k,o[k])}
+omit2=(o:{..r},@drop:keysOf(r)@{})=>{keysOf(o)->k,!drop.has(k);(k,o[k])}
 array:Text[]
 set:Text@{}

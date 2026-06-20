@@ -1418,6 +1418,18 @@ Slices:
   absent-field rules to bulk deletion, preserves static field delete behavior,
   and locks `omit(user, @{"name"})` plus out-of-domain `omit` fixtures.
 
+- 16.8 — comprehension guards for filtered record unrolling:
+  `source -> binder, guard; body` evaluates a small comptime predicate language
+  per unrolled member. `set.has(k)`, `!`, `&&`, and `||` produce internal
+  comptime `Bool` values; `true` folds the body, `false` skips it, and anything
+  unsupported or not comptime-known defers through the existing row-entry path.
+
+  Done: `aven-parser` carries `guard: Option<Expr>` on
+  `RecordEntry::Iteration` and preserves rename disambiguation, shared AST
+  walkers/name resolution include the guard in binder scope, `aven-fmt`
+  round-trips guarded comprehensions, and `aven-check` filters unrolled record
+  members so `omit2(user, @{"name"})` infers `{ email: Text }`.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field

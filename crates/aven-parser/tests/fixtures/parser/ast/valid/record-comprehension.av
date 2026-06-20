@@ -1,1 +1,2 @@
 value = { keys -> k; (k, o[k]) }
+filtered = { keys -> k, !drop.has(k); (k, o[k]) }

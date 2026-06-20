@@ -545,8 +545,16 @@ impl<'a> Checker<'a> {
                 | RecordEntry::Element(value) => {
                     self.check_value_expr(value);
                 }
-                RecordEntry::Iteration { source, body, .. } => {
+                RecordEntry::Iteration {
+                    source,
+                    guard,
+                    body,
+                    ..
+                } => {
                     self.check_value_expr(source);
+                    if let Some(guard) = guard {
+                        self.check_value_expr(guard);
+                    }
                     self.walk_value_record_values(body);
                 }
                 RecordEntry::Shorthand { .. }
@@ -1689,6 +1697,7 @@ impl<'a> Checker<'a> {
         let RecordEntry::Iteration {
             source,
             binder,
+            guard,
             body,
             ..
         } = entry
@@ -1698,6 +1707,9 @@ impl<'a> Checker<'a> {
 
         let RowFoldMode::Value { env } = mode else {
             self.fold_expression(source, mode);
+            if let Some(guard) = guard {
+                self.fold_expression(guard, mode);
+            }
             for entry in body {
                 self.fold_deferred_row_entry(entry, kind, mode);
             }
@@ -1706,13 +1718,16 @@ impl<'a> Checker<'a> {
 
         if kind != RowKind::Record {
             self.fold_expression(source, mode);
+            if let Some(guard) = guard {
+                self.fold_expression(guard, mode);
+            }
             for entry in body {
                 self.fold_deferred_row_entry(entry, kind, mode);
             }
             return Err(());
         }
 
-        let Some(labels) = self.comptime_known_label_set(source) else {
+        let Some(labels) = self.comptime_known_label_set_in_env(source, env) else {
             self.fold_expression(source, mode);
             return Err(());
         };
@@ -1731,6 +1746,33 @@ impl<'a> Checker<'a> {
                 comptime::ComptimeValue::Literal(literal.clone()),
             );
             self.local_comptime_values.push(scope);
+
+            if let Some(guard) = guard {
+                match comptime::evaluate_runtime_value(
+                    guard,
+                    &self.current_comptime_value_bindings(),
+                )
+                .evaluation
+                {
+                    Evaluation::Evaluated(comptime::ComptimeValue::Bool(true)) => {}
+                    Evaluation::Evaluated(comptime::ComptimeValue::Bool(false)) => {
+                        self.local_comptime_values.pop();
+                        continue;
+                    }
+                    Evaluation::Evaluated(_) | Evaluation::Deferred | Evaluation::Unsupported => {
+                        self.fold_expression(guard, RowFoldMode::Value { env: &body_env });
+                        for body_entry in body {
+                            self.fold_deferred_row_entry(
+                                body_entry,
+                                kind,
+                                RowFoldMode::Value { env: &body_env },
+                            );
+                        }
+                        self.local_comptime_values.pop();
+                        return Err(());
+                    }
+                }
+            }
 
             for (index, body_entry) in body.iter().enumerate() {
                 if self
@@ -1858,8 +1900,16 @@ impl<'a> Checker<'a> {
                     }
                 }
             },
-            RecordEntry::Iteration { source, body, .. } => {
+            RecordEntry::Iteration {
+                source,
+                guard,
+                body,
+                ..
+            } => {
                 self.fold_expression(source, mode);
+                if let Some(guard) = guard {
+                    self.fold_expression(guard, mode);
+                }
                 for entry in body {
                     self.fold_deferred_row_entry(entry, kind, mode);
                 }
@@ -2873,7 +2923,9 @@ fn comptime_value_label(value: &comptime::ComptimeValue) -> Option<String> {
 fn comptime_value_label_set(value: &comptime::ComptimeValue) -> Option<Vec<String>> {
     match value {
         comptime::ComptimeValue::LabelSet(labels) => Some(labels.clone()),
-        comptime::ComptimeValue::ReifiedType(_) | comptime::ComptimeValue::Literal(_) => None,
+        comptime::ComptimeValue::ReifiedType(_)
+        | comptime::ComptimeValue::Literal(_)
+        | comptime::ComptimeValue::Bool(_) => None,
     }
 }
 
@@ -3523,7 +3575,7 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
-                    comptime::ComptimeValue::ReifiedType(_) => {}
+                    comptime::ComptimeValue::ReifiedType(_) | comptime::ComptimeValue::Bool(_) => {}
                 }
             }
             if self.diagnostics.len() > diagnostics_before_domain_check {
@@ -3641,6 +3693,42 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         }
+    }
+
+    fn comptime_known_label_set_in_env(&self, expr: &Expr, env: &TypeEnv) -> Option<Vec<String>> {
+        self.comptime_known_label_set(expr)
+            .or_else(|| self.comptime_known_keys_of_value(expr, env))
+    }
+
+    fn comptime_known_keys_of_value(&self, expr: &Expr, env: &TypeEnv) -> Option<Vec<String>> {
+        let ExprKind::Call { callee, args } = &ungroup_expr(expr).kind else {
+            return None;
+        };
+        if expr_name(callee)? != "keysOf" {
+            return None;
+        }
+
+        let [arg] = args.as_slice() else {
+            return None;
+        };
+        let name = expr_name(arg)?;
+        let LocalValueType::Known(subject) = env.get(name)? else {
+            return None;
+        };
+        let subject = self.normalize(&self.unifier.resolve(subject));
+
+        let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) =
+            comptime::evaluate_keys_of(
+                &subject,
+                arg.span,
+                self.reflection_subject_is_unresolved(&subject),
+            )
+            .evaluation
+        else {
+            return None;
+        };
+
+        Some(labels)
     }
 
     fn lookup_comptime_value(&self, name: &str) -> Option<&comptime::ComptimeValue> {
