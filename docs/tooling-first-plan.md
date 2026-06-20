@@ -1461,6 +1461,17 @@ Slices:
   formatter fixtures round-trip both spellings, and optional fields produced by
   `partial` are still checked when present.
 
+- 16.11 — `required` type modifier (strip optional):
+  `required = (object) => { keysOf(object) -> k; [k]: object[k] }` is the dual of
+  `partial`, rebuilding a closed record with the same field types and required
+  field flags even when the input record's fields are optional.
+
+  Done: no production code was needed. The existing `keysOf` record reflection,
+  type-position `object[k]`, and non-optional computed field-add machinery lower
+  `required(partial(User))` back to `{ email: Text, name: Text }` with both
+  fields required, and the normal missing-field diagnostic fires when a restored
+  value omits a field.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field

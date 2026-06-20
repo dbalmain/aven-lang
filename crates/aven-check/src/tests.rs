@@ -476,6 +476,29 @@ fn comptime_type_position_computed_field_add_sets_optional_flags() {
 }
 
 #[test]
+fn comptime_required_strips_optional_fields_from_partial_record() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         partial = (object) => { keysOf(object) -> k; [k]?: object[k] }\n\
+         required = (object) => { keysOf(object) -> k; [k]: object[k] }\n\
+         Restored = required(partial(User))\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("Restored"),
+        Some(&Type::Record(Row {
+            entries: vec![field("email", named("Text")), field("name", named("Text"))],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
 fn comptime_type_position_record_comprehension_non_concrete_subject_defers_without_diagnostic() {
     let open = parse_module(
         "clone = (object) => { keysOf(object) -> k; (k, object[k]) }\n\
