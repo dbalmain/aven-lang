@@ -598,7 +598,7 @@ Decisions to lock before starting:
   rather than by hover. Revisit only if hover must show normalized/computed
   types rather than the author's written annotation.
 - builtin type set: M7 knows a fixed primitive set (`Int`, `Text`, `Bool`,
-  `Unit`, `Nil`, ...) and nothing else. Records-as-types, variants/rows, `[a]`
+  `Unit`, `Undefined`, ...) and nothing else. Records-as-types, variants/rows, `[a]`
   application semantics, and comptime type computation stay deferred to their
   milestones.
 
@@ -861,7 +861,7 @@ runs at the declaration level, so inline annotations and adjacent
 signature-plus-binding declarations share the same declared annotation lookup
 instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
-types, and nullable values are accepted when they are `Nil` or satisfy the inner
+types, and nullable values are accepted when they are `Undefined` or satisfy the inner
 type. Identifier values are checked when a top-level declaration value
 references another top-level binding with a single clean declared annotation or
 synthesized concrete type. Direct applications written under an annotation are
@@ -1686,6 +1686,17 @@ Completed parser groundwork:
   exhaustiveness path, literal arms cover matching members, open literal unions
   require a default arm, and out-of-union literal arms report
   `type.unreachable-match-arm`.
+
+## Milestone N — null/undefined model
+
+- N1 done: `true`, `false`, `null`, and `undefined` are reserved value
+  keywords. `true`/`false` infer and evaluate as `Bool`; `undefined` is the
+  renamed unset empty with type `Undefined`; `null` is a distinct deliberate
+  empty with type `Null`. The old `Nil` builtin/value surface is removed from
+  checker/tooling fixtures. Postfix `T?` still means the existing
+  `Type::Nullable(T)` shape and, for N1, still admits `Undefined`; prefix `?`,
+  `Optional`, optional-field changes, and spread semantics remain deferred to
+  later N milestones.
 
 ## To investigate later
 

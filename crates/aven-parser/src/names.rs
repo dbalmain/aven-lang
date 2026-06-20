@@ -153,7 +153,11 @@ fn analyze_expr(expr: &Expr, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
         ExprKind::Record(entries) | ExprKind::Set(entries) => {
             analyze_record_entries(entries, scopes, diagnostics);
         }
-        ExprKind::Missing | ExprKind::Literal(_) | ExprKind::Tag(_) => {}
+        ExprKind::Missing
+        | ExprKind::Literal(_)
+        | ExprKind::Undefined
+        | ExprKind::Null
+        | ExprKind::Tag(_) => {}
         _ => walk_expr_children(expr, &mut |child| {
             analyze_expr(child, scopes, diagnostics);
         }),

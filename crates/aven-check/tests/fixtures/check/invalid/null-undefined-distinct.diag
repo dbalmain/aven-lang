@@ -1,0 +1,9 @@
+error type.mismatch: expected `Undefined`, found `Null`
+  label 16..20: this value has type `Null`
+  note: change the value to produce `Undefined`, or change the annotation to `Null`
+error type.mismatch: expected `Null`, found `Undefined`
+  label 32..41: this value has type `Undefined`
+  note: change the value to produce `Null`, or change the annotation to `Undefined`
+error type.mismatch: expected `Text`, found `Null`
+  label 54..58: this value has type `Null`
+  note: change the value to produce `Text`, or change the annotation to `Null`

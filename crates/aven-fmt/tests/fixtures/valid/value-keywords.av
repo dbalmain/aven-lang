@@ -1,0 +1,4 @@
+truth=true
+lie=false
+absent=undefined
+empty=null

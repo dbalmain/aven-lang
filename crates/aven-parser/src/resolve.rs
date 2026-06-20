@@ -487,6 +487,8 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
         ExprKind::Lambda { .. } => {}
         ExprKind::Missing
         | ExprKind::Literal(_)
+        | ExprKind::Undefined
+        | ExprKind::Null
         | ExprKind::Name(_)
         | ExprKind::ComptimeName(_)
         | ExprKind::Tag(_) => {}

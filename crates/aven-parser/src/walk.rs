@@ -62,6 +62,8 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
         }
         ExprKind::Missing
         | ExprKind::Literal(_)
+        | ExprKind::Undefined
+        | ExprKind::Null
         | ExprKind::Name(_)
         | ExprKind::ComptimeName(_)
         | ExprKind::Tag(_) => {}

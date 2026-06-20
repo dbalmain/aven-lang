@@ -301,7 +301,8 @@ fn is_tight_set_postfix_marker(previous: &Token, current: &Token, next: Option<&
 fn can_end_postfix_operand(token: &Token) -> bool {
     matches!(
         token.kind,
-        TokenKind::Identifier(_)
+        TokenKind::Keyword(_)
+            | TokenKind::Identifier(_)
             | TokenKind::ComptimeIdentifier(_)
             | TokenKind::CloseParen
             | TokenKind::CloseBracket

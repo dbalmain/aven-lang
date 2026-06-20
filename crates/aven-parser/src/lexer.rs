@@ -27,6 +27,7 @@ impl Token {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
+    Keyword(Keyword),
     Identifier(String),
     ComptimeIdentifier(String),
     ComptimeParamMarker(String),
@@ -54,9 +55,29 @@ pub enum TokenKind {
     DocComment(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keyword {
+    True,
+    False,
+    Null,
+    Undefined,
+}
+
+impl Keyword {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::True => "true",
+            Self::False => "false",
+            Self::Null => "null",
+            Self::Undefined => "undefined",
+        }
+    }
+}
+
 impl TokenKind {
     pub fn describe(&self) -> String {
         match self {
+            Self::Keyword(keyword) => format!("keyword `{}`", keyword.as_str()),
             Self::Identifier(name) => format!("identifier `{name}`"),
             Self::ComptimeIdentifier(name) => format!("comptime_identifier `{name}`"),
             Self::ComptimeParamMarker(name) => format!("comptime_param `@{name}`"),
@@ -265,11 +286,13 @@ impl Lexer<'_> {
             self.offset += 1;
         }
 
-        let text = self.source[start..self.offset].to_owned();
-        let kind = if is_comptime_identifier_name(&text) {
-            TokenKind::ComptimeIdentifier(text)
+        let text = &self.source[start..self.offset];
+        let kind = if let Some(keyword) = keyword_from_text(text) {
+            TokenKind::Keyword(keyword)
+        } else if is_comptime_identifier_name(text) {
+            TokenKind::ComptimeIdentifier(text.to_owned())
         } else {
-            TokenKind::Identifier(text)
+            TokenKind::Identifier(text.to_owned())
         };
         self.push(kind, Span::new(start, self.offset));
     }
@@ -707,6 +730,16 @@ fn is_identifier_continue_byte(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphanumeric()
 }
 
+fn keyword_from_text(text: &str) -> Option<Keyword> {
+    match text {
+        "true" => Some(Keyword::True),
+        "false" => Some(Keyword::False),
+        "null" => Some(Keyword::Null),
+        "undefined" => Some(Keyword::Undefined),
+        _ => None,
+    }
+}
+
 pub fn is_comptime_identifier_name(name: &str) -> bool {
     name.as_bytes()
         .first()
@@ -779,7 +812,7 @@ fn is_path_end_byte(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{TokenKind, is_identifier, lex_source};
+    use super::{Keyword, TokenKind, is_identifier, lex_source};
 
     #[test]
     fn normalizes_newline_shapes_to_newline_tokens() {
@@ -822,5 +855,26 @@ mod tests {
         assert!(!is_identifier("1name"));
         assert!(!is_identifier("name+"));
         assert!(!is_identifier("two words"));
+        assert!(!is_identifier("true"));
+        assert!(!is_identifier("false"));
+        assert!(!is_identifier("null"));
+        assert!(!is_identifier("undefined"));
+    }
+
+    #[test]
+    fn lexes_value_keywords_as_reserved_tokens() {
+        let output = lex_source("true false null undefined");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::Keyword(Keyword::True),
+                TokenKind::Keyword(Keyword::False),
+                TokenKind::Keyword(Keyword::Null),
+                TokenKind::Keyword(Keyword::Undefined),
+            ]
+        );
     }
 }

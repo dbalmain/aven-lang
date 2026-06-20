@@ -15,12 +15,22 @@ pub(crate) use checker::Checker;
 pub(crate) use lower::{cyclic_alias_diagnostics, known_type_names, type_definitions};
 
 const BUILTIN_TYPES: &[&str] = &[
-    "Bool", "Float", "Int", "Nil", "Text", "Unit",
+    "Bool",
+    "Float",
+    "Int",
+    "Null",
+    "Text",
+    "Undefined",
+    "Unit",
     // Seeded std names until import resolution provides them.
-    "Array", "Json", "Result", "Set", "Yaml",
+    "Array",
+    "Json",
+    "Result",
+    "Set",
+    "Yaml",
 ];
 
-const CHECKED_NAMED_TYPES: &[&str] = &["Bool", "Float", "Int", "Nil", "Text", "Unit"];
+const CHECKED_NAMED_TYPES: &[&str] = &["Bool", "Float", "Int", "Null", "Text", "Undefined", "Unit"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckOutput {

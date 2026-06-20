@@ -1,0 +1,5 @@
+b : Bool = true
+f : Bool = false
+u : Undefined = undefined
+n : Null = null
+e : Text? = undefined

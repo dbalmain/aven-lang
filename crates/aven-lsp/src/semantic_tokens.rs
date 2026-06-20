@@ -17,6 +17,7 @@ const TOKEN_TYPE: u32 = 6;
 const TOKEN_FUNCTION: u32 = 7;
 const TOKEN_PARAMETER: u32 = 8;
 const TOKEN_PROPERTY: u32 = 9;
+const TOKEN_KEYWORD: u32 = 10;
 
 const MODIFIER_DEFINITION: u32 = 1 << 0;
 const MODIFIER_DOCUMENTATION: u32 = 1 << 1;
@@ -40,6 +41,7 @@ pub(crate) fn legend() -> SemanticTokensLegend {
             SemanticTokenType::FUNCTION,
             SemanticTokenType::PARAMETER,
             SemanticTokenType::PROPERTY,
+            SemanticTokenType::KEYWORD,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DEFINITION,
@@ -267,6 +269,7 @@ fn signature_semantic_style(signature: &aven_parser::Signature) -> SemanticStyle
 
 fn semantic_style_for_token(kind: &aven_parser::TokenKind) -> Option<SemanticStyle> {
     let token_type = match kind {
+        aven_parser::TokenKind::Keyword(_) => TOKEN_KEYWORD,
         aven_parser::TokenKind::Identifier(_) | aven_parser::TokenKind::ComptimeParamMarker(_) => {
             TOKEN_VARIABLE
         }
@@ -496,6 +499,7 @@ mod tests {
             (TOKEN_FUNCTION, SemanticTokenType::FUNCTION),
             (TOKEN_PARAMETER, SemanticTokenType::PARAMETER),
             (TOKEN_PROPERTY, SemanticTokenType::PROPERTY),
+            (TOKEN_KEYWORD, SemanticTokenType::KEYWORD),
         ];
         assert_eq!(legend.token_types.len(), expected_types.len());
         for (index, expected) in expected_types {
@@ -567,6 +571,7 @@ mod tests {
             TOKEN_FUNCTION => "function",
             TOKEN_PARAMETER => "parameter",
             TOKEN_PROPERTY => "property",
+            TOKEN_KEYWORD => "keyword",
             _ => panic!("unknown semantic token type index {index}"),
         }
     }

@@ -101,6 +101,8 @@ fn row_label(entry: &RowEntry) -> &str {
     match entry {
         RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
         RowEntry::Literal { value } => match value {
+            Literal::Bool(true) => "true",
+            Literal::Bool(false) => "false",
             Literal::Number(value)
             | Literal::String(value)
             | Literal::Regex(value)
@@ -1085,7 +1087,7 @@ fn literal_bindings_report_definitive_scalar_mismatches() {
         "value : Text\nvalue = 42\n",
         "value : Int = (\"hi\")\n",
         "value : Bool = \"hi\"\n",
-        "value : Nil = 42\n",
+        "value : Undefined = 42\n",
         "value : Unit = \"hi\"\n",
     ] {
         let output = parse_module(source);
@@ -1110,6 +1112,20 @@ fn literal_binding_mismatch_defers_non_literals_and_non_scalar_annotations() {
             !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
             "{source} unexpectedly produced type.mismatch"
         );
+    }
+}
+
+#[test]
+fn bool_keywords_evaluate_to_comptime_bools() {
+    for (source, expected) in [("value = true\n", true), ("value = false\n", false)] {
+        let value = binding_value(source);
+        let result = comptime::evaluate_runtime_value(&value, &Default::default());
+
+        assert!(matches!(
+            result.evaluation,
+            comptime::Evaluation::Evaluated(comptime::ComptimeValue::Bool(actual))
+                if actual == expected
+        ));
     }
 }
 
@@ -1468,7 +1484,7 @@ fn contextual_matches_keep_pattern_binders_unknown() {
 fn match_guards_are_checked_as_bool() {
     for source in [
         "value : Text =\n  result ?>\n    @Ok(_), 1 < 2 => \"ok\"\n",
-        "flag : Bool = True\nvalue : Text =\n  result ?>\n    @Ok(_), flag => \"ok\"\n",
+        "flag : Bool = true\nvalue : Text =\n  result ?>\n    @Ok(_), flag => \"ok\"\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1510,7 +1526,7 @@ fn match_guard_pattern_binders_stay_unknown() {
 #[test]
 fn variant_match_payload_binders_use_subject_types() {
     let body = parse_module(
-        "source : @{@Ok(Text), @Err(Text)} = result\nvalue : Bool = source ?>\n  @Ok(item) => item\n  @Err(_) => False\n",
+        "source : @{@Ok(Text), @Err(Text)} = result\nvalue : Bool = source ?>\n  @Ok(item) => item\n  @Err(_) => false\n",
     );
     let body_check = check_module(&body.module);
     assert_eq!(
@@ -1671,7 +1687,7 @@ fn match_results_merge_open_variant_rows_when_an_arm_is_open() {
 
 #[test]
 fn tag_literals_and_constructors_infer_closed_variant_rows() {
-    let output = parse_module("zero = @Zero\nok = @Ok(1)\ntruth = True\nnil = Nil\n");
+    let output = parse_module("zero = @Zero\nok = @Ok(1)\ntruth = true\nabsent = undefined\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
@@ -1692,7 +1708,10 @@ fn tag_literals_and_constructors_infer_closed_variant_rows() {
     }
 
     assert_eq!(checker.infer_top_level_value("truth"), Some(named("Bool")));
-    assert_eq!(checker.infer_top_level_value("nil"), Some(named("Nil")));
+    assert_eq!(
+        checker.infer_top_level_value("absent"),
+        Some(named("Undefined"))
+    );
 }
 
 #[test]
@@ -2197,7 +2216,7 @@ fn builtin_operator_results_are_inferred() {
         "value : Text = \"a\" + \"b\"\n",
         "value : Bool = 1 == 2\n",
         "value : Bool = 1 < 2\n",
-        "left : Bool = True\nright : Bool = False\nvalue : Bool = left && right\n",
+        "left : Bool = true\nright : Bool = false\nvalue : Bool = left && right\n",
         "f = (floatParam : Float) =>\n  mix : Float = floatParam + 1\n  mix\n",
         "f = (intParam : Int) =>\n  sum : Int = intParam + 1\n  sum\n",
     ] {
@@ -2215,7 +2234,7 @@ fn builtin_operator_results_are_inferred() {
         "result = 1 + 2\nvalue : Text = result\n",
         "result = \"a\" + \"b\"\nvalue : Int = result\n",
         "result = 1 < 2\nvalue : Text = result\n",
-        "left : Bool = True\nright : Bool = False\nresult = left && right\nvalue : Text = result\n",
+        "left : Bool = true\nright : Bool = false\nresult = left && right\nvalue : Text = result\n",
         "h = (x) => x + 1\nr = h(1)\nvalue : Text = r\n",
     ] {
         let output = parse_module(source);
@@ -2290,7 +2309,7 @@ fn infer_value_synthesizes_literal_record_types() {
 #[test]
 fn infer_value_synthesizes_closed_record_transform_types() {
     let output = parse_module(
-        "base = { x: 1, y: \"yes\", old: True }\n\
+        "base = { x: 1, y: \"yes\", old: true }\n\
          added = { ..base, z: 2 }\n\
          replaced = { ..base, y := \"changed\" }\n\
          deleted = { ..base, -y }\n\
@@ -2780,7 +2799,7 @@ fn annotated_identifier_values_are_checked_against_expected_types() {
     for source in [
         "other : Text = \"hi\"\nvalue : Int = other\n",
         "other : (Int, Text) = (1, \"a\")\nvalue : (Int, Int) = other\n",
-        "other : Text? = Nil\nvalue : Text = other\n",
+        "other : Text? = undefined\nvalue : Text = other\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -2798,7 +2817,7 @@ fn annotated_identifier_values_accept_compatible_declared_types() {
     for source in [
         "other : Text = \"hi\"\nvalue : Text = other\n",
         "other : Text = \"hi\"\nvalue : Text? = other\n",
-        "other : Nil = Nil\nvalue : Text? = other\n",
+        "other : Undefined = undefined\nvalue : Text? = other\n",
         "other : (Int, Text) = (1, \"a\")\nvalue : (Int, Text) = other\n",
     ] {
         let output = parse_module(source);
@@ -3030,11 +3049,11 @@ fn parenthesized_values_are_checked_through_groups() {
 }
 
 #[test]
-fn nullable_values_accept_nil_and_matching_inner_values() {
+fn nullable_values_accept_undefined_and_matching_inner_values() {
     for source in [
         "value : Text? = \"hi\"\n",
-        "value : Text? = Nil\n",
-        "value : Int? = Nil\n",
+        "value : Text? = undefined\n",
+        "value : Int? = undefined\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -3131,8 +3150,8 @@ fn optional_record_fields_may_be_absent_or_checked_when_present() {
 }
 
 #[test]
-fn nullable_record_fields_accept_nil() {
-    let output = parse_module("value : { email: Text? } = { email: Nil }\n");
+fn nullable_record_fields_accept_undefined() {
+    let output = parse_module("value : { email: Text? } = { email: undefined }\n");
     let check = check_module(&output.module);
 
     assert!(check.diagnostics.is_empty());

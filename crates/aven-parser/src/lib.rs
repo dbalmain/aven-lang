@@ -15,7 +15,7 @@ pub use items::{MergedItem, merged_items};
 pub(crate) use layout::lex_then_layout;
 pub use layout::{LayoutOutput, layout_source, layout_tokens};
 pub use lexer::{
-    LexOutput, Token, TokenKind, is_comptime_identifier_name, is_identifier, lex_source,
+    Keyword, LexOutput, Token, TokenKind, is_comptime_identifier_name, is_identifier, lex_source,
 };
 pub use names::{NameAnalysis, analyze_names};
 pub use parser::{

@@ -398,6 +398,14 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             let _ = writeln!(output, "missing");
         }
         ExprKind::Literal(literal) => render_literal_ast(output, literal, indent),
+        ExprKind::Undefined => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "undefined");
+        }
+        ExprKind::Null => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "null");
+        }
         ExprKind::Name(name) => {
             write_indent(output, indent);
             let _ = writeln!(output, "name {name}");
@@ -684,6 +692,9 @@ fn render_param_ast(output: &mut String, param: &Param, indent: usize) {
 fn render_literal_ast(output: &mut String, literal: &Literal, indent: usize) {
     write_indent(output, indent);
     match literal {
+        Literal::Bool(value) => {
+            let _ = writeln!(output, "bool {value}");
+        }
         Literal::Number(number) => {
             let _ = writeln!(output, "number {number}");
         }

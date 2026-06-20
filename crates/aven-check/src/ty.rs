@@ -492,6 +492,8 @@ pub(crate) fn named_builtin(name: &str) -> Type {
 
 pub(crate) fn render_literal_value(literal: &Literal) -> &str {
     match literal {
+        Literal::Bool(true) => "true",
+        Literal::Bool(false) => "false",
         Literal::Number(value)
         | Literal::String(value)
         | Literal::Regex(value)
@@ -529,9 +531,17 @@ pub(crate) fn is_meta_type(ty: &Type) -> bool {
 
 pub(crate) fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static str> {
     match (expected, literal) {
+        ("Bool", Literal::Bool(_)) => None,
         ("Text", Literal::String(_)) | ("Int" | "Float", Literal::Number(_)) => None,
-        ("Int" | "Float" | "Bool" | "Nil" | "Unit", Literal::String(_)) => Some("text literal"),
-        ("Text" | "Bool" | "Nil" | "Unit", Literal::Number(_)) => Some("number literal"),
+        ("Int" | "Float" | "Bool" | "Null" | "Undefined" | "Unit", Literal::String(_)) => {
+            Some("text literal")
+        }
+        ("Text" | "Bool" | "Null" | "Undefined" | "Unit", Literal::Number(_)) => {
+            Some("number literal")
+        }
+        ("Text" | "Int" | "Float" | "Null" | "Undefined" | "Unit", Literal::Bool(_)) => {
+            Some("bool literal")
+        }
         _ => None,
     }
 }
@@ -544,6 +554,6 @@ pub(crate) fn named_type_mismatch(expected: &str, actual: &str) -> bool {
     expected != actual
 }
 
-pub(crate) fn is_nil_value(value: &Expr) -> bool {
-    matches!(&value.kind, ExprKind::ComptimeName(name) if name == "Nil")
+pub(crate) fn is_undefined_value(value: &Expr) -> bool {
+    matches!(&value.kind, ExprKind::Undefined)
 }

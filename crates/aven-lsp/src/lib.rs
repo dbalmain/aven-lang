@@ -543,7 +543,19 @@ fn completion_kind_for_type(ty: Option<&aven_compiler::Type>) -> CompletionItemK
 // Hardcoded with reference to aven-check's private BUILTIN_TYPES/CHECKED_NAMED_TYPES
 // rather than adding an LSP dependency on the checker just for completion.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Array", "Bool", "Float", "Int", "Json", "Nil", "Result", "Set", "Text", "U8", "Unit", "Yaml",
+    "Array",
+    "Bool",
+    "Float",
+    "Int",
+    "Json",
+    "Null",
+    "Result",
+    "Set",
+    "Text",
+    "U8",
+    "Undefined",
+    "Unit",
+    "Yaml",
 ];
 
 fn definition_location(
@@ -1050,7 +1062,16 @@ mod tests {
         let document = parsed_document_with_semantics("value = 1\n");
         let completions = completion_at_position(&document, position(0, 8));
 
-        for name in ["Bool", "Float", "Int", "Nil", "Text", "U8", "Unit"] {
+        for name in [
+            "Bool",
+            "Float",
+            "Int",
+            "Null",
+            "Text",
+            "U8",
+            "Undefined",
+            "Unit",
+        ] {
             let Some(item) = completion_item(&completions, name) else {
                 panic!("expected builtin completion for {name}");
             };

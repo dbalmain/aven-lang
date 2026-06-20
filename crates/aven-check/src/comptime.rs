@@ -166,6 +166,9 @@ pub(crate) fn evaluate_runtime_value(
             .cloned()
             .map(EvaluationResult::evaluated)
             .unwrap_or_else(EvaluationResult::unsupported),
+        ExprKind::Literal(Literal::Bool(value)) => {
+            EvaluationResult::evaluated(ComptimeValue::Bool(*value))
+        }
         ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
             EvaluationResult::evaluated(ComptimeValue::Literal(literal.clone()))
         }
@@ -190,6 +193,8 @@ pub(crate) fn evaluate_runtime_value(
         ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
         ExprKind::Missing
         | ExprKind::Literal(_)
+        | ExprKind::Undefined
+        | ExprKind::Null
         | ExprKind::Tag(_)
         | ExprKind::Array(_)
         | ExprKind::Tuple(_)
@@ -322,6 +327,8 @@ where
             ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
             ExprKind::Missing
             | ExprKind::Literal(_)
+            | ExprKind::Undefined
+            | ExprKind::Null
             | ExprKind::Tag(_)
             | ExprKind::Array(_)
             | ExprKind::FieldAccess { .. }

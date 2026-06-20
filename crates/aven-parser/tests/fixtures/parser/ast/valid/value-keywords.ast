@@ -1,0 +1,13 @@
+module
+  binding truth
+    value
+      bool true
+  binding lie
+    value
+      bool false
+  binding absent
+    value
+      undefined
+  binding empty
+    value
+      null

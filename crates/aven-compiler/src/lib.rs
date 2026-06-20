@@ -527,6 +527,8 @@ fn collect_pattern_references(pattern: &Expr, references: &mut Vec<Reference>) {
         | ExprKind::Block(_)
         | ExprKind::Missing
         | ExprKind::Literal(_)
+        | ExprKind::Undefined
+        | ExprKind::Null
         | ExprKind::Name(_)
         | ExprKind::Tag(_) => {}
     }

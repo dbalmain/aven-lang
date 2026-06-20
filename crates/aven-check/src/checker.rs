@@ -20,9 +20,9 @@ use crate::lower::{
 };
 use crate::ty::{
     Row, RowEntry, RowKind, RowTail, Type, TypeScheme, free_metas, generalize,
-    has_only_meta_unknowns, is_concrete_type, is_meta_type, is_nil_value, mismatched_literal_kind,
-    named_builtin, named_type_mismatch, named_type_name, numeric_type_name, render_literal_value,
-    type_contains_deferred,
+    has_only_meta_unknowns, is_concrete_type, is_meta_type, is_undefined_value,
+    mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
+    numeric_type_name, render_literal_value, type_contains_deferred,
 };
 use crate::unify::Unifier;
 
@@ -324,10 +324,6 @@ impl<'a> Checker<'a> {
         name: &str,
         visiting: &mut HashSet<String>,
     ) -> bool {
-        if matches!(name, "True" | "False" | "Nil") {
-            return false;
-        }
-
         if self.comptime_bindings.contains(name) {
             return self.comptime_binding_is_artifact(name, visiting);
         }
@@ -450,6 +446,8 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Missing
             | ExprKind::Literal(_)
+            | ExprKind::Undefined
+            | ExprKind::Null
             | ExprKind::Name(_)
             | ExprKind::ComptimeName(_)
             | ExprKind::Tag(_) => {}
@@ -513,7 +511,7 @@ impl<'a> Checker<'a> {
                         Diagnostic::error("optional record fields are only valid in type position")
                             .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
                             .with_label(Label::primary(*name_span, "optional field marker here"))
-                            .with_note("remove `?` in value records; use `field: Nil` when the value is absent"),
+                            .with_note("remove `?` in value records; use `field: undefined` when the value is absent"),
                     );
                 }
                 RecordEntry::FieldComputed {
@@ -525,7 +523,7 @@ impl<'a> Checker<'a> {
                         Diagnostic::error("optional record fields are only valid in type position")
                             .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
                             .with_label(Label::primary(*span, "optional field marker here"))
-                            .with_note("remove `?` in value records; use `field: Nil` when the value is absent"),
+                            .with_note("remove `?` in value records; use `field: undefined` when the value is absent"),
                     );
                 }
                 RecordEntry::Open { span } => {
@@ -751,7 +749,7 @@ impl<'a> Checker<'a> {
                 }
             }
             (_, Type::Nullable(inner)) => {
-                if !is_nil_value(value) {
+                if !is_undefined_value(value) {
                     self.check_value_against(inner, value);
                 }
             }
@@ -935,7 +933,7 @@ impl<'a> Checker<'a> {
         }
 
         match (expected, actual) {
-            (Type::Nullable(_), Type::Named(name)) if name == "Nil" => {}
+            (Type::Nullable(_), Type::Named(name)) if name == "Undefined" => {}
             (Type::Nullable(inner), _) => self.check_type_against_type(inner, actual, span),
             (Type::Named(expected), Type::Named(actual))
                 if named_type_mismatch(expected, actual) =>
@@ -1462,6 +1460,8 @@ impl<'a> Checker<'a> {
                 }),
             ExprKind::Missing => Type::Deferred,
             ExprKind::Literal(_)
+            | ExprKind::Undefined
+            | ExprKind::Null
             | ExprKind::Tag(_)
             | ExprKind::Array(_)
             | ExprKind::FieldAccess { .. }
@@ -3198,6 +3198,7 @@ fn literal_union_accepts_base_type(literals: &[&Literal], base: &str) -> bool {
 
 fn literal_kind_name(literal: &Literal) -> &'static str {
     match literal {
+        Literal::Bool(_) => "bool literal",
         Literal::String(_) => "text literal",
         Literal::Number(_) => "number literal",
         Literal::Regex(_) => "regex literal",
@@ -3343,10 +3344,9 @@ impl<'a> Checker<'a> {
         match &expr.kind {
             ExprKind::Literal(Literal::Number(_)) => self.unifier.fresh_numeric(),
             ExprKind::Literal(Literal::String(_)) => named_builtin("Text"),
-            ExprKind::ComptimeName(name) if name == "True" || name == "False" => {
-                named_builtin("Bool")
-            }
-            ExprKind::ComptimeName(name) if name == "Nil" => named_builtin("Nil"),
+            ExprKind::Literal(Literal::Bool(_)) => named_builtin("Bool"),
+            ExprKind::Undefined => named_builtin("Undefined"),
+            ExprKind::Null => named_builtin("Null"),
             ExprKind::Tag(name) => Type::Variant(Row {
                 entries: vec![RowEntry::Tag {
                     name: name.clone(),

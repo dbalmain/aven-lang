@@ -1,6 +1,6 @@
 use aven_core::{Diagnostic, FileId, Label, SourceFile, Span, codes};
 
-use crate::{Token, TokenKind, lex_then_layout};
+use crate::{Keyword, Token, TokenKind, lex_then_layout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
@@ -53,6 +53,8 @@ pub struct Expr {
 pub enum ExprKind {
     Missing,
     Literal(Literal),
+    Undefined,
+    Null,
     Name(String),
     ComptimeName(String),
     Tag(String),
@@ -194,6 +196,7 @@ pub enum RecordEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Literal {
+    Bool(bool),
     Number(String),
     String(String),
     Regex(String),
@@ -1034,6 +1037,21 @@ impl Parser<'_> {
         };
 
         match token.kind {
+            TokenKind::Keyword(keyword) => {
+                self.advance();
+                match keyword {
+                    Keyword::True => literal_expr(Literal::Bool(true), token.span),
+                    Keyword::False => literal_expr(Literal::Bool(false), token.span),
+                    Keyword::Null => Expr {
+                        kind: ExprKind::Null,
+                        span: token.span,
+                    },
+                    Keyword::Undefined => Expr {
+                        kind: ExprKind::Undefined,
+                        span: token.span,
+                    },
+                }
+            }
             TokenKind::Identifier(name) => {
                 self.advance();
                 Expr {
