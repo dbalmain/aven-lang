@@ -1,1 +1,3 @@
-pick=(o:{..r},@keys:keysOf(r)[])=>{keys->k;(k,o[k])}
+pick=(o:{..r},@keys:keysOf(r)@{})=>{keys->k;(k,o[k])}
+array:Text[]
+set:Text@{}

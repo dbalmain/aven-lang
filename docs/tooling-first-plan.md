@@ -1354,7 +1354,7 @@ Slices:
 - 16.4 — record comprehension + comptime unrolling (thinnest: `pick`): the first
   comprehension slice. Thinnest end-to-end target:
   ```
-  pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }
+  pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }
   pick(user, @{"name", "email"})    # result type: { name: Text, email: Text }
   ```
   Pieces:
@@ -1367,8 +1367,8 @@ Slices:
     **add-entry** item (reuse the tuple `Element`; the checker interprets a
     2-tuple as add-field). Thread `walk`/`resolve`/`names` (the binder is an
     ordinary binder) and `aven-fmt` (round-trip the iteration form).
-  - **Checker (`aven-check`):** extend `@param` to a key **set/array**
-    (`@keys: keysOf(r)[]`): the comptime argument is a set literal
+  - **Checker (`aven-check`):** extend `@param` to a key **set**
+    (`@keys: keysOf(r)@{}`): the comptime argument is a set literal
     (`@{"name","email"}`) → a `LabelSet`, each member checked against the domain
     by literal-union membership (reuse M15.1/M16.3). **Comptime-unroll** the
     iteration over the comptime key set: bind the binder to each member and
@@ -1384,7 +1384,7 @@ Slices:
   Done: `aven-parser` now parses `source -> binder; body` as
   `RecordEntry::Iteration` while preserving bare `a -> b` renames, `aven-fmt`
   round-trips the comprehension form, and `aven-check` accepts concrete
-  label-set comptime arguments for `keysOf(r)[]`, checks each member against the
+  label-set comptime arguments for `keysOf(r)@{}`, checks each member against the
   literal-union domain, and unrolls record iterations so `pick(user,
   @{"name", "email"})` infers `{ name: Text, email: Text }` while non-concrete
   key sets defer.
@@ -1401,6 +1401,11 @@ Slices:
   the `@{}` postfix is the empty set adjacent to a type (mirroring the empty `[]`
   postfix), distinct from a `@{...}` set literal. `aven-parser` + `aven-fmt` +
   `aven-check`.
+
+  Done: `aven-parser` desugars empty postfix `[]` and adjacent empty postfix
+  `@{}` to existing `Array[...]`/`Set[...]` applications, `aven-fmt` round-trips
+  both postfix spellings, and `aven-check` unwraps `Set[<literal union>]` for
+  comptime key-set domains used by `pick`.
 
 	Done when:
 
@@ -1428,7 +1433,7 @@ Slices:
 - a record-body iteration `source -> binder; body` parses to
   `RecordEntry::Iteration` (distinct from rename), `aven-fmt` round-trips it, and
   the binder resolves as an ordinary binder; fixtures lock parse + fmt
-- `pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }` with
+- `pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }` with
   `pick(user, @{"name", "email"})` types as `{ name: Text, email: Text }`; an
   out-of-domain key in the set reports the membership diagnostic; a non-concrete
   key set defers; fixtures lock each

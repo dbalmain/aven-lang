@@ -487,6 +487,20 @@ fn lowers_function_application_and_nullable_annotations() {
 }
 
 #[test]
+fn lowers_postfix_collection_sugar_annotations() {
+    let output = parse_module("array : Text[] = values\nset : Text@{} = values\n");
+    assert!(output.diagnostics.is_empty());
+
+    let array = lower_annotation(&output.module, annotation(&output.module, "array"));
+    let set = lower_annotation(&output.module, annotation(&output.module, "set"));
+
+    assert_eq!(array.ty, apply(named("Array"), vec![named("Text")]));
+    assert!(array.diagnostics.is_empty());
+    assert_eq!(set.ty, apply(named("Set"), vec![named("Text")]));
+    assert!(set.diagnostics.is_empty());
+}
+
+#[test]
 fn lowers_normalized_rows_and_closed_transforms() {
     let output = parse_module(
         "FileError = @{@Io}\n\
@@ -2264,7 +2278,7 @@ fn comptime_pick_unrolls_key_set_to_closed_record_type() {
     let output = parse_module(
         "User = { name: Text, email: Text }\n\
          user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
-         pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }\n\
+         pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }\n\
          result = pick(user, @{\"name\", \"email\"})\n",
     );
     let known_types = known_type_names(&output.module);
@@ -2287,7 +2301,7 @@ fn comptime_pick_with_non_concrete_key_set_defers_without_diagnostic() {
         "User = { name: Text, email: Text }\n\
          user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
          keys = @{\"name\", \"email\"}\n\
-         pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }\n\
+         pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }\n\
          result = pick(user, keys)\n",
     );
     let known_types = known_type_names(&output.module);

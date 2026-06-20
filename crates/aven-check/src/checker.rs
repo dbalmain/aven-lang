@@ -2836,10 +2836,14 @@ fn literal_type(literal: Literal) -> Type {
 fn literal_union_domain_row(domain: &Type) -> Option<&Row> {
     match domain {
         Type::Variant(row) => Some(row),
-        Type::Apply { callee, args } if args.is_empty() => match callee.as_ref() {
-            Type::Variant(row) => Some(row),
-            _ => None,
-        },
+        Type::Apply { callee, args }
+            if matches!(callee.as_ref(), Type::Named(name) if name == "Set") && args.len() == 1 =>
+        {
+            match &args[0] {
+                Type::Variant(row) => Some(row),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

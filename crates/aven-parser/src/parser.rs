@@ -705,6 +705,11 @@ impl Parser<'_> {
                 continue;
             }
 
+            if self.current_is_empty_set_postfix(expr.span.end) {
+                expr = self.finish_set_type_postfix(expr);
+                continue;
+            }
+
             if self.current_is_operator(".") || self.current_is_operator("?.") {
                 expr = self.finish_field_access(expr);
                 continue;
@@ -736,9 +741,19 @@ impl Parser<'_> {
 
     fn finish_index(&mut self, callee: Expr) -> Expr {
         let start = callee.span.start;
+        let open_span = self.current_span();
         self.advance();
         let args = self.parse_expression_list(TokenKind::CloseBracket);
         let end = self.consume_close(TokenKind::CloseBracket);
+
+        if args.is_empty() {
+            return collection_type_application(
+                "Array",
+                open_span.merge(Span::point(end)),
+                callee,
+                end,
+            );
+        }
 
         Expr {
             kind: ExprKind::Index {
@@ -747,6 +762,16 @@ impl Parser<'_> {
             },
             span: Span::new(start, end),
         }
+    }
+
+    fn finish_set_type_postfix(&mut self, element: Expr) -> Expr {
+        let marker_span = self.current_span();
+        self.advance();
+        self.advance();
+        let end = self.current_span().end;
+        self.advance();
+
+        collection_type_application("Set", marker_span.merge(Span::point(end)), element, end)
     }
 
     fn finish_call(&mut self, callee: Expr) -> Expr {
@@ -2053,6 +2078,25 @@ impl Parser<'_> {
             .is_some_and(|token| token.kind == kind)
     }
 
+    fn current_is_empty_set_postfix(&self, previous_end: usize) -> bool {
+        let Some(at) = self.current() else {
+            return false;
+        };
+        let Some(open) = self.tokens.get(self.cursor + 1) else {
+            return false;
+        };
+        let Some(close) = self.tokens.get(self.cursor + 2) else {
+            return false;
+        };
+
+        at.is_operator("@")
+            && at.span.start == previous_end
+            && open.kind == TokenKind::OpenBrace
+            && open.span.start == at.span.end
+            && close.kind == TokenKind::CloseBrace
+            && close.span.start == open.span.end
+    }
+
     fn close_exists_before_item_boundary(&self, close: TokenKind) -> bool {
         for token in &self.tokens[self.cursor..] {
             if token.kind == close {
@@ -2107,6 +2151,25 @@ fn literal_expr(literal: Literal, span: Span) -> Expr {
     Expr {
         kind: ExprKind::Literal(literal),
         span,
+    }
+}
+
+fn collection_type_application(
+    collection: &str,
+    collection_span: Span,
+    element: Expr,
+    end: usize,
+) -> Expr {
+    let start = element.span.start;
+    Expr {
+        kind: ExprKind::Index {
+            callee: Box::new(Expr {
+                kind: ExprKind::ComptimeName(collection.to_owned()),
+                span: collection_span,
+            }),
+            args: vec![element],
+        },
+        span: Span::new(start, end),
     }
 }
 

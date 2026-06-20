@@ -1,4 +1,4 @@
 User = { name: Text, email: Text }
 user : User = { name: "Ada", email: "ada@x.dev" }
-pick = (o: {..r}, @keys: keysOf(r)[]) => { keys -> k; (k, o[k]) }
+pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }
 result : { name: Text, phone: Text } = pick(user, @{"name", "phone"})

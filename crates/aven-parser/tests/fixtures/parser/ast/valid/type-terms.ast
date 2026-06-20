@@ -19,6 +19,27 @@ module
               comptime Array
             args
               name b
+  signature collections
+    annotation
+      arrow
+        params
+          index
+            callee
+              comptime Array
+            args
+              comptime Text
+          index
+            callee
+              comptime Set
+            args
+              comptime Text
+          index
+            callee
+              comptime Array
+            args
+              name a
+        result
+          comptime Unit
   binding value
     annotation
       nullable

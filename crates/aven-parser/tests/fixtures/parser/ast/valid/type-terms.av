@@ -1,2 +1,3 @@
 mapper : (Array[a], a -> b) -> Array[b]
+collections : (Text[], Text@{}, Array[a]) -> Unit
 value : Text? = name

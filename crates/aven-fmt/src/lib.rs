@@ -121,9 +121,10 @@ fn emit_line(output: &mut String, source: &str, tokens: &[&Token]) {
         let previous_previous = index
             .checked_sub(2)
             .and_then(|index| tokens.get(index).copied());
+        let next = tokens.get(index + 1).copied();
 
         if let Some(previous) = previous
-            && needs_space(previous_previous, previous, token)
+            && needs_space(previous_previous, previous, token, next)
         {
             output.push(' ');
         }
@@ -144,13 +145,19 @@ fn token_text(source: &str, token: &Token) -> String {
     }
 }
 
-fn needs_space(previous_previous: Option<&Token>, previous: &Token, current: &Token) -> bool {
+fn needs_space(
+    previous_previous: Option<&Token>,
+    previous: &Token,
+    current: &Token,
+    next: Option<&Token>,
+) -> bool {
     if is_comment(current) {
         return true;
     }
 
     if is_comment(previous)
         || is_close_paren_or_bracket(current)
+        || is_tight_set_postfix_marker(previous, current, next)
         || is_tight_postfix_operator(current)
         || is_tight_access_operator(current)
         || is_colon(current)
@@ -281,6 +288,21 @@ fn is_tight_prefix_operator(token: &Token, next: Option<&Token>) -> bool {
 fn is_at_set_marker(token: &Token, next: Option<&Token>) -> bool {
     matches!(&token.kind, TokenKind::Operator(operator) if operator == "@")
         && next.is_some_and(is_open_brace)
+}
+
+fn is_tight_set_postfix_marker(previous: &Token, current: &Token, next: Option<&Token>) -> bool {
+    is_at_set_marker(current, next) && can_end_postfix_operand(previous)
+}
+
+fn can_end_postfix_operand(token: &Token) -> bool {
+    matches!(
+        token.kind,
+        TokenKind::Identifier(_)
+            | TokenKind::ComptimeIdentifier(_)
+            | TokenKind::CloseParen
+            | TokenKind::CloseBracket
+            | TokenKind::CloseBrace
+    )
 }
 
 fn is_prefix_minus(token: &Token, previous_previous: Option<&Token>) -> bool {
