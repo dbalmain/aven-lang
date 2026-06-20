@@ -1484,6 +1484,22 @@ Slices:
   sources, and reuses the existing reflection type-mismatch diagnostic with
   variant-specific wording for concrete non-variant subjects.
 
+- 16.13 — `typeOf` reflection from value expression to static `Type`:
+  `typeOf(value)` asks the checker for a value expression's inferred static type
+  and reifies the normalized, concrete result as a comptime `Type`, so it
+  composes with the existing type modifiers and reflection functions.
+
+  Done: `aven-check` now dispatches `typeOf` as a value-expression reflection
+  built-in distinct from `keysOf`/`tagsOf`'s type-subject label reflection. The
+  evaluator infers the argument through a checker hook, resolves/defaults and
+  normalizes the result, reifies concrete resolved types, and defers unresolved
+  subjects without diagnostics. This enables `partial(typeOf(config))` and direct
+  annotations such as `T = typeOf(config)`. The current hook uses a fresh
+  top-level environment, so top-level bindings and self-contained literals work;
+  subjects depending on active local bindings still defer until a follow-up
+  threads the active `TypeEnv` into the query, matching the M16.9-style context
+  threading.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field

@@ -130,6 +130,7 @@ pub(crate) trait EvalContext<'a> {
     fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction<'a>>;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
+    fn infer_value_type(&mut self, expr: &Expr) -> Type;
     fn type_is_unresolved(&self, ty: &Type) -> bool;
 }
 
@@ -430,6 +431,10 @@ where
             return self.evaluate_reflection_application(args, env, kind);
         }
 
+        if name == "typeOf" {
+            return self.evaluate_type_of(args);
+        }
+
         let Some(function) = self.context.lookup_comptime_function(name) else {
             return EvaluationResult::unsupported();
         };
@@ -469,6 +474,19 @@ where
             arg.span,
             self.context.type_is_unresolved(&subject),
         )
+    }
+
+    fn evaluate_type_of(&mut self, args: &[Expr]) -> EvaluationResult {
+        let [arg] = args else {
+            return EvaluationResult::unsupported();
+        };
+
+        let ty = self.context.infer_value_type(arg);
+        if self.context.type_is_unresolved(&ty) || !is_concrete_type(&ty) {
+            return EvaluationResult::deferred();
+        }
+
+        EvaluationResult::evaluated(ComptimeValue::ReifiedType(ty))
     }
 
     fn evaluate_function_application(

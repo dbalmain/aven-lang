@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::checker::comptime_rhs_needs_evaluation;
 use crate::*;
 use aven_core::{Diagnostic, Span, codes};
-use aven_parser::{Item, Literal, Module, collect_declarations, parse_module};
+use aven_parser::{ExprKind, Item, Literal, Module, collect_declarations, parse_module};
 
 fn annotation<'a>(module: &'a Module, name: &str) -> &'a Expr {
     module
@@ -404,6 +404,78 @@ fn comptime_tagsof_variant_reifies_sorted_literal_union() {
             tail: RowTail::Closed,
         }))
     );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_typeof_top_level_value_reifies_normalized_record_type() {
+    let output = parse_module(
+        "Config = { host: Text, port: Int }\n\
+         config : Config = { host: \"x\", port: 8080 }\n\
+         T = typeOf(config)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("T"),
+        Some(&Type::Record(Row {
+            entries: vec![field("host", named("Text")), field("port", named("Int"))],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_typeof_direct_annotation_rejects_wrong_shape() {
+    let output = parse_module(
+        "config = { host: \"x\", port: 8080 }\n\
+         T = typeOf(config)\n\
+         other : T = { host: \"z\" }\n",
+    );
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+        1
+    );
+}
+
+#[test]
+fn comptime_typeof_local_dependent_subject_defers_without_diagnostic() {
+    let output = parse_module("f = (config) =>\n  value : typeOf(config) = config\n  value\n");
+    let local_annotation = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Binding(binding) if binding.name == "f" => match &binding.value.kind {
+                ExprKind::Lambda { body, .. } => match &body.kind {
+                    ExprKind::Block(items) => items.iter().find_map(|item| match item {
+                        Item::Binding(binding) if binding.name == "value" => {
+                            binding.annotation.as_ref()
+                        }
+                        Item::Signature(signature) if signature.name == "value" => {
+                            Some(&signature.annotation)
+                        }
+                        _ => None,
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("expected local annotation");
+    let lowering = lower_annotation(&output.module, local_annotation);
+
+    assert_eq!(lowering.ty, Type::Deferred);
+    assert!(lowering.diagnostics.is_empty());
 
     let check = check_module(&output.module);
     assert!(check.diagnostics.is_empty());

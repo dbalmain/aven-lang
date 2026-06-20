@@ -4214,6 +4214,14 @@ impl<'a> comptime::EvalContext<'a> for Checker<'a> {
         self.comptime_specializations.insert(key, result);
     }
 
+    fn infer_value_type(&mut self, expr: &Expr) -> Type {
+        let start = self.diagnostics.len();
+        let inferred = self.infer(&TypeEnv::new(), expr);
+        let ty = self.normalize(&self.resolve_and_default(&inferred));
+        let _ = self.diagnostics.split_off(start);
+        ty
+    }
+
     fn type_is_unresolved(&self, ty: &Type) -> bool {
         self.reflection_subject_is_unresolved(ty)
     }
