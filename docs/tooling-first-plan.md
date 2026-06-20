@@ -1389,6 +1389,19 @@ Slices:
   @{"name", "email"})` infers `{ name: Text, email: Text }` while non-concrete
   key sets defer.
 
+- 16.5 — postfix collection-type sugar `X[]` / `X@{}`: a trailing **empty** `[]`
+  or `@{}` after a type is sugar for the named collection generic (decided
+  2026-06-20) — `X[]` ≡ `Array[X]`, `X@{}` ≡ `Set[X]` (`Set`/`Array` are already
+  builtin types). Non-empty `X[a]` stays type application. Desugar to the
+  named-generic application (reuse the `Array[a]`/`Set[a]` path; **no new Type IR
+  variant**), which also fixes the current loose `X[]` → `Apply{X, []}` lowering.
+  `pick`/`omit`'s key parameter becomes `@keys: keysOf(r)@{}` (== `Set[keysOf(r)]`),
+  matching the `@{...}` set value; update the checker's `literal_union_domain_row`
+  to unwrap `Set[<literal union>]`. Parser + fmt round-trip the postfix forms;
+  the `@{}` postfix is the empty set adjacent to a type (mirroring the empty `[]`
+  postfix), distinct from a `@{...}` set literal. `aven-parser` + `aven-fmt` +
+  `aven-check`.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field
