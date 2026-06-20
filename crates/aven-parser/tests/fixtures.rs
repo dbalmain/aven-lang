@@ -583,24 +583,15 @@ fn render_record_entry_ast(output: &mut String, entry: &RecordEntry, indent: usi
             name,
             value,
             overwrite,
-            optional,
             ..
         } => {
             write_indent(output, indent);
-            let _ = writeln!(
-                output,
-                "field {name} optional={optional} overwrite={overwrite}"
-            );
+            let _ = writeln!(output, "field {name} overwrite={overwrite}");
             render_expr_ast(output, value, indent + 1);
         }
-        RecordEntry::FieldComputed {
-            key,
-            value,
-            optional,
-            ..
-        } => {
+        RecordEntry::FieldComputed { key, value, .. } => {
             write_indent(output, indent);
-            let _ = writeln!(output, "field computed optional={optional}");
+            let _ = writeln!(output, "field computed");
             write_indent(output, indent + 1);
             let _ = writeln!(output, "key");
             render_expr_ast(output, key, indent + 2);

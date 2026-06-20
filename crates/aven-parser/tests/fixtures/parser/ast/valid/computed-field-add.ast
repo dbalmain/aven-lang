@@ -2,17 +2,18 @@ module
   binding value
     value
       record
-        field computed optional=false
+        field computed
           key
             name k
           value
             name v
-        field computed optional=true
+        field computed
           key
             name k
           value
-            index
-              callee
-                name object
-              args
-                name k
+            optional
+              index
+                callee
+                  name object
+                args
+                  name k

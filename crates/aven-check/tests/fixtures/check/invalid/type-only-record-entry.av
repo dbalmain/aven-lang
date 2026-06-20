@@ -1,1 +1,1 @@
-value = { phone?: "123", .. }
+value : { name: Int } = { name: 1, .. }

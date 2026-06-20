@@ -61,18 +61,9 @@ pub struct Row {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RowEntry {
-    Field {
-        name: String,
-        ty: Type,
-        optional: bool,
-    },
-    Tag {
-        name: String,
-        payload: Vec<Type>,
-    },
-    Literal {
-        value: Literal,
-    },
+    Field { name: String, ty: Type },
+    Tag { name: String, payload: Vec<Type> },
+    Literal { value: Literal },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -221,10 +212,7 @@ impl TypeRenderer {
 
     fn render_row_entry(&mut self, entry: &RowEntry) -> String {
         match entry {
-            RowEntry::Field { name, ty, optional } => {
-                let optional = if *optional { "?" } else { "" };
-                format!("{name}{optional}: {}", self.render_type(ty))
-            }
+            RowEntry::Field { name, ty } => format!("{name}: {}", self.render_type(ty)),
             RowEntry::Tag { name, payload } if payload.is_empty() => format!("@{name}"),
             RowEntry::Tag { name, payload } => format!(
                 "@{name}({})",
@@ -328,10 +316,9 @@ fn map_row_entry(
     tail: &mut impl FnMut(RowTail) -> Option<Row>,
 ) -> RowEntry {
     match entry {
-        RowEntry::Field { name, ty, optional } => RowEntry::Field {
+        RowEntry::Field { name, ty } => RowEntry::Field {
             name: name.clone(),
             ty: map_type_with_rows(ty, leaf, tail),
-            optional: *optional,
         },
         RowEntry::Tag { name, payload } => RowEntry::Tag {
             name: name.clone(),

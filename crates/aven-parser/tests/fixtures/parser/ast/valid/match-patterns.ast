@@ -21,7 +21,7 @@ module
             pattern
               record
                 rename givenName -> firstName
-                field status optional=false overwrite=false
+                field status overwrite=false
                   tag Active
                 spread overwrite=false
                   name rest

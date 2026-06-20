@@ -143,14 +143,11 @@ pub enum RecordEntry {
         name_span: Span,
         value: Expr,
         overwrite: bool,
-        /// `phone?: Text`: the field is marked optional with a trailing `?`.
-        optional: bool,
         span: Span,
     },
     FieldComputed {
         key: Expr,
         value: Expr,
-        optional: bool,
         span: Span,
     },
     Shorthand {
@@ -1373,11 +1370,6 @@ impl Parser<'_> {
                 return None;
             };
 
-            let optional = self.current_is_operator("?");
-            if optional {
-                self.advance();
-            }
-
             if !self.current_is_operator(":") {
                 self.report_expected_record_entry(self.current_span());
                 self.recover_record_entry();
@@ -1387,12 +1379,7 @@ impl Parser<'_> {
 
             let value = self.parse_expression();
             let span = bracket_span.merge(value.span);
-            return Some(RecordEntry::FieldComputed {
-                key,
-                value,
-                optional,
-                span,
-            });
+            return Some(RecordEntry::FieldComputed { key, value, span });
         }
 
         if mode == EntryMode::Record && self.iteration_arrow_follows() {
@@ -1507,16 +1494,6 @@ impl Parser<'_> {
             });
         }
 
-        // `phone?: Text`: an optional-field marker before the separator.
-        let optional = self.current_is_operator("?");
-        let optional_end = if optional {
-            let span = self.current_span();
-            self.advance();
-            span.end
-        } else {
-            name_span.end
-        };
-
         let separator = if self.current_is_operator(":") {
             Some((false, false))
         } else if self.current_is_operator("::") {
@@ -1531,12 +1508,7 @@ impl Parser<'_> {
 
         if let Some((overwrite, legacy)) = separator {
             if legacy {
-                self.report_legacy_record_field_separator(
-                    self.current_span(),
-                    &name,
-                    optional,
-                    overwrite,
-                );
+                self.report_legacy_record_field_separator(self.current_span(), &name, overwrite);
             }
             self.advance();
             let value = self.parse_expression();
@@ -1546,7 +1518,6 @@ impl Parser<'_> {
                 name_span,
                 value,
                 overwrite,
-                optional,
                 span,
             });
         }
@@ -1554,7 +1525,7 @@ impl Parser<'_> {
         Some(RecordEntry::Shorthand {
             name,
             name_span,
-            span: Span::new(name_span.start, optional_end),
+            span: name_span,
         })
     }
 
@@ -1931,29 +1902,18 @@ impl Parser<'_> {
         );
     }
 
-    fn report_legacy_record_field_separator(
-        &mut self,
-        span: Span,
-        name: &str,
-        optional: bool,
-        overwrite: bool,
-    ) {
-        let label = if optional {
-            format!("{name}?")
-        } else {
-            name.to_owned()
-        };
+    fn report_legacy_record_field_separator(&mut self, span: Span, name: &str, overwrite: bool) {
         let (message, replacement, example) = if overwrite {
             (
                 "record replacements use `::`, not `:=`",
                 "replace this marker with `::`",
-                format!("{label} :: value"),
+                format!("{name} :: value"),
             )
         } else {
             (
                 "record fields use `:`, not `=`",
                 "replace this separator with `:`",
-                format!("{label}: value"),
+                format!("{name}: value"),
             )
         };
 
@@ -2625,7 +2585,7 @@ mod tests {
     #[test]
     fn parses_record_transform_entries_into_ast_nodes() {
         let output = parse_module(
-            "cleaned = { ..user, :..defaults, -password, -[key], [key]: value, [key]?: maybe, name -> fullName, active: true, age :: 37 }\n",
+            "cleaned = { ..user, :..defaults, -password, -[key], [key]: value, [other]: maybe, name -> fullName, active: true, age :: 37 }\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -2659,19 +2619,11 @@ mod tests {
         ));
         assert!(matches!(
             &entries[4],
-            RecordEntry::FieldComputed {
-                key,
-                optional: false,
-                ..
-            } if matches!(&key.kind, ExprKind::Name(name) if name == "key")
+            RecordEntry::FieldComputed { key, .. } if matches!(&key.kind, ExprKind::Name(name) if name == "key")
         ));
         assert!(matches!(
             &entries[5],
-            RecordEntry::FieldComputed {
-                key,
-                optional: true,
-                ..
-            } if matches!(&key.kind, ExprKind::Name(name) if name == "key")
+            RecordEntry::FieldComputed { key, .. } if matches!(&key.kind, ExprKind::Name(name) if name == "other")
         ));
         assert!(matches!(
             &entries[6],
@@ -3052,9 +3004,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_record_type_with_open_optional_and_delete_entries() {
+    fn parses_record_type_with_open_optional_type_and_delete_entries() {
         let output = parse_module(
-            "user : { name: Text, email: Text?, phone?: Text, -password, .. } = current\n",
+            "user : { name: Text, email: Text?, phone: ?Text, -password, .. } = current\n",
         );
 
         assert!(output.diagnostics.is_empty());
@@ -3068,16 +3020,17 @@ mod tests {
         assert_eq!(entries.len(), 5);
         assert!(matches!(
             &entries[0],
-            RecordEntry::Field { name, optional: false, .. } if name == "name"
+            RecordEntry::Field { name, .. } if name == "name"
         ));
         assert!(matches!(
             &entries[1],
-            RecordEntry::Field { name, value, optional: false, .. }
+            RecordEntry::Field { name, value, .. }
                 if name == "email" && matches!(&value.kind, ExprKind::Nullable(_))
         ));
         assert!(matches!(
             &entries[2],
-            RecordEntry::Field { name, optional: true, .. } if name == "phone"
+            RecordEntry::Field { name, value, .. }
+                if name == "phone" && matches!(&value.kind, ExprKind::Optional(_))
         ));
         assert!(matches!(
             &entries[3],

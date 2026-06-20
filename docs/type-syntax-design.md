@@ -37,10 +37,10 @@ were added.
 One entry parser (`parse_record_entry`) serves both `{...}` records and `@{...}`
 sets/variants, selected by an `EntryMode { Record, Set }` flag. The union:
 
-- `Field { name, name_span, value: Expr, overwrite, optional, span }` — gained
-  `optional: bool` for `phone? = Text`. The value is an ordinary `Expr`, so
-  `name = Text` (→ `ComptimeName`) and `name = "Ada"` (→ `String`) use the same
-  parser.
+- `Field { name, name_span, value: Expr, overwrite, span }` — the value is an
+  ordinary `Expr`, so `name = Text` (→ `ComptimeName`) and `name = "Ada"`
+  (→ `String`) use the same parser. N3 removed the former optional-key flag;
+  omittability is represented by the field value type, `?T`.
 - `Shorthand`, `Spread { overwrite }`, `Delete`, `Rename` — unchanged.
 - `Open { span }` — **new**, the `.._` open-row marker (record mode only; `:.._`
   and `.._` of any other term remain spreads).

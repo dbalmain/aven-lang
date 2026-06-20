@@ -4,5 +4,5 @@ nullable:Text ? =empty
 both: ? Text ? =maybe
 greet=(person:Text):Text=>person
 User={name:Text,age:Int}
-Contact={phone?:Text}
+Contact={phone: ?Text}
 older={..base,age::37}

@@ -360,7 +360,6 @@ mod tests {
         RowEntry::Field {
             name: name.to_owned(),
             ty,
-            optional: false,
         }
     }
 

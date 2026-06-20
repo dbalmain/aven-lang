@@ -1,6 +1,3 @@
-error type.type-only-record-entry: optional record fields are only valid in type position
-  label 10..15: optional field marker here
-  note: remove `?` in value records; use `field: undefined` when the value is absent
 error type.type-only-record-entry: open row markers are only valid in type position
-  label 25..27: open row marker here
+  label 35..37: open row marker here
   note: remove `..` from value records

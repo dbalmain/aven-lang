@@ -502,30 +502,6 @@ impl<'a> Checker<'a> {
     fn report_value_record_markers(&mut self, entries: &[RecordEntry]) {
         for entry in entries {
             match entry {
-                RecordEntry::Field {
-                    optional: true,
-                    name_span,
-                    ..
-                } => {
-                    self.diagnostics.push(
-                        Diagnostic::error("optional record fields are only valid in type position")
-                            .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
-                            .with_label(Label::primary(*name_span, "optional field marker here"))
-                            .with_note("remove `?` in value records; use `field: undefined` when the value is absent"),
-                    );
-                }
-                RecordEntry::FieldComputed {
-                    optional: true,
-                    span,
-                    ..
-                } => {
-                    self.diagnostics.push(
-                        Diagnostic::error("optional record fields are only valid in type position")
-                            .with_code(codes::ty::TYPE_ONLY_RECORD_ENTRY)
-                            .with_label(Label::primary(*span, "optional field marker here"))
-                            .with_note("remove `?` in value records; use `field: undefined` when the value is absent"),
-                    );
-                }
                 RecordEntry::Open { span } => {
                     self.diagnostics.push(
                         Diagnostic::error("open row markers are only valid in type position")
@@ -1039,7 +1015,12 @@ impl<'a> Checker<'a> {
                 else {
                     return;
                 };
-                if actual.open || actual.fields.iter().any(|field| field.optional) {
+                if actual.open
+                    || actual
+                        .fields
+                        .iter()
+                        .any(|field| self.type_admits_undefined(field.ty))
+                {
                     return;
                 }
 
@@ -1280,7 +1261,7 @@ impl<'a> Checker<'a> {
                 Some(FieldValue::Type(ty)) => {
                     self.check_type_against_type(field.ty, ty, record_span)
                 }
-                None if field.optional => {}
+                None if self.type_admits_undefined(field.ty) => {}
                 None => self.report_missing_field(field.name, record_span),
             }
         }
@@ -1367,6 +1348,10 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn type_admits_undefined(&self, ty: &Type) -> bool {
+        matches!(self.normalize(ty), Type::Optional(_))
+    }
+
     pub(crate) fn normalize(&self, ty: &Type) -> Type {
         self.normalize_with_visited(ty, HashSet::new())
     }
@@ -1440,10 +1425,9 @@ impl<'a> Checker<'a> {
 
     fn normalize_row_entry(&self, entry: &RowEntry, visited: &HashSet<String>) -> RowEntry {
         match entry {
-            RowEntry::Field { name, ty, optional } => RowEntry::Field {
+            RowEntry::Field { name, ty } => RowEntry::Field {
                 name: name.clone(),
                 ty: self.normalize_with_visited(ty, visited.clone()),
-                optional: *optional,
             },
             RowEntry::Tag { name, payload } => RowEntry::Tag {
                 name: name.clone(),
@@ -1635,7 +1619,6 @@ impl<'a> Checker<'a> {
                 name,
                 value,
                 overwrite,
-                optional,
                 span,
                 ..
             } => {
@@ -1647,10 +1630,6 @@ impl<'a> Checker<'a> {
                 let entry = RowEntry::Field {
                     name: name.clone(),
                     ty,
-                    optional: match mode {
-                        RowFoldMode::Annotation => *optional,
-                        RowFoldMode::Value { .. } => false,
-                    },
                 };
 
                 if *overwrite {
@@ -1678,12 +1657,7 @@ impl<'a> Checker<'a> {
                     Ok(())
                 }
             }
-            RecordEntry::FieldComputed {
-                key,
-                value,
-                optional,
-                span,
-            } => {
+            RecordEntry::FieldComputed { key, value, span } => {
                 let Some(label) = self.comptime_known_label(key) else {
                     self.fold_deferred_row_entry(entry, kind, mode);
                     return Err(());
@@ -1697,10 +1671,6 @@ impl<'a> Checker<'a> {
                 let entry = RowEntry::Field {
                     name: label.clone(),
                     ty,
-                    optional: match mode {
-                        RowFoldMode::Annotation => *optional,
-                        RowFoldMode::Value { .. } => false,
-                    },
                 };
 
                 if row_entry_index(&row.entries, &label).is_some() {
@@ -1979,7 +1949,6 @@ impl<'a> Checker<'a> {
         let entry = RowEntry::Field {
             name: label.clone(),
             ty: self.fold_field_type(field_value, mode),
-            optional: false,
         };
 
         if row_entry_index(&row.entries, &label).is_some() {
@@ -2556,7 +2525,7 @@ impl<'a> Checker<'a> {
                     "this record is missing a required field",
                 ))
                 .with_note(format!(
-                    "add `{name}: ...`, or make the field optional with `{name}?` in the type"
+                    "add `{name}: ...`, or make the field type optional with `?T`"
                 )),
         );
     }
@@ -2746,7 +2715,6 @@ struct ExpectedRecordShape<'a> {
 struct ExpectedRecordField<'a> {
     name: &'a str,
     ty: &'a Type,
-    optional: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2831,10 +2799,9 @@ fn row_entry_index(entries: &[RowEntry], label: &str) -> Option<usize> {
 
 fn relabel_row_entry(entry: &RowEntry, label: &str) -> RowEntry {
     match entry {
-        RowEntry::Field { ty, optional, .. } => RowEntry::Field {
+        RowEntry::Field { ty, .. } => RowEntry::Field {
             name: label.to_owned(),
             ty: ty.clone(),
-            optional: *optional,
         },
         RowEntry::Tag { payload, .. } => RowEntry::Tag {
             name: label.to_owned(),
@@ -2851,11 +2818,7 @@ fn literal_record_type(row: &Row) -> Option<ExpectedRecordShape<'_>> {
 
     for entry in &row.entries {
         match entry {
-            RowEntry::Field { name, ty, optional } => fields.push(ExpectedRecordField {
-                name,
-                ty,
-                optional: *optional,
-            }),
+            RowEntry::Field { name, ty } => fields.push(ExpectedRecordField { name, ty }),
             RowEntry::Tag { .. } | RowEntry::Literal { .. } => return None,
         }
     }
@@ -3514,7 +3477,6 @@ impl<'a> Checker<'a> {
                         fields.push(RowEntry::Field {
                             name: field.name.to_owned(),
                             ty: self.infer(env, value),
-                            optional: false,
                         });
                     }
                     Type::Record(Row {
@@ -3544,7 +3506,6 @@ impl<'a> Checker<'a> {
                     entries: vec![RowEntry::Field {
                         name: field.clone(),
                         ty: field_type.clone(),
-                        optional: false,
                     }],
                     tail: RowTail::Var(tail),
                 });

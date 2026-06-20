@@ -1445,32 +1445,22 @@ Slices:
   non-record `keysOf` subjects reuse the existing reflection type-mismatch
   diagnostic.
 
-- 16.10 — optional computed field-add `[k]?: v` to support `partial`:
-  record entries can now add fields with computed keys via `[k]: v` and mark
-  those adds optional in type position via `[k]?: v`. Parser, formatter,
-  reference/name/scope walkers, LSP token handling, compiler references, and
-  checker row folding all thread `RecordEntry::FieldComputed`; in annotation
-  mode the checker resolves the computed key with `comptime_known_label`, folds
-  `object[k]` through the M16.9 type-position index path, and preserves optional
-  flags, while value mode forces computed adds to required fields.
+- 16.10 — computed field-add for record type maps:
+  record entries can now add fields with computed keys via `[k]: v`. Parser,
+  formatter, reference/name/scope walkers, LSP token handling, compiler
+  references, and checker row folding all thread `RecordEntry::FieldComputed`;
+  in annotation mode the checker resolves the computed key with
+  `comptime_known_label` and folds `object[k]` through the M16.9 type-position
+  index path.
 
-  Done: `partial = (object) => { keysOf(object) -> k; [k]?: object[k] }`
-  applied to `{ name: Text, email: Text }` lowers to a closed record with both
-  fields optional, so `{ name: "Ada" }` checks against `partial(User)`. The
-  non-optional `[k]: object[k]` form lowers to required fields, parser and
-  formatter fixtures round-trip both spellings, and optional fields produced by
-  `partial` are still checked when present.
+  Superseded by N3: optionality no longer lives on field labels, so `partial`
+  now uses `partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }`.
 
-- 16.11 — `required` type modifier (strip optional):
-  `required = (object) => { keysOf(object) -> k; [k]: object[k] }` is the dual of
-  `partial`, rebuilding a closed record with the same field types and required
-  field flags even when the input record's fields are optional.
-
-  Done: no production code was needed. The existing `keysOf` record reflection,
-  type-position `object[k]`, and non-optional computed field-add machinery lower
-  `required(partial(User))` back to `{ email: Text, name: Text }` with both
-  fields required, and the normal missing-field diagnostic fires when a restored
-  value omits a field.
+- 16.11 — `required` type modifier (strip Optional):
+  Deferred by N3. The old implementation stripped optional field flags, but the
+  field flag no longer exists; `required` now needs a comptime primitive that can
+  strip the `Optional` wrapper from a field type. The M16.11 fixtures/tests were
+  removed until that primitive exists.
 
 - 16.12 — `tagsOf` reflection for variant constructor tags:
   `tagsOf(variant)` mirrors `keysOf(record)`, reflecting a closed variant type's
@@ -1702,6 +1692,13 @@ Completed parser groundwork:
   The composed `?T?` form normalizes as `Optional(Nullable(T))`, subtype
   widening flows from `T`, `?T`, and `T?` into `?T?`, and matches peel the
   required `undefined`/`null` arms before binding the payload.
+- N3 done: the optional field flag and `x?:` / computed-field optional marker
+  syntax are removed. Record rows always carry `name: T`; a record literal may
+  omit a field only when the normalized field type is `Optional`, so `{ name:
+  Text, phone: ?Text }` accepts `{ name: "Ada" }` while non-`Optional` missing
+  fields keep the existing `type.missing-field` diagnostic. `partial` is now
+  written as `{ keysOf(object) -> k; [k]: ?object[k] }`. `required` is deferred
+  pending a comptime strip-`Optional` primitive.
 
 ## To investigate later
 

@@ -1,0 +1,1 @@
+value : { name: Text, phone: ?Text } = { name: "Ada" }

@@ -70,15 +70,6 @@ fn field(name: &str, ty: Type) -> RowEntry {
     RowEntry::Field {
         name: name.to_owned(),
         ty,
-        optional: false,
-    }
-}
-
-fn optional_field(name: &str, ty: Type) -> RowEntry {
-    RowEntry::Field {
-        name: name.to_owned(),
-        ty,
-        optional: true,
     }
 }
 
@@ -133,14 +124,13 @@ fn renders_types_as_surface_syntax() {
                 field("name", named("Text")),
                 RowEntry::Field {
                     name: "phone".to_owned(),
-                    ty: nullable(named("Text")),
-                    optional: true,
+                    ty: optional(nullable(named("Text"))),
                 },
             ],
             tail: RowTail::Open,
         })
         .render(),
-        "{ name: Text, phone?: Text?, .. }"
+        "{ name: Text, phone: ?Text?, .. }"
     );
     assert_eq!(
         Type::Variant(Row {
@@ -577,13 +567,14 @@ fn comptime_type_position_record_comprehension_reifies_record_type() {
 }
 
 #[test]
-fn comptime_type_position_computed_field_add_sets_optional_flags() {
+fn comptime_partial_wraps_fields_in_optional_types() {
     let output = parse_module(
         "User = { name: Text, email: Text }\n\
-         partial = (object) => { keysOf(object) -> k; [k]?: object[k] }\n\
+         partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
          clone = (object) => { keysOf(object) -> k; [k]: object[k] }\n\
          Partial = partial(User)\n\
-         Cloned = clone(User)\n",
+         Cloned = clone(User)\n\
+         p : Partial = { name: \"Ada\" }\n",
     );
     let known_types = known_type_names(&output.module);
     let definitions = type_definitions(&output.module, &known_types);
@@ -592,37 +583,14 @@ fn comptime_type_position_computed_field_add_sets_optional_flags() {
         definitions.get("Partial"),
         Some(&Type::Record(Row {
             entries: vec![
-                optional_field("email", named("Text")),
-                optional_field("name", named("Text"))
+                field("email", optional(named("Text"))),
+                field("name", optional(named("Text")))
             ],
             tail: RowTail::Closed,
         }))
     );
     assert_eq!(
         definitions.get("Cloned"),
-        Some(&Type::Record(Row {
-            entries: vec![field("email", named("Text")), field("name", named("Text"))],
-            tail: RowTail::Closed,
-        }))
-    );
-
-    let check = check_module(&output.module);
-    assert!(check.diagnostics.is_empty());
-}
-
-#[test]
-fn comptime_required_strips_optional_fields_from_partial_record() {
-    let output = parse_module(
-        "User = { name: Text, email: Text }\n\
-         partial = (object) => { keysOf(object) -> k; [k]?: object[k] }\n\
-         required = (object) => { keysOf(object) -> k; [k]: object[k] }\n\
-         Restored = required(partial(User))\n",
-    );
-    let known_types = known_type_names(&output.module);
-    let definitions = type_definitions(&output.module, &known_types);
-
-    assert_eq!(
-        definitions.get("Restored"),
         Some(&Type::Record(Row {
             entries: vec![field("email", named("Text")), field("name", named("Text"))],
             tail: RowTail::Closed,
@@ -758,7 +726,7 @@ fn lowers_postfix_collection_sugar_annotations() {
 fn lowers_normalized_rows_and_closed_transforms() {
     let output = parse_module(
         "FileError = @{@Io}\n\
-             user : { name: Text, email: Text?, phone?: Text, .. } = current\n\
+             user : { name: Text, email: Text?, phone: ?Text, .. } = current\n\
              error : @{@ParseError(Text), @NotFound} = value\n\
              transformed_user : { name: Text, -password } = current\n\
              transformed_error : @{@ParseError(Text), ..FileError} = value\n",
@@ -779,21 +747,9 @@ fn lowers_normalized_rows_and_closed_transforms() {
         user.ty,
         Type::Record(Row {
             entries: vec![
-                RowEntry::Field {
-                    name: "name".to_owned(),
-                    ty: named("Text"),
-                    optional: false,
-                },
-                RowEntry::Field {
-                    name: "email".to_owned(),
-                    ty: nullable(named("Text")),
-                    optional: false,
-                },
-                RowEntry::Field {
-                    name: "phone".to_owned(),
-                    ty: named("Text"),
-                    optional: true,
-                },
+                field("name", named("Text")),
+                field("email", nullable(named("Text"))),
+                field("phone", optional(named("Text"))),
             ],
             tail: RowTail::Open,
         })
@@ -923,7 +879,6 @@ fn lowers_open_row_extension_and_update_transforms() {
             entries: vec![RowEntry::Field {
                 name: "timeout".to_owned(),
                 ty: named("Int"),
-                optional: false,
             }],
             tail: RowTail::Open,
         })
@@ -936,7 +891,6 @@ fn lowers_open_row_extension_and_update_transforms() {
             entries: vec![RowEntry::Field {
                 name: "x".to_owned(),
                 ty: named("Float"),
-                optional: false,
             }],
             tail: RowTail::Open,
         })
@@ -950,12 +904,10 @@ fn lowers_open_row_extension_and_update_transforms() {
                 RowEntry::Field {
                     name: "x".to_owned(),
                     ty: named("Int"),
-                    optional: false,
                 },
                 RowEntry::Field {
                     name: "y".to_owned(),
                     ty: named("Text"),
-                    optional: false,
                 },
             ],
             tail: RowTail::Open,
@@ -970,12 +922,10 @@ fn lowers_open_row_extension_and_update_transforms() {
                 RowEntry::Field {
                     name: "host".to_owned(),
                     ty: named("Text"),
-                    optional: false,
                 },
                 RowEntry::Field {
                     name: "timeout".to_owned(),
                     ty: named("Int"),
-                    optional: false,
                 },
             ],
             tail: RowTail::Open,
@@ -1034,12 +984,10 @@ fn type_definitions_compute_closed_transform_aliases() {
                 RowEntry::Field {
                     name: "x".to_owned(),
                     ty: named("Int"),
-                    optional: false,
                 },
                 RowEntry::Field {
                     name: "name".to_owned(),
                     ty: named("Text"),
-                    optional: false,
                 },
             ],
             tail: RowTail::Closed,
@@ -2357,12 +2305,10 @@ fn infer_value_synthesizes_literal_record_types() {
                 RowEntry::Field {
                     name: "id".to_owned(),
                     ty: named("Int"),
-                    optional: false,
                 },
                 RowEntry::Field {
                     name: "name".to_owned(),
                     ty: named("Text"),
-                    optional: false,
                 },
             ],
             tail: RowTail::Closed,
@@ -2768,7 +2714,6 @@ fn inferred_field_access_scheme_contains_a_quantified_row_variable() {
         [RowEntry::Field {
             name,
             ty,
-            optional: false,
         }] if name == "x" && ty == result.as_ref()
     ));
 }
@@ -3278,14 +3223,28 @@ fn open_record_types_allow_extra_value_fields() {
 }
 
 #[test]
-fn optional_record_fields_may_be_absent_or_checked_when_present() {
-    let output = parse_module("value : { name: Text, phone?: Text } = { name: \"x\" }\n");
+fn optional_typed_record_fields_may_be_absent_or_checked_when_present() {
+    let output = parse_module("value : { name: Text, phone: ?Text } = { name: \"x\" }\n");
     let check = check_module(&output.module);
     assert!(check.diagnostics.is_empty());
 
-    let output = parse_module("value : { phone?: Text } = { phone: 42 }\n");
+    let output = parse_module("value : { phone: ?Text } = { phone: 42 }\n");
     let check = check_module(&output.module);
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn record_field_omission_keys_off_optional_type_not_nullability() {
+    let output = parse_module("value : { phone: ?Text, email: Text? } = { email: null }\n");
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+
+    let output = parse_module("value : { email: Text? } = {}\n");
+    let check = check_module(&output.module);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+        1
+    );
 }
 
 #[test]
@@ -3312,7 +3271,7 @@ fn nested_record_values_are_checked_recursively() {
 
 #[test]
 fn nested_matched_record_markers_are_reported_once() {
-    let output = parse_module("value : { r: { name: Text } } = { r: { name: 1, extra?: 2 } }\n");
+    let output = parse_module("value : { r: { name: Text } } = { r: { name: 1, .. } }\n");
     let check = check_module(&output.module);
 
     assert_eq!(
@@ -3323,7 +3282,7 @@ fn nested_matched_record_markers_are_reported_once() {
 
 #[test]
 fn set_element_record_markers_are_reported_once() {
-    let output = parse_module("value : Set[{ name: Text }] = @{ { name: 1, extra?: 2 } }\n");
+    let output = parse_module("value : Set[{ name: Text }] = @{ { name: 1, .. } }\n");
     let check = check_module(&output.module);
 
     assert_eq!(
@@ -3334,7 +3293,7 @@ fn set_element_record_markers_are_reported_once() {
 
 #[test]
 fn extra_field_record_markers_are_reported_once() {
-    let output = parse_module("value : { name: Text } = { name: 1, blob: { inner?: 3 } }\n");
+    let output = parse_module("value : { name: Text } = { name: 1, blob: { .. } }\n");
     let check = check_module(&output.module);
 
     assert_eq!(
@@ -3345,8 +3304,7 @@ fn extra_field_record_markers_are_reported_once() {
 
 #[test]
 fn open_extra_field_record_markers_are_reported_once() {
-    let output =
-        parse_module("value : { name: Text, .. } = { name: \"x\", blob: { inner?: 3 } }\n");
+    let output = parse_module("value : { name: Text, .. } = { name: \"x\", blob: { .. } }\n");
     let check = check_module(&output.module);
 
     assert_eq!(
@@ -3478,7 +3436,7 @@ fn tuple_values_report_arity_mismatches() {
 
 #[test]
 fn check_module_reports_type_only_entries_in_value_records() {
-    let output = parse_module("value = { name?: 1 }\n");
+    let output = parse_module("value : { name: Int } = { name: 1, .. }\n");
     let check = check_module(&output.module);
 
     assert_eq!(check.diagnostics.len(), 1);
