@@ -1430,6 +1430,21 @@ Slices:
   round-trips guarded comprehensions, and `aven-check` filters unrolled record
   members so `omit2(user, @{"name"})` infers `{ email: Text }`.
 
+- 16.9 — type-position record comprehension foundation:
+  comptime functions whose body is a record comprehension can now specialize in
+  type position and lower to a record type. The evaluator threads parameter
+  bindings into annotation lowering, `fold_iteration_entry` unrolls closed
+  `keysOf` label sets in annotation mode, and computed type-position field
+  reads like `object[k]` resolve to the selected field type. This enables the
+  identity record type map (`clone(User)`) while leaving optional computed field
+  modifiers for the next slice.
+
+  Done: `clone = (object) => { keysOf(object) -> k; (k, object[k]) }` applied to
+  a closed record type lowers to the corresponding closed record type in
+  `aven-check`; open or unknown subjects defer without diagnostics, and
+  non-record `keysOf` subjects reuse the existing reflection type-mismatch
+  diagnostic.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field

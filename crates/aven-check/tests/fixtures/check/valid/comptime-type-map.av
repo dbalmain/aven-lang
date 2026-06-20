@@ -1,0 +1,4 @@
+User = { name: Text, email: Text }
+clone = (object) => { keysOf(object) -> k; (k, object[k]) }
+Cloned = clone(User)
+x : Cloned = { name: "Ada", email: "ada@x.dev" }

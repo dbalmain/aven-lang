@@ -122,7 +122,11 @@ pub(crate) struct ComptimeFunction<'a> {
 }
 
 pub(crate) trait EvalContext<'a> {
-    fn lower_comptime_type(&mut self, expr: &Expr) -> LoweredType;
+    fn lower_comptime_type(
+        &mut self,
+        expr: &Expr,
+        bindings: &HashMap<String, ComptimeValue>,
+    ) -> LoweredType;
     fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction<'a>>;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
@@ -303,7 +307,7 @@ where
                     return EvaluationResult::evaluated(value.clone());
                 }
 
-                self.evaluate_type_term(expr)
+                self.evaluate_type_term(expr, env)
             }
             ExprKind::Call { callee, args } => {
                 self.evaluate_application(expr.span, callee, args, env)
@@ -313,7 +317,7 @@ where
             | ExprKind::Arrow { .. }
             | ExprKind::Tuple(_)
             | ExprKind::Record(_)
-            | ExprKind::Set(_) => self.evaluate_type_term(expr),
+            | ExprKind::Set(_) => self.evaluate_type_term(expr, env),
             ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
             ExprKind::Missing
             | ExprKind::Literal(_)
@@ -530,8 +534,8 @@ where
         Ok(values)
     }
 
-    fn evaluate_type_term(&mut self, expr: &Expr) -> EvaluationResult {
-        let lowering = self.context.lower_comptime_type(expr);
+    fn evaluate_type_term(&mut self, expr: &Expr, env: &Environment) -> EvaluationResult {
+        let lowering = self.context.lower_comptime_type(expr, env.bindings());
         if !lowering.diagnostics.is_empty() {
             return EvaluationResult::deferred_with_diagnostics(lowering.diagnostics);
         }
@@ -652,6 +656,10 @@ impl Environment {
 
     fn get(&self, name: &str) -> Option<&ComptimeValue> {
         self.bindings.get(name)
+    }
+
+    fn bindings(&self) -> &HashMap<String, ComptimeValue> {
+        &self.bindings
     }
 }
 

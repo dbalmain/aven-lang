@@ -412,6 +412,52 @@ fn comptime_function_application_non_concrete_argument_defers_without_diagnostic
 }
 
 #[test]
+fn comptime_type_position_record_comprehension_reifies_record_type() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         clone = (object) => { keysOf(object) -> k; (k, object[k]) }\n\
+         Cloned = clone(User)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("Cloned"),
+        Some(&Type::Record(Row {
+            entries: vec![field("email", named("Text")), field("name", named("Text"))],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn comptime_type_position_record_comprehension_non_concrete_subject_defers_without_diagnostic() {
+    let open = parse_module(
+        "clone = (object) => { keysOf(object) -> k; (k, object[k]) }\n\
+         value : clone({ name: Text, .. }) = x\n",
+    );
+    let open_lowering = lower_annotation(&open.module, annotation(&open.module, "value"));
+
+    assert_eq!(open_lowering.ty, Type::Deferred);
+    assert!(open_lowering.diagnostics.is_empty());
+
+    let unknown = parse_module(
+        "clone = (object) => { keysOf(object) -> k; (k, object[k]) }\n\
+         Cloned = clone(t)\n",
+    );
+    let known_types = known_type_names(&unknown.module);
+    let definitions = type_definitions(&unknown.module, &known_types);
+
+    assert_eq!(definitions.get("Cloned"), Some(&Type::Deferred));
+
+    let check = check_module(&unknown.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
 fn comptime_function_application_reports_recursion_cycle() {
     let output = parse_module("loop = (r) => loop(r)\nUser = { name: Text }\nKeys = loop(User)\n");
     let check = check_module(&output.module);

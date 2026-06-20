@@ -1411,15 +1411,24 @@ impl<'a> Checker<'a> {
     pub(crate) fn lower_annotation(&mut self, annotation: &Expr) -> Type {
         match &annotation.kind {
             ExprKind::ComptimeName(name) => {
+                if let Some(ty) = self.lookup_comptime_reified_type(name) {
+                    return ty.clone();
+                }
+
                 self.check_type_name(name, annotation.span);
                 Type::Named(name.clone())
             }
-            ExprKind::Name(name) => Type::Variable(name.clone()),
+            ExprKind::Name(name) => self
+                .lookup_comptime_reified_type(name)
+                .cloned()
+                .unwrap_or_else(|| Type::Variable(name.clone())),
             ExprKind::Group(inner) => self.lower_annotation(inner),
-            ExprKind::Index { callee, args } => Type::Apply {
-                callee: Box::new(self.lower_annotation(callee)),
-                args: self.lower_annotations(args),
-            },
+            ExprKind::Index { callee, args } => self
+                .lower_comptime_type_index(callee, args)
+                .unwrap_or_else(|| Type::Apply {
+                    callee: Box::new(self.lower_annotation(callee)),
+                    args: self.lower_annotations(args),
+                }),
             ExprKind::Nullable(inner) => Type::Nullable(Box::new(self.lower_annotation(inner))),
             ExprKind::Arrow { params, result } => Type::Function {
                 params: self.lower_annotations(params),
@@ -1456,6 +1465,49 @@ impl<'a> Checker<'a> {
             .iter()
             .map(|item| self.lower_annotation(item))
             .collect()
+    }
+
+    fn lower_comptime_type_index(&mut self, callee: &Expr, args: &[Expr]) -> Option<Type> {
+        let subject = self.lookup_comptime_reified_type_expr(callee)?;
+        let [arg] = args else {
+            return Some(Type::Deferred);
+        };
+
+        let subject = self.normalize(&subject);
+        let Type::Record(row) = subject else {
+            return Some(Type::Deferred);
+        };
+        if row.tail != RowTail::Closed {
+            return Some(Type::Deferred);
+        }
+
+        let Some(label) = self.comptime_known_label(arg) else {
+            return Some(Type::Deferred);
+        };
+
+        Some(
+            row_field_type(&row, &label)
+                .cloned()
+                .unwrap_or(Type::Deferred),
+        )
+    }
+
+    fn lookup_comptime_reified_type_expr(&self, expr: &Expr) -> Option<Type> {
+        match &ungroup_expr(expr).kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
+                self.lookup_comptime_reified_type(name).cloned()
+            }
+            _ => None,
+        }
+    }
+
+    fn lookup_comptime_reified_type(&self, name: &str) -> Option<&Type> {
+        match self.lookup_comptime_value(name)? {
+            comptime::ComptimeValue::ReifiedType(ty) => Some(ty),
+            comptime::ComptimeValue::LabelSet(_)
+            | comptime::ComptimeValue::Literal(_)
+            | comptime::ComptimeValue::Bool(_) => None,
+        }
     }
 
     fn lower_deferred_annotation(&mut self, annotation: &Expr) {
@@ -1705,17 +1757,6 @@ impl<'a> Checker<'a> {
             unreachable!("fold_iteration_entry called for non-iteration entry");
         };
 
-        let RowFoldMode::Value { env } = mode else {
-            self.fold_expression(source, mode);
-            if let Some(guard) = guard {
-                self.fold_expression(guard, mode);
-            }
-            for entry in body {
-                self.fold_deferred_row_entry(entry, kind, mode);
-            }
-            return Err(());
-        };
-
         if kind != RowKind::Record {
             self.fold_expression(source, mode);
             if let Some(guard) = guard {
@@ -1727,19 +1768,21 @@ impl<'a> Checker<'a> {
             return Err(());
         }
 
-        let Some(labels) = self.comptime_known_label_set_in_env(source, env) else {
+        let Some(labels) = self.comptime_known_label_set_for_mode(source, mode) else {
             self.fold_expression(source, mode);
+            if matches!(mode, RowFoldMode::Annotation) {
+                if let Some(guard) = guard {
+                    self.fold_expression(guard, mode);
+                }
+                for entry in body {
+                    self.fold_deferred_row_entry(entry, kind, mode);
+                }
+            }
             return Err(());
         };
 
         for label in labels {
             let literal = label_literal(&label);
-            let mut body_env = env.clone();
-            body_env.insert(
-                binder.clone(),
-                LocalValueType::Known(literal_type(literal.clone())),
-            );
-
             let mut scope = HashMap::new();
             scope.insert(
                 binder.clone(),
@@ -1747,51 +1790,65 @@ impl<'a> Checker<'a> {
             );
             self.local_comptime_values.push(scope);
 
-            if let Some(guard) = guard {
-                match comptime::evaluate_runtime_value(
-                    guard,
-                    &self.current_comptime_value_bindings(),
-                )
-                .evaluation
-                {
-                    Evaluation::Evaluated(comptime::ComptimeValue::Bool(true)) => {}
-                    Evaluation::Evaluated(comptime::ComptimeValue::Bool(false)) => {
-                        self.local_comptime_values.pop();
-                        continue;
-                    }
-                    Evaluation::Evaluated(_) | Evaluation::Deferred | Evaluation::Unsupported => {
-                        self.fold_expression(guard, RowFoldMode::Value { env: &body_env });
-                        for body_entry in body {
-                            self.fold_deferred_row_entry(
-                                body_entry,
-                                kind,
-                                RowFoldMode::Value { env: &body_env },
-                            );
-                        }
-                        self.local_comptime_values.pop();
-                        return Err(());
-                    }
+            let result = match mode {
+                RowFoldMode::Annotation => self.fold_unrolled_iteration_body(
+                    body,
+                    guard.as_ref(),
+                    kind,
+                    RowFoldMode::Annotation,
+                    row,
+                ),
+                RowFoldMode::Value { env } => {
+                    let mut body_env = env.clone();
+                    body_env.insert(binder.clone(), LocalValueType::Known(literal_type(literal)));
+                    self.fold_unrolled_iteration_body(
+                        body,
+                        guard.as_ref(),
+                        kind,
+                        RowFoldMode::Value { env: &body_env },
+                        row,
+                    )
                 }
-            }
+            };
 
-            for (index, body_entry) in body.iter().enumerate() {
-                if self
-                    .fold_row_entry(body_entry, kind, RowFoldMode::Value { env: &body_env }, row)
-                    .is_err()
-                {
-                    for remaining in &body[index + 1..] {
-                        self.fold_deferred_row_entry(
-                            remaining,
-                            kind,
-                            RowFoldMode::Value { env: &body_env },
-                        );
+            self.local_comptime_values.pop();
+            result?;
+        }
+
+        Ok(())
+    }
+
+    fn fold_unrolled_iteration_body(
+        &mut self,
+        body: &[RecordEntry],
+        guard: Option<&Expr>,
+        kind: RowKind,
+        mode: RowFoldMode<'_>,
+        row: &mut Row,
+    ) -> Result<(), ()> {
+        if let Some(guard) = guard {
+            match comptime::evaluate_runtime_value(guard, &self.current_comptime_value_bindings())
+                .evaluation
+            {
+                Evaluation::Evaluated(comptime::ComptimeValue::Bool(true)) => {}
+                Evaluation::Evaluated(comptime::ComptimeValue::Bool(false)) => return Ok(()),
+                Evaluation::Evaluated(_) | Evaluation::Deferred | Evaluation::Unsupported => {
+                    self.fold_expression(guard, mode);
+                    for body_entry in body {
+                        self.fold_deferred_row_entry(body_entry, kind, mode);
                     }
-                    self.local_comptime_values.pop();
                     return Err(());
                 }
             }
+        }
 
-            self.local_comptime_values.pop();
+        for (index, body_entry) in body.iter().enumerate() {
+            if self.fold_row_entry(body_entry, kind, mode, row).is_err() {
+                for remaining in &body[index + 1..] {
+                    self.fold_deferred_row_entry(remaining, kind, mode);
+                }
+                return Err(());
+            }
         }
 
         Ok(())
@@ -1812,11 +1869,6 @@ impl<'a> Checker<'a> {
             return Err(());
         };
 
-        let RowFoldMode::Value { env } = mode else {
-            self.fold_expression(value, mode);
-            return Err(());
-        };
-
         let Some(label) = self.comptime_known_label(key) else {
             self.fold_expression(value, mode);
             return Err(());
@@ -1824,7 +1876,7 @@ impl<'a> Checker<'a> {
 
         let entry = RowEntry::Field {
             name: label.clone(),
-            ty: self.infer(env, field_value),
+            ty: self.fold_field_type(field_value, mode),
             optional: false,
         };
 
@@ -1832,7 +1884,10 @@ impl<'a> Checker<'a> {
             self.report_duplicate_row_label(
                 &label,
                 value.span,
-                DuplicateRowLabelContext::RecordValueAdd,
+                match mode {
+                    RowFoldMode::Annotation => DuplicateRowLabelContext::RecordAdd,
+                    RowFoldMode::Value { .. } => DuplicateRowLabelContext::RecordValueAdd,
+                },
             );
             Err(())
         } else {
@@ -3695,9 +3750,43 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn comptime_known_label_set_in_env(&self, expr: &Expr, env: &TypeEnv) -> Option<Vec<String>> {
-        self.comptime_known_label_set(expr)
-            .or_else(|| self.comptime_known_keys_of_value(expr, env))
+    fn comptime_known_label_set_for_mode(
+        &self,
+        expr: &Expr,
+        mode: RowFoldMode<'_>,
+    ) -> Option<Vec<String>> {
+        self.comptime_known_label_set(expr).or_else(|| match mode {
+            RowFoldMode::Annotation => self.comptime_known_keys_of_reified_type(expr),
+            RowFoldMode::Value { env } => self.comptime_known_keys_of_value(expr, env),
+        })
+    }
+
+    fn comptime_known_keys_of_reified_type(&self, expr: &Expr) -> Option<Vec<String>> {
+        let ExprKind::Call { callee, args } = &ungroup_expr(expr).kind else {
+            return None;
+        };
+        if expr_name(callee)? != "keysOf" {
+            return None;
+        }
+
+        let [arg] = args.as_slice() else {
+            return None;
+        };
+        let subject = self.lookup_comptime_reified_type_expr(arg)?;
+        let subject = self.normalize(&subject);
+
+        let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) =
+            comptime::evaluate_keys_of(
+                &subject,
+                arg.span,
+                self.reflection_subject_is_unresolved(&subject),
+            )
+            .evaluation
+        else {
+            return None;
+        };
+
+        Some(labels)
     }
 
     fn comptime_known_keys_of_value(&self, expr: &Expr, env: &TypeEnv) -> Option<Vec<String>> {
@@ -3992,9 +4081,15 @@ impl<'a> Checker<'a> {
 }
 
 impl<'a> comptime::EvalContext<'a> for Checker<'a> {
-    fn lower_comptime_type(&mut self, expr: &Expr) -> comptime::LoweredType {
+    fn lower_comptime_type(
+        &mut self,
+        expr: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> comptime::LoweredType {
         let start = self.diagnostics.len();
+        self.local_comptime_values.push(bindings.clone());
         let ty = self.lower_annotation(expr);
+        self.local_comptime_values.pop();
         let diagnostics = self.diagnostics.split_off(start);
 
         comptime::LoweredType {
