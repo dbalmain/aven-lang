@@ -497,6 +497,7 @@ fn collect_pattern_references(pattern: &Expr, references: &mut Vec<Reference>) {
             collect_pattern_references_from_entries(entries, references);
         }
         ExprKind::Group(inner)
+        | ExprKind::Optional(inner)
         | ExprKind::Nullable(inner)
         | ExprKind::Unary { value: inner, .. }
         | ExprKind::Propagate { value: inner, .. } => collect_pattern_references(inner, references),

@@ -1,0 +1,4 @@
+source : ?Text? = undefined
+result = source ?>
+  undefined => 0
+  value => 1

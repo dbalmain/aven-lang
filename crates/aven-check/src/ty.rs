@@ -23,6 +23,7 @@ pub enum Type {
         params: Vec<Type>,
         result: Box<Type>,
     },
+    Optional(Box<Type>),
     Nullable(Box<Type>),
     Tuple(Vec<Type>),
     Record(Row),
@@ -108,6 +109,7 @@ struct TypeRenderer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TypePrecedence {
     Arrow,
+    Prefix,
     Postfix,
 }
 
@@ -154,6 +156,16 @@ impl TypeRenderer {
                 let rendered_result = self.render_type(result);
                 let rendered = format!("{rendered_params} -> {rendered_result}");
                 if parent > TypePrecedence::Arrow {
+                    format!("({rendered})")
+                } else {
+                    rendered
+                }
+            }
+            Type::Optional(inner) => {
+                let rendered_inner =
+                    self.render_type_with_precedence(inner, TypePrecedence::Prefix);
+                let rendered = format!("?{rendered_inner}");
+                if parent > TypePrecedence::Prefix {
                     format!("({rendered})")
                 } else {
                     rendered
@@ -275,6 +287,7 @@ pub(crate) fn map_type_with_rows(
                 .collect(),
             result: Box::new(map_type_with_rows(result, leaf, tail)),
         },
+        Type::Optional(inner) => Type::Optional(Box::new(map_type_with_rows(inner, leaf, tail))),
         Type::Nullable(inner) => Type::Nullable(Box::new(map_type_with_rows(inner, leaf, tail))),
         Type::Tuple(items) => Type::Tuple(
             items
@@ -356,6 +369,7 @@ fn visit_type_with_rows(
                 .for_each(|param| visit_type_with_rows(param, visit, visit_tail));
             visit_type_with_rows(result, visit, visit_tail);
         }
+        Type::Optional(inner) => visit_type_with_rows(inner, visit, visit_tail),
         Type::Nullable(inner) => visit_type_with_rows(inner, visit, visit_tail),
         Type::Tuple(items) => items
             .iter()
@@ -510,6 +524,7 @@ pub(crate) fn named_type_name(ty: &Type) -> Option<&str> {
         | Type::Meta(_)
         | Type::Apply { .. }
         | Type::Function { .. }
+        | Type::Optional(_)
         | Type::Nullable(_)
         | Type::Tuple(_)
         | Type::Record(_)
@@ -556,4 +571,8 @@ pub(crate) fn named_type_mismatch(expected: &str, actual: &str) -> bool {
 
 pub(crate) fn is_undefined_value(value: &Expr) -> bool {
     matches!(&value.kind, ExprKind::Undefined)
+}
+
+pub(crate) fn is_null_value(value: &Expr) -> bool {
+    matches!(&value.kind, ExprKind::Null)
 }

@@ -70,8 +70,10 @@ pub enum ExprKind {
         callee: Box<Expr>,
         args: Vec<Expr>,
     },
-    /// `T?`: postfix nullable marker (type-level "optional"). Match uses the
-    /// distinct `?>` operator, so bare `?` is parsed uniformly.
+    /// `?T`: prefix optional marker.
+    Optional(Box<Expr>),
+    /// `T?`: postfix nullable marker. Match uses the distinct `?>` operator,
+    /// so bare postfix `?` is parsed uniformly.
     Nullable(Box<Expr>),
     /// `a -> b` / `(A, B) -> C`: a function/arrow form, right-associative.
     /// A parenthesized tuple on the left flattens into `params`.
@@ -560,6 +562,18 @@ impl Parser<'_> {
     }
 
     fn parse_unary(&mut self) -> Expr {
+        if self.current_is_operator("?") {
+            let operator_span = self.current_span();
+            self.advance();
+            let value = self.parse_unary();
+            let span = operator_span.merge(value.span);
+
+            return Expr {
+                kind: ExprKind::Optional(Box::new(value)),
+                span,
+            };
+        }
+
         if self.current_is_operator("-") || self.current_is_operator("!") {
             let Some(operator) = self.current().cloned() else {
                 return self.parse_postfix();
@@ -2947,6 +2961,38 @@ mod tests {
         };
         assert!(matches!(&inner.kind, ExprKind::ComptimeName(name) if name == "Text"));
         assert!(matches!(&binding.value.kind, ExprKind::Name(name) if name == "name"));
+    }
+
+    #[test]
+    fn parses_prefix_optional_and_composed_nullability() {
+        let output = parse_module("optional : ?Text = name\nboth : ?Text? = name\n");
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Binding(optional)) = output.module.items.first() else {
+            panic!("expected optional binding");
+        };
+        let optional_annotation = optional.annotation.as_ref().expect("expected annotation");
+        let ExprKind::Optional(inner) = &optional_annotation.kind else {
+            panic!(
+                "expected optional annotation, got {:?}",
+                optional_annotation.kind
+            );
+        };
+        assert!(matches!(&inner.kind, ExprKind::ComptimeName(name) if name == "Text"));
+
+        let Some(Item::Binding(both)) = output.module.items.get(1) else {
+            panic!("expected composed binding");
+        };
+        let both_annotation = both.annotation.as_ref().expect("expected annotation");
+        let ExprKind::Optional(inner) = &both_annotation.kind else {
+            panic!(
+                "expected optional outer annotation, got {:?}",
+                both_annotation.kind
+            );
+        };
+        assert!(
+            matches!(&inner.kind, ExprKind::Nullable(nullable_inner) if matches!(&nullable_inner.kind, ExprKind::ComptimeName(name) if name == "Text"))
+        );
     }
 
     #[test]

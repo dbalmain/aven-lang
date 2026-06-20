@@ -40,9 +40,22 @@ module
               name a
         result
           comptime Unit
-  binding value
+  binding optional
+    annotation
+      optional
+        comptime Text
+    value
+      name name
+  binding nullable
     annotation
       nullable
         comptime Text
+    value
+      name name
+  binding both
+    annotation
+      optional
+        nullable
+          comptime Text
     value
       name name

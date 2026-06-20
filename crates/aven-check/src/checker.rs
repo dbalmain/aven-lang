@@ -20,7 +20,7 @@ use crate::lower::{
 };
 use crate::ty::{
     Row, RowEntry, RowKind, RowTail, Type, TypeScheme, free_metas, generalize,
-    has_only_meta_unknowns, is_concrete_type, is_meta_type, is_undefined_value,
+    has_only_meta_unknowns, is_concrete_type, is_meta_type, is_null_value, is_undefined_value,
     mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
     numeric_type_name, render_literal_value, type_contains_deferred,
 };
@@ -584,7 +584,7 @@ impl<'a> Checker<'a> {
         self.check_value_expr(subject);
         let env = self.local_types.inference_env();
         let inferred_subject = self.infer(&env, subject);
-        let resolved_subject = self.resolve_and_default(&inferred_subject);
+        let resolved_subject = self.normalize(&self.resolve_and_default(&inferred_subject));
         self.check_match_exhaustiveness(subject, arms, &resolved_subject);
         let subject_type = is_concrete_type(&resolved_subject).then_some(resolved_subject);
 
@@ -612,10 +612,23 @@ impl<'a> Checker<'a> {
         arms: &[MatchArm],
         subject_type: &Type,
     ) {
-        if type_contains_deferred(subject_type) {
+        let subject_type = self.normalize(subject_type);
+        if type_contains_deferred(&subject_type) {
             return;
         }
-        let Type::Variant(row) = subject_type else {
+        let (empty_values, payload_type) = peel_empty_values(&subject_type);
+        if !empty_values.is_empty() {
+            let missing = empty_values
+                .iter()
+                .copied()
+                .filter(|value| !empty_value_is_covered(arms, *value))
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                self.report_missing_empty_match_values(&missing, subject.span);
+            }
+        }
+
+        let Type::Variant(row) = payload_type else {
             return;
         };
 
@@ -748,8 +761,13 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            (_, Type::Nullable(inner)) => {
+            (_, Type::Optional(inner)) => {
                 if !is_undefined_value(value) {
+                    self.check_value_against(inner, value);
+                }
+            }
+            (_, Type::Nullable(inner)) => {
+                if !is_null_value(value) {
                     self.check_value_against(inner, value);
                 }
             }
@@ -933,18 +951,28 @@ impl<'a> Checker<'a> {
         }
 
         match (expected, actual) {
-            (Type::Nullable(_), Type::Named(name)) if name == "Undefined" => {}
+            (Type::Optional(expected_inner), Type::Optional(actual_inner))
+            | (Type::Nullable(expected_inner), Type::Nullable(actual_inner)) => {
+                self.check_type_against_type(expected_inner, actual_inner, span);
+            }
+            (Type::Optional(_), Type::Named(name)) if name == "Undefined" => {}
+            (Type::Nullable(_), Type::Named(name)) if name == "Null" => {}
+            (Type::Optional(inner), _) => self.check_type_against_type(inner, actual, span),
             (Type::Nullable(inner), _) => self.check_type_against_type(inner, actual, span),
             (Type::Named(expected), Type::Named(actual))
                 if named_type_mismatch(expected, actual) =>
             {
                 self.report_type_mismatch_between_types(expected, actual, span);
             }
-            (Type::Named(expected), Type::Nullable(actual)) => {
-                if let Type::Named(actual) = actual.as_ref()
-                    && (named_type_mismatch(expected, actual) || expected == actual)
+            (Type::Named(expected), actual @ (Type::Optional(_) | Type::Nullable(_))) => {
+                let inner = match actual {
+                    Type::Optional(inner) | Type::Nullable(inner) => inner,
+                    _ => unreachable!("actual is constrained by the outer pattern"),
+                };
+                if let Type::Named(actual_name) = inner.as_ref()
+                    && (named_type_mismatch(expected, actual_name) || expected == actual_name)
                 {
-                    self.report_type_mismatch_between_types(expected, &format!("{actual}?"), span);
+                    self.report_type_mismatch_between_types(expected, &actual.render(), span);
                 }
             }
             (Type::Tuple(expected), Type::Tuple(actual)) => {
@@ -1319,7 +1347,9 @@ impl<'a> Checker<'a> {
                     .any(|param| self.reflection_subject_is_unresolved(param))
                     || self.reflection_subject_is_unresolved(result)
             }
-            Type::Nullable(inner) => self.reflection_subject_is_unresolved(inner),
+            Type::Optional(inner) | Type::Nullable(inner) => {
+                self.reflection_subject_is_unresolved(inner)
+            }
             Type::Tuple(items) => items
                 .iter()
                 .any(|item| self.reflection_subject_is_unresolved(item)),
@@ -1337,7 +1367,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn normalize(&self, ty: &Type) -> Type {
+    pub(crate) fn normalize(&self, ty: &Type) -> Type {
         self.normalize_with_visited(ty, HashSet::new())
     }
 
@@ -1367,9 +1397,8 @@ impl<'a> Checker<'a> {
                 params: self.normalize_types(params, &visited),
                 result: Box::new(self.normalize_with_visited(result, visited)),
             },
-            Type::Nullable(inner) => {
-                Type::Nullable(Box::new(self.normalize_with_visited(inner, visited)))
-            }
+            Type::Optional(inner) => self.normalize_optional(inner, visited),
+            Type::Nullable(inner) => self.normalize_nullable(inner, visited),
             Type::Tuple(items) => Type::Tuple(self.normalize_types(items, &visited)),
             Type::Record(row) => Type::Record(self.normalize_row(row, &visited)),
             Type::Variant(row) => Type::Variant(self.normalize_row(row, &visited)),
@@ -1381,6 +1410,21 @@ impl<'a> Checker<'a> {
             .iter()
             .map(|ty| self.normalize_with_visited(ty, visited.clone()))
             .collect()
+    }
+
+    fn normalize_optional(&self, inner: &Type, visited: HashSet<String>) -> Type {
+        match self.normalize_with_visited(inner, visited) {
+            Type::Optional(inner) => Type::Optional(inner),
+            inner => Type::Optional(Box::new(inner)),
+        }
+    }
+
+    fn normalize_nullable(&self, inner: &Type, visited: HashSet<String>) -> Type {
+        match self.normalize_with_visited(inner, visited) {
+            Type::Optional(inner) => Type::Optional(Box::new(Type::Nullable(inner))),
+            Type::Nullable(inner) => Type::Nullable(inner),
+            inner => Type::Nullable(Box::new(inner)),
+        }
     }
 
     fn normalize_row(&self, row: &Row, visited: &HashSet<String>) -> Row {
@@ -1444,6 +1488,7 @@ impl<'a> Checker<'a> {
                     callee: Box::new(self.lower_annotation(callee)),
                     args: self.lower_annotations(args),
                 }),
+            ExprKind::Optional(inner) => Type::Optional(Box::new(self.lower_annotation(inner))),
             ExprKind::Nullable(inner) => Type::Nullable(Box::new(self.lower_annotation(inner))),
             ExprKind::Arrow { params, result } => Type::Function {
                 params: self.lower_annotations(params),
@@ -2060,6 +2105,7 @@ impl<'a> Checker<'a> {
             | Type::Meta(_)
             | Type::Apply { .. }
             | Type::Function { .. }
+            | Type::Optional(_)
             | Type::Nullable(_)
             | Type::Tuple(_)
             | Type::Variant(_) => None,
@@ -2468,6 +2514,25 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_missing_empty_match_values(&mut self, missing: &[EmptyValue], span: Span) {
+        let values = missing
+            .iter()
+            .map(|value| value.render())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = format!("non-exhaustive match; missing {values}");
+
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(codes::ty::NON_EXHAUSTIVE_MATCH)
+                .with_label(Label::primary(
+                    span,
+                    "this subject has empty values without matching arms",
+                ))
+                .with_note("add the missing arm(s), or add `_ => ...` as a default"),
+        );
+    }
+
     fn report_type_mismatch_between_types(&mut self, expected: &str, actual: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("expected `{expected}`, found `{actual}`"))
@@ -2721,6 +2786,21 @@ enum VariantEntryKind {
     Literal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyValue {
+    Undefined,
+    Null,
+}
+
+impl EmptyValue {
+    fn render(self) -> &'static str {
+        match self {
+            EmptyValue::Undefined => "`undefined`",
+            EmptyValue::Null => "`null`",
+        }
+    }
+}
+
 fn is_non_liftable_artifact_type(ty: &Type) -> bool {
     matches!(
         ty,
@@ -2728,6 +2808,7 @@ fn is_non_liftable_artifact_type(ty: &Type) -> bool {
             | Type::Variable(_)
             | Type::Apply { .. }
             | Type::Function { .. }
+            | Type::Optional(_)
             | Type::Nullable(_)
             | Type::Tuple(_)
             | Type::Record(_)
@@ -2865,6 +2946,14 @@ fn pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> Vec<(String, 
 fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut HashMap<String, Type>) {
     match (&pattern.kind, expected) {
         (ExprKind::Group(inner), _) => collect_known_pattern_types(inner, expected, known),
+        (_, Type::Optional(inner))
+            if empty_value_pattern(pattern) != Some(EmptyValue::Undefined) =>
+        {
+            collect_known_pattern_types(pattern, inner, known);
+        }
+        (_, Type::Nullable(inner)) if empty_value_pattern(pattern) != Some(EmptyValue::Null) => {
+            collect_known_pattern_types(pattern, inner, known);
+        }
         (ExprKind::Name(name), _) if name != "_" && is_concrete_type(expected) => {
             known.insert(name.clone(), expected.clone());
         }
@@ -2988,6 +3077,9 @@ fn collect_comptime_type_bindings(
             }
         }
         (ExprKind::Nullable(inner), Type::Nullable(actual_inner)) => {
+            collect_comptime_type_bindings(inner, actual_inner, bindings);
+        }
+        (ExprKind::Optional(inner), Type::Optional(actual_inner)) => {
             collect_comptime_type_bindings(inner, actual_inner, bindings);
         }
         (ExprKind::Tuple(items), Type::Tuple(actual_items))
@@ -3219,6 +3311,54 @@ fn render_literal_union(literals: &[&Literal]) -> String {
         .join(" | ")
 }
 
+fn peel_empty_values(ty: &Type) -> (Vec<EmptyValue>, &Type) {
+    let mut values = Vec::new();
+    let mut payload = ty;
+
+    loop {
+        match payload {
+            Type::Optional(inner) => {
+                if !values.contains(&EmptyValue::Undefined) {
+                    values.push(EmptyValue::Undefined);
+                }
+                payload = inner;
+            }
+            Type::Nullable(inner) => {
+                if !values.contains(&EmptyValue::Null) {
+                    values.push(EmptyValue::Null);
+                }
+                payload = inner;
+            }
+            _ => return (values, payload),
+        }
+    }
+}
+
+fn empty_value_is_covered(arms: &[MatchArm], value: EmptyValue) -> bool {
+    arms.iter().any(|arm| {
+        arm.guards.is_empty()
+            && (empty_value_pattern(&arm.pattern) == Some(value)
+                || is_underscore_pattern(&arm.pattern))
+    })
+}
+
+fn empty_value_pattern(pattern: &Expr) -> Option<EmptyValue> {
+    match &pattern.kind {
+        ExprKind::Group(inner) => empty_value_pattern(inner),
+        ExprKind::Undefined => Some(EmptyValue::Undefined),
+        ExprKind::Null => Some(EmptyValue::Null),
+        _ => None,
+    }
+}
+
+fn is_underscore_pattern(pattern: &Expr) -> bool {
+    match &pattern.kind {
+        ExprKind::Group(inner) => is_underscore_pattern(inner),
+        ExprKind::Name(name) if name == "_" => true,
+        _ => false,
+    }
+}
+
 fn is_catch_all_pattern(pattern: &Expr) -> bool {
     match &pattern.kind {
         ExprKind::Group(inner) => is_catch_all_pattern(inner),
@@ -3297,7 +3437,7 @@ impl<'a> Checker<'a> {
     /// Fully resolve `ty`; keep it only when no metavariable remains, so a
     /// synthesized value type never leaks an unsolved meta into checking.
     fn resolve_if_concrete(&self, ty: &Type) -> Option<Type> {
-        let ty = self.resolve_and_default(ty);
+        let ty = self.normalize(&self.resolve_and_default(ty));
         is_concrete_type(&ty).then_some(ty)
     }
 
@@ -3429,6 +3569,7 @@ impl<'a> Checker<'a> {
             ExprKind::Match { subject, arms, .. } => self.infer_match(env, subject, arms),
             ExprKind::Missing
             | ExprKind::Literal(_)
+            | ExprKind::Optional(_)
             | ExprKind::Nullable(_)
             | ExprKind::Arrow { .. }
             | ExprKind::Propagate { .. } => Type::Deferred,

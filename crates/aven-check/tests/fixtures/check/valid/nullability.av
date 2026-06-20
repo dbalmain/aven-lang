@@ -1,0 +1,19 @@
+a : ?Text = undefined
+a2 : ?Text = "x"
+b : Text? = null
+b2 : Text? = "x"
+c : ?Text? = undefined
+c2 : ?Text? = "x"
+c3 : ?Text? = null
+
+plain : Text = "x"
+optionalFromPlain : ?Text = plain
+nullableFromPlain : Text? = plain
+bothFromPlain : ?Text? = plain
+bothFromOptional : ?Text? = a
+bothFromNullable : ?Text? = b
+
+matched : Text = c ?>
+  undefined => "undefined"
+  null => "null"
+  value => value

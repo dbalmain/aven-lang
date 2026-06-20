@@ -62,6 +62,10 @@ fn nullable(ty: Type) -> Type {
     Type::Nullable(Box::new(ty))
 }
 
+fn optional(ty: Type) -> Type {
+    Type::Optional(Box::new(ty))
+}
+
 fn field(name: &str, ty: Type) -> RowEntry {
     RowEntry::Field {
         name: name.to_owned(),
@@ -195,6 +199,11 @@ fn renders_types_as_surface_syntax() {
         nullable(function(vec![named("Int")], named("Text"))).render(),
         "(Int -> Text)?"
     );
+    assert_eq!(
+        optional(function(vec![named("Int")], named("Text"))).render(),
+        "?(Int -> Text)"
+    );
+    assert_eq!(optional(nullable(named("Text"))).render(), "?Text?");
     assert_eq!(
         apply(named("Result"), vec![named("Int"), variable("e")]).render(),
         "Result[Int, e]"
@@ -702,11 +711,15 @@ fn annotation_lowerer_lowers_declaration_annotations() {
 }
 
 #[test]
-fn lowers_function_application_and_nullable_annotations() {
-    let output = parse_module("mapper : (Array[a], a -> b) -> Array[b]\nvalue : Text? = name\n");
+fn lowers_function_application_optional_and_nullable_annotations() {
+    let output = parse_module(
+        "mapper : (Array[a], a -> b) -> Array[b]\noptional : ?Text = name\nnullable : Text? = name\nboth : ?Text? = name\n",
+    );
 
     let mapper = lower_annotation(&output.module, annotation(&output.module, "mapper"));
-    let value = lower_annotation(&output.module, annotation(&output.module, "value"));
+    let optional_value = lower_annotation(&output.module, annotation(&output.module, "optional"));
+    let nullable_value = lower_annotation(&output.module, annotation(&output.module, "nullable"));
+    let both = lower_annotation(&output.module, annotation(&output.module, "both"));
 
     assert_eq!(
         mapper.ty,
@@ -719,8 +732,12 @@ fn lowers_function_application_and_nullable_annotations() {
         )
     );
     assert!(mapper.diagnostics.is_empty());
-    assert_eq!(value.ty, nullable(named("Text")));
-    assert!(value.diagnostics.is_empty());
+    assert_eq!(optional_value.ty, optional(named("Text")));
+    assert!(optional_value.diagnostics.is_empty());
+    assert_eq!(nullable_value.ty, nullable(named("Text")));
+    assert!(nullable_value.diagnostics.is_empty());
+    assert_eq!(both.ty, optional(nullable(named("Text"))));
+    assert!(both.diagnostics.is_empty());
 }
 
 #[test]
@@ -1890,6 +1907,53 @@ fn literal_union_match_reports_unreachable_literal_arms() {
 }
 
 #[test]
+fn optional_nullable_match_exhaustiveness_requires_both_empty_values() {
+    let complete = parse_module(concat!(
+        "source : ?Text? = undefined\n",
+        "result = source ?>\n",
+        "  undefined => 0\n",
+        "  null => 1\n",
+        "  text => 2\n",
+    ));
+    let complete_check = check_module(&complete.module);
+    assert!(
+        !has_diagnostic_code(&complete_check.diagnostics, codes::ty::NON_EXHAUSTIVE_MATCH),
+        "complete optional/nullable match produced diagnostics: {:?}",
+        complete_check.diagnostics
+    );
+
+    let missing = parse_module(concat!(
+        "source : ?Text? = undefined\n",
+        "result = source ?>\n",
+        "  undefined => 0\n",
+        "  text => 1\n",
+    ));
+    let missing_check = check_module(&missing.module);
+    assert_eq!(
+        matching_codes(&missing_check.diagnostics, codes::ty::NON_EXHAUSTIVE_MATCH),
+        1
+    );
+}
+
+#[test]
+fn optional_nullable_match_payload_binds_inner_type() {
+    let output = parse_module(concat!(
+        "source : ?Text? = \"x\"\n",
+        "result : Text = source ?>\n",
+        "  undefined => \"absent\"\n",
+        "  null => \"empty\"\n",
+        "  text => text\n",
+    ));
+    let check = check_module(&output.module);
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "payload binder should be Text after peeling: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn match_result_inference_handles_block_arm_bodies() {
     let output = parse_module(
         "result = source ?>\n  @Ok(_) =>\n    local = 1\n    local\nvalue : Text = result\n",
@@ -2799,7 +2863,7 @@ fn annotated_identifier_values_are_checked_against_expected_types() {
     for source in [
         "other : Text = \"hi\"\nvalue : Int = other\n",
         "other : (Int, Text) = (1, \"a\")\nvalue : (Int, Int) = other\n",
-        "other : Text? = undefined\nvalue : Text = other\n",
+        "other : ?Text = undefined\nvalue : Text = other\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -2817,7 +2881,7 @@ fn annotated_identifier_values_accept_compatible_declared_types() {
     for source in [
         "other : Text = \"hi\"\nvalue : Text = other\n",
         "other : Text = \"hi\"\nvalue : Text? = other\n",
-        "other : Undefined = undefined\nvalue : Text? = other\n",
+        "other : Undefined = undefined\nvalue : ?Text = other\n",
         "other : (Int, Text) = (1, \"a\")\nvalue : (Int, Text) = other\n",
     ] {
         let output = parse_module(source);
@@ -3049,11 +3113,30 @@ fn parenthesized_values_are_checked_through_groups() {
 }
 
 #[test]
-fn nullable_values_accept_undefined_and_matching_inner_values() {
+fn nullable_values_accept_null_and_matching_inner_values() {
     for source in [
         "value : Text? = \"hi\"\n",
-        "value : Text? = undefined\n",
-        "value : Int? = undefined\n",
+        "value : Text? = null\n",
+        "value : Int? = null\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} unexpectedly produced type.mismatch"
+        );
+    }
+}
+
+#[test]
+fn optional_values_accept_undefined_and_matching_inner_values() {
+    for source in [
+        "value : ?Text = \"hi\"\n",
+        "value : ?Text = undefined\n",
+        "value : ?Int = undefined\n",
+        "value : ?Text? = undefined\n",
+        "value : ?Text? = null\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -3086,6 +3169,62 @@ fn nullable_values_defer_names() {
         &check.diagnostics,
         codes::ty::MISMATCH
     ));
+}
+
+#[test]
+fn optional_and_nullable_values_reject_the_other_empty_value() {
+    for source in ["value : Text? = undefined\n", "value : ?Text = null\n"] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+            1,
+            "{source} should produce one type.mismatch"
+        );
+    }
+}
+
+#[test]
+fn optional_and_nullable_widen_from_inner_values() {
+    for source in [
+        "plain : Text = \"x\"\nvalue : ?Text = plain\n",
+        "plain : Text = \"x\"\nvalue : Text? = plain\n",
+        "plain : Text = \"x\"\nvalue : ?Text? = plain\n",
+        "nullable : Text? = null\nvalue : ?Text? = nullable\n",
+        "optional : ?Text = undefined\nvalue : ?Text? = optional\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} unexpectedly produced type.mismatch: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn normalizes_optional_and_nullable_wrappers() {
+    let checker = Checker::with_type_definitions(HashSet::new(), Default::default());
+
+    assert_eq!(
+        checker.normalize(&optional(optional(named("Text")))),
+        optional(named("Text"))
+    );
+    assert_eq!(
+        checker.normalize(&nullable(nullable(named("Text")))),
+        nullable(named("Text"))
+    );
+    assert_eq!(
+        checker.normalize(&optional(nullable(named("Text")))),
+        optional(nullable(named("Text")))
+    );
+    assert_eq!(
+        checker.normalize(&nullable(optional(named("Text")))),
+        optional(nullable(named("Text")))
+    );
 }
 
 #[test]
@@ -3150,8 +3289,10 @@ fn optional_record_fields_may_be_absent_or_checked_when_present() {
 }
 
 #[test]
-fn nullable_record_fields_accept_undefined() {
-    let output = parse_module("value : { email: Text? } = { email: undefined }\n");
+fn optional_and_nullable_record_fields_accept_their_empty_values() {
+    let output = parse_module(
+        "value : { maybe: ?Text, email: Text? } = { maybe: undefined, email: null }\n",
+    );
     let check = check_module(&output.module);
 
     assert!(check.diagnostics.is_empty());

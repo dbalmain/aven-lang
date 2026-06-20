@@ -3,6 +3,7 @@ use crate::parser::{Expr, ExprKind, Item, RecordEntry};
 pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
     match &expr.kind {
         ExprKind::Group(inner)
+        | ExprKind::Optional(inner)
         | ExprKind::Nullable(inner)
         | ExprKind::Unary { value: inner, .. }
         | ExprKind::Propagate { value: inner, .. } => visit(inner),

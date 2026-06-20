@@ -1,3 +1,4 @@
 u : Undefined = null
 n : Null = undefined
-e : Text? = null
+e : Text? = undefined
+e2 : ?Text = null

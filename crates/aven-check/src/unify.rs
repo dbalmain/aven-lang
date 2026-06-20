@@ -133,6 +133,7 @@ impl Unifier {
                 self.unify_many(left_params, right_params)?;
                 self.unify_inner(left_result, right_result)
             }
+            (Type::Optional(left), Type::Optional(right)) => self.unify_inner(left, right),
             (Type::Nullable(left), Type::Nullable(right)) => self.unify_inner(left, right),
             (Type::Tuple(left), Type::Tuple(right)) if left.len() == right.len() => {
                 self.unify_many(left, right)

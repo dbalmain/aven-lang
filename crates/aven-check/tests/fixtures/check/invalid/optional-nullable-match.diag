@@ -1,0 +1,3 @@
+error type.non-exhaustive-match: non-exhaustive match; missing `null`
+  label 37..43: this subject has empty values without matching arms
+  note: add the missing arm(s), or add `_ => ...` as a default

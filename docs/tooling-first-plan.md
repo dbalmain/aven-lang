@@ -1697,6 +1697,11 @@ Completed parser groundwork:
   `Type::Nullable(T)` shape and, for N1, still admits `Undefined`; prefix `?`,
   `Optional`, optional-field changes, and spread semantics remain deferred to
   later N milestones.
+- N2 done: prefix `?T` now lowers to `Type::Optional(T)` and admits
+  `undefined`; postfix `T?` remains `Type::Nullable(T)` and now admits `null`.
+  The composed `?T?` form normalizes as `Optional(Nullable(T))`, subtype
+  widening flows from `T`, `?T`, and `T?` into `?T?`, and matches peel the
+  required `undefined`/`null` arms before binding the payload.
 
 ## To investigate later
 

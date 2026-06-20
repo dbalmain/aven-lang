@@ -1,4 +1,7 @@
 value:Text=name
+optional: ? Text=absent
+nullable:Text ? =empty
+both: ? Text ? =maybe
 greet=(person:Text):Text=>person
 User={name:Text,age:Int}
 Contact={phone?:Text}
