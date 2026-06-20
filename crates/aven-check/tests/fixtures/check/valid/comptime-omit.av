@@ -1,0 +1,4 @@
+User = { name: Text, email: Text }
+user : User = { name: "Ada", email: "ada@x.dev" }
+omit = (object: {..r}, @keys: keysOf(r)@{}) => { ..object, -keys }
+result : { email: Text } = omit(user, @{"name"})

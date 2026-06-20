@@ -1407,6 +1407,17 @@ Slices:
   both postfix spellings, and `aven-check` unwraps `Set[<literal union>]` for
   comptime key-set domains used by `pick`.
 
+- 16.6 — `omit` via bulk computed delete `-keys`: the `pick` dual for closed
+  record transforms. A bare delete name that resolves to a comptime label set
+  deletes every member from the current closed row, while ordinary static deletes
+  like `-password` keep their existing single-field behavior. Out-of-domain key
+  sets remain rejected by the existing `@param` literal-union membership check.
+
+  Done: `aven-check` now resolves bare delete names to in-scope comptime label
+  sets before falling back to static delete, applies the existing closed-row and
+  absent-field rules to bulk deletion, preserves static field delete behavior,
+  and locks `omit(user, @{"name"})` plus out-of-domain `omit` fixtures.
+
 	Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field

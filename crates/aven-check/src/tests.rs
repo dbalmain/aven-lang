@@ -2296,6 +2296,37 @@ fn comptime_pick_unrolls_key_set_to_closed_record_type() {
 }
 
 #[test]
+fn comptime_omit_bulk_deletes_key_set_from_closed_record_type() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+         omit = (object: {..r}, @keys: keysOf(r)@{}) => { ..object, -keys }\n\
+         result = omit(user, @{\"name\"})\n\
+         credentials = { email: \"ops@x.dev\", password: \"secret\" }\n\
+         without_password = { ..credentials, -password }\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker.infer_top_level_value("result"),
+        Some(Type::Record(Row {
+            entries: vec![field("email", named("Text"))],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert_eq!(
+        checker.infer_top_level_value("without_password"),
+        Some(Type::Record(Row {
+            entries: vec![field("email", named("Text"))],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
 fn comptime_pick_with_non_concrete_key_set_defers_without_diagnostic() {
     let output = parse_module(
         "User = { name: Text, email: Text }\n\

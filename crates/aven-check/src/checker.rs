@@ -1560,6 +1560,29 @@ impl<'a> Checker<'a> {
                     return Err(());
                 }
 
+                if let Some(labels) = self
+                    .lookup_comptime_value(name)
+                    .and_then(comptime_value_label_set)
+                {
+                    let mut missing = false;
+                    for label in &labels {
+                        if row_entry_index(&row.entries, label).is_none() {
+                            self.report_delete_absent_field(label, *span);
+                            missing = true;
+                        }
+                    }
+                    if missing {
+                        return Err(());
+                    }
+
+                    for label in labels {
+                        if let Some(index) = row_entry_index(&row.entries, &label) {
+                            row.entries.remove(index);
+                        }
+                    }
+                    return Ok(());
+                }
+
                 let Some(index) = row_entry_index(&row.entries, name) else {
                     self.report_delete_absent_field(name, *span);
                     return Err(());
@@ -3446,6 +3469,7 @@ impl<'a> Checker<'a> {
                 self.evaluate_comptime_param_domain(annotation, &type_bindings)
             });
 
+            let diagnostics_before_domain_check = self.diagnostics.len();
             if let Some(row) = domain.as_ref().and_then(literal_union_domain_row) {
                 match &value {
                     comptime::ComptimeValue::Literal(literal) => {
@@ -3469,6 +3493,9 @@ impl<'a> Checker<'a> {
                     }
                     comptime::ComptimeValue::ReifiedType(_) => {}
                 }
+            }
+            if self.diagnostics.len() > diagnostics_before_domain_check {
+                return Some(Type::Deferred);
             }
 
             let value_type = value
