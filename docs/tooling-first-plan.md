@@ -1699,6 +1699,14 @@ Completed parser groundwork:
   fields keep the existing `type.missing-field` diagnostic. `partial` is now
   written as `{ keysOf(object) -> k; [k]: ?object[k] }`. `required` is deferred
   pending a comptime strip-`Optional` primitive.
+- N4 done: record spreads are undefined-transparent for optional patch fields.
+  When an incoming spread field is `?T` and the base already has that label, the
+  base field type survives while the present `T` is checked against it; ordinary
+  and nullable values still overwrite through the existing spread rules. Explicit
+  value-record fields such as `x: undefined` now emit
+  `record.redundant-undefined` and suggest omission or `-x` deletion. Milestone N
+  is complete; the `required` helper still awaits a comptime strip-`Optional`
+  primitive follow-up.
 
 ## To investigate later
 

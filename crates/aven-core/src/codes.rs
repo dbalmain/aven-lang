@@ -62,6 +62,10 @@ pub mod parse {
     pub const UNSUPPORTED_SYNTAX: &str = "parse.unsupported-syntax";
 }
 
+pub mod record {
+    pub const REDUNDANT_UNDEFINED: &str = "record.redundant-undefined";
+}
+
 pub mod ty {
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
@@ -123,6 +127,7 @@ pub const ALL: &[&str] = &[
     parse::UNEXPECTED_INDENTATION,
     parse::UNEXPECTED_SEPARATOR,
     parse::UNSUPPORTED_SYNTAX,
+    record::REDUNDANT_UNDEFINED,
     ty::CYCLIC_ALIAS,
     ty::DELETE_ABSENT_FIELD,
     ty::DUPLICATE_SPREAD_LABEL,

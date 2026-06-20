@@ -175,6 +175,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "The syntax is intentionally not supported by the current parser slice. Rewrite using currently supported operators or wait for the planned syntax milestone.",
     },
     DiagnosticExplanation {
+        code: codes::record::REDUNDANT_UNDEFINED,
+        text: "A record field explicitly set to undefined is equivalent to omitting the field. Omit the field, or use the delete-entry form when a spread field should be removed.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::CYCLIC_ALIAS,
         text: "A transparent type alias eventually refers back to itself without passing through a type constructor. Wrap one member in a record or variant to make the recursion well-founded, or remove the alias.",
     },

@@ -432,8 +432,12 @@ impl<'a> Checker<'a> {
 
     fn check_value_expr(&mut self, expr: &Expr) {
         match &expr.kind {
-            ExprKind::Record(entries) | ExprKind::Set(entries) => {
+            ExprKind::Record(entries) => {
                 self.check_value_record_entries(entries);
+            }
+            ExprKind::Set(entries) => {
+                self.report_value_record_markers(entries);
+                self.walk_value_record_values(entries);
             }
             ExprKind::Lambda {
                 params,
@@ -496,6 +500,7 @@ impl<'a> Checker<'a> {
 
     fn check_value_record_entries(&mut self, entries: &[RecordEntry]) {
         self.report_value_record_markers(entries);
+        self.report_redundant_undefined_record_fields(entries);
         self.walk_value_record_values(entries);
     }
 
@@ -518,6 +523,33 @@ impl<'a> Checker<'a> {
                 | RecordEntry::DeleteComputed { .. }
                 | RecordEntry::Rename { .. }
                 | RecordEntry::Iteration { .. }
+                | RecordEntry::Element(_) => {}
+            }
+        }
+    }
+
+    fn report_redundant_undefined_record_fields(&mut self, entries: &[RecordEntry]) {
+        for entry in entries {
+            match entry {
+                RecordEntry::Field {
+                    name, value, span, ..
+                } if is_undefined_value(value) => {
+                    self.report_redundant_undefined_field(*span, format!("`-{name}`"));
+                }
+                RecordEntry::FieldComputed { value, span, .. } if is_undefined_value(value) => {
+                    self.report_redundant_undefined_field(*span, "`-[...]`");
+                }
+                RecordEntry::Iteration { body, .. } => {
+                    self.report_redundant_undefined_record_fields(body);
+                }
+                RecordEntry::Open { .. }
+                | RecordEntry::Field { .. }
+                | RecordEntry::FieldComputed { .. }
+                | RecordEntry::Shorthand { .. }
+                | RecordEntry::Spread { .. }
+                | RecordEntry::Delete { .. }
+                | RecordEntry::DeleteComputed { .. }
+                | RecordEntry::Rename { .. }
                 | RecordEntry::Element(_) => {}
             }
         }
@@ -1165,6 +1197,7 @@ impl<'a> Checker<'a> {
         value_span: Span,
     ) {
         self.report_value_record_markers(value_entries);
+        self.report_redundant_undefined_record_fields(value_entries);
 
         let Some(expected) = literal_record_type(row) else {
             self.walk_value_record_values(value_entries);
@@ -1622,10 +1655,14 @@ impl<'a> Checker<'a> {
                 span,
                 ..
             } => {
-                let ty = self.fold_field_type(value, mode);
                 if kind != RowKind::Record {
                     return Err(());
                 }
+                if matches!(mode, RowFoldMode::Value { .. }) && is_undefined_value(value) {
+                    return Ok(());
+                }
+
+                let ty = self.fold_field_type(value, mode);
 
                 let entry = RowEntry::Field {
                     name: name.clone(),
@@ -1658,6 +1695,14 @@ impl<'a> Checker<'a> {
                 }
             }
             RecordEntry::FieldComputed { key, value, span } => {
+                if kind == RowKind::Record
+                    && matches!(mode, RowFoldMode::Value { .. })
+                    && is_undefined_value(value)
+                {
+                    self.fold_expression(key, mode);
+                    return Ok(());
+                }
+
                 let Some(label) = self.comptime_known_label(key) else {
                     self.fold_deferred_row_entry(entry, kind, mode);
                     return Err(());
@@ -2101,6 +2146,12 @@ impl<'a> Checker<'a> {
 
             let label = row_entry_label(&entry).to_owned();
             if let Some(index) = row_entry_index(&row.entries, &label) {
+                if kind == RowKind::Record
+                    && self.merge_optional_record_patch_field(&row.entries[index], &entry, span)
+                {
+                    continue;
+                }
+
                 if !overwrite {
                     self.report_duplicate_row_label(&label, span, DuplicateRowLabelContext::Spread);
                     return Err(());
@@ -2116,6 +2167,30 @@ impl<'a> Checker<'a> {
         }
 
         Ok(())
+    }
+
+    fn merge_optional_record_patch_field(
+        &mut self,
+        base: &RowEntry,
+        incoming: &RowEntry,
+        span: Span,
+    ) -> bool {
+        let (
+            RowEntry::Field { ty: base_ty, .. },
+            RowEntry::Field {
+                ty: incoming_ty, ..
+            },
+        ) = (base, incoming)
+        else {
+            return false;
+        };
+
+        let Type::Optional(inner) = self.normalize(incoming_ty) else {
+            return false;
+        };
+
+        self.check_type_against_type(base_ty, &inner, span);
+        true
     }
 
     fn check_homogeneous_variant_entry(
@@ -2512,6 +2587,25 @@ impl<'a> Checker<'a> {
                 ))
                 .with_note(format!(
                     "change the value to produce `{expected}`, or change the annotation to `{actual}`"
+                )),
+        );
+    }
+
+    fn report_redundant_undefined_field(
+        &mut self,
+        span: Span,
+        delete_suggestion: impl Into<String>,
+    ) {
+        let delete_suggestion = delete_suggestion.into();
+        self.diagnostics.push(
+            Diagnostic::error("redundant `undefined` field value")
+                .with_code(codes::record::REDUNDANT_UNDEFINED)
+                .with_label(Label::primary(
+                    span,
+                    "this field is explicitly `undefined`",
+                ))
+                .with_note(format!(
+                    "omit the field (it defaults to `undefined`), or use {delete_suggestion} to delete it from a spread"
                 )),
         );
     }

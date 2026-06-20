@@ -1,0 +1,8 @@
+User = { name: Text, email: Text }
+partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }
+update = (u: User, patch: partial(User)) => { ..u, ..patch }
+user : User = { name: "Grace", email: "grace@example.test" }
+updated : User = update(user, { name: "Ada" })
+base : User = user
+patch : partial(User) = { name: "Ada" }
+fresh : User = { ..base, ..patch }

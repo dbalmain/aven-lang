@@ -1,0 +1,6 @@
+error record.redundant-undefined: redundant `undefined` field value
+  label 33..45: this field is explicitly `undefined`
+  note: omit the field (it defaults to `undefined`), or use `-x` to delete it from a spread
+error record.redundant-undefined: redundant `undefined` field value
+  label 58..70: this field is explicitly `undefined`
+  note: omit the field (it defaults to `undefined`), or use `-x` to delete it from a spread

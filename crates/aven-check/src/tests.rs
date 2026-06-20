@@ -2391,6 +2391,33 @@ fn infer_value_synthesizes_disjoint_spread_union() {
 }
 
 #[test]
+fn optional_spread_patch_fields_preserve_base_shape() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+         user : User = { name: \"Grace\", email: \"grace@example.test\" }\n\
+         patch : partial(User) = { name: \"Ada\" }\n\
+         fresh = { ..user, ..patch }\n\
+         update = (u: User, patch: partial(User)) => { ..u, ..patch }\n\
+         updated = update(user, patch)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let user_type = Type::Record(Row {
+        entries: vec![field("name", named("Text")), field("email", named("Text"))],
+        tail: RowTail::Closed,
+    });
+
+    assert_eq!(
+        checker.infer_top_level_value("fresh"),
+        Some(user_type.clone())
+    );
+    assert_eq!(checker.infer_top_level_value("updated"), Some(user_type));
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
 fn value_spread_conflict_reports_duplicate_label() {
     let output = parse_module("a = { x: 1 }\nb = { x: 2 }\nconflict = { ..a, ..b }\n");
     let check = check_module(&output.module);
@@ -3248,10 +3275,8 @@ fn record_field_omission_keys_off_optional_type_not_nullability() {
 }
 
 #[test]
-fn optional_and_nullable_record_fields_accept_their_empty_values() {
-    let output = parse_module(
-        "value : { maybe: ?Text, email: Text? } = { maybe: undefined, email: null }\n",
-    );
+fn optional_record_fields_accept_omission_and_nullable_fields_accept_null() {
+    let output = parse_module("value : { maybe: ?Text, email: Text? } = { email: null }\n");
     let check = check_module(&output.module);
 
     assert!(check.diagnostics.is_empty());

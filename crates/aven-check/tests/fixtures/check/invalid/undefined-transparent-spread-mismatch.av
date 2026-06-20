@@ -1,0 +1,5 @@
+User = { name: Text, email: Text }
+Patch = { name: ?Int, email: ?Text }
+base : User = { name: "Grace", email: "grace@example.test" }
+patch : Patch = { name: 1 }
+value = { ..base, ..patch }

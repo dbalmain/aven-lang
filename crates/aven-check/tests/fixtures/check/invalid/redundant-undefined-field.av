@@ -1,0 +1,3 @@
+obj = { x: 1 }
+spread = { ..obj, x: undefined }
+fresh = { x: undefined }
