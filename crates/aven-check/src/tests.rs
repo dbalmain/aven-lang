@@ -36,6 +36,17 @@ fn binding_value(source: &str) -> Expr {
         .unwrap_or_else(|| panic!("expected binding for {source:?}"))
 }
 
+fn binding_value_named<'a>(module: &'a Module, name: &str) -> &'a Expr {
+    module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Binding(binding) if binding.name == name => Some(&binding.value),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected binding for {name}"))
+}
+
 fn named(name: &str) -> Type {
     Type::Named(name.to_owned())
 }
@@ -271,6 +282,50 @@ fn check_output_records_annotated_declared_types() {
             .type_at(nth_span(source, "person", 0))
             .map(Type::render),
         Some("{ name: Text, .. }".to_owned())
+    );
+}
+
+#[test]
+fn check_output_records_concrete_expression_types() {
+    let source = "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, 2)\nconfig = { name: \"Ada\" }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty());
+    assert_eq!(
+        check
+            .type_at(binding_value_named(&output.module, "total").span)
+            .map(Type::render),
+        Some("Int".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(binding_value_named(&output.module, "config").span)
+            .map(Type::render),
+        Some("{ name: Text }".to_owned())
+    );
+}
+
+#[test]
+fn check_output_type_at_returns_narrowest_containing_expression_type() {
+    let source = "name : { length: Int } = current\nvalue = name.length\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    let field_access_span = binding_value_named(&output.module, "value").span;
+    let field_span = nth_span(source, "length", 1);
+
+    assert!(check.diagnostics.is_empty());
+    assert_eq!(
+        check.type_at(nth_span(source, "name", 1)).map(Type::render),
+        Some("{ length: Int }".to_owned())
+    );
+    assert_eq!(
+        check.type_at(field_span).map(Type::render),
+        Some("Int".to_owned())
+    );
+    assert_eq!(
+        check.type_at(field_access_span).map(Type::render),
+        Some("Int".to_owned())
     );
 }
 

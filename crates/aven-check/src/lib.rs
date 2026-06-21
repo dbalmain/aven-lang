@@ -44,9 +44,16 @@ impl CheckOutput {
     pub fn type_at(&self, span: Span) -> Option<&Type> {
         self.inferred_types
             .iter()
-            .find(|inferred| inferred.name_span.contains(span))
+            .filter(|inferred| type_span_contains(inferred.name_span, span))
+            .min_by_key(|inferred| inferred.name_span.len())
             .map(|inferred| &inferred.ty)
     }
+}
+
+fn type_span_contains(outer: Span, inner: Span) -> bool {
+    let outer_end = outer.end.max(outer.start.saturating_add(1));
+    let inner_end = inner.end.max(inner.start.saturating_add(1));
+    inner.start >= outer.start && inner_end <= outer_end
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

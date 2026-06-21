@@ -1733,6 +1733,13 @@ Completed parser groundwork:
   types are exposed through the checker/compiler `function_signature` accessor
   with `Optional`/`Nullable` wrappers peeled, and the active parameter is counted
   from depth-aware top-level commas inside the enclosing call.
+- T4 done: the inferred-type snapshot now records concrete expression spans in
+  addition to binder spans, and `type_at` returns the narrowest containing span so
+  hover can target calls, literals, records, fields, indexes, and other inferred
+  sub-expressions without regressing name hover. Expression entries are recorded
+  only when the type is concrete at inference time after resolve/default/normalize;
+  expressions that become concrete only through later unification are still
+  omitted until a future record-then-resolve pass.
 
 ## To investigate later
 

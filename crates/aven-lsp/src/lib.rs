@@ -947,6 +947,48 @@ fn rename_workspace_edit(
 }
 
 fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Hover> {
+    let expression_hover = expression_hover_at_position(document, position);
+    let identifier_hover = identifier_hover_at_position(document, position);
+
+    match (expression_hover, identifier_hover) {
+        (Some(expression), Some(identifier)) if expression.span.len() < identifier.span.len() => {
+            Some(expression.hover)
+        }
+        (_, Some(identifier)) => Some(identifier.hover),
+        (Some(expression), None) => Some(expression.hover),
+        (None, None) => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HoverCandidate {
+    span: Span,
+    hover: Hover,
+}
+
+fn expression_hover_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<HoverCandidate> {
+    let span = expr_span_at_position(document, position)?;
+    let rendered = document.type_at(span)?.render();
+
+    Some(HoverCandidate {
+        span,
+        hover: Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("```aven\n{rendered}\n```"),
+            }),
+            range: Some(span_to_range(document, span)),
+        },
+    })
+}
+
+fn identifier_hover_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<HoverCandidate> {
     let identifier = identifier_at_position(document, position)?;
     let definition = definition_span_for_identifier(document, &identifier)?;
 
@@ -962,12 +1004,15 @@ fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Ho
         document.type_at(definition)?.render()
     };
 
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: format!("```aven\n{} : {}\n```", identifier.name, rendered),
-        }),
-        range: Some(span_to_range(document, identifier.span)),
+    Some(HoverCandidate {
+        span: identifier.span,
+        hover: Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("```aven\n{} : {}\n```", identifier.name, rendered),
+            }),
+            range: Some(span_to_range(document, identifier.span)),
+        },
     })
 }
 
@@ -1014,6 +1059,56 @@ fn identifier_at_position(
 
         identifier_from_token(token)
     })
+}
+
+fn expr_span_at_position(document: &ParsedDocument, position: Position) -> Option<Span> {
+    let offset = position_to_offset(document, position)?;
+    let target = Span::point(offset);
+    let mut found = None;
+
+    for item in &document.parse_output().module.items {
+        collect_item_expr_span_at(item, target, &mut found);
+    }
+
+    found.or_else(|| token_span_at_offset(document, offset))
+}
+
+fn collect_item_expr_span_at(item: &aven_parser::Item, target: Span, found: &mut Option<Span>) {
+    match item {
+        aven_parser::Item::Binding(binding) => {
+            if let Some(annotation) = &binding.annotation {
+                collect_expr_span_at(annotation, target, found);
+            }
+            collect_expr_span_at(&binding.value, target, found);
+        }
+        aven_parser::Item::Signature(signature) => {
+            collect_expr_span_at(&signature.annotation, target, found);
+        }
+        aven_parser::Item::Expr(expr) => collect_expr_span_at(expr, target, found),
+    }
+}
+
+fn collect_expr_span_at(expr: &aven_parser::Expr, target: Span, found: &mut Option<Span>) {
+    if expr.span.is_empty() || !expr.span.contains(target) {
+        return;
+    }
+
+    if found.is_none_or(|span| expr.span.len() < span.len()) {
+        *found = Some(expr.span);
+    }
+
+    aven_parser::walk_expr_children(expr, &mut |child| {
+        collect_expr_span_at(child, target, found);
+    });
+}
+
+fn token_span_at_offset(document: &ParsedDocument, offset: usize) -> Option<Span> {
+    document
+        .parse_output()
+        .raw_tokens
+        .iter()
+        .find(|token| offset >= token.span.start && offset < token.span.end)
+        .map(|token| token.span)
 }
 
 fn significant_tokens(document: &ParsedDocument) -> Vec<&aven_parser::Token> {
@@ -2067,6 +2162,28 @@ mod tests {
         };
 
         assert_hover_value(hover, "```aven\nlocal : Text\n```");
+    }
+
+    #[test]
+    fn hover_at_position_shows_call_result_expression_type() {
+        let document = parsed_document_with_semantics(
+            "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, 2)\n",
+        );
+        let Some(hover) = hover_at_position(&document, position(2, 11)) else {
+            panic!("expected hover");
+        };
+
+        assert_hover_value(hover, "```aven\nInt\n```");
+    }
+
+    #[test]
+    fn hover_at_position_shows_literal_expression_type() {
+        let document = parsed_document_with_semantics("value = \"hi\"\n".to_owned());
+        let Some(hover) = hover_at_position(&document, position(0, 8)) else {
+            panic!("expected hover");
+        };
+
+        assert_hover_value(hover, "```aven\nText\n```");
     }
 
     #[test]

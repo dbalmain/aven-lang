@@ -430,6 +430,17 @@ impl<'a> Checker<'a> {
         self.inferred_types.push(InferredType { name_span, ty });
     }
 
+    fn record_expr_type(&mut self, span: Span, ty: &Type) {
+        if span.is_empty() {
+            return;
+        }
+
+        let ty = self.normalize(&self.resolve_and_default(ty));
+        if is_concrete_type(&ty) {
+            self.record_inferred_type(span, ty);
+        }
+    }
+
     fn check_value_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Record(entries) => {
@@ -3563,7 +3574,7 @@ impl<'a> Checker<'a> {
     }
 
     fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
-        match &expr.kind {
+        let ty = match &expr.kind {
             ExprKind::Literal(Literal::Number(_)) => self.unifier.fresh_numeric(),
             ExprKind::Literal(Literal::String(_)) => named_builtin("Text"),
             ExprKind::Literal(Literal::Bool(_)) => named_builtin("Bool"),
@@ -3654,7 +3665,9 @@ impl<'a> Checker<'a> {
             | ExprKind::NonNull(_)
             | ExprKind::Arrow { .. }
             | ExprKind::Propagate { .. } => Type::Deferred,
-        }
+        };
+        self.record_expr_type(expr.span, &ty);
+        ty
     }
 
     fn infer_binary(&mut self, env: &TypeEnv, left: &Expr, operator: &str, right: &Expr) -> Type {

@@ -179,7 +179,8 @@ impl DocumentSnapshot {
     pub fn type_at(&self, span: aven_core::Span) -> Option<&Type> {
         self.inferred_types
             .iter()
-            .find(|inferred| inferred.name_span.contains(span))
+            .filter(|inferred| type_span_contains(inferred.name_span, span))
+            .min_by_key(|inferred| inferred.name_span.len())
             .map(|inferred| &inferred.ty)
     }
 
@@ -197,6 +198,12 @@ impl DocumentSnapshot {
     fn matches(&self, revision: Revision, source: &str) -> bool {
         self.revision == revision && self.source() == source
     }
+}
+
+fn type_span_contains(outer: aven_core::Span, inner: aven_core::Span) -> bool {
+    let outer_end = outer.end.max(outer.start.saturating_add(1));
+    let inner_end = inner.end.max(inner.start.saturating_add(1));
+    inner.start >= outer.start && inner_end <= outer_end
 }
 
 fn collect_declaration_artifacts(
