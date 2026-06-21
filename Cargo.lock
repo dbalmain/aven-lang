@@ -98,6 +98,7 @@ dependencies = [
  "ariadne",
  "aven-compiler",
  "aven-core",
+ "aven-eval",
  "aven-fmt",
  "aven-lsp",
  "aven-parser",
@@ -126,6 +127,14 @@ dependencies = [
 [[package]]
 name = "aven-core"
 version = "0.1.0"
+
+[[package]]
+name = "aven-eval"
+version = "0.1.0"
+dependencies = [
+ "aven-core",
+ "aven-parser",
+]
 
 [[package]]
 name = "aven-fmt"

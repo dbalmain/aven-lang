@@ -211,6 +211,30 @@ fn check_json_timings_marks_skipped_semantic_phases() {
 }
 
 #[test]
+fn run_prints_last_expression_value() {
+    let file = TempFile::new("run-ok", "1 + 2 * 3\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "7\n");
+}
+
+#[test]
+fn run_reports_runtime_diagnostics() {
+    let file = TempFile::new("run-error", "1 / 0\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("runtime.division-by-zero"),
+        "expected runtime diagnostic, got:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn explain_prints_diagnostic_explanations() {
     let output = run_aven_without_path(["explain", "parse.unclosed-delimiter"]);
 

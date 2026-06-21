@@ -34,6 +34,16 @@ enum Command {
         timings: bool,
     },
 
+    /// Run a file and print the last expression value.
+    Run {
+        /// Source file to run.
+        path: PathBuf,
+
+        /// Diagnostic output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+
     /// Explain a diagnostic code.
     Explain {
         /// Diagnostic code to explain.
@@ -82,6 +92,7 @@ async fn main() -> Result<()> {
             format,
             timings,
         } => check(&path, format, timings),
+        Command::Run { path, format } => run(&path, format),
         Command::Explain { code } => explain(&code),
         Command::Tokens { path } => tokens(&path),
         Command::Layout { path } => layout(&path),
@@ -136,6 +147,41 @@ fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
             "{}: ok (parse, name, annotation, and partial monomorphic inference checks)",
             path.display()
         );
+    }
+
+    Ok(())
+}
+
+fn run(path: &Path, format: OutputFormat) -> Result<()> {
+    let file = load_source_file(path)?;
+    let parse = aven_parser::parse_source(&file);
+    let mut diagnostics = parse.diagnostics.clone();
+    let mut value = None;
+
+    if !diagnostics.iter().any(AvenDiagnostic::is_error) {
+        let outcome = aven_eval::eval_module(&parse.module);
+        value = outcome.value;
+        diagnostics.extend(outcome.diagnostics);
+    }
+
+    let mut report = DiagnosticReport::new(file.id, diagnostics);
+    report.sort_by_primary_span();
+
+    match format {
+        OutputFormat::Text => {
+            if !report.is_empty() {
+                print_diagnostics(&file, &report)?;
+            }
+        }
+        OutputFormat::Json => print_json_diagnostics(&file, &report, None)?,
+    }
+
+    if report.has_errors() {
+        bail!("run failed");
+    }
+
+    if let Some(value) = value {
+        println!("{value}");
     }
 
     Ok(())

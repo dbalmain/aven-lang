@@ -18,6 +18,7 @@ anyhow.workspace = true
 ariadne.workspace = true
 aven-compiler.workspace = true
 aven-core.workspace = true
+aven-eval.workspace = true
 aven-fmt.workspace = true
 aven-lsp.workspace = true
 aven-parser.workspace = true

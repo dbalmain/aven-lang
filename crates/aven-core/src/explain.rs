@@ -179,6 +179,18 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A record field explicitly set to undefined is equivalent to omitting the field. Omit the field, or use the delete-entry form when a spread field should be removed.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::DIVISION_BY_ZERO,
+        text: "Runtime evaluation tried to divide or take a remainder by zero. Change the right operand of `/` or `%` so it evaluates to a non-zero number before running the program.",
+    },
+    DiagnosticExplanation {
+        code: codes::runtime::TYPE_ERROR,
+        text: "Runtime evaluation reached an operator with operands it cannot accept. Use operands of the expected runtime kind, or add a static check once the relevant language feature exists.",
+    },
+    DiagnosticExplanation {
+        code: codes::runtime::UNSUPPORTED,
+        text: "Runtime evaluation reached syntax that is parsed but not implemented by the current evaluator slice. Rewrite the program using supported expression forms or wait for the planned evaluator milestone.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::CYCLIC_ALIAS,
         text: "A transparent type alias eventually refers back to itself without passing through a type constructor. Wrap one member in a record or variant to make the recursion well-founded, or remove the alias.",
     },

@@ -66,6 +66,12 @@ pub mod record {
     pub const REDUNDANT_UNDEFINED: &str = "record.redundant-undefined";
 }
 
+pub mod runtime {
+    pub const DIVISION_BY_ZERO: &str = "runtime.division-by-zero";
+    pub const TYPE_ERROR: &str = "runtime.type-error";
+    pub const UNSUPPORTED: &str = "runtime.unsupported";
+}
+
 pub mod ty {
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
@@ -128,6 +134,9 @@ pub const ALL: &[&str] = &[
     parse::UNEXPECTED_SEPARATOR,
     parse::UNSUPPORTED_SYNTAX,
     record::REDUNDANT_UNDEFINED,
+    runtime::DIVISION_BY_ZERO,
+    runtime::TYPE_ERROR,
+    runtime::UNSUPPORTED,
     ty::CYCLIC_ALIAS,
     ty::DELETE_ABSENT_FIELD,
     ty::DUPLICATE_SPREAD_LABEL,

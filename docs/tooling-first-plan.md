@@ -1757,6 +1757,24 @@ Completed parser groundwork:
   calls, tuples, or other expressions remain future work because they need
   expected-type propagation.
 
+## Milestone E — tree-walking evaluator
+
+Status: in progress
+
+Goal: make parsed Aven programs executable through a direct AST evaluator before
+the later bytecode/runtime work.
+
+- E1 done: added `aven-eval`, a tree-walking evaluator over parser AST nodes
+  with runtime `Value` support for `Int`, `Float`, `Text`, `Bool`, `undefined`,
+  and `null`. The first slice evaluates literals, grouping, unary `-`/`!`, core
+  arithmetic, numeric and equality comparisons, boolean short-circuiting, and
+  text concatenation. `aven run <path>` now parses a file, renders parse/runtime
+  diagnostics through the existing CLI renderer, and prints the last expression
+  value on success.
+- E2 next: add environments for top-level bindings, local block bindings, name
+  lookup, and block result values. E1 reports bindings explicitly as
+  `runtime.unsupported` instead of silently ignoring them.
+
 ## To investigate later
 
 - **Braceless multiline set/record literals.** Allow dropping the braces on

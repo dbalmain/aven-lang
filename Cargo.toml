@@ -4,6 +4,7 @@ members = [
   "crates/aven-compiler",
   "crates/aven-cli",
   "crates/aven-core",
+  "crates/aven-eval",
   "crates/aven-fmt",
   "crates/aven-lsp",
   "crates/aven-parser",
@@ -23,6 +24,7 @@ ariadne = "0.6.0"
 aven-check = { path = "crates/aven-check" }
 aven-compiler = { path = "crates/aven-compiler" }
 aven-core = { path = "crates/aven-core" }
+aven-eval = { path = "crates/aven-eval" }
 aven-fmt = { path = "crates/aven-fmt" }
 aven-lsp = { path = "crates/aven-lsp" }
 aven-parser = { path = "crates/aven-parser" }
