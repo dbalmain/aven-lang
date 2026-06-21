@@ -11,9 +11,10 @@ use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MarkupContent, MarkupKind, MessageType, OneOf, Position, Range, RenameParams,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
+    InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind,
+    MessageType, OneOf, Position, Range, RenameParams, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, SymbolKind, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
@@ -119,6 +120,7 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec![".".to_owned()]),
                     ..CompletionOptions::default()
                 }),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(SemanticTokensServerCapabilities::from(
                     SemanticTokensOptions {
                         work_done_progress_options: Default::default(),
@@ -234,6 +236,14 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(completion_at_position(
             &document, position,
         ))))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let Some(document) = self.document(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        Ok(Some(inlay_hints_in_range(&document, params.range)))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -579,6 +589,105 @@ fn completion_kind_for_type(ty: Option<&aven_compiler::Type>) -> CompletionItemK
     }
 
     CompletionItemKind::VARIABLE
+}
+
+fn inlay_hints_in_range(document: &ParsedDocument, range: Range) -> Vec<InlayHint> {
+    let mut hints = Vec::new();
+    collect_inlay_hints_in_items(
+        document,
+        &document.parse_output().module.items,
+        range,
+        &mut hints,
+    );
+    hints
+}
+
+fn collect_inlay_hints_in_items(
+    document: &ParsedDocument,
+    items: &[aven_parser::Item],
+    range: Range,
+    hints: &mut Vec<InlayHint>,
+) {
+    for item in items {
+        match item {
+            aven_parser::Item::Binding(binding) => {
+                push_inlay_hint_for_name_span(document, binding.name_span, range, hints);
+                collect_inlay_hints_in_expr(document, &binding.value, range, hints);
+            }
+            aven_parser::Item::Signature(_) => {}
+            aven_parser::Item::Expr(expr) => {
+                collect_inlay_hints_in_expr(document, expr, range, hints)
+            }
+        }
+    }
+}
+
+fn collect_inlay_hints_in_expr(
+    document: &ParsedDocument,
+    expr: &aven_parser::Expr,
+    range: Range,
+    hints: &mut Vec<InlayHint>,
+) {
+    match &expr.kind {
+        aven_parser::ExprKind::Lambda { params, body, .. } => {
+            for param in params {
+                push_inlay_hint_for_name_span(document, param.name_span, range, hints);
+            }
+            collect_inlay_hints_in_expr(document, body, range, hints);
+        }
+        aven_parser::ExprKind::Block(items) => {
+            collect_inlay_hints_in_items(document, items, range, hints);
+        }
+        aven_parser::ExprKind::Match { subject, arms, .. } => {
+            collect_inlay_hints_in_expr(document, subject, range, hints);
+            for arm in arms {
+                for binding in aven_parser::pattern_bindings(&arm.pattern) {
+                    push_inlay_hint_for_name_span(document, binding.span, range, hints);
+                }
+                for guard in &arm.guards {
+                    collect_inlay_hints_in_expr(document, guard, range, hints);
+                }
+                collect_inlay_hints_in_expr(document, &arm.body, range, hints);
+            }
+        }
+        _ => aven_parser::walk_expr_children(expr, &mut |child| {
+            collect_inlay_hints_in_expr(document, child, range, hints);
+        }),
+    }
+}
+
+fn push_inlay_hint_for_name_span(
+    document: &ParsedDocument,
+    name_span: Span,
+    requested_range: Range,
+    hints: &mut Vec<InlayHint>,
+) {
+    let name_range = span_to_range(document, name_span);
+    if !range_contains_range(requested_range, name_range)
+        || aven_parser::annotation_for_definition(&document.parse_output().module, name_span)
+            .is_some()
+    {
+        return;
+    }
+
+    let Some(ty) = document.type_at(name_span) else {
+        return;
+    };
+
+    hints.push(InlayHint {
+        position: name_range.end,
+        label: InlayHintLabel::String(format!(": {}", ty.render())),
+        kind: Some(InlayHintKind::TYPE),
+        text_edits: None,
+        tooltip: None,
+        padding_left: Some(true),
+        padding_right: None,
+        data: None,
+    });
+}
+
+fn range_contains_range(outer: Range, inner: Range) -> bool {
+    inner.start >= outer.start && inner.end <= outer.end
 }
 
 // Hardcoded with reference to aven-check's private BUILTIN_TYPES/CHECKED_NAMED_TYPES
@@ -942,6 +1051,10 @@ mod tests {
                 .as_ref()
                 .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == "."))
         );
+        assert!(matches!(
+            initialize_result.capabilities.inlay_hint_provider,
+            Some(OneOf::Left(true))
+        ));
 
         let did_open = Request::build("textDocument/didOpen")
             .params(json!({
@@ -1030,6 +1143,77 @@ mod tests {
             Err(error) => panic!("expected semantic tokens result: {error}"),
         };
         assert!(!semantic_tokens.data.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn protocol_inlay_hint_returns_inferred_binding_type() {
+        let (mut service, mut socket) = LspService::new(test_backend);
+        let uri = test_uri();
+        let uri_text = uri.to_string();
+
+        let initialize = Request::build("initialize")
+            .params(json!({"capabilities": {}}))
+            .id(1)
+            .finish();
+        let Some(response) = call_service(&mut service, initialize).await else {
+            panic!("expected initialize response");
+        };
+        assert!(response.is_ok());
+
+        let did_open = Request::build("textDocument/didOpen")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text.clone(),
+                    "languageId": "aven",
+                    "version": 1,
+                    "text": "n = 1\n"
+                }
+            }))
+            .finish();
+        assert!(call_service(&mut service, did_open).await.is_none());
+
+        let parse = next_publish_diagnostics(&mut socket).await;
+        assert_eq!(parse.version, Some(1));
+        assert!(parse.diagnostics.is_empty());
+
+        advance(SEMANTIC_DEBOUNCE + Duration::from_millis(1)).await;
+
+        let semantic = next_publish_diagnostics(&mut socket).await;
+        assert_eq!(semantic.version, Some(1));
+        assert!(semantic.diagnostics.is_empty());
+
+        let inlay_hint = Request::build("textDocument/inlayHint")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text
+                },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 1, "character": 0 }
+                }
+            }))
+            .id(2)
+            .finish();
+        let Some(response) = call_service(&mut service, inlay_hint).await else {
+            panic!("expected inlayHint response");
+        };
+        let (_id, body) = response.into_parts();
+        let Ok(value) = body else {
+            panic!("expected successful inlayHint response");
+        };
+        let hints = match serde_json::from_value::<Vec<InlayHint>>(value) {
+            Ok(hints) => hints,
+            Err(error) => panic!("expected inlay hint response: {error}"),
+        };
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].position, position(0, 1));
+        assert!(matches!(
+            &hints[0].label,
+            InlayHintLabel::String(label) if label == ": Int"
+        ));
+        assert_eq!(hints[0].kind, Some(InlayHintKind::TYPE));
+        assert_eq!(hints[0].padding_left, Some(true));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -1287,6 +1471,14 @@ mod tests {
         assert_eq!(user.detail.as_deref(), Some("{ name: Text, email: Text }"));
         assert!(completion_item(&completions, "Text").is_some());
         assert!(completion_item(&completions, "name").is_none());
+    }
+
+    #[test]
+    fn inlay_hints_in_range_skip_annotated_bindings() {
+        let document = parsed_document_with_semantics("x : Text = \"a\"\n");
+        let hints = inlay_hints_in_range(&document, full_document_range(&document));
+
+        assert!(hints.is_empty());
     }
 
     #[test]

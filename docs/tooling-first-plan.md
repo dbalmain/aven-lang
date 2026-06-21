@@ -1721,6 +1721,12 @@ Completed parser groundwork:
   render their field type as completion detail, `Optional` and `Nullable`
   receiver wrappers are peeled by the checker query, and unknown or non-record
   receivers keep the previous identifier-list fallback.
+- T2 done: LSP inlay hints now render cached inferred types for unannotated
+  binders as `: Type` at the end of the binder name. The server advertises
+  `inlayHintProvider`, answers `textDocument/inlayHint` from the stored
+  semantic snapshot without re-parsing or re-checking, and, because the current
+  snapshot also contains declared annotation types, suppresses hints for binders
+  that already have a written annotation.
 
 ## To investigate later
 
