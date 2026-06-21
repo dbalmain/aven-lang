@@ -179,8 +179,16 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A record field explicitly set to undefined is equivalent to omitting the field. Omit the field, or use the delete-entry form when a spread field should be removed.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::ARITY_MISMATCH,
+        text: "A runtime function call supplied the wrong number of arguments. Pass exactly the number of arguments declared by the lambda parameters.",
+    },
+    DiagnosticExplanation {
         code: codes::runtime::DIVISION_BY_ZERO,
         text: "Runtime evaluation tried to divide or take a remainder by zero. Change the right operand of `/` or `%` so it evaluates to a non-zero number before running the program.",
+    },
+    DiagnosticExplanation {
+        code: codes::runtime::NOT_CALLABLE,
+        text: "Runtime evaluation tried to call a value that is not a function. Only closures produced by lambda expressions are callable in the current evaluator.",
     },
     DiagnosticExplanation {
         code: codes::runtime::TYPE_ERROR,

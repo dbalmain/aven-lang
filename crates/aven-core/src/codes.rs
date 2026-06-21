@@ -67,7 +67,9 @@ pub mod record {
 }
 
 pub mod runtime {
+    pub const ARITY_MISMATCH: &str = "runtime.arity-mismatch";
     pub const DIVISION_BY_ZERO: &str = "runtime.division-by-zero";
+    pub const NOT_CALLABLE: &str = "runtime.not-callable";
     pub const TYPE_ERROR: &str = "runtime.type-error";
     pub const UNBOUND_NAME: &str = "runtime.unbound-name";
     pub const UNSUPPORTED: &str = "runtime.unsupported";
@@ -135,7 +137,9 @@ pub const ALL: &[&str] = &[
     parse::UNEXPECTED_SEPARATOR,
     parse::UNSUPPORTED_SYNTAX,
     record::REDUNDANT_UNDEFINED,
+    runtime::ARITY_MISMATCH,
     runtime::DIVISION_BY_ZERO,
+    runtime::NOT_CALLABLE,
     runtime::TYPE_ERROR,
     runtime::UNBOUND_NAME,
     runtime::UNSUPPORTED,

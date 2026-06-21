@@ -1,16 +1,47 @@
-use std::{cmp::Ordering, collections::HashMap, fmt};
+use std::{cell::RefCell, cmp::Ordering, collections::HashMap, fmt, rc::Rc};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{Expr, ExprKind, Item, Literal, Module};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
+pub struct Closure {
+    params: Vec<String>,
+    body: Rc<Expr>,
+    env: Environment,
+}
+
+impl fmt::Debug for Closure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Closure")
+            .field("params", &self.params)
+            .field("body", &self.body)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Int(i64),
     Float(f64),
     Text(String),
     Bool(bool),
+    Closure(Closure),
     Undefined,
     Null,
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(left), Self::Int(right)) => left == right,
+            (Self::Float(left), Self::Float(right)) => left == right,
+            (Self::Text(left), Self::Text(right)) => left == right,
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
+            (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Value {
@@ -20,6 +51,7 @@ impl fmt::Display for Value {
             Self::Float(value) => write!(f, "{value}"),
             Self::Text(value) => write!(f, "{value}"),
             Self::Bool(value) => write!(f, "{value}"),
+            Self::Closure(_) => write!(f, "<function>"),
             Self::Undefined => write!(f, "undefined"),
             Self::Null => write!(f, "null"),
         }
@@ -33,42 +65,75 @@ impl Value {
             Self::Float(_) => "Float",
             Self::Text(_) => "Text",
             Self::Bool(_) => "Bool",
+            Self::Closure(_) => "Function",
             Self::Undefined => "Undefined",
             Self::Null => "Null",
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct Environment {
-    scopes: Vec<HashMap<String, Value>>,
+    scope: Rc<Scope>,
+}
+
+struct Scope {
+    values: RefCell<HashMap<String, Value>>,
+    parent: Option<Rc<Scope>>,
+}
+
+impl Scope {
+    fn new(parent: Option<Rc<Scope>>) -> Self {
+        Self {
+            values: RefCell::new(HashMap::new()),
+            parent,
+        }
+    }
+}
+
+impl fmt::Debug for Environment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Environment")
+            .field("scope", &Rc::as_ptr(&self.scope))
+            .finish()
+    }
+}
+
+impl PartialEq for Environment {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.scope, &other.scope)
+    }
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            scope: Rc::new(Scope::new(None)),
         }
     }
 
     fn child(&self) -> Self {
-        let mut scopes = self.scopes.clone();
-        scopes.push(HashMap::new());
-        Self { scopes }
+        Self {
+            scope: Rc::new(Scope::new(Some(Rc::clone(&self.scope)))),
+        }
     }
 
-    pub fn bind(&mut self, name: impl Into<String>, value: Value) {
-        self.scopes
-            .last_mut()
-            .expect("environment always has at least one scope")
-            .insert(name.into(), value);
+    pub fn bind(&self, name: impl Into<String>, value: Value) {
+        self.scope.values.borrow_mut().insert(name.into(), value);
     }
 
     fn lookup(&self, name: &str) -> Option<Value> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name).cloned())
+        let mut scope = Some(Rc::clone(&self.scope));
+
+        while let Some(current) = scope {
+            let value = { current.values.borrow().get(name).cloned() };
+            if value.is_some() {
+                return value;
+            }
+            scope = current.parent.as_ref().map(Rc::clone);
+        }
+
+        None
     }
 }
 
@@ -87,11 +152,11 @@ pub struct EvalOutcome {
 /// Evaluate module items sequentially. Bindings update the environment for
 /// later items, and the outcome value is produced only by a trailing expression.
 pub fn eval_module(module: &Module) -> EvalOutcome {
-    let mut env = Environment::new();
-    eval_items(&module.items, &mut env)
+    let env = Environment::new();
+    eval_items(&module.items, &env)
 }
 
-fn eval_items(items: &[Item], env: &mut Environment) -> EvalOutcome {
+fn eval_items(items: &[Item], env: &Environment) -> EvalOutcome {
     let mut value = None;
     let mut diagnostics = Vec::new();
 
@@ -144,6 +209,12 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
             right,
         } => eval_binary(left, operator, *operator_span, right, expr.span, env),
         ExprKind::Block(items) => eval_block(items, env),
+        ExprKind::Lambda { params, body, .. } => Ok(Value::Closure(Closure {
+            params: params.iter().map(|param| param.name.clone()).collect(),
+            body: Rc::new((**body).clone()),
+            env: env.clone(),
+        })),
+        ExprKind::Call { callee, args } => eval_call(callee, args, expr.span, env),
         _ => Err(one_diagnostic(unsupported_expr(
             expr.span,
             "this expression is not supported by the current evaluator",
@@ -152,14 +223,47 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
 }
 
 fn eval_block(items: &[Item], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
-    let mut child = env.child();
-    let outcome = eval_items(items, &mut child);
+    let child = env.child();
+    let outcome = eval_items(items, &child);
 
     if outcome.diagnostics.is_empty() {
         Ok(outcome.value.unwrap_or(Value::Undefined))
     } else {
         Err(outcome.diagnostics)
     }
+}
+
+fn eval_call(
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
+    let callee_value = eval_expr_many(callee, env)?;
+    let closure = match callee_value {
+        Value::Closure(closure) => closure,
+        value => return Err(one_diagnostic(not_callable(callee.span, value.type_name()))),
+    };
+
+    if args.len() != closure.params.len() {
+        return Err(one_diagnostic(arity_mismatch(
+            span,
+            closure.params.len(),
+            args.len(),
+        )));
+    }
+
+    let mut arg_values = Vec::with_capacity(args.len());
+    for arg in args {
+        arg_values.push(eval_expr_many(arg, env)?);
+    }
+
+    let call_env = closure.env.child();
+    for (name, value) in closure.params.iter().zip(arg_values) {
+        call_env.bind(name.clone(), value);
+    }
+
+    eval_expr_many(closure.body.as_ref(), &call_env)
 }
 
 fn eval_literal(literal: &Literal, span: Span) -> Result<Value, Diagnostic> {
@@ -449,6 +553,13 @@ fn float_arithmetic(
 }
 
 fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Value, Diagnostic> {
+    if matches!(
+        (&left, &right),
+        (Value::Closure(_), _) | (_, Value::Closure(_))
+    ) {
+        return Err(closure_equality_error(span, operator));
+    }
+
     let equal = match (&left, &right) {
         (Value::Int(left), Value::Int(right)) => left == right,
         (Value::Float(left), Value::Float(right)) => {
@@ -560,6 +671,40 @@ fn division_by_zero(span: Span) -> Diagnostic {
         .with_note("the right operand of `/` and `%` must be non-zero")
 }
 
+fn not_callable(span: Span, actual: &str) -> Diagnostic {
+    Diagnostic::error(format!("cannot call {actual}"))
+        .with_code(codes::runtime::NOT_CALLABLE)
+        .with_label(Label::primary(
+            span,
+            "this expression does not evaluate to a function",
+        ))
+        .with_note(
+            "only closures created by lambda expressions are callable in this evaluator slice",
+        )
+}
+
+fn arity_mismatch(span: Span, expected: usize, got: usize) -> Diagnostic {
+    Diagnostic::error("function arity mismatch")
+        .with_code(codes::runtime::ARITY_MISMATCH)
+        .with_label(Label::primary(
+            span,
+            format!("expected {expected} argument(s), got {got}"),
+        ))
+        .with_note(format!(
+            "this function expects {expected} argument(s), but the call supplied {got}"
+        ))
+}
+
+fn closure_equality_error(span: Span, operator: &str) -> Diagnostic {
+    Diagnostic::error("closures are not comparable")
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(
+            span,
+            format!("`{operator}` cannot compare function values"),
+        ))
+        .with_note("function values do not have runtime equality in this evaluator slice")
+}
+
 fn integer_overflow(span: Span, operation: &str) -> Diagnostic {
     Diagnostic::error("integer arithmetic overflow")
         .with_code(codes::runtime::TYPE_ERROR)
@@ -579,7 +724,7 @@ fn unsupported_expr(span: Span, label: &str) -> Diagnostic {
         .with_code(codes::runtime::UNSUPPORTED)
         .with_label(Label::primary(span, label))
         .with_note(
-            "the evaluator currently supports literals, names, bindings, blocks, unary operators, and core binary operators",
+            "the evaluator currently supports literals, names, bindings, blocks, lambdas, calls, unary operators, and core binary operators",
         )
 }
 
@@ -689,6 +834,52 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_simple_function_call() {
+        assert_module_value("double = (x) => x * 2\ndouble(5)\n", Value::Int(10));
+    }
+
+    #[test]
+    fn evaluates_higher_order_function_call() {
+        assert_module_value(
+            "twice = (f, x) => f(f(x))\ninc = (n) => n + 1\ntwice(inc, 1)\n",
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn closures_capture_their_defining_scope() {
+        assert_module_value(
+            "add_base =\n  base = 10\n  (x) => x + base\nbase = 1\nadd_base(2)\n",
+            Value::Int(12),
+        );
+    }
+
+    #[test]
+    fn reports_function_arity_mismatch() {
+        let diagnostic = module_error("id = (x) => x\nid()\n");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::ARITY_MISMATCH)
+        );
+    }
+
+    #[test]
+    fn reports_calling_non_function_values() {
+        let diagnostic = eval_error("5(1)");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::NOT_CALLABLE)
+        );
+    }
+
+    #[test]
+    fn closures_resolve_sibling_top_level_functions_at_call_time() {
+        assert_module_value("f = (x) => g(x)\ng = (x) => x + 1\nf(2)\n", Value::Int(3));
+    }
+
+    #[test]
     fn evaluates_block_bindings_and_result() {
         assert_module_value(
             "result =\n  a = 2\n  b = a * 3\n  b + 1\nresult\n",
@@ -748,6 +939,14 @@ mod tests {
 
     fn eval_error(source: &str) -> aven_core::Diagnostic {
         eval_source(source).expect_err("expected evaluation error")
+    }
+
+    fn module_error(source: &str) -> aven_core::Diagnostic {
+        let module = parse_ok(source);
+        let mut diagnostics = eval_module(&module).diagnostics;
+
+        assert_eq!(diagnostics.len(), 1);
+        diagnostics.remove(0)
     }
 
     fn eval_source(source: &str) -> Result<Value, aven_core::Diagnostic> {

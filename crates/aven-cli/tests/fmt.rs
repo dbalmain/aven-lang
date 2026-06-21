@@ -231,6 +231,16 @@ fn run_prints_final_value_after_bindings() {
 }
 
 #[test]
+fn run_prints_function_call_value() {
+    let file = TempFile::new("run-function", "double = (x) => x * 2\ndouble(5)\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "10\n");
+}
+
+#[test]
 fn run_reports_runtime_diagnostics() {
     let file = TempFile::new("run-error", "1 / 0\n");
 

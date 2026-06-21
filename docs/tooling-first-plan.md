@@ -1778,6 +1778,12 @@ the later bytecode/runtime work.
   `undefined`. Block scopes can shadow outer bindings without leaking mutations
   back out. Forward references and mutual recursion remain out of scope until E3
   closures; a reference to a later binding reports `runtime.unbound-name`.
+- E3 done: added lambda closures and function calls. Closures capture shared
+  environment scopes, so top-level function bodies see sibling functions added
+  after the closure was created, enabling self and mutual recursion once E5 match
+  adds base-case branching. This letrec-style behavior applies to functions; eager
+  value forward references such as `a = b` before `b = 1` still report
+  `runtime.unbound-name`.
 
 ## To investigate later
 
