@@ -1,14 +1,15 @@
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::rc::Rc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use ariadne::{Config as AriadneConfig, Label as AriadneLabel, Report, ReportKind, Source};
 use aven_core::{Diagnostic as AvenDiagnostic, DiagnosticReport, FileId, Severity, SourceFile};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde_json::json;
+use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 
 #[derive(Debug, Parser)]
 #[command(name = "aven")]
@@ -159,9 +160,10 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
     let mut value = None;
 
     if !diagnostics.iter().any(AvenDiagnostic::is_error) {
+        let platform = default_platform()?;
         let outcome = aven_eval::eval_module_with_globals(
             &parse.module,
-            vec![("Platform".to_owned(), default_platform())],
+            vec![("Platform".to_owned(), platform)],
         );
         value = outcome.value;
         diagnostics.extend(outcome.diagnostics);
@@ -190,24 +192,160 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn default_platform() -> aven_eval::Value {
-    aven_eval::Value::record(vec![(
-        "Console".to_owned(),
-        aven_eval::Value::record(vec![(
-            "log".to_owned(),
-            aven_eval::Value::native(|args| {
-                let mut stdout = io::stdout().lock();
-                for (index, value) in args.iter().enumerate() {
-                    if index > 0 {
-                        write!(stdout, " ").map_err(|error| error.to_string())?;
+fn default_platform() -> Result<aven_eval::Value> {
+    let log_sink = Rc::new(StdoutLogSink);
+    let trace = root_trace_context()?;
+
+    Ok(aven_eval::Value::record(vec![
+        (
+            "Console".to_owned(),
+            aven_eval::Value::record(vec![(
+                "log".to_owned(),
+                aven_eval::Value::native(|args| {
+                    let mut stdout = io::stdout().lock();
+                    for (index, value) in args.iter().enumerate() {
+                        if index > 0 {
+                            write!(stdout, " ").map_err(|error| error.to_string())?;
+                        }
+                        write!(stdout, "{value}").map_err(|error| error.to_string())?;
                     }
-                    write!(stdout, "{value}").map_err(|error| error.to_string())?;
-                }
-                writeln!(stdout).map_err(|error| error.to_string())?;
-                Ok(aven_eval::Value::unit())
-            }),
-        )]),
-    )])
+                    writeln!(stdout).map_err(|error| error.to_string())?;
+                    Ok(aven_eval::Value::unit())
+                }),
+            )]),
+        ),
+        (
+            "Log".to_owned(),
+            aven_eval::logging::logger(log_sink, trace),
+        ),
+    ]))
+}
+
+struct StdoutLogSink;
+
+impl aven_eval::logging::LogSink for StdoutLogSink {
+    fn emit(&self, record: &aven_eval::logging::LogRecord<'_>) {
+        let output = log_record_json(record);
+        let mut stdout = io::stdout().lock();
+        if let Err(error) = serde_json::to_writer(&mut stdout, &output) {
+            eprintln!("failed to serialize log record: {error}");
+            return;
+        }
+        if let Err(error) = writeln!(stdout) {
+            eprintln!("failed to write log record: {error}");
+        }
+    }
+}
+
+fn log_record_json(record: &aven_eval::logging::LogRecord<'_>) -> JsonValue {
+    let mut output = JsonMap::new();
+    output.insert(
+        "level".to_owned(),
+        JsonValue::String(record.level.as_str().to_owned()),
+    );
+    output.insert(
+        "severity".to_owned(),
+        JsonValue::Number(JsonNumber::from(record.level.severity_number())),
+    );
+    output.insert(
+        "time".to_owned(),
+        JsonValue::Number(JsonNumber::from(unix_time_ms())),
+    );
+    output.insert("msg".to_owned(), JsonValue::String(record.message.clone()));
+    output.insert(
+        "traceId".to_owned(),
+        JsonValue::String(record.trace.trace_id.clone()),
+    );
+    output.insert(
+        "spanId".to_owned(),
+        JsonValue::String(record.trace.span_id.clone()),
+    );
+    output.insert(
+        "traceFlags".to_owned(),
+        JsonValue::String(record.trace.trace_flags.clone()),
+    );
+    output.insert(
+        "traceState".to_owned(),
+        JsonValue::String(record.trace.trace_state.clone()),
+    );
+
+    for (name, value) in record.attributes {
+        output.insert(name.clone(), aven_value_json(value));
+    }
+
+    JsonValue::Object(output)
+}
+
+fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
+    match value {
+        aven_eval::Value::Int(value) => JsonValue::Number(JsonNumber::from(*value)),
+        aven_eval::Value::Float(value) => JsonNumber::from_f64(*value)
+            .map(JsonValue::Number)
+            .unwrap_or_else(|| JsonValue::String(value.to_string())),
+        aven_eval::Value::Text(value) => JsonValue::String(value.clone()),
+        aven_eval::Value::Bool(value) => JsonValue::Bool(*value),
+        aven_eval::Value::Array(values)
+        | aven_eval::Value::Tuple(values)
+        | aven_eval::Value::Set(values) => {
+            JsonValue::Array(values.iter().map(aven_value_json).collect())
+        }
+        aven_eval::Value::Record(fields) => {
+            let mut output = JsonMap::new();
+            for (name, value) in fields.iter() {
+                output.insert(name.clone(), aven_value_json(value));
+            }
+            JsonValue::Object(output)
+        }
+        aven_eval::Value::Tag { name, payload } => json!({
+            "tag": name,
+            "payload": payload.iter().map(aven_value_json).collect::<Vec<_>>(),
+        }),
+        aven_eval::Value::Closure(_) => JsonValue::String("<function>".to_owned()),
+        aven_eval::Value::Native(_) => JsonValue::String("<native>".to_owned()),
+        aven_eval::Value::Undefined | aven_eval::Value::Null => JsonValue::Null,
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn root_trace_context() -> Result<aven_eval::logging::TraceContext> {
+    Ok(aven_eval::logging::TraceContext {
+        trace_id: random_hex_id::<16>().context("failed to generate W3C trace id")?,
+        span_id: random_hex_id::<8>().context("failed to generate W3C span id")?,
+        trace_flags: "01".to_owned(),
+        trace_state: String::new(),
+    })
+}
+
+fn random_hex_id<const N: usize>() -> io::Result<String> {
+    loop {
+        let mut bytes = [0u8; N];
+        fill_random(&mut bytes)?;
+        if bytes.iter().any(|byte| *byte != 0) {
+            return Ok(hex_encode(&bytes));
+        }
+    }
+}
+
+fn fill_random(bytes: &mut [u8]) -> io::Result<()> {
+    // The CLI host owns randomness. Reading OS randomness directly keeps aven-eval
+    // effect-free without adding a dependency for this small host-side need.
+    fs::File::open("/dev/urandom")?.read_exact(bytes)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 fn print_timings(timings: aven_compiler::PhaseTimings) {

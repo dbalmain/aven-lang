@@ -1807,6 +1807,13 @@ the later bytecode/runtime work.
   ordinary record field access, with the stdout effect implemented in the CLI
   host and native failures reported as `runtime.platform-error`. Typing this
   platform boundary in `aven-check` is the next step.
+- E8 done: added first-class structured logging as `Platform.Log`. `aven-eval`
+  owns logger semantics, OTel-aligned levels/severity numbers, child loggers,
+  context merging, W3C trace-context fields, and the host-agnostic `LogSink`
+  trait; the CLI host owns stdout JSON-line output, timestamps, and `/dev/urandom`
+  root trace/span id generation. Deferred: per-child span-id generation, full
+  `tracestate` semantics, and HTTP `traceparent` header extraction when the HTTP
+  platform lands.
 
 ## To investigate later
 

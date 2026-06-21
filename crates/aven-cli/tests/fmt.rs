@@ -254,6 +254,51 @@ fn run_injects_default_console_platform() {
 }
 
 #[test]
+fn run_log_writes_structured_json_line() {
+    let file = TempFile::new(
+        "run-platform-structured-log",
+        "log = Platform.Log\nlog.info(\"hello\", { n: 1 })\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    let stdout = stdout(&output);
+    assert!(
+        stdout.contains("\"msg\":\"hello\""),
+        "expected log message, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"level\":\"info\""),
+        "expected info level, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"n\":1"),
+        "expected numeric attribute, got:\n{stdout}"
+    );
+    let mut lines = stdout.lines();
+    let Some(line) = lines.next() else {
+        panic!("expected one log line, got empty stdout");
+    };
+    assert!(
+        lines.next().is_none(),
+        "expected one log line, got:\n{stdout}"
+    );
+    let json: serde_json::Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(error) => panic!("expected valid JSON log line, got {error}: {line}"),
+    };
+    let trace_id = json
+        .get("traceId")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    assert!(
+        is_lower_hex(trace_id, 32),
+        "expected 32-lower-hex traceId, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn run_prints_match_factorial_value() {
     let file = TempFile::new(
         "run-match-factorial",
@@ -414,6 +459,13 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn is_lower_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 struct TempFile {

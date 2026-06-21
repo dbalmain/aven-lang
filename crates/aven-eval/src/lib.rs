@@ -3,6 +3,8 @@ use std::{cell::RefCell, cmp::Ordering, collections::HashMap, fmt, rc::Rc};
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{Expr, ExprKind, Item, Literal, MatchArm, Module, RecordEntry};
 
+pub mod logging;
+
 pub type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
 
 #[derive(Clone)]
@@ -1526,7 +1528,8 @@ fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::{
-        Environment, EvalOutcome, Value, eval_expr, eval_module, eval_module_with_globals,
+        Environment, EvalOutcome, Value, eval_expr, eval_module, eval_module_with_globals, logging,
+        record_field_value,
     };
     use aven_core::codes;
     use aven_parser::{Item, Module, parse_module};
@@ -1696,6 +1699,112 @@ mod tests {
         );
         assert_eq!(diagnostic.labels[0].span, call_span);
         assert_eq!(diagnostic.labels[0].message, "native failure");
+    }
+
+    #[test]
+    fn log_info_emits_message_fields_and_trace_context() {
+        let records = Rc::new(RefCell::new(Vec::new()));
+        let platform = logging_platform(Rc::clone(&records));
+        let module = parse_ok("log = Platform.Log\nlog.info(\"hi\", { userId: 42 })\n");
+
+        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+
+        assert_eq!(
+            outcome,
+            EvalOutcome {
+                value: Some(Value::unit()),
+                diagnostics: Vec::new()
+            }
+        );
+        let records = records.borrow();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.level, logging::Level::Info);
+        assert_eq!(record.message, "hi");
+        assert_eq!(
+            record_field_value(&record.attributes, "userId"),
+            Some(&Value::Int(42))
+        );
+        assert_eq!(record.trace, fixed_trace_context());
+    }
+
+    #[test]
+    fn child_logger_inherits_trace_and_merges_bound_context() {
+        let records = Rc::new(RefCell::new(Vec::new()));
+        let platform = logging_platform(Rc::clone(&records));
+        let module = parse_ok(
+            "log = Platform.Log\nrequestLog = log.child({ requestId: \"r1\" })\nrequestLog.info(\"child\")\n",
+        );
+
+        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+
+        assert_eq!(outcome.value, Some(Value::unit()));
+        assert!(outcome.diagnostics.is_empty());
+        let records = records.borrow();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(
+            record_field_value(&record.attributes, "requestId"),
+            Some(&Value::Text("r1".to_owned()))
+        );
+        assert_eq!(record.trace, fixed_trace_context());
+    }
+
+    #[test]
+    fn child_logger_trace_keys_update_trace_context_not_attributes() {
+        let records = Rc::new(RefCell::new(Vec::new()));
+        let platform = logging_platform(Rc::clone(&records));
+        let trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
+        let module = parse_ok(&format!(
+            "log = Platform.Log\nchild = log.child({{ traceId: \"{trace_id}\", requestId: \"r1\" }})\nchild.info(\"child\")\n"
+        ));
+
+        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+
+        assert_eq!(outcome.value, Some(Value::unit()));
+        assert!(outcome.diagnostics.is_empty());
+        let records = records.borrow();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.trace.trace_id, trace_id);
+        assert_eq!(record.trace.span_id, fixed_trace_context().span_id);
+        assert!(record_field_value(&record.attributes, "traceId").is_none());
+        assert_eq!(
+            record_field_value(&record.attributes, "requestId"),
+            Some(&Value::Text("r1".to_owned()))
+        );
+    }
+
+    #[test]
+    fn log_message_validation_reports_platform_error() {
+        let records = Rc::new(RefCell::new(Vec::new()));
+        let platform = logging_platform(records);
+        let diagnostic = module_error_with_globals(
+            "log = Platform.Log\nlog.info(5)\n",
+            vec![("Platform".to_owned(), platform)],
+        );
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+        assert!(
+            diagnostic.labels[0]
+                .message
+                .contains("log.info message must be Text"),
+            "expected message-first validation, got {:?}",
+            diagnostic.labels
+        );
+    }
+
+    #[test]
+    fn log_level_severity_numbers_match_otel() {
+        assert_eq!(logging::Level::Trace.severity_number(), 1);
+        assert_eq!(logging::Level::Debug.severity_number(), 5);
+        assert_eq!(logging::Level::Info.severity_number(), 9);
+        assert_eq!(logging::Level::Warn.severity_number(), 13);
+        assert_eq!(logging::Level::Error.severity_number(), 17);
+        assert_eq!(logging::Level::Fatal.severity_number(), 21);
     }
 
     #[test]
@@ -2071,6 +2180,17 @@ mod tests {
         diagnostics.remove(0)
     }
 
+    fn module_error_with_globals(
+        source: &str,
+        globals: Vec<(String, Value)>,
+    ) -> aven_core::Diagnostic {
+        let module = parse_ok(source);
+        let mut diagnostics = eval_module_with_globals(&module, globals).diagnostics;
+
+        assert_eq!(diagnostics.len(), 1);
+        diagnostics.remove(0)
+    }
+
     fn eval_source(source: &str) -> Result<Value, aven_core::Diagnostic> {
         let module = parse_ok(source);
         let Item::Expr(expr) = &module.items[0] else {
@@ -2105,6 +2225,45 @@ mod tests {
             "Console".to_owned(),
             Value::record(vec![(name.to_owned(), function)]),
         )])
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct CapturedLogRecord {
+        level: logging::Level,
+        message: String,
+        attributes: Vec<(String, Value)>,
+        trace: logging::TraceContext,
+    }
+
+    struct CapturingLogSink {
+        records: Rc<RefCell<Vec<CapturedLogRecord>>>,
+    }
+
+    impl logging::LogSink for CapturingLogSink {
+        fn emit(&self, record: &logging::LogRecord<'_>) {
+            self.records.borrow_mut().push(CapturedLogRecord {
+                level: record.level,
+                message: record.message.clone(),
+                attributes: record.attributes.to_vec(),
+                trace: record.trace.clone(),
+            });
+        }
+    }
+
+    fn logging_platform(records: Rc<RefCell<Vec<CapturedLogRecord>>>) -> Value {
+        Value::record(vec![(
+            "Log".to_owned(),
+            logging::logger(Rc::new(CapturingLogSink { records }), fixed_trace_context()),
+        )])
+    }
+
+    fn fixed_trace_context() -> logging::TraceContext {
+        logging::TraceContext {
+            trace_id: "0af7651916cd43dd8448eb211c80319c".to_owned(),
+            span_id: "b7ad6b7169203331".to_owned(),
+            trace_flags: "01".to_owned(),
+            trace_state: "test=state".to_owned(),
+        }
     }
 
     fn module_expr_span(module: &Module) -> aven_core::Span {
