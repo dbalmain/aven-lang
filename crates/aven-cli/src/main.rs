@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -159,7 +159,10 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
     let mut value = None;
 
     if !diagnostics.iter().any(AvenDiagnostic::is_error) {
-        let outcome = aven_eval::eval_module(&parse.module);
+        let outcome = aven_eval::eval_module_with_globals(
+            &parse.module,
+            vec![("Platform".to_owned(), default_platform())],
+        );
         value = outcome.value;
         diagnostics.extend(outcome.diagnostics);
     }
@@ -180,11 +183,31 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
         bail!("run failed");
     }
 
-    if let Some(value) = value {
+    if let Some(value) = value.filter(|value| !value.is_unit()) {
         println!("{value}");
     }
 
     Ok(())
+}
+
+fn default_platform() -> aven_eval::Value {
+    aven_eval::Value::record(vec![(
+        "Console".to_owned(),
+        aven_eval::Value::record(vec![(
+            "log".to_owned(),
+            aven_eval::Value::native(|args| {
+                let mut stdout = io::stdout().lock();
+                for (index, value) in args.iter().enumerate() {
+                    if index > 0 {
+                        write!(stdout, " ").map_err(|error| error.to_string())?;
+                    }
+                    write!(stdout, "{value}").map_err(|error| error.to_string())?;
+                }
+                writeln!(stdout).map_err(|error| error.to_string())?;
+                Ok(aven_eval::Value::unit())
+            }),
+        )]),
+    )])
 }
 
 fn print_timings(timings: aven_compiler::PhaseTimings) {

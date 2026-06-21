@@ -1802,6 +1802,11 @@ the later bytecode/runtime work.
   preserving first-seen display order and compare order-independently. Tuple
   patterns now bind tuple elements in matches, `?.` propagates null/undefined
   receivers, and `??` short-circuits to the left value when it is present.
+- E7 done: added the eval-side platform boundary with host-injected globals and
+  native functions. `aven run` now provides ambient `Platform.Console.log` through
+  ordinary record field access, with the stdout effect implemented in the CLI
+  host and native failures reported as `runtime.platform-error`. Typing this
+  platform boundary in `aven-check` is the next step.
 
 ## To investigate later
 

@@ -241,6 +241,19 @@ fn run_prints_function_call_value() {
 }
 
 #[test]
+fn run_injects_default_console_platform() {
+    let file = TempFile::new(
+        "run-platform-log",
+        "Platform.Console.log(\"Hello, Aven!\")\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "Hello, Aven!\n");
+}
+
+#[test]
 fn run_prints_match_factorial_value() {
     let file = TempFile::new(
         "run-match-factorial",

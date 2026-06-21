@@ -3,6 +3,8 @@ use std::{cell::RefCell, cmp::Ordering, collections::HashMap, fmt, rc::Rc};
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{Expr, ExprKind, Item, Literal, MatchArm, Module, RecordEntry};
 
+pub type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
+
 #[derive(Clone)]
 pub struct Closure {
     params: Vec<String>,
@@ -19,7 +21,7 @@ impl fmt::Debug for Closure {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -31,8 +33,33 @@ pub enum Value {
     Record(Rc<Vec<(String, Value)>>),
     Tag { name: String, payload: Vec<Value> },
     Closure(Closure),
+    Native(NativeFn),
     Undefined,
     Null,
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Int(value) => f.debug_tuple("Int").field(value).finish(),
+            Self::Float(value) => f.debug_tuple("Float").field(value).finish(),
+            Self::Text(value) => f.debug_tuple("Text").field(value).finish(),
+            Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
+            Self::Array(values) => f.debug_tuple("Array").field(values).finish(),
+            Self::Tuple(values) => f.debug_tuple("Tuple").field(values).finish(),
+            Self::Set(values) => f.debug_tuple("Set").field(values).finish(),
+            Self::Record(fields) => f.debug_tuple("Record").field(fields).finish(),
+            Self::Tag { name, payload } => f
+                .debug_struct("Tag")
+                .field("name", name)
+                .field("payload", payload)
+                .finish(),
+            Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
+            Self::Native(_) => f.write_str("Native(<native>)"),
+            Self::Undefined => f.write_str("Undefined"),
+            Self::Null => f.write_str("Null"),
+        }
+    }
 }
 
 impl PartialEq for Value {
@@ -58,6 +85,7 @@ impl PartialEq for Value {
             ) => left_name == right_name && left_payload == right_payload,
             (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
             (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
+            (Self::Native(_), _) | (_, Self::Native(_)) => false,
             _ => false,
         }
     }
@@ -76,6 +104,7 @@ impl fmt::Display for Value {
             Self::Record(fields) => fmt_record(fields, f),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::Closure(_) => write!(f, "<function>"),
+            Self::Native(_) => write!(f, "<native>"),
             Self::Undefined => write!(f, "undefined"),
             Self::Null => write!(f, "null"),
         }
@@ -83,6 +112,22 @@ impl fmt::Display for Value {
 }
 
 impl Value {
+    pub fn native(function: impl Fn(&[Value]) -> Result<Value, String> + 'static) -> Self {
+        Self::Native(Rc::new(function))
+    }
+
+    pub fn record(fields: Vec<(String, Value)>) -> Self {
+        Self::Record(Rc::new(fields))
+    }
+
+    pub fn unit() -> Self {
+        Self::Tuple(Rc::new(Vec::new()))
+    }
+
+    pub fn is_unit(&self) -> bool {
+        matches!(self, Self::Tuple(values) if values.is_empty())
+    }
+
     fn type_name(&self) -> &'static str {
         match self {
             Self::Int(_) => "Int",
@@ -95,6 +140,7 @@ impl Value {
             Self::Record(_) => "Record",
             Self::Tag { .. } => "Tag",
             Self::Closure(_) => "Function",
+            Self::Native(_) => "Native",
             Self::Undefined => "Undefined",
             Self::Null => "Null",
         }
@@ -295,7 +341,17 @@ pub struct EvalOutcome {
 /// Evaluate module items sequentially. Bindings update the environment for
 /// later items, and the outcome value is produced only by a trailing expression.
 pub fn eval_module(module: &Module) -> EvalOutcome {
+    eval_module_with_globals(module, Vec::new())
+}
+
+/// Evaluate a module with host-provided globals pre-bound in the top-level
+/// environment. Module bindings use normal top-level scope rules and may shadow
+/// an injected global by rebinding the same name.
+pub fn eval_module_with_globals(module: &Module, globals: Vec<(String, Value)>) -> EvalOutcome {
     let env = Environment::new();
+    for (name, value) in globals {
+        env.bind(name, value);
+    }
     eval_items(&module.items, &env)
 }
 
@@ -601,6 +657,15 @@ fn eval_call(
 
     let callee_value = eval_expr_many(callee, env)?;
     let closure = match callee_value {
+        Value::Native(function) => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+
+            return function(&arg_values)
+                .map_err(|message| one_diagnostic(platform_error(span, message)));
+        }
         Value::Closure(closure) => closure,
         value => return Err(one_diagnostic(not_callable(callee.span, value.type_name()))),
     };
@@ -1211,6 +1276,7 @@ fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Val
         (Value::Set(_), Value::Set(_)) => left == right,
         (Value::Record(_), Value::Record(_)) => left == right,
         (Value::Tag { .. }, Value::Tag { .. }) => left == right,
+        (Value::Native(_), Value::Native(_)) => false,
         (Value::Undefined, Value::Undefined) => true,
         (Value::Null, Value::Null) => true,
         _ => {
@@ -1373,6 +1439,13 @@ fn arity_mismatch(span: Span, expected: usize, got: usize) -> Diagnostic {
         ))
 }
 
+fn platform_error(span: Span, message: String) -> Diagnostic {
+    Diagnostic::error("platform function failed")
+        .with_code(codes::runtime::PLATFORM_ERROR)
+        .with_label(Label::primary(span, message))
+        .with_note("host platform functions report errors through the runtime boundary")
+}
+
 fn closure_equality_error(span: Span, operator: &str) -> Diagnostic {
     Diagnostic::error("closures are not comparable")
         .with_code(codes::runtime::TYPE_ERROR)
@@ -1452,9 +1525,12 @@ fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
 
 #[cfg(test)]
 mod tests {
-    use super::{Environment, EvalOutcome, Value, eval_expr, eval_module};
+    use super::{
+        Environment, EvalOutcome, Value, eval_expr, eval_module, eval_module_with_globals,
+    };
     use aven_core::codes;
     use aven_parser::{Item, Module, parse_module};
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     #[test]
@@ -1572,6 +1648,74 @@ mod tests {
         assert_eq!(
             diagnostic.code.as_deref(),
             Some(codes::runtime::NOT_CALLABLE)
+        );
+    }
+
+    #[test]
+    fn evaluates_native_platform_function_through_field_access() {
+        let captured = Rc::new(RefCell::new(Vec::new()));
+        let capture = Rc::clone(&captured);
+        let platform = platform_with(
+            "log",
+            Value::native(move |args| {
+                if args.len() != 1 || args.first() != Some(&Value::Text("hi".to_owned())) {
+                    return Err(format!("unexpected args: {args:?}"));
+                }
+                capture.borrow_mut().push(args[0].to_string());
+                Ok(Value::unit())
+            }),
+        );
+        let module = parse_ok("Platform.Console.log(\"hi\")\n");
+
+        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+
+        assert_eq!(
+            outcome,
+            EvalOutcome {
+                value: Some(Value::unit()),
+                diagnostics: Vec::new()
+            }
+        );
+        assert_eq!(captured.borrow().clone(), vec!["hi".to_owned()]);
+    }
+
+    #[test]
+    fn reports_native_platform_errors_at_call_span() {
+        let platform = platform_with("fail", Value::native(|_| Err("native failure".to_owned())));
+        let module = parse_ok("Platform.Console.fail(\"hi\")\n");
+        let call_span = module_expr_span(&module);
+
+        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+
+        assert_eq!(outcome.value, None);
+        assert_eq!(outcome.diagnostics.len(), 1);
+        let diagnostic = &outcome.diagnostics[0];
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+        assert_eq!(diagnostic.labels[0].span, call_span);
+        assert_eq!(diagnostic.labels[0].message, "native failure");
+    }
+
+    #[test]
+    fn module_bindings_can_shadow_injected_globals() {
+        let platform = platform_with(
+            "log",
+            Value::native(|_| Err("injected platform should be shadowed".to_owned())),
+        );
+        let module = parse_ok(
+            "Platform = { Console: { log: (message) => message } }\nPlatform.Console.log(\"local\")\n",
+        );
+
+        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+
+        assert_eq!(
+            outcome,
+            EvalOutcome {
+                value: Some(Value::Text("local".to_owned())),
+                diagnostics: Vec::new()
+            }
         );
     }
 
@@ -1936,12 +2080,12 @@ mod tests {
     }
 
     fn record_value(fields: Vec<(&str, Value)>) -> Value {
-        Value::Record(Rc::new(
+        Value::record(
             fields
                 .into_iter()
                 .map(|(name, value)| (name.to_owned(), value))
                 .collect(),
-        ))
+        )
     }
 
     fn array_value(values: Vec<Value>) -> Value {
@@ -1954,6 +2098,20 @@ mod tests {
 
     fn set_value(values: Vec<Value>) -> Value {
         Value::Set(Rc::new(values))
+    }
+
+    fn platform_with(name: &str, function: Value) -> Value {
+        Value::record(vec![(
+            "Console".to_owned(),
+            Value::record(vec![(name.to_owned(), function)]),
+        )])
+    }
+
+    fn module_expr_span(module: &Module) -> aven_core::Span {
+        let Item::Expr(expr) = &module.items[0] else {
+            panic!("expected expression item");
+        };
+        expr.span
     }
 
     fn parse_ok(source: &str) -> Module {
