@@ -1385,6 +1385,21 @@ impl<'a> Checker<'a> {
         matches!(self.normalize(ty), Type::Optional(_))
     }
 
+    fn strip_optional(&self, ty: &Type) -> Type {
+        match self.normalize(ty) {
+            Type::Optional(inner) => *inner,
+            ty => ty,
+        }
+    }
+
+    fn strip_nullable(&self, ty: &Type) -> Type {
+        match self.normalize(ty) {
+            Type::Optional(inner) => Type::Optional(Box::new(self.strip_nullable(&inner))),
+            Type::Nullable(inner) => *inner,
+            ty => ty,
+        }
+    }
+
     pub(crate) fn normalize(&self, ty: &Type) -> Type {
         self.normalize_with_visited(ty, HashSet::new())
     }
@@ -1507,6 +1522,16 @@ impl<'a> Checker<'a> {
                 }),
             ExprKind::Optional(inner) => Type::Optional(Box::new(self.lower_annotation(inner))),
             ExprKind::Nullable(inner) => Type::Nullable(Box::new(self.lower_annotation(inner))),
+            ExprKind::NonNull(inner) => {
+                let inner = self.lower_annotation(inner);
+                self.strip_nullable(&inner)
+            }
+            ExprKind::Unary {
+                operator, value, ..
+            } if operator == "!" => {
+                let inner = self.lower_annotation(value);
+                self.strip_optional(&inner)
+            }
             ExprKind::Arrow { params, result } => Type::Function {
                 params: self.lower_annotations(params),
                 result: Box::new(self.lower_annotation(result)),
@@ -3626,6 +3651,7 @@ impl<'a> Checker<'a> {
             | ExprKind::Literal(_)
             | ExprKind::Optional(_)
             | ExprKind::Nullable(_)
+            | ExprKind::NonNull(_)
             | ExprKind::Arrow { .. }
             | ExprKind::Propagate { .. } => Type::Deferred,
         }

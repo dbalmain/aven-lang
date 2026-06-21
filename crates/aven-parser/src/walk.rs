@@ -5,6 +5,7 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
         ExprKind::Group(inner)
         | ExprKind::Optional(inner)
         | ExprKind::Nullable(inner)
+        | ExprKind::NonNull(inner)
         | ExprKind::Unary { value: inner, .. }
         | ExprKind::Propagate { value: inner, .. } => visit(inner),
         ExprKind::Tuple(items) | ExprKind::Array(items) => walk_exprs(items, visit),

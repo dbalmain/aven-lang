@@ -3,3 +3,7 @@ collections : (Text[], Text@{}, Array[a]) -> Unit
 optional : ?Text = name
 nullable : Text? = name
 both : ?Text? = name
+strip_optional : !Text = name
+strip_nullable : Text! = name
+optional_strip_nullable : ?Text! = name
+strip_optional_after_nullable_strip : !Text! = name

@@ -1457,10 +1457,10 @@ Slices:
   now uses `partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }`.
 
 - 16.11 — `required` type modifier (strip Optional):
-  Deferred by N3. The old implementation stripped optional field flags, but the
-  field flag no longer exists; `required` now needs a comptime primitive that can
-  strip the `Optional` wrapper from a field type. The M16.11 fixtures/tests were
-  removed until that primitive exists.
+  Restored by N5. The old implementation stripped optional field flags; after N3
+  removed field-level optionality, `required` is now expressed as a comptime type
+  map using prefix `!` to strip the `Optional` wrapper from each field type:
+  `{ keysOf(object) -> k; [k]: !object[k] }`.
 
 - 16.12 — `tagsOf` reflection for variant constructor tags:
   `tagsOf(variant)` mirrors `keysOf(record)`, reflecting a closed variant type's
@@ -1697,16 +1697,21 @@ Completed parser groundwork:
   omit a field only when the normalized field type is `Optional`, so `{ name:
   Text, phone: ?Text }` accepts `{ name: "Ada" }` while non-`Optional` missing
   fields keep the existing `type.missing-field` diagnostic. `partial` is now
-  written as `{ keysOf(object) -> k; [k]: ?object[k] }`. `required` is deferred
-  pending a comptime strip-`Optional` primitive.
+  written as `{ keysOf(object) -> k; [k]: ?object[k] }`; N5 later restores
+  `required` with prefix `!`.
 - N4 done: record spreads are undefined-transparent for optional patch fields.
   When an incoming spread field is `?T` and the base already has that label, the
   base field type survives while the present `T` is checked against it; ordinary
   and nullable values still overwrite through the existing spread rules. Explicit
   value-record fields such as `x: undefined` now emit
-  `record.redundant-undefined` and suggest omission or `-x` deletion. Milestone N
-  is complete; the `required` helper still awaits a comptime strip-`Optional`
-  primitive follow-up.
+  `record.redundant-undefined` and suggest omission or `-x` deletion.
+- N5 done: `!` now neutralizes `?` in type position, independently on the
+  optional and nullable sides. Prefix `!T` strips the normalized outer
+  `Optional`, postfix `T!` strips `Nullable` while preserving any outer
+  `Optional`, and compositions such as `!?T?!` lower to existing `Type` IR
+  shapes without adding a new type variant. This restores `required` as
+  `{ keysOf(object) -> k; [k]: !object[k] }`, so `required(partial(User))`
+  lowers back to `User`.
 
 ## To investigate later
 

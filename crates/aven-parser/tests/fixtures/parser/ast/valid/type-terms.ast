@@ -59,3 +59,29 @@ module
           comptime Text
     value
       name name
+  binding strip_optional
+    annotation
+      unary !
+        comptime Text
+    value
+      name name
+  binding strip_nullable
+    annotation
+      non-null
+        comptime Text
+    value
+      name name
+  binding optional_strip_nullable
+    annotation
+      optional
+        non-null
+          comptime Text
+    value
+      name name
+  binding strip_optional_after_nullable_strip
+    annotation
+      unary !
+        non-null
+          comptime Text
+    value
+      name name

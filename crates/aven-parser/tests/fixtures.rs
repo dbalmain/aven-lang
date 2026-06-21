@@ -458,6 +458,11 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             let _ = writeln!(output, "nullable");
             render_expr_ast(output, inner, indent + 1);
         }
+        ExprKind::NonNull(inner) => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "non-null");
+            render_expr_ast(output, inner, indent + 1);
+        }
         ExprKind::Optional(inner) => {
             write_indent(output, indent);
             let _ = writeln!(output, "optional");

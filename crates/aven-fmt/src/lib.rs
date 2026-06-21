@@ -264,7 +264,7 @@ fn is_separator(token: &Token) -> bool {
 fn is_binary_operator(token: &Token) -> bool {
     matches!(&token.kind, TokenKind::Operator(operator) if !matches!(
         operator.as_str(),
-        "." | "?." | "?" | "?^" | "?!" | "@" | ".." | ":.."
+        "." | "?." | "?" | "!" | "?^" | "?!" | "@" | ".." | ":.."
     ))
 }
 
@@ -282,10 +282,12 @@ fn is_colon(token: &Token) -> bool {
 fn is_tight_postfix_operator(token: &Token, previous: Option<&Token>) -> bool {
     matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), "?^" | "?!"))
         || matches!(&token.kind, TokenKind::Operator(operator) if operator == "?" && previous.is_some_and(can_end_postfix_operand))
+        || matches!(&token.kind, TokenKind::Operator(operator) if operator == "!" && previous.is_some_and(can_end_postfix_operand))
 }
 
 fn is_tight_prefix_operator(token: &Token, previous: Option<&Token>, next: Option<&Token>) -> bool {
-    matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), "!" | ".." | ":.."))
+    matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), ".." | ":.."))
+        || matches!(&token.kind, TokenKind::Operator(operator) if operator == "!" && previous.is_none_or(|previous| !can_end_postfix_operand(previous)))
         || matches!(&token.kind, TokenKind::Operator(operator) if operator == "?" && previous.is_none_or(|previous| !can_end_postfix_operand(previous)))
         || is_at_set_marker(token, next)
 }

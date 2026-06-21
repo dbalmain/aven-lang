@@ -1,0 +1,5 @@
+User = { name: Text, email: Text }
+partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }
+required = (object) => { keysOf(object) -> k; [k]: !object[k] }
+Restored = required(partial(User))
+x : Restored = { name: "Ada", email: "ada@x.dev" }

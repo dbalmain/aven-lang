@@ -75,6 +75,8 @@ pub enum ExprKind {
     /// `T?`: postfix nullable marker. Match uses the distinct `?>` operator,
     /// so bare postfix `?` is parsed uniformly.
     Nullable(Box<Expr>),
+    /// `T!`: postfix nullable-strip marker in type position.
+    NonNull(Box<Expr>),
     /// `a -> b` / `(A, B) -> C`: a function/arrow form, right-associative.
     /// A parenthesized tuple on the left flattens into `params`.
     Arrow {
@@ -759,6 +761,16 @@ impl Parser<'_> {
                 expr = Expr {
                     span: expr.span.merge(operator_span),
                     kind: ExprKind::Nullable(Box::new(expr)),
+                };
+                continue;
+            }
+
+            if self.current_is_operator("!") {
+                let operator_span = self.current_span();
+                self.advance();
+                expr = Expr {
+                    span: expr.span.merge(operator_span),
+                    kind: ExprKind::NonNull(Box::new(expr)),
                 };
                 continue;
             }

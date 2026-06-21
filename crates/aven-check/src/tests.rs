@@ -602,6 +602,29 @@ fn comptime_partial_wraps_fields_in_optional_types() {
 }
 
 #[test]
+fn comptime_required_strips_partial_field_optional_types() {
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+         required = (object) => { keysOf(object) -> k; [k]: !object[k] }\n\
+         Restored = required(partial(User))\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("Restored"),
+        Some(&Type::Record(Row {
+            entries: vec![field("email", named("Text")), field("name", named("Text"))],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
 fn comptime_type_position_record_comprehension_non_concrete_subject_defers_without_diagnostic() {
     let open = parse_module(
         "clone = (object) => { keysOf(object) -> k; (k, object[k]) }\n\
@@ -706,6 +729,61 @@ fn lowers_function_application_optional_and_nullable_annotations() {
     assert!(nullable_value.diagnostics.is_empty());
     assert_eq!(both.ty, optional(nullable(named("Text"))));
     assert!(both.diagnostics.is_empty());
+}
+
+#[test]
+fn lowers_optional_and_nullable_strip_annotations() {
+    let output = parse_module(
+        "strip_optional : !?Text = value\n\
+         strip_optional_noop : !Text = value\n\
+         strip_nullable : (Text?)! = value\n\
+         strip_nullable_noop : Text! = value\n\
+         optional_side_only : ?Text! = value\n\
+         nullable_side_only : !Text? = value\n\
+         optional_nullable_strip_optional : !?Text? = value\n\
+         optional_nullable_strip_nullable : (?Text?)! = value\n\
+         optional_nullable_strip_both : !(?Text?)! = value\n",
+    );
+
+    for name in [
+        "strip_optional",
+        "strip_optional_noop",
+        "strip_nullable",
+        "strip_nullable_noop",
+        "optional_nullable_strip_both",
+    ] {
+        let lowering = lower_annotation(&output.module, annotation(&output.module, name));
+        assert_eq!(lowering.ty, named("Text"), "{name}");
+        assert!(lowering.diagnostics.is_empty(), "{name}");
+    }
+
+    let optional_side_only = lower_annotation(
+        &output.module,
+        annotation(&output.module, "optional_side_only"),
+    );
+    assert_eq!(optional_side_only.ty, optional(named("Text")));
+    assert!(optional_side_only.diagnostics.is_empty());
+
+    let nullable_side_only = lower_annotation(
+        &output.module,
+        annotation(&output.module, "nullable_side_only"),
+    );
+    assert_eq!(nullable_side_only.ty, nullable(named("Text")));
+    assert!(nullable_side_only.diagnostics.is_empty());
+
+    let optional_nullable_strip_optional = lower_annotation(
+        &output.module,
+        annotation(&output.module, "optional_nullable_strip_optional"),
+    );
+    assert_eq!(optional_nullable_strip_optional.ty, nullable(named("Text")));
+    assert!(optional_nullable_strip_optional.diagnostics.is_empty());
+
+    let optional_nullable_strip_nullable = lower_annotation(
+        &output.module,
+        annotation(&output.module, "optional_nullable_strip_nullable"),
+    );
+    assert_eq!(optional_nullable_strip_nullable.ty, optional(named("Text")));
+    assert!(optional_nullable_strip_nullable.diagnostics.is_empty());
 }
 
 #[test]

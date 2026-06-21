@@ -203,6 +203,7 @@ pub(crate) fn evaluate_runtime_value(
         | ExprKind::Index { .. }
         | ExprKind::Optional(_)
         | ExprKind::Nullable(_)
+        | ExprKind::NonNull(_)
         | ExprKind::Arrow { .. }
         | ExprKind::FieldAccess { .. }
         | ExprKind::Binary { .. }
@@ -322,6 +323,7 @@ where
             ExprKind::Index { callee, args } => self.evaluate_index_type(callee, args, env),
             ExprKind::Optional(_)
             | ExprKind::Nullable(_)
+            | ExprKind::NonNull(_)
             | ExprKind::Arrow { .. }
             | ExprKind::Tuple(_)
             | ExprKind::Record(_)

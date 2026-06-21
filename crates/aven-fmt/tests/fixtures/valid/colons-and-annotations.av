@@ -2,6 +2,10 @@ value:Text=name
 optional: ? Text=absent
 nullable:Text ? =empty
 both: ? Text ? =maybe
+strip_optional: ! Text=present
+strip_nullable:Text ! =present
+optional_strip_nullable: ? Text ! =present
+strip_optional_after_nullable_strip: ! Text ! =present
 greet=(person:Text):Text=>person
 User={name:Text,age:Int}
 Contact={phone: ?Text}
