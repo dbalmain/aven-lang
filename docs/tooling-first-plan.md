@@ -1814,6 +1814,12 @@ the later bytecode/runtime work.
   root trace/span id generation. Deferred: per-child span-id generation, full
   `tracestate` semantics, and HTTP `traceparent` header extraction when the HTTP
   platform lands.
+- E9 done: `aven run` now injects a host-curated ambient prelude as ordinary
+  base-scope bindings. The root structured logger is available directly as `log`
+  while the same shared value remains discoverable as `Platform.Log`; `Platform.*`
+  stays as the optional grouping namespace for less-common host capabilities.
+  Normal scoping still applies, so user bindings may shadow prelude names. Roc-style
+  selective imports are deferred until a module system exists.
 
 ## To investigate later
 

@@ -160,11 +160,7 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
     let mut value = None;
 
     if !diagnostics.iter().any(AvenDiagnostic::is_error) {
-        let platform = default_platform()?;
-        let outcome = aven_eval::eval_module_with_globals(
-            &parse.module,
-            vec![("Platform".to_owned(), platform)],
-        );
+        let outcome = aven_eval::eval_module_with_globals(&parse.module, prelude()?);
         value = outcome.value;
         diagnostics.extend(outcome.diagnostics);
     }
@@ -192,11 +188,23 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn default_platform() -> Result<aven_eval::Value> {
-    let log_sink = Rc::new(StdoutLogSink);
-    let trace = root_trace_context()?;
+fn prelude() -> Result<Vec<(String, aven_eval::Value)>> {
+    let log = root_logger()?;
+    let platform = default_platform(log.clone());
 
-    Ok(aven_eval::Value::record(vec![
+    Ok(vec![
+        ("log".to_owned(), log),
+        ("Platform".to_owned(), platform),
+    ])
+}
+
+fn root_logger() -> Result<aven_eval::Value> {
+    let log_sink = Rc::new(StdoutLogSink);
+    Ok(aven_eval::logging::logger(log_sink, root_trace_context()?))
+}
+
+fn default_platform(log: aven_eval::Value) -> aven_eval::Value {
+    aven_eval::Value::record(vec![
         (
             "Console".to_owned(),
             aven_eval::Value::record(vec![(
@@ -214,11 +222,8 @@ fn default_platform() -> Result<aven_eval::Value> {
                 }),
             )]),
         ),
-        (
-            "Log".to_owned(),
-            aven_eval::logging::logger(log_sink, trace),
-        ),
-    ]))
+        ("Log".to_owned(), log),
+    ])
 }
 
 struct StdoutLogSink;

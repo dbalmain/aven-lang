@@ -256,8 +256,8 @@ fn run_injects_default_console_platform() {
 #[test]
 fn run_log_writes_structured_json_line() {
     let file = TempFile::new(
-        "run-platform-structured-log",
-        "log = Platform.Log\nlog.info(\"hello\", { n: 1 })\n",
+        "run-ambient-structured-log",
+        "log.info(\"hello\", { n: 1 })\n",
     );
 
     let output = run_aven(["run"], file.path());
@@ -276,26 +276,51 @@ fn run_log_writes_structured_json_line() {
         stdout.contains("\"n\":1"),
         "expected numeric attribute, got:\n{stdout}"
     );
-    let mut lines = stdout.lines();
-    let Some(line) = lines.next() else {
-        panic!("expected one log line, got empty stdout");
-    };
-    assert!(
-        lines.next().is_none(),
-        "expected one log line, got:\n{stdout}"
+    let records = json_log_lines(&stdout);
+    assert_eq!(records.len(), 1, "expected one log line, got:\n{stdout}");
+    assert_w3c_trace_context(&records[0], &stdout);
+}
+
+#[test]
+fn run_ambient_log_and_platform_log_share_trace_context() {
+    let file = TempFile::new(
+        "run-shared-structured-log",
+        "log.info(\"hello\", { n: 1 })\nPlatform.Log.info(\"hello\", { n: 1 })\n",
     );
-    let json: serde_json::Value = match serde_json::from_str(line) {
-        Ok(value) => value,
-        Err(error) => panic!("expected valid JSON log line, got {error}: {line}"),
-    };
-    let trace_id = json
-        .get("traceId")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    assert!(
-        is_lower_hex(trace_id, 32),
-        "expected 32-lower-hex traceId, got:\n{stdout}"
-    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    let stdout = stdout(&output);
+    let records = json_log_lines(&stdout);
+    assert_eq!(records.len(), 2, "expected two log lines, got:\n{stdout}");
+
+    let ambient = &records[0];
+    let namespaced = &records[1];
+    for field in ["level", "severity", "msg", "n"] {
+        assert_eq!(
+            ambient[field], namespaced[field],
+            "expected matching `{field}` fields, got:\n{stdout}"
+        );
+    }
+    for field in ["traceId", "spanId", "traceFlags", "traceState"] {
+        assert_eq!(
+            ambient[field], namespaced[field],
+            "expected shared trace `{field}`, got:\n{stdout}"
+        );
+    }
+    assert_w3c_trace_context(ambient, &stdout);
+    assert_w3c_trace_context(namespaced, &stdout);
+}
+
+#[test]
+fn run_user_binding_shadows_prelude_log() {
+    let file = TempFile::new("run-shadow-ambient-log", "log = 5\nlog\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "5\n");
 }
 
 #[test]
@@ -459,6 +484,39 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn json_log_lines(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .map(|line| match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(error) => panic!("expected valid JSON log line, got {error}: {line}"),
+        })
+        .collect()
+}
+
+fn assert_w3c_trace_context(record: &serde_json::Value, stdout: &str) {
+    let trace_id = record
+        .get("traceId")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    assert!(
+        is_lower_hex(trace_id, 32),
+        "expected 32-lower-hex traceId, got:\n{stdout}"
+    );
+
+    let span_id = record
+        .get("spanId")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    assert!(
+        is_lower_hex(span_id, 16),
+        "expected 16-lower-hex spanId, got:\n{stdout}"
+    );
+
+    assert_eq!(record["traceFlags"], "01", "unexpected traceFlags");
+    assert_eq!(record["traceState"], "", "unexpected traceState");
 }
 
 fn is_lower_hex(value: &str, len: usize) -> bool {
