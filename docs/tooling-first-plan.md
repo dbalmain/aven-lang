@@ -1784,6 +1784,13 @@ the later bytecode/runtime work.
   adds base-case branching. This letrec-style behavior applies to functions; eager
   value forward references such as `a = b` before `b = 1` still report
   `runtime.unbound-name`.
+- E4 done: added runtime record and variant values. Records preserve insertion
+  order for display while comparing structurally by field name, and the evaluator
+  now handles record construction, spread/overwrite, delete, rename, shorthand,
+  computed fields/deletes, field access, and text-key record indexing. Variant
+  tags evaluate as `@Tag`/`@Tag(payload...)` values. Missing field lookup reports
+  `runtime.missing-field`; nil-safe access, record comprehensions, and tuple/array
+  indexing remain explicit `runtime.unsupported` follow-ups.
 
 ## To investigate later
 

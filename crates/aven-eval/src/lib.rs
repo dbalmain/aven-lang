@@ -1,7 +1,7 @@
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, fmt, rc::Rc};
 
 use aven_core::{Diagnostic, Label, Span, codes};
-use aven_parser::{Expr, ExprKind, Item, Literal, Module};
+use aven_parser::{Expr, ExprKind, Item, Literal, Module, RecordEntry};
 
 #[derive(Clone)]
 pub struct Closure {
@@ -25,6 +25,8 @@ pub enum Value {
     Float(f64),
     Text(String),
     Bool(bool),
+    Record(Rc<Vec<(String, Value)>>),
+    Tag { name: String, payload: Vec<Value> },
     Closure(Closure),
     Undefined,
     Null,
@@ -37,6 +39,17 @@ impl PartialEq for Value {
             (Self::Float(left), Self::Float(right)) => left == right,
             (Self::Text(left), Self::Text(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Record(left), Self::Record(right)) => records_equal(left, right),
+            (
+                Self::Tag {
+                    name: left_name,
+                    payload: left_payload,
+                },
+                Self::Tag {
+                    name: right_name,
+                    payload: right_payload,
+                },
+            ) => left_name == right_name && left_payload == right_payload,
             (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
             (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
             _ => false,
@@ -51,6 +64,8 @@ impl fmt::Display for Value {
             Self::Float(value) => write!(f, "{value}"),
             Self::Text(value) => write!(f, "{value}"),
             Self::Bool(value) => write!(f, "{value}"),
+            Self::Record(fields) => fmt_record(fields, f),
+            Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::Closure(_) => write!(f, "<function>"),
             Self::Undefined => write!(f, "undefined"),
             Self::Null => write!(f, "null"),
@@ -65,11 +80,76 @@ impl Value {
             Self::Float(_) => "Float",
             Self::Text(_) => "Text",
             Self::Bool(_) => "Bool",
+            Self::Record(_) => "Record",
+            Self::Tag { .. } => "Tag",
             Self::Closure(_) => "Function",
             Self::Undefined => "Undefined",
             Self::Null => "Null",
         }
     }
+}
+
+fn records_equal(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(name, value)| {
+            record_field_value(right, name).is_some_and(|right_value| value == right_value)
+        })
+}
+
+fn fmt_record(fields: &[(String, Value)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{{")?;
+    for (index, (name, value)) in fields.iter().enumerate() {
+        if index == 0 {
+            write!(f, " ")?;
+        } else {
+            write!(f, ", ")?;
+        }
+        write!(f, "{name}: ")?;
+        fmt_nested_value(value, f)?;
+    }
+    if !fields.is_empty() {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+fn fmt_tag(name: &str, payload: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "@{name}")?;
+    if !payload.is_empty() {
+        write!(f, "(")?;
+        for (index, value) in payload.iter().enumerate() {
+            if index > 0 {
+                write!(f, ", ")?;
+            }
+            fmt_nested_value(value, f)?;
+        }
+        write!(f, ")")?;
+    }
+    Ok(())
+}
+
+fn fmt_nested_value(value: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match value {
+        Value::Text(text) => write!(f, "\"{}\"", escape_string(text)),
+        Value::Record(fields) => fmt_record(fields, f),
+        Value::Tag { name, payload } => fmt_tag(name, payload, f),
+        value => write!(f, "{value}"),
+    }
+}
+
+fn escape_string(text: &str) -> String {
+    let mut escaped = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 #[derive(Clone)]
@@ -214,6 +294,18 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
             body: Rc::new((**body).clone()),
             env: env.clone(),
         })),
+        ExprKind::Tag(name) => Ok(Value::Tag {
+            name: name.clone(),
+            payload: Vec::new(),
+        }),
+        ExprKind::Record(entries) => eval_record(entries, env),
+        ExprKind::FieldAccess {
+            receiver,
+            field,
+            field_span,
+            null_safe,
+        } => eval_field_access(receiver, field, *field_span, *null_safe, expr.span, env),
+        ExprKind::Index { callee, args } => eval_index(callee, args, expr.span, env),
         ExprKind::Call { callee, args } => eval_call(callee, args, expr.span, env),
         _ => Err(one_diagnostic(unsupported_expr(
             expr.span,
@@ -239,6 +331,18 @@ fn eval_call(
     span: Span,
     env: &Environment,
 ) -> Result<Value, Vec<Diagnostic>> {
+    if let ExprKind::Tag(name) = &callee.kind {
+        let mut payload = Vec::with_capacity(args.len());
+        for arg in args {
+            payload.push(eval_expr_many(arg, env)?);
+        }
+
+        return Ok(Value::Tag {
+            name: name.clone(),
+            payload,
+        });
+    }
+
     let callee_value = eval_expr_many(callee, env)?;
     let closure = match callee_value {
         Value::Closure(closure) => closure,
@@ -264,6 +368,185 @@ fn eval_call(
     }
 
     eval_expr_many(closure.body.as_ref(), &call_env)
+}
+
+fn eval_record(entries: &[RecordEntry], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+    let mut fields = Vec::new();
+
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { name, value, .. } => {
+                let value = eval_expr_many(value, env)?;
+                insert_or_replace_field(&mut fields, name.clone(), value);
+            }
+            RecordEntry::FieldComputed { key, value, .. } => {
+                let name = eval_text_key(key, key.span, env)?;
+                let value = eval_expr_many(value, env)?;
+                insert_or_replace_field(&mut fields, name, value);
+            }
+            RecordEntry::Shorthand {
+                name, name_span, ..
+            } => {
+                let value = env
+                    .lookup(name)
+                    .ok_or_else(|| one_diagnostic(unbound_name(name, *name_span)))?;
+                insert_or_replace_field(&mut fields, name.clone(), value);
+            }
+            RecordEntry::Spread {
+                value: source_expr, ..
+            } => {
+                let source = eval_expr_many(source_expr, env)?;
+                let source_fields = match source {
+                    Value::Record(fields) => fields,
+                    value => {
+                        return Err(one_diagnostic(record_type_error(
+                            source_expr.span,
+                            "spread",
+                            value.type_name(),
+                            "Record",
+                        )));
+                    }
+                };
+
+                for (name, value) in source_fields.iter() {
+                    insert_or_replace_field(&mut fields, name.clone(), value.clone());
+                }
+            }
+            RecordEntry::Delete { name, .. } => {
+                remove_field(&mut fields, name);
+            }
+            RecordEntry::DeleteComputed { key, .. } => {
+                let name = eval_text_key(key, key.span, env)?;
+                remove_field(&mut fields, &name);
+            }
+            RecordEntry::Rename { from, to, .. } => {
+                rename_field(&mut fields, from, to);
+            }
+            RecordEntry::Iteration { span, .. } => {
+                return Err(one_diagnostic(unsupported_expr(
+                    *span,
+                    "record comprehensions are deferred until comptime/runtime staging",
+                )));
+            }
+            RecordEntry::Open { span } => {
+                return Err(one_diagnostic(record_type_error(
+                    *span,
+                    "record construction",
+                    "open row marker",
+                    "value record entry",
+                )));
+            }
+            RecordEntry::Element(value) => {
+                return Err(one_diagnostic(unsupported_expr(
+                    value.span,
+                    "tuple-style record entries are deferred until tuple evaluation",
+                )));
+            }
+        }
+    }
+
+    Ok(Value::Record(Rc::new(fields)))
+}
+
+fn eval_field_access(
+    receiver: &Expr,
+    field: &str,
+    field_span: Span,
+    null_safe: bool,
+    span: Span,
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
+    if null_safe {
+        return Err(one_diagnostic(unsupported_expr(
+            span,
+            "nil-safe field access is deferred until optional/null handling",
+        )));
+    }
+
+    match eval_expr_many(receiver, env)? {
+        Value::Record(fields) => record_field_value(&fields, field)
+            .cloned()
+            .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
+        value => Err(one_diagnostic(record_type_error(
+            receiver.span,
+            "field access",
+            value.type_name(),
+            "Record",
+        ))),
+    }
+}
+
+fn eval_index(
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
+    if args.len() != 1 {
+        return Err(one_diagnostic(unsupported_expr(
+            span,
+            "only single-key record indexing is supported by the current evaluator",
+        )));
+    }
+
+    match eval_expr_many(callee, env)? {
+        Value::Record(fields) => {
+            let key = eval_text_key(&args[0], args[0].span, env)?;
+            record_field_value(&fields, &key)
+                .cloned()
+                .ok_or_else(|| one_diagnostic(missing_field(&key, args[0].span)))
+        }
+        _ => Err(one_diagnostic(unsupported_expr(
+            span,
+            "non-record indexing is deferred until tuple and array evaluation",
+        ))),
+    }
+}
+
+fn eval_text_key(expr: &Expr, span: Span, env: &Environment) -> Result<String, Vec<Diagnostic>> {
+    match eval_expr_many(expr, env)? {
+        Value::Text(text) => Ok(text),
+        value => Err(one_diagnostic(record_type_error(
+            span,
+            "computed record key",
+            value.type_name(),
+            "Text",
+        ))),
+    }
+}
+
+fn insert_or_replace_field(fields: &mut Vec<(String, Value)>, name: String, value: Value) {
+    if let Some(index) = record_field_index(fields, &name) {
+        fields[index] = (name, value);
+    } else {
+        fields.push((name, value));
+    }
+}
+
+fn remove_field(fields: &mut Vec<(String, Value)>, name: &str) {
+    if let Some(index) = record_field_index(fields, name) {
+        fields.remove(index);
+    }
+}
+
+fn rename_field(fields: &mut Vec<(String, Value)>, from: &str, to: &str) {
+    let Some(from_index) = record_field_index(fields, from) else {
+        return;
+    };
+
+    let (_, value) = fields.remove(from_index);
+    remove_field(fields, to);
+    fields.insert(from_index.min(fields.len()), (to.to_owned(), value));
+}
+
+fn record_field_index(fields: &[(String, Value)], name: &str) -> Option<usize> {
+    fields.iter().position(|(field, _)| field == name)
+}
+
+fn record_field_value<'a>(fields: &'a [(String, Value)], name: &str) -> Option<&'a Value> {
+    fields
+        .iter()
+        .find_map(|(field, value)| (field == name).then_some(value))
 }
 
 fn eval_literal(literal: &Literal, span: Span) -> Result<Value, Diagnostic> {
@@ -571,6 +854,8 @@ fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Val
             .is_some_and(|ordering| ordering == Ordering::Equal),
         (Value::Text(left), Value::Text(right)) => left == right,
         (Value::Bool(left), Value::Bool(right)) => left == right,
+        (Value::Record(_), Value::Record(_)) => left == right,
+        (Value::Tag { .. }, Value::Tag { .. }) => left == right,
         (Value::Undefined, Value::Undefined) => true,
         (Value::Null, Value::Null) => true,
         _ => {
@@ -664,6 +949,22 @@ fn binary_type_error(
         .with_note("runtime type errors are reported by the evaluator; static checking is a separate phase")
 }
 
+fn record_type_error(span: Span, operation: &str, actual: &str, expected: &str) -> Diagnostic {
+    Diagnostic::error(format!("cannot perform {operation} on {actual}"))
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(span, format!("expected {expected}")))
+        .with_note(
+            "runtime type errors are reported by the evaluator; static checking is a separate phase",
+        )
+}
+
+fn missing_field(field: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(format!("missing field `{field}`"))
+        .with_code(codes::runtime::MISSING_FIELD)
+        .with_label(Label::primary(span, "this field is not present at runtime"))
+        .with_note("record field lookup only succeeds for fields present on the record value")
+}
+
 fn division_by_zero(span: Span) -> Diagnostic {
     Diagnostic::error("division by zero")
         .with_code(codes::runtime::DIVISION_BY_ZERO)
@@ -724,7 +1025,7 @@ fn unsupported_expr(span: Span, label: &str) -> Diagnostic {
         .with_code(codes::runtime::UNSUPPORTED)
         .with_label(Label::primary(span, label))
         .with_note(
-            "the evaluator currently supports literals, names, bindings, blocks, lambdas, calls, unary operators, and core binary operators",
+            "the evaluator currently supports literals, names, bindings, blocks, lambdas, calls, records, tags, unary operators, and core binary operators",
         )
 }
 
@@ -755,6 +1056,7 @@ mod tests {
     use super::{Environment, EvalOutcome, Value, eval_expr, eval_module};
     use aven_core::codes;
     use aven_parser::{Item, Module, parse_module};
+    use std::rc::Rc;
 
     #[test]
     fn evaluates_arithmetic_with_parser_precedence() {
@@ -920,6 +1222,123 @@ mod tests {
         );
     }
 
+    #[test]
+    fn evaluates_record_literals_and_field_access() {
+        assert_module_value(
+            "user = { name: \"Ada\", age: 36 }\nuser.name\n",
+            Value::Text("Ada".to_owned()),
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                record_value(vec![
+                    ("name", Value::Text("Ada".to_owned())),
+                    ("age", Value::Int(36))
+                ])
+            ),
+            "{ name: \"Ada\", age: 36 }"
+        );
+    }
+
+    #[test]
+    fn evaluates_record_spread_with_overwrite() {
+        assert_module_value(
+            "user = { name: \"Ada\", age: 36 }\nolder = { ..user, age :: 37 }\nolder.age\n",
+            Value::Int(37),
+        );
+    }
+
+    #[test]
+    fn evaluates_record_delete() {
+        assert_module_value(
+            "user = { name: \"Ada\", age: 36 }\ncleaned = { ..user, -age }\ncleaned\n",
+            record_value(vec![("name", Value::Text("Ada".to_owned()))]),
+        );
+    }
+
+    #[test]
+    fn evaluates_record_rename() {
+        assert_module_value(
+            "user = { name: \"Ada\", age: 36 }\nrenamed = { ..user, name -> handle }\nrenamed.handle\n",
+            Value::Text("Ada".to_owned()),
+        );
+    }
+
+    #[test]
+    fn evaluates_record_shorthand() {
+        assert_module_value(
+            "name = \"Ada\"\nage = 36\nuser = { name, age }\nuser.age\n",
+            Value::Int(36),
+        );
+    }
+
+    #[test]
+    fn evaluates_computed_record_field_and_delete() {
+        assert_module_value(
+            "key = \"handle\"\nremove = \"age\"\nuser = { name: \"Ada\", age: 36, [key]: \"ada\" }\ncleaned = { ..user, -[remove] }\ncleaned[\"handle\"]\n",
+            Value::Text("ada".to_owned()),
+        );
+    }
+
+    #[test]
+    fn evaluates_nested_record_access() {
+        assert_module_value(
+            "user = { profile: { name: \"Ada\" } }\nuser.profile.name\n",
+            Value::Text("Ada".to_owned()),
+        );
+    }
+
+    #[test]
+    fn record_equality_is_order_independent() {
+        assert_eval("{ a: 1, b: 2 } == { b: 2, a: 1 }", Value::Bool(true));
+    }
+
+    #[test]
+    fn evaluates_variant_tags() {
+        assert_eval(
+            "@Ok(1)",
+            Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Int(1)],
+            },
+        );
+        assert_eval(
+            "@Red",
+            Value::Tag {
+                name: "Red".to_owned(),
+                payload: Vec::new(),
+            },
+        );
+    }
+
+    #[test]
+    fn evaluates_variant_tags_with_multiple_payload_args() {
+        assert_eval(
+            "@Rgb(1, 2, 3)",
+            Value::Tag {
+                name: "Rgb".to_owned(),
+                payload: vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            },
+        );
+    }
+
+    #[test]
+    fn reports_missing_record_fields() {
+        let diagnostic = eval_error("{ name: \"Ada\" }.age");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::MISSING_FIELD)
+        );
+    }
+
+    #[test]
+    fn reports_field_access_on_non_record() {
+        let diagnostic = eval_error("1.name");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    }
+
     fn assert_module_value(source: &str, expected: Value) {
         let module = parse_ok(source);
         let outcome = eval_module(&module);
@@ -955,6 +1374,15 @@ mod tests {
             panic!("expected expression item");
         };
         eval_expr(expr, &Environment::new())
+    }
+
+    fn record_value(fields: Vec<(&str, Value)>) -> Value {
+        Value::Record(Rc::new(
+            fields
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+        ))
     }
 
     fn parse_ok(source: &str) -> Module {
