@@ -1713,6 +1713,15 @@ Completed parser groundwork:
   `{ keysOf(object) -> k; [k]: !object[k] }`, so `required(partial(User))`
   lowers back to `User`.
 
+## Milestone T — editor type intelligence
+
+- T1 done: LSP completion now recognizes field-access position for name
+  receivers and asks `aven-check`/`aven-compiler` for the receiver record's
+  fields instead of inspecting row internals in the language server. Field items
+  render their field type as completion detail, `Optional` and `Nullable`
+  receiver wrappers are peeled by the checker query, and unknown or non-record
+  receivers keep the previous identifier-list fallback.
+
 ## To investigate later
 
 - **Braceless multiline set/record literals.** Allow dropping the braces on

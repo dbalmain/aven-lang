@@ -116,7 +116,7 @@ impl LanguageServer for Backend {
                 rename_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: None,
+                    trigger_characters: Some(vec![".".to_owned()]),
                     ..CompletionOptions::default()
                 }),
                 semantic_tokens_provider: Some(SemanticTokensServerCapabilities::from(
@@ -440,6 +440,17 @@ fn symbol_kind(declaration: &aven_parser::Declaration) -> SymbolKind {
 }
 
 fn completion_at_position(document: &ParsedDocument, position: Position) -> Vec<CompletionItem> {
+    if let Some(items) = field_completion_at_position(document, position) {
+        return items;
+    }
+
+    identifier_completion_at_position(document, position)
+}
+
+fn identifier_completion_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let mut seen = HashSet::new();
 
@@ -482,6 +493,27 @@ fn completion_at_position(document: &ParsedDocument, position: Position) -> Vec<
     items
 }
 
+fn field_completion_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<Vec<CompletionItem>> {
+    let receiver = field_access_receiver_at_position(document, position)?;
+    let receiver_span = definition_span_for_identifier(document, &receiver)?;
+    let fields = aven_compiler::record_fields(document.type_at(receiver_span)?)?;
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    for field in fields {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            completion_item_for_record_field(field),
+        );
+    }
+
+    Some(items)
+}
+
 fn push_completion_item(
     items: &mut Vec<CompletionItem>,
     seen: &mut HashSet<String>,
@@ -489,6 +521,15 @@ fn push_completion_item(
 ) {
     if seen.insert(item.label.clone()) {
         items.push(item);
+    }
+}
+
+fn completion_item_for_record_field(field: aven_compiler::RecordField) -> CompletionItem {
+    CompletionItem {
+        label: field.name,
+        kind: Some(CompletionItemKind::FIELD),
+        detail: Some(field.ty.render()),
+        ..CompletionItem::default()
     }
 }
 
@@ -565,11 +606,7 @@ fn definition_location(
 ) -> Option<Location> {
     let identifier = identifier_at_position(document, position)?;
 
-    if let Some(span) = aven_parser::resolve_local_definition(
-        &document.parse_output().module,
-        &identifier.name,
-        identifier.span,
-    ) {
+    if let Some(span) = local_definition_span(document, &identifier) {
         return Some(Location::new(uri, span_to_range(document, span)));
     }
 
@@ -626,18 +663,7 @@ fn rename_workspace_edit(
 
 fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Hover> {
     let identifier = identifier_at_position(document, position)?;
-    let definition = aven_parser::resolve_local_definition(
-        &document.parse_output().module,
-        &identifier.name,
-        identifier.span,
-    )
-    .or_else(|| {
-        document
-            .declarations()
-            .iter()
-            .find(|declaration| declaration.name == identifier.name)
-            .map(|declaration| declaration.name_span)
-    })?;
+    let definition = definition_span_for_identifier(document, &identifier)?;
 
     let rendered = if let Some(annotation) =
         aven_parser::annotation_for_definition(&document.parse_output().module, definition)
@@ -666,6 +692,30 @@ struct IdentifierAtPosition {
     span: Span,
 }
 
+fn definition_span_for_identifier(
+    document: &ParsedDocument,
+    identifier: &IdentifierAtPosition,
+) -> Option<Span> {
+    local_definition_span(document, identifier).or_else(|| {
+        document
+            .declarations()
+            .iter()
+            .find(|declaration| declaration.name == identifier.name)
+            .map(|declaration| declaration.name_span)
+    })
+}
+
+fn local_definition_span(
+    document: &ParsedDocument,
+    identifier: &IdentifierAtPosition,
+) -> Option<Span> {
+    aven_parser::resolve_local_definition(
+        &document.parse_output().module,
+        &identifier.name,
+        identifier.span,
+    )
+}
+
 fn identifier_at_position(
     document: &ParsedDocument,
     position: Position,
@@ -677,15 +727,75 @@ fn identifier_at_position(
             return None;
         }
 
-        match &token.kind {
-            aven_parser::TokenKind::Identifier(name)
-            | aven_parser::TokenKind::ComptimeIdentifier(name) => Some(IdentifierAtPosition {
-                name: name.clone(),
-                span: token.span,
-            }),
-            _ => None,
-        }
+        identifier_from_token(token)
     })
+}
+
+fn field_access_receiver_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<IdentifierAtPosition> {
+    let offset = position_to_offset(document, position)?;
+    let significant_tokens = document
+        .parse_output()
+        .raw_tokens
+        .iter()
+        .filter(|token| !is_trivia_token(token))
+        .collect::<Vec<_>>();
+
+    for (index, token) in significant_tokens.iter().enumerate() {
+        if is_field_access_operator(token) && token.span.end == offset {
+            return receiver_before_dot(&significant_tokens, index);
+        }
+
+        if identifier_from_token(token).is_some()
+            && offset >= token.span.start
+            && offset <= token.span.end
+        {
+            let dot_index = index.checked_sub(1)?;
+            if is_field_access_operator(significant_tokens[dot_index]) {
+                return receiver_before_dot(&significant_tokens, dot_index);
+            }
+        }
+    }
+
+    None
+}
+
+fn receiver_before_dot(
+    tokens: &[&aven_parser::Token],
+    dot_index: usize,
+) -> Option<IdentifierAtPosition> {
+    let receiver_index = dot_index.checked_sub(1)?;
+    identifier_from_token(tokens[receiver_index])
+}
+
+fn identifier_from_token(token: &aven_parser::Token) -> Option<IdentifierAtPosition> {
+    match &token.kind {
+        aven_parser::TokenKind::Identifier(name)
+        | aven_parser::TokenKind::ComptimeIdentifier(name) => Some(IdentifierAtPosition {
+            name: name.clone(),
+            span: token.span,
+        }),
+        _ => None,
+    }
+}
+
+fn is_field_access_operator(token: &aven_parser::Token) -> bool {
+    matches!(&token.kind, aven_parser::TokenKind::Operator(operator) if operator == "." || operator == "?.")
+}
+
+fn is_trivia_token(token: &aven_parser::Token) -> bool {
+    matches!(
+        &token.kind,
+        aven_parser::TokenKind::RawNewline
+            | aven_parser::TokenKind::RawIndent { .. }
+            | aven_parser::TokenKind::Newline
+            | aven_parser::TokenKind::Indent
+            | aven_parser::TokenKind::Dedent
+            | aven_parser::TokenKind::Comment(_)
+            | aven_parser::TokenKind::DocComment(_)
+    )
 }
 
 fn span_to_range(document: &ParsedDocument, span: Span) -> Range {
@@ -821,7 +931,17 @@ mod tests {
             Some(SemanticTokensServerCapabilities::SemanticTokensOptions(options))
                 if matches!(options.full, Some(SemanticTokensFullOptions::Bool(true)))
         ));
-        assert!(initialize_result.capabilities.completion_provider.is_some());
+        let completion_options = initialize_result
+            .capabilities
+            .completion_provider
+            .as_ref()
+            .expect("expected completion provider");
+        assert!(
+            completion_options
+                .trigger_characters
+                .as_ref()
+                .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == "."))
+        );
 
         let did_open = Request::build("textDocument/didOpen")
             .params(json!({
@@ -1114,6 +1234,59 @@ mod tests {
 
         assert_eq!(value_items.len(), 1);
         assert_eq!(value_items[0].detail.as_deref(), Some("Text"));
+    }
+
+    #[test]
+    fn completion_at_field_access_returns_record_fields() {
+        let document = parsed_document_with_semantics(
+            "user : { name: Text, email: Text } = current\nresult = user.name\n",
+        );
+        let completions = completion_at_position(&document, position(1, 14));
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        let Some(name) = completion_item(&completions, "name") else {
+            panic!("expected name field completion");
+        };
+        let Some(email) = completion_item(&completions, "email") else {
+            panic!("expected email field completion");
+        };
+
+        assert_eq!(labels, vec!["name", "email"]);
+        assert_eq!(name.kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(name.detail.as_deref(), Some("Text"));
+        assert_eq!(email.kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(email.detail.as_deref(), Some("Text"));
+        assert!(completion_item(&completions, "user").is_none());
+        assert!(completion_item(&completions, "Text").is_none());
+    }
+
+    #[test]
+    fn completion_at_partial_field_access_returns_record_fields() {
+        let document = parsed_document_with_semantics(
+            "user : { name: Text, email: Text } = current\nresult = user.em\n",
+        );
+        let completions = completion_at_position(&document, position(1, 16));
+
+        assert!(completion_item(&completions, "name").is_some());
+        assert!(completion_item(&completions, "email").is_some());
+        assert!(completion_item(&completions, "user").is_none());
+    }
+
+    #[test]
+    fn completion_at_non_field_position_still_returns_identifier_list() {
+        let document = parsed_document_with_semantics(
+            "user : { name: Text, email: Text } = current\nresult = use\n",
+        );
+        let completions = completion_at_position(&document, position(1, 12));
+        let Some(user) = completion_item(&completions, "user") else {
+            panic!("expected user identifier completion");
+        };
+
+        assert_eq!(user.detail.as_deref(), Some("{ name: Text, email: Text }"));
+        assert!(completion_item(&completions, "Text").is_some());
+        assert!(completion_item(&completions, "name").is_none());
     }
 
     #[test]

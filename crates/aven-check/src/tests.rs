@@ -205,6 +205,32 @@ fn renders_types_as_surface_syntax() {
 }
 
 #[test]
+fn record_fields_query_enumerates_record_fields_and_peels_wrappers() {
+    let record = Type::Record(Row {
+        entries: vec![field("name", named("Text")), field("email", named("Text"))],
+        tail: RowTail::Closed,
+    });
+    let expected = vec![
+        RecordField {
+            name: "name".to_owned(),
+            ty: named("Text"),
+        },
+        RecordField {
+            name: "email".to_owned(),
+            ty: named("Text"),
+        },
+    ];
+
+    assert_eq!(record_fields(&record), Some(expected.clone()));
+    assert_eq!(
+        record_fields(&optional(record.clone())),
+        Some(expected.clone())
+    );
+    assert_eq!(record_fields(&nullable(record)), Some(expected));
+    assert_eq!(record_fields(&named("Text")), None);
+}
+
+#[test]
 fn check_output_records_unannotated_local_inferred_types() {
     let source = "value =\n  local = \"hi\"\n  local\n";
     let output = parse_module(source);

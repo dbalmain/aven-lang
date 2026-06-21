@@ -12,7 +12,7 @@ use aven_parser::{
     resolve_local_definition, walk_expr_children,
 };
 
-pub use aven_check::{InferredType, Type};
+pub use aven_check::{InferredType, RecordField, Type, record_fields};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Revision(i32);

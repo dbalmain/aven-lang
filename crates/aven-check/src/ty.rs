@@ -37,6 +37,36 @@ impl Type {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordField {
+    pub name: String,
+    pub ty: Type,
+}
+
+pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
+    let mut ty = ty;
+    while let Type::Optional(inner) | Type::Nullable(inner) = ty {
+        ty = inner;
+    }
+
+    let Type::Record(row) = ty else {
+        return None;
+    };
+
+    Some(
+        row.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                RowEntry::Field { name, ty } => Some(RecordField {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                }),
+                RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+            })
+            .collect(),
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TypeScheme {
     pub(crate) vars: Vec<u32>,
     pub(crate) row_vars: Vec<u32>,
