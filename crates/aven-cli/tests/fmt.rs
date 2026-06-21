@@ -267,6 +267,19 @@ fn run_prints_record_field_access_value() {
 }
 
 #[test]
+fn run_prints_collection_and_nullable_program_value() {
+    let file = TempFile::new(
+        "run-collections",
+        "xs = [10, 20, 30]\npair = (1, \"a\")\nset = @{ 1, 2, 2, 3 }\nchosen = null?.name ?? xs[1]\npair ?>\n  (n, _) => chosen + n\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "21\n");
+}
+
+#[test]
 fn run_reports_runtime_diagnostics() {
     let file = TempFile::new("run-error", "1 / 0\n");
 

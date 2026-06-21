@@ -1796,6 +1796,12 @@ the later bytecode/runtime work.
   expressions. Match evaluation reports `runtime.no-match` if the checker safety
   net is needed. With match base cases available, self and mutual recursion are
   now demonstrable end to end through `aven run`.
+- E6 done: added runtime arrays, tuples, and sets. Arrays are ordered and index
+  out of bounds to `undefined`; tuples are fixed-arity and report
+  `runtime.index-out-of-bounds`; sets deduplicate by structural equality while
+  preserving first-seen display order and compare order-independently. Tuple
+  patterns now bind tuple elements in matches, `?.` propagates null/undefined
+  receivers, and `??` short-circuits to the left value when it is present.
 
 ## To investigate later
 

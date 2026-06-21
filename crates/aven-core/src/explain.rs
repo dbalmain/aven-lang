@@ -187,6 +187,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Runtime evaluation tried to divide or take a remainder by zero. Change the right operand of `/` or `%` so it evaluates to a non-zero number before running the program.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::INDEX_OUT_OF_BOUNDS,
+        text: "Runtime evaluation tried to read a fixed-arity tuple at an index outside its bounds. Use an in-range tuple index, match the tuple shape, or use an array when out-of-bounds lookup should produce undefined.",
+    },
+    DiagnosticExplanation {
         code: codes::runtime::MISSING_FIELD,
         text: "Runtime evaluation tried to read a record field that is not present on the record value. Add the field before the lookup, change the field name, or handle the absent-field case once optional access exists.",
     },

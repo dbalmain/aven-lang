@@ -25,6 +25,9 @@ pub enum Value {
     Float(f64),
     Text(String),
     Bool(bool),
+    Array(Rc<Vec<Value>>),
+    Tuple(Rc<Vec<Value>>),
+    Set(Rc<Vec<Value>>),
     Record(Rc<Vec<(String, Value)>>),
     Tag { name: String, payload: Vec<Value> },
     Closure(Closure),
@@ -39,6 +42,9 @@ impl PartialEq for Value {
             (Self::Float(left), Self::Float(right)) => left == right,
             (Self::Text(left), Self::Text(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Array(left), Self::Array(right)) => left == right,
+            (Self::Tuple(left), Self::Tuple(right)) => left == right,
+            (Self::Set(left), Self::Set(right)) => sets_equal(left, right),
             (Self::Record(left), Self::Record(right)) => records_equal(left, right),
             (
                 Self::Tag {
@@ -64,6 +70,9 @@ impl fmt::Display for Value {
             Self::Float(value) => write!(f, "{value}"),
             Self::Text(value) => write!(f, "{value}"),
             Self::Bool(value) => write!(f, "{value}"),
+            Self::Array(values) => fmt_array(values, f),
+            Self::Tuple(values) => fmt_tuple(values, f),
+            Self::Set(values) => fmt_set(values, f),
             Self::Record(fields) => fmt_record(fields, f),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::Closure(_) => write!(f, "<function>"),
@@ -80,6 +89,9 @@ impl Value {
             Self::Float(_) => "Float",
             Self::Text(_) => "Text",
             Self::Bool(_) => "Bool",
+            Self::Array(_) => "Array",
+            Self::Tuple(_) => "Tuple",
+            Self::Set(_) => "Set",
             Self::Record(_) => "Record",
             Self::Tag { .. } => "Tag",
             Self::Closure(_) => "Function",
@@ -89,11 +101,59 @@ impl Value {
     }
 }
 
+fn sets_equal(left: &[Value], right: &[Value]) -> bool {
+    left.len() == right.len() && left.iter().all(|value| contains_value(right, value))
+}
+
+fn contains_value(values: &[Value], needle: &Value) -> bool {
+    values.iter().any(|value| value == needle)
+}
+
 fn records_equal(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
     left.len() == right.len()
         && left.iter().all(|(name, value)| {
             record_field_value(right, name).is_some_and(|right_value| value == right_value)
         })
+}
+
+fn fmt_array(values: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt_sequence("[", "]", values, f)
+}
+
+fn fmt_tuple(values: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt_sequence("(", ")", values, f)
+}
+
+fn fmt_sequence(
+    open: &str,
+    close: &str,
+    values: &[Value],
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    write!(f, "{open}")?;
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            write!(f, ", ")?;
+        }
+        fmt_nested_value(value, f)?;
+    }
+    write!(f, "{close}")
+}
+
+fn fmt_set(values: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "@{{")?;
+    for (index, value) in values.iter().enumerate() {
+        if index == 0 {
+            write!(f, " ")?;
+        } else {
+            write!(f, ", ")?;
+        }
+        fmt_nested_value(value, f)?;
+    }
+    if !values.is_empty() {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
 }
 
 fn fmt_record(fields: &[(String, Value)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -131,6 +191,9 @@ fn fmt_tag(name: &str, payload: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Re
 fn fmt_nested_value(value: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match value {
         Value::Text(text) => write!(f, "\"{}\"", escape_string(text)),
+        Value::Array(values) => fmt_array(values, f),
+        Value::Tuple(values) => fmt_tuple(values, f),
+        Value::Set(values) => fmt_set(values, f),
         Value::Record(fields) => fmt_record(fields, f),
         Value::Tag { name, payload } => fmt_tag(name, payload, f),
         value => write!(f, "{value}"),
@@ -298,6 +361,9 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
             name: name.clone(),
             payload: Vec::new(),
         }),
+        ExprKind::Array(items) => eval_array(items, env),
+        ExprKind::Tuple(items) => eval_tuple(items, env),
+        ExprKind::Set(entries) => eval_set(entries, env),
         ExprKind::Record(entries) => eval_record(entries, env),
         ExprKind::Match { subject, arms, .. } => eval_match(subject, arms, expr.span, env),
         ExprKind::FieldAccess {
@@ -305,7 +371,7 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
             field,
             field_span,
             null_safe,
-        } => eval_field_access(receiver, field, *field_span, *null_safe, expr.span, env),
+        } => eval_field_access(receiver, field, *field_span, *null_safe, env),
         ExprKind::Index { callee, args } => eval_index(callee, args, expr.span, env),
         ExprKind::Call { callee, args } => eval_call(callee, args, expr.span, env),
         _ => Err(one_diagnostic(unsupported_expr(
@@ -381,10 +447,7 @@ fn match_pattern(
         },
         ExprKind::Call { callee, args } => match_tag_payload_pattern(callee, args, value, env),
         ExprKind::Record(entries) => match_record_pattern(entries, value, env),
-        ExprKind::Tuple(_) => Err(unsupported_expr(
-            pattern.span,
-            "tuple patterns are deferred until tuple evaluation",
-        )),
+        ExprKind::Tuple(items) => match_tuple_pattern(items, value, env),
         _ => Ok(None),
     }
 }
@@ -435,6 +498,30 @@ fn match_tag_payload_pattern(
 
     let mut bindings = Vec::new();
     for (pattern, value) in args.iter().zip(payload) {
+        let Some(mut next_bindings) = match_pattern(pattern, value, env)? else {
+            return Ok(None);
+        };
+        bindings.append(&mut next_bindings);
+    }
+
+    Ok(Some(bindings))
+}
+
+fn match_tuple_pattern(
+    items: &[Expr],
+    value: &Value,
+    env: &Environment,
+) -> Result<Option<Vec<(String, Value)>>, Diagnostic> {
+    let Value::Tuple(values) = value else {
+        return Ok(None);
+    };
+
+    if values.len() != items.len() {
+        return Ok(None);
+    }
+
+    let mut bindings = Vec::new();
+    for (pattern, value) in items.iter().zip(values.iter()) {
         let Some(mut next_bindings) = match_pattern(pattern, value, env)? else {
             return Ok(None);
         };
@@ -539,6 +626,49 @@ fn eval_call(
     eval_expr_many(closure.body.as_ref(), &call_env)
 }
 
+fn eval_array(items: &[Expr], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+    let mut values = Vec::with_capacity(items.len());
+
+    for item in items {
+        values.push(eval_expr_many(item, env)?);
+    }
+
+    Ok(Value::Array(Rc::new(values)))
+}
+
+fn eval_tuple(items: &[Expr], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+    let mut values = Vec::with_capacity(items.len());
+
+    for item in items {
+        values.push(eval_expr_many(item, env)?);
+    }
+
+    Ok(Value::Tuple(Rc::new(values)))
+}
+
+fn eval_set(entries: &[RecordEntry], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+    let mut values = Vec::new();
+
+    for entry in entries {
+        match entry {
+            RecordEntry::Element(expr) => {
+                let value = eval_expr_many(expr, env)?;
+                if !contains_value(&values, &value) {
+                    values.push(value);
+                }
+            }
+            entry => {
+                return Err(one_diagnostic(unsupported_expr(
+                    record_entry_span(entry),
+                    "only element entries are supported in set literals by the current evaluator",
+                )));
+            }
+        }
+    }
+
+    Ok(Value::Set(Rc::new(values)))
+}
+
 fn eval_record(entries: &[RecordEntry], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
     let mut fields = Vec::new();
 
@@ -622,17 +752,14 @@ fn eval_field_access(
     field: &str,
     field_span: Span,
     null_safe: bool,
-    span: Span,
     env: &Environment,
 ) -> Result<Value, Vec<Diagnostic>> {
-    if null_safe {
-        return Err(one_diagnostic(unsupported_expr(
-            span,
-            "nil-safe field access is deferred until optional/null handling",
-        )));
+    let receiver_value = eval_expr_many(receiver, env)?;
+    if null_safe && matches!(receiver_value, Value::Undefined | Value::Null) {
+        return Ok(receiver_value);
     }
 
-    match eval_expr_many(receiver, env)? {
+    match receiver_value {
         Value::Record(fields) => record_field_value(&fields, field)
             .cloned()
             .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
@@ -654,22 +781,64 @@ fn eval_index(
     if args.len() != 1 {
         return Err(one_diagnostic(unsupported_expr(
             span,
-            "only single-key record indexing is supported by the current evaluator",
+            "only single-argument indexing is supported by the current evaluator",
         )));
     }
 
-    match eval_expr_many(callee, env)? {
+    let callee_value = eval_expr_many(callee, env)?;
+    let arg_value = eval_expr_many(&args[0], env)?;
+    match callee_value {
+        Value::Array(values) => {
+            let Value::Int(index) = arg_value else {
+                return Err(one_diagnostic(record_type_error(
+                    args[0].span,
+                    "array indexing",
+                    arg_value.type_name(),
+                    "Int",
+                )));
+            };
+
+            Ok(indexed_value(&values, index).unwrap_or(Value::Undefined))
+        }
+        Value::Tuple(values) => {
+            let Value::Int(index) = arg_value else {
+                return Err(one_diagnostic(record_type_error(
+                    args[0].span,
+                    "tuple indexing",
+                    arg_value.type_name(),
+                    "Int",
+                )));
+            };
+
+            indexed_value(&values, index).ok_or_else(|| {
+                one_diagnostic(index_out_of_bounds(args[0].span, index, values.len()))
+            })
+        }
         Value::Record(fields) => {
-            let key = eval_text_key(&args[0], args[0].span, env)?;
+            let Value::Text(key) = arg_value else {
+                return Err(one_diagnostic(record_type_error(
+                    args[0].span,
+                    "record indexing",
+                    arg_value.type_name(),
+                    "Text",
+                )));
+            };
             record_field_value(&fields, &key)
                 .cloned()
                 .ok_or_else(|| one_diagnostic(missing_field(&key, args[0].span)))
         }
-        _ => Err(one_diagnostic(unsupported_expr(
-            span,
-            "non-record indexing is deferred until tuple and array evaluation",
+        value => Err(one_diagnostic(record_type_error(
+            callee.span,
+            "indexing",
+            value.type_name(),
+            "Array, Tuple, or Record",
         ))),
     }
+}
+
+fn indexed_value(values: &[Value], index: i64) -> Option<Value> {
+    let index = usize::try_from(index).ok()?;
+    values.get(index).cloned()
 }
 
 fn eval_text_key(expr: &Expr, span: Span, env: &Environment) -> Result<String, Vec<Diagnostic>> {
@@ -829,6 +998,7 @@ fn eval_binary(
     match operator {
         "&&" => eval_boolean_and(left, right, span, env),
         "||" => eval_boolean_or(left, right, span, env),
+        "??" => eval_null_coalesce(left, right, env),
         _ => {
             let left_value = eval_expr_many(left, env)?;
             let right_value = eval_expr_many(right, env)?;
@@ -842,6 +1012,19 @@ fn eval_binary(
             )
             .map_err(one_diagnostic)
         }
+    }
+}
+
+fn eval_null_coalesce(
+    left: &Expr,
+    right: &Expr,
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
+    let left_value = eval_expr_many(left, env)?;
+    if matches!(left_value, Value::Undefined | Value::Null) {
+        eval_expr_many(right, env)
+    } else {
+        Ok(left_value)
     }
 }
 
@@ -1023,6 +1206,9 @@ fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Val
             .is_some_and(|ordering| ordering == Ordering::Equal),
         (Value::Text(left), Value::Text(right)) => left == right,
         (Value::Bool(left), Value::Bool(right)) => left == right,
+        (Value::Array(_), Value::Array(_)) => left == right,
+        (Value::Tuple(_), Value::Tuple(_)) => left == right,
+        (Value::Set(_), Value::Set(_)) => left == right,
         (Value::Record(_), Value::Record(_)) => left == right,
         (Value::Tag { .. }, Value::Tag { .. }) => left == right,
         (Value::Undefined, Value::Undefined) => true,
@@ -1127,6 +1313,18 @@ fn record_type_error(span: Span, operation: &str, actual: &str, expected: &str) 
         )
 }
 
+fn index_out_of_bounds(span: Span, index: i64, length: usize) -> Diagnostic {
+    Diagnostic::error("tuple index out of bounds")
+        .with_code(codes::runtime::INDEX_OUT_OF_BOUNDS)
+        .with_label(Label::primary(
+            span,
+            format!("index {index} is outside tuple arity {length}"),
+        ))
+        .with_note(
+            "tuple indexing is fixed-arity; use an array when out-of-bounds should evaluate to undefined",
+        )
+}
+
 fn missing_field(field: &str, span: Span) -> Diagnostic {
     Diagnostic::error(format!("missing field `{field}`"))
         .with_code(codes::runtime::MISSING_FIELD)
@@ -1211,8 +1409,23 @@ fn unsupported_expr(span: Span, label: &str) -> Diagnostic {
         .with_code(codes::runtime::UNSUPPORTED)
         .with_label(Label::primary(span, label))
         .with_note(
-            "the evaluator currently supports literals, names, bindings, blocks, lambdas, calls, matches, records, tags, unary operators, and core binary operators",
+            "the evaluator currently supports literals, names, bindings, blocks, lambdas, calls, matches, records, variants, collections, indexes, nullable field access, unary operators, and core binary operators",
         )
+}
+
+fn record_entry_span(entry: &RecordEntry) -> Span {
+    match entry {
+        RecordEntry::Field { span, .. }
+        | RecordEntry::FieldComputed { span, .. }
+        | RecordEntry::Shorthand { span, .. }
+        | RecordEntry::Spread { span, .. }
+        | RecordEntry::Delete { span, .. }
+        | RecordEntry::DeleteComputed { span, .. }
+        | RecordEntry::Rename { span, .. }
+        | RecordEntry::Iteration { span, .. }
+        | RecordEntry::Open { span } => *span,
+        RecordEntry::Element(expr) => expr.span,
+    }
 }
 
 fn unsupported_operator(operator: &str, span: Span) -> Diagnostic {
@@ -1480,6 +1693,91 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_array_literals_and_indexing() {
+        assert_eval(
+            "[10, 20, 30]",
+            array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
+        );
+        assert_module_value("xs = [10, 20, 30]\nxs[1]\n", Value::Int(20));
+        assert_module_value("xs = [10, 20, 30]\nxs[9]\n", Value::Undefined);
+        assert_module_value("xs = [10, 20, 30]\nxs[-1]\n", Value::Undefined);
+        assert_eq!(
+            format!(
+                "{}",
+                array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+            ),
+            "[10, 20, 30]"
+        );
+    }
+
+    #[test]
+    fn evaluates_tuple_literals_and_indexing() {
+        assert_eval(
+            "(1, \"a\")",
+            tuple_value(vec![Value::Int(1), Value::Text("a".to_owned())]),
+        );
+        assert_eval("(1, \"a\")[0]", Value::Int(1));
+        assert_eq!(
+            format!(
+                "{}",
+                tuple_value(vec![Value::Int(1), Value::Text("a".to_owned())])
+            ),
+            "(1, \"a\")"
+        );
+    }
+
+    #[test]
+    fn reports_tuple_index_out_of_bounds() {
+        let diagnostic = eval_error("(1, \"a\")[2]");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::INDEX_OUT_OF_BOUNDS)
+        );
+    }
+
+    #[test]
+    fn evaluates_empty_tuple_as_unit() {
+        assert_eval("()", tuple_value(Vec::new()));
+        assert_eq!(format!("{}", tuple_value(Vec::new())), "()");
+    }
+
+    #[test]
+    fn evaluates_set_literals_with_deduplication() {
+        assert_eval(
+            "@{ 1, 2, 2, 3 }",
+            set_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+        assert_eval("@{ 1, 2, 3 } == @{ 3, 2, 1 }", Value::Bool(true));
+        assert_eq!(
+            format!(
+                "{}",
+                set_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+            ),
+            "@{ 1, 2, 3 }"
+        );
+    }
+
+    #[test]
+    fn evaluates_tuple_patterns() {
+        assert_module_value("pair = (1, \"a\")\npair ?>\n  (n, t) => n\n", Value::Int(1));
+    }
+
+    #[test]
+    fn evaluates_null_safe_field_access() {
+        assert_eval("undefined?.name", Value::Undefined);
+        assert_eval("null?.name", Value::Null);
+        assert_eval("{ name: \"Ada\" }?.name", Value::Text("Ada".to_owned()));
+    }
+
+    #[test]
+    fn evaluates_null_coalescing_with_short_circuiting() {
+        assert_eval("undefined ?? 5", Value::Int(5));
+        assert_eval("null ?? 6", Value::Int(6));
+        assert_eval("7 ?? 1 / 0", Value::Int(7));
+    }
+
+    #[test]
     fn evaluates_variant_tags() {
         assert_eval(
             "@Ok(1)",
@@ -1644,6 +1942,18 @@ mod tests {
                 .map(|(name, value)| (name.to_owned(), value))
                 .collect(),
         ))
+    }
+
+    fn array_value(values: Vec<Value>) -> Value {
+        Value::Array(Rc::new(values))
+    }
+
+    fn tuple_value(values: Vec<Value>) -> Value {
+        Value::Tuple(Rc::new(values))
+    }
+
+    fn set_value(values: Vec<Value>) -> Value {
+        Value::Set(Rc::new(values))
     }
 
     fn parse_ok(source: &str) -> Module {
