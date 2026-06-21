@@ -1740,6 +1740,13 @@ Completed parser groundwork:
   only when the type is concrete at inference time after resolve/default/normalize;
   expressions that become concrete only through later unification are still
   omitted until a future record-then-resolve pass.
+- T5 done: LSP field completion and signature help now query the cached
+  expression-type snapshot at the receiver/callee boundary before `.` / `(`, so
+  non-name expressions such as call results, index results, and higher-order call
+  callees participate without re-parsing or re-checking. Bare-name definition
+  resolution remains only as a fallback when the positional snapshot has no type,
+  and signature labels prefer the callee source text while preserving name-callee
+  labels.
 
 ## To investigate later
 

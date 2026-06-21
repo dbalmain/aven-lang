@@ -522,9 +522,19 @@ fn field_completion_at_position(
     document: &ParsedDocument,
     position: Position,
 ) -> Option<Vec<CompletionItem>> {
-    let receiver = field_access_receiver_at_position(document, position)?;
-    let receiver_span = definition_span_for_identifier(document, &receiver)?;
-    let fields = aven_compiler::record_fields(document.type_at(receiver_span)?)?;
+    let access = field_access_at_position(document, position)?;
+    let receiver_type = access
+        .operator_span
+        .start
+        .checked_sub(1)
+        .and_then(|offset| document.type_at(Span::point(offset)));
+    let fields = if let Some(receiver_type) = receiver_type {
+        aven_compiler::record_fields(receiver_type)?
+    } else {
+        let receiver = access.receiver.as_ref()?;
+        let receiver_span = definition_span_for_identifier(document, receiver)?;
+        aven_compiler::record_fields(document.type_at(receiver_span)?)?
+    };
     let mut items = Vec::new();
     let mut seen = HashSet::new();
 
@@ -612,14 +622,25 @@ fn signature_help_at_position(
 ) -> Option<SignatureHelp> {
     let offset = position_to_offset(document, position)?;
     let significant_tokens = significant_tokens(document);
-    let call = enclosing_name_call_at_offset(&significant_tokens, offset)?;
-    let callee_span = definition_span_for_identifier(document, &call.callee)?;
-    let (params, result) = aven_compiler::function_signature(document.type_at(callee_span)?)?;
+    let call = enclosing_call_at_offset(&significant_tokens, offset)?;
+    let callee_type = call
+        .open_span
+        .start
+        .checked_sub(1)
+        .and_then(|offset| document.type_at(Span::point(offset)));
+    let (params, result) = if let Some(callee_type) = callee_type {
+        aven_compiler::function_signature(callee_type)?
+    } else {
+        let callee = call.fallback_callee.as_ref()?;
+        let callee_span = definition_span_for_identifier(document, callee)?;
+        aven_compiler::function_signature(document.type_at(callee_span)?)?
+    };
+    let callee_label = callee_label_for_call(document, &call);
     let active_parameter = active_parameter_for_call(&significant_tokens, call.open_index, offset);
 
     Some(SignatureHelp {
         signatures: vec![signature_information(
-            &call.callee.name,
+            callee_label.as_deref(),
             &params,
             &result,
             active_parameter,
@@ -630,12 +651,16 @@ fn signature_help_at_position(
 }
 
 fn signature_information(
-    callee_name: &str,
+    callee_label: Option<&str>,
     params: &[aven_compiler::Type],
     result: &aven_compiler::Type,
     active_parameter: u32,
 ) -> SignatureInformation {
-    let mut label = format!("{callee_name}(");
+    let mut label = String::new();
+    if let Some(callee_label) = callee_label {
+        label.push_str(callee_label);
+    }
+    label.push('(');
     let mut parameters = Vec::new();
 
     for (index, param) in params.iter().enumerate() {
@@ -668,15 +693,16 @@ fn signature_label_offset(label: &str) -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NameCallAtPosition {
-    callee: IdentifierAtPosition,
+struct CallAtPosition {
+    fallback_callee: Option<IdentifierAtPosition>,
     open_index: usize,
+    open_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OpenDelimiter {
     kind: DelimiterKind,
-    call: Option<NameCallAtPosition>,
+    call: Option<CallAtPosition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -686,10 +712,10 @@ enum DelimiterKind {
     Brace,
 }
 
-fn enclosing_name_call_at_offset(
+fn enclosing_call_at_offset(
     tokens: &[&aven_parser::Token],
     offset: usize,
-) -> Option<NameCallAtPosition> {
+) -> Option<CallAtPosition> {
     let mut stack = Vec::new();
 
     for (index, token) in tokens.iter().enumerate() {
@@ -699,13 +725,7 @@ fn enclosing_name_call_at_offset(
 
         if let Some(kind) = opening_delimiter_kind(token) {
             let call = if kind == DelimiterKind::Paren {
-                index
-                    .checked_sub(1)
-                    .and_then(|callee_index| identifier_from_token(tokens[callee_index]))
-                    .map(|callee| NameCallAtPosition {
-                        callee,
-                        open_index: index,
-                    })
+                call_before_open(tokens, index)
             } else {
                 None
             };
@@ -719,6 +739,120 @@ fn enclosing_name_call_at_offset(
     }
 
     stack.into_iter().rev().find_map(|open| open.call)
+}
+
+fn call_before_open(tokens: &[&aven_parser::Token], open_index: usize) -> Option<CallAtPosition> {
+    let callee_index = open_index.checked_sub(1)?;
+    if !token_can_end_callee_expression(tokens[callee_index]) {
+        return None;
+    }
+
+    Some(CallAtPosition {
+        fallback_callee: bare_identifier_callee_before_open(tokens, callee_index),
+        open_index,
+        open_span: tokens[open_index].span,
+    })
+}
+
+fn bare_identifier_callee_before_open(
+    tokens: &[&aven_parser::Token],
+    callee_index: usize,
+) -> Option<IdentifierAtPosition> {
+    let identifier = identifier_from_token(tokens[callee_index])?;
+    if callee_index
+        .checked_sub(1)
+        .is_some_and(|previous| is_field_access_operator(tokens[previous]))
+    {
+        return None;
+    }
+
+    Some(identifier)
+}
+
+fn token_can_end_callee_expression(token: &aven_parser::Token) -> bool {
+    matches!(
+        &token.kind,
+        aven_parser::TokenKind::Identifier(_)
+            | aven_parser::TokenKind::ComptimeIdentifier(_)
+            | aven_parser::TokenKind::Number(_)
+            | aven_parser::TokenKind::StringLiteral(_)
+            | aven_parser::TokenKind::RegexLiteral(_)
+            | aven_parser::TokenKind::PathLiteral(_)
+            | aven_parser::TokenKind::LabelPath(_)
+            | aven_parser::TokenKind::Tag(_)
+            | aven_parser::TokenKind::Keyword(_)
+            | aven_parser::TokenKind::CloseParen
+            | aven_parser::TokenKind::CloseBracket
+            | aven_parser::TokenKind::CloseBrace
+    )
+}
+
+fn callee_label_for_call(document: &ParsedDocument, call: &CallAtPosition) -> Option<String> {
+    call_callee_label_span_before_open(document, call.open_span.start)
+        .and_then(|span| document.source().get(span.start..span.end))
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            call.fallback_callee
+                .as_ref()
+                .map(|callee| callee.name.clone())
+        })
+}
+
+fn call_callee_label_span_before_open(
+    document: &ParsedDocument,
+    open_start: usize,
+) -> Option<Span> {
+    let mut found = None;
+
+    for item in &document.parse_output().module.items {
+        collect_item_call_callee_label_span(item, open_start, &mut found);
+    }
+
+    found.map(|(span, _)| span)
+}
+
+fn collect_item_call_callee_label_span(
+    item: &aven_parser::Item,
+    open_start: usize,
+    found: &mut Option<(Span, usize)>,
+) {
+    match item {
+        aven_parser::Item::Binding(binding) => {
+            if let Some(annotation) = &binding.annotation {
+                collect_expr_call_callee_label_span(annotation, open_start, found);
+            }
+            collect_expr_call_callee_label_span(&binding.value, open_start, found);
+        }
+        aven_parser::Item::Signature(signature) => {
+            collect_expr_call_callee_label_span(&signature.annotation, open_start, found);
+        }
+        aven_parser::Item::Expr(expr) => {
+            collect_expr_call_callee_label_span(expr, open_start, found);
+        }
+    }
+}
+
+fn collect_expr_call_callee_label_span(
+    expr: &aven_parser::Expr,
+    open_start: usize,
+    found: &mut Option<(Span, usize)>,
+) {
+    if let aven_parser::ExprKind::Call { callee, .. } = &expr.kind
+        && callee.span.start <= open_start
+        && callee.span.end <= open_start
+        && open_start < expr.span.end
+    {
+        let expr_len = expr.span.len();
+        if found.is_none_or(|(_, found_len)| expr_len < found_len) {
+            *found = Some((Span::new(callee.span.start, open_start), expr_len));
+        }
+    }
+
+    aven_parser::walk_expr_children(expr, &mut |child| {
+        collect_expr_call_callee_label_span(child, open_start, found);
+    });
 }
 
 fn active_parameter_for_call(
@@ -1120,16 +1254,22 @@ fn significant_tokens(document: &ParsedDocument) -> Vec<&aven_parser::Token> {
         .collect()
 }
 
-fn field_access_receiver_at_position(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FieldAccessAtPosition {
+    operator_span: Span,
+    receiver: Option<IdentifierAtPosition>,
+}
+
+fn field_access_at_position(
     document: &ParsedDocument,
     position: Position,
-) -> Option<IdentifierAtPosition> {
+) -> Option<FieldAccessAtPosition> {
     let offset = position_to_offset(document, position)?;
     let significant_tokens = significant_tokens(document);
 
     for (index, token) in significant_tokens.iter().enumerate() {
         if is_field_access_operator(token) && token.span.end == offset {
-            return receiver_before_dot(&significant_tokens, index);
+            return Some(field_access_at_operator(&significant_tokens, index));
         }
 
         if identifier_from_token(token).is_some()
@@ -1138,7 +1278,7 @@ fn field_access_receiver_at_position(
         {
             let dot_index = index.checked_sub(1)?;
             if is_field_access_operator(significant_tokens[dot_index]) {
-                return receiver_before_dot(&significant_tokens, dot_index);
+                return Some(field_access_at_operator(&significant_tokens, dot_index));
             }
         }
     }
@@ -1146,11 +1286,21 @@ fn field_access_receiver_at_position(
     None
 }
 
-fn receiver_before_dot(
+fn field_access_at_operator(
     tokens: &[&aven_parser::Token],
-    dot_index: usize,
+    operator_index: usize,
+) -> FieldAccessAtPosition {
+    FieldAccessAtPosition {
+        operator_span: tokens[operator_index].span,
+        receiver: receiver_name_before_field_operator(tokens, operator_index),
+    }
+}
+
+fn receiver_name_before_field_operator(
+    tokens: &[&aven_parser::Token],
+    operator_index: usize,
 ) -> Option<IdentifierAtPosition> {
-    let receiver_index = dot_index.checked_sub(1)?;
+    let receiver_index = operator_index.checked_sub(1)?;
     identifier_from_token(tokens[receiver_index])
 }
 
@@ -1745,6 +1895,42 @@ mod tests {
     }
 
     #[test]
+    fn completion_at_call_result_field_access_returns_record_fields() {
+        let document = parsed_document_with_semantics(
+            "getUser : () -> { name: Text, email: Text }\n\
+             getUser = () => { name: \"Ada\", email: \"ada@example.com\" }\n\
+             result = getUser().name\n",
+        );
+        let completions = completion_at_position(&document, position(2, 19));
+
+        let Some(name) = completion_item(&completions, "name") else {
+            panic!("expected name field completion");
+        };
+        let Some(email) = completion_item(&completions, "email") else {
+            panic!("expected email field completion");
+        };
+
+        assert_eq!(name.kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(name.detail.as_deref(), Some("Text"));
+        assert_eq!(email.kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(email.detail.as_deref(), Some("Text"));
+        assert!(completion_item(&completions, "getUser").is_none());
+    }
+
+    #[test]
+    fn completion_at_index_result_field_access_returns_record_fields() {
+        let document = parsed_document_with_semantics(
+            "usersById : { ada: { name: Text, email: Text } } = current\n\
+             result = usersById[\"ada\"].name\n",
+        );
+        let completions = completion_at_position(&document, position(1, 26));
+
+        assert!(completion_item(&completions, "name").is_some());
+        assert!(completion_item(&completions, "email").is_some());
+        assert!(completion_item(&completions, "usersById").is_none());
+    }
+
+    #[test]
     fn completion_at_non_field_position_still_returns_identifier_list() {
         let document = parsed_document_with_semantics(
             "user : { name: Text, email: Text } = current\nresult = use\n",
@@ -1797,6 +1983,32 @@ mod tests {
         assert_eq!(help.signatures[0].label, "add(Int, Int) -> Int");
         assert_eq!(help.active_parameter, Some(0));
         assert_eq!(help.signatures[0].active_parameter, Some(0));
+    }
+
+    #[test]
+    fn signature_help_at_call_result_callee_returns_signature_and_active_parameter() {
+        let document = parsed_document_with_semantics(
+            "add : (Int, Int) -> Int\n\
+             add = (a, b) => a + b\n\
+             wrap : ((Int, Int) -> Int) -> (Int, Int) -> Int\n\
+             wrap = (f) => f\n\
+             total = wrap(add)(1, 2)\n",
+        );
+
+        let Some(help) = signature_help_at_position(&document, position(4, 21)) else {
+            panic!("expected signature help");
+        };
+
+        assert_eq!(help.active_parameter, Some(1));
+        assert_eq!(help.signatures[0].label, "wrap(add)(Int, Int) -> Int");
+        assert_eq!(help.signatures[0].active_parameter, Some(1));
+
+        let parameters = help.signatures[0]
+            .parameters
+            .as_ref()
+            .expect("expected parameter labels");
+        assert_eq!(parameters[0].label, ParameterLabel::LabelOffsets([10, 13]));
+        assert_eq!(parameters[1].label, ParameterLabel::LabelOffsets([15, 18]));
     }
 
     #[test]
