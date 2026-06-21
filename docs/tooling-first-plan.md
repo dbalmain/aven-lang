@@ -1771,9 +1771,13 @@ the later bytecode/runtime work.
   text concatenation. `aven run <path>` now parses a file, renders parse/runtime
   diagnostics through the existing CLI renderer, and prints the last expression
   value on success.
-- E2 next: add environments for top-level bindings, local block bindings, name
-  lookup, and block result values. E1 reports bindings explicitly as
-  `runtime.unsupported` instead of silently ignoring them.
+- E2 done: added evaluator environments for sequential module bindings, block-local
+  bindings, name lookup, and block result values. Item evaluation is sequential:
+  bindings are visible only to later items, a module value is produced only by a
+  trailing expression, and a block with no trailing expression evaluates as
+  `undefined`. Block scopes can shadow outer bindings without leaking mutations
+  back out. Forward references and mutual recursion remain out of scope until E3
+  closures; a reference to a later binding reports `runtime.unbound-name`.
 
 ## To investigate later
 

@@ -221,6 +221,16 @@ fn run_prints_last_expression_value() {
 }
 
 #[test]
+fn run_prints_final_value_after_bindings() {
+    let file = TempFile::new("run-bindings", "x = 5\ny = x + 1\ny\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "6\n");
+}
+
+#[test]
 fn run_reports_runtime_diagnostics() {
     let file = TempFile::new("run-error", "1 / 0\n");
 

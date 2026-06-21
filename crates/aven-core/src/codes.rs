@@ -69,6 +69,7 @@ pub mod record {
 pub mod runtime {
     pub const DIVISION_BY_ZERO: &str = "runtime.division-by-zero";
     pub const TYPE_ERROR: &str = "runtime.type-error";
+    pub const UNBOUND_NAME: &str = "runtime.unbound-name";
     pub const UNSUPPORTED: &str = "runtime.unsupported";
 }
 
@@ -136,6 +137,7 @@ pub const ALL: &[&str] = &[
     record::REDUNDANT_UNDEFINED,
     runtime::DIVISION_BY_ZERO,
     runtime::TYPE_ERROR,
+    runtime::UNBOUND_NAME,
     runtime::UNSUPPORTED,
     ty::CYCLIC_ALIAS,
     ty::DELETE_ABSENT_FIELD,

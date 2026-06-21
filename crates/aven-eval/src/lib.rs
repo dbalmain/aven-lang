@@ -1,8 +1,7 @@
-use std::cmp::Ordering;
-use std::fmt;
+use std::{cmp::Ordering, collections::HashMap, fmt};
 
 use aven_core::{Diagnostic, Label, Span, codes};
-use aven_parser::{Binding, Expr, ExprKind, Item, Literal, Module};
+use aven_parser::{Expr, ExprKind, Item, Literal, Module};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -41,48 +40,125 @@ impl Value {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Environment {
+    scopes: Vec<HashMap<String, Value>>,
+}
+
+impl Environment {
+    pub fn new() -> Self {
+        Self {
+            scopes: vec![HashMap::new()],
+        }
+    }
+
+    fn child(&self) -> Self {
+        let mut scopes = self.scopes.clone();
+        scopes.push(HashMap::new());
+        Self { scopes }
+    }
+
+    pub fn bind(&mut self, name: impl Into<String>, value: Value) {
+        self.scopes
+            .last_mut()
+            .expect("environment always has at least one scope")
+            .insert(name.into(), value);
+    }
+
+    fn lookup(&self, name: &str) -> Option<Value> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned())
+    }
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct EvalOutcome {
     pub value: Option<Value>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Evaluate module items sequentially. Bindings update the environment for
+/// later items, and the outcome value is produced only by a trailing expression.
 pub fn eval_module(module: &Module) -> EvalOutcome {
+    let mut env = Environment::new();
+    eval_items(&module.items, &mut env)
+}
+
+fn eval_items(items: &[Item], env: &mut Environment) -> EvalOutcome {
     let mut value = None;
     let mut diagnostics = Vec::new();
 
-    for item in &module.items {
+    for item in items {
         match item {
-            Item::Expr(expr) => match eval_expr(expr) {
+            Item::Expr(expr) => match eval_expr_many(expr, env) {
                 Ok(next_value) => value = Some(next_value),
-                Err(diagnostic) => diagnostics.push(diagnostic),
+                Err(mut next_diagnostics) => {
+                    value = None;
+                    diagnostics.append(&mut next_diagnostics);
+                }
             },
-            Item::Signature(_) => {}
-            Item::Binding(binding) => diagnostics.push(unsupported_binding(binding)),
+            Item::Binding(binding) => match eval_expr_many(&binding.value, env) {
+                Ok(next_value) => {
+                    env.bind(binding.name.clone(), next_value);
+                    value = None;
+                }
+                Err(mut next_diagnostics) => {
+                    value = None;
+                    diagnostics.append(&mut next_diagnostics);
+                }
+            },
+            Item::Signature(_) => value = None,
         }
     }
 
     EvalOutcome { value, diagnostics }
 }
 
-pub fn eval_expr(expr: &Expr) -> Result<Value, Diagnostic> {
+pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
+    eval_expr_many(expr, env).map_err(first_diagnostic)
+}
+
+fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnostic>> {
     match &expr.kind {
-        ExprKind::Literal(literal) => eval_literal(literal, expr.span),
+        ExprKind::Literal(literal) => eval_literal(literal, expr.span).map_err(one_diagnostic),
         ExprKind::Undefined => Ok(Value::Undefined),
         ExprKind::Null => Ok(Value::Null),
-        ExprKind::Group(inner) => eval_expr(inner),
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => env
+            .lookup(name)
+            .ok_or_else(|| one_diagnostic(unbound_name(name, expr.span))),
+        ExprKind::Group(inner) => eval_expr_many(inner, env),
         ExprKind::Unary {
             operator, value, ..
-        } => eval_unary(operator, value, expr.span),
+        } => eval_unary(operator, value, expr.span, env),
         ExprKind::Binary {
             left,
             operator,
             operator_span,
             right,
-        } => eval_binary(left, operator, *operator_span, right, expr.span),
-        _ => Err(unsupported_expr(
+        } => eval_binary(left, operator, *operator_span, right, expr.span, env),
+        ExprKind::Block(items) => eval_block(items, env),
+        _ => Err(one_diagnostic(unsupported_expr(
             expr.span,
-            "this expression is not supported by the E1 evaluator",
-        )),
+            "this expression is not supported by the current evaluator",
+        ))),
+    }
+}
+
+fn eval_block(items: &[Item], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+    let mut child = env.child();
+    let outcome = eval_items(items, &mut child);
+
+    if outcome.diagnostics.is_empty() {
+        Ok(outcome.value.unwrap_or(Value::Undefined))
+    } else {
+        Err(outcome.diagnostics)
     }
 }
 
@@ -93,7 +169,7 @@ fn eval_literal(literal: &Literal, span: Span) -> Result<Value, Diagnostic> {
         Literal::String(text) => Ok(Value::Text(decode_string_literal(text))),
         Literal::Regex(_) | Literal::Path(_) | Literal::Label(_) => Err(unsupported_expr(
             span,
-            "this literal kind is not supported by the E1 evaluator",
+            "this literal kind is not supported by the current evaluator",
         )),
     }
 }
@@ -152,32 +228,37 @@ fn decode_string_literal(text: &str) -> String {
     decoded
 }
 
-fn eval_unary(operator: &str, value: &Expr, span: Span) -> Result<Value, Diagnostic> {
-    let value = eval_expr(value)?;
+fn eval_unary(
+    operator: &str,
+    value: &Expr,
+    span: Span,
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
+    let value = eval_expr_many(value, env)?;
 
     match (operator, value) {
         ("-", Value::Int(value)) => value
             .checked_neg()
             .map(Value::Int)
-            .ok_or_else(|| integer_overflow(span, "unary `-`")),
+            .ok_or_else(|| one_diagnostic(integer_overflow(span, "unary `-`"))),
         ("-", Value::Float(value)) => Ok(Value::Float(-value)),
-        ("-", value) => Err(unary_type_error(
+        ("-", value) => Err(one_diagnostic(unary_type_error(
             span,
             "-",
             value.type_name(),
             "a numeric operand",
-        )),
+        ))),
         ("!", Value::Bool(value)) => Ok(Value::Bool(!value)),
-        ("!", value) => Err(unary_type_error(
+        ("!", value) => Err(one_diagnostic(unary_type_error(
             span,
             "!",
             value.type_name(),
             "a Bool operand",
-        )),
-        _ => Err(unsupported_expr(
+        ))),
+        _ => Err(one_diagnostic(unsupported_expr(
             span,
-            "this unary operator is not supported by the E1 evaluator",
-        )),
+            "this unary operator is not supported by the current evaluator",
+        ))),
     }
 }
 
@@ -187,13 +268,14 @@ fn eval_binary(
     operator_span: Span,
     right: &Expr,
     span: Span,
-) -> Result<Value, Diagnostic> {
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
     match operator {
-        "&&" => eval_boolean_and(left, right, span),
-        "||" => eval_boolean_or(left, right, span),
+        "&&" => eval_boolean_and(left, right, span, env),
+        "||" => eval_boolean_or(left, right, span, env),
         _ => {
-            let left_value = eval_expr(left)?;
-            let right_value = eval_expr(right)?;
+            let left_value = eval_expr_many(left, env)?;
+            let right_value = eval_expr_many(right, env)?;
             apply_binary(
                 left_value,
                 operator,
@@ -202,53 +284,64 @@ fn eval_binary(
                 right.span,
                 span,
             )
+            .map_err(one_diagnostic)
         }
     }
 }
 
-fn eval_boolean_and(left: &Expr, right: &Expr, span: Span) -> Result<Value, Diagnostic> {
-    match eval_expr(left)? {
+fn eval_boolean_and(
+    left: &Expr,
+    right: &Expr,
+    span: Span,
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
+    match eval_expr_many(left, env)? {
         Value::Bool(false) => Ok(Value::Bool(false)),
-        Value::Bool(true) => match eval_expr(right)? {
+        Value::Bool(true) => match eval_expr_many(right, env)? {
             Value::Bool(value) => Ok(Value::Bool(value)),
-            value => Err(binary_type_error(
+            value => Err(one_diagnostic(binary_type_error(
                 span,
                 "&&",
                 "Bool",
                 value.type_name(),
                 "Bool operands",
-            )),
+            ))),
         },
-        value => Err(binary_type_error(
+        value => Err(one_diagnostic(binary_type_error(
             span,
             "&&",
             value.type_name(),
             "Bool",
             "Bool operands",
-        )),
+        ))),
     }
 }
 
-fn eval_boolean_or(left: &Expr, right: &Expr, span: Span) -> Result<Value, Diagnostic> {
-    match eval_expr(left)? {
+fn eval_boolean_or(
+    left: &Expr,
+    right: &Expr,
+    span: Span,
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
+    match eval_expr_many(left, env)? {
         Value::Bool(true) => Ok(Value::Bool(true)),
-        Value::Bool(false) => match eval_expr(right)? {
+        Value::Bool(false) => match eval_expr_many(right, env)? {
             Value::Bool(value) => Ok(Value::Bool(value)),
-            value => Err(binary_type_error(
+            value => Err(one_diagnostic(binary_type_error(
                 span,
                 "||",
                 "Bool",
                 value.type_name(),
                 "Bool operands",
-            )),
+            ))),
         },
-        value => Err(binary_type_error(
+        value => Err(one_diagnostic(binary_type_error(
             span,
             "||",
             value.type_name(),
             "Bool",
             "Bool operands",
-        )),
+        ))),
     }
 }
 
@@ -350,7 +443,7 @@ fn float_arithmetic(
         "%" => Ok(Value::Float(left % right)),
         _ => Err(unsupported_expr(
             span,
-            "this numeric operator is not supported by the E1 evaluator",
+            "this numeric operator is not supported by the current evaluator",
         )),
     }
 }
@@ -474,16 +567,11 @@ fn integer_overflow(span: Span, operation: &str) -> Diagnostic {
         .with_note("Aven Int currently uses i64; arbitrary precision integers are planned for a later milestone")
 }
 
-fn unsupported_binding(binding: &Binding) -> Diagnostic {
-    Diagnostic::error("bindings are not supported by the evaluator yet")
-        .with_code(codes::runtime::UNSUPPORTED)
-        .with_label(Label::primary(
-            binding.span,
-            "this binding will be evaluated in Milestone E2",
-        ))
-        .with_note(
-            "Milestone E1 evaluates expression items only; bindings arrive with environments in E2",
-        )
+fn unbound_name(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(format!("unbound name `{name}`"))
+        .with_code(codes::runtime::UNBOUND_NAME)
+        .with_label(Label::primary(span, "this name is not bound at runtime"))
+        .with_note("the name may be undefined or defined later; runtime evaluation is sequential")
 }
 
 fn unsupported_expr(span: Span, label: &str) -> Diagnostic {
@@ -491,7 +579,7 @@ fn unsupported_expr(span: Span, label: &str) -> Diagnostic {
         .with_code(codes::runtime::UNSUPPORTED)
         .with_label(Label::primary(span, label))
         .with_note(
-            "Milestone E1 supports literals, grouping, unary operators, and core binary operators",
+            "the evaluator currently supports literals, names, bindings, blocks, unary operators, and core binary operators",
         )
 }
 
@@ -506,9 +594,20 @@ fn unsupported_operator(operator: &str, span: Span) -> Diagnostic {
     ))
 }
 
+fn one_diagnostic(diagnostic: Diagnostic) -> Vec<Diagnostic> {
+    vec![diagnostic]
+}
+
+fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
+    diagnostics
+        .into_iter()
+        .next()
+        .expect("expression errors include at least one diagnostic")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EvalOutcome, Value, eval_expr, eval_module};
+    use super::{Environment, EvalOutcome, Value, eval_expr, eval_module};
     use aven_core::codes;
     use aven_parser::{Item, Module, parse_module};
 
@@ -585,15 +684,61 @@ mod tests {
     }
 
     #[test]
-    fn reports_bindings_as_unsupported_and_continues() {
-        let module = parse_ok("value = 1\n2\n");
+    fn evaluates_sequential_bindings() {
+        assert_module_value("x = 5\ny = x + 1\ny\n", Value::Int(6));
+    }
+
+    #[test]
+    fn evaluates_block_bindings_and_result() {
+        assert_module_value(
+            "result =\n  a = 2\n  b = a * 3\n  b + 1\nresult\n",
+            Value::Int(7),
+        );
+    }
+
+    #[test]
+    fn block_local_shadowing_does_not_leak() {
+        assert_module_value("x = 1\nshadow =\n  x = 2\n  x\nx\n", Value::Int(1));
+    }
+
+    #[test]
+    fn evaluates_block_without_trailing_expression_to_undefined() {
+        assert_module_value("value =\n  x = 1\nvalue\n", Value::Undefined);
+    }
+
+    #[test]
+    fn reports_unbound_name_references() {
+        let diagnostic = eval_error("missing");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::UNBOUND_NAME)
+        );
+    }
+
+    #[test]
+    fn reports_forward_references_as_unbound() {
+        let module = parse_ok("a = b\nb = 1\n");
         let outcome = eval_module(&module);
 
-        assert_eq!(outcome.value, Some(Value::Int(2)));
+        assert_eq!(outcome.value, None);
         assert_eq!(outcome.diagnostics.len(), 1);
         assert_eq!(
             outcome.diagnostics[0].code.as_deref(),
-            Some(codes::runtime::UNSUPPORTED)
+            Some(codes::runtime::UNBOUND_NAME)
+        );
+    }
+
+    fn assert_module_value(source: &str, expected: Value) {
+        let module = parse_ok(source);
+        let outcome = eval_module(&module);
+
+        assert_eq!(
+            outcome,
+            EvalOutcome {
+                value: Some(expected),
+                diagnostics: Vec::new()
+            }
         );
     }
 
@@ -610,7 +755,7 @@ mod tests {
         let Item::Expr(expr) = &module.items[0] else {
             panic!("expected expression item");
         };
-        eval_expr(expr)
+        eval_expr(expr, &Environment::new())
     }
 
     fn parse_ok(source: &str) -> Module {

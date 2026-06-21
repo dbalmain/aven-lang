@@ -187,6 +187,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Runtime evaluation reached an operator with operands it cannot accept. Use operands of the expected runtime kind, or add a static check once the relevant language feature exists.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::UNBOUND_NAME,
+        text: "Runtime evaluation referenced a name that has not been bound in the current environment. Define the name before the reference, or move the reference after the binding because runtime evaluation is sequential.",
+    },
+    DiagnosticExplanation {
         code: codes::runtime::UNSUPPORTED,
         text: "Runtime evaluation reached syntax that is parsed but not implemented by the current evaluator slice. Rewrite the program using supported expression forms or wait for the planned evaluator milestone.",
     },
