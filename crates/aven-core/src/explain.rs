@@ -191,6 +191,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Runtime evaluation tried to read a record field that is not present on the record value. Add the field before the lookup, change the field name, or handle the absent-field case once optional access exists.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::NO_MATCH,
+        text: "Runtime pattern matching reached the end of the arm list without finding a matching pattern whose guards all passed. Add a default arm, handle the missing case explicitly, or run the checker to catch non-exhaustive matches before evaluation.",
+    },
+    DiagnosticExplanation {
         code: codes::runtime::NOT_CALLABLE,
         text: "Runtime evaluation tried to call a value that is not a function. Only closures produced by lambda expressions are callable in the current evaluator.",
     },

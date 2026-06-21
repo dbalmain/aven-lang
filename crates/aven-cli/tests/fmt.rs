@@ -241,6 +241,19 @@ fn run_prints_function_call_value() {
 }
 
 #[test]
+fn run_prints_match_factorial_value() {
+    let file = TempFile::new(
+        "run-match-factorial",
+        "fact = (n) =>\n  n ?>\n    0 => 1\n    _ => n * fact(n - 1)\nfact(5)\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "120\n");
+}
+
+#[test]
 fn run_prints_record_field_access_value() {
     let file = TempFile::new(
         "run-record",

@@ -1791,6 +1791,11 @@ the later bytecode/runtime work.
   tags evaluate as `@Tag`/`@Tag(payload...)` values. Missing field lookup reports
   `runtime.missing-field`; nil-safe access, record comprehensions, and tuple/array
   indexing remain explicit `runtime.unsupported` follow-ups.
+- E5 done: added runtime `?>` pattern matching over literals, wildcards,
+  nullable empties, variant tags and payloads, record field patterns, and guard
+  expressions. Match evaluation reports `runtime.no-match` if the checker safety
+  net is needed. With match base cases available, self and mutual recursion are
+  now demonstrable end to end through `aven run`.
 
 ## To investigate later
 

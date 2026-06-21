@@ -70,6 +70,7 @@ pub mod runtime {
     pub const ARITY_MISMATCH: &str = "runtime.arity-mismatch";
     pub const DIVISION_BY_ZERO: &str = "runtime.division-by-zero";
     pub const MISSING_FIELD: &str = "runtime.missing-field";
+    pub const NO_MATCH: &str = "runtime.no-match";
     pub const NOT_CALLABLE: &str = "runtime.not-callable";
     pub const TYPE_ERROR: &str = "runtime.type-error";
     pub const UNBOUND_NAME: &str = "runtime.unbound-name";
@@ -141,6 +142,7 @@ pub const ALL: &[&str] = &[
     runtime::ARITY_MISMATCH,
     runtime::DIVISION_BY_ZERO,
     runtime::MISSING_FIELD,
+    runtime::NO_MATCH,
     runtime::NOT_CALLABLE,
     runtime::TYPE_ERROR,
     runtime::UNBOUND_NAME,

@@ -1,7 +1,7 @@
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, fmt, rc::Rc};
 
 use aven_core::{Diagnostic, Label, Span, codes};
-use aven_parser::{Expr, ExprKind, Item, Literal, Module, RecordEntry};
+use aven_parser::{Expr, ExprKind, Item, Literal, MatchArm, Module, RecordEntry};
 
 #[derive(Clone)]
 pub struct Closure {
@@ -299,6 +299,7 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
             payload: Vec::new(),
         }),
         ExprKind::Record(entries) => eval_record(entries, env),
+        ExprKind::Match { subject, arms, .. } => eval_match(subject, arms, expr.span, env),
         ExprKind::FieldAccess {
             receiver,
             field,
@@ -312,6 +313,174 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
             "this expression is not supported by the current evaluator",
         ))),
     }
+}
+
+fn eval_match(
+    subject: &Expr,
+    arms: &[MatchArm],
+    span: Span,
+    env: &Environment,
+) -> Result<Value, Vec<Diagnostic>> {
+    let subject_value = eval_expr_many(subject, env)?;
+
+    for arm in arms {
+        let Some(bindings) =
+            match_pattern(&arm.pattern, &subject_value, env).map_err(one_diagnostic)?
+        else {
+            continue;
+        };
+
+        let arm_env = env.child();
+        for (name, value) in bindings {
+            arm_env.bind(name, value);
+        }
+
+        if guards_pass(&arm.guards, &arm_env)? {
+            return eval_expr_many(&arm.body, &arm_env);
+        }
+    }
+
+    Err(one_diagnostic(no_match(span)))
+}
+
+fn guards_pass(guards: &[Expr], env: &Environment) -> Result<bool, Vec<Diagnostic>> {
+    for guard in guards {
+        match eval_expr_many(guard, env)? {
+            Value::Bool(true) => {}
+            Value::Bool(false) => return Ok(false),
+            value => {
+                return Err(one_diagnostic(match_guard_type_error(
+                    guard.span,
+                    value.type_name(),
+                )));
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+fn match_pattern(
+    pattern: &Expr,
+    value: &Value,
+    env: &Environment,
+) -> Result<Option<Vec<(String, Value)>>, Diagnostic> {
+    match &pattern.kind {
+        ExprKind::Group(inner) => match_pattern(inner, value, env),
+        ExprKind::Name(name) if name == "_" => Ok(Some(Vec::new())),
+        ExprKind::Name(name) => Ok(bind_pattern_name(name, value)),
+        ExprKind::Undefined => Ok((value == &Value::Undefined).then_some(Vec::new())),
+        ExprKind::Null => Ok((value == &Value::Null).then_some(Vec::new())),
+        ExprKind::Literal(literal) => match_literal_pattern(literal, pattern.span, value),
+        ExprKind::Tag(name) => match value {
+            Value::Tag {
+                name: value_name,
+                payload,
+            } if value_name == name && payload.is_empty() => Ok(Some(Vec::new())),
+            _ => Ok(None),
+        },
+        ExprKind::Call { callee, args } => match_tag_payload_pattern(callee, args, value, env),
+        ExprKind::Record(entries) => match_record_pattern(entries, value, env),
+        ExprKind::Tuple(_) => Err(unsupported_expr(
+            pattern.span,
+            "tuple patterns are deferred until tuple evaluation",
+        )),
+        _ => Ok(None),
+    }
+}
+
+fn bind_pattern_name(name: &str, value: &Value) -> Option<Vec<(String, Value)>> {
+    if matches!(value, Value::Undefined | Value::Null) {
+        None
+    } else {
+        Some(vec![(name.to_owned(), value.clone())])
+    }
+}
+
+fn match_literal_pattern(
+    literal: &Literal,
+    span: Span,
+    value: &Value,
+) -> Result<Option<Vec<(String, Value)>>, Diagnostic> {
+    match literal {
+        Literal::Bool(_) | Literal::Number(_) | Literal::String(_) => {
+            let literal_value = eval_literal(literal, span)?;
+            Ok((literal_value == *value).then_some(Vec::new()))
+        }
+        Literal::Regex(_) | Literal::Path(_) | Literal::Label(_) => Ok(None),
+    }
+}
+
+fn match_tag_payload_pattern(
+    callee: &Expr,
+    args: &[Expr],
+    value: &Value,
+    env: &Environment,
+) -> Result<Option<Vec<(String, Value)>>, Diagnostic> {
+    let ExprKind::Tag(name) = &callee.kind else {
+        return Ok(None);
+    };
+
+    let Value::Tag {
+        name: value_name,
+        payload,
+    } = value
+    else {
+        return Ok(None);
+    };
+
+    if value_name != name || payload.len() != args.len() {
+        return Ok(None);
+    }
+
+    let mut bindings = Vec::new();
+    for (pattern, value) in args.iter().zip(payload) {
+        let Some(mut next_bindings) = match_pattern(pattern, value, env)? else {
+            return Ok(None);
+        };
+        bindings.append(&mut next_bindings);
+    }
+
+    Ok(Some(bindings))
+}
+
+fn match_record_pattern(
+    entries: &[RecordEntry],
+    value: &Value,
+    env: &Environment,
+) -> Result<Option<Vec<(String, Value)>>, Diagnostic> {
+    let Value::Record(fields) = value else {
+        return Ok(None);
+    };
+
+    let mut bindings = Vec::new();
+
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { name, value, .. } => {
+                let Some(field_value) = record_field_value(fields, name) else {
+                    return Ok(None);
+                };
+                let Some(mut next_bindings) = match_pattern(value, field_value, env)? else {
+                    return Ok(None);
+                };
+                bindings.append(&mut next_bindings);
+            }
+            RecordEntry::Shorthand { name, .. } => {
+                let Some(field_value) = record_field_value(fields, name) else {
+                    return Ok(None);
+                };
+                let Some(mut next_bindings) = bind_pattern_name(name, field_value) else {
+                    return Ok(None);
+                };
+                bindings.append(&mut next_bindings);
+            }
+            RecordEntry::Open { .. } | RecordEntry::Spread { .. } => {}
+            _ => return Ok(None),
+        }
+    }
+
+    Ok(Some(bindings))
 }
 
 fn eval_block(items: &[Item], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
@@ -965,6 +1134,16 @@ fn missing_field(field: &str, span: Span) -> Diagnostic {
         .with_note("record field lookup only succeeds for fields present on the record value")
 }
 
+fn no_match(span: Span) -> Diagnostic {
+    Diagnostic::error("no match arm matched")
+        .with_code(codes::runtime::NO_MATCH)
+        .with_label(Label::primary(
+            span,
+            "no pattern matched this value with passing guards",
+        ))
+        .with_note("the checker enforces match exhaustiveness; this is the evaluator safety net")
+}
+
 fn division_by_zero(span: Span) -> Diagnostic {
     Diagnostic::error("division by zero")
         .with_code(codes::runtime::DIVISION_BY_ZERO)
@@ -1006,6 +1185,13 @@ fn closure_equality_error(span: Span, operator: &str) -> Diagnostic {
         .with_note("function values do not have runtime equality in this evaluator slice")
 }
 
+fn match_guard_type_error(span: Span, actual: &str) -> Diagnostic {
+    Diagnostic::error(format!("match guard evaluated to {actual}"))
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(span, "expected a Bool guard"))
+        .with_note("match guards must evaluate to true or false")
+}
+
 fn integer_overflow(span: Span, operation: &str) -> Diagnostic {
     Diagnostic::error("integer arithmetic overflow")
         .with_code(codes::runtime::TYPE_ERROR)
@@ -1025,7 +1211,7 @@ fn unsupported_expr(span: Span, label: &str) -> Diagnostic {
         .with_code(codes::runtime::UNSUPPORTED)
         .with_label(Label::primary(span, label))
         .with_note(
-            "the evaluator currently supports literals, names, bindings, blocks, lambdas, calls, records, tags, unary operators, and core binary operators",
+            "the evaluator currently supports literals, names, bindings, blocks, lambdas, calls, matches, records, tags, unary operators, and core binary operators",
         )
 }
 
@@ -1319,6 +1505,81 @@ mod tests {
                 name: "Rgb".to_owned(),
                 payload: vec![Value::Int(1), Value::Int(2), Value::Int(3)],
             },
+        );
+    }
+
+    #[test]
+    fn evaluates_literal_union_match() {
+        assert_eval(
+            "1 ?>\n  0 => \"zero\"\n  1 => \"one\"\n  _ => \"many\"\n",
+            Value::Text("one".to_owned()),
+        );
+    }
+
+    #[test]
+    fn evaluates_default_match_arm() {
+        assert_eval(
+            "2 ?>\n  0 => \"zero\"\n  1 => \"one\"\n  _ => \"many\"\n",
+            Value::Text("many".to_owned()),
+        );
+    }
+
+    #[test]
+    fn evaluates_variant_match_payload_bindings() {
+        assert_module_value(
+            "result = @Ok(41)\nresult ?>\n  @Ok(x) => x + 1\n  @Err(error) => error\n",
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn evaluates_guarded_match_arms() {
+        assert_eval(
+            "1 ?>\n  n, n > 0 => \"pos\"\n  _ => \"other\"\n",
+            Value::Text("pos".to_owned()),
+        );
+        assert_eval(
+            "-1 ?>\n  n, n > 0 => \"pos\"\n  _ => \"other\"\n",
+            Value::Text("other".to_owned()),
+        );
+    }
+
+    #[test]
+    fn variable_patterns_do_not_match_undefined() {
+        assert_eval(
+            "undefined ?>\n  value => value\n  undefined => \"empty\"\n",
+            Value::Text("empty".to_owned()),
+        );
+    }
+
+    #[test]
+    fn evaluates_record_patterns() {
+        assert_module_value(
+            "user = { name: \"Ada\", age: 36 }\nuser ?>\n  { name } => name\n",
+            Value::Text("Ada".to_owned()),
+        );
+    }
+
+    #[test]
+    fn reports_match_without_matching_arm() {
+        let diagnostic = eval_error("2 ?>\n  0 => \"zero\"\n");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::NO_MATCH));
+    }
+
+    #[test]
+    fn evaluates_recursive_factorial_with_match_base_case() {
+        assert_module_value(
+            "fact = (n) =>\n  n ?>\n    0 => 1\n    _ => n * fact(n - 1)\nfact(5)\n",
+            Value::Int(120),
+        );
+    }
+
+    #[test]
+    fn evaluates_mutually_recursive_functions_with_match_base_cases() {
+        assert_module_value(
+            "isEven = (n) =>\n  n ?>\n    0 => true\n    _ => isOdd(n - 1)\nisOdd = (n) =>\n  n ?>\n    0 => false\n    _ => isEven(n - 1)\nisEven(6)\n",
+            Value::Bool(true),
         );
     }
 
