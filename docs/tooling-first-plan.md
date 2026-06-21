@@ -1747,6 +1747,15 @@ Completed parser groundwork:
   resolution remains only as a fallback when the positional snapshot has no type,
   and signature labels prefer the callee source text while preserving name-callee
   labels.
+- T6 done: LSP completion now recognizes direct annotated construction sites:
+  record literal binding values offer missing declared labels with field type
+  details, and variant set literal binding values offer declared `@` tags. The
+  server advertises `@` as a completion trigger, uses checker/compiler accessors
+  for record fields and variant tags instead of row destructuring, and falls back
+  to identifier completion when the cursor is inside an existing entry value or
+  when no declared expected shape is available. Nested construction sites inside
+  calls, tuples, or other expressions remain future work because they need
+  expected-type propagation.
 
 ## To investigate later
 

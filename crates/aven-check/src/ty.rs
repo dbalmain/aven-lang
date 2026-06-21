@@ -66,6 +66,27 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
     )
 }
 
+pub fn variant_tags(ty: &Type) -> Option<Vec<String>> {
+    let mut ty = ty;
+    while let Type::Optional(inner) | Type::Nullable(inner) = ty {
+        ty = inner;
+    }
+
+    let Type::Variant(row) = ty else {
+        return None;
+    };
+
+    Some(
+        row.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                RowEntry::Tag { name, .. } => Some(name.clone()),
+                RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
+            })
+            .collect(),
+    )
+}
+
 pub fn function_signature(ty: &Type) -> Option<(Vec<Type>, Type)> {
     let mut ty = ty;
     while let Type::Optional(inner) | Type::Nullable(inner) = ty {

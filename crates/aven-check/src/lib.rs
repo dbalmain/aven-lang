@@ -11,6 +11,7 @@ use aven_parser::{Expr, Module};
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::{
     RecordField, Row, RowEntry, RowTail, Type, function_signature, record_fields, render_type,
+    variant_tags,
 };
 
 pub(crate) use checker::Checker;

@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aven_core::{Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile, SourcePosition, Span};
+use aven_parser::RecordEntry;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tower_lsp::jsonrpc::Result;
@@ -118,7 +119,7 @@ impl LanguageServer for Backend {
                 rename_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_owned()]),
+                    trigger_characters: Some(vec![".".to_owned(), "@".to_owned()]),
                     ..CompletionOptions::default()
                 }),
                 signature_help_provider: Some(SignatureHelpOptions {
@@ -469,6 +470,10 @@ fn completion_at_position(document: &ParsedDocument, position: Position) -> Vec<
         return items;
     }
 
+    if let Some(items) = construction_completion_at_position(document, position) {
+        return items;
+    }
+
     identifier_completion_at_position(document, position)
 }
 
@@ -549,6 +554,236 @@ fn field_completion_at_position(
     Some(items)
 }
 
+fn construction_completion_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<Vec<CompletionItem>> {
+    let offset = position_to_offset(document, position)?;
+    let target = Span::point(offset);
+    let binding = construction_binding_at_position(&document.parse_output().module.items, target)?;
+
+    aven_parser::annotation_for_definition(&document.parse_output().module, binding.name_span)?;
+
+    let expected = expected_type_for_construction_binding(document, binding)?;
+    let (entries, kind) = match &binding.value.kind {
+        aven_parser::ExprKind::Record(entries) => {
+            (entries.as_slice(), ConstructionCompletionKind::RecordLabels)
+        }
+        aven_parser::ExprKind::Set(entries) => {
+            (entries.as_slice(), ConstructionCompletionKind::Tags)
+        }
+        _ => return None,
+    };
+
+    if entries
+        .iter()
+        .any(|entry| record_entry_value_span(entry).is_some_and(|span| span.contains(target)))
+    {
+        return None;
+    }
+
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    match kind {
+        ConstructionCompletionKind::RecordLabels => {
+            let present = entries
+                .iter()
+                .filter_map(record_entry_label)
+                .collect::<HashSet<_>>();
+
+            for field in aven_compiler::record_fields(expected)? {
+                if present.contains(field.name.as_str()) {
+                    continue;
+                }
+
+                push_completion_item(
+                    &mut items,
+                    &mut seen,
+                    completion_item_for_record_field(field),
+                );
+            }
+        }
+        ConstructionCompletionKind::Tags => {
+            let present = entries
+                .iter()
+                .filter_map(record_entry_tag)
+                .collect::<HashSet<_>>();
+
+            for tag in aven_compiler::variant_tags(expected)? {
+                if present.contains(tag.as_str()) {
+                    continue;
+                }
+
+                push_completion_item(&mut items, &mut seen, completion_item_for_variant_tag(&tag));
+            }
+        }
+    }
+
+    Some(items)
+}
+
+fn expected_type_for_construction_binding<'a>(
+    document: &'a ParsedDocument,
+    binding: &aven_parser::Binding,
+) -> Option<&'a aven_compiler::Type> {
+    document
+        .type_at(binding.name_span)
+        .or_else(|| declared_type_for_definition(document, binding.name_span))
+}
+
+fn declared_type_for_definition(
+    document: &ParsedDocument,
+    definition: Span,
+) -> Option<&aven_compiler::Type> {
+    document
+        .declarations()
+        .iter()
+        .zip(document.declaration_artifacts())
+        .find(|(declaration, _)| declaration.name_span == definition)
+        .and_then(|(_, artifact)| artifact.declared_type())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstructionCompletionKind {
+    RecordLabels,
+    Tags,
+}
+
+fn construction_binding_at_position(
+    items: &[aven_parser::Item],
+    target: Span,
+) -> Option<&aven_parser::Binding> {
+    items
+        .iter()
+        .find_map(|item| construction_binding_in_item_at_position(item, target))
+}
+
+fn construction_binding_in_item_at_position(
+    item: &aven_parser::Item,
+    target: Span,
+) -> Option<&aven_parser::Binding> {
+    match item {
+        aven_parser::Item::Binding(binding) if binding.value.span.contains(target) => {
+            construction_binding_in_expr_at_position(&binding.value, target).or_else(|| {
+                matches!(
+                    binding.value.kind,
+                    aven_parser::ExprKind::Record(_) | aven_parser::ExprKind::Set(_)
+                )
+                .then_some(binding)
+            })
+        }
+        aven_parser::Item::Binding(_) | aven_parser::Item::Signature(_) => None,
+        aven_parser::Item::Expr(expr) => construction_binding_in_expr_at_position(expr, target),
+    }
+}
+
+fn construction_binding_in_expr_at_position(
+    expr: &aven_parser::Expr,
+    target: Span,
+) -> Option<&aven_parser::Binding> {
+    if !expr.span.contains(target) {
+        return None;
+    }
+
+    match &expr.kind {
+        aven_parser::ExprKind::Block(items) => construction_binding_at_position(items, target),
+        _ => {
+            let mut found = None;
+            aven_parser::walk_expr_children(expr, &mut |child| {
+                if found.is_none() {
+                    found = construction_binding_in_expr_at_position(child, target);
+                }
+            });
+            found
+        }
+    }
+}
+
+fn record_entry_value_span(entry: &RecordEntry) -> Option<Span> {
+    match entry {
+        RecordEntry::Field { value, .. }
+        | RecordEntry::Spread { value, .. }
+        | RecordEntry::DeleteComputed { key: value, .. }
+        | RecordEntry::Element(value) => Some(value.span),
+        RecordEntry::FieldComputed { key, value, .. } => Some(key.span.merge(value.span)),
+        RecordEntry::Iteration {
+            source,
+            guard,
+            body,
+            ..
+        } => {
+            let mut span = source.span;
+            if let Some(guard) = guard {
+                span = span.merge(guard.span);
+            }
+            for entry in body {
+                span = span.merge(record_entry_span(entry));
+            }
+            Some(span)
+        }
+        RecordEntry::Shorthand { .. }
+        | RecordEntry::Delete { .. }
+        | RecordEntry::Rename { .. }
+        | RecordEntry::Open { .. } => None,
+    }
+}
+
+fn record_entry_label(entry: &RecordEntry) -> Option<&str> {
+    match entry {
+        RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => Some(name),
+        RecordEntry::FieldComputed { .. }
+        | RecordEntry::Spread { .. }
+        | RecordEntry::Delete { .. }
+        | RecordEntry::DeleteComputed { .. }
+        | RecordEntry::Rename { .. }
+        | RecordEntry::Iteration { .. }
+        | RecordEntry::Open { .. }
+        | RecordEntry::Element(_) => None,
+    }
+}
+
+fn record_entry_tag(entry: &RecordEntry) -> Option<&str> {
+    match entry {
+        RecordEntry::Element(expr) => tag_name_from_expr(expr),
+        RecordEntry::Delete { name, .. } => Some(name),
+        RecordEntry::Rename { to, .. } => Some(to),
+        RecordEntry::Field { .. }
+        | RecordEntry::FieldComputed { .. }
+        | RecordEntry::Shorthand { .. }
+        | RecordEntry::Spread { .. }
+        | RecordEntry::DeleteComputed { .. }
+        | RecordEntry::Iteration { .. }
+        | RecordEntry::Open { .. } => None,
+    }
+}
+
+fn tag_name_from_expr(expr: &aven_parser::Expr) -> Option<&str> {
+    match &expr.kind {
+        aven_parser::ExprKind::Tag(name) => Some(name),
+        aven_parser::ExprKind::Call { callee, .. } => match &callee.kind {
+            aven_parser::ExprKind::Tag(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn record_entry_span(entry: &RecordEntry) -> Span {
+    match entry {
+        RecordEntry::Field { span, .. }
+        | RecordEntry::FieldComputed { span, .. }
+        | RecordEntry::Shorthand { span, .. }
+        | RecordEntry::Spread { span, .. }
+        | RecordEntry::Delete { span, .. }
+        | RecordEntry::DeleteComputed { span, .. }
+        | RecordEntry::Rename { span, .. }
+        | RecordEntry::Iteration { span, .. }
+        | RecordEntry::Open { span } => *span,
+        RecordEntry::Element(expr) => expr.span,
+    }
+}
+
 fn push_completion_item(
     items: &mut Vec<CompletionItem>,
     seen: &mut HashSet<String>,
@@ -564,6 +799,14 @@ fn completion_item_for_record_field(field: aven_compiler::RecordField) -> Comple
         label: field.name,
         kind: Some(CompletionItemKind::FIELD),
         detail: Some(field.ty.render()),
+        ..CompletionItem::default()
+    }
+}
+
+fn completion_item_for_variant_tag(tag: &str) -> CompletionItem {
+    CompletionItem {
+        label: format!("@{tag}"),
+        kind: Some(CompletionItemKind::ENUM_MEMBER),
         ..CompletionItem::default()
     }
 }
@@ -1476,6 +1719,12 @@ mod tests {
                 .as_ref()
                 .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == "."))
         );
+        assert!(
+            completion_options
+                .trigger_characters
+                .as_ref()
+                .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == "@"))
+        );
         let signature_help_options = initialize_result
             .capabilities
             .signature_help_provider
@@ -1928,6 +2177,82 @@ mod tests {
         assert!(completion_item(&completions, "name").is_some());
         assert!(completion_item(&completions, "email").is_some());
         assert!(completion_item(&completions, "usersById").is_none());
+    }
+
+    #[test]
+    fn completion_at_record_construction_returns_missing_declared_fields() {
+        let completions =
+            completions_at_marker("user : { name: Text, email: Text } = { name: \"Ada\", | }\n");
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        let Some(email) = completion_item(&completions, "email") else {
+            panic!("expected email field completion");
+        };
+
+        assert_eq!(labels, vec!["email"]);
+        assert_eq!(email.kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(email.detail.as_deref(), Some("Text"));
+        assert!(completion_item(&completions, "name").is_none());
+    }
+
+    #[test]
+    fn completion_at_record_construction_returns_no_present_fields() {
+        let completions = completions_at_marker(
+            "user : { name: Text, email: Text } = { name: \"Ada\", email: \"ada@example.com\", | }\n",
+        );
+
+        assert!(completions.is_empty());
+    }
+
+    #[test]
+    fn completion_at_variant_construction_returns_declared_tags() {
+        let completions = completions_at_marker("color : @{ @Red, @Green } = @{ | }\n");
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        let Some(red) = completion_item(&completions, "@Red") else {
+            panic!("expected @Red completion");
+        };
+        let Some(green) = completion_item(&completions, "@Green") else {
+            panic!("expected @Green completion");
+        };
+
+        assert_eq!(labels, vec!["@Red", "@Green"]);
+        assert_eq!(red.kind, Some(CompletionItemKind::ENUM_MEMBER));
+        assert_eq!(green.kind, Some(CompletionItemKind::ENUM_MEMBER));
+    }
+
+    #[test]
+    fn completion_at_variant_construction_after_at_omits_present_tags() {
+        let completions = completions_at_marker("color : @{ @Red, @Green } = @{ @Red, @| }\n");
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["@Green"]);
+    }
+
+    #[test]
+    fn completion_inside_record_field_value_falls_back_to_identifiers() {
+        let completions =
+            completions_at_marker("user : { name: Text, email: Text } = { name: \"A|\" }\n");
+
+        assert!(completion_item(&completions, "email").is_none());
+        assert!(completion_item(&completions, "user").is_some());
+        assert!(completion_item(&completions, "Text").is_some());
+    }
+
+    #[test]
+    fn completion_in_record_without_expected_type_falls_back_to_identifiers() {
+        let completions =
+            completions_at_marker("name = \"Ada\"\nemail = \"ada@example.com\"\nuser = { | }\n");
+
+        assert!(completion_item(&completions, "email").is_some());
+        assert!(completion_item(&completions, "Text").is_some());
     }
 
     #[test]
@@ -2419,6 +2744,23 @@ mod tests {
 
     fn position(line: u32, character: u32) -> Position {
         Position { line, character }
+    }
+
+    fn completions_at_marker(source: &str) -> Vec<CompletionItem> {
+        let marker = source
+            .find('|')
+            .unwrap_or_else(|| panic!("expected cursor marker in {source:?}"));
+        let mut source = source.to_owned();
+        source.remove(marker);
+        let document = parsed_document_with_semantics(source);
+        let position = to_lsp_position(
+            document
+                .file()
+                .line_index()
+                .offset_to_position(document.source(), marker),
+        );
+
+        completion_at_position(&document, position)
     }
 
     fn assert_hover_value(hover: Hover, expected: &str) {

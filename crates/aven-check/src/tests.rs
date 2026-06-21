@@ -242,6 +242,27 @@ fn record_fields_query_enumerates_record_fields_and_peels_wrappers() {
 }
 
 #[test]
+fn variant_tags_query_enumerates_variant_tags_and_peels_wrappers() {
+    let variant = Type::Variant(Row {
+        entries: vec![
+            tag("Red", Vec::new()),
+            tag("Green", vec![named("Text")]),
+            literal_string("\"literal\""),
+        ],
+        tail: RowTail::Closed,
+    });
+    let expected = vec!["Red".to_owned(), "Green".to_owned()];
+
+    assert_eq!(variant_tags(&variant), Some(expected.clone()));
+    assert_eq!(
+        variant_tags(&optional(variant.clone())),
+        Some(expected.clone())
+    );
+    assert_eq!(variant_tags(&nullable(variant)), Some(expected));
+    assert_eq!(variant_tags(&named("Text")), None);
+}
+
+#[test]
 fn function_signature_query_returns_params_and_result_and_peels_wrappers() {
     let signature = function(vec![named("Int"), named("Text")], named("Bool"));
     let expected = Some((vec![named("Int"), named("Text")], named("Bool")));
