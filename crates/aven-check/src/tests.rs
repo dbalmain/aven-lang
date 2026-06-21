@@ -231,6 +231,20 @@ fn record_fields_query_enumerates_record_fields_and_peels_wrappers() {
 }
 
 #[test]
+fn function_signature_query_returns_params_and_result_and_peels_wrappers() {
+    let signature = function(vec![named("Int"), named("Text")], named("Bool"));
+    let expected = Some((vec![named("Int"), named("Text")], named("Bool")));
+
+    assert_eq!(function_signature(&signature), expected.clone());
+    assert_eq!(
+        function_signature(&optional(signature.clone())),
+        expected.clone()
+    );
+    assert_eq!(function_signature(&nullable(signature)), expected);
+    assert_eq!(function_signature(&named("Text")), None);
+}
+
+#[test]
 fn check_output_records_unannotated_local_inferred_types() {
     let source = "value =\n  local = \"hi\"\n  local\n";
     let output = parse_module(source);

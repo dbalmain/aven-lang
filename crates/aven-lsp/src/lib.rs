@@ -13,9 +13,10 @@ use tower_lsp::lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
     InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind,
-    MessageType, OneOf, Position, Range, RenameParams, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, SymbolKind, TextDocumentSyncCapability,
+    MessageType, OneOf, ParameterInformation, ParameterLabel, Position, Range, RenameParams,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    SignatureHelpParams, SignatureInformation, SymbolKind, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -119,6 +120,10 @@ impl LanguageServer for Backend {
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned()]),
                     ..CompletionOptions::default()
+                }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_owned(), ",".to_owned()]),
+                    ..SignatureHelpOptions::default()
                 }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(SemanticTokensServerCapabilities::from(
@@ -236,6 +241,16 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(completion_at_position(
             &document, position,
         ))))
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(document) = self.document(&uri) else {
+            return Ok(None);
+        };
+
+        Ok(signature_help_at_position(&document, position))
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
@@ -584,11 +599,172 @@ fn completion_kind_for_declaration(
 }
 
 fn completion_kind_for_type(ty: Option<&aven_compiler::Type>) -> CompletionItemKind {
-    if matches!(ty, Some(aven_compiler::Type::Function { .. })) {
+    if ty.and_then(aven_compiler::function_signature).is_some() {
         return CompletionItemKind::FUNCTION;
     }
 
     CompletionItemKind::VARIABLE
+}
+
+fn signature_help_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<SignatureHelp> {
+    let offset = position_to_offset(document, position)?;
+    let significant_tokens = significant_tokens(document);
+    let call = enclosing_name_call_at_offset(&significant_tokens, offset)?;
+    let callee_span = definition_span_for_identifier(document, &call.callee)?;
+    let (params, result) = aven_compiler::function_signature(document.type_at(callee_span)?)?;
+    let active_parameter = active_parameter_for_call(&significant_tokens, call.open_index, offset);
+
+    Some(SignatureHelp {
+        signatures: vec![signature_information(
+            &call.callee.name,
+            &params,
+            &result,
+            active_parameter,
+        )],
+        active_signature: Some(0),
+        active_parameter: Some(active_parameter),
+    })
+}
+
+fn signature_information(
+    callee_name: &str,
+    params: &[aven_compiler::Type],
+    result: &aven_compiler::Type,
+    active_parameter: u32,
+) -> SignatureInformation {
+    let mut label = format!("{callee_name}(");
+    let mut parameters = Vec::new();
+
+    for (index, param) in params.iter().enumerate() {
+        if index > 0 {
+            label.push_str(", ");
+        }
+
+        let start = signature_label_offset(&label);
+        label.push_str(&param.render());
+        let end = signature_label_offset(&label);
+        parameters.push(ParameterInformation {
+            label: ParameterLabel::LabelOffsets([start, end]),
+            documentation: None,
+        });
+    }
+
+    label.push_str(") -> ");
+    label.push_str(&result.render());
+
+    SignatureInformation {
+        label,
+        documentation: None,
+        parameters: Some(parameters),
+        active_parameter: Some(active_parameter),
+    }
+}
+
+fn signature_label_offset(label: &str) -> u32 {
+    label.encode_utf16().count() as u32
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NameCallAtPosition {
+    callee: IdentifierAtPosition,
+    open_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenDelimiter {
+    kind: DelimiterKind,
+    call: Option<NameCallAtPosition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DelimiterKind {
+    Paren,
+    Bracket,
+    Brace,
+}
+
+fn enclosing_name_call_at_offset(
+    tokens: &[&aven_parser::Token],
+    offset: usize,
+) -> Option<NameCallAtPosition> {
+    let mut stack = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        if token.span.start >= offset {
+            break;
+        }
+
+        if let Some(kind) = opening_delimiter_kind(token) {
+            let call = if kind == DelimiterKind::Paren {
+                index
+                    .checked_sub(1)
+                    .and_then(|callee_index| identifier_from_token(tokens[callee_index]))
+                    .map(|callee| NameCallAtPosition {
+                        callee,
+                        open_index: index,
+                    })
+            } else {
+                None
+            };
+
+            stack.push(OpenDelimiter { kind, call });
+        } else if let Some(kind) = closing_delimiter_kind(token)
+            && let Some(open_index) = stack.iter().rposition(|open| open.kind == kind)
+        {
+            stack.truncate(open_index);
+        }
+    }
+
+    stack.into_iter().rev().find_map(|open| open.call)
+}
+
+fn active_parameter_for_call(
+    tokens: &[&aven_parser::Token],
+    open_index: usize,
+    offset: usize,
+) -> u32 {
+    let mut depth = 0usize;
+    let mut active_parameter = 0;
+
+    for token in tokens.iter().skip(open_index + 1) {
+        if token.span.start >= offset {
+            break;
+        }
+
+        if opening_delimiter_kind(token).is_some() {
+            depth += 1;
+        } else if closing_delimiter_kind(token).is_some() {
+            if depth == 0 {
+                break;
+            }
+            depth -= 1;
+        } else if matches!(&token.kind, aven_parser::TokenKind::Comma) && depth == 0 {
+            active_parameter += 1;
+        }
+    }
+
+    active_parameter
+}
+
+fn opening_delimiter_kind(token: &aven_parser::Token) -> Option<DelimiterKind> {
+    match &token.kind {
+        aven_parser::TokenKind::OpenParen => Some(DelimiterKind::Paren),
+        aven_parser::TokenKind::OpenBracket => Some(DelimiterKind::Bracket),
+        aven_parser::TokenKind::OpenBrace => Some(DelimiterKind::Brace),
+        _ => None,
+    }
+}
+
+fn closing_delimiter_kind(token: &aven_parser::Token) -> Option<DelimiterKind> {
+    match &token.kind {
+        aven_parser::TokenKind::CloseParen => Some(DelimiterKind::Paren),
+        aven_parser::TokenKind::CloseBracket => Some(DelimiterKind::Bracket),
+        aven_parser::TokenKind::CloseBrace => Some(DelimiterKind::Brace),
+        _ => None,
+    }
 }
 
 fn inlay_hints_in_range(document: &ParsedDocument, range: Range) -> Vec<InlayHint> {
@@ -840,17 +1016,21 @@ fn identifier_at_position(
     })
 }
 
+fn significant_tokens(document: &ParsedDocument) -> Vec<&aven_parser::Token> {
+    document
+        .parse_output()
+        .raw_tokens
+        .iter()
+        .filter(|token| !is_trivia_token(token))
+        .collect()
+}
+
 fn field_access_receiver_at_position(
     document: &ParsedDocument,
     position: Position,
 ) -> Option<IdentifierAtPosition> {
     let offset = position_to_offset(document, position)?;
-    let significant_tokens = document
-        .parse_output()
-        .raw_tokens
-        .iter()
-        .filter(|token| !is_trivia_token(token))
-        .collect::<Vec<_>>();
+    let significant_tokens = significant_tokens(document);
 
     for (index, token) in significant_tokens.iter().enumerate() {
         if is_field_access_operator(token) && token.span.end == offset {
@@ -1050,6 +1230,17 @@ mod tests {
                 .trigger_characters
                 .as_ref()
                 .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == "."))
+        );
+        let signature_help_options = initialize_result
+            .capabilities
+            .signature_help_provider
+            .as_ref()
+            .expect("expected signature help provider");
+        assert!(
+            signature_help_options
+                .trigger_characters
+                .as_ref()
+                .is_some_and(|triggers| triggers == &["(".to_owned(), ",".to_owned()])
         );
         assert!(matches!(
             initialize_result.capabilities.inlay_hint_provider,
@@ -1471,6 +1662,55 @@ mod tests {
         assert_eq!(user.detail.as_deref(), Some("{ name: Text, email: Text }"));
         assert!(completion_item(&completions, "Text").is_some());
         assert!(completion_item(&completions, "name").is_none());
+    }
+
+    #[test]
+    fn signature_help_at_name_call_returns_signature_and_active_parameter() {
+        let document = parsed_document_with_semantics(
+            "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, 2)\n",
+        );
+
+        let Some(help) = signature_help_at_position(&document, position(2, 15)) else {
+            panic!("expected signature help");
+        };
+
+        assert_eq!(help.active_signature, Some(0));
+        assert_eq!(help.active_parameter, Some(1));
+        assert_eq!(help.signatures.len(), 1);
+        assert_eq!(help.signatures[0].label, "add(Int, Int) -> Int");
+        assert_eq!(help.signatures[0].active_parameter, Some(1));
+
+        let parameters = help.signatures[0]
+            .parameters
+            .as_ref()
+            .expect("expected parameter labels");
+        assert_eq!(parameters.len(), 2);
+        assert_eq!(parameters[0].label, ParameterLabel::LabelOffsets([4, 7]));
+        assert_eq!(parameters[1].label, ParameterLabel::LabelOffsets([9, 12]));
+    }
+
+    #[test]
+    fn signature_help_at_call_start_uses_first_parameter() {
+        let document = parsed_document_with_semantics(
+            "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, 2)\n",
+        );
+
+        let Some(help) = signature_help_at_position(&document, position(2, 12)) else {
+            panic!("expected signature help");
+        };
+
+        assert_eq!(help.signatures[0].label, "add(Int, Int) -> Int");
+        assert_eq!(help.active_parameter, Some(0));
+        assert_eq!(help.signatures[0].active_parameter, Some(0));
+    }
+
+    #[test]
+    fn signature_help_outside_call_returns_none() {
+        let document = parsed_document_with_semantics(
+            "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, 2)\n",
+        );
+
+        assert!(signature_help_at_position(&document, position(0, 0)).is_none());
     }
 
     #[test]

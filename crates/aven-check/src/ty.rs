@@ -66,6 +66,19 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
     )
 }
 
+pub fn function_signature(ty: &Type) -> Option<(Vec<Type>, Type)> {
+    let mut ty = ty;
+    while let Type::Optional(inner) | Type::Nullable(inner) = ty {
+        ty = inner;
+    }
+
+    let Type::Function { params, result } = ty else {
+        return None;
+    };
+
+    Some((params.clone(), result.as_ref().clone()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TypeScheme {
     pub(crate) vars: Vec<u32>,

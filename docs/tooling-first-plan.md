@@ -1727,6 +1727,12 @@ Completed parser groundwork:
   semantic snapshot without re-parsing or re-checking, and, because the current
   snapshot also contains declared annotation types, suppresses hints for binders
   that already have a written annotation.
+- T3 done: LSP signature help now advertises `(` and `,` triggers and answers
+  `textDocument/signatureHelp` from the cached parse plus inferred-type
+  snapshot. Name callees resolve through the shared definition query, callable
+  types are exposed through the checker/compiler `function_signature` accessor
+  with `Optional`/`Nullable` wrappers peeled, and the active parameter is counted
+  from depth-aware top-level commas inside the enclosing call.
 
 ## To investigate later
 
