@@ -1827,6 +1827,21 @@ the later bytecode/runtime work.
   existing field-access-plus-call path. The parsed single-identifier binder
   iterates Set/Array elements or Record field labels as `Text`; the spec's
   `(k, v)` tuple-binder form is not parsed yet and remains deferred.
+- E11 done: types are first-class runtime values, mirroring the Layer-2 comptime
+  premise (Zig-style, types as values). `aven-eval` adds one opaque `Value::Type`
+  (a bare name; the real type IR stays in `aven-check`, no dependency added) and
+  binds the atomic primitive type names (`Bool`, `Float`, `Int`, `Null`, `Text`,
+  `Undefined`, `Unit`) as intrinsics next to `keysOf`, seeded before host globals
+  so a user binding may shadow them. Record-as-type reuses `Value::Record`, so
+  `User = { name: Text }` evaluates to a record of type-values and the canonical
+  annotated `pick`/`omit` programs now run honestly with no type-alias erasure.
+  `debug` is a CLI-host native that writes each argument's `Display` to stderr and
+  returns its single argument unchanged, keeping stdout clean. Function types
+  (`->`), open rows (`{..r}`), and type application (`Array[a]`) only make sense in
+  the full type language and appear only in ignored annotations; in bound value
+  position they remain unsupported via the existing `runtime.unbound-name` /
+  `runtime.unsupported` paths. A staged Core IR with type *erasure* is the
+  eventual VM-phase answer (deferred to the VM milestone).
 
 ## To investigate later
 

@@ -244,9 +244,11 @@ fn run_prints_function_call_value() {
 fn run_prints_pick_record_comprehension_value() {
     let file = TempFile::new(
         "run-pick-record-comprehension",
-        "user = { name: \"Ada\", email: \"ada@x.dev\" }\n\
-         pick = (o, keys) => { keys -> k; (k, o[k]) }\n\
-         pick(user, @{\"name\", \"email\"})\n",
+        "User = { name: Text, email: Text }\n\
+         user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+         pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }\n\
+         result : { name: Text, email: Text } = pick(user, @{\"name\", \"email\"})\n\
+         result\n",
     );
 
     let output = run_aven(["run"], file.path());
@@ -259,15 +261,28 @@ fn run_prints_pick_record_comprehension_value() {
 fn run_prints_omit_record_comprehension_value() {
     let file = TempFile::new(
         "run-omit-record-comprehension",
-        "user = { name: \"Ada\", email: \"ada@x.dev\" }\n\
-         omit = (o, drop) => { keysOf(o) -> k, !drop.has(k); (k, o[k]) }\n\
-         omit(user, @{\"name\"})\n",
+        "User = { name: Text, email: Text }\n\
+         user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+         omit = (o: {..r}, @keys: keysOf(r)@{}) => { keysOf(o) -> k, !keys.has(k); (k, o[k]) }\n\
+         result : { email: Text } = omit(user, @{\"name\"})\n\
+         result\n",
     );
 
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
     assert_eq!(stdout(&output), "{ email: \"ada@x.dev\" }\n");
+}
+
+#[test]
+fn run_debug_writes_type_to_stderr_and_keeps_stdout_clean() {
+    let file = TempFile::new("run-debug-type", "User = { name: Text }\ndebug(User)\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "{ name: Text }\n");
+    assert_eq!(stderr(&output), "{ name: Text }\n");
 }
 
 #[test]

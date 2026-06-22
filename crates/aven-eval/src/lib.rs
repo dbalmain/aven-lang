@@ -33,12 +33,23 @@ pub enum Value {
     Tuple(Rc<Vec<Value>>),
     Set(Rc<Vec<Value>>),
     Record(Rc<Vec<(String, Value)>>),
-    Tag { name: String, payload: Vec<Value> },
+    Tag {
+        name: String,
+        payload: Vec<Value>,
+    },
     Closure(Closure),
     Native(NativeFn),
+    /// An opaque named type value (e.g. `Text`). Types are first-class runtime
+    /// values: this holds only the name; the real type IR lives in `aven-check`.
+    Type(String),
     Undefined,
     Null,
 }
+
+/// Atomic primitive type names bound as `Value::Type` intrinsics. Matches
+/// `CHECKED_NAMED_TYPES` in `aven-check`.
+const PRIMITIVE_TYPE_NAMES: [&str; 7] =
+    ["Bool", "Float", "Int", "Null", "Text", "Undefined", "Unit"];
 
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -58,6 +69,7 @@ impl fmt::Debug for Value {
                 .finish(),
             Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
             Self::Native(_) => f.write_str("Native(<native>)"),
+            Self::Type(name) => f.debug_tuple("Type").field(name).finish(),
             Self::Undefined => f.write_str("Undefined"),
             Self::Null => f.write_str("Null"),
         }
@@ -85,6 +97,7 @@ impl PartialEq for Value {
                     payload: right_payload,
                 },
             ) => left_name == right_name && left_payload == right_payload,
+            (Self::Type(left), Self::Type(right)) => left == right,
             (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
             (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
             (Self::Native(_), _) | (_, Self::Native(_)) => false,
@@ -107,6 +120,7 @@ impl fmt::Display for Value {
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::Closure(_) => write!(f, "<function>"),
             Self::Native(_) => write!(f, "<native>"),
+            Self::Type(name) => write!(f, "{name}"),
             Self::Undefined => write!(f, "undefined"),
             Self::Null => write!(f, "null"),
         }
@@ -143,6 +157,7 @@ impl Value {
             Self::Tag { .. } => "Tag",
             Self::Closure(_) => "Function",
             Self::Native(_) => "Native",
+            Self::Type(_) => "Type",
             Self::Undefined => "Undefined",
             Self::Null => "Null",
         }
@@ -365,7 +380,12 @@ fn bind_intrinsics(env: &Environment) {
 }
 
 fn intrinsics() -> Vec<(String, Value)> {
-    vec![(
+    let mut intrinsics: Vec<(String, Value)> = PRIMITIVE_TYPE_NAMES
+        .iter()
+        .map(|name| ((*name).to_owned(), Value::Type((*name).to_owned())))
+        .collect();
+
+    intrinsics.push((
         "keysOf".to_owned(),
         Value::native(|args| {
             if args.len() != 1 {
@@ -386,7 +406,9 @@ fn intrinsics() -> Vec<(String, Value)> {
                     .collect(),
             )))
         }),
-    )]
+    ));
+
+    intrinsics
 }
 
 fn eval_items(items: &[Item], env: &Environment) -> EvalOutcome {
@@ -1421,6 +1443,7 @@ fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Val
         (Value::Set(_), Value::Set(_)) => left == right,
         (Value::Record(_), Value::Record(_)) => left == right,
         (Value::Tag { .. }, Value::Tag { .. }) => left == right,
+        (Value::Type(left), Value::Type(right)) => left == right,
         (Value::Native(_), Value::Native(_)) => false,
         (Value::Undefined, Value::Undefined) => true,
         (Value::Null, Value::Null) => true,
@@ -2419,6 +2442,51 @@ mod tests {
         let diagnostic = eval_error("1.name");
 
         assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    }
+
+    #[test]
+    fn primitive_type_name_evaluates_to_type_value() {
+        assert_module_value("Text\n", Value::Type("Text".to_owned()));
+        assert_eq!(format!("{}", Value::Type("Text".to_owned())), "Text");
+    }
+
+    #[test]
+    fn record_of_types_evaluates_and_displays_as_type_record() {
+        let expected = record_value(vec![
+            ("name", Value::Type("Text".to_owned())),
+            ("age", Value::Type("Int".to_owned())),
+        ]);
+        assert_module_value("{ name: Text, age: Int }\n", expected.clone());
+        assert_eq!(format!("{expected}"), "{ name: Text, age: Int }");
+    }
+
+    #[test]
+    fn type_alias_binding_yields_record_of_types_and_keysof() {
+        assert_module_value(
+            "User = { name: Text, email: Text }\nUser\n",
+            record_value(vec![
+                ("name", Value::Type("Text".to_owned())),
+                ("email", Value::Type("Text".to_owned())),
+            ]),
+        );
+        assert_module_value(
+            "User = { name: Text, email: Text }\nkeysOf(User)\n",
+            set_value(vec![
+                Value::Text("name".to_owned()),
+                Value::Text("email".to_owned()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn type_values_compare_by_name() {
+        assert_module_value("Text == Text\n", Value::Bool(true));
+        assert_module_value("Text == Int\n", Value::Bool(false));
+    }
+
+    #[test]
+    fn user_binding_shadows_primitive_type_name() {
+        assert_module_value("Text = 5\nText\n", Value::Int(5));
     }
 
     fn assert_module_value(source: &str, expected: Value) {

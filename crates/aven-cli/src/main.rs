@@ -195,7 +195,30 @@ fn prelude() -> Result<Vec<(String, aven_eval::Value)>> {
     Ok(vec![
         ("logger".to_owned(), log),
         ("Platform".to_owned(), platform),
+        ("debug".to_owned(), debug_native()),
     ])
+}
+
+/// Writes each argument's `Display` to stderr (space-separated, newline-terminated)
+/// and returns its single argument unchanged, so `debug(x)` is usable inline. This
+/// keeps stdout clean for the program's value and log output. The IO effect lives in
+/// the host, so the native is injected by the CLI prelude rather than `aven-eval`.
+fn debug_native() -> aven_eval::Value {
+    aven_eval::Value::native(|args| {
+        let mut stderr = io::stderr().lock();
+        for (index, value) in args.iter().enumerate() {
+            if index > 0 {
+                write!(stderr, " ").map_err(|error| error.to_string())?;
+            }
+            write!(stderr, "{value}").map_err(|error| error.to_string())?;
+        }
+        writeln!(stderr).map_err(|error| error.to_string())?;
+
+        Ok(match args {
+            [single] => single.clone(),
+            _ => aven_eval::Value::unit(),
+        })
+    })
 }
 
 fn root_logger() -> Result<aven_eval::Value> {
@@ -307,6 +330,7 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
         }),
         aven_eval::Value::Closure(_) => JsonValue::String("<function>".to_owned()),
         aven_eval::Value::Native(_) => JsonValue::String("<native>".to_owned()),
+        aven_eval::Value::Type(name) => JsonValue::String(name.clone()),
         aven_eval::Value::Undefined | aven_eval::Value::Null => JsonValue::Null,
     }
 }
