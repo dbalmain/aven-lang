@@ -257,7 +257,7 @@ fn run_injects_default_console_platform() {
 fn run_log_writes_structured_json_line() {
     let file = TempFile::new(
         "run-ambient-structured-log",
-        "log.info(\"hello\", { n: 1 })\n",
+        "logger.info(\"hello\", { n: 1 })\n",
     );
 
     let output = run_aven(["run"], file.path());
@@ -285,7 +285,7 @@ fn run_log_writes_structured_json_line() {
 fn run_ambient_log_and_platform_log_share_trace_context() {
     let file = TempFile::new(
         "run-shared-structured-log",
-        "log.info(\"hello\", { n: 1 })\nPlatform.Log.info(\"hello\", { n: 1 })\n",
+        "logger.info(\"hello\", { n: 1 })\nPlatform.Log.info(\"hello\", { n: 1 })\n",
     );
 
     let output = run_aven(["run"], file.path());
@@ -315,7 +315,7 @@ fn run_ambient_log_and_platform_log_share_trace_context() {
 
 #[test]
 fn run_user_binding_shadows_prelude_log() {
-    let file = TempFile::new("run-shadow-ambient-log", "log = 5\nlog\n");
+    let file = TempFile::new("run-shadow-ambient-log", "logger = 5\nlogger\n");
 
     let output = run_aven(["run"], file.path());
 

@@ -193,7 +193,7 @@ fn prelude() -> Result<Vec<(String, aven_eval::Value)>> {
     let platform = default_platform(log.clone());
 
     Ok(vec![
-        ("log".to_owned(), log),
+        ("logger".to_owned(), log),
         ("Platform".to_owned(), platform),
     ])
 }
