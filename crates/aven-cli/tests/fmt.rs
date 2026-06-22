@@ -241,6 +241,36 @@ fn run_prints_function_call_value() {
 }
 
 #[test]
+fn run_prints_pick_record_comprehension_value() {
+    let file = TempFile::new(
+        "run-pick-record-comprehension",
+        "user = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+         pick = (o, keys) => { keys -> k; (k, o[k]) }\n\
+         pick(user, @{\"name\", \"email\"})\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "{ name: \"Ada\", email: \"ada@x.dev\" }\n");
+}
+
+#[test]
+fn run_prints_omit_record_comprehension_value() {
+    let file = TempFile::new(
+        "run-omit-record-comprehension",
+        "user = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+         omit = (o, drop) => { keysOf(o) -> k, !drop.has(k); (k, o[k]) }\n\
+         omit(user, @{\"name\"})\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "{ email: \"ada@x.dev\" }\n");
+}
+
+#[test]
 fn run_injects_default_console_platform() {
     let file = TempFile::new(
         "run-platform-log",

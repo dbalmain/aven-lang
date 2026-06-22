@@ -1820,6 +1820,13 @@ the later bytecode/runtime work.
   stays as the optional grouping namespace for less-common host capabilities.
   Normal scoping still applies, so user bindings may shadow prelude names. Roc-style
   selective imports are deferred until a module system exists.
+- E10 done: runtime record comprehensions now evaluate through the shared record
+  entry folder, so tuple-emits like `(k, object[k])` can insert or replace fields
+  across comprehension iterations. `aven-eval` also provides the pure `keysOf`
+  intrinsic for record labels and `.has` methods on Set/Array values through the
+  existing field-access-plus-call path. The parsed single-identifier binder
+  iterates Set/Array elements or Record field labels as `Text`; the spec's
+  `(k, v)` tuple-binder form is not parsed yet and remains deferred.
 
 ## To investigate later
 

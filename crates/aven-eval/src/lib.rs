@@ -351,10 +351,42 @@ pub fn eval_module(module: &Module) -> EvalOutcome {
 /// an injected global by rebinding the same name.
 pub fn eval_module_with_globals(module: &Module, globals: Vec<(String, Value)>) -> EvalOutcome {
     let env = Environment::new();
+    bind_intrinsics(&env);
     for (name, value) in globals {
         env.bind(name, value);
     }
     eval_items(&module.items, &env)
+}
+
+fn bind_intrinsics(env: &Environment) {
+    for (name, value) in intrinsics() {
+        env.bind(name, value);
+    }
+}
+
+fn intrinsics() -> Vec<(String, Value)> {
+    vec![(
+        "keysOf".to_owned(),
+        Value::native(|args| {
+            if args.len() != 1 {
+                return Err(format!("keysOf expects 1 argument, got {}", args.len()));
+            }
+
+            let Value::Record(fields) = &args[0] else {
+                return Err(format!(
+                    "keysOf expects a Record, got {}",
+                    args[0].type_name()
+                ));
+            };
+
+            Ok(Value::Set(Rc::new(
+                fields
+                    .iter()
+                    .map(|(name, _)| Value::Text(name.clone()))
+                    .collect(),
+            )))
+        }),
+    )]
 }
 
 fn eval_items(items: &[Item], env: &Environment) -> EvalOutcome {
@@ -473,7 +505,7 @@ fn guards_pass(guards: &[Expr], env: &Environment) -> Result<bool, Vec<Diagnosti
             Value::Bool(true) => {}
             Value::Bool(false) => return Ok(false),
             value => {
-                return Err(one_diagnostic(match_guard_type_error(
+                return Err(one_diagnostic(guard_type_error(
                     guard.span,
                     value.type_name(),
                 )));
@@ -740,78 +772,169 @@ fn eval_record(entries: &[RecordEntry], env: &Environment) -> Result<Value, Vec<
     let mut fields = Vec::new();
 
     for entry in entries {
-        match entry {
-            RecordEntry::Field { name, value, .. } => {
-                let value = eval_expr_many(value, env)?;
-                insert_or_replace_field(&mut fields, name.clone(), value);
-            }
-            RecordEntry::FieldComputed { key, value, .. } => {
-                let name = eval_text_key(key, key.span, env)?;
-                let value = eval_expr_many(value, env)?;
-                insert_or_replace_field(&mut fields, name, value);
-            }
-            RecordEntry::Shorthand {
-                name, name_span, ..
-            } => {
-                let value = env
-                    .lookup(name)
-                    .ok_or_else(|| one_diagnostic(unbound_name(name, *name_span)))?;
-                insert_or_replace_field(&mut fields, name.clone(), value);
-            }
-            RecordEntry::Spread {
-                value: source_expr, ..
-            } => {
-                let source = eval_expr_many(source_expr, env)?;
-                let source_fields = match source {
-                    Value::Record(fields) => fields,
-                    value => {
-                        return Err(one_diagnostic(record_type_error(
-                            source_expr.span,
-                            "spread",
-                            value.type_name(),
-                            "Record",
-                        )));
-                    }
-                };
-
-                for (name, value) in source_fields.iter() {
-                    insert_or_replace_field(&mut fields, name.clone(), value.clone());
-                }
-            }
-            RecordEntry::Delete { name, .. } => {
-                remove_field(&mut fields, name);
-            }
-            RecordEntry::DeleteComputed { key, .. } => {
-                let name = eval_text_key(key, key.span, env)?;
-                remove_field(&mut fields, &name);
-            }
-            RecordEntry::Rename { from, to, .. } => {
-                rename_field(&mut fields, from, to);
-            }
-            RecordEntry::Iteration { span, .. } => {
-                return Err(one_diagnostic(unsupported_expr(
-                    *span,
-                    "record comprehensions are deferred until comptime/runtime staging",
-                )));
-            }
-            RecordEntry::Open { span } => {
-                return Err(one_diagnostic(record_type_error(
-                    *span,
-                    "record construction",
-                    "open row marker",
-                    "value record entry",
-                )));
-            }
-            RecordEntry::Element(value) => {
-                return Err(one_diagnostic(unsupported_expr(
-                    value.span,
-                    "tuple-style record entries are deferred until tuple evaluation",
-                )));
-            }
-        }
+        fold_record_entry(&mut fields, entry, env)?;
     }
 
     Ok(Value::Record(Rc::new(fields)))
+}
+
+fn fold_record_entry(
+    fields: &mut Vec<(String, Value)>,
+    entry: &RecordEntry,
+    env: &Environment,
+) -> Result<(), Vec<Diagnostic>> {
+    match entry {
+        RecordEntry::Field { name, value, .. } => {
+            let value = eval_expr_many(value, env)?;
+            insert_or_replace_field(fields, name.clone(), value);
+        }
+        RecordEntry::FieldComputed { key, value, .. } => {
+            let name = eval_text_key(key, key.span, env)?;
+            let value = eval_expr_many(value, env)?;
+            insert_or_replace_field(fields, name, value);
+        }
+        RecordEntry::Shorthand {
+            name, name_span, ..
+        } => {
+            let value = env
+                .lookup(name)
+                .ok_or_else(|| one_diagnostic(unbound_name(name, *name_span)))?;
+            insert_or_replace_field(fields, name.clone(), value);
+        }
+        RecordEntry::Spread {
+            value: source_expr, ..
+        } => {
+            let source = eval_expr_many(source_expr, env)?;
+            let source_fields = match source {
+                Value::Record(fields) => fields,
+                value => {
+                    return Err(one_diagnostic(record_type_error(
+                        source_expr.span,
+                        "spread",
+                        value.type_name(),
+                        "Record",
+                    )));
+                }
+            };
+
+            for (name, value) in source_fields.iter() {
+                insert_or_replace_field(fields, name.clone(), value.clone());
+            }
+        }
+        RecordEntry::Delete { name, .. } => {
+            remove_field(fields, name);
+        }
+        RecordEntry::DeleteComputed { key, .. } => {
+            let name = eval_text_key(key, key.span, env)?;
+            remove_field(fields, &name);
+        }
+        RecordEntry::Rename { from, to, .. } => {
+            rename_field(fields, from, to);
+        }
+        RecordEntry::Iteration {
+            source,
+            binder,
+            guard,
+            body,
+            ..
+        } => {
+            fold_record_iteration(fields, source, binder, guard.as_ref(), body, env)?;
+        }
+        RecordEntry::Open { span } => {
+            return Err(one_diagnostic(record_type_error(
+                *span,
+                "record construction",
+                "open row marker",
+                "value record entry",
+            )));
+        }
+        RecordEntry::Element(expr) => {
+            fold_record_element(fields, expr, env)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn fold_record_iteration(
+    fields: &mut Vec<(String, Value)>,
+    source: &Expr,
+    binder: &str,
+    guard: Option<&Expr>,
+    body: &[RecordEntry],
+    env: &Environment,
+) -> Result<(), Vec<Diagnostic>> {
+    let source_value = eval_expr_many(source, env)?;
+    let values: Vec<Value> = match source_value {
+        Value::Set(items) | Value::Array(items) => items.iter().cloned().collect(),
+        Value::Record(source_fields) => source_fields
+            .iter()
+            .map(|(name, _)| Value::Text(name.clone()))
+            .collect(),
+        value => {
+            return Err(one_diagnostic(record_type_error(
+                source.span,
+                "record comprehension source",
+                value.type_name(),
+                "Set, Array, or Record",
+            )));
+        }
+    };
+
+    for value in values {
+        let child = env.child();
+        child.bind(binder, value);
+
+        if let Some(guard) = guard {
+            match eval_expr_many(guard, &child)? {
+                Value::Bool(true) => {}
+                Value::Bool(false) => continue,
+                value => {
+                    return Err(one_diagnostic(guard_type_error(
+                        guard.span,
+                        value.type_name(),
+                    )));
+                }
+            }
+        }
+
+        for entry in body {
+            fold_record_entry(fields, entry, &child)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn fold_record_element(
+    fields: &mut Vec<(String, Value)>,
+    expr: &Expr,
+    env: &Environment,
+) -> Result<(), Vec<Diagnostic>> {
+    let value = eval_expr_many(expr, env)?;
+    let Value::Tuple(values) = value else {
+        return Err(one_diagnostic(record_tuple_emit_type_error(
+            expr.span,
+            value.type_name(),
+        )));
+    };
+
+    let [label, field_value] = values.as_slice() else {
+        return Err(one_diagnostic(record_tuple_emit_type_error(
+            expr.span,
+            "Tuple with wrong arity",
+        )));
+    };
+
+    let Value::Text(name) = label else {
+        return Err(one_diagnostic(record_tuple_emit_type_error(
+            expr.span,
+            label.type_name(),
+        )));
+    };
+
+    insert_or_replace_field(fields, name.clone(), field_value.clone());
+    Ok(())
 }
 
 fn eval_field_access(
@@ -830,13 +953,33 @@ fn eval_field_access(
         Value::Record(fields) => record_field_value(&fields, field)
             .cloned()
             .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
-        value => Err(one_diagnostic(record_type_error(
-            receiver.span,
-            "field access",
-            value.type_name(),
-            "Record",
-        ))),
+        value => builtin_method(&value, field).ok_or_else(|| {
+            one_diagnostic(record_type_error(
+                receiver.span,
+                "field access",
+                value.type_name(),
+                "Record",
+            ))
+        }),
     }
+}
+
+fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
+    match (receiver, field) {
+        (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),
+        (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
+        _ => None,
+    }
+}
+
+fn collection_has_method(kind: &'static str, items: Rc<Vec<Value>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("{kind}.has expects 1 argument, got {}", args.len()));
+        }
+
+        Ok(Value::Bool(contains_value(&items, &args[0])))
+    })
 }
 
 fn eval_index(
@@ -1458,11 +1601,21 @@ fn closure_equality_error(span: Span, operator: &str) -> Diagnostic {
         .with_note("function values do not have runtime equality in this evaluator slice")
 }
 
-fn match_guard_type_error(span: Span, actual: &str) -> Diagnostic {
-    Diagnostic::error(format!("match guard evaluated to {actual}"))
+fn guard_type_error(span: Span, actual: &str) -> Diagnostic {
+    Diagnostic::error(format!("guard evaluated to {actual}"))
         .with_code(codes::runtime::TYPE_ERROR)
         .with_label(Label::primary(span, "expected a Bool guard"))
-        .with_note("match guards must evaluate to true or false")
+        .with_note("guards must evaluate to true or false")
+}
+
+fn record_tuple_emit_type_error(span: Span, actual: &str) -> Diagnostic {
+    Diagnostic::error(format!("record tuple emit evaluated to {actual}"))
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(
+            span,
+            "record comprehension body must emit a `(label, value)` tuple with a Text label",
+        ))
+        .with_note("record tuple emits insert or replace one field using the tuple's Text label")
 }
 
 fn integer_overflow(span: Span, operation: &str) -> Diagnostic {
@@ -1943,6 +2096,123 @@ mod tests {
     #[test]
     fn record_equality_is_order_independent() {
         assert_eval("{ a: 1, b: 2 } == { b: 2, a: 1 }", Value::Bool(true));
+    }
+
+    #[test]
+    fn evaluates_record_comprehension_pick_over_literal_set() {
+        assert_module_value(
+            "user = { name: \"Ada\", email: \"ada@x.dev\", age: 36 }\n\
+             pick = (o, keys) => { keys -> k; (k, o[k]) }\n\
+             pick(user, @{\"name\", \"email\"})\n",
+            record_value(vec![
+                ("name", Value::Text("Ada".to_owned())),
+                ("email", Value::Text("ada@x.dev".to_owned())),
+            ]),
+        );
+    }
+
+    #[test]
+    fn evaluates_record_comprehension_omit_with_keysof_and_has_guard() {
+        assert_module_value(
+            "user = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+             omit = (o, drop) => { keysOf(o) -> k, !drop.has(k); (k, o[k]) }\n\
+             omit(user, @{\"name\"})\n",
+            record_value(vec![("email", Value::Text("ada@x.dev".to_owned()))]),
+        );
+    }
+
+    #[test]
+    fn record_comprehension_guard_filters_iterations() {
+        assert_eval(
+            "{ @{\"name\", \"email\"} -> k, k == \"email\"; (k, k) }",
+            record_value(vec![("email", Value::Text("email".to_owned()))]),
+        );
+    }
+
+    #[test]
+    fn record_comprehension_non_bool_guard_reports_type_error() {
+        let diagnostic = eval_error("{ @{\"name\"} -> k, k; (k, 1) }");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+        assert_eq!(diagnostic.labels[0].message, "expected a Bool guard");
+    }
+
+    #[test]
+    fn record_comprehension_can_iterate_record_labels() {
+        assert_eval(
+            "{ { name: \"Ada\", email: \"ada@x.dev\" } -> k; (k, k) }",
+            record_value(vec![
+                ("name", Value::Text("name".to_owned())),
+                ("email", Value::Text("email".to_owned())),
+            ]),
+        );
+    }
+
+    #[test]
+    fn record_comprehension_source_type_error_reports_type_error() {
+        let diagnostic = eval_error("{ 1 -> k; (k, 1) }");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    }
+
+    #[test]
+    fn tuple_emit_in_record_inserts_field() {
+        assert_eval(
+            "{ (\"name\", \"Ada\") }",
+            record_value(vec![("name", Value::Text("Ada".to_owned()))]),
+        );
+    }
+
+    #[test]
+    fn tuple_emit_requires_text_label() {
+        let diagnostic = eval_error("{ (1, \"Ada\") }");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+        assert!(diagnostic.labels[0].message.contains("Text label"));
+    }
+
+    #[test]
+    fn tuple_emit_requires_arity_two_tuple() {
+        let diagnostic = eval_error("{ (\"name\", \"Ada\", 1) }");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+        assert!(diagnostic.labels[0].message.contains("Text label"));
+    }
+
+    #[test]
+    fn keyof_returns_record_labels_as_set() {
+        assert_module_value(
+            "keysOf({ name: \"Ada\", email: \"ada@x.dev\" })\n",
+            set_value(vec![
+                Value::Text("name".to_owned()),
+                Value::Text("email".to_owned()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn keyof_non_record_reports_platform_error() {
+        let diagnostic = module_error("keysOf(1)\n");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+    }
+
+    #[test]
+    fn set_and_array_has_report_membership() {
+        assert_eval("@{\"name\", \"email\"}.has(\"name\")", Value::Bool(true));
+        assert_eval("@{\"name\", \"email\"}.has(\"age\")", Value::Bool(false));
+        assert_eval("[1, 2, 3].has(2)", Value::Bool(true));
+        assert_eval("[1, 2, 3].has(4)", Value::Bool(false));
+    }
+
+    #[test]
+    fn has_on_unsupported_receiver_still_reports_type_error() {
+        let diagnostic = eval_error("1.has(1)");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
     }
 
     #[test]
