@@ -1842,6 +1842,24 @@ the later bytecode/runtime work.
   position they remain unsupported via the existing `runtime.unbound-name` /
   `runtime.unsupported` paths. A staged Core IR with type *erasure* is the
   eventual VM-phase answer (deferred to the VM milestone).
+- E12 done: error propagation operators `?^` (`ExprKind::Propagate` /
+  `PropagationMode::ReturnError`) and `?!` (`Panic`) evaluate. `Result` stays the
+  ordinary tagged value `@Ok(v)` / `@Err(e)` (no dedicated Result value); both
+  operators just inspect the `Value::Tag`. The mechanism is a control-flow channel:
+  the evaluator's internal result type migrates to `type Eval = Result<Value, Flow>`
+  with `Flow::{Fail(Vec<Diagnostic>), Propagate(Value)}`, so `?^`'s non-local early
+  return bubbles through `?` automatically. `Flow::Propagate` is caught at exactly
+  two boundaries — the closure body in `eval_call` (the `@Err` becomes the
+  function's return value) and the top-level item loop (the `@Err` becomes the
+  program value and stops further items). Blocks deliberately do *not* catch it:
+  `eval_block` lets `Propagate` pass through so a `?^` inside a binding-value block
+  early-returns the enclosing function rather than landing in the binding.
+  Existing `Flow::Fail` recovery (collecting diagnostics across items) is
+  preserved. `?^` on `@Ok(v)` yields `v`; `@Err` early-returns; `?!` on `@Err`
+  raises a new `runtime.panic` diagnostic embedding the payload's `Display`; either
+  operator on a non-Result raises `runtime.type-error`. Deferred: annotated
+  error-type fitting / `mapError` (a checker concern) and any finer block-level
+  exit semantics — function-level propagation is what's implemented.
 
 ## To investigate later
 

@@ -203,6 +203,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Runtime evaluation tried to call a value that is not a function. Only closures produced by lambda expressions and host-injected native functions are callable in the current evaluator.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::PANIC,
+        text: "An explicit panic operator (`?!`) unwrapped an `@Err` result. Panics abort evaluation with the error payload; use `?^` instead to propagate the `@Err` out of the enclosing function, or handle the `@Err` with a match.",
+    },
+    DiagnosticExplanation {
         code: codes::runtime::PLATFORM_ERROR,
         text: "A host-provided platform function reported an error while running. The platform boundary is effectful, so inspect the call and the host error message attached to it.",
     },

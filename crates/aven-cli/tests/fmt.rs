@@ -422,6 +422,35 @@ fn run_reports_runtime_diagnostics() {
 }
 
 #[test]
+fn run_threads_result_with_propagation_operator() {
+    let file = TempFile::new(
+        "run-propagate",
+        "parse = (n) =>\n  n ?>\n    0 => @Err(\"zero\")\n    _ => @Ok(n)\n\
+         add = (a, b) =>\n  x = parse(a)?^\n  y = parse(b)?^\n  @Ok(x + y)\n\
+         add(2, 3)\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "@Ok(5)\n");
+}
+
+#[test]
+fn run_panic_operator_exits_non_zero_with_runtime_panic() {
+    let file = TempFile::new("run-panic", "@Err(\"boom\")?!\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("runtime.panic"),
+        "expected runtime.panic diagnostic, got:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn explain_prints_diagnostic_explanations() {
     let output = run_aven_without_path(["explain", "parse.unclosed-delimiter"]);
 

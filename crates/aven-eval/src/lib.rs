@@ -1,9 +1,23 @@
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, fmt, rc::Rc};
 
 use aven_core::{Diagnostic, Label, Span, codes};
-use aven_parser::{Expr, ExprKind, Item, Literal, MatchArm, Module, RecordEntry};
+use aven_parser::{Expr, ExprKind, Item, Literal, MatchArm, Module, PropagationMode, RecordEntry};
 
 pub mod logging;
+
+/// The evaluator's control-flow channel. Most failures are ordinary runtime
+/// errors ([`Flow::Fail`]); [`Flow::Propagate`] carries an `@Err` value that is
+/// early-returning from the enclosing function via `?^`. Both bubble through `?`;
+/// `Propagate` is caught only at the closure body and the top-level item loop.
+enum Flow {
+    /// A real runtime error: one or more diagnostics.
+    Fail(Vec<Diagnostic>),
+    /// An `@Err` value early-returning from the enclosing function (`?^`).
+    Propagate(Value),
+}
+
+/// Internal evaluator result. `Ok` is the produced value; `Err` is a [`Flow`].
+type Eval<T = Value> = Result<T, Flow>;
 
 pub type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
 
@@ -370,7 +384,19 @@ pub fn eval_module_with_globals(module: &Module, globals: Vec<(String, Value)>) 
     for (name, value) in globals {
         env.bind(name, value);
     }
-    eval_items(&module.items, &env)
+    // Top-level: a propagated `@Err` (`?^` with no enclosing function) becomes
+    // the program value and stops further items.
+    match eval_items(&module.items, &env) {
+        Ok(outcome) => outcome,
+        Err(Flow::Propagate(value)) => EvalOutcome {
+            value: Some(value),
+            diagnostics: Vec::new(),
+        },
+        Err(Flow::Fail(diagnostics)) => EvalOutcome {
+            value: None,
+            diagnostics,
+        },
+    }
 }
 
 fn bind_intrinsics(env: &Environment) {
@@ -411,7 +437,11 @@ fn intrinsics() -> Vec<(String, Value)> {
     intrinsics
 }
 
-fn eval_items(items: &[Item], env: &Environment) -> EvalOutcome {
+/// Evaluate a sequence of items, collecting `Flow::Fail` diagnostics across them
+/// (recovery) while letting `Flow::Propagate` bubble out via `?`. Both the
+/// top-level loop and blocks share this; only their callers decide whether to
+/// catch `Propagate`.
+fn eval_items(items: &[Item], env: &Environment) -> Eval<EvalOutcome> {
     let mut value = None;
     let mut diagnostics = Vec::new();
 
@@ -419,7 +449,8 @@ fn eval_items(items: &[Item], env: &Environment) -> EvalOutcome {
         match item {
             Item::Expr(expr) => match eval_expr_many(expr, env) {
                 Ok(next_value) => value = Some(next_value),
-                Err(mut next_diagnostics) => {
+                Err(flow @ Flow::Propagate(_)) => return Err(flow),
+                Err(Flow::Fail(mut next_diagnostics)) => {
                     value = None;
                     diagnostics.append(&mut next_diagnostics);
                 }
@@ -429,7 +460,8 @@ fn eval_items(items: &[Item], env: &Environment) -> EvalOutcome {
                     env.bind(binding.name.clone(), next_value);
                     value = None;
                 }
-                Err(mut next_diagnostics) => {
+                Err(flow @ Flow::Propagate(_)) => return Err(flow),
+                Err(Flow::Fail(mut next_diagnostics)) => {
                     value = None;
                     diagnostics.append(&mut next_diagnostics);
                 }
@@ -438,14 +470,14 @@ fn eval_items(items: &[Item], env: &Environment) -> EvalOutcome {
         }
     }
 
-    EvalOutcome { value, diagnostics }
+    Ok(EvalOutcome { value, diagnostics })
 }
 
 pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
     eval_expr_many(expr, env).map_err(first_diagnostic)
 }
 
-fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
     match &expr.kind {
         ExprKind::Literal(literal) => eval_literal(literal, expr.span).map_err(one_diagnostic),
         ExprKind::Undefined => Ok(Value::Undefined),
@@ -486,6 +518,11 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
         } => eval_field_access(receiver, field, *field_span, *null_safe, env),
         ExprKind::Index { callee, args } => eval_index(callee, args, expr.span, env),
         ExprKind::Call { callee, args } => eval_call(callee, args, expr.span, env),
+        ExprKind::Propagate {
+            value,
+            operator_span,
+            mode,
+        } => eval_propagate(value, *operator_span, *mode, env),
         _ => Err(one_diagnostic(unsupported_expr(
             expr.span,
             "this expression is not supported by the current evaluator",
@@ -493,12 +530,7 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Result<Value, Vec<Diagnosti
     }
 }
 
-fn eval_match(
-    subject: &Expr,
-    arms: &[MatchArm],
-    span: Span,
-    env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+fn eval_match(subject: &Expr, arms: &[MatchArm], span: Span, env: &Environment) -> Eval {
     let subject_value = eval_expr_many(subject, env)?;
 
     for arm in arms {
@@ -521,7 +553,7 @@ fn eval_match(
     Err(one_diagnostic(no_match(span)))
 }
 
-fn guards_pass(guards: &[Expr], env: &Environment) -> Result<bool, Vec<Diagnostic>> {
+fn guards_pass(guards: &[Expr], env: &Environment) -> Eval<bool> {
     for guard in guards {
         match eval_expr_many(guard, env)? {
             Value::Bool(true) => {}
@@ -682,23 +714,20 @@ fn match_record_pattern(
     Ok(Some(bindings))
 }
 
-fn eval_block(items: &[Item], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+fn eval_block(items: &[Item], env: &Environment) -> Eval {
     let child = env.child();
-    let outcome = eval_items(items, &child);
+    // `?` lets a `Flow::Propagate` from a binding value bubble past the block to
+    // the enclosing function; blocks only recover `Flow::Fail`.
+    let outcome = eval_items(items, &child)?;
 
     if outcome.diagnostics.is_empty() {
         Ok(outcome.value.unwrap_or(Value::Undefined))
     } else {
-        Err(outcome.diagnostics)
+        Err(Flow::Fail(outcome.diagnostics))
     }
 }
 
-fn eval_call(
-    callee: &Expr,
-    args: &[Expr],
-    span: Span,
-    env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eval {
     if let ExprKind::Tag(name) = &callee.kind {
         let mut payload = Vec::with_capacity(args.len());
         for arg in args {
@@ -744,10 +773,41 @@ fn eval_call(
         call_env.bind(name.clone(), value);
     }
 
-    eval_expr_many(closure.body.as_ref(), &call_env)
+    // The closure body is a propagation boundary: a `?^` `@Err` early-returns the
+    // function, so its `@Err` becomes the call's value. `Flow::Fail` still bubbles.
+    match eval_expr_many(closure.body.as_ref(), &call_env) {
+        Err(Flow::Propagate(value)) => Ok(value),
+        other => other,
+    }
 }
 
-fn eval_array(items: &[Expr], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+/// Evaluate `expr?^` / `expr?!`. `Result` is the ordinary tagged value
+/// `@Ok(v)` / `@Err(e)`; there is no dedicated Result value.
+fn eval_propagate(
+    value: &Expr,
+    operator_span: Span,
+    mode: PropagationMode,
+    env: &Environment,
+) -> Eval {
+    let result = eval_expr_many(value, env)?;
+
+    let Value::Tag { name, payload } = &result else {
+        return Err(one_diagnostic(propagate_type_error(operator_span)));
+    };
+
+    match (name.as_str(), payload.as_slice()) {
+        ("Ok", [inner]) => Ok(inner.clone()),
+        ("Err", [_]) => match mode {
+            // `?^` early-returns the enclosing function with the whole `@Err`.
+            PropagationMode::ReturnError => Err(Flow::Propagate(result)),
+            // `?!` panics, embedding the `@Err` payload in the diagnostic.
+            PropagationMode::Panic => Err(one_diagnostic(panic(operator_span, &payload[0]))),
+        },
+        _ => Err(one_diagnostic(propagate_type_error(operator_span))),
+    }
+}
+
+fn eval_array(items: &[Expr], env: &Environment) -> Eval {
     let mut values = Vec::with_capacity(items.len());
 
     for item in items {
@@ -757,7 +817,7 @@ fn eval_array(items: &[Expr], env: &Environment) -> Result<Value, Vec<Diagnostic
     Ok(Value::Array(Rc::new(values)))
 }
 
-fn eval_tuple(items: &[Expr], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+fn eval_tuple(items: &[Expr], env: &Environment) -> Eval {
     let mut values = Vec::with_capacity(items.len());
 
     for item in items {
@@ -767,7 +827,7 @@ fn eval_tuple(items: &[Expr], env: &Environment) -> Result<Value, Vec<Diagnostic
     Ok(Value::Tuple(Rc::new(values)))
 }
 
-fn eval_set(entries: &[RecordEntry], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+fn eval_set(entries: &[RecordEntry], env: &Environment) -> Eval {
     let mut values = Vec::new();
 
     for entry in entries {
@@ -790,7 +850,7 @@ fn eval_set(entries: &[RecordEntry], env: &Environment) -> Result<Value, Vec<Dia
     Ok(Value::Set(Rc::new(values)))
 }
 
-fn eval_record(entries: &[RecordEntry], env: &Environment) -> Result<Value, Vec<Diagnostic>> {
+fn eval_record(entries: &[RecordEntry], env: &Environment) -> Eval {
     let mut fields = Vec::new();
 
     for entry in entries {
@@ -804,7 +864,7 @@ fn fold_record_entry(
     fields: &mut Vec<(String, Value)>,
     entry: &RecordEntry,
     env: &Environment,
-) -> Result<(), Vec<Diagnostic>> {
+) -> Eval<()> {
     match entry {
         RecordEntry::Field { name, value, .. } => {
             let value = eval_expr_many(value, env)?;
@@ -885,7 +945,7 @@ fn fold_record_iteration(
     guard: Option<&Expr>,
     body: &[RecordEntry],
     env: &Environment,
-) -> Result<(), Vec<Diagnostic>> {
+) -> Eval<()> {
     let source_value = eval_expr_many(source, env)?;
     let values: Vec<Value> = match source_value {
         Value::Set(items) | Value::Array(items) => items.iter().cloned().collect(),
@@ -932,7 +992,7 @@ fn fold_record_element(
     fields: &mut Vec<(String, Value)>,
     expr: &Expr,
     env: &Environment,
-) -> Result<(), Vec<Diagnostic>> {
+) -> Eval<()> {
     let value = eval_expr_many(expr, env)?;
     let Value::Tuple(values) = value else {
         return Err(one_diagnostic(record_tuple_emit_type_error(
@@ -965,7 +1025,7 @@ fn eval_field_access(
     field_span: Span,
     null_safe: bool,
     env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+) -> Eval {
     let receiver_value = eval_expr_many(receiver, env)?;
     if null_safe && matches!(receiver_value, Value::Undefined | Value::Null) {
         return Ok(receiver_value);
@@ -1004,12 +1064,7 @@ fn collection_has_method(kind: &'static str, items: Rc<Vec<Value>>) -> Value {
     })
 }
 
-fn eval_index(
-    callee: &Expr,
-    args: &[Expr],
-    span: Span,
-    env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eval {
     if args.len() != 1 {
         return Err(one_diagnostic(unsupported_expr(
             span,
@@ -1073,7 +1128,7 @@ fn indexed_value(values: &[Value], index: i64) -> Option<Value> {
     values.get(index).cloned()
 }
 
-fn eval_text_key(expr: &Expr, span: Span, env: &Environment) -> Result<String, Vec<Diagnostic>> {
+fn eval_text_key(expr: &Expr, span: Span, env: &Environment) -> Eval<String> {
     match eval_expr_many(expr, env)? {
         Value::Text(text) => Ok(text),
         value => Err(one_diagnostic(record_type_error(
@@ -1185,12 +1240,7 @@ fn decode_string_literal(text: &str) -> String {
     decoded
 }
 
-fn eval_unary(
-    operator: &str,
-    value: &Expr,
-    span: Span,
-    env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+fn eval_unary(operator: &str, value: &Expr, span: Span, env: &Environment) -> Eval {
     let value = eval_expr_many(value, env)?;
 
     match (operator, value) {
@@ -1226,7 +1276,7 @@ fn eval_binary(
     right: &Expr,
     span: Span,
     env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+) -> Eval {
     match operator {
         "&&" => eval_boolean_and(left, right, span, env),
         "||" => eval_boolean_or(left, right, span, env),
@@ -1247,11 +1297,7 @@ fn eval_binary(
     }
 }
 
-fn eval_null_coalesce(
-    left: &Expr,
-    right: &Expr,
-    env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+fn eval_null_coalesce(left: &Expr, right: &Expr, env: &Environment) -> Eval {
     let left_value = eval_expr_many(left, env)?;
     if matches!(left_value, Value::Undefined | Value::Null) {
         eval_expr_many(right, env)
@@ -1260,12 +1306,7 @@ fn eval_null_coalesce(
     }
 }
 
-fn eval_boolean_and(
-    left: &Expr,
-    right: &Expr,
-    span: Span,
-    env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+fn eval_boolean_and(left: &Expr, right: &Expr, span: Span, env: &Environment) -> Eval {
     match eval_expr_many(left, env)? {
         Value::Bool(false) => Ok(Value::Bool(false)),
         Value::Bool(true) => match eval_expr_many(right, env)? {
@@ -1288,12 +1329,7 @@ fn eval_boolean_and(
     }
 }
 
-fn eval_boolean_or(
-    left: &Expr,
-    right: &Expr,
-    span: Span,
-    env: &Environment,
-) -> Result<Value, Vec<Diagnostic>> {
+fn eval_boolean_or(left: &Expr, right: &Expr, span: Span, env: &Environment) -> Eval {
     match eval_expr_many(left, env)? {
         Value::Bool(true) => Ok(Value::Bool(true)),
         Value::Bool(false) => match eval_expr_many(right, env)? {
@@ -1614,6 +1650,25 @@ fn platform_error(span: Span, message: String) -> Diagnostic {
         .with_note("host platform functions report errors through the runtime boundary")
 }
 
+fn propagate_type_error(span: Span) -> Diagnostic {
+    Diagnostic::error("error propagation expects a Result")
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(
+            span,
+            "`?^` and `?!` operate on `@Ok(value)` or `@Err(error)`",
+        ))
+        .with_note("the operand of `?^`/`?!` must evaluate to a Result tagged `@Ok` or `@Err`")
+}
+
+fn panic(span: Span, error: &Value) -> Diagnostic {
+    Diagnostic::error(format!("unwrapped an `@Err`: {error}"))
+        .with_code(codes::runtime::PANIC)
+        .with_label(Label::primary(span, "`?!` panicked on this `@Err` result"))
+        .with_note(
+            "use `?^` to propagate the `@Err` to the caller, or match on the Result to handle it",
+        )
+}
+
 fn closure_equality_error(span: Span, operator: &str) -> Diagnostic {
     Diagnostic::error("closures are not comparable")
         .with_code(codes::runtime::TYPE_ERROR)
@@ -1690,15 +1745,32 @@ fn unsupported_operator(operator: &str, span: Span) -> Diagnostic {
     ))
 }
 
-fn one_diagnostic(diagnostic: Diagnostic) -> Vec<Diagnostic> {
-    vec![diagnostic]
+fn one_diagnostic(diagnostic: Diagnostic) -> Flow {
+    Flow::Fail(vec![diagnostic])
 }
 
-fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
-    diagnostics
+fn first_diagnostic(flow: Flow) -> Diagnostic {
+    flow_diagnostics(flow)
         .into_iter()
         .next()
         .expect("expression errors include at least one diagnostic")
+}
+
+/// Collapse a [`Flow`] into the diagnostics it reports. A [`Flow::Propagate`]
+/// only reaches here when an `@Err` escaped past every catch boundary (a bare
+/// `eval_expr` with no enclosing function); surface it as a runtime error rather
+/// than swallow it.
+fn flow_diagnostics(flow: Flow) -> Vec<Diagnostic> {
+    match flow {
+        Flow::Fail(diagnostics) => diagnostics,
+        Flow::Propagate(value) => vec![propagate_escaped(&value)],
+    }
+}
+
+fn propagate_escaped(value: &Value) -> Diagnostic {
+    Diagnostic::error(format!("error propagated past the enclosing scope: {value}"))
+        .with_code(codes::runtime::PANIC)
+        .with_note("`?^` early-returns the enclosing function; with no enclosing function the `@Err` has nowhere to return to")
 }
 
 #[cfg(test)]
@@ -2487,6 +2559,115 @@ mod tests {
     #[test]
     fn user_binding_shadows_primitive_type_name() {
         assert_module_value("Text = 5\nText\n", Value::Int(5));
+    }
+
+    #[test]
+    fn propagate_unwraps_ok_payload() {
+        assert_eval("@Ok(7)?^", Value::Int(7));
+    }
+
+    #[test]
+    fn propagate_err_early_returns_enclosing_function() {
+        // `?^` on `@Err` returns that whole `@Err` as the function's value, and
+        // short-circuits: the unbound `missing` after it must never evaluate.
+        assert_module_value(
+            "f = (r) =>\n  x = r?^\n  missing\nf(@Err(\"boom\"))\n",
+            Value::Tag {
+                name: "Err".to_owned(),
+                payload: vec![Value::Text("boom".to_owned())],
+            },
+        );
+    }
+
+    #[test]
+    fn propagate_ok_threads_value_through_function() {
+        assert_module_value(
+            "f = (r) =>\n  x = r?^\n  x + 1\nf(@Ok(41))\n",
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn top_level_propagate_err_becomes_program_value_and_stops() {
+        // The `@Err` becomes the program value; the unbound `missing` after it
+        // must not run.
+        let module = parse_ok("@Err(\"top\")?^\nmissing\n");
+        let outcome = eval_module(&module);
+
+        assert_eq!(
+            outcome,
+            EvalOutcome {
+                value: Some(Value::Tag {
+                    name: "Err".to_owned(),
+                    payload: vec![Value::Text("top".to_owned())],
+                }),
+                diagnostics: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn propagate_through_binding_block_bubbles_to_enclosing_function() {
+        // A `?^` inside a binding-value block must early-return the function, not
+        // make `x` the `@Err` and continue.
+        assert_module_value(
+            "f = (r) =>\n  x =\n    a = r?^\n    a + 1\n  x + 100\nf(@Err(\"inner\"))\n",
+            Value::Tag {
+                name: "Err".to_owned(),
+                payload: vec![Value::Text("inner".to_owned())],
+            },
+        );
+    }
+
+    #[test]
+    fn propagate_on_non_result_reports_type_error() {
+        let diagnostic = eval_error("5?^");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    }
+
+    #[test]
+    fn panic_unwraps_ok_payload() {
+        assert_eval("@Ok(9)?!", Value::Int(9));
+    }
+
+    #[test]
+    fn panic_on_err_reports_runtime_panic_with_payload() {
+        let diagnostic = eval_error("@Err(\"kaboom\")?!");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::PANIC));
+        assert!(
+            diagnostic.message.contains("kaboom"),
+            "panic message should embed the @Err payload, got {:?}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn panic_on_non_result_reports_type_error() {
+        let diagnostic = eval_error("5?!");
+
+        assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    }
+
+    #[test]
+    fn chained_propagation_returns_ok_on_happy_path_and_first_err_on_sad_path() {
+        let program = "parse = (n) =>\n  n ?>\n    0 => @Err(\"zero\")\n    _ => @Ok(n)\n\
+             chain = (a, b) =>\n  x = parse(a)?^\n  y = parse(b)?^\n  @Ok(x + y)\n";
+        assert_module_value(
+            &format!("{program}chain(2, 3)\n"),
+            Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Int(5)],
+            },
+        );
+        assert_module_value(
+            &format!("{program}chain(0, 3)\n"),
+            Value::Tag {
+                name: "Err".to_owned(),
+                payload: vec![Value::Text("zero".to_owned())],
+            },
+        );
     }
 
     fn assert_module_value(source: &str, expected: Value) {
