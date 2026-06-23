@@ -20,6 +20,7 @@ aven-compiler.workspace = true
 aven-core.workspace = true
 aven-eval.workspace = true
 aven-fmt.workspace = true
+aven-host.workspace = true
 aven-lsp.workspace = true
 aven-parser.workspace = true
 clap.workspace = true

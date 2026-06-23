@@ -118,7 +118,8 @@ fn explain(code: &str) -> Result<()> {
 
 fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
     let file = load_source_file(path)?;
-    let checked = aven_compiler::check_source_file(file);
+    let checked =
+        aven_compiler::check_source_file_with_globals(file, &build_host()?.check_globals());
     let timings = checked.timings;
     let file = checked.document.file();
 
@@ -160,7 +161,8 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
     let mut value = None;
 
     if !diagnostics.iter().any(AvenDiagnostic::is_error) {
-        let outcome = aven_eval::eval_module_with_globals(&parse.module, prelude()?);
+        let outcome =
+            aven_eval::eval_module_with_globals(&parse.module, build_host()?.eval_globals());
         value = outcome.value;
         diagnostics.extend(outcome.diagnostics);
     }
@@ -188,15 +190,42 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn prelude() -> Result<Vec<(String, aven_eval::Value)>> {
-    let log = root_logger()?;
-    let platform = default_platform(log.clone());
+/// Build the host registry that feeds both `run` (values) and `check` (types).
+///
+/// The CLI owns the concrete IO (the `StdoutLogSink`, the root trace context, the
+/// `Console.log`/`debug` natives); `aven-host` owns the registration/typing
+/// vocabulary, so the logger type lives there and the CLI only calls `build::*`.
+fn build_host() -> Result<aven_host::Host> {
+    let mut host = aven_host::Host::new();
 
-    Ok(vec![
-        ("logger".to_owned(), log),
-        ("Platform".to_owned(), platform),
-        ("debug".to_owned(), debug_native()),
-    ])
+    // Share one logger value between the `logger` global and `Platform.Log` so
+    // they emit on the same sink and trace context.
+    let log_sink = Rc::new(StdoutLogSink);
+    let log = aven_eval::logging::logger(log_sink, root_trace_context()?);
+    // `logger` runs untyped for now: its methods take an optional trailing fields
+    // argument (`logger.info("msg")` and `logger.info("msg", { .. })` are both
+    // valid), which needs default/optional parameters (Milestone D) to type
+    // without falsely rejecting the one-argument form. Re-typed in D4.
+    host.register_runtime_only("logger".to_owned(), log.clone());
+
+    use aven_host::build;
+    // Open record: `Platform.Log` and other capabilities stay permissive while
+    // `Platform.Console.log` is precisely typed (its single `Text` argument is
+    // unambiguous), demonstrating the typed boundary end to end.
+    let platform_type = build::open_record(vec![(
+        "Console",
+        build::record(vec![(
+            "log",
+            build::function(vec![build::text()], build::unit()),
+        )]),
+    )]);
+    host.register("Platform".to_owned(), default_platform(log), platform_type);
+
+    // TODO(P2): `debug : (a) -> a` is generic; its type isn't expressible until
+    // scheme support / the typed-fn adapter lands, so it runs untyped for now.
+    host.register_runtime_only("debug".to_owned(), debug_native());
+
+    Ok(host)
 }
 
 /// Writes each argument's `Display` to stderr (space-separated, newline-terminated)
@@ -219,11 +248,6 @@ fn debug_native() -> aven_eval::Value {
             _ => aven_eval::Value::unit(),
         })
     })
-}
-
-fn root_logger() -> Result<aven_eval::Value> {
-    let log_sink = Rc::new(StdoutLogSink);
-    Ok(aven_eval::logging::logger(log_sink, root_trace_context()?))
 }
 
 fn default_platform(log: aven_eval::Value) -> aven_eval::Value {

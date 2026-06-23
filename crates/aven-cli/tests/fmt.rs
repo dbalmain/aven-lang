@@ -154,6 +154,41 @@ fn check_reports_type_diagnostics() {
 }
 
 #[test]
+fn check_accepts_logger_calls_while_untyped() {
+    // `logger` is registered runtime-only until default/optional parameters
+    // (Milestone D) let its optional trailing fields argument be typed without
+    // rejecting the one-argument form. Both call shapes must check cleanly.
+    let one_arg = TempFile::new("check-logger-one", "logger.info(\"hi\")\n");
+    let two_arg = TempFile::new("check-logger-two", "logger.info(\"hi\", { n: 1 })\n");
+
+    assert_success(&run_aven(["check"], one_arg.path()));
+    assert_success(&run_aven(["check"], two_arg.path()));
+}
+
+#[test]
+fn check_rejects_platform_call_with_wrong_argument_type() {
+    let file = TempFile::new("check-platform-arg", "Platform.Console.log(42)\n");
+
+    let output = run_aven(["check"], file.path());
+
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("type.mismatch"),
+        "expected type mismatch, got:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn check_accepts_valid_platform_call() {
+    let file = TempFile::new("check-platform-ok", "Platform.Console.log(\"hi\")\n");
+
+    let output = run_aven(["check"], file.path());
+
+    assert_success(&output);
+}
+
+#[test]
 fn check_json_reports_structured_diagnostics() {
     let source = "value : Missing = value\n";
     let file = TempFile::new("json-type-error", source);

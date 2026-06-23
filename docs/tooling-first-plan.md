@@ -1889,8 +1889,34 @@ in thin, self-contained slices.
   without reaching into row internals; `TypeScheme` stays private. `keysOf`,
   `pick`, and `omit` remain checker-native/runtime comptime builtins — they are
   **not** host globals and are unchanged.
-- **P1b (later).** A host crate (`aven-host`) plus CLI/eval wiring so a real host
-  registers globals end-to-end.
+- **P1b done (`aven-host` + wiring).** A new `aven-host` crate sits above both
+  `aven-eval` and `aven-check` and holds a `Host` registry. `register(name,
+  value, type)` binds a runtime value and its Aven type in **one** call (the same
+  API for libraries and platforms, so the two halves can't drift);
+  `register_runtime_only(name, value)` is the escape hatch for not-yet-typeable
+  generics (runs but isn't checked); `eval_globals()`/`check_globals()` feed the
+  evaluator (all values) and checker (typed only). Required capabilities are Rust
+  traits the platform implements: `register_logger(sink, trace)` takes the
+  existing `aven_eval::logging::LogSink` impl, builds the logger value, and
+  registers it under `logger` with the statically-known type (`logger_type()`,
+  the single source so the CLI's `Platform.Log` shares it, built from
+  `aven_check::build::*`). `aven-compiler` threads globals through
+  `analyze_semantics_with_globals` / `check_source_file_with_globals` (the
+  no-global versions delegate with `&[]`; the incremental artifact path is
+  unchanged). The CLI's `build_host()` registers `Platform` with
+  `Console.log : (Text) -> Unit` precisely typed (the open `Platform` record keeps
+  `Log`/other capabilities permissive), demonstrating the typed boundary end to
+  end — `Platform.Console.log(42)` is a type error, `Platform.Console.log("hi")`
+  passes. **`logger` is registered runtime-only for now**: its level methods take
+  an optional trailing fields argument (`logger.info("msg")` and
+  `logger.info("msg", { .. })` both valid), which needs default/optional
+  parameters (Milestone D, chosen: explicit default params) to type without
+  falsely rejecting the one-argument form. `logger_type()` /`register_logger`
+  exist for when D lands (re-typed in D4). Deferred: Milestone D (default params)
+  then precise `logger` typing; generic host fns like `debug` need scheme support
+  / the typed-fn adapter (P2); the recursive `Logger` type (`child` returns an
+  open record); LSP seeding (the editor keeps un-seeded `check_module` for now);
+  and checking calls in expression (non-statement) position.
 - **P2 (later).** A typed-fn adapter so host functions carry generic schemes, not
   just monomorphic types.
 

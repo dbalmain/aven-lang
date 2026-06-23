@@ -6,6 +6,7 @@ members = [
   "crates/aven-core",
   "crates/aven-eval",
   "crates/aven-fmt",
+  "crates/aven-host",
   "crates/aven-lsp",
   "crates/aven-parser",
 ]
@@ -26,6 +27,7 @@ aven-compiler = { path = "crates/aven-compiler" }
 aven-core = { path = "crates/aven-core" }
 aven-eval = { path = "crates/aven-eval" }
 aven-fmt = { path = "crates/aven-fmt" }
+aven-host = { path = "crates/aven-host" }
 aven-lsp = { path = "crates/aven-lsp" }
 aven-parser = { path = "crates/aven-parser" }
 clap = { version = "4.6.1", features = ["derive"] }

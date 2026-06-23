@@ -100,6 +100,7 @@ dependencies = [
  "aven-core",
  "aven-eval",
  "aven-fmt",
+ "aven-host",
  "aven-lsp",
  "aven-parser",
  "clap",
@@ -142,6 +143,14 @@ version = "0.1.0"
 dependencies = [
  "aven-core",
  "aven-parser",
+]
+
+[[package]]
+name = "aven-host"
+version = "0.1.0"
+dependencies = [
+ "aven-check",
+ "aven-eval",
 ]
 
 [[package]]
