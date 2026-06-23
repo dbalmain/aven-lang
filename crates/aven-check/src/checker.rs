@@ -40,6 +40,10 @@ pub(crate) struct Checker<'a> {
     memo: HashMap<String, TypeScheme>,
     in_progress: HashSet<String>,
     unifier: Unifier,
+    /// Host/library globals seeded into the top-level value environment. They
+    /// are checked through the same `value_types` paths as user declarations,
+    /// which shadow them.
+    globals: Vec<(String, Type)>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
 }
@@ -63,6 +67,7 @@ impl<'a> Checker<'a> {
             memo: HashMap::new(),
             in_progress: HashSet::new(),
             unifier: Unifier::default(),
+            globals: Vec::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
         }
@@ -78,12 +83,23 @@ impl<'a> Checker<'a> {
         checker
     }
 
+    #[cfg(test)]
     pub(crate) fn with_module(
         known_types: HashSet<String>,
         type_definitions: HashMap<String, Type>,
         module: &'a Module,
     ) -> Self {
+        Self::with_module_and_globals(known_types, type_definitions, module, &[])
+    }
+
+    pub(crate) fn with_module_and_globals(
+        known_types: HashSet<String>,
+        type_definitions: HashMap<String, Type>,
+        module: &'a Module,
+        globals: &[(String, Type)],
+    ) -> Self {
         let mut checker = Self::with_module_environment(known_types, type_definitions, module);
+        checker.globals = globals.to_vec();
         checker.build_value_types(module);
         checker.build_comptime_artifacts(module);
         checker
@@ -112,7 +128,23 @@ impl<'a> Checker<'a> {
     }
 
     fn build_value_types(&mut self, module: &Module) {
-        let mut types = HashMap::new();
+        // Seed host/library globals into `value_types` before inferring user
+        // declarations, but only for names no user declaration claims, so user
+        // top-level declarations shadow them (runtime-prelude scoping). Seeding
+        // up front lets a user binding that references a global (e.g.
+        // `x = logger.info`) resolve it through the existing read paths during
+        // inference.
+        let declared: HashSet<_> = collect_declarations(module)
+            .into_iter()
+            .map(|declaration| declaration.name)
+            .collect();
+        let mut types: HashMap<String, Option<TypeScheme>> = self
+            .globals
+            .iter()
+            .filter(|(name, _)| !declared.contains(name))
+            .map(|(name, ty)| (name.clone(), Some(TypeScheme::mono(ty.clone()))))
+            .collect();
+        self.value_types = types.clone();
 
         for declaration in collect_declarations(module) {
             let name = declaration.name.clone();
@@ -459,6 +491,12 @@ impl<'a> Checker<'a> {
             ExprKind::Match { subject, arms, .. } => {
                 self.check_match_arms(subject, arms, None);
             }
+            ExprKind::Call { callee, args } => self.check_value_call(callee, args),
+            ExprKind::FieldAccess {
+                receiver, field, ..
+            } => {
+                self.check_value_field_access(receiver, field, expr.span);
+            }
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Undefined
@@ -469,6 +507,63 @@ impl<'a> Checker<'a> {
             _ => walk_expr_children(expr, &mut |child| {
                 self.check_value_expr(child);
             }),
+        }
+    }
+
+    /// Check a call expression in statement position. When the callee resolves
+    /// to a concretely-known function type (e.g. a host global), surface
+    /// argument/arity errors through the existing arity/mismatch machinery
+    /// rather than letting inference silently defer them. A non-concrete callee
+    /// (unknown/free name) keeps today's permissive behaviour.
+    fn check_value_call(&mut self, callee: &Expr, args: &[Expr]) {
+        for arg in args {
+            self.check_value_expr(arg);
+        }
+        self.check_value_expr(callee);
+
+        let env = self.local_types.inference_env();
+        let inferred = self.infer(&env, callee);
+        let callee_type = self.normalize(&self.resolve_and_default(&inferred));
+        let Type::Function { params, .. } = &callee_type else {
+            return;
+        };
+        if !is_concrete_type(&callee_type) {
+            return;
+        }
+
+        if params.len() != args.len() {
+            self.report_function_arity_mismatch(params.len(), args.len(), callee.span);
+            return;
+        }
+
+        let params = params.clone();
+        for (expected, arg) in params.iter().zip(args) {
+            self.check_value_against(expected, arg);
+        }
+    }
+
+    /// Check a field-access expression in statement position. A concretely-known
+    /// closed record receiver that lacks the field is a real missing-field
+    /// error; an unknown/open receiver stays deferred as before.
+    fn check_value_field_access(&mut self, receiver: &Expr, field: &str, span: Span) {
+        self.check_value_expr(receiver);
+
+        let env = self.local_types.inference_env();
+        let inferred = self.infer(&env, receiver);
+        let receiver_type = self.normalize(&self.resolve_and_default(&inferred));
+        let Type::Record(row) = &receiver_type else {
+            return;
+        };
+        if row.tail != RowTail::Closed || !is_concrete_type(&receiver_type) {
+            return;
+        }
+
+        let has_field = row
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == field));
+        if !has_field {
+            self.report_missing_field(field, span);
         }
     }
 
@@ -3627,26 +3722,7 @@ impl<'a> Checker<'a> {
             ExprKind::Index { callee, args } => self.infer_value_index(env, callee, args),
             ExprKind::FieldAccess {
                 receiver, field, ..
-            } => {
-                let snapshot = self.unifier.snapshot();
-                let receiver_type = self.infer(env, receiver);
-                let field_type = self.unifier.fresh();
-                let tail = self.unifier.fresh_row_var();
-                let required = Type::Record(Row {
-                    entries: vec![RowEntry::Field {
-                        name: field.clone(),
-                        ty: field_type.clone(),
-                    }],
-                    tail: RowTail::Var(tail),
-                });
-
-                if self.unifier.unify(&receiver_type, &required).is_err() {
-                    self.unifier.restore(snapshot);
-                    Type::Deferred
-                } else {
-                    field_type
-                }
-            }
+            } => self.infer_field_access(env, receiver, field),
             ExprKind::Binary {
                 left,
                 operator,
@@ -3866,6 +3942,27 @@ impl<'a> Checker<'a> {
         Type::Function {
             params: param_types,
             result: Box::new(result_type),
+        }
+    }
+
+    fn infer_field_access(&mut self, env: &TypeEnv, receiver: &Expr, field: &str) -> Type {
+        let snapshot = self.unifier.snapshot();
+        let receiver_type = self.infer(env, receiver);
+        let field_type = self.unifier.fresh();
+        let tail = self.unifier.fresh_row_var();
+        let required = Type::Record(Row {
+            entries: vec![RowEntry::Field {
+                name: field.to_owned(),
+                ty: field_type.clone(),
+            }],
+            tail: RowTail::Var(tail),
+        });
+
+        if self.unifier.unify(&receiver_type, &required).is_err() {
+            self.unifier.restore(snapshot);
+            Type::Deferred
+        } else {
+            field_type
         }
     }
 
@@ -4200,10 +4297,18 @@ impl<'a> Checker<'a> {
             };
         }
 
-        let Some(scheme) = self.infer_top_level(name) else {
-            return Type::Deferred;
-        };
-        self.unifier.instantiate_scheme(&scheme)
+        if let Some(scheme) = self.infer_top_level(name) {
+            return self.unifier.instantiate_scheme(&scheme);
+        }
+
+        // Seeded host globals have no binding to infer from; read their
+        // published scheme so the inference path sees the same type as the
+        // directed-checking path.
+        if let Some(Some(scheme)) = self.value_types.get(name).cloned() {
+            return self.unifier.instantiate_scheme(&scheme);
+        }
+
+        Type::Deferred
     }
 
     fn infer_variant_constructor(&mut self, env: &TypeEnv, tag: &str, args: &[Expr]) -> Type {

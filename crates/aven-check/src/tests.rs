@@ -3665,6 +3665,95 @@ fn check_module_reports_type_only_entries_in_value_records() {
     );
 }
 
+/// A small host-style logger global: `logger : { info: (Text) -> Unit }`.
+fn logger_globals() -> Vec<(String, Type)> {
+    vec![(
+        "logger".to_owned(),
+        build::record(vec![(
+            "info",
+            build::function(vec![build::text()], build::unit()),
+        )]),
+    )]
+}
+
+#[test]
+fn seeded_global_call_checks_ok() {
+    let output = parse_module("logger.info(\"hi\")\n");
+    let check = check_module_with_globals(&output.module, &logger_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn seeded_global_call_rejects_wrong_argument_type() {
+    let output = parse_module("logger.info(42)\n");
+    let check = check_module_with_globals(&output.module, &logger_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn seeded_global_rejects_unknown_field() {
+    let output = parse_module("logger.nope\n");
+    let check = check_module_with_globals(&output.module, &logger_globals());
+
+    assert!(
+        has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+        "expected a missing-field diagnostic, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn seeded_global_call_rejects_extra_argument() {
+    let output = parse_module("logger.info(\"a\", \"b\")\n");
+    let check = check_module_with_globals(&output.module, &logger_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn seeded_global_reaches_inference_name_path() {
+    // Binding `x` to `logger.info` forces inference (not directed checking) of
+    // the seeded global, then `x(42)` must still catch the Text/Int mismatch.
+    let source = "x = logger.info\nx(42)\n";
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &logger_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn non_seeded_free_name_stays_unchecked() {
+    let output = parse_module("mystery.foo()\n");
+    let check = check_module_with_globals(&output.module, &logger_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics for non-seeded name, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn user_binding_shadows_seeded_global() {
+    // A user top-level `logger = 5` wins over the seeded record, so using
+    // `logger` as a function/record is now the Int it was bound to.
+    let source = "logger = 5\nvalue : Int = logger\n";
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &logger_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected the user binding to shadow the seed, got {:?}",
+        check.diagnostics
+    );
+}
+
 fn has_diagnostic_code(diagnostics: &[Diagnostic], code: &str) -> bool {
     matching_codes(diagnostics, code) > 0
 }

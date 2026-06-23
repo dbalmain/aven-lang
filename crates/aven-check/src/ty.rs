@@ -555,6 +555,80 @@ pub(crate) fn named_builtin(name: &str) -> Type {
     Type::Named(name.to_owned())
 }
 
+/// Public type builders so hosts and tests can spell Aven types in Rust
+/// without reaching into row internals. These wrap the same `Type`/`Row`
+/// representation the checker uses; `check_module_with_globals` consumes the
+/// `Type`s they produce.
+pub mod build {
+    use super::{Row, RowEntry, RowTail, Type};
+
+    /// A named type such as `Text` or a user/host-defined type name.
+    pub fn named(name: &str) -> Type {
+        Type::Named(name.to_owned())
+    }
+
+    pub fn text() -> Type {
+        named("Text")
+    }
+
+    pub fn int() -> Type {
+        named("Int")
+    }
+
+    pub fn float() -> Type {
+        named("Float")
+    }
+
+    pub fn bool() -> Type {
+        named("Bool")
+    }
+
+    pub fn unit() -> Type {
+        named("Unit")
+    }
+
+    /// A function type `(params...) -> result`.
+    pub fn function(params: Vec<Type>, result: Type) -> Type {
+        Type::Function {
+            params,
+            result: Box::new(result),
+        }
+    }
+
+    /// A closed record `{ field: ty, ... }`.
+    pub fn record(fields: Vec<(&str, Type)>) -> Type {
+        Type::Record(record_row(fields, RowTail::Closed))
+    }
+
+    /// An open record `{ field: ty, ..., .. }` that admits extra fields.
+    pub fn open_record(fields: Vec<(&str, Type)>) -> Type {
+        Type::Record(record_row(fields, RowTail::Open))
+    }
+
+    /// An optional type `?ty` (may be absent / `undefined`).
+    pub fn optional(ty: Type) -> Type {
+        Type::Optional(Box::new(ty))
+    }
+
+    /// A nullable type `ty?` (may be `null`).
+    pub fn nullable(ty: Type) -> Type {
+        Type::Nullable(Box::new(ty))
+    }
+
+    fn record_row(fields: Vec<(&str, Type)>, tail: RowTail) -> Row {
+        Row {
+            entries: fields
+                .into_iter()
+                .map(|(name, ty)| RowEntry::Field {
+                    name: name.to_owned(),
+                    ty,
+                })
+                .collect(),
+            tail,
+        }
+    }
+}
+
 pub(crate) fn render_literal_value(literal: &Literal) -> &str {
     match literal {
         Literal::Bool(true) => "true",

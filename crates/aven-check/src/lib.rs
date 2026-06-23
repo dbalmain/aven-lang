@@ -9,6 +9,7 @@ use aven_core::{Diagnostic, Span};
 use aven_parser::{Expr, Module};
 
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
+pub use ty::build;
 pub use ty::{
     RecordField, Row, RowEntry, RowTail, Type, function_signature, record_fields, render_type,
     variant_tags,
@@ -70,10 +71,19 @@ impl InferredType {
 }
 
 pub fn check_module(module: &Module) -> CheckOutput {
+    check_module_with_globals(module, &[])
+}
+
+/// Check `module` with a set of host/library globals seeded into the top-level
+/// value environment. Each `(name, ty)` is a monomorphic value available to the
+/// module unless a user top-level declaration shadows it. Free references to a
+/// seeded name are checked by the existing call/field/arity machinery.
+pub fn check_module_with_globals(module: &Module, globals: &[(String, Type)]) -> CheckOutput {
     let known_types = known_type_names(module);
     let type_definitions = type_definitions(module, &known_types);
     let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
-    let mut checker = Checker::with_module(known_types, type_definitions, module);
+    let mut checker =
+        Checker::with_module_and_globals(known_types, type_definitions, module, globals);
 
     checker.diagnostics.extend(alias_diagnostics);
     checker.check_module(module);

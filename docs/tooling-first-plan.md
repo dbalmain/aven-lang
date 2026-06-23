@@ -1861,6 +1861,39 @@ the later bytecode/runtime work.
   error-type fitting / `mapError` (a checker concern) and any finer block-level
   exit semantics — function-level propagation is what's implemented.
 
+## Milestone P — typed platform boundary
+
+Aven's differentiator is a type-safe host/script boundary: a host (or a
+Rust-implemented library) registers named values with their Aven types, and
+`aven check` type-checks uses of those names. This milestone builds that boundary
+in thin, self-contained slices.
+
+- **P1a done (`aven-check` only).** The checker can seed a typed global
+  environment via `check_module_with_globals(module, globals)`, where `globals:
+  &[(String, Type)]` are monomorphic host/library values; `check_module`
+  delegates with `&[]`. Seeds flow into the existing top-level `value_types`
+  map (each as `TypeScheme::mono`) for names no user declaration claims, so a
+  user top-level binding **shadows** a seed (runtime-prelude scoping). Seeded
+  names are then checked by the **existing** call/field/arity machinery — both
+  the directed `check_value_against` path and the inference `Name` path read
+  them (the latter via a `value_types` fallback in `infer_name_reference`, and
+  seeds are populated before user-declaration inference so a binding like
+  `x = logger.info` resolves the global). Statement-position calls and field
+  accesses are now checked against a *concretely-known* callee/receiver type
+  (`check_value_call`/`check_value_field_access`), surfacing argument/arity and
+  missing-field errors through the existing `report_*` helpers instead of
+  silently deferring; an unknown/free receiver keeps today's permissive
+  behaviour, so non-seeded names produce no false errors. A small public type
+  builder surface (`build::named/text/int/float/bool/unit/function/record/
+  open_record/optional/nullable`) lets hosts and tests spell Aven types in Rust
+  without reaching into row internals; `TypeScheme` stays private. `keysOf`,
+  `pick`, and `omit` remain checker-native/runtime comptime builtins — they are
+  **not** host globals and are unchanged.
+- **P1b (later).** A host crate (`aven-host`) plus CLI/eval wiring so a real host
+  registers globals end-to-end.
+- **P2 (later).** A typed-fn adapter so host functions carry generic schemes, not
+  just monomorphic types.
+
 ## To investigate later
 
 - **Braceless multiline set/record literals.** Allow dropping the braces on
