@@ -1,0 +1,3 @@
+error parse.required-param-after-default: required parameter follows a defaulted parameter
+  label 12..13: this parameter has no default
+  note: give this parameter a default, or move it before the defaulted parameters

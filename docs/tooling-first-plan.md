@@ -1920,6 +1920,44 @@ in thin, self-contained slices.
 - **P2 (later).** A typed-fn adapter so host functions carry generic schemes, not
   just monomorphic types.
 
+## Milestone D — default/optional parameters
+
+Aven gains default/optional parameters so capabilities like `logger.info` (an
+optional trailing fields argument) can be typed without falsely rejecting the
+short call form (see Milestone P1b). The chosen surface is explicit defaults on
+**lambda parameters**: `(msg: Text, fields: Record = {}) => ...`,
+`(name = "world") => ...`. A parameter with a default may be omitted at the call
+site. Sliced parser-first; semantics follow.
+
+- **D1 done (`aven-parser` + `aven-fmt`).** `Param` carries a new
+  `default: Option<Expr>`; `parse_lambda_params` parses an optional `= value`
+  after the annotation in both the ordinary-identifier and comptime-param arms.
+  The default is an ordinary **value** expression (parsed via the same value
+  entry as a call argument, not the type-term parser), so it naturally stops at
+  the `,` or `)` that delimits the parameter; the `Param`'s span extends to cover
+  it. Defaults must be **trailing**: a required parameter following a defaulted
+  one emits a recoverable `parse.required-param-after-default` diagnostic (primary
+  label on the offending parameter, repair note) and parsing continues. `walk.rs`
+  visits the default so name resolution sees it. The token-based formatter already
+  renders `name: Type = default` / `name = default` with normal `=`/`:` spacing
+  (round-trip is stable); no fmt rendering change was needed beyond a guarding
+  test. The checker and evaluator ignore the new field for now, so a defaulted
+  lambda still type-checks/evaluates with today's arity behaviour — a call that
+  omits a defaulted argument still errors until D3 (acceptable for this slice).
+- **D2 (checker).** Give `Type::Function` a required-arity notion derived from the
+  lambda's defaulted-parameter count, and add arity / default-value-type checks
+  (a default's type must satisfy the parameter's annotation).
+- **D3 (evaluator).** Apply defaults at call time: a call omitting a defaulted
+  argument evaluates the default expression in the appropriate scope.
+- **D4 (re-typing).** Re-type `logger` (precise level-method signatures with the
+  optional trailing fields argument) now that defaults exist, replacing the
+  runtime-only registration from P1b.
+
+Deferred: writing a literal default inside a standalone function-*type*
+annotation (e.g. `(Text, Record = {}) -> Unit` as a bare type) is out of scope.
+A function type's optionality will be represented in the D2 type IR, derived from
+the lambda, not from type-annotation syntax.
+
 ## To investigate later
 
 - **Braceless multiline set/record literals.** Allow dropping the braces on

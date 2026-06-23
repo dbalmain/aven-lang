@@ -53,6 +53,7 @@ pub mod parse {
     pub const MISSING_LAMBDA_BODY: &str = "parse.missing-lambda-body";
     pub const MISSING_MATCH_ARMS: &str = "parse.missing-match-arms";
     pub const MISSING_MATCH_BODY: &str = "parse.missing-match-body";
+    pub const REQUIRED_PARAM_AFTER_DEFAULT: &str = "parse.required-param-after-default";
     pub const SINGLE_ITEM_TUPLE: &str = "parse.single-item-tuple";
     pub const UNCLOSED_DELIMITER: &str = "parse.unclosed-delimiter";
     pub const UNEXPECTED_COMPTIME_MARKER: &str = "parse.unexpected-comptime-marker";
@@ -134,6 +135,7 @@ pub const ALL: &[&str] = &[
     parse::MISSING_LAMBDA_BODY,
     parse::MISSING_MATCH_ARMS,
     parse::MISSING_MATCH_BODY,
+    parse::REQUIRED_PARAM_AFTER_DEFAULT,
     parse::SINGLE_ITEM_TUPLE,
     parse::UNCLOSED_DELIMITER,
     parse::UNEXPECTED_COMPTIME_MARKER,

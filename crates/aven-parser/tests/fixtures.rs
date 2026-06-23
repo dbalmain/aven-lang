@@ -688,6 +688,11 @@ fn render_param_ast(output: &mut String, param: &Param, indent: usize) {
         let _ = writeln!(output, "annotation");
         render_expr_ast(output, annotation, indent + 2);
     }
+    if let Some(default) = &param.default {
+        write_indent(output, indent + 1);
+        let _ = writeln!(output, "default");
+        render_expr_ast(output, default, indent + 2);
+    }
 }
 
 fn render_literal_ast(output: &mut String, literal: &Literal, indent: usize) {

@@ -40,6 +40,10 @@ pub struct Param {
     pub comptime: bool,
     /// Optional `: type` ascription, parsed as an ordinary expression.
     pub annotation: Option<Expr>,
+    /// Optional `= value` default, parsed as an ordinary value expression.
+    /// `None` when the parameter has no default. Semantics (arity, default-type
+    /// checking, applying the default) are deferred to milestones D2/D3.
+    pub default: Option<Expr>,
     pub span: Span,
 }
 
@@ -644,6 +648,10 @@ impl Parser<'_> {
             return params;
         }
 
+        // Tracks the most recent defaulted parameter so a later required
+        // parameter can be flagged: defaults must be trailing.
+        let mut last_default_span: Option<Span> = None;
+
         loop {
             match self.current() {
                 Some(Token {
@@ -661,15 +669,23 @@ impl Parser<'_> {
                         None
                     };
 
-                    let span = annotation
+                    let default = self.parse_param_default();
+
+                    let annotation_end = annotation
                         .as_ref()
                         .map_or(name_span, |term| name_span.merge(term.span));
+                    let span = default
+                        .as_ref()
+                        .map_or(annotation_end, |value| annotation_end.merge(value.span));
+
+                    self.check_required_after_default(&mut last_default_span, &default, span);
 
                     params.push(Param {
                         name,
                         name_span,
                         comptime: false,
                         annotation,
+                        default,
                         span,
                     });
                 }
@@ -689,15 +705,23 @@ impl Parser<'_> {
                         None
                     };
 
-                    let span = annotation
+                    let default = self.parse_param_default();
+
+                    let annotation_end = annotation
                         .as_ref()
                         .map_or(marker_span, |term| marker_span.merge(term.span));
+                    let span = default
+                        .as_ref()
+                        .map_or(annotation_end, |value| annotation_end.merge(value.span));
+
+                    self.check_required_after_default(&mut last_default_span, &default, span);
 
                     params.push(Param {
                         name,
                         name_span,
                         comptime: true,
                         annotation,
+                        default,
                         span,
                     });
                 }
@@ -721,6 +745,41 @@ impl Parser<'_> {
         }
 
         params
+    }
+
+    /// Parses an optional `= value` default on a lambda parameter. The default
+    /// is an ordinary value expression (not a type term); it naturally stops at
+    /// the `,` or `)` that delimits the parameter list.
+    fn parse_param_default(&mut self) -> Option<Expr> {
+        if !self.current_is_operator("=") {
+            return None;
+        }
+
+        self.advance();
+        Some(self.parse_expression())
+    }
+
+    /// Enforces the trailing-default rule: once a parameter carries a default,
+    /// every following parameter must too. A required parameter after a
+    /// defaulted one is a recoverable error; parsing continues.
+    fn check_required_after_default(
+        &mut self,
+        last_default_span: &mut Option<Span>,
+        default: &Option<Expr>,
+        param_span: Span,
+    ) {
+        if default.is_some() {
+            *last_default_span = Some(param_span);
+        } else if last_default_span.is_some() {
+            self.diagnostics.push(
+                Diagnostic::error("required parameter follows a defaulted parameter")
+                    .with_code(codes::parse::REQUIRED_PARAM_AFTER_DEFAULT)
+                    .with_label(Label::primary(param_span, "this parameter has no default"))
+                    .with_note(
+                        "give this parameter a default, or move it before the defaulted parameters",
+                    ),
+            );
+        }
     }
 
     fn parse_postfix(&mut self) -> Expr {
@@ -2412,10 +2471,10 @@ fn delimiter_text(kind: &TokenKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use aven_core::{FileId, SourceFile};
+    use aven_core::{FileId, SourceFile, codes};
 
     use super::{
-        ExprKind, Item, Literal, ParseOutput, PropagationMode, RecordEntry, parse_module,
+        ExprKind, Item, Literal, Param, ParseOutput, PropagationMode, RecordEntry, parse_module,
         parse_source,
     };
     use crate::TokenKind;
@@ -3101,6 +3160,73 @@ mod tests {
         };
         assert_eq!(signature.name, "load");
         assert!(matches!(&signature.annotation.kind, ExprKind::Arrow { .. }));
+    }
+
+    fn lambda_params(output: &ParseOutput, index: usize) -> &[Param] {
+        let ExprKind::Lambda { params, .. } = binding_value(output, index) else {
+            panic!("expected lambda binding");
+        };
+        params
+    }
+
+    #[test]
+    fn parses_unannotated_lambda_parameter_defaults() {
+        let output = parse_module("f = (x, y = 1) => x + y\n");
+
+        assert!(output.diagnostics.is_empty());
+        let params = lambda_params(&output, 0);
+        assert_eq!(params.len(), 2);
+
+        assert_eq!(params[0].name, "x");
+        assert!(params[0].annotation.is_none());
+        assert!(params[0].default.is_none());
+
+        assert_eq!(params[1].name, "y");
+        assert!(params[1].annotation.is_none());
+        assert!(matches!(
+            params[1].default.as_ref().map(|default| &default.kind),
+            Some(ExprKind::Literal(Literal::Number(value))) if value == "1"
+        ));
+    }
+
+    #[test]
+    fn parses_annotated_lambda_parameter_default_bounded_at_separator() {
+        let output = parse_module("g = (msg: Text, fields: Record = {}) => msg\n");
+
+        assert!(output.diagnostics.is_empty());
+        let params = lambda_params(&output, 0);
+        assert_eq!(params.len(), 2);
+
+        assert_eq!(params[0].name, "msg");
+        assert!(params[0].annotation.is_some());
+        assert!(params[0].default.is_none());
+
+        assert_eq!(params[1].name, "fields");
+        assert!(matches!(
+            params[1].annotation.as_ref().map(|annotation| &annotation.kind),
+            Some(ExprKind::ComptimeName(name)) if name == "Record"
+        ));
+        // The default stops at the closing `)` and parses as an empty record,
+        // not consuming the annotation or the paren.
+        assert!(matches!(
+            params[1].default.as_ref().map(|default| &default.kind),
+            Some(ExprKind::Record(entries)) if entries.is_empty()
+        ));
+    }
+
+    #[test]
+    fn rejects_required_parameter_after_defaulted_with_recovery() {
+        let output = parse_module("h = (x = 1, y) => x\n");
+
+        assert!(output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::parse::REQUIRED_PARAM_AFTER_DEFAULT)
+        }));
+
+        // Recovery: both parameters are still produced.
+        let params = lambda_params(&output, 0);
+        assert_eq!(params.len(), 2);
+        assert!(params[0].default.is_some());
+        assert!(params[1].default.is_none());
     }
 
     fn binding_value(output: &ParseOutput, index: usize) -> &ExprKind {

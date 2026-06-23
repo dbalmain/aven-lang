@@ -1,0 +1,2 @@
+log = (msg: Text, fields: Record = {}) => msg
+greet = (name = "world") => name

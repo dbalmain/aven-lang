@@ -1,0 +1,24 @@
+module
+  binding log
+    value
+      lambda
+        params
+          param msg comptime=false
+            annotation
+              comptime Text
+          param fields comptime=false
+            annotation
+              comptime Record
+            default
+              record
+        body
+          name msg
+  binding greet
+    value
+      lambda
+        params
+          param name comptime=false
+            default
+              string "world"
+        body
+          name name

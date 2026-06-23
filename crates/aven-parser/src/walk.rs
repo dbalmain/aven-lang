@@ -42,6 +42,9 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
                 if let Some(annotation) = &param.annotation {
                     visit(annotation);
                 }
+                if let Some(default) = &param.default {
+                    visit(default);
+                }
             }
             if let Some(annotation) = return_annotation {
                 visit(annotation);

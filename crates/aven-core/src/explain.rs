@@ -147,6 +147,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A match arm has a pattern and => but no body expression. Add the expression returned by that arm.",
     },
     DiagnosticExplanation {
+        code: codes::parse::REQUIRED_PARAM_AFTER_DEFAULT,
+        text: "A parameter without a default may not follow one with a default. Give it a default, or move it before the defaulted parameters so defaults stay trailing.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::SINGLE_ITEM_TUPLE,
         text: "Anonymous one-item tuples are not allowed. Remove the comma for grouping, or use a tagged one-item tuple such as @Ok(value).",
     },

@@ -412,6 +412,20 @@ mod tests {
     }
 
     #[test]
+    fn formats_lambda_parameter_defaults_stably() {
+        let formatted =
+            "log = (msg: Text, fields: Record = {}) => msg\ngreet = (name = \"world\") => name\n";
+
+        // Spacing around `=` and `:` is normalised...
+        assert_eq!(
+            format_source("log=(msg:Text,fields:Record={})=>msg\ngreet=(name=\"world\")=>name\n"),
+            Ok(formatted.to_owned())
+        );
+        // ...and re-formatting an already-formatted lambda is idempotent.
+        assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
+    }
+
+    #[test]
     fn normalizes_simple_expression_spacing() {
         assert_eq!(
             format_source(
