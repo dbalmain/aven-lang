@@ -373,6 +373,20 @@ fn run_prints_omit_record_comprehension_value() {
 }
 
 #[test]
+fn run_uses_predefined_pick_and_omit_builtins() {
+    let file = TempFile::new(
+        "run-predefined-pick-omit",
+        "user = { name: \"Ada\", email: \"ada@x.dev\", age: 3 }\n\
+         pick(omit(user, @{\"age\"}), @{\"name\", \"email\"})\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "{ name: \"Ada\", email: \"ada@x.dev\" }\n");
+}
+
+#[test]
 fn run_debug_writes_type_to_stderr_and_keeps_stdout_clean() {
     let file = TempFile::new("run-debug-type", "User = { name: Text }\ndebug(User)\n");
 

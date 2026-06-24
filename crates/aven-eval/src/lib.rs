@@ -1,4 +1,10 @@
-use std::{cell::RefCell, cmp::Ordering, collections::HashMap, fmt, rc::Rc};
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    fmt,
+    rc::Rc,
+};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{Expr, ExprKind, Item, Literal, MatchArm, Module, PropagationMode, RecordEntry};
@@ -443,7 +449,62 @@ fn intrinsics() -> Vec<(String, Value)> {
         }),
     ));
 
+    intrinsics.push((
+        "pick".to_owned(),
+        Value::native(|args| select_record_fields("pick", args, true)),
+    ));
+
+    intrinsics.push((
+        "omit".to_owned(),
+        Value::native(|args| select_record_fields("omit", args, false)),
+    ));
+
     intrinsics
+}
+
+/// Shared body of the `pick`/`omit` intrinsics. Both take `(record, labels)` —
+/// a `Record` and a `Set` of `Text` labels (the shape `keysOf`/`@{...}` yield) —
+/// and return a new `Record` preserving the source field order, keeping the
+/// labelled fields when `keep_matched` is set (`pick`) or dropping them (`omit`).
+/// A label absent from the record is simply skipped (intersection semantics).
+/// Shape errors surface as `runtime.platform-error`.
+fn select_record_fields(name: &str, args: &[Value], keep_matched: bool) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("{name} expects 2 arguments, got {}", args.len()));
+    }
+
+    let Value::Record(fields) = &args[0] else {
+        return Err(format!(
+            "{name} expects a Record, got {}",
+            args[0].type_name()
+        ));
+    };
+
+    let Value::Set(members) = &args[1] else {
+        return Err(format!(
+            "{name} expects a Set of labels, got {}",
+            args[1].type_name()
+        ));
+    };
+
+    let labels = members
+        .iter()
+        .map(|member| match member {
+            Value::Text(label) => Ok(label.as_str()),
+            other => Err(format!(
+                "{name} expects Text labels, got {}",
+                other.type_name()
+            )),
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
+
+    Ok(Value::Record(Rc::new(
+        fields
+            .iter()
+            .filter(|(field, _)| labels.contains(field.as_str()) == keep_matched)
+            .cloned()
+            .collect(),
+    )))
 }
 
 /// Evaluate a sequence of items, collecting `Flow::Fail` diagnostics across them
@@ -2393,6 +2454,90 @@ mod tests {
             diagnostic.code.as_deref(),
             Some(codes::runtime::PLATFORM_ERROR)
         );
+    }
+
+    #[test]
+    fn pick_keeps_named_fields_in_record_order() {
+        assert_module_value(
+            "pick({ name: \"Ada\", email: \"a@x\", age: 3 }, @{\"name\", \"email\"})\n",
+            record_value(vec![
+                ("name", Value::Text("Ada".to_owned())),
+                ("email", Value::Text("a@x".to_owned())),
+            ]),
+        );
+    }
+
+    #[test]
+    fn omit_drops_named_fields_in_record_order() {
+        assert_module_value(
+            "omit({ name: \"Ada\", email: \"a@x\" }, @{\"name\"})\n",
+            record_value(vec![("email", Value::Text("a@x".to_owned()))]),
+        );
+    }
+
+    #[test]
+    fn omit_runs_uniformly_on_a_type_record() {
+        // The headline case: a record *type* is just a record whose values are
+        // types, so `omit` runs at runtime over it with no special casing.
+        assert_module_value(
+            "omit({ name: Text, email: Text }, @{\"name\"})\n",
+            record_value(vec![("email", Value::Type("Text".to_owned()))]),
+        );
+    }
+
+    #[test]
+    fn pick_skips_keys_absent_from_the_record() {
+        assert_module_value(
+            "pick({ name: \"Ada\" }, @{\"name\", \"missing\"})\n",
+            record_value(vec![("name", Value::Text("Ada".to_owned()))]),
+        );
+    }
+
+    #[test]
+    fn pick_non_record_reports_platform_error() {
+        let diagnostic = module_error("pick(5, @{\"a\"})\n");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+    }
+
+    #[test]
+    fn pick_non_set_reports_platform_error() {
+        for source in ["pick({ a: 1 }, [1])\n", "pick({ a: 1 }, \"a\")\n"] {
+            let diagnostic = module_error(source);
+
+            assert_eq!(
+                diagnostic.code.as_deref(),
+                Some(codes::runtime::PLATFORM_ERROR)
+            );
+        }
+    }
+
+    #[test]
+    fn pick_non_text_set_member_reports_platform_error() {
+        let diagnostic = module_error("pick({ a: 1 }, @{1})\n");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+    }
+
+    #[test]
+    fn pick_wrong_arity_reports_platform_error() {
+        let diagnostic = module_error("pick({ a: 1 })\n");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+    }
+
+    #[test]
+    fn user_binding_shadows_pick_builtin() {
+        assert_module_value("pick = 5\npick\n", Value::Int(5));
     }
 
     #[test]

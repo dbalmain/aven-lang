@@ -1937,6 +1937,21 @@ in thin, self-contained slices.
   marshalling (records↔structs, `Vec`↔Array, `Option`↔`?T`, `Result`↔Aven
   `Result`), optional params via the adapter, arities above 4, and migrating the
   existing host regs.
+- **P3 done (`aven-eval`).** `pick` and `omit` are now predefined runtime
+  intrinsics alongside `keysOf`, seeded before host globals so a user binding may
+  shadow them. Each takes `(record, labels)` — a `Value::Record` and a
+  `Value::Set` of `Value::Text` labels (the shape `keysOf` and `@{...}` produce) —
+  and returns a new record: `pick` keeps the fields whose names are in the set,
+  `omit` removes them, both preserving the source record's field order; a label
+  absent from the record is skipped (intersection semantics, lenient at runtime).
+  Because a record *type* is just a record whose values are type-values, the same
+  natives run uniformly on data and type records with no special casing — e.g.
+  `omit({ name: Text, email: Text }, @{"name"})` ⇒ `{ email: Text }`. Wrong arity,
+  a non-Record first arg, a non-Set second arg, or a non-Text set member each
+  surface as `runtime.platform-error`. These are language builtins (like
+  `keysOf`), **not** host-registered through `aven-host`. Deferred: the
+  comptime-typed-builtin form — so `pick(user, @{...})` *infers* the precise picked
+  row without a user definition — which is a larger checker-side follow-on.
 
 ## Milestone D — default/optional parameters
 
