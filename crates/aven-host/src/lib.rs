@@ -99,10 +99,12 @@ impl Host {
 /// `Logger` type / typed-fn adapter exists. Single source of truth so the CLI's
 /// `Platform.Log` field shares it without reconstructing the type.
 pub fn logger_type() -> Type {
-    // `(Text, ?{..}) -> Unit`
+    // `(Text, ?{..}) -> Unit`: one required message, an optional trailing fields
+    // record, so both `logger.info("msg")` and `logger.info("msg", { .. })` check.
     let level_method = || {
-        build::function(
-            vec![build::text(), build::optional(build::open_record(vec![]))],
+        build::function_opt(
+            vec![build::text()],
+            vec![build::open_record(vec![])],
             build::unit(),
         )
     };
@@ -124,7 +126,7 @@ pub fn logger_type() -> Type {
 mod tests {
     use super::*;
 
-    use aven_check::{function_signature, record_fields};
+    use aven_check::{function_required_arity, function_signature, record_fields};
 
     struct NullSink;
 
@@ -191,6 +193,11 @@ mod tests {
             .expect("logger has an info method");
         let (params, result) = function_signature(&info.ty).expect("info is a function");
         assert_eq!(params.len(), 2);
+        assert_eq!(
+            function_required_arity(&info.ty),
+            Some(1),
+            "info takes one required message, fields optional"
+        );
         assert_eq!(result, build::unit());
     }
 }

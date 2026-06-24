@@ -154,15 +154,52 @@ fn check_reports_type_diagnostics() {
 }
 
 #[test]
-fn check_accepts_logger_calls_while_untyped() {
-    // `logger` is registered runtime-only until default/optional parameters
-    // (Milestone D) let its optional trailing fields argument be typed without
-    // rejecting the one-argument form. Both call shapes must check cleanly.
-    let one_arg = TempFile::new("check-logger-one", "logger.info(\"hi\")\n");
-    let two_arg = TempFile::new("check-logger-two", "logger.info(\"hi\", { n: 1 })\n");
+fn check_accepts_logger_call_with_optional_fields_omitted() {
+    let file = TempFile::new("check-logger-one", "logger.info(\"hi\")\n");
 
-    assert_success(&run_aven(["check"], one_arg.path()));
-    assert_success(&run_aven(["check"], two_arg.path()));
+    assert_success(&run_aven(["check"], file.path()));
+}
+
+#[test]
+fn check_accepts_logger_call_with_optional_fields_supplied() {
+    let file = TempFile::new("check-logger-two", "logger.info(\"hi\", { n: 1 })\n");
+
+    assert_success(&run_aven(["check"], file.path()));
+}
+
+#[test]
+fn check_rejects_logger_call_with_wrong_message_type() {
+    let file = TempFile::new("check-logger-int", "logger.info(42)\n");
+
+    let output = run_aven(["check"], file.path());
+
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("type.mismatch"),
+        "expected type mismatch (Int vs Text), got:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn check_rejects_logger_call_with_too_few_arguments() {
+    let file = TempFile::new("check-logger-none", "logger.info()\n");
+
+    let output = run_aven(["check"], file.path());
+
+    assert_failure(&output);
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("type.mismatch") && stderr.contains("between 1 and 2 arguments"),
+        "expected a 1..=2 arity diagnostic, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn check_accepts_platform_log_call() {
+    let file = TempFile::new("check-platform-log", "Platform.Log.warn(\"x\")\n");
+
+    assert_success(&run_aven(["check"], file.path()));
 }
 
 #[test]

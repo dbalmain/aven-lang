@@ -202,23 +202,21 @@ fn build_host() -> Result<aven_host::Host> {
     // they emit on the same sink and trace context.
     let log_sink = Rc::new(StdoutLogSink);
     let log = aven_eval::logging::logger(log_sink, root_trace_context()?);
-    // `logger` runs untyped for now: its methods take an optional trailing fields
-    // argument (`logger.info("msg")` and `logger.info("msg", { .. })` are both
-    // valid), which needs default/optional parameters (Milestone D) to type
-    // without falsely rejecting the one-argument form. Re-typed in D4.
-    host.register_runtime_only("logger".to_owned(), log.clone());
+    host.register("logger".to_owned(), log.clone(), aven_host::logger_type());
 
     use aven_host::build;
-    // Open record: `Platform.Log` and other capabilities stay permissive while
-    // `Platform.Console.log` is precisely typed (its single `Text` argument is
-    // unambiguous), demonstrating the typed boundary end to end.
-    let platform_type = build::open_record(vec![(
-        "Console",
-        build::record(vec![(
-            "log",
-            build::function(vec![build::text()], build::unit()),
-        )]),
-    )]);
+    // Closed record: `Platform.Console.log` and `Platform.Log` are both precisely
+    // typed, so the platform boundary type-checks end to end.
+    let platform_type = build::record(vec![
+        (
+            "Console",
+            build::record(vec![(
+                "log",
+                build::function(vec![build::text()], build::unit()),
+            )]),
+        ),
+        ("Log", aven_host::logger_type()),
+    ]);
     host.register("Platform".to_owned(), default_platform(log), platform_type);
 
     // TODO(P2): `debug : (a) -> a` is generic; its type isn't expressible until

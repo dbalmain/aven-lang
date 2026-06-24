@@ -1907,16 +1907,12 @@ in thin, self-contained slices.
   `Console.log : (Text) -> Unit` precisely typed (the open `Platform` record keeps
   `Log`/other capabilities permissive), demonstrating the typed boundary end to
   end — `Platform.Console.log(42)` is a type error, `Platform.Console.log("hi")`
-  passes. **`logger` is registered runtime-only for now**: its level methods take
-  an optional trailing fields argument (`logger.info("msg")` and
-  `logger.info("msg", { .. })` both valid), which needs default/optional
-  parameters (Milestone D, chosen: explicit default params) to type without
-  falsely rejecting the one-argument form. `logger_type()` /`register_logger`
-  exist for when D lands (re-typed in D4). Deferred: Milestone D (default params)
-  then precise `logger` typing; generic host fns like `debug` need scheme support
-  / the typed-fn adapter (P2); the recursive `Logger` type (`child` returns an
-  open record); LSP seeding (the editor keeps un-seeded `check_module` for now);
-  and checking calls in expression (non-statement) position.
+  passes. (P1b registered `logger` runtime-only until default params existed; D4
+  re-types it through the typed path and `Platform` becomes a closed record — see
+  below.) Remaining P-thread follow-ups: generic host fns like `debug` need scheme
+  support / the typed-fn adapter (P2); the recursive `Logger` type (`child`
+  returns an open record); LSP seeding (the editor keeps un-seeded `check_module`
+  for now); and checking calls in expression (non-statement) position.
 - **P2 (later).** A typed-fn adapter so host functions carry generic schemes, not
   just monomorphic types.
 
@@ -1973,9 +1969,20 @@ site. Sliced parser-first; semantics follow.
   evaluation, so a failing default like `1 / 0` stays inert). Default failures
   propagate through the existing `Flow` channel. Native functions are unaffected
   (they default their own args in Rust).
-- **D4 (re-typing).** Re-type `logger` (precise level-method signatures with the
-  optional trailing fields argument) now that defaults exist, replacing the
-  runtime-only registration from P1b.
+- **D4 done (`aven-host` + `aven-cli`).** `logger` is now **typed** via
+  `function_opt`: each level method (`trace`/`debug`/`info`/`warn`/`error`/
+  `fatal`) is `(Text, ?{..}) -> Unit` — one required message, an optional trailing
+  fields record — so `logger.info("msg")` and `logger.info("msg", { .. })` both
+  check, `logger.info(42)` is a `type.mismatch` (Int vs Text), and `logger.info()`
+  is a `type.mismatch` arity error ("expected between 1 and 2 arguments"). The CLI
+  registers `logger` through the typed path (`host.register("logger", …,
+  logger_type())`) and `Platform` is restored to a **closed** record
+  `{ Console: { log: (Text) -> Unit }, Log: <logger_type()> }`, dropping the
+  interim open-record/runtime-only workaround. The typed platform boundary now
+  covers the required logging capability end to end. Remaining P-thread
+  follow-ups: generic host fns / `debug` via the typed-fn adapter (P2), the
+  recursive `Logger` type (`child` still returns an open record), LSP seeding, and
+  expression-position call checking.
 
 Deferred: writing a literal default inside a standalone function-*type*
 annotation (e.g. `(Text, Record = {}) -> Unit` as a bare type) is out of scope.
