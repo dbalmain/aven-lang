@@ -22,6 +22,10 @@ pub enum Type {
     Function {
         params: Vec<Type>,
         result: Box<Type>,
+        /// Number of leading required params. `params[required..]` are the
+        /// optional (defaulted) trailing params. Invariant: `required <=
+        /// params.len()`.
+        required: usize,
     },
     Optional(Box<Type>),
     Nullable(Box<Type>),
@@ -93,11 +97,25 @@ pub fn function_signature(ty: &Type) -> Option<(Vec<Type>, Type)> {
         ty = inner;
     }
 
-    let Type::Function { params, result } = ty else {
+    let Type::Function { params, result, .. } = ty else {
         return None;
     };
 
     Some((params.clone(), result.as_ref().clone()))
+}
+
+/// The required-arity of a function type (peeling `?`/`?`-style wrappers like
+/// [`function_signature`]). `None` for non-function types.
+pub fn function_required_arity(ty: &Type) -> Option<usize> {
+    let mut ty = ty;
+    while let Type::Optional(inner) | Type::Nullable(inner) = ty {
+        ty = inner;
+    }
+
+    match ty {
+        Type::Function { required, .. } => Some(*required),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,17 +214,33 @@ impl TypeRenderer {
                     .join(", ");
                 format!("{rendered_callee}[{rendered_args}]")
             }
-            Type::Function { params, result } => {
-                let rendered_params = match params.as_slice() {
-                    [param] => self.render_function_param(param),
-                    params => format!(
+            Type::Function {
+                params,
+                result,
+                required,
+            } => {
+                // Only an all-required single param uses the bare form; an
+                // optional param needs both its ` = _` marker and parens so
+                // `Int = _ -> Unit` cannot be misread.
+                let rendered_params = if params.len() == 1 && *required == 1 {
+                    self.render_function_param(&params[0])
+                } else {
+                    format!(
                         "({})",
                         params
                             .iter()
-                            .map(|param| self.render_type(param))
+                            .enumerate()
+                            .map(|(index, param)| {
+                                let rendered = self.render_type(param);
+                                if index < *required {
+                                    rendered
+                                } else {
+                                    format!("{rendered} = _")
+                                }
+                            })
                             .collect::<Vec<_>>()
                             .join(", ")
-                    ),
+                    )
                 };
                 let rendered_result = self.render_type(result);
                 let rendered = format!("{rendered_params} -> {rendered_result}");
@@ -332,12 +366,17 @@ pub(crate) fn map_type_with_rows(
                 .map(|arg| map_type_with_rows(arg, leaf, tail))
                 .collect(),
         },
-        Type::Function { params, result } => Type::Function {
+        Type::Function {
+            params,
+            result,
+            required,
+        } => Type::Function {
             params: params
                 .iter()
                 .map(|param| map_type_with_rows(param, leaf, tail))
                 .collect(),
             result: Box::new(map_type_with_rows(result, leaf, tail)),
+            required: *required,
         },
         Type::Optional(inner) => Type::Optional(Box::new(map_type_with_rows(inner, leaf, tail))),
         Type::Nullable(inner) => Type::Nullable(Box::new(map_type_with_rows(inner, leaf, tail))),
@@ -414,7 +453,7 @@ fn visit_type_with_rows(
             args.iter()
                 .for_each(|arg| visit_type_with_rows(arg, visit, visit_tail));
         }
-        Type::Function { params, result } => {
+        Type::Function { params, result, .. } => {
             params
                 .iter()
                 .for_each(|param| visit_type_with_rows(param, visit, visit_tail));
@@ -587,11 +626,26 @@ pub mod build {
         named("Unit")
     }
 
-    /// A function type `(params...) -> result`.
+    /// A function type `(params...) -> result` where every param is required.
     pub fn function(params: Vec<Type>, result: Type) -> Type {
+        let required = params.len();
         Type::Function {
             params,
             result: Box::new(result),
+            required,
+        }
+    }
+
+    /// A function type with required leading params followed by optional
+    /// (defaulted) trailing params, e.g. `function_opt(vec![text()],
+    /// vec![open_record(vec![])], unit())` for one required `Text` and one
+    /// optional fields record.
+    pub fn function_opt(required: Vec<Type>, optional: Vec<Type>, result: Type) -> Type {
+        let required_arity = required.len();
+        Type::Function {
+            params: required.into_iter().chain(optional).collect(),
+            result: Box::new(result),
+            required: required_arity,
         }
     }
 

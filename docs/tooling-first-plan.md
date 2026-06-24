@@ -1944,9 +1944,23 @@ site. Sliced parser-first; semantics follow.
   test. The checker and evaluator ignore the new field for now, so a defaulted
   lambda still type-checks/evaluates with today's arity behaviour — a call that
   omits a defaulted argument still errors until D3 (acceptable for this slice).
-- **D2 (checker).** Give `Type::Function` a required-arity notion derived from the
-  lambda's defaulted-parameter count, and add arity / default-value-type checks
-  (a default's type must satisfy the parameter's annotation).
+- **D2 done (`aven-check`).** `Type::Function` carries a `required: usize`
+  (`params[required..]` are the optional/defaulted trailing params; invariant
+  `required <= params.len()`). Lambda inference derives `required` from the
+  trailing-default count and type-checks each default expression against its
+  parameter type: an annotated param's default reuses `check_value_against` (a
+  mismatch is a normal `type.*` diagnostic on the default), an unannotated param
+  infers its type from the default via unification. Calls arity-check the
+  `required..=total` range — both statement-position `check_value_call` and
+  inference `infer_call` accept an omitted trailing optional; arguments are
+  checked against `params[0..args.len()]`. `report_function_arity_mismatch` grew a
+  range message ("expected between {required} and {total} arguments…") for
+  `required != total`, keeping the exact-count wording otherwise. Unify requires
+  equal total length **and** equal `required` (conservative). `build::function_opt`
+  lets a host spell optional trailing params (e.g. `logger.info` with an optional
+  fields record). D3 = evaluator applies defaults at call time; D4 = re-type
+  `logger`. Deferred: function subtyping (accepting a fewer-required function where
+  a more-required one is expected) and standalone function-*type* default syntax.
 - **D3 (evaluator).** Apply defaults at call time: a call omitting a defaulted
   argument evaluates the default expression in the appropriate scope.
 - **D4 (re-typing).** Re-type `logger` (precise level-method signatures with the

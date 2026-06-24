@@ -124,12 +124,18 @@ impl Unifier {
                 Type::Function {
                     params: left_params,
                     result: left_result,
+                    required: left_required,
                 },
                 Type::Function {
                     params: right_params,
                     result: right_result,
+                    required: right_required,
                 },
-            ) if left_params.len() == right_params.len() => {
+                // Conservative: two function types unify only with the same
+                // total length and the same required-arity. Function subtyping
+                // (accepting a fewer-required function where a more-required one
+                // is expected) is deferred.
+            ) if left_params.len() == right_params.len() && left_required == right_required => {
                 self.unify_many(left_params, right_params)?;
                 self.unify_inner(left_result, right_result)
             }

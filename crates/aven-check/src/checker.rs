@@ -524,18 +524,24 @@ impl<'a> Checker<'a> {
         let env = self.local_types.inference_env();
         let inferred = self.infer(&env, callee);
         let callee_type = self.normalize(&self.resolve_and_default(&inferred));
-        let Type::Function { params, .. } = &callee_type else {
+        let Type::Function {
+            params, required, ..
+        } = &callee_type
+        else {
             return;
         };
         if !is_concrete_type(&callee_type) {
             return;
         }
 
-        if params.len() != args.len() {
-            self.report_function_arity_mismatch(params.len(), args.len(), callee.span);
+        let required = *required;
+        if args.len() < required || args.len() > params.len() {
+            self.report_function_arity_mismatch(required, params.len(), args.len(), callee.span);
             return;
         }
 
+        // Omitted trailing optional params are simply not supplied; check each
+        // provided argument against its corresponding param.
         let params = params.clone();
         for (expected, arg) in params.iter().zip(args) {
             self.check_value_against(expected, arg);
@@ -848,6 +854,7 @@ impl<'a> Checker<'a> {
                 Type::Function {
                     params: expected_params,
                     result: expected_result,
+                    ..
                 },
             ) => self.check_lambda_against_function(
                 value.span,
@@ -1008,7 +1015,14 @@ impl<'a> Checker<'a> {
         expected_result: &Type,
     ) {
         if params.len() != expected_params.len() {
-            self.report_function_arity_mismatch(expected_params.len(), params.len(), lambda_span);
+            // The expected type is a function-type annotation, which has no
+            // defaults: required == total.
+            self.report_function_arity_mismatch(
+                expected_params.len(),
+                expected_params.len(),
+                params.len(),
+                lambda_span,
+            );
             self.check_lambda_value_expr(params, return_annotation, body);
             return;
         }
@@ -1107,14 +1121,19 @@ impl<'a> Checker<'a> {
                 Type::Function {
                     params: expected_params,
                     result: expected_result,
+                    ..
                 },
                 Type::Function {
                     params: actual_params,
                     result: actual_result,
+                    ..
                 },
             ) => {
                 if expected_params.len() != actual_params.len() {
+                    // Function-type annotations have no defaults: required ==
+                    // total.
                     self.report_function_arity_mismatch(
+                        expected_params.len(),
                         expected_params.len(),
                         actual_params.len(),
                         span,
@@ -1461,7 +1480,7 @@ impl<'a> Checker<'a> {
                         .iter()
                         .any(|arg| self.reflection_subject_is_unresolved(arg))
             }
-            Type::Function { params, result } => {
+            Type::Function { params, result, .. } => {
                 params
                     .iter()
                     .any(|param| self.reflection_subject_is_unresolved(param))
@@ -1532,9 +1551,14 @@ impl<'a> Checker<'a> {
                 callee: Box::new(self.normalize_with_visited(callee, visited.clone())),
                 args: self.normalize_types(args, &visited),
             },
-            Type::Function { params, result } => Type::Function {
+            Type::Function {
+                params,
+                result,
+                required,
+            } => Type::Function {
                 params: self.normalize_types(params, &visited),
                 result: Box::new(self.normalize_with_visited(result, visited)),
+                required: *required,
             },
             Type::Optional(inner) => self.normalize_optional(inner, visited),
             Type::Nullable(inner) => self.normalize_nullable(inner, visited),
@@ -1638,10 +1662,17 @@ impl<'a> Checker<'a> {
                 let inner = self.lower_annotation(value);
                 self.strip_optional(&inner)
             }
-            ExprKind::Arrow { params, result } => Type::Function {
-                params: self.lower_annotations(params),
-                result: Box::new(self.lower_annotation(result)),
-            },
+            ExprKind::Arrow { params, result } => {
+                // A function-type annotation has no defaults: all params are
+                // required. Standalone function-type default syntax is deferred.
+                let lowered = self.lower_annotations(params);
+                let required = lowered.len();
+                Type::Function {
+                    params: lowered,
+                    result: Box::new(self.lower_annotation(result)),
+                    required,
+                }
+            }
             ExprKind::Tuple(items) => Type::Tuple(self.lower_annotations(items)),
             ExprKind::Record(entries) => self.lower_row_entries(entries, RowKind::Record),
             ExprKind::Set(entries) => self.lower_row_entries(entries, RowKind::Variant),
@@ -2493,18 +2524,29 @@ impl<'a> Checker<'a> {
         );
     }
 
-    fn report_function_arity_mismatch(&mut self, expected: usize, found: usize, span: Span) {
+    fn report_function_arity_mismatch(
+        &mut self,
+        required: usize,
+        total: usize,
+        found: usize,
+        span: Span,
+    ) {
+        let message = if required == total {
+            format!(
+                "expected a function with {total} parameter{}, found one with {found}",
+                if total == 1 { "" } else { "s" },
+            )
+        } else {
+            format!("expected between {required} and {total} arguments, found {found}")
+        };
         self.diagnostics.push(
-            Diagnostic::error(format!(
-                "expected a function with {expected} parameter{}, found one with {found}",
-                if expected == 1 { "" } else { "s" },
-            ))
-            .with_code(codes::ty::MISMATCH)
-            .with_label(Label::primary(
-                span,
-                "function parameter count does not match annotation",
-            ))
-            .with_note("add or remove parameters to match the annotation"),
+            Diagnostic::error(message)
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    span,
+                    "function parameter count does not match annotation",
+                ))
+                .with_note("add or remove parameters to match the annotation"),
         );
     }
 
@@ -3282,6 +3324,7 @@ fn collect_comptime_type_bindings(
             Type::Function {
                 params: actual_params,
                 result: actual_result,
+                ..
             },
         ) if params.len() == actual_params.len() => {
             for (param, actual_param) in params.iter().zip(actual_params) {
@@ -3913,13 +3956,32 @@ impl<'a> Checker<'a> {
     ) -> Type {
         let mut next_env = env.clone();
         let mut param_types = Vec::new();
+        // Defaults are trailing (per D1): the required-arity is the count of
+        // leading params without a default.
+        let mut required = params.len();
 
-        for param in params {
+        for (index, param) in params.iter().enumerate() {
             let ty = if let Some(annotation) = &param.annotation {
                 self.lower_annotation_for_inference(annotation)
             } else {
                 self.unifier.fresh()
             };
+
+            if let Some(default) = &param.default {
+                required = required.min(index);
+                // Check the default against the param's type. An annotated
+                // param's default must match the annotation (a normal `type.*`
+                // diagnostic on the default); an unannotated param infers its
+                // type from the default. The default cannot reference the param
+                // itself, so use the env without it bound.
+                if param.annotation.is_some() {
+                    self.check_value_against(&ty, default);
+                } else {
+                    let inferred = self.infer(&next_env, default);
+                    let _ = self.unifier.unify(&ty, &inferred);
+                }
+            }
+
             next_env.insert(param.name.clone(), LocalValueType::Known(ty.clone()));
             param_types.push(ty);
         }
@@ -3942,6 +4004,7 @@ impl<'a> Checker<'a> {
         Type::Function {
             params: param_types,
             result: Box::new(result_type),
+            required,
         }
     }
 
@@ -3977,10 +4040,34 @@ impl<'a> Checker<'a> {
 
         let callee_type = self.infer(env, callee);
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+
+        // When the callee already resolves to a function (e.g. a host global or
+        // a lambda with defaults), unify each supplied argument against the
+        // matching param and keep the function's own result. This admits an
+        // omitted trailing optional param, which a fixed-arity synthetic
+        // function type could not.
+        let resolved = self.unifier.resolve(&callee_type);
+        if let Type::Function {
+            params,
+            result,
+            required,
+        } = &resolved
+            && required <= &arg_types.len()
+            && arg_types.len() <= params.len()
+        {
+            for (arg, param) in arg_types.iter().zip(params) {
+                if self.unifier.unify(arg, param).is_err() {
+                    return Type::Deferred;
+                }
+            }
+            return result.as_ref().clone();
+        }
+
         let result_type = self.unifier.fresh();
         let expected_callee = Type::Function {
             params: arg_types,
             result: Box::new(result_type.clone()),
+            required: args.len(),
         };
 
         if self.unifier.unify(&callee_type, &expected_callee).is_err() {

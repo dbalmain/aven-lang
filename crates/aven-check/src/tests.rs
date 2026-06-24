@@ -63,9 +63,11 @@ fn apply(callee: Type, args: Vec<Type>) -> Type {
 }
 
 fn function(params: Vec<Type>, result: Type) -> Type {
+    let required = params.len();
     Type::Function {
         params,
         result: Box::new(result),
+        required,
     }
 }
 
@@ -2922,7 +2924,7 @@ fn inferred_field_access_scheme_contains_a_quantified_row_variable() {
 
     assert_eq!(scheme.vars.len(), 1);
     assert_eq!(scheme.row_vars.len(), 1);
-    let Type::Function { params, result } = &scheme.ty else {
+    let Type::Function { params, result, .. } = &scheme.ty else {
         panic!("getX should infer a function type");
     };
     assert_eq!(params.len(), 1);
@@ -3751,6 +3753,143 @@ fn user_binding_shadows_seeded_global() {
         check.diagnostics.is_empty(),
         "expected the user binding to shadow the seed, got {:?}",
         check.diagnostics
+    );
+}
+
+/// A host global typed with one required `Text` and one optional trailing
+/// fields record: `f : function_opt([Text], [{..}]) -> Unit`.
+fn optional_param_globals() -> Vec<(String, Type)> {
+    vec![(
+        "f".to_owned(),
+        build::function_opt(
+            vec![build::text()],
+            vec![build::open_record(vec![])],
+            build::unit(),
+        ),
+    )]
+}
+
+#[test]
+fn lambda_default_infers_required_arity() {
+    let source = "f = (x: Int, y: Int = 0) => x + y\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+    let f_type = check
+        .type_at(nth_span(source, "f", 0))
+        .expect("f should have an inferred type");
+    assert_eq!(f_type.render(), "(Int, Int = _) -> Int");
+    assert_eq!(function_required_arity(f_type), Some(1));
+}
+
+#[test]
+fn lambda_default_accepts_calls_within_required_range() {
+    for source in [
+        "f = (x: Int, y: Int = 0) => x + y\nf(1)\n",
+        "f = (x: Int, y: Int = 0) => x + y\nf(1, 2)\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "expected no diagnostics for {source:?}, got {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn lambda_default_rejects_too_few_arguments() {
+    let output = parse_module("f = (x: Int, y: Int = 0) => x + y\nf()\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn lambda_default_rejects_too_many_arguments() {
+    let output = parse_module("f = (x: Int, y: Int = 0) => x + y\nf(1, 2, 3)\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn unannotated_default_infers_parameter_type() {
+    for source in ["g = (x = 5) => x\ng()\n", "g = (x = 5) => x\ng(9)\n"] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "expected no diagnostics for {source:?}, got {:?}",
+            check.diagnostics
+        );
+    }
+
+    let mismatch = parse_module("g = (x = 5) => x\ng(\"no\")\n");
+    let check = check_module(&mismatch.module);
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn default_mismatching_annotation_is_a_type_error() {
+    let output = parse_module("h = (x: Int = \"no\") => x\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn optional_param_global_accepts_required_and_optional_calls() {
+    for source in ["f(\"hi\")\n", "f(\"hi\", { n: 1 })\n"] {
+        let output = parse_module(source);
+        let check = check_module_with_globals(&output.module, &optional_param_globals());
+        assert!(
+            check.diagnostics.is_empty(),
+            "expected no diagnostics for {source:?}, got {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn optional_param_global_rejects_wrong_argument_type() {
+    let output = parse_module("f(42)\n");
+    let check = check_module_with_globals(&output.module, &optional_param_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn optional_param_global_rejects_too_few_arguments() {
+    let output = parse_module("f()\n");
+    let check = check_module_with_globals(&output.module, &optional_param_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn optional_param_global_rejects_too_many_arguments() {
+    let output = parse_module("f(\"a\", \"b\", \"c\")\n");
+    let check = check_module_with_globals(&output.module, &optional_param_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn optional_params_render_with_default_marker() {
+    assert_eq!(
+        build::function_opt(vec![named("Text")], vec![named("Int")], named("Unit")).render(),
+        "(Text, Int = _) -> Unit"
+    );
+    assert_eq!(
+        build::function_opt(vec![], vec![named("Int")], named("Unit")).render(),
+        "(Int = _) -> Unit"
     );
 }
 
