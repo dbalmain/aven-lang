@@ -1961,8 +1961,18 @@ site. Sliced parser-first; semantics follow.
   fields record). D3 = evaluator applies defaults at call time; D4 = re-type
   `logger`. Deferred: function subtyping (accepting a fewer-required function where
   a more-required one is expected) and standalone function-*type* default syntax.
-- **D3 (evaluator).** Apply defaults at call time: a call omitting a defaulted
-  argument evaluates the default expression in the appropriate scope.
+- **D3 done (`aven-eval`).** The closure now carries each param's optional
+  default (`ClosureParam { name, default: Option<Rc<Expr>> }`). At call time the
+  evaluator accepts `required..=total` args (`required` = leading params with no
+  default; `total` = all params) and emits the runtime arity diagnostic — now a
+  range ("expected between {required} and {total} arguments") when they differ,
+  keeping the exact-count wording when equal. Provided args bind first; each
+  omitted trailing param then has its default evaluated **in the call env, in
+  order** (so a later default may reference an earlier param, e.g.
+  `(x, y = x + 1)`), and only when omitted (a supplied arg never triggers default
+  evaluation, so a failing default like `1 / 0` stays inert). Default failures
+  propagate through the existing `Flow` channel. Native functions are unaffected
+  (they default their own args in Rust).
 - **D4 (re-typing).** Re-type `logger` (precise level-method signatures with the
   optional trailing fields argument) now that defaults exist, replacing the
   runtime-only registration from P1b.

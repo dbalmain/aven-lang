@@ -23,9 +23,18 @@ pub type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
 
 #[derive(Clone)]
 pub struct Closure {
-    params: Vec<String>,
+    params: Vec<ClosureParam>,
     body: Rc<Expr>,
     env: Environment,
+}
+
+/// A closure parameter: its binding name plus an optional default expression
+/// (trailing-only, enforced by the parser/checker). The default is evaluated in
+/// the call environment, in parameter order, only when the argument is omitted.
+#[derive(Clone, Debug)]
+struct ClosureParam {
+    name: String,
+    default: Option<Rc<Expr>>,
 }
 
 impl fmt::Debug for Closure {
@@ -497,7 +506,13 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
         } => eval_binary(left, operator, *operator_span, right, expr.span, env),
         ExprKind::Block(items) => eval_block(items, env),
         ExprKind::Lambda { params, body, .. } => Ok(Value::Closure(Closure {
-            params: params.iter().map(|param| param.name.clone()).collect(),
+            params: params
+                .iter()
+                .map(|param| ClosureParam {
+                    name: param.name.clone(),
+                    default: param.default.clone().map(Rc::new),
+                })
+                .collect(),
             body: Rc::new((**body).clone()),
             env: env.clone(),
         })),
@@ -755,10 +770,20 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
         value => return Err(one_diagnostic(not_callable(callee.span, value.type_name()))),
     };
 
-    if args.len() != closure.params.len() {
+    let total = closure.params.len();
+    // Defaults are trailing, so the required count is the run of leading params
+    // that have no default.
+    let required = closure
+        .params
+        .iter()
+        .take_while(|param| param.default.is_none())
+        .count();
+
+    if args.len() < required || args.len() > total {
         return Err(one_diagnostic(arity_mismatch(
             span,
-            closure.params.len(),
+            required,
+            total,
             args.len(),
         )));
     }
@@ -769,8 +794,19 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
     }
 
     let call_env = closure.env.child();
-    for (name, value) in closure.params.iter().zip(arg_values) {
-        call_env.bind(name.clone(), value);
+    for (param, value) in closure.params.iter().zip(arg_values) {
+        call_env.bind(param.name.clone(), value);
+    }
+    // Bind each omitted trailing param by evaluating its default in `call_env`,
+    // in order, so a later default may reference an earlier parameter. A default
+    // runs only when its argument is omitted; failures propagate via `?`.
+    for param in &closure.params[args.len()..] {
+        let default = param
+            .default
+            .as_ref()
+            .expect("omitted params past `required` always carry a default");
+        let value = eval_expr_many(default, &call_env)?;
+        call_env.bind(param.name.clone(), value);
     }
 
     // The closure body is a propagation boundary: a `?^` `@Err` early-returns the
@@ -1631,15 +1667,21 @@ fn not_callable(span: Span, actual: &str) -> Diagnostic {
         )
 }
 
-fn arity_mismatch(span: Span, expected: usize, got: usize) -> Diagnostic {
+fn arity_mismatch(span: Span, required: usize, total: usize, got: usize) -> Diagnostic {
+    let expected = if required == total {
+        format!("{total} argument(s)")
+    } else {
+        format!("between {required} and {total} arguments")
+    };
+
     Diagnostic::error("function arity mismatch")
         .with_code(codes::runtime::ARITY_MISMATCH)
         .with_label(Label::primary(
             span,
-            format!("expected {expected} argument(s), got {got}"),
+            format!("expected {expected}, got {got}"),
         ))
         .with_note(format!(
-            "this function expects {expected} argument(s), but the call supplied {got}"
+            "this function expects {expected}, but the call supplied {got}"
         ))
 }
 
@@ -1885,6 +1927,64 @@ mod tests {
     #[test]
     fn reports_function_arity_mismatch() {
         let diagnostic = module_error("id = (x) => x\nid()\n");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::ARITY_MISMATCH)
+        );
+    }
+
+    #[test]
+    fn applies_trailing_parameter_default_when_omitted() {
+        assert_module_value("f = (x, y = 10) => x + y\nf(1)\n", Value::Int(11));
+    }
+
+    #[test]
+    fn supplied_argument_overrides_parameter_default() {
+        assert_module_value("f = (x, y = 10) => x + y\nf(1, 2)\n", Value::Int(3));
+    }
+
+    #[test]
+    fn default_may_reference_an_earlier_parameter() {
+        assert_module_value("g = (x, y = x + 1) => y\ng(5)\n", Value::Int(6));
+    }
+
+    #[test]
+    fn unannotated_single_default_applies_with_no_args() {
+        assert_module_value(
+            "greet = (name = \"world\") => name\ngreet()\n",
+            Value::Text("world".to_owned()),
+        );
+    }
+
+    #[test]
+    fn default_is_not_evaluated_when_argument_supplied() {
+        assert_module_value("h = (x, y = 1 / 0) => x\nh(7, 2)\n", Value::Int(7));
+    }
+
+    #[test]
+    fn omitted_default_evaluates_and_can_fail() {
+        let diagnostic = module_error("h = (x, y = 1 / 0) => x\nh(7)\n");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::DIVISION_BY_ZERO)
+        );
+    }
+
+    #[test]
+    fn reports_too_few_arguments_below_required() {
+        let diagnostic = module_error("f = (x, y = 10) => x + y\nf()\n");
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::ARITY_MISMATCH)
+        );
+    }
+
+    #[test]
+    fn reports_too_many_arguments_above_total() {
+        let diagnostic = module_error("f = (x, y = 10) => x + y\nf(1, 2, 3)\n");
 
         assert_eq!(
             diagnostic.code.as_deref(),

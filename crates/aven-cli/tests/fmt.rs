@@ -276,6 +276,32 @@ fn run_prints_function_call_value() {
 }
 
 #[test]
+fn run_applies_parameter_default_when_omitted() {
+    let file = TempFile::new(
+        "run-default-omitted",
+        "greet = (name, greeting = \"hello\") => greeting + \", \" + name\ngreet(\"world\")\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "hello, world\n");
+}
+
+#[test]
+fn run_overrides_parameter_default_when_supplied() {
+    let file = TempFile::new(
+        "run-default-supplied",
+        "greet = (name, greeting = \"hello\") => greeting + \", \" + name\ngreet(\"world\", \"hi\")\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "hi, world\n");
+}
+
+#[test]
 fn run_prints_pick_record_comprehension_value() {
     let file = TempFile::new(
         "run-pick-record-comprehension",
