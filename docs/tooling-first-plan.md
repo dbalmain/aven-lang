@@ -1913,8 +1913,30 @@ in thin, self-contained slices.
   support / the typed-fn adapter (P2); the recursive `Logger` type (`child`
   returns an open record); LSP seeding (the editor keeps un-seeded `check_module`
   for now); and checking calls in expression (non-statement) position.
-- **P2 (later).** A typed-fn adapter so host functions carry generic schemes, not
-  just monomorphic types.
+- **P2 done (`aven-host`).** A typed-fn adapter derives both the Aven `Type` and a
+  marshalling `Value::native` from a monomorphic Rust closure, so a host fn's value
+  and type can't drift — register a closure once and both halves are generated from
+  the signature. `AvenMarshal` is the single source pairing a Rust type with its
+  Aven type (`aven_type()` via `build::*`) and the conversions in both directions
+  (`to_value`/`from_value`); implemented for `i64`→`Int`, `f64`→`Float`,
+  `String`→`Text`, `bool`→`Bool`, `()`→`Unit`, with `from_value` returning a clear
+  shape-mismatch `Err` ("expected Int, got Text") that surfaces as
+  `runtime.platform-error` through the native path. A sealed `IntoHostFn<Args>`
+  (macro-implemented for `Fn(A0..A3) -> R + 'static` where every type is
+  `AvenMarshal`, arities 0..=4) yields `into_host_fn() -> (Type, Value)`: an
+  all-required `Type::Function` plus a native that arity-checks (`expected N
+  arguments, got M`), unmarshals each arg, calls the closure, and marshals the
+  result. `Host::register_fn(name, f)` routes that pair through the existing
+  `register`, so it lands in both `eval_globals` and `check_globals` with no new
+  registry path. Verified end to end: `register_fn("add", |a: i64, b: i64| a + b)`
+  makes `add(2, 3)` check and evaluate to `5` while `add("x", 3)` is a check-time
+  type error. The existing `logger`/`Platform`/`debug` registrations are **not**
+  migrated in this slice (logger is a record of optional-arg methods, `Console.log`
+  is variadic-Display, `debug` is generic). Deferred: generic host fns (`debug` /
+  `Value` passthrough mapped to a type variable + scheme support), compound
+  marshalling (records↔structs, `Vec`↔Array, `Option`↔`?T`, `Result`↔Aven
+  `Result`), optional params via the adapter, arities above 4, and migrating the
+  existing host regs.
 
 ## Milestone D — default/optional parameters
 

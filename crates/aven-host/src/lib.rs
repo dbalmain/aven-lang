@@ -8,9 +8,13 @@
 //! Rust traits the platform implements, while the statically-known value+type is
 //! registered through helpers like [`Host::register_logger`].
 
+mod marshal;
+
 use std::rc::Rc;
 
 use aven_check::Type;
+
+pub use marshal::{AvenMarshal, IntoHostFn};
 
 /// Re-exported Aven type builders so hosts spell types without depending on
 /// `aven-check` directly (the registration/typing vocabulary lives here).
@@ -61,6 +65,18 @@ impl Host {
             name: name.into(),
             value,
         });
+    }
+
+    /// Register a typed Rust closure: derive both its Aven [`Type`] and a
+    /// marshalling [`Value::native`] from the signature so the value and type
+    /// can't drift, then register them through the normal [`Host::register`]
+    /// path. Monomorphic primitives only — see [`AvenMarshal`].
+    pub fn register_fn<F, Args>(&mut self, name: impl Into<String>, f: F)
+    where
+        F: IntoHostFn<Args>,
+    {
+        let (ty, value) = f.into_host_fn();
+        self.register(name, value, ty);
     }
 
     /// Register the `logger` required capability: build the logger value from the
@@ -165,6 +181,80 @@ mod tests {
             vec![("debug".to_owned(), Value::Int(7))]
         );
         assert!(host.check_globals().is_empty());
+    }
+
+    #[test]
+    fn register_fn_derives_type_and_native_in_globals() {
+        let mut host = Host::new();
+        host.register_fn("add", |a: i64, b: i64| a + b);
+
+        let check = host.check_globals();
+        assert_eq!(check.len(), 1);
+        assert_eq!(check[0].0, "add");
+        let (params, result) = function_signature(&check[0].1).expect("add is a function");
+        assert_eq!(params, vec![build::int(), build::int()]);
+        assert_eq!(result, build::int());
+        assert_eq!(function_required_arity(&check[0].1), Some(2));
+
+        let eval = host.eval_globals();
+        assert_eq!(eval.len(), 1);
+        let Value::Native(native) = &eval[0].1 else {
+            panic!("add is a native value");
+        };
+        assert_eq!(native(&[Value::Int(2), Value::Int(3)]), Ok(Value::Int(5)));
+        assert_eq!(
+            native(&[Value::Text("x".to_owned()), Value::Int(3)]),
+            Err("expected Int, got Text".to_owned())
+        );
+        assert_eq!(
+            native(&[Value::Int(2)]),
+            Err("expected 2 arguments, got 1".to_owned())
+        );
+    }
+
+    #[test]
+    fn register_fn_nullary() {
+        let mut host = Host::new();
+        host.register_fn("answer", || 42_i64);
+
+        let check = host.check_globals();
+        assert_eq!(check[0].1, build::function(vec![], build::int()));
+
+        let eval = host.eval_globals();
+        let Value::Native(native) = &eval[0].1 else {
+            panic!("answer is a native value");
+        };
+        assert_eq!(native(&[]), Ok(Value::Int(42)));
+    }
+
+    #[test]
+    fn register_fn_checks_and_evaluates_end_to_end() {
+        use aven_parser::parse_module;
+
+        let mut host = Host::new();
+        host.register_fn("add", |a: i64, b: i64| a + b);
+
+        let ok = parse_module("add(2, 3)\n");
+        assert!(
+            ok.diagnostics.is_empty(),
+            "program parses: {:?}",
+            ok.diagnostics
+        );
+        let checked = aven_check::check_module_with_globals(&ok.module, &host.check_globals());
+        assert!(
+            checked.diagnostics.is_empty(),
+            "add(2, 3) checks: {:?}",
+            checked.diagnostics
+        );
+        let evaluated = aven_eval::eval_module_with_globals(&ok.module, host.eval_globals());
+        assert_eq!(evaluated.value, Some(Value::Int(5)));
+
+        let bad = parse_module("add(\"x\", 3)\n");
+        let checked = aven_check::check_module_with_globals(&bad.module, &host.check_globals());
+        assert!(
+            !checked.diagnostics.is_empty(),
+            "add(\"x\", 3) is a type error"
+        );
     }
 
     #[test]

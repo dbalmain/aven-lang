@@ -12,3 +12,6 @@ workspace = true
 [dependencies]
 aven-check.workspace = true
 aven-eval.workspace = true
+
+[dev-dependencies]
+aven-parser.workspace = true
