@@ -57,6 +57,7 @@ pub struct Expr {
 pub enum ExprKind {
     Missing,
     Literal(Literal),
+    Interpolation(Vec<InterpolationSegment>),
     Undefined,
     Null,
     Name(String),
@@ -125,6 +126,12 @@ pub enum ExprKind {
         body: Box<Expr>,
     },
     Block(Vec<Item>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InterpolationSegment {
+    Text(String),
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1168,6 +1175,7 @@ impl Parser<'_> {
                 self.advance();
                 literal_expr(Literal::String(text), token.span)
             }
+            TokenKind::InterpolationStart(text) => self.parse_interpolation(text, token.span),
             TokenKind::RegexLiteral(regex) => {
                 self.advance();
                 literal_expr(Literal::Regex(regex), token.span)
@@ -1202,6 +1210,56 @@ impl Parser<'_> {
                 self.advance();
                 missing_expr(token.span)
             }
+        }
+    }
+
+    fn parse_interpolation(&mut self, start_text: String, start_span: Span) -> Expr {
+        let start = start_span.start;
+        let mut end = start_span.end;
+        let mut segments = vec![InterpolationSegment::Text(interpolation_start_text(
+            &start_text,
+        ))];
+        self.advance();
+
+        loop {
+            if self.at_end() || self.at_item_boundary() {
+                break;
+            }
+
+            let value = if self.current_is_interpolation_continuation() {
+                missing_expr(self.current_span())
+            } else {
+                self.parse_expression()
+            };
+            end = value.span.end;
+            segments.push(InterpolationSegment::Expr(value));
+
+            let Some(token) = self.current().cloned() else {
+                break;
+            };
+
+            match token.kind {
+                TokenKind::InterpolationMiddle(text) => {
+                    self.advance();
+                    end = token.span.end;
+                    segments.push(InterpolationSegment::Text(text));
+                }
+                TokenKind::InterpolationEnd(text) => {
+                    self.advance();
+                    end = token.span.end;
+                    segments.push(InterpolationSegment::Text(interpolation_end_text(&text)));
+                    break;
+                }
+                _ => {
+                    self.report_unsupported_interpolation_continuation(token.span);
+                    break;
+                }
+            }
+        }
+
+        Expr {
+            kind: ExprKind::Interpolation(segments),
+            span: Span::new(start, end),
         }
     }
 
@@ -1618,10 +1676,14 @@ impl Parser<'_> {
                 TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
                     depth += 1;
                 }
+                TokenKind::InterpolationStart(_) => depth += 1,
                 TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
                     if depth == 0 {
                         return false;
                     }
+                    depth = depth.saturating_sub(1);
+                }
+                TokenKind::InterpolationEnd(_) => {
                     depth = depth.saturating_sub(1);
                 }
                 TokenKind::Operator(operator) if operator == "->" && depth == 0 => {
@@ -1673,10 +1735,14 @@ impl Parser<'_> {
                 TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
                     depth += 1;
                 }
+                TokenKind::InterpolationStart(_) => depth += 1,
                 TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
                     if depth == 0 {
                         return false;
                     }
+                    depth = depth.saturating_sub(1);
+                }
+                TokenKind::InterpolationEnd(_) => {
                     depth = depth.saturating_sub(1);
                 }
                 TokenKind::Semicolon if depth == 0 => return true,
@@ -1764,9 +1830,11 @@ impl Parser<'_> {
                 TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
                     depth += 1;
                 }
+                TokenKind::InterpolationStart(_) => depth += 1,
                 TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
                     depth = depth.saturating_sub(1);
                 }
+                TokenKind::InterpolationEnd(_) => depth = depth.saturating_sub(1),
                 TokenKind::Operator(operator) if operator == "=" && depth == 0 => {
                     return Some(index);
                 }
@@ -1799,12 +1867,14 @@ impl Parser<'_> {
         for index in self.cursor..self.tokens.len() {
             match &self.tokens[index].kind {
                 TokenKind::OpenParen => depth += 1,
+                TokenKind::InterpolationStart(_) => depth += 1,
                 TokenKind::CloseParen => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
                         return self.lambda_arrow_follows(index + 1);
                     }
                 }
+                TokenKind::InterpolationEnd(_) => depth = depth.saturating_sub(1),
                 TokenKind::Newline | TokenKind::Dedent if depth == 0 => return false,
                 _ => {}
             }
@@ -1836,6 +1906,8 @@ impl Parser<'_> {
                 TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
                     depth = depth.saturating_sub(1);
                 }
+                TokenKind::InterpolationStart(_) => depth += 1,
+                TokenKind::InterpolationEnd(_) => depth = depth.saturating_sub(1),
                 TokenKind::Operator(operator) if operator == "=>" && depth == 0 => return true,
                 TokenKind::Newline | TokenKind::Dedent if depth == 0 => return false,
                 _ => {}
@@ -2071,6 +2143,20 @@ impl Parser<'_> {
         self.recover_to_next_line();
     }
 
+    fn report_unsupported_interpolation_continuation(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("expected string interpolation continuation")
+                .with_code(codes::parse::UNSUPPORTED_SYNTAX)
+                .with_label(Label::primary(
+                    span,
+                    "expected more string text or the end of the interpolated string",
+                ))
+                .with_note(
+                    "close the interpolation expression with `}` before continuing the string",
+                ),
+        );
+    }
+
     fn consume_close_paren(&mut self) {
         if self.current_is(TokenKind::CloseParen) {
             self.advance();
@@ -2247,6 +2333,13 @@ impl Parser<'_> {
         self.current().is_some_and(|token| token.kind == kind)
     }
 
+    fn current_is_interpolation_continuation(&self) -> bool {
+        matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::InterpolationMiddle(_) | TokenKind::InterpolationEnd(_))
+        )
+    }
+
     fn next_is(&self, kind: TokenKind) -> bool {
         self.tokens
             .get(self.cursor + 1)
@@ -2327,6 +2420,14 @@ fn literal_expr(literal: Literal, span: Span) -> Expr {
         kind: ExprKind::Literal(literal),
         span,
     }
+}
+
+fn interpolation_start_text(text: &str) -> String {
+    text.strip_prefix('"').unwrap_or(text).to_owned()
+}
+
+fn interpolation_end_text(text: &str) -> String {
+    text.strip_suffix('"').unwrap_or(text).to_owned()
 }
 
 fn collection_type_application(
@@ -2474,8 +2575,8 @@ mod tests {
     use aven_core::{FileId, SourceFile, codes};
 
     use super::{
-        ExprKind, Item, Literal, Param, ParseOutput, PropagationMode, RecordEntry, parse_module,
-        parse_source,
+        ExprKind, InterpolationSegment, Item, Literal, Param, ParseOutput, PropagationMode,
+        RecordEntry, parse_module, parse_source,
     };
     use crate::TokenKind;
 
@@ -2563,6 +2664,45 @@ mod tests {
         assert!(matches!(
             &binding.value.kind,
             ExprKind::Literal(Literal::String(text)) if text == "\"Aven\""
+        ));
+    }
+
+    #[test]
+    fn parses_string_interpolation_segments() {
+        let output = parse_module("message = \"a${b}c\"\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Interpolation(segments) = binding_value(&output, 0) else {
+            panic!("expected interpolation expression");
+        };
+        assert_eq!(segments.len(), 3);
+        assert!(matches!(
+            &segments[0],
+            InterpolationSegment::Text(text) if text == "a"
+        ));
+        assert!(matches!(
+            &segments[1],
+            InterpolationSegment::Expr(expr)
+                if matches!(&expr.kind, ExprKind::Name(name) if name == "b")
+        ));
+        assert!(matches!(
+            &segments[2],
+            InterpolationSegment::Text(text) if text == "c"
+        ));
+    }
+
+    #[test]
+    fn parses_operator_expression_inside_interpolation() {
+        let output = parse_module("message = \"${a + b}\"\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Interpolation(segments) = binding_value(&output, 0) else {
+            panic!("expected interpolation expression");
+        };
+        assert!(matches!(
+            &segments[1],
+            InterpolationSegment::Expr(expr)
+                if matches!(&expr.kind, ExprKind::Binary { operator, .. } if operator == "+")
         ));
     }
 

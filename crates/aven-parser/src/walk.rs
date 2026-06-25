@@ -1,4 +1,4 @@
-use crate::parser::{Expr, ExprKind, Item, RecordEntry};
+use crate::parser::{Expr, ExprKind, InterpolationSegment, Item, RecordEntry};
 
 pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
     match &expr.kind {
@@ -9,6 +9,13 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
         | ExprKind::Unary { value: inner, .. }
         | ExprKind::Propagate { value: inner, .. } => visit(inner),
         ExprKind::Tuple(items) | ExprKind::Array(items) => walk_exprs(items, visit),
+        ExprKind::Interpolation(segments) => {
+            for segment in segments {
+                if let InterpolationSegment::Expr(expr) = segment {
+                    visit(expr);
+                }
+            }
+        }
         ExprKind::Record(entries) | ExprKind::Set(entries) => {
             walk_record_entry_exprs(entries, visit);
         }

@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 
 use aven_core::{Diagnostic, Severity};
 use aven_parser::{
-    Declaration, DeclarationKind, DeclarationPhase, DeclarationShape, Expr, ExprKind, Item,
-    Literal, MatchArm, Module, Param, PropagationMode, RecordEntry, Token,
+    Declaration, DeclarationKind, DeclarationPhase, DeclarationShape, Expr, ExprKind,
+    InterpolationSegment, Item, Literal, MatchArm, Module, Param, PropagationMode, RecordEntry,
+    Token,
 };
 
 const PARSER_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parser");
@@ -398,6 +399,23 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             let _ = writeln!(output, "missing");
         }
         ExprKind::Literal(literal) => render_literal_ast(output, literal, indent),
+        ExprKind::Interpolation(segments) => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "interpolation");
+            for segment in segments {
+                match segment {
+                    InterpolationSegment::Text(text) => {
+                        write_indent(output, indent + 1);
+                        let _ = writeln!(output, "text {text:?}");
+                    }
+                    InterpolationSegment::Expr(expr) => {
+                        write_indent(output, indent + 1);
+                        let _ = writeln!(output, "expr");
+                        render_expr_ast(output, expr, indent + 2);
+                    }
+                }
+            }
+        }
         ExprKind::Undefined => {
             write_indent(output, indent);
             let _ = writeln!(output, "undefined");

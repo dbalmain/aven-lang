@@ -134,6 +134,13 @@ fn emit_line(output: &mut String, source: &str, tokens: &[&Token]) {
 }
 
 fn token_text(source: &str, token: &Token) -> String {
+    match &token.kind {
+        TokenKind::InterpolationStart(text) => return format!("{text}${{"),
+        TokenKind::InterpolationMiddle(text) => return format!("}}{text}${{"),
+        TokenKind::InterpolationEnd(text) => return format!("}}{text}"),
+        _ => {}
+    }
+
     let text = source
         .get(token.span.start..token.span.end)
         .unwrap_or_default();
@@ -156,6 +163,8 @@ fn needs_space(
     }
 
     if is_comment(previous)
+        || is_interpolation_continuation(current)
+        || is_interpolation_prefix(previous)
         || is_close_paren_or_bracket(current)
         || is_tight_set_postfix_marker(previous, current, next)
         || is_tight_postfix_operator(current, Some(previous))
@@ -307,9 +316,24 @@ fn can_end_postfix_operand(token: &Token) -> bool {
         TokenKind::Keyword(_)
             | TokenKind::Identifier(_)
             | TokenKind::ComptimeIdentifier(_)
+            | TokenKind::InterpolationEnd(_)
             | TokenKind::CloseParen
             | TokenKind::CloseBracket
             | TokenKind::CloseBrace
+    )
+}
+
+fn is_interpolation_prefix(token: &Token) -> bool {
+    matches!(
+        token.kind,
+        TokenKind::InterpolationStart(_) | TokenKind::InterpolationMiddle(_)
+    )
+}
+
+fn is_interpolation_continuation(token: &Token) -> bool {
+    matches!(
+        token.kind,
+        TokenKind::InterpolationMiddle(_) | TokenKind::InterpolationEnd(_)
     )
 }
 

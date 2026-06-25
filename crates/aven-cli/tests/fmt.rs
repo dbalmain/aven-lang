@@ -539,6 +539,19 @@ fn run_prints_record_field_access_value() {
 }
 
 #[test]
+fn run_prints_string_interpolation_value() {
+    let file = TempFile::new(
+        "run-interpolation",
+        "count = 3\n\"${count} files copied\"\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "3 files copied\n");
+}
+
+#[test]
 fn run_prints_collection_and_nullable_program_value() {
     let file = TempFile::new(
         "run-collections",

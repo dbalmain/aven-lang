@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
-    Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Literal, MatchArm, MergedItem,
-    Module, Param, RecordEntry, Signature, collect_declarations, merged_items, pattern_bindings,
-    walk_expr_children,
+    Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
+    MatchArm, MergedItem, Module, Param, RecordEntry, Signature, collect_declarations,
+    merged_items, pattern_bindings, walk_expr_children,
 };
 
 use crate::BUILTIN_TYPES;
@@ -1689,6 +1689,7 @@ impl<'a> Checker<'a> {
                 }),
             ExprKind::Missing => Type::Deferred,
             ExprKind::Literal(_)
+            | ExprKind::Interpolation(_)
             | ExprKind::Undefined
             | ExprKind::Null
             | ExprKind::Tag(_)
@@ -3673,6 +3674,7 @@ pub(crate) fn comptime_rhs_needs_evaluation(value: &Expr) -> bool {
             | ExprKind::Match { .. }
             | ExprKind::Block(_)
             | ExprKind::Lambda { .. }
+            | ExprKind::Interpolation(_)
     )
 }
 
@@ -3814,6 +3816,7 @@ impl<'a> Checker<'a> {
             } => self.infer_unary(env, operator, value),
             ExprKind::Block(items) => self.infer_block(env, items),
             ExprKind::Match { subject, arms, .. } => self.infer_match(env, subject, arms),
+            ExprKind::Interpolation(segments) => self.infer_interpolation(env, segments),
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Optional(_)
@@ -3824,6 +3827,16 @@ impl<'a> Checker<'a> {
         };
         self.record_expr_type(expr.span, &ty);
         ty
+    }
+
+    fn infer_interpolation(&mut self, env: &TypeEnv, segments: &[InterpolationSegment]) -> Type {
+        for segment in segments {
+            if let InterpolationSegment::Expr(expr) = segment {
+                self.infer(env, expr);
+            }
+        }
+
+        named_builtin("Text")
     }
 
     fn infer_binary(&mut self, env: &TypeEnv, left: &Expr, operator: &str, right: &Expr) -> Type {

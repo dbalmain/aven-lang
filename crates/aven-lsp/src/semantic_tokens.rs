@@ -275,9 +275,11 @@ fn semantic_style_for_token(kind: &aven_parser::TokenKind) -> Option<SemanticSty
         }
         aven_parser::TokenKind::ComptimeIdentifier(_) => TOKEN_TYPE,
         aven_parser::TokenKind::Number(_) => TOKEN_NUMBER,
-        aven_parser::TokenKind::StringLiteral(_) | aven_parser::TokenKind::PathLiteral(_) => {
-            TOKEN_STRING
-        }
+        aven_parser::TokenKind::StringLiteral(_)
+        | aven_parser::TokenKind::InterpolationStart(_)
+        | aven_parser::TokenKind::InterpolationMiddle(_)
+        | aven_parser::TokenKind::InterpolationEnd(_)
+        | aven_parser::TokenKind::PathLiteral(_) => TOKEN_STRING,
         aven_parser::TokenKind::RegexLiteral(_) => TOKEN_REGEXP,
         aven_parser::TokenKind::LabelPath(_) | aven_parser::TokenKind::Tag(_) => TOKEN_PROPERTY,
         aven_parser::TokenKind::Operator(_) => TOKEN_OPERATOR,

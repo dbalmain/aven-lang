@@ -24,6 +24,7 @@ pub mod lex {
     pub const RESERVED_OPERATOR: &str = "lex.reserved-operator";
     pub const TAB_INDENTATION: &str = "lex.tab-indentation";
     pub const UNEXPECTED_CHARACTER: &str = "lex.unexpected-character";
+    pub const UNTERMINATED_INTERPOLATION: &str = "lex.unterminated-interpolation";
     pub const UNTERMINATED_REGEX: &str = "lex.unterminated-regex";
     pub const UNTERMINATED_STRING: &str = "lex.unterminated-string";
 }
@@ -112,6 +113,7 @@ pub const ALL: &[&str] = &[
     lex::RESERVED_OPERATOR,
     lex::TAB_INDENTATION,
     lex::UNEXPECTED_CHARACTER,
+    lex::UNTERMINATED_INTERPOLATION,
     lex::UNTERMINATED_REGEX,
     lex::UNTERMINATED_STRING,
     name::ACCIDENTAL_SHADOWING,

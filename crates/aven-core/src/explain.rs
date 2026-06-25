@@ -55,6 +55,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "The lexer found a character that is not part of Aven source syntax. Remove it or rewrite it using a supported literal, identifier, or operator form.",
     },
     DiagnosticExplanation {
+        code: codes::lex::UNTERMINATED_INTERPOLATION,
+        text: "A string interpolation was opened but the interpolated string did not reach its closing quote. Close the interpolation with } and close the surrounding string with a quote.",
+    },
+    DiagnosticExplanation {
         code: codes::lex::UNTERMINATED_REGEX,
         text: "A regex literal was opened but not closed. Add the closing /, or use Regex.compile(pattern) when the pattern is dynamic.",
     },

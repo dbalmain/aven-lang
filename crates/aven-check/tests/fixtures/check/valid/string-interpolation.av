@@ -1,0 +1,1 @@
+value : Text = "hi ${1 + 2}"

@@ -7,7 +7,10 @@ use std::{
 };
 
 use aven_core::{Diagnostic, Label, Span, codes};
-use aven_parser::{Expr, ExprKind, Item, Literal, MatchArm, Module, PropagationMode, RecordEntry};
+use aven_parser::{
+    Expr, ExprKind, InterpolationSegment, Item, Literal, MatchArm, Module, PropagationMode,
+    RecordEntry,
+};
 
 pub mod logging;
 
@@ -550,6 +553,7 @@ pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
 fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
     match &expr.kind {
         ExprKind::Literal(literal) => eval_literal(literal, expr.span).map_err(one_diagnostic),
+        ExprKind::Interpolation(segments) => eval_interpolation(segments, env),
         ExprKind::Undefined => Ok(Value::Undefined),
         ExprKind::Null => Ok(Value::Null),
         ExprKind::Name(name) | ExprKind::ComptimeName(name) => env
@@ -1283,6 +1287,21 @@ fn eval_literal(literal: &Literal, span: Span) -> Result<Value, Diagnostic> {
     }
 }
 
+fn eval_interpolation(segments: &[InterpolationSegment], env: &Environment) -> Eval {
+    let mut text = String::new();
+
+    for segment in segments {
+        match segment {
+            InterpolationSegment::Text(raw) => text.push_str(&decode_string_body(raw)),
+            InterpolationSegment::Expr(expr) => {
+                text.push_str(&eval_expr_many(expr, env)?.to_string());
+            }
+        }
+    }
+
+    Ok(Value::Text(text))
+}
+
 fn eval_number_literal(text: &str, span: Span) -> Result<Value, Diagnostic> {
     let normalized = text.replace('_', "");
 
@@ -1309,10 +1328,14 @@ fn decode_string_literal(text: &str) -> String {
         .and_then(|stripped| stripped.strip_suffix('"'))
         .unwrap_or(text);
 
+    decode_string_body(inner)
+}
+
+fn decode_string_body(text: &str) -> String {
     let mut decoded = String::new();
     let mut escaped = false;
 
-    for ch in inner.chars() {
+    for ch in text.chars() {
         if escaped {
             decoded.push(match ch {
                 'n' => '\n',
@@ -1936,6 +1959,29 @@ mod tests {
     #[test]
     fn concatenates_text_with_plus() {
         assert_eval("\"a\" + \"b\"", Value::Text("ab".to_owned()));
+    }
+
+    #[test]
+    fn evaluates_string_interpolation_with_stringified_values() {
+        assert_eval("\"a${1 + 2}b\"", Value::Text("a3b".to_owned()));
+    }
+
+    #[test]
+    fn evaluates_interpolation_field_access() {
+        assert_module_value(
+            "user = { name: \"Ada\" }\n\"${user.name}\"\n",
+            Value::Text("Ada".to_owned()),
+        );
+    }
+
+    #[test]
+    fn escaped_interpolation_marker_evaluates_literally() {
+        assert_eval(r#""\${x}""#, Value::Text("${x}".to_owned()));
+    }
+
+    #[test]
+    fn evaluates_nested_record_expression_inside_interpolation() {
+        assert_eval("\"${ { a: 1 }.a }\"", Value::Text("1".to_owned()));
     }
 
     #[test]

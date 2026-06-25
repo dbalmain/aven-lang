@@ -33,6 +33,9 @@ pub enum TokenKind {
     ComptimeParamMarker(String),
     Number(String),
     StringLiteral(String),
+    InterpolationStart(String),
+    InterpolationMiddle(String),
+    InterpolationEnd(String),
     RegexLiteral(String),
     PathLiteral(String),
     LabelPath(String),
@@ -83,6 +86,9 @@ impl TokenKind {
             Self::ComptimeParamMarker(name) => format!("comptime_param `@{name}`"),
             Self::Number(number) => format!("number `{number}`"),
             Self::StringLiteral(text) => format!("string `{text}`"),
+            Self::InterpolationStart(text) => format!("interpolation_start `{text}`"),
+            Self::InterpolationMiddle(text) => format!("interpolation_middle `{text}`"),
+            Self::InterpolationEnd(text) => format!("interpolation_end `{text}`"),
             Self::RegexLiteral(regex) => format!("regex `{regex}`"),
             Self::PathLiteral(path) => format!("path `{path}`"),
             Self::LabelPath(path) => format!("label `{path}`"),
@@ -114,6 +120,7 @@ pub fn lex_source(source: &str) -> LexOutput {
         tokens: Vec::new(),
         diagnostics: Vec::new(),
         at_line_start: true,
+        interp_contexts: Vec::new(),
     };
 
     lexer.lex();
@@ -146,6 +153,13 @@ struct Lexer<'a> {
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
     at_line_start: bool,
+    interp_contexts: Vec<InterpolationContext>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InterpolationContext {
+    brace_depth: usize,
+    start: usize,
 }
 
 impl Lexer<'_> {
@@ -153,11 +167,15 @@ impl Lexer<'_> {
         self.scan_leading_bom();
 
         while self.offset < self.source.len() {
-            if self.at_line_start {
+            if self.at_line_start && self.interp_contexts.is_empty() {
                 self.scan_indent();
                 if self.offset >= self.source.len() {
                     break;
                 }
+            }
+
+            if self.interpolation_newline_or_eof() {
+                continue;
             }
 
             match self.current_byte() {
@@ -175,8 +193,8 @@ impl Lexer<'_> {
                 Some(b'/') if self.regex_allowed_here() => self.scan_regex_or_operator(),
                 Some(b'(') => self.push_single(TokenKind::OpenParen),
                 Some(b')') => self.push_single(TokenKind::CloseParen),
-                Some(b'{') => self.push_single(TokenKind::OpenBrace),
-                Some(b'}') => self.push_single(TokenKind::CloseBrace),
+                Some(b'{') => self.scan_open_brace(),
+                Some(b'}') => self.scan_close_brace(),
                 Some(b'[') => self.push_single(TokenKind::OpenBracket),
                 Some(b']') => self.push_single(TokenKind::CloseBracket),
                 Some(b',') => self.push_single(TokenKind::Comma),
@@ -185,6 +203,11 @@ impl Lexer<'_> {
                 Some(_) => self.scan_unexpected_character(),
                 None => break,
             }
+        }
+
+        if let Some(context) = self.interp_contexts.last().copied() {
+            self.push_unterminated_interpolation(context.start, true);
+            self.interp_contexts.clear();
         }
     }
 
@@ -359,6 +382,16 @@ impl Lexer<'_> {
                     escaped = true;
                     self.offset += 1;
                 }
+                '$' if self.peek_byte(1) == Some(b'{') => {
+                    let interpolation_start = self.offset;
+                    self.push(
+                        TokenKind::InterpolationStart(self.source[start..self.offset].to_owned()),
+                        Span::new(start, self.offset),
+                    );
+                    self.offset += 2;
+                    self.push_interpolation_context(interpolation_start);
+                    return;
+                }
                 '"' => {
                     self.offset += 1;
                     self.push(
@@ -378,6 +411,55 @@ impl Lexer<'_> {
         self.push_unterminated_string(start);
     }
 
+    fn scan_string_continuation(&mut self) {
+        let start = self.offset;
+        let mut escaped = false;
+
+        while self.offset < self.source.len() {
+            let Some(ch) = self.current_char() else {
+                break;
+            };
+
+            if escaped {
+                escaped = false;
+                self.offset += ch.len_utf8();
+                continue;
+            }
+
+            match ch {
+                '\\' => {
+                    escaped = true;
+                    self.offset += 1;
+                }
+                '$' if self.peek_byte(1) == Some(b'{') => {
+                    let interpolation_start = self.offset;
+                    self.push(
+                        TokenKind::InterpolationMiddle(self.source[start..self.offset].to_owned()),
+                        Span::new(start, self.offset),
+                    );
+                    self.offset += 2;
+                    self.push_interpolation_context(interpolation_start);
+                    return;
+                }
+                '"' => {
+                    self.offset += 1;
+                    self.push(
+                        TokenKind::InterpolationEnd(self.source[start..self.offset].to_owned()),
+                        Span::new(start, self.offset),
+                    );
+                    return;
+                }
+                '\n' | '\r' => {
+                    self.push_unterminated_interpolation_fragment(start);
+                    return;
+                }
+                _ => self.offset += ch.len_utf8(),
+            }
+        }
+
+        self.push_unterminated_interpolation_fragment(start);
+    }
+
     fn push_unterminated_string(&mut self, start: usize) {
         self.diagnostics.push(
             Diagnostic::error("unterminated string literal")
@@ -394,6 +476,80 @@ impl Lexer<'_> {
             TokenKind::StringLiteral(self.source[start..self.offset].to_owned()),
             Span::new(start, self.offset),
         );
+    }
+
+    fn push_unterminated_interpolation_fragment(&mut self, fragment_start: usize) {
+        self.push_unterminated_interpolation(fragment_start, false);
+        self.push(
+            TokenKind::InterpolationEnd(self.source[fragment_start..self.offset].to_owned()),
+            Span::new(fragment_start, self.offset),
+        );
+    }
+
+    fn push_unterminated_interpolation(&mut self, start: usize, synthesize_end: bool) {
+        self.diagnostics.push(
+            Diagnostic::error("unterminated string interpolation")
+                .with_code(codes::lex::UNTERMINATED_INTERPOLATION)
+                .with_label(Label::primary(
+                    Span::new(start, self.offset),
+                    "interpolated string starts here",
+                ))
+                .with_note("close the interpolation with `}` and the string with a `\"`."),
+        );
+
+        if synthesize_end {
+            self.push(
+                TokenKind::InterpolationEnd(String::new()),
+                Span::point(self.offset),
+            );
+        }
+    }
+
+    fn interpolation_newline_or_eof(&mut self) -> bool {
+        if self.interp_contexts.is_empty() || !self.at_newline_or_eof() {
+            return false;
+        }
+
+        let start = self
+            .interp_contexts
+            .last()
+            .map(|context| context.start)
+            .unwrap_or(self.offset);
+        self.push_unterminated_interpolation(start, true);
+        self.interp_contexts.clear();
+        true
+    }
+
+    fn push_interpolation_context(&mut self, start: usize) {
+        self.interp_contexts.push(InterpolationContext {
+            brace_depth: 0,
+            start,
+        });
+    }
+
+    fn scan_open_brace(&mut self) {
+        if let Some(context) = self.interp_contexts.last_mut() {
+            context.brace_depth += 1;
+        }
+
+        self.push_single(TokenKind::OpenBrace);
+    }
+
+    fn scan_close_brace(&mut self) {
+        let Some(context) = self.interp_contexts.last_mut() else {
+            self.push_single(TokenKind::CloseBrace);
+            return;
+        };
+
+        if context.brace_depth > 0 {
+            context.brace_depth -= 1;
+            self.push_single(TokenKind::CloseBrace);
+            return;
+        }
+
+        self.interp_contexts.pop();
+        self.offset += 1;
+        self.scan_string_continuation();
     }
 
     fn scan_label_or_operator(&mut self) {
@@ -876,5 +1032,85 @@ mod tests {
                 TokenKind::Keyword(Keyword::Undefined),
             ]
         );
+    }
+
+    #[test]
+    fn lexes_string_interpolation_fragments_and_body_tokens() {
+        let output = lex_source("\"a${b}c\"");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::InterpolationStart("\"a".to_owned()),
+                TokenKind::Identifier("b".to_owned()),
+                TokenKind::InterpolationEnd("c\"".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_brace_balanced_interpolation_bodies() {
+        let output = lex_source("\"${ {x: 1} }\"");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::InterpolationStart("\"".to_owned()),
+                TokenKind::OpenBrace,
+                TokenKind::Identifier("x".to_owned()),
+                TokenKind::Operator(":".to_owned()),
+                TokenKind::Number("1".to_owned()),
+                TokenKind::CloseBrace,
+                TokenKind::InterpolationEnd("\"".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn escaped_interpolation_marker_stays_a_plain_string() {
+        let output = lex_source(r#""\${x}""#);
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            tokens,
+            vec![TokenKind::StringLiteral(r#""\${x}""#.to_owned())]
+        );
+    }
+
+    #[test]
+    fn lexes_multiple_interpolations() {
+        let output = lex_source("\"${a}${b}\"");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::InterpolationStart("\"".to_owned()),
+                TokenKind::Identifier("a".to_owned()),
+                TokenKind::InterpolationMiddle(String::new()),
+                TokenKind::Identifier("b".to_owned()),
+                TokenKind::InterpolationEnd("\"".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn reports_unterminated_interpolation_on_newline_and_eof() {
+        for source in ["\"a${b\n", "\"a${b"] {
+            let output = lex_source(source);
+            let codes: Vec<_> = output
+                .diagnostics
+                .iter()
+                .filter_map(|diagnostic| diagnostic.code.as_deref())
+                .collect();
+
+            assert_eq!(codes, vec!["lex.unterminated-interpolation"]);
+        }
     }
 }

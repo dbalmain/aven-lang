@@ -534,6 +534,9 @@ fn collect_pattern_references(pattern: &Expr, references: &mut Vec<Reference>) {
                 collect_pattern_references(&arm.body, references);
             }
         }
+        ExprKind::Interpolation(_) => walk_expr_children(pattern, &mut |child| {
+            collect_expr_references(child, references)
+        }),
         ExprKind::Lambda { .. }
         | ExprKind::Block(_)
         | ExprKind::Missing

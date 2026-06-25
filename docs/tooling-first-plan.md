@@ -185,6 +185,11 @@ symbolic runs so custom operators can be tokenized without feeding declarations
 back into the lexer. The language-reserved operator starts `=`, `:`, `.`, `?`,
 and `@` reject unknown symbolic runs instead of silently splitting them. The
 lexer feeds the layout pass, which in turn feeds the Milestone 4 parser.
+Normal double-quoted string interpolation is implemented with lexer-driven
+`InterpolationStart`/`InterpolationMiddle`/`InterpolationEnd` tokens and a
+dedicated `ExprKind::Interpolation` node; interpolation bodies are ordinary
+expressions and are auto-stringified to `Text`. Triple-quoted/raw strings and
+`@"..."` label interpolation remain deferred.
 
 Goal: replace ad hoc string scanning with one tokenization pass.
 
