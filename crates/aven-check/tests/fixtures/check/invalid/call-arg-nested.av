@@ -1,0 +1,5 @@
+f : (Text) -> Text
+f = (x) => x
+h : (Text) -> Text
+h = (x) => x
+top = h(f(42))

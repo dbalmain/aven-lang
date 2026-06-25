@@ -1,0 +1,3 @@
+error type.mismatch: expected `Text`, found a number literal
+  label 182..184: this is a number literal
+  note: change the value to produce `Text`, or change the annotation to match the literal

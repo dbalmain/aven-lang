@@ -1,0 +1,4 @@
+f : (Text) -> Int
+f = (x) => { text: x, value: 1 }.value
+result : Int = f(42) ?>
+  _ => 1

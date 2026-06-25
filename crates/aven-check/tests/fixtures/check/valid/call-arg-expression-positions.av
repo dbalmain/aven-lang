@@ -1,0 +1,18 @@
+textId : (Text) -> Text
+textId = (value) => value
+intFromText : (Text) -> Int
+intFromText = (value) => { text: value, result: 1 }.result
+curried : (Text) -> (Int) -> Int
+curried = (text) => (number) => { text: text, result: number }.result
+apply : (Text, Text -> Text) -> Text
+apply = (value, transform) => transform(value)
+
+nested : Text = textId(textId("ok"))
+binop : Int = intFromText("ok") + 1
+tuple : (Int, Int) = (intFromText("ok"), 1)
+record : { a: Int } = { a: intFromText("ok") }
+array : Array[Int] = [intFromText("ok")]
+matched : Int = intFromText("ok") ?>
+  _ => 1
+curriedValue : Int = curried("ok")(1)
+higherOrder : Text = apply("ok", (text) => textId(text))

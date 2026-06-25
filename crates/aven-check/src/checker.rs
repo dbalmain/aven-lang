@@ -521,9 +521,6 @@ impl<'a> Checker<'a> {
     /// rather than letting inference silently defer them. A non-concrete callee
     /// (unknown/free name) keeps today's permissive behaviour.
     fn check_value_call(&mut self, callee: &Expr, args: &[Expr]) {
-        for arg in args {
-            self.check_value_expr(arg);
-        }
         self.check_value_expr(callee);
 
         let env = self.local_types.inference_env();
@@ -533,15 +530,18 @@ impl<'a> Checker<'a> {
             params, required, ..
         } = &callee_type
         else {
+            self.check_value_exprs(args);
             return;
         };
         if !is_concrete_type(&callee_type) {
+            self.check_value_exprs(args);
             return;
         }
 
         let required = *required;
         if args.len() < required || args.len() > params.len() {
             self.report_function_arity_mismatch(required, params.len(), args.len(), callee.span);
+            self.check_value_exprs(args);
             return;
         }
 

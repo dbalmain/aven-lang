@@ -1,0 +1,5 @@
+f : (Text) -> Text
+f = (x) => x
+apply : (Text, Text -> Text) -> Text
+apply = (value, transform) => transform(value)
+result : Text = apply("ok", (text) => { original: text, result: f(42) }.result)

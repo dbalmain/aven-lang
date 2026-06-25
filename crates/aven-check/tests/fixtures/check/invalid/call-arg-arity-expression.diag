@@ -1,0 +1,6 @@
+error type.mismatch: expected a function with 2 parameters, found one with 1
+  label 132..135: function parameter count does not match annotation
+  note: add or remove parameters to match the annotation
+error type.mismatch: expected `Text`, found a number literal
+  label 138..140: this is a number literal
+  note: change the value to produce `Text`, or change the annotation to match the literal

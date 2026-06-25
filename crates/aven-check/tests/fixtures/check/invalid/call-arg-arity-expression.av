@@ -1,0 +1,5 @@
+f : (Text) -> Int
+f = (x) => { text: x, value: 1 }.value
+add : (Int, Int) -> Int
+add = (left, right) => left + right
+result : Int = add(f(42))
