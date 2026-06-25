@@ -1,0 +1,6 @@
+User = { name: Text, email: Text }
+NameOnly = { name: Text }
+u : User = { name: "Ada", email: "ada@x.dev" }
+
+n : { name: Text } = pick(u, keysOf(NameOnly))
+all : User = pick(u, keysOf(u))

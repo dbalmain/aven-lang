@@ -1,0 +1,3 @@
+User = { name: Text, email: Text }
+u : User = { name: "a", email: "b" }
+bad : { phone: Text } = pick(u, @{"name"})

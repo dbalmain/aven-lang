@@ -1,0 +1,4 @@
+User = { name: Text, email: Text }
+
+name_field : { name: Text } = pick(User, @{"name"})
+email_field : { email: Text } = omit(User, @{"name"})

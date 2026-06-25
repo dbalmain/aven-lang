@@ -936,6 +936,21 @@ impl<'a> Checker<'a> {
                 };
                 self.check_variant_value_against(type_entries, tag, args, value.span);
             }
+            (ExprKind::Call { callee, args }, _) => {
+                let env = self.local_types.inference_env();
+                if let Some(actual) = self.infer_record_selection_builtin_call(&env, callee, args) {
+                    self.record_expr_type(value.span, &actual);
+                    if !type_contains_deferred(&actual) {
+                        self.check_type_against_type(expected, &actual, value.span);
+                    }
+                } else {
+                    self.check_value_expr(value);
+                    let env = self.local_types.inference_env();
+                    if let Some(actual) = self.infer_local_value(&env, value) {
+                        self.check_type_against_type(expected, &actual, value.span);
+                    }
+                }
+            }
             (ExprKind::Match { subject, arms, .. }, _) => {
                 self.check_match_arms(subject, arms, Some(expected));
             }
@@ -4067,6 +4082,10 @@ impl<'a> Checker<'a> {
             return self.infer_variant_constructor(env, tag, args);
         }
 
+        if let Some(result) = self.infer_record_selection_builtin_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_comptime_param_call(env, callee, args) {
             return result;
         }
@@ -4107,6 +4126,117 @@ impl<'a> Checker<'a> {
             Type::Deferred
         } else {
             result_type
+        }
+    }
+
+    fn infer_record_selection_builtin_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let name = expr_name(callee)?;
+        let kind = comptime::RecordSelectionKind::from_name(name)?;
+        if self.record_selection_builtin_is_shadowed(env, name) {
+            return None;
+        }
+
+        let [subject_arg, labels_arg] = args else {
+            return Some(Type::Deferred);
+        };
+
+        let subject = self.infer_record_selection_subject(env, subject_arg);
+        let subject_is_unresolved = self.reflection_subject_is_unresolved(&subject);
+        if subject_is_unresolved || !is_concrete_type(&subject) {
+            return Some(Type::Deferred);
+        }
+
+        if !matches!(subject, Type::Record(_)) {
+            let evaluation = comptime::evaluate_record_selection(
+                &subject,
+                &[],
+                subject_arg.span,
+                subject_is_unresolved,
+                kind,
+            );
+            self.diagnostics.extend(evaluation.diagnostics);
+            return Some(Type::Deferred);
+        }
+
+        let Some(labels) = self.evaluate_record_selection_labels(env, labels_arg) else {
+            return Some(Type::Deferred);
+        };
+
+        let evaluation = comptime::evaluate_record_selection(
+            &subject,
+            &labels,
+            subject_arg.span,
+            subject_is_unresolved,
+            kind,
+        );
+        self.diagnostics.extend(evaluation.diagnostics);
+
+        match evaluation.evaluation {
+            Evaluation::Evaluated(value) => value.into_reified_type().or(Some(Type::Deferred)),
+            Evaluation::Deferred | Evaluation::Unsupported => Some(Type::Deferred),
+        }
+    }
+
+    fn record_selection_builtin_is_shadowed(&self, env: &TypeEnv, name: &str) -> bool {
+        env.get(name).is_some()
+            || self.bindings.contains_key(name)
+            || self.value_types.contains_key(name)
+    }
+
+    fn infer_record_selection_subject(&mut self, env: &TypeEnv, arg: &Expr) -> Type {
+        let inferred = self.infer(env, arg);
+        let subject = self.normalize(&self.resolve_and_default(&inferred));
+        if is_concrete_type(&subject) {
+            return subject;
+        }
+
+        let mut checker = self.fork_annotation_checker();
+        let lowered = checker.lower_annotation(arg);
+        if checker.diagnostics.is_empty() {
+            let lowered = checker.normalize(&lowered);
+            if is_concrete_type(&lowered) {
+                return lowered;
+            }
+        }
+
+        subject
+    }
+
+    fn evaluate_record_selection_labels(
+        &mut self,
+        env: &TypeEnv,
+        arg: &Expr,
+    ) -> Option<Vec<String>> {
+        let bindings = self.current_comptime_value_bindings();
+        if let Some(argument) = self.evaluate_comptime_param_argument(arg, &bindings)
+            && let comptime::ComptimeValue::LabelSet(labels) = argument.value
+        {
+            return Some(labels);
+        }
+
+        if let Some(labels) =
+            self.comptime_known_label_set_for_mode(arg, RowFoldMode::Value { env })
+        {
+            return Some(labels);
+        }
+
+        let evaluation = comptime::evaluate_type_position_with_bindings(self, arg, &bindings);
+        self.diagnostics.extend(evaluation.diagnostics);
+
+        match evaluation.evaluation {
+            Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) => Some(labels),
+            Evaluation::Evaluated(
+                comptime::ComptimeValue::ReifiedType(_)
+                | comptime::ComptimeValue::Literal(_)
+                | comptime::ComptimeValue::Bool(_),
+            )
+            | Evaluation::Deferred
+            | Evaluation::Unsupported => None,
         }
     }
 

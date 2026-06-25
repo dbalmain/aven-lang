@@ -1,0 +1,5 @@
+User = { name: Text, email: Text }
+user : User = { name: "Ada", email: "ada@x.dev" }
+
+pick = (object: {..r}, @keys: keysOf(r)@{}) => object
+picked : User = pick(user, @{"name"})

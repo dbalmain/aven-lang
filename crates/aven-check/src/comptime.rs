@@ -642,6 +642,46 @@ pub(crate) fn evaluate_tags_of(
     EvaluationResult::evaluated(ComptimeValue::LabelSet(labels))
 }
 
+pub(crate) fn evaluate_record_selection(
+    subject: &Type,
+    labels: &[String],
+    arg_span: Span,
+    subject_is_unresolved: bool,
+    kind: RecordSelectionKind,
+) -> EvaluationResult {
+    if subject_is_unresolved || !is_concrete_type(subject) {
+        return EvaluationResult::deferred();
+    }
+
+    let Type::Record(row) = subject else {
+        return EvaluationResult::diagnostic(reflection_type_mismatch(
+            arg_span,
+            kind.name(),
+            "record",
+        ));
+    };
+
+    if row.tail != RowTail::Closed {
+        return EvaluationResult::deferred();
+    }
+
+    let labels: HashSet<_> = labels.iter().map(String::as_str).collect();
+    let mut entries = Vec::new();
+    for entry in &row.entries {
+        let RowEntry::Field { name, .. } = entry else {
+            return EvaluationResult::deferred();
+        };
+        if kind.keeps(labels.contains(name.as_str())) {
+            entries.push(entry.clone());
+        }
+    }
+
+    EvaluationResult::evaluated(ComptimeValue::ReifiedType(Type::Record(Row {
+        entries,
+        tail: RowTail::Closed,
+    })))
+}
+
 fn label_set_type(labels: Vec<String>) -> Type {
     Type::Variant(Row {
         entries: labels
@@ -665,6 +705,36 @@ fn literal_type(literal: Literal) -> Type {
         entries: vec![RowEntry::Literal { value: literal }],
         tail: RowTail::Closed,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RecordSelectionKind {
+    Pick,
+    Omit,
+}
+
+impl RecordSelectionKind {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "pick" => Some(Self::Pick),
+            "omit" => Some(Self::Omit),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Pick => "pick",
+            Self::Omit => "omit",
+        }
+    }
+
+    fn keeps(self, label_matches: bool) -> bool {
+        match self {
+            Self::Pick => label_matches,
+            Self::Omit => !label_matches,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

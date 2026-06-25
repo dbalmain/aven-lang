@@ -1,0 +1,9 @@
+User = { name: Text, email: Text, age: Int }
+u : User = { name: "Ada", email: "ada@x.dev", age: 37 }
+
+n : { name: Text } = pick(u, @{"name"})
+contact : { name: Text, email: Text } = pick(u, @{"name", "email"})
+without_email : { name: Text, age: Int } = omit(u, @{"email"})
+
+picked_email = pick(u, @{"email"})
+e : { email: Text } = picked_email
