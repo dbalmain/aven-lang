@@ -49,7 +49,8 @@ impl Host {
     }
 
     /// Register a name with its runtime value AND its Aven type (the normal path
-    /// for both libraries and platforms).
+    /// for both libraries and platforms). Free [`build::var`] variables in `ty`
+    /// are generalized by the checker and instantiated fresh at each use site.
     pub fn register(&mut self, name: impl Into<String>, value: Value, ty: Type) {
         self.typed.push(TypedEntry {
             name: name.into(),
@@ -58,8 +59,8 @@ impl Host {
         });
     }
 
-    /// Escape hatch for a value whose type isn't expressible yet (generics need
-    /// scheme support — see the P2 typed-fn adapter). Runs but is NOT type-checked.
+    /// Escape hatch for a value whose type is not registered yet. Runs but is NOT
+    /// type-checked.
     pub fn register_runtime_only(&mut self, name: impl Into<String>, value: Value) {
         self.runtime_only.push(RuntimeOnlyEntry {
             name: name.into(),

@@ -21,7 +21,7 @@ use crate::lower::{
 use crate::ty::{
     Row, RowEntry, RowKind, RowTail, Type, TypeScheme, free_metas, generalize,
     has_only_meta_unknowns, is_concrete_type, is_meta_type, is_null_value, is_undefined_value,
-    mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
+    map_type, mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
     numeric_type_name, render_literal_value, type_contains_deferred,
 };
 use crate::unify::Unifier;
@@ -142,7 +142,12 @@ impl<'a> Checker<'a> {
             .globals
             .iter()
             .filter(|(name, _)| !declared.contains(name))
-            .map(|(name, ty)| (name.clone(), Some(TypeScheme::mono(ty.clone()))))
+            .map(|(name, ty)| {
+                (
+                    name.clone(),
+                    Some(scheme_from_global(ty, &mut self.unifier)),
+                )
+            })
             .collect();
         self.value_types = types.clone();
 
@@ -3607,6 +3612,38 @@ fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn scheme_from_global(ty: &Type, unifier: &mut Unifier) -> TypeScheme {
+    let mut metas_by_name = HashMap::new();
+    let mut vars = Vec::new();
+    let generalized = map_type(ty, &mut |node| {
+        let Type::Variable(name) = node else {
+            return None;
+        };
+        let id = match metas_by_name.entry(name.clone()) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let Type::Meta(id) = unifier.fresh() else {
+                    unreachable!("fresh types are metavariables");
+                };
+                entry.insert(id);
+                vars.push(id);
+                id
+            }
+        };
+        Some(Type::Meta(id))
+    });
+
+    if vars.is_empty() {
+        TypeScheme::mono(generalized)
+    } else {
+        TypeScheme {
+            vars,
+            row_vars: Vec::new(),
+            ty: generalized,
+        }
     }
 }
 

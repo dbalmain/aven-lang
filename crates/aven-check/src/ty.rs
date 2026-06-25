@@ -606,6 +606,11 @@ pub mod build {
         Type::Named(name.to_owned())
     }
 
+    /// A named type variable, used by generic host/global signatures.
+    pub fn var(name: &str) -> Type {
+        Type::Variable(name.to_owned())
+    }
+
     pub fn text() -> Type {
         named("Text")
     }

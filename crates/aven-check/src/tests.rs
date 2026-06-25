@@ -3678,6 +3678,13 @@ fn logger_globals() -> Vec<(String, Type)> {
     )]
 }
 
+fn generic_id_globals() -> Vec<(String, Type)> {
+    vec![(
+        "id".to_owned(),
+        build::function(vec![build::var("a")], build::var("a")),
+    )]
+}
+
 #[test]
 fn seeded_global_call_checks_ok() {
     let output = parse_module("logger.info(\"hi\")\n");
@@ -3696,6 +3703,51 @@ fn seeded_global_call_rejects_wrong_argument_type() {
     let check = check_module_with_globals(&output.module, &logger_globals());
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn generic_seeded_global_accepts_different_argument_types() {
+    let output = parse_module("id(42)\nid(\"x\")\n");
+    let check = check_module_with_globals(&output.module, &generic_id_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn generic_seeded_global_result_flows_to_annotation() {
+    let output = parse_module("x : Int = id(42)\n");
+    let check = check_module_with_globals(&output.module, &generic_id_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn generic_seeded_global_result_mismatch_is_reported() {
+    let output = parse_module("y : Text = id(42)\n");
+    let check = check_module_with_globals(&output.module, &generic_id_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn generic_seeded_global_instantiates_fresh_per_use() {
+    let source = "a : Int = id(1)\nb : Text = id(\"s\")\n";
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &generic_id_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
 }
 
 #[test]

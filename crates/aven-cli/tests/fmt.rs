@@ -226,6 +226,38 @@ fn check_accepts_valid_platform_call() {
 }
 
 #[test]
+fn check_accepts_debug_call() {
+    let file = TempFile::new("check-debug", "debug(42)\n");
+
+    let output = run_aven(["check"], file.path());
+
+    assert_success(&output);
+}
+
+#[test]
+fn check_accepts_debug_result_matching_annotation() {
+    let file = TempFile::new("check-debug-int", "x : Int = debug(42)\nx\n");
+
+    let output = run_aven(["check"], file.path());
+
+    assert_success(&output);
+}
+
+#[test]
+fn check_rejects_debug_result_mismatching_annotation() {
+    let file = TempFile::new("check-debug-text", "x : Text = debug(42)\nx\n");
+
+    let output = run_aven(["check"], file.path());
+
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("type.mismatch"),
+        "expected type mismatch, got:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn check_json_reports_structured_diagnostics() {
     let source = "value : Missing = value\n";
     let file = TempFile::new("json-type-error", source);

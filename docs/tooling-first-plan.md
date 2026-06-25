@@ -1909,10 +1909,10 @@ in thin, self-contained slices.
   end — `Platform.Console.log(42)` is a type error, `Platform.Console.log("hi")`
   passes. (P1b registered `logger` runtime-only until default params existed; D4
   re-types it through the typed path and `Platform` becomes a closed record — see
-  below.) Remaining P-thread follow-ups: generic host fns like `debug` need scheme
-  support / the typed-fn adapter (P2); the recursive `Logger` type (`child`
-  returns an open record); LSP seeding (the editor keeps un-seeded `check_module`
-  for now); and checking calls in expression (non-statement) position.
+  below.) Remaining P-thread follow-ups: deriving generic host-fn types through the
+  typed-fn adapter; the recursive `Logger` type (`child` returns an open record);
+  LSP seeding (the editor keeps un-seeded `check_module` for now); and checking
+  calls in expression (non-statement) position.
 - **P2 done (`aven-host`).** A typed-fn adapter derives both the Aven `Type` and a
   marshalling `Value::native` from a monomorphic Rust closure, so a host fn's value
   and type can't drift — register a closure once and both halves are generated from
@@ -1932,11 +1932,11 @@ in thin, self-contained slices.
   makes `add(2, 3)` check and evaluate to `5` while `add("x", 3)` is a check-time
   type error. The existing `logger`/`Platform`/`debug` registrations are **not**
   migrated in this slice (logger is a record of optional-arg methods, `Console.log`
-  is variadic-Display, `debug` is generic). Deferred: generic host fns (`debug` /
-  `Value` passthrough mapped to a type variable + scheme support), compound
-  marshalling (records↔structs, `Vec`↔Array, `Option`↔`?T`, `Result`↔Aven
-  `Result`), optional params via the adapter, arities above 4, and migrating the
-  existing host regs.
+  is variadic-Display, `debug` is generic; P4 later types `debug` through the
+  ordinary register path). Deferred: generic host-fn derivation (`Value` passthrough
+  mapped to type variables), compound marshalling (records↔structs, `Vec`↔Array,
+  `Option`↔`?T`, `Result`↔Aven `Result`), optional params via the adapter, arities
+  above 4, and migrating the existing host regs.
 - **P3 done (`aven-eval`).** `pick` and `omit` are now predefined runtime
   intrinsics alongside `keysOf`, seeded before host globals so a user binding may
   shadow them. Each takes `(record, labels)` — a `Value::Record` and a
@@ -1952,6 +1952,18 @@ in thin, self-contained slices.
   `keysOf`), **not** host-registered through `aven-host`. Deferred: the
   comptime-typed-builtin form — so `pick(user, @{...})` *infers* the precise picked
   row without a user definition — which is a larger checker-side follow-on.
+- **P4 done (`aven-check` + `aven-cli`).** Seeded host/library globals still use the
+  existing `&[(String, Type)]` plumbing, but seeding now generalizes free named
+  `Type::Variable`s (spelled by hosts as `build::var("a")`) into `TypeScheme`
+  quantified metas before inserting into `value_types`. The existing
+  `instantiate_scheme` read path freshens those metas per use site, so generic
+  host/library functions type-check without a parallel generics mechanism:
+  `debug : (a) -> a` now accepts any argument type while its result type still flows
+  through inference and annotations. The CLI registers `debug` through the typed
+  `Host::register` path and no longer treats it as runtime-only. Still deferred:
+  teaching the P2 typed-fn adapter to derive generic types from `Value` passthrough
+  positions by assigning distinct per-position type vars, and migrating other host
+  registrations where the adapter can own the type.
 
 ## Milestone D — default/optional parameters
 

@@ -219,9 +219,11 @@ fn build_host() -> Result<aven_host::Host> {
     ]);
     host.register("Platform".to_owned(), default_platform(log), platform_type);
 
-    // TODO(P2): `debug : (a) -> a` is generic; its type isn't expressible until
-    // scheme support / the typed-fn adapter lands, so it runs untyped for now.
-    host.register_runtime_only("debug".to_owned(), debug_native());
+    host.register(
+        "debug".to_owned(),
+        debug_native(),
+        build::function(vec![build::var("a")], build::var("a")),
+    );
 
     Ok(host)
 }
