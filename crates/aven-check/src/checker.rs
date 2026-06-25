@@ -2392,14 +2392,6 @@ impl<'a> Checker<'a> {
                     value: literal.clone(),
                 })
             }
-            ExprKind::Literal(Literal::Label(label)) => {
-                let name = label.strip_prefix('@').unwrap_or(label);
-                self.report_lowercase_variant_tag(name, tag.span);
-                Some(RowEntry::Tag {
-                    name: name.to_owned(),
-                    payload: Vec::new(),
-                })
-            }
             ExprKind::Name(name) => {
                 self.report_lowercase_variant_tag(name, tag.span);
                 Some(RowEntry::Tag {
@@ -2412,14 +2404,6 @@ impl<'a> Checker<'a> {
                     name: name.clone(),
                     payload: self.lower_annotations(args),
                 }),
-                ExprKind::Literal(Literal::Label(label)) => {
-                    let name = label.strip_prefix('@').unwrap_or(label);
-                    self.report_lowercase_variant_tag(name, callee.span);
-                    Some(RowEntry::Tag {
-                        name: name.to_owned(),
-                        payload: self.lower_annotations(args),
-                    })
-                }
                 ExprKind::Name(name) => {
                     self.report_lowercase_variant_tag(name, callee.span);
                     Some(RowEntry::Tag {
@@ -3532,7 +3516,6 @@ fn literal_kind_name(literal: &Literal) -> &'static str {
         Literal::Number(_) => "number literal",
         Literal::Regex(_) => "regex literal",
         Literal::Path(_) => "path literal",
-        Literal::Label(_) => "label literal",
     }
 }
 

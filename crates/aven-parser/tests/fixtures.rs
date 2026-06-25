@@ -731,9 +731,6 @@ fn render_literal_ast(output: &mut String, literal: &Literal, indent: usize) {
         Literal::Path(path) => {
             let _ = writeln!(output, "path {path}");
         }
-        Literal::Label(label) => {
-            let _ = writeln!(output, "label {label}");
-        }
     }
 }
 

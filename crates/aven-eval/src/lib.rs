@@ -694,7 +694,7 @@ fn match_literal_pattern(
             let literal_value = eval_literal(literal, span)?;
             Ok((literal_value == *value).then_some(Vec::new()))
         }
-        Literal::Regex(_) | Literal::Path(_) | Literal::Label(_) => Ok(None),
+        Literal::Regex(_) | Literal::Path(_) => Ok(None),
     }
 }
 
@@ -1280,7 +1280,7 @@ fn eval_literal(literal: &Literal, span: Span) -> Result<Value, Diagnostic> {
         Literal::Bool(value) => Ok(Value::Bool(*value)),
         Literal::Number(text) => eval_number_literal(text, span),
         Literal::String(text) => Ok(Value::Text(decode_string_literal(text))),
-        Literal::Regex(_) | Literal::Path(_) | Literal::Label(_) => Err(unsupported_expr(
+        Literal::Regex(_) | Literal::Path(_) => Err(unsupported_expr(
             span,
             "this literal kind is not supported by the current evaluator",
         )),

@@ -114,8 +114,7 @@ fn row_label(entry: &RowEntry) -> &str {
             Literal::Number(value)
             | Literal::String(value)
             | Literal::Regex(value)
-            | Literal::Path(value)
-            | Literal::Label(value) => value,
+            | Literal::Path(value) => value,
         },
     }
 }

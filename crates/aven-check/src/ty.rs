@@ -695,8 +695,7 @@ pub(crate) fn render_literal_value(literal: &Literal) -> &str {
         Literal::Number(value)
         | Literal::String(value)
         | Literal::Regex(value)
-        | Literal::Path(value)
-        | Literal::Label(value) => value,
+        | Literal::Path(value) => value,
     }
 }
 

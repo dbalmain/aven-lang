@@ -213,7 +213,6 @@ pub enum Literal {
     String(String),
     Regex(String),
     Path(String),
-    Label(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1184,10 +1183,6 @@ impl Parser<'_> {
                 self.advance();
                 literal_expr(Literal::Path(path), token.span)
             }
-            TokenKind::LabelPath(label) => {
-                self.advance();
-                literal_expr(Literal::Label(label), token.span)
-            }
             TokenKind::Operator(operator)
                 if operator == "@" && self.next_is(TokenKind::OpenBrace) =>
             {
@@ -1425,17 +1420,6 @@ impl Parser<'_> {
             Some(TokenKind::ComptimeParamMarker(_))
         ) {
             self.report_unexpected_comptime_marker(self.current_span());
-            self.recover_record_entry();
-            return None;
-        }
-
-        if mode == EntryMode::Record
-            && matches!(
-                self.current().map(|token| &token.kind),
-                Some(TokenKind::LabelPath(_))
-            )
-        {
-            self.report_expected_record_label(self.current_span());
             self.recover_record_entry();
             return None;
         }

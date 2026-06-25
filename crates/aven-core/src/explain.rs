@@ -112,7 +112,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::parse::EXPECTED_RECORD_LABEL,
-        text: "A record entry needs a valid field label. Use an identifier-style label for now; quoted labels are reserved for a later parser slice.",
+        text: "A record entry needs a valid field name. Use an identifier-style field name for now; quoted string field names are reserved for a later parser slice.",
     },
     DiagnosticExplanation {
         code: codes::parse::EXPECTED_TYPE,

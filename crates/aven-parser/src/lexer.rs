@@ -38,7 +38,6 @@ pub enum TokenKind {
     InterpolationEnd(String),
     RegexLiteral(String),
     PathLiteral(String),
-    LabelPath(String),
     Tag(String),
     Operator(String),
     OpenParen,
@@ -91,7 +90,6 @@ impl TokenKind {
             Self::InterpolationEnd(text) => format!("interpolation_end `{text}`"),
             Self::RegexLiteral(regex) => format!("regex `{regex}`"),
             Self::PathLiteral(path) => format!("path `{path}`"),
-            Self::LabelPath(path) => format!("label `{path}`"),
             Self::Tag(name) => format!("tag `@{name}`"),
             Self::Operator(operator) => format!("operator `{operator}`"),
             Self::OpenParen => "delimiter `(`".to_owned(),
@@ -584,16 +582,8 @@ impl Lexer<'_> {
             return;
         }
 
-        if self.source.as_bytes()[start + 1].is_ascii_lowercase() {
-            self.push(
-                TokenKind::ComptimeParamMarker(self.source[start + 1..self.offset].to_owned()),
-                Span::new(start, self.offset),
-            );
-            return;
-        }
-
         self.push(
-            TokenKind::LabelPath(self.source[start..self.offset].to_owned()),
+            TokenKind::ComptimeParamMarker(self.source[start + 1..self.offset].to_owned()),
             Span::new(start, self.offset),
         );
     }
