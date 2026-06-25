@@ -194,7 +194,7 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
 ///
 /// The CLI owns the concrete IO (the `StdoutLogSink`, the root trace context, the
 /// `Console.log`/`debug` natives); `aven-host` owns the registration/typing
-/// vocabulary, so the logger type lives there and the CLI only calls `build::*`.
+/// vocabulary for the standard host types.
 fn build_host() -> Result<aven_host::Host> {
     let mut host = aven_host::Host::new();
 
@@ -204,26 +204,13 @@ fn build_host() -> Result<aven_host::Host> {
     let log = aven_eval::logging::logger(log_sink, root_trace_context()?);
     host.register("logger".to_owned(), log.clone(), aven_host::logger_type());
 
-    use aven_host::build;
-    // Closed record: `Platform.Console.log` and `Platform.Log` are both precisely
-    // typed, so the platform boundary type-checks end to end.
-    let platform_type = build::record(vec![
-        (
-            "Console",
-            build::record(vec![(
-                "log",
-                build::function(vec![build::text()], build::unit()),
-            )]),
-        ),
-        ("Log", aven_host::logger_type()),
-    ]);
-    host.register("Platform".to_owned(), default_platform(log), platform_type);
-
     host.register(
-        "debug".to_owned(),
-        debug_native(),
-        build::function(vec![build::var("a")], build::var("a")),
+        "Platform".to_owned(),
+        default_platform(log),
+        aven_host::platform_type(),
     );
+
+    host.register("debug".to_owned(), debug_native(), aven_host::debug_type());
 
     Ok(host)
 }
@@ -647,4 +634,17 @@ fn span_range(source: &str, span: aven_core::Span) -> Range<usize> {
     let end = span.end.min(source.len()).max(start);
 
     start..end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_host_check_globals_match_standard_host_types() -> Result<()> {
+        let host = build_host()?;
+
+        assert_eq!(host.check_globals(), aven_host::standard_check_globals());
+        Ok(())
+    }
 }

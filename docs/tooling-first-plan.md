@@ -1911,8 +1911,7 @@ in thin, self-contained slices.
   re-types it through the typed path and `Platform` becomes a closed record — see
   below.) Remaining P-thread follow-ups: deriving generic host-fn types through the
   typed-fn adapter; the recursive `Logger` type (`child` returns an open record);
-  LSP seeding (the editor keeps un-seeded `check_module` for now); and checking
-  calls in expression (non-statement) position.
+  and checking calls in expression (non-statement) position.
 - **P2 done (`aven-host`).** A typed-fn adapter derives both the Aven `Type` and a
   marshalling `Value::native` from a monomorphic Rust closure, so a host fn's value
   and type can't drift — register a closure once and both halves are generated from
@@ -1964,6 +1963,17 @@ in thin, self-contained slices.
   teaching the P2 typed-fn adapter to derive generic types from `Value` passthrough
   positions by assigning distinct per-position type vars, and migrating other host
   registrations where the adapter can own the type.
+- **P5 done (`aven-host` + `aven-cli` + `aven-lsp`).** The standard host
+  type-globals now live in one place:
+  `aven_host::standard_check_globals()` returns the `logger`, `Platform`, and
+  `debug` type interface used by editor analysis. The LSP seeds semantic
+  analysis with those globals, so diagnostics and cached inferred types cover
+  `logger`/`Platform`/`debug` the same way `aven check` does; hover, field
+  completion, and signature-help paths can now read host global types from the
+  same `type_at` snapshot as user code. The CLI still owns the runtime values
+  and effects, but its registered check globals are compared against
+  `standard_check_globals()` in a drift-guard test so CLI and LSP host types
+  cannot silently diverge.
 
 ## Milestone D — default/optional parameters
 
@@ -2030,7 +2040,7 @@ site. Sliced parser-first; semantics follow.
   interim open-record/runtime-only workaround. The typed platform boundary now
   covers the required logging capability end to end. Remaining P-thread
   follow-ups: generic host fns / `debug` via the typed-fn adapter (P2), the
-  recursive `Logger` type (`child` still returns an open record), LSP seeding, and
+  recursive `Logger` type (`child` still returns an open record), and
   expression-position call checking.
 
 Deferred: writing a literal default inside a standalone function-*type*

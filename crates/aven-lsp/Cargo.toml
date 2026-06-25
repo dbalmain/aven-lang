@@ -13,6 +13,7 @@ workspace = true
 aven-compiler.workspace = true
 aven-core.workspace = true
 aven-fmt.workspace = true
+aven-host.workspace = true
 aven-parser.workspace = true
 tokio.workspace = true
 tower-lsp.workspace = true

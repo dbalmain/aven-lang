@@ -365,7 +365,7 @@ async fn publish_semantic_diagnostics(
         return;
     }
 
-    let semantic = aven_compiler::analyze_semantics(document.parse_output());
+    let semantic = analyze_document_semantics(&document);
     let Some(document) = store.lock().ok().and_then(|mut store| {
         if !store.set_semantic(&uri, version, semantic.diagnostics, semantic.inferred_types) {
             return None;
@@ -379,6 +379,11 @@ async fn publish_semantic_diagnostics(
     client
         .publish_diagnostics(uri, document_diagnostics(&document), Some(version))
         .await;
+}
+
+fn analyze_document_semantics(document: &ParsedDocument) -> aven_compiler::SemanticOutput {
+    let globals = aven_host::standard_check_globals();
+    aven_compiler::analyze_semantics_with_globals(document.parse_output(), &globals)
 }
 
 fn document_diagnostics(document: &ParsedDocument) -> Vec<Diagnostic> {
@@ -1675,7 +1680,7 @@ mod tests {
 
     fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
         let document = parsed_document(source);
-        let semantic = aven_compiler::analyze_semantics(document.parse_output());
+        let semantic = analyze_document_semantics(&document);
         document.with_semantic(semantic.diagnostics, semantic.inferred_types)
     }
 
@@ -2070,6 +2075,38 @@ mod tests {
     }
 
     #[test]
+    fn seeded_host_globals_reach_semantic_diagnostics() {
+        let document = parsed_document_with_semantics("logger.info(42)\n");
+
+        assert!(document.parse_diagnostics().is_empty());
+        assert_eq!(document.semantic_diagnostics().len(), 1);
+        assert_eq!(
+            document.semantic_diagnostics()[0].code.as_deref(),
+            Some("type.mismatch")
+        );
+    }
+
+    #[test]
+    fn completion_at_seeded_logger_field_access_returns_logger_methods() {
+        let document = parsed_document_with_semantics("logger.info\n");
+        let completions = completion_at_position(&document, position(0, 7));
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        let Some(info) = completion_item(&completions, "info") else {
+            panic!("expected logger.info completion");
+        };
+
+        assert_eq!(
+            labels,
+            vec!["trace", "debug", "info", "warn", "error", "fatal", "child"]
+        );
+        assert_eq!(info.kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(info.detail.as_deref(), Some("(Text, { .. } = _) -> Unit"));
+    }
+
+    #[test]
     fn completion_at_position_includes_visible_local_bindings() {
         let document =
             parsed_document_with_semantics("value =\n  local = \"hi\"\n  local\nother = 1\n");
@@ -2410,7 +2447,7 @@ mod tests {
     fn parsed_document_diagnostic_report_uses_file_id() {
         let document =
             parsed_document_with_file_id(FileId(7), "value : Missing = value\n".to_owned());
-        let semantic = aven_compiler::analyze_semantics(document.parse_output());
+        let semantic = analyze_document_semantics(&document);
         let document = document.with_semantic(semantic.diagnostics, semantic.inferred_types);
         let report = document.diagnostic_report();
 

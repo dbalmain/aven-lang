@@ -139,6 +139,34 @@ pub fn logger_type() -> Type {
     ])
 }
 
+/// The Aven type of the standard `Platform` value.
+pub fn platform_type() -> Type {
+    build::record(vec![
+        (
+            "Console",
+            build::record(vec![(
+                "log",
+                build::function(vec![build::text()], build::unit()),
+            )]),
+        ),
+        ("Log", logger_type()),
+    ])
+}
+
+/// The Aven type of the standard `debug` value.
+pub fn debug_type() -> Type {
+    build::function(vec![build::var("a")], build::var("a"))
+}
+
+/// Type globals for the standard host prelude used by `aven check` and the LSP.
+pub fn standard_check_globals() -> Vec<(String, Type)> {
+    vec![
+        ("logger".to_owned(), logger_type()),
+        ("Platform".to_owned(), platform_type()),
+        ("debug".to_owned(), debug_type()),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +318,73 @@ mod tests {
             "info takes one required message, fields optional"
         );
         assert_eq!(result, build::unit());
+    }
+
+    #[test]
+    fn standard_check_globals_have_expected_shapes() {
+        let globals = standard_check_globals();
+        let names = globals
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["logger", "Platform", "debug"]);
+
+        let logger = global_type(&globals, "logger");
+        let logger_fields = record_fields(logger).expect("logger is a record");
+        let logger_field_names = logger_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            logger_field_names,
+            vec!["trace", "debug", "info", "warn", "error", "fatal", "child"]
+        );
+
+        let logger_info = record_field_type(logger, "info");
+        let (info_params, info_result) =
+            function_signature(&logger_info).expect("logger.info is a function");
+        assert_eq!(function_required_arity(&logger_info), Some(1));
+        assert_eq!(info_params.len(), 2);
+        assert_eq!(info_params[0], build::text());
+        assert!(record_fields(&info_params[1]).is_some());
+        assert_eq!(info_result, build::unit());
+
+        let platform = global_type(&globals, "Platform");
+        let platform_fields = record_fields(platform).expect("Platform is a record");
+        let platform_field_names = platform_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(platform_field_names, vec!["Console", "Log"]);
+
+        let console_log = record_field_type(&record_field_type(platform, "Console"), "log");
+        let (log_params, log_result) =
+            function_signature(&console_log).expect("Platform.Console.log is a function");
+        assert_eq!(function_required_arity(&console_log), Some(1));
+        assert_eq!(log_params, vec![build::text()]);
+        assert_eq!(log_result, build::unit());
+        assert_eq!(record_field_type(platform, "Log"), logger_type());
+
+        let debug = global_type(&globals, "debug");
+        let (debug_params, debug_result) = function_signature(debug).expect("debug is a function");
+        assert_eq!(function_required_arity(debug), Some(1));
+        assert_eq!(debug_params, vec![build::var("a")]);
+        assert_eq!(debug_result, build::var("a"));
+    }
+
+    fn global_type<'a>(globals: &'a [(String, Type)], name: &str) -> &'a Type {
+        globals
+            .iter()
+            .find_map(|(global_name, ty)| (global_name == name).then_some(ty))
+            .unwrap_or_else(|| panic!("expected global `{name}`"))
+    }
+
+    fn record_field_type(ty: &Type, name: &str) -> Type {
+        record_fields(ty)
+            .expect("expected a record type")
+            .into_iter()
+            .find_map(|field| (field.name == name).then_some(field.ty))
+            .unwrap_or_else(|| panic!("expected record field `{name}`"))
     }
 }

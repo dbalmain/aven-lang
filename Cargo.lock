@@ -161,6 +161,7 @@ dependencies = [
  "aven-compiler",
  "aven-core",
  "aven-fmt",
+ "aven-host",
  "aven-parser",
  "futures-util",
  "serde_json",
