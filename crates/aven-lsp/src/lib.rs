@@ -2,25 +2,30 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aven_core::{Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile, SourcePosition, Span};
-use aven_parser::RecordEntry;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
-    InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind,
-    MessageType, OneOf, ParameterInformation, ParameterLabel, Position, Range, RenameParams,
+    CodeAction, CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+    CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintKind,
+    InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind, MessageType,
+    NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position, Range, RenameParams,
     SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
     SignatureHelpParams, SignatureInformation, SymbolKind, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+
+use aven_core::{
+    Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile, SourcePosition, Span, codes,
+};
+use aven_parser::RecordEntry;
 
 mod semantic_tokens;
 
@@ -117,6 +122,7 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned(), "@".to_owned()]),
@@ -242,6 +248,20 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(completion_at_position(
             &document, position,
         ))))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri;
+        let Some(document) = self.document(&uri) else {
+            return Ok(None);
+        };
+
+        let actions = spread_overwrite_code_actions(&document, &uri, &params.context);
+        if actions.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(actions))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
@@ -418,6 +438,56 @@ fn to_lsp_diagnostic(document: &ParsedDocument, diagnostic: &AvenDiagnostic) -> 
         code_description: None,
         data: None,
     }
+}
+
+fn spread_overwrite_code_actions(
+    document: &ParsedDocument,
+    uri: &Url,
+    context: &CodeActionContext,
+) -> Vec<CodeActionOrCommand> {
+    context
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            if !is_duplicate_spread_label_diagnostic(diagnostic) {
+                return None;
+            }
+
+            let offset = position_to_offset(document, diagnostic.range.start)?;
+            let source_at_range = document.source().get(offset..)?;
+            if !source_at_range.starts_with("..") || source_at_range.starts_with(":..") {
+                return None;
+            }
+
+            let edit = TextEdit {
+                range: Range {
+                    start: diagnostic.range.start,
+                    end: diagnostic.range.start,
+                },
+                new_text: ":".to_owned(),
+            };
+
+            Some(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Overwrite-merge spread with `:..`".to_owned(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diagnostic.clone()]),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                is_preferred: Some(true),
+                ..CodeAction::default()
+            }))
+        })
+        .collect()
+}
+
+fn is_duplicate_spread_label_diagnostic(diagnostic: &Diagnostic) -> bool {
+    matches!(
+        diagnostic.code.as_ref(),
+        Some(NumberOrString::String(code)) if code == codes::ty::DUPLICATE_SPREAD_LABEL
+    )
 }
 
 fn document_symbols(document: &ParsedDocument) -> Vec<DocumentSymbol> {
@@ -1713,6 +1783,10 @@ mod tests {
             Some(SemanticTokensServerCapabilities::SemanticTokensOptions(options))
                 if matches!(options.full, Some(SemanticTokensFullOptions::Bool(true)))
         ));
+        assert!(matches!(
+            initialize_result.capabilities.code_action_provider.as_ref(),
+            Some(CodeActionProviderCapability::Simple(true))
+        ));
         let completion_options = initialize_result
             .capabilities
             .completion_provider
@@ -2415,6 +2489,80 @@ mod tests {
     }
 
     #[test]
+    fn spread_overwrite_code_action_inserts_colon_for_type_spread_collision() {
+        let uri = test_uri();
+        let document =
+            parsed_document_with_semantics("Base = { x: Int }\ndup : { x: Int, ..Base } = value\n");
+        let diagnostics = document_diagnostics(&document);
+        let diagnostic = duplicate_spread_label_diagnostic(&diagnostics);
+        let context = CodeActionContext {
+            diagnostics: diagnostics.clone(),
+            ..CodeActionContext::default()
+        };
+        let actions = spread_overwrite_code_actions(&document, &uri, &context);
+
+        let action = single_code_action(&actions);
+        assert_eq!(action.title, "Overwrite-merge spread with `:..`");
+        assert_eq!(action.kind.as_ref(), Some(&CodeActionKind::QUICKFIX));
+        assert_eq!(action.is_preferred, Some(true));
+        assert_action_carries_diagnostic(action, diagnostic);
+
+        let edit = single_action_text_edit(action, &uri);
+        assert_eq!(edit.new_text, ":");
+        assert_eq!(edit.range.start, diagnostic.range.start);
+        assert_eq!(edit.range.end, diagnostic.range.start);
+        assert_edit_inserts_text(&document, edit, ":..Base");
+    }
+
+    #[test]
+    fn spread_overwrite_code_action_inserts_colon_for_value_spread_collision() {
+        let uri = test_uri();
+        let document =
+            parsed_document_with_semantics("y = { x: 1 }\nz = { x: 2 }\na = { ..y, ..z }\n");
+        let diagnostics = document_diagnostics(&document);
+        let diagnostic = duplicate_spread_label_diagnostic(&diagnostics);
+        let context = CodeActionContext {
+            diagnostics: diagnostics.clone(),
+            ..CodeActionContext::default()
+        };
+        let actions = spread_overwrite_code_actions(&document, &uri, &context);
+
+        let action = single_code_action(&actions);
+        assert_eq!(action.kind.as_ref(), Some(&CodeActionKind::QUICKFIX));
+        assert_action_carries_diagnostic(action, diagnostic);
+
+        let edit = single_action_text_edit(action, &uri);
+        assert_eq!(edit.new_text, ":");
+        assert_eq!(edit.range.start, diagnostic.range.start);
+        assert_eq!(edit.range.end, diagnostic.range.start);
+        assert_edit_inserts_text(&document, edit, "{ ..y, :..z }");
+    }
+
+    #[test]
+    fn spread_overwrite_code_action_skips_duplicate_add_with_shared_code() {
+        let document = parsed_document_with_semantics(
+            "Base = { x: Int }\ndup : { ..Base, x: Text } = value\n",
+        );
+        let diagnostics = document_diagnostics(&document);
+        let diagnostic = duplicate_spread_label_diagnostic(&diagnostics);
+        let offset = position_to_offset(&document, diagnostic.range.start)
+            .expect("expected diagnostic range start to convert to source offset");
+        let source_at_range = document
+            .source()
+            .get(offset..)
+            .expect("expected valid diagnostic source offset");
+        assert!(!source_at_range.starts_with(".."));
+
+        let context = CodeActionContext {
+            diagnostics,
+            ..CodeActionContext::default()
+        };
+        let actions = spread_overwrite_code_actions(&document, &test_uri(), &context);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
     fn parsed_documents_keep_parse_diagnostics_separate() {
         let document = parsed_document("value = )\n".to_owned());
 
@@ -2806,6 +2954,57 @@ mod tests {
         };
 
         assert_eq!(markup.value, expected);
+    }
+
+    fn duplicate_spread_label_diagnostic(diagnostics: &[Diagnostic]) -> &Diagnostic {
+        diagnostics
+            .iter()
+            .find(|diagnostic| is_duplicate_spread_label_diagnostic(diagnostic))
+            .expect("expected duplicate spread label diagnostic")
+    }
+
+    fn single_code_action(actions: &[CodeActionOrCommand]) -> &CodeAction {
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected code action");
+        };
+
+        action
+    }
+
+    fn single_action_text_edit<'a>(action: &'a CodeAction, uri: &Url) -> &'a TextEdit {
+        let edits = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .and_then(|changes| changes.get(uri))
+            .expect("expected text edits for URI");
+
+        assert_eq!(edits.len(), 1);
+        &edits[0]
+    }
+
+    fn assert_action_carries_diagnostic(action: &CodeAction, diagnostic: &Diagnostic) {
+        let action_diagnostics = action
+            .diagnostics
+            .as_ref()
+            .expect("expected action diagnostics");
+
+        assert_eq!(action_diagnostics.len(), 1);
+        assert_eq!(&action_diagnostics[0], diagnostic);
+    }
+
+    fn assert_edit_inserts_text(document: &ParsedDocument, edit: &TextEdit, expected: &str) {
+        assert_eq!(edit.range.start, edit.range.end);
+        let offset = position_to_offset(document, edit.range.start)
+            .expect("expected edit position to convert to source offset");
+        let mut edited = document.source().to_owned();
+        edited.insert_str(offset, &edit.new_text);
+
+        assert!(
+            edited.contains(expected),
+            "expected edited source to contain {expected:?}, got {edited:?}"
+        );
     }
 
     fn completion_item<'a>(items: &'a [CompletionItem], label: &str) -> Option<&'a CompletionItem> {
