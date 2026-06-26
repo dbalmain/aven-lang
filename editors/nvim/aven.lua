@@ -23,12 +23,13 @@ vim.api.nvim_create_autocmd("FileType", {
   pattern = "aven",
   desc = "Start aven-lsp",
   callback = function(args)
+    -- Aven scripts are self-contained; fall back to the file's directory so the
+    -- server attaches even for loose, project-less `.av` files.
+    local root = vim.fs.root(args.buf, { ".git" }) or vim.fs.dirname(vim.api.nvim_buf_get_name(args.buf))
     vim.lsp.start({
       name = "aven",
       cmd = { "aven", "lsp" },
-      -- Aven scripts are self-contained; fall back to the file's directory so
-      -- the server attaches even for loose, project-less `.av` files.
-      root_dir = vim.fs.root(args.buf, { ".git" }) or vim.fs.dirname(vim.api.nvim_buf_get_name(args.buf)),
+      root_dir = root,
     })
   end,
 })
