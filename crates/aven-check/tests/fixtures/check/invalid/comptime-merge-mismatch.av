@@ -1,0 +1,5 @@
+User = { name: Text }
+Meta = { age: Int }
+merge = (a, b) => { ..a, ..b }
+Both = merge(User, Meta)
+bad : Both = { name: "Ada" }

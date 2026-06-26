@@ -1,0 +1,10 @@
+User = { name: Text }
+Meta = { age: Int }
+merge = (a, b) => { ..a, ..b }
+Both = merge(User, Meta)
+x : Both = { name: "Ada", age: 3 }
+
+u = { name: "Ada" }
+m = { age: 3 }
+both = merge(u, m)
+y : { name: Text, age: Int } = both

@@ -1,0 +1,4 @@
+A = { name: Text }
+B = { name: Text, age: Int }
+merge = (a, b) => { ..a, ..b }
+Both = merge(A, B)

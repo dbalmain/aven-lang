@@ -1,0 +1,3 @@
+error type.missing-field: missing field `age`
+  label 111..126: this record is missing a required field
+  note: add `age: ...`, or make the field type optional with `?T`

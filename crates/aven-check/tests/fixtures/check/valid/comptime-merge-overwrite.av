@@ -1,0 +1,5 @@
+A = { id: Text, v: Int }
+B = { v: Text }
+merge = (a, b) => { ..a, :..b }
+Both = merge(A, B)
+x : Both = { id: "a", v: "hi" }
