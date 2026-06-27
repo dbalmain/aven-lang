@@ -659,6 +659,11 @@ pub mod build {
         Type::Record(record_row(fields, RowTail::Closed))
     }
 
+    /// The closed empty record `{}`.
+    pub fn empty_record() -> Type {
+        record(vec![])
+    }
+
     /// An open record `{ field: ty, ..., .. }` that admits extra fields.
     pub fn open_record(fields: Vec<(&str, Type)>) -> Type {
         Type::Record(record_row(fields, RowTail::Open))

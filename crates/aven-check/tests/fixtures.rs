@@ -134,24 +134,24 @@ fn fixture_globals() -> Vec<(String, Type)> {
     ]);
 
     vec![
-        ("logger".to_owned(), logger.clone()),
+        ("logger".to_owned(), logger),
         (
-            "Platform".to_owned(),
-            build::record(vec![
-                (
-                    "Console",
-                    build::record(vec![(
-                        "log",
-                        build::function(vec![build::text()], build::unit()),
-                    )]),
-                ),
-                ("Log", logger),
-            ]),
-        ),
-        (
-            "debug".to_owned(),
+            "dbg".to_owned(),
             build::function(vec![build::var("a")], build::var("a")),
         ),
+        (
+            "write".to_owned(),
+            build::function(vec![build::text()], build::empty_record()),
+        ),
+        (
+            "writeLine".to_owned(),
+            build::function(vec![build::text()], build::empty_record()),
+        ),
+        (
+            "readLine".to_owned(),
+            build::function(vec![], build::optional(build::text())),
+        ),
+        ("readAll".to_owned(), build::function(vec![], build::text())),
     ]
 }
 

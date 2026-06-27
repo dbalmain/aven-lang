@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -200,29 +201,11 @@ fn check_rejects_logger_call_with_too_few_arguments() {
 }
 
 #[test]
-fn check_accepts_platform_log_call() {
-    let file = TempFile::new("check-platform-log", "Platform.Log.warn(\"x\")\n");
-
-    assert_success(&run_aven(["check"], file.path()));
-}
-
-#[test]
-fn check_rejects_platform_call_with_wrong_argument_type() {
-    let file = TempFile::new("check-platform-arg", "Platform.Console.log(42)\n");
-
-    let output = run_aven(["check"], file.path());
-
-    assert_failure(&output);
-    assert!(
-        stderr(&output).contains("type.mismatch"),
-        "expected type mismatch, got:\n{}",
-        stderr(&output)
+fn check_accepts_bare_io_globals() {
+    let file = TempFile::new(
+        "check-io-globals",
+        "write(\"a\")\nwriteLine(\"b\")\nline = readLine()\nall : Text = readAll()\n",
     );
-}
-
-#[test]
-fn check_accepts_valid_platform_call() {
-    let file = TempFile::new("check-platform-ok", "Platform.Console.log(\"hi\")\n");
 
     let output = run_aven(["check"], file.path());
 
@@ -230,8 +213,8 @@ fn check_accepts_valid_platform_call() {
 }
 
 #[test]
-fn check_accepts_debug_call() {
-    let file = TempFile::new("check-debug", "debug(42)\n");
+fn check_accepts_dbg_call() {
+    let file = TempFile::new("check-dbg", "dbg(42)\n");
 
     let output = run_aven(["check"], file.path());
 
@@ -239,8 +222,8 @@ fn check_accepts_debug_call() {
 }
 
 #[test]
-fn check_accepts_debug_result_matching_annotation() {
-    let file = TempFile::new("check-debug-int", "x : Int = debug(42)\nx\n");
+fn check_accepts_dbg_result_matching_annotation() {
+    let file = TempFile::new("check-dbg-int", "x : Int = dbg(42)\nx\n");
 
     let output = run_aven(["check"], file.path());
 
@@ -248,8 +231,8 @@ fn check_accepts_debug_result_matching_annotation() {
 }
 
 #[test]
-fn check_rejects_debug_result_mismatching_annotation() {
-    let file = TempFile::new("check-debug-text", "x : Text = debug(42)\nx\n");
+fn check_rejects_dbg_result_mismatching_annotation() {
+    let file = TempFile::new("check-dbg-text", "x : Text = dbg(42)\nx\n");
 
     let output = run_aven(["check"], file.path());
 
@@ -423,8 +406,8 @@ fn run_uses_predefined_pick_and_omit_builtins() {
 }
 
 #[test]
-fn run_debug_writes_type_to_stderr_and_keeps_stdout_clean() {
-    let file = TempFile::new("run-debug-type", "User = { name: Text }\ndebug(User)\n");
+fn run_dbg_writes_type_to_stderr_and_keeps_stdout_clean() {
+    let file = TempFile::new("run-dbg-type", "User = { name: Text }\ndbg(User)\n");
 
     let output = run_aven(["run"], file.path());
 
@@ -434,16 +417,58 @@ fn run_debug_writes_type_to_stderr_and_keeps_stdout_clean() {
 }
 
 #[test]
-fn run_injects_default_console_platform() {
-    let file = TempFile::new(
-        "run-platform-log",
-        "Platform.Console.log(\"Hello, Aven!\")\n",
-    );
+fn run_write_line_writes_to_stdout() {
+    let file = TempFile::new("run-write-line", "ignored = writeLine(\"hi\")\n");
 
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
-    assert_eq!(stdout(&output), "Hello, Aven!\n");
+    assert_eq!(stdout(&output), "hi\n");
+}
+
+#[test]
+fn run_does_not_print_trivial_empty_record_result() {
+    // A bare effect call as the final expression returns `{}`; that trivial
+    // value must not be printed after the effect's own output.
+    let file = TempFile::new("run-trivial-result", "writeLine(\"hi\")\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "hi\n");
+}
+
+#[test]
+fn run_write_writes_to_stdout_without_newline() {
+    let file = TempFile::new("run-write", "ignored = write(\"hi\")\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "hi");
+}
+
+#[test]
+fn run_read_line_and_read_all_consume_stdin() {
+    let file = TempFile::new(
+        "run-read-line-all",
+        "first = readLine()\nrest = readAll()\nfirst + \"|\" + rest\n",
+    );
+
+    let output = run_aven_with_stdin(["run"], file.path(), "one\ntwo\nthree");
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "one|two\nthree\n");
+}
+
+#[test]
+fn run_read_line_at_eof_returns_undefined() {
+    let file = TempFile::new("run-read-line-eof", "readLine()\n");
+
+    let output = run_aven_with_stdin(["run"], file.path(), "");
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "undefined\n");
 }
 
 #[test]
@@ -475,10 +500,66 @@ fn run_log_writes_structured_json_line() {
 }
 
 #[test]
-fn run_ambient_log_and_platform_log_share_trace_context() {
+fn run_log_file_writes_structured_json_line() {
+    let file = TempFile::new("run-log-file-source", "logger.info(\"hello\", { n: 1 })\n");
+    let log_file = TempFile::new("run-log-file-output", "");
+    let log_path = log_file.path().to_string_lossy().into_owned();
+
+    let output = run_aven(["run", "--log", log_path.as_str()], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "");
+    let log_output = fs::read_to_string(log_file.path()).expect("failed to read log file");
+    assert!(
+        log_output.contains("\"msg\":\"hello\""),
+        "expected log message, got:\n{log_output}"
+    );
+    assert!(
+        log_output.contains("\"n\":1"),
+        "expected numeric attribute, got:\n{log_output}"
+    );
+    let records = json_log_lines(&log_output);
+    assert_eq!(
+        records.len(),
+        1,
+        "expected one log line, got:\n{log_output}"
+    );
+    assert_w3c_trace_context(&records[0], &log_output);
+}
+
+#[test]
+fn run_log_format_text_writes_one_line_record() {
+    let file = TempFile::new(
+        "run-text-log",
+        "logger.warn(\"careful\", { n: 2, user: \"ada\" })\n",
+    );
+
+    let output = run_aven(["run", "--log-format", "text"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "WARN careful n=2 user=ada\n");
+}
+
+#[test]
+fn run_log_syslog_reports_not_implemented() {
+    let file = TempFile::new("run-syslog", "1\n");
+
+    let output = run_aven(["run", "--log", "syslog"], file.path());
+
+    assert_failure(&output);
+    assert_eq!(stdout(&output), "");
+    assert!(
+        stderr(&output).contains("--log syslog is not yet implemented"),
+        "expected syslog stub error, got:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn run_ambient_log_and_child_log_share_trace_context() {
     let file = TempFile::new(
         "run-shared-structured-log",
-        "logger.info(\"hello\", { n: 1 })\nPlatform.Log.info(\"hello\", { n: 1 })\n",
+        "logger.info(\"hello\", { n: 1 })\nchild = logger.child({ requestId: \"r1\" })\nchild.info(\"child\", { n: 2 })\n",
     );
 
     let output = run_aven(["run"], file.path());
@@ -489,21 +570,18 @@ fn run_ambient_log_and_platform_log_share_trace_context() {
     assert_eq!(records.len(), 2, "expected two log lines, got:\n{stdout}");
 
     let ambient = &records[0];
-    let namespaced = &records[1];
-    for field in ["level", "severity", "msg", "n"] {
-        assert_eq!(
-            ambient[field], namespaced[field],
-            "expected matching `{field}` fields, got:\n{stdout}"
-        );
-    }
+    let child = &records[1];
+    assert_eq!(ambient["msg"], "hello");
+    assert_eq!(child["msg"], "child");
+    assert_eq!(child["requestId"], "r1");
     for field in ["traceId", "spanId", "traceFlags", "traceState"] {
         assert_eq!(
-            ambient[field], namespaced[field],
+            ambient[field], child[field],
             "expected shared trace `{field}`, got:\n{stdout}"
         );
     }
     assert_w3c_trace_context(ambient, &stdout);
-    assert_w3c_trace_context(namespaced, &stdout);
+    assert_w3c_trace_context(child, &stdout);
 }
 
 #[test]
@@ -598,6 +676,28 @@ fn run_threads_result_with_propagation_operator() {
 }
 
 #[test]
+fn run_final_err_value_exits_non_zero_and_writes_stderr() {
+    let file = TempFile::new("run-final-err", "@Err(\"boom\")\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_failure(&output);
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "@Err(\"boom\")\n");
+}
+
+#[test]
+fn run_final_ok_value_exits_zero() {
+    let file = TempFile::new("run-final-ok", "@Ok(\"fine\")\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "@Ok(\"fine\")\n");
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
 fn run_panic_operator_exits_non_zero_with_runtime_panic() {
     let file = TempFile::new("run-panic", "@Err(\"boom\")?!\n");
 
@@ -685,6 +785,25 @@ fn run_aven<const N: usize>(args: [&str; N], path: &Path) -> Output {
         .arg(path)
         .output()
         .expect("failed to run aven")
+}
+
+fn run_aven_with_stdin<const N: usize>(args: [&str; N], path: &Path, stdin: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aven"))
+        .args(args)
+        .arg(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run aven");
+
+    let mut child_stdin = child.stdin.take().expect("failed to open aven stdin");
+    child_stdin
+        .write_all(stdin.as_bytes())
+        .expect("failed to write aven stdin");
+    drop(child_stdin);
+
+    child.wait_with_output().expect("failed to wait for aven")
 }
 
 fn run_aven_without_path<const N: usize>(args: [&str; N]) -> Output {

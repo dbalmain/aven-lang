@@ -113,8 +113,7 @@ impl Host {
 ///
 /// Approximate: the `child` method returns an open record rather than a named
 /// recursive `Logger`. A precise recursive type is deferred until a named
-/// `Logger` type / typed-fn adapter exists. Single source of truth so the CLI's
-/// `Platform.Log` field shares it without reconstructing the type.
+/// `Logger` type / typed-fn adapter exists.
 pub fn logger_type() -> Type {
     // `(Text, ?{..}) -> Unit`: one required message, an optional trailing fields
     // record, so both `logger.info("msg")` and `logger.info("msg", { .. })` check.
@@ -139,31 +138,40 @@ pub fn logger_type() -> Type {
     ])
 }
 
-/// The Aven type of the standard `Platform` value.
-pub fn platform_type() -> Type {
-    build::record(vec![
-        (
-            "Console",
-            build::record(vec![(
-                "log",
-                build::function(vec![build::text()], build::unit()),
-            )]),
-        ),
-        ("Log", logger_type()),
-    ])
+/// The Aven type of the standard `dbg` value.
+pub fn dbg_type() -> Type {
+    build::function(vec![build::var("a")], build::var("a"))
 }
 
-/// The Aven type of the standard `debug` value.
-pub fn debug_type() -> Type {
-    build::function(vec![build::var("a")], build::var("a"))
+/// The Aven type of the standard `write` value.
+pub fn io_write_type() -> Type {
+    build::function(vec![build::text()], build::empty_record())
+}
+
+/// The Aven type of the standard `writeLine` value.
+pub fn io_write_line_type() -> Type {
+    build::function(vec![build::text()], build::empty_record())
+}
+
+/// The Aven type of the standard `readLine` value.
+pub fn io_read_line_type() -> Type {
+    build::function(vec![], build::optional(build::text()))
+}
+
+/// The Aven type of the standard `readAll` value.
+pub fn io_read_all_type() -> Type {
+    build::function(vec![], build::text())
 }
 
 /// Type globals for the standard host prelude used by `aven check` and the LSP.
 pub fn standard_check_globals() -> Vec<(String, Type)> {
     vec![
         ("logger".to_owned(), logger_type()),
-        ("Platform".to_owned(), platform_type()),
-        ("debug".to_owned(), debug_type()),
+        ("dbg".to_owned(), dbg_type()),
+        ("write".to_owned(), io_write_type()),
+        ("writeLine".to_owned(), io_write_line_type()),
+        ("readLine".to_owned(), io_read_line_type()),
+        ("readAll".to_owned(), io_read_all_type()),
     ]
 }
 
@@ -203,12 +211,9 @@ mod tests {
     #[test]
     fn runtime_only_is_evaluated_but_not_checked() {
         let mut host = Host::new();
-        host.register_runtime_only("debug", Value::Int(7));
+        host.register_runtime_only("dbg", Value::Int(7));
 
-        assert_eq!(
-            host.eval_globals(),
-            vec![("debug".to_owned(), Value::Int(7))]
-        );
+        assert_eq!(host.eval_globals(), vec![("dbg".to_owned(), Value::Int(7))]);
         assert!(host.check_globals().is_empty());
     }
 
@@ -328,7 +333,10 @@ mod tests {
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(names, vec!["logger", "Platform", "debug"]);
+        assert_eq!(
+            names,
+            vec!["logger", "dbg", "write", "writeLine", "readLine", "readAll"]
+        );
 
         let logger = global_type(&globals, "logger");
         let logger_fields = record_fields(logger).expect("logger is a record");
@@ -350,27 +358,38 @@ mod tests {
         assert!(record_fields(&info_params[1]).is_some());
         assert_eq!(info_result, build::unit());
 
-        let platform = global_type(&globals, "Platform");
-        let platform_fields = record_fields(platform).expect("Platform is a record");
-        let platform_field_names = platform_fields
-            .iter()
-            .map(|field| field.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(platform_field_names, vec!["Console", "Log"]);
+        let dbg = global_type(&globals, "dbg");
+        let (dbg_params, dbg_result) = function_signature(dbg).expect("dbg is a function");
+        assert_eq!(function_required_arity(dbg), Some(1));
+        assert_eq!(dbg_params, vec![build::var("a")]);
+        assert_eq!(dbg_result, build::var("a"));
 
-        let console_log = record_field_type(&record_field_type(platform, "Console"), "log");
-        let (log_params, log_result) =
-            function_signature(&console_log).expect("Platform.Console.log is a function");
-        assert_eq!(function_required_arity(&console_log), Some(1));
-        assert_eq!(log_params, vec![build::text()]);
-        assert_eq!(log_result, build::unit());
-        assert_eq!(record_field_type(platform, "Log"), logger_type());
+        let write = global_type(&globals, "write");
+        let (write_params, write_result) = function_signature(write).expect("write is a function");
+        assert_eq!(function_required_arity(write), Some(1));
+        assert_eq!(write_params, vec![build::text()]);
+        assert_eq!(write_result, build::empty_record());
 
-        let debug = global_type(&globals, "debug");
-        let (debug_params, debug_result) = function_signature(debug).expect("debug is a function");
-        assert_eq!(function_required_arity(debug), Some(1));
-        assert_eq!(debug_params, vec![build::var("a")]);
-        assert_eq!(debug_result, build::var("a"));
+        let write_line = global_type(&globals, "writeLine");
+        let (write_line_params, write_line_result) =
+            function_signature(write_line).expect("writeLine is a function");
+        assert_eq!(function_required_arity(write_line), Some(1));
+        assert_eq!(write_line_params, vec![build::text()]);
+        assert_eq!(write_line_result, build::empty_record());
+
+        let read_line = global_type(&globals, "readLine");
+        let (read_line_params, read_line_result) =
+            function_signature(read_line).expect("readLine is a function");
+        assert_eq!(function_required_arity(read_line), Some(0));
+        assert!(read_line_params.is_empty());
+        assert_eq!(read_line_result, build::optional(build::text()));
+
+        let read_all = global_type(&globals, "readAll");
+        let (read_all_params, read_all_result) =
+            function_signature(read_all).expect("readAll is a function");
+        assert_eq!(function_required_arity(read_all), Some(0));
+        assert!(read_all_params.is_empty());
+        assert_eq!(read_all_result, build::text());
     }
 
     fn global_type<'a>(globals: &'a [(String, Type)], name: &str) -> &'a Type {

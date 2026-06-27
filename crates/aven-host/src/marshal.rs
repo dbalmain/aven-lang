@@ -7,7 +7,7 @@
 //! `Fn(A0, ..) -> R` (arities 0..=4, every type [`AvenMarshal`]) into the
 //! `(Type, Value)` pair [`crate::Host::register_fn`] feeds to `register`.
 //!
-//! Deferred: generic host fns (e.g. `debug : (a) -> a`, needing a `Value`
+//! Deferred: generic host fns (e.g. `dbg : (a) -> a`, needing a `Value`
 //! passthrough mapped to a type variable plus scheme support), compound
 //! marshalling (records↔structs, `Vec`↔Array, `Option`↔`?T`, `Result`↔Aven
 //! `Result`), optional params via the adapter, and arities above 4.

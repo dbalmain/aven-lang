@@ -1,5 +1,6 @@
+use std::cell::RefCell;
 use std::fs;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -43,6 +44,14 @@ enum Command {
         /// Diagnostic output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+
+        /// Logger sink target: stdout, stderr, syslog, journald, or a file path.
+        #[arg(long, default_value = "stdout")]
+        log: String,
+
+        /// Logger record rendering format.
+        #[arg(long = "log-format", value_enum, default_value_t = LogFormat::Json)]
+        log_format: LogFormat,
     },
 
     /// Explain a diagnostic code.
@@ -83,6 +92,27 @@ enum OutputFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum LogFormat {
+    Json,
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunConfig {
+    log: String,
+    log_format: LogFormat,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            log: "stdout".to_owned(),
+            log_format: LogFormat::Json,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -93,7 +123,12 @@ async fn main() -> Result<()> {
             format,
             timings,
         } => check(&path, format, timings),
-        Command::Run { path, format } => run(&path, format),
+        Command::Run {
+            path,
+            format,
+            log,
+            log_format,
+        } => run(&path, format, &RunConfig { log, log_format }),
         Command::Explain { code } => explain(&code),
         Command::Tokens { path } => tokens(&path),
         Command::Layout { path } => layout(&path),
@@ -119,7 +154,7 @@ fn explain(code: &str) -> Result<()> {
 fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
     let file = load_source_file(path)?;
     let checked =
-        aven_compiler::check_source_file_with_globals(file, &build_host()?.check_globals());
+        aven_compiler::check_source_file_with_globals(file, &aven_host::standard_check_globals());
     let timings = checked.timings;
     let file = checked.document.file();
 
@@ -154,7 +189,7 @@ fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
     Ok(())
 }
 
-fn run(path: &Path, format: OutputFormat) -> Result<()> {
+fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
     let file = load_source_file(path)?;
     let parse = aven_parser::parse_source(&file);
     let mut diagnostics = parse.diagnostics.clone();
@@ -162,7 +197,7 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
 
     if !diagnostics.iter().any(AvenDiagnostic::is_error) {
         let outcome =
-            aven_eval::eval_module_with_globals(&parse.module, build_host()?.eval_globals());
+            aven_eval::eval_module_with_globals(&parse.module, build_host(config)?.eval_globals());
         value = outcome.value;
         diagnostics.extend(outcome.diagnostics);
     }
@@ -183,43 +218,59 @@ fn run(path: &Path, format: OutputFormat) -> Result<()> {
         bail!("run failed");
     }
 
-    if let Some(value) = value.filter(|value| !value.is_unit()) {
+    if let Some(value) = value.filter(|value| !is_trivial_value(value)) {
+        if is_err_value(&value) {
+            eprintln!("{value}");
+            std::process::exit(1);
+        }
         println!("{value}");
     }
 
     Ok(())
 }
 
+fn is_err_value(value: &aven_eval::Value) -> bool {
+    matches!(value, aven_eval::Value::Tag { name, .. } if name == "Err")
+}
+
+/// Whether a final value carries no information worth printing: `Unit` or the
+/// empty record `{}` (the trivial value the bare IO functions return). Keeps
+/// stdout clean for effect-terminated scripts like `writeLine("hi")`.
+fn is_trivial_value(value: &aven_eval::Value) -> bool {
+    value.is_unit() || matches!(value, aven_eval::Value::Record(fields) if fields.is_empty())
+}
+
 /// Build the host registry that feeds both `run` (values) and `check` (types).
 ///
-/// The CLI owns the concrete IO (the `StdoutLogSink`, the root trace context, the
-/// `Console.log`/`debug` natives); `aven-host` owns the registration/typing
+/// The CLI owns the concrete IO (the selected log sink, the root trace context,
+/// and the bare IO/`dbg` natives); `aven-host` owns the registration/typing
 /// vocabulary for the standard host types.
-fn build_host() -> Result<aven_host::Host> {
+fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     let mut host = aven_host::Host::new();
 
-    // Share one logger value between the `logger` global and `Platform.Log` so
-    // they emit on the same sink and trace context.
-    let log_sink = Rc::new(StdoutLogSink);
-    let log = aven_eval::logging::logger(log_sink, root_trace_context()?);
-    host.register("logger".to_owned(), log.clone(), aven_host::logger_type());
-
+    host.register_logger(config.log_sink()?, root_trace_context()?);
+    host.register("dbg", dbg_native(), aven_host::dbg_type());
+    host.register("write", write_native(), aven_host::io_write_type());
     host.register(
-        "Platform".to_owned(),
-        default_platform(log),
-        aven_host::platform_type(),
+        "writeLine",
+        write_line_native(),
+        aven_host::io_write_line_type(),
     );
-
-    host.register("debug".to_owned(), debug_native(), aven_host::debug_type());
+    host.register(
+        "readLine",
+        read_line_native(),
+        aven_host::io_read_line_type(),
+    );
+    host.register("readAll", read_all_native(), aven_host::io_read_all_type());
 
     Ok(host)
 }
 
 /// Writes each argument's `Display` to stderr (space-separated, newline-terminated)
-/// and returns its single argument unchanged, so `debug(x)` is usable inline. This
+/// and returns its single argument unchanged, so `dbg(x)` is usable inline. This
 /// keeps stdout clean for the program's value and log output. The IO effect lives in
 /// the host, so the native is injected by the CLI prelude rather than `aven-eval`.
-fn debug_native() -> aven_eval::Value {
+fn dbg_native() -> aven_eval::Value {
     aven_eval::Value::native(|args| {
         let mut stderr = io::stderr().lock();
         for (index, value) in args.iter().enumerate() {
@@ -237,43 +288,198 @@ fn debug_native() -> aven_eval::Value {
     })
 }
 
-fn default_platform(log: aven_eval::Value) -> aven_eval::Value {
-    aven_eval::Value::record(vec![
-        (
-            "Console".to_owned(),
-            aven_eval::Value::record(vec![(
-                "log".to_owned(),
-                aven_eval::Value::native(|args| {
-                    let mut stdout = io::stdout().lock();
-                    for (index, value) in args.iter().enumerate() {
-                        if index > 0 {
-                            write!(stdout, " ").map_err(|error| error.to_string())?;
-                        }
-                        write!(stdout, "{value}").map_err(|error| error.to_string())?;
-                    }
-                    writeln!(stdout).map_err(|error| error.to_string())?;
-                    Ok(aven_eval::Value::unit())
-                }),
-            )]),
-        ),
-        ("Log".to_owned(), log),
-    ])
+fn write_native() -> aven_eval::Value {
+    aven_eval::Value::native(|args| {
+        let text = io_text_arg("write", args)?;
+        let mut stdout = io::stdout().lock();
+        write!(stdout, "{text}").map_err(|error| error.to_string())?;
+        Ok(empty_record_value())
+    })
 }
 
-struct StdoutLogSink;
-
-impl aven_eval::logging::LogSink for StdoutLogSink {
-    fn emit(&self, record: &aven_eval::logging::LogRecord<'_>) {
-        let output = log_record_json(record);
+fn write_line_native() -> aven_eval::Value {
+    aven_eval::Value::native(|args| {
+        let text = io_text_arg("writeLine", args)?;
         let mut stdout = io::stdout().lock();
-        if let Err(error) = serde_json::to_writer(&mut stdout, &output) {
-            eprintln!("failed to serialize log record: {error}");
-            return;
+        writeln!(stdout, "{text}").map_err(|error| error.to_string())?;
+        Ok(empty_record_value())
+    })
+}
+
+fn read_line_native() -> aven_eval::Value {
+    aven_eval::Value::native(|args| {
+        if !args.is_empty() {
+            return Err(format!("readLine expects 0 arguments, got {}", args.len()));
         }
-        if let Err(error) = writeln!(stdout) {
-            eprintln!("failed to write log record: {error}");
+
+        let mut line = String::new();
+        let bytes = io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(|error| error.to_string())?;
+        if bytes == 0 {
+            return Ok(aven_eval::Value::Undefined);
+        }
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+
+        Ok(aven_eval::Value::Text(line))
+    })
+}
+
+fn read_all_native() -> aven_eval::Value {
+    aven_eval::Value::native(|args| {
+        if !args.is_empty() {
+            return Err(format!("readAll expects 0 arguments, got {}", args.len()));
+        }
+
+        let mut text = String::new();
+        io::stdin()
+            .lock()
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+        Ok(aven_eval::Value::Text(text))
+    })
+}
+
+fn io_text_arg<'a>(
+    name: &str,
+    args: &'a [aven_eval::Value],
+) -> std::result::Result<&'a str, String> {
+    if args.len() != 1 {
+        return Err(format!("{name} expects 1 argument, got {}", args.len()));
+    }
+
+    let aven_eval::Value::Text(text) = &args[0] else {
+        return Err(format!(
+            "{name} expects Text, got {}",
+            aven_value_type_name(&args[0])
+        ));
+    };
+
+    Ok(text)
+}
+
+fn aven_value_type_name(value: &aven_eval::Value) -> &'static str {
+    match value {
+        aven_eval::Value::Int(_) => "Int",
+        aven_eval::Value::Float(_) => "Float",
+        aven_eval::Value::Text(_) => "Text",
+        aven_eval::Value::Bool(_) => "Bool",
+        aven_eval::Value::Array(_) => "Array",
+        aven_eval::Value::Tuple(_) => "Tuple",
+        aven_eval::Value::Set(_) => "Set",
+        aven_eval::Value::Record(_) => "Record",
+        aven_eval::Value::Tag { .. } => "Tag",
+        aven_eval::Value::Closure(_) => "Function",
+        aven_eval::Value::Native(_) => "Native",
+        aven_eval::Value::Type(_) => "Type",
+        aven_eval::Value::Undefined => "Undefined",
+        aven_eval::Value::Null => "Null",
+    }
+}
+
+fn empty_record_value() -> aven_eval::Value {
+    aven_eval::Value::record(vec![])
+}
+
+enum LogDestination {
+    Stdout,
+    Stderr,
+    File(RefCell<fs::File>),
+}
+
+struct ConfiguredLogSink {
+    destination: LogDestination,
+    format: LogFormat,
+}
+
+impl RunConfig {
+    fn log_sink(&self) -> Result<Rc<dyn aven_eval::logging::LogSink>> {
+        let destination = match self.log.as_str() {
+            "stdout" => LogDestination::Stdout,
+            "stderr" => LogDestination::Stderr,
+            "syslog" => bail!("--log syslog is not yet implemented"),
+            "journald" => bail!("--log journald is not yet implemented"),
+            path => LogDestination::File(RefCell::new(
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .with_context(|| format!("failed to open log file {path}"))?,
+            )),
+        };
+
+        Ok(Rc::new(ConfiguredLogSink {
+            destination,
+            format: self.log_format,
+        }))
+    }
+}
+
+impl aven_eval::logging::LogSink for ConfiguredLogSink {
+    fn emit(&self, record: &aven_eval::logging::LogRecord<'_>) {
+        let result = match &self.destination {
+            LogDestination::Stdout => {
+                let mut stdout = io::stdout().lock();
+                write_log_record(&mut stdout, self.format, record)
+            }
+            LogDestination::Stderr => {
+                let mut stderr = io::stderr().lock();
+                write_log_record(&mut stderr, self.format, record)
+            }
+            LogDestination::File(file) => {
+                let mut file = file.borrow_mut();
+                write_log_record(&mut *file, self.format, record)
+            }
+        };
+
+        if let Err(error) = result {
+            eprintln!("{error}");
         }
     }
+}
+
+fn write_log_record(
+    writer: &mut dyn Write,
+    format: LogFormat,
+    record: &aven_eval::logging::LogRecord<'_>,
+) -> std::result::Result<(), String> {
+    match format {
+        LogFormat::Json => write_json_log_record(writer, record),
+        LogFormat::Text => write_text_log_record(writer, record),
+    }
+}
+
+fn write_json_log_record(
+    writer: &mut dyn Write,
+    record: &aven_eval::logging::LogRecord<'_>,
+) -> std::result::Result<(), String> {
+    serde_json::to_writer(&mut *writer, &log_record_json(record))
+        .map_err(|error| format!("failed to serialize log record: {error}"))?;
+    writeln!(writer).map_err(|error| format!("failed to write log record: {error}"))
+}
+
+fn write_text_log_record(
+    writer: &mut dyn Write,
+    record: &aven_eval::logging::LogRecord<'_>,
+) -> std::result::Result<(), String> {
+    write!(
+        writer,
+        "{} {}",
+        record.level.as_str().to_ascii_uppercase(),
+        record.message
+    )
+    .map_err(|error| format!("failed to write log record: {error}"))?;
+    for (name, value) in record.attributes {
+        write!(writer, " {name}={value}")
+            .map_err(|error| format!("failed to write log record: {error}"))?;
+    }
+    writeln!(writer).map_err(|error| format!("failed to write log record: {error}"))
 }
 
 fn log_record_json(record: &aven_eval::logging::LogRecord<'_>) -> JsonValue {
@@ -642,7 +848,7 @@ mod tests {
 
     #[test]
     fn build_host_check_globals_match_standard_host_types() -> Result<()> {
-        let host = build_host()?;
+        let host = build_host(&RunConfig::default())?;
 
         assert_eq!(host.check_globals(), aven_host::standard_check_globals());
         Ok(())

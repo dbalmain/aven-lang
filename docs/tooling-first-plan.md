@@ -1808,23 +1808,23 @@ the later bytecode/runtime work.
   patterns now bind tuple elements in matches, `?.` propagates null/undefined
   receivers, and `??` short-circuits to the left value when it is present.
 - E7 done: added the eval-side platform boundary with host-injected globals and
-  native functions. `aven run` now provides ambient `Platform.Console.log` through
+  native functions. This first shipped as ambient `Platform.Console.log` through
   ordinary record field access, with the stdout effect implemented in the CLI
-  host and native failures reported as `runtime.platform-error`. Typing this
-  platform boundary in `aven-check` is the next step.
-- E8 done: added first-class structured logging as `Platform.Log`. `aven-eval`
-  owns logger semantics, OTel-aligned levels/severity numbers, child loggers,
-  context merging, W3C trace-context fields, and the host-agnostic `LogSink`
-  trait; the CLI host owns stdout JSON-line output, timestamps, and `/dev/urandom`
-  root trace/span id generation. Deferred: per-child span-id generation, full
+  host and native failures reported as `runtime.platform-error`; CLI IO Phase 1
+  later removed that namespace in favor of bare `write`/`writeLine`.
+- E8 done: added first-class structured logging, initially as `Platform.Log`.
+  `aven-eval` owns logger semantics, OTel-aligned levels/severity numbers, child
+  loggers, context merging, W3C trace-context fields, and the host-agnostic
+  `LogSink` trait; the CLI host owns stdout JSON-line output, timestamps, and
+  `/dev/urandom` root trace/span id generation. CLI IO Phase 1 later kept
+  `logger` ambient and removed `Platform.Log`. Deferred: per-child span-id generation, full
   `tracestate` semantics, and HTTP `traceparent` header extraction when the HTTP
   platform lands.
 - E9 done: `aven run` now injects a host-curated ambient prelude as ordinary
   base-scope bindings. The root structured logger is available directly as `logger`
-  while the same shared value remains discoverable as `Platform.Log`; `Platform.*`
-  stays as the optional grouping namespace for less-common host capabilities.
-  Normal scoping still applies, so user bindings may shadow prelude names. Roc-style
-  selective imports are deferred until a module system exists.
+  (originally also through `Platform.Log`, since removed); normal scoping still
+  applies, so user bindings may shadow prelude names. Roc-style selective imports
+  are deferred until a module system exists.
 - E10 done: runtime record comprehensions now evaluate through the shared record
   entry folder, so tuple-emits like `(k, object[k])` can insert or replace fields
   across comprehension iterations. `aven-eval` also provides the pure `keysOf`
@@ -1840,7 +1840,7 @@ the later bytecode/runtime work.
   so a user binding may shadow them. Record-as-type reuses `Value::Record`, so
   `User = { name: Text }` evaluates to a record of type-values and the canonical
   annotated `pick`/`omit` programs now run honestly with no type-alias erasure.
-  `debug` is a CLI-host native that writes each argument's `Display` to stderr and
+  `dbg` is a CLI-host native that writes each argument's `Display` to stderr and
   returns its single argument unchanged, keeping stdout clean. Function types
   (`->`), open rows (`{..r}`), and type application (`Array[a]`) only make sense in
   the full type language and appear only in ignored annotations; in bound value
@@ -1865,6 +1865,16 @@ the later bytecode/runtime work.
   operator on a non-Result raises `runtime.type-error`. Deferred: annotated
   error-type fitting / `mapError` (a checker concern) and any finer block-level
   exit semantics — function-level propagation is what's implemented.
+- E13 done: CLI IO Phase 1 replaced the old standard platform namespace with the
+  bare panic-on-error convenience tier. Standard globals are now `logger`, `dbg`,
+  `write : Text -> {}`, `writeLine : Text -> {}`, `readLine : () -> ?Text`, and
+  `readAll : () -> Text`; `Platform`/`Console` are no longer seeded. `logger`
+  remains ambient and `aven-host::standard_check_globals()` is the checker/LSP
+  source of truth. `aven run --log <stdout|stderr|path|syslog>` selects the logger
+  sink (`stdout` default; files append; `syslog`/`journald` are explicit
+  not-yet-implemented stubs) and `--log-format <json|text>` selects JSON lines or
+  a simple `LEVEL message key=value` rendering. A final `@Err(...)` program value
+  now prints to stderr and exits non-zero.
 
 ## Milestone P — typed platform boundary
 
@@ -1904,17 +1914,14 @@ in thin, self-contained slices.
   traits the platform implements: `register_logger(sink, trace)` takes the
   existing `aven_eval::logging::LogSink` impl, builds the logger value, and
   registers it under `logger` with the statically-known type (`logger_type()`,
-  the single source so the CLI's `Platform.Log` shares it, built from
-  `aven_check::build::*`). `aven-compiler` threads globals through
+  built from `aven_check::build::*`). `aven-compiler` threads globals through
   `analyze_semantics_with_globals` / `check_source_file_with_globals` (the
   no-global versions delegate with `&[]`; the incremental artifact path is
-  unchanged). The CLI's `build_host()` registers `Platform` with
-  `Console.log : (Text) -> Unit` precisely typed (the open `Platform` record keeps
-  `Log`/other capabilities permissive), demonstrating the typed boundary end to
-  end — `Platform.Console.log(42)` is a type error, `Platform.Console.log("hi")`
-  passes. (P1b registered `logger` runtime-only until default params existed; D4
-  re-types it through the typed path and `Platform` becomes a closed record — see
-  below.) Remaining P-thread follow-ups: deriving generic host-fn types through the
+  unchanged). This first demonstrated the typed boundary with a `Platform`
+  namespace; CLI IO Phase 1 later removed that standard namespace and moved IO to
+  bare globals. (P1b registered `logger` runtime-only until default params
+  existed; D4 re-types it through the typed path — see below.) Remaining P-thread
+  follow-ups: deriving generic host-fn types through the
   typed-fn adapter; the recursive `Logger` type (`child` returns an open record);
   and checking calls in expression (non-statement) position.
 - **P2 done (`aven-host`).** A typed-fn adapter derives both the Aven `Type` and a
@@ -1934,13 +1941,14 @@ in thin, self-contained slices.
   `register`, so it lands in both `eval_globals` and `check_globals` with no new
   registry path. Verified end to end: `register_fn("add", |a: i64, b: i64| a + b)`
   makes `add(2, 3)` check and evaluate to `5` while `add("x", 3)` is a check-time
-  type error. The existing `logger`/`Platform`/`debug` registrations are **not**
-  migrated in this slice (logger is a record of optional-arg methods, `Console.log`
-  is variadic-Display, `debug` is generic; P4 later types `debug` through the
-  ordinary register path). Deferred: generic host-fn derivation (`Value` passthrough
-  mapped to type variables), compound marshalling (records↔structs, `Vec`↔Array,
-  `Option`↔`?T`, `Result`↔Aven `Result`), optional params via the adapter, arities
-  above 4, and migrating the existing host regs.
+  type error. The then-existing `logger`/platform/`debug` registrations were
+  **not** migrated in this slice (logger is a record of optional-arg methods and
+  `debug` was generic; P4 later typed it through the ordinary register path, and
+  CLI IO Phase 1 renamed it to `dbg`). Deferred: generic host-fn derivation
+  (`Value` passthrough mapped to type variables), compound marshalling
+  (records↔structs, `Vec`↔Array, `Option`↔`?T`, `Result`↔Aven `Result`),
+  optional params via the adapter, arities above 4, and migrating the existing
+  host regs.
 - **P3 done (`aven-eval`).** `pick` and `omit` are now predefined runtime
   intrinsics alongside `keysOf`, seeded before host globals so a user binding may
   shadow them. Each takes `(record, labels)` — a `Value::Record` and a
@@ -1962,18 +1970,19 @@ in thin, self-contained slices.
   quantified metas before inserting into `value_types`. The existing
   `instantiate_scheme` read path freshens those metas per use site, so generic
   host/library functions type-check without a parallel generics mechanism:
-  `debug : (a) -> a` now accepts any argument type while its result type still flows
-  through inference and annotations. The CLI registers `debug` through the typed
-  `Host::register` path and no longer treats it as runtime-only. Still deferred:
-  teaching the P2 typed-fn adapter to derive generic types from `Value` passthrough
-  positions by assigning distinct per-position type vars, and migrating other host
-  registrations where the adapter can own the type.
+  `debug : (a) -> a` (later renamed `dbg`) accepts any argument type while its
+  result type still flows through inference and annotations. The CLI registers it
+  through the typed `Host::register` path and no longer treats it as runtime-only.
+  Still deferred: teaching the P2 typed-fn adapter to derive generic types from
+  `Value` passthrough positions by assigning distinct per-position type vars, and
+  migrating other host registrations where the adapter can own the type.
 - **P5 done (`aven-host` + `aven-cli` + `aven-lsp`).** The standard host
   type-globals now live in one place:
-  `aven_host::standard_check_globals()` returns the `logger`, `Platform`, and
-  `debug` type interface used by editor analysis. The LSP seeds semantic
+  `aven_host::standard_check_globals()` returns the current standard host
+  interface used by editor analysis (`logger`, `dbg`, `write`, `writeLine`,
+  `readLine`, `readAll`). The LSP seeds semantic
   analysis with those globals, so diagnostics and cached inferred types cover
-  `logger`/`Platform`/`debug` the same way `aven check` does; hover, field
+  host globals the same way `aven check` does; hover, field
   completion, and signature-help paths can now read host global types from the
   same `type_at` snapshot as user code. The CLI still owns the runtime values
   and effects, but its registered check globals are compared against
@@ -2040,11 +2049,10 @@ site. Sliced parser-first; semantics follow.
   check, `logger.info(42)` is a `type.mismatch` (Int vs Text), and `logger.info()`
   is a `type.mismatch` arity error ("expected between 1 and 2 arguments"). The CLI
   registers `logger` through the typed path (`host.register("logger", …,
-  logger_type())`) and `Platform` is restored to a **closed** record
-  `{ Console: { log: (Text) -> Unit }, Log: <logger_type()> }`, dropping the
-  interim open-record/runtime-only workaround. The typed platform boundary now
-  covers the required logging capability end to end. Remaining P-thread
-  follow-ups: generic host fns / `debug` via the typed-fn adapter (P2), the
+  logger_type())`). This slice also restored a closed `Platform` record at the
+  time, but CLI IO Phase 1 later removed `Platform` from the standard globals.
+  The typed host boundary now covers the required logging capability end to end.
+  Remaining P-thread follow-ups: generic host fns via the typed-fn adapter (P2), the
   recursive `Logger` type (`child` still returns an open record), and
   expression-position call checking.
 

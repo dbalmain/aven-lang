@@ -2110,10 +2110,10 @@ mod tests {
     }
 
     #[test]
-    fn evaluates_native_platform_function_through_field_access() {
+    fn evaluates_native_host_function_through_field_access() {
         let captured = Rc::new(RefCell::new(Vec::new()));
         let capture = Rc::clone(&captured);
-        let platform = platform_with(
+        let host = host_with(
             "log",
             Value::native(move |args| {
                 if args.len() != 1 || args.first() != Some(&Value::Text("hi".to_owned())) {
@@ -2123,9 +2123,9 @@ mod tests {
                 Ok(Value::unit())
             }),
         );
-        let module = parse_ok("Platform.Console.log(\"hi\")\n");
+        let module = parse_ok("Host.Native.log(\"hi\")\n");
 
-        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+        let outcome = eval_module_with_globals(&module, vec![("Host".to_owned(), host)]);
 
         assert_eq!(
             outcome,
@@ -2138,12 +2138,12 @@ mod tests {
     }
 
     #[test]
-    fn reports_native_platform_errors_at_call_span() {
-        let platform = platform_with("fail", Value::native(|_| Err("native failure".to_owned())));
-        let module = parse_ok("Platform.Console.fail(\"hi\")\n");
+    fn reports_native_host_errors_at_call_span() {
+        let host = host_with("fail", Value::native(|_| Err("native failure".to_owned())));
+        let module = parse_ok("Host.Native.fail(\"hi\")\n");
         let call_span = module_expr_span(&module);
 
-        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+        let outcome = eval_module_with_globals(&module, vec![("Host".to_owned(), host)]);
 
         assert_eq!(outcome.value, None);
         assert_eq!(outcome.diagnostics.len(), 1);
@@ -2159,10 +2159,10 @@ mod tests {
     #[test]
     fn log_info_emits_message_fields_and_trace_context() {
         let records = Rc::new(RefCell::new(Vec::new()));
-        let platform = logging_platform(Rc::clone(&records));
-        let module = parse_ok("log = Platform.Log\nlog.info(\"hi\", { userId: 42 })\n");
+        let logger = capturing_logger(Rc::clone(&records));
+        let module = parse_ok("logger.info(\"hi\", { userId: 42 })\n");
 
-        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+        let outcome = eval_module_with_globals(&module, vec![("logger".to_owned(), logger)]);
 
         assert_eq!(
             outcome,
@@ -2186,12 +2186,12 @@ mod tests {
     #[test]
     fn child_logger_inherits_trace_and_merges_bound_context() {
         let records = Rc::new(RefCell::new(Vec::new()));
-        let platform = logging_platform(Rc::clone(&records));
+        let logger = capturing_logger(Rc::clone(&records));
         let module = parse_ok(
-            "log = Platform.Log\nrequestLog = log.child({ requestId: \"r1\" })\nrequestLog.info(\"child\")\n",
+            "requestLog = logger.child({ requestId: \"r1\" })\nrequestLog.info(\"child\")\n",
         );
 
-        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+        let outcome = eval_module_with_globals(&module, vec![("logger".to_owned(), logger)]);
 
         assert_eq!(outcome.value, Some(Value::unit()));
         assert!(outcome.diagnostics.is_empty());
@@ -2208,13 +2208,13 @@ mod tests {
     #[test]
     fn child_logger_trace_keys_update_trace_context_not_attributes() {
         let records = Rc::new(RefCell::new(Vec::new()));
-        let platform = logging_platform(Rc::clone(&records));
+        let logger = capturing_logger(Rc::clone(&records));
         let trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
         let module = parse_ok(&format!(
-            "log = Platform.Log\nchild = log.child({{ traceId: \"{trace_id}\", requestId: \"r1\" }})\nchild.info(\"child\")\n"
+            "child = logger.child({{ traceId: \"{trace_id}\", requestId: \"r1\" }})\nchild.info(\"child\")\n"
         ));
 
-        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+        let outcome = eval_module_with_globals(&module, vec![("logger".to_owned(), logger)]);
 
         assert_eq!(outcome.value, Some(Value::unit()));
         assert!(outcome.diagnostics.is_empty());
@@ -2233,11 +2233,9 @@ mod tests {
     #[test]
     fn log_message_validation_reports_platform_error() {
         let records = Rc::new(RefCell::new(Vec::new()));
-        let platform = logging_platform(records);
-        let diagnostic = module_error_with_globals(
-            "log = Platform.Log\nlog.info(5)\n",
-            vec![("Platform".to_owned(), platform)],
-        );
+        let logger = capturing_logger(records);
+        let diagnostic =
+            module_error_with_globals("logger.info(5)\n", vec![("logger".to_owned(), logger)]);
 
         assert_eq!(
             diagnostic.code.as_deref(),
@@ -2264,15 +2262,15 @@ mod tests {
 
     #[test]
     fn module_bindings_can_shadow_injected_globals() {
-        let platform = platform_with(
+        let toolbox = host_with(
             "log",
-            Value::native(|_| Err("injected platform should be shadowed".to_owned())),
+            Value::native(|_| Err("injected host should be shadowed".to_owned())),
         );
         let module = parse_ok(
-            "Platform = { Console: { log: (message) => message } }\nPlatform.Console.log(\"local\")\n",
+            "toolbox = { Native: { log: (message) => message } }\ntoolbox.Native.log(\"local\")\n",
         );
 
-        let outcome = eval_module_with_globals(&module, vec![("Platform".to_owned(), platform)]);
+        let outcome = eval_module_with_globals(&module, vec![("toolbox".to_owned(), toolbox)]);
 
         assert_eq!(
             outcome,
@@ -3038,9 +3036,9 @@ mod tests {
         Value::Set(Rc::new(values))
     }
 
-    fn platform_with(name: &str, function: Value) -> Value {
+    fn host_with(name: &str, function: Value) -> Value {
         Value::record(vec![(
-            "Console".to_owned(),
+            "Native".to_owned(),
             Value::record(vec![(name.to_owned(), function)]),
         )])
     }
@@ -3068,11 +3066,8 @@ mod tests {
         }
     }
 
-    fn logging_platform(records: Rc<RefCell<Vec<CapturedLogRecord>>>) -> Value {
-        Value::record(vec![(
-            "Log".to_owned(),
-            logging::logger(Rc::new(CapturingLogSink { records }), fixed_trace_context()),
-        )])
+    fn capturing_logger(records: Rc<RefCell<Vec<CapturedLogRecord>>>) -> Value {
+        logging::logger(Rc::new(CapturingLogSink { records }), fixed_trace_context())
     }
 
     fn fixed_trace_context() -> logging::TraceContext {

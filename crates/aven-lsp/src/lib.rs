@@ -605,7 +605,7 @@ fn identifier_completion_at_position(
         );
     }
 
-    // Host/library globals (e.g. `logger`, `Platform`) are bound in the value
+    // Host/library globals (e.g. `logger`, `writeLine`) are bound in the value
     // environment but have no in-document declaration, so offer them too. Pushed
     // last, after locals and top-level declarations have claimed their names, so
     // a user binding of the same name shadows the global.
@@ -2539,7 +2539,12 @@ mod tests {
                 .as_deref()
                 .is_some_and(|d| d.contains("info:"))
         );
-        assert!(completion_item(&completions, "Platform").is_some());
+        assert!(completion_item(&completions, "dbg").is_some());
+        assert!(completion_item(&completions, "write").is_some());
+        assert!(completion_item(&completions, "writeLine").is_some());
+        assert!(completion_item(&completions, "readLine").is_some());
+        assert!(completion_item(&completions, "readAll").is_some());
+        assert!(completion_item(&completions, "Platform").is_none());
     }
 
     #[test]
