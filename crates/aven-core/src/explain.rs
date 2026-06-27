@@ -79,6 +79,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Two local binders introduce the same name in one scope. Keep only one binding or rename one of them.",
     },
     DiagnosticExplanation {
+        code: codes::name::NO_TOPLEVEL_SHADOW,
+        text: "`:=` shadows a binding inside a block, but top-level declarations are one mutually-recursive group with unique names, so there is nothing to sequentially shadow. Use a distinct name, or move the shadow into a block.",
+    },
+    DiagnosticExplanation {
         code: codes::name::SHADOW_UNBOUND,
         text: "An explicit shadow binding introduced with := has no visible binding to shadow. Use = to introduce a fresh binding, or move the shadow after the binding it replaces.",
     },

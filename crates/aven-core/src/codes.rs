@@ -33,6 +33,7 @@ pub mod name {
     pub const ACCIDENTAL_SHADOWING: &str = "name.accidental-shadowing";
     pub const DUPLICATE_DECLARATION: &str = "name.duplicate-declaration";
     pub const DUPLICATE_LOCAL: &str = "name.duplicate-local";
+    pub const NO_TOPLEVEL_SHADOW: &str = "name.no-toplevel-shadow";
     pub const SHADOW_UNBOUND: &str = "name.shadow-unbound";
     pub const UNBOUND: &str = "name.unbound";
     pub const UNUSED_BINDING: &str = "name.unused-binding";
@@ -121,6 +122,7 @@ pub const ALL: &[&str] = &[
     name::ACCIDENTAL_SHADOWING,
     name::DUPLICATE_DECLARATION,
     name::DUPLICATE_LOCAL,
+    name::NO_TOPLEVEL_SHADOW,
     name::SHADOW_UNBOUND,
     name::UNBOUND,
     name::UNUSED_BINDING,

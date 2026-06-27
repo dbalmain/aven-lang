@@ -66,6 +66,30 @@ fn duplicate_top_level_diagnostics(declarations: &[Declaration]) -> Vec<Diagnost
             continue;
         };
 
+        if declaration.shadow {
+            // A top-level `:=` has no sequential scope to shadow — the top level
+            // is one mutually-recursive group. Point at the `:=` use itself.
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "cannot shadow `{}` at the top level",
+                    declaration.name
+                ))
+                .with_code(codes::name::NO_TOPLEVEL_SHADOW)
+                .with_label(Label::primary(
+                    declaration.name_span,
+                    "`:=` shadowing is not allowed at the top level",
+                ))
+                .with_label(Label::primary(
+                    previous.name_span,
+                    "this name is already declared here",
+                ))
+                .with_note(
+                    "top-level names are mutually recursive and must be unique; use a distinct name, or move the shadow into a block",
+                ),
+            );
+            continue;
+        }
+
         if is_plausible_typed_overload(previous, declaration) {
             continue;
         }

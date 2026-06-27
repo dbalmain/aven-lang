@@ -13,6 +13,9 @@ pub struct Declaration {
     pub phase: DeclarationPhase,
     pub shape: DeclarationShape,
     pub is_annotated: bool,
+    /// True when this declaration came from a `:=` (explicit shadow) binding.
+    /// Meaningless at the top level, where it is reported as an error.
+    pub shadow: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +76,7 @@ fn binding_declaration(binding: &Binding, signature: Option<&Signature>) -> Decl
         phase: declaration_phase(&binding.name),
         shape: binding_shape(binding, signature),
         is_annotated: signature.is_some(),
+        shadow: binding.shadow,
     }
 }
 
@@ -85,6 +89,7 @@ fn signature_declaration(signature: &Signature) -> Declaration {
         phase: declaration_phase(&signature.name),
         shape: signature_shape(signature),
         is_annotated: false,
+        shadow: false,
     }
 }
 
