@@ -1,4 +1,4 @@
 error name.no-toplevel-shadow: cannot shadow `x` at the top level
-  label 9..10: `:=` shadowing is not allowed at the top level
+  label 11..13: `:=` shadowing is not allowed at the top level
   label 0..1: this name is already declared here
   note: top-level names are mutually recursive and must be unique; use a distinct name, or move the shadow into a block

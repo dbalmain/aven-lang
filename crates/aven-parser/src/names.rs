@@ -66,9 +66,9 @@ fn duplicate_top_level_diagnostics(declarations: &[Declaration]) -> Vec<Diagnost
             continue;
         };
 
-        if declaration.shadow {
+        if let Some(shadow_span) = declaration.shadow_span {
             // A top-level `:=` has no sequential scope to shadow — the top level
-            // is one mutually-recursive group. Point at the `:=` use itself.
+            // is one mutually-recursive group. Point at the `:=` operator itself.
             diagnostics.push(
                 Diagnostic::error(format!(
                     "cannot shadow `{}` at the top level",
@@ -76,7 +76,7 @@ fn duplicate_top_level_diagnostics(declarations: &[Declaration]) -> Vec<Diagnost
                 ))
                 .with_code(codes::name::NO_TOPLEVEL_SHADOW)
                 .with_label(Label::primary(
-                    declaration.name_span,
+                    shadow_span,
                     "`:=` shadowing is not allowed at the top level",
                 ))
                 .with_label(Label::primary(
@@ -137,7 +137,7 @@ fn analyze_item(item: &Item, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
                 analyze_expr(annotation, scopes, diagnostics);
             }
             analyze_expr(&binding.value, scopes, diagnostics);
-            if binding.shadow {
+            if binding.shadow_span.is_some() {
                 scopes.diagnose_shadow_target(&binding.name, binding.name_span, diagnostics);
             }
         }
@@ -210,7 +210,7 @@ fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<
                 scopes.define_local_binding(
                     &binding.name,
                     binding.name_span,
-                    binding.shadow,
+                    binding.shadow_span.is_some(),
                     diagnostics,
                 );
             }

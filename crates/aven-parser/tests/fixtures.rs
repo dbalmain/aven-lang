@@ -367,7 +367,7 @@ fn render_item_ast(output: &mut String, item: &Item, indent: usize) {
     match item {
         Item::Binding(binding) => {
             write_indent(output, indent);
-            if binding.shadow {
+            if binding.shadow_span.is_some() {
                 let _ = writeln!(output, "binding {} shadow=true", binding.name);
             } else {
                 let _ = writeln!(output, "binding {}", binding.name);

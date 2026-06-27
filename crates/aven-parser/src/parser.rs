@@ -18,8 +18,9 @@ pub enum Item {
 pub struct Binding {
     pub name: String,
     pub name_span: Span,
-    /// True when this binding was introduced with explicit shadowing syntax.
-    pub shadow: bool,
+    /// Span of the `:=` operator when this binding uses explicit shadowing
+    /// syntax; `None` for an ordinary `=` binding.
+    pub shadow_span: Option<Span>,
     /// Optional `: type` ascription, parsed as an ordinary expression.
     pub annotation: Option<Expr>,
     pub value: Expr,
@@ -452,7 +453,8 @@ impl Parser<'_> {
         Some(Binding {
             name,
             name_span,
-            shadow: operator == BindingOperator::Shadow,
+            shadow_span: (operator == BindingOperator::Shadow)
+                .then(|| self.tokens[operator_index].span),
             annotation,
             value,
             span,
@@ -2682,8 +2684,8 @@ mod tests {
             panic!("expected shadow binding item");
         };
 
-        assert!(!plain.shadow);
-        assert!(shadow.shadow);
+        assert!(plain.shadow_span.is_none());
+        assert!(shadow.shadow_span.is_some());
     }
 
     #[test]
