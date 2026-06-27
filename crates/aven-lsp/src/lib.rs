@@ -326,18 +326,11 @@ impl Backend {
     fn schedule_semantic_diagnostics(&self, uri: Url, version: i32) {
         self.cancel_pending_semantic_diagnostics(&uri);
 
-        let Some(document) = self.document(&uri) else {
-            return;
-        };
-
-        if document
-            .parse_diagnostics()
-            .iter()
-            .any(AvenDiagnostic::is_error)
-        {
-            return;
-        }
-
+        // Run semantic analysis even when the parse has errors: the recovered
+        // tree still yields inferred types for the valid parts, which powers
+        // type-directed completion and hover mid-edit. The compiler suppresses
+        // semantic diagnostics while parse errors exist, so this publishes only
+        // the parse diagnostics, as before.
         let client = self.client.clone();
         let store = Arc::clone(&self.store);
         let task_uri = uri.clone();
@@ -2181,6 +2174,44 @@ mod tests {
     }
 
     #[test]
+    fn completion_at_incomplete_seeded_logger_field_access_returns_logger_methods() {
+        let document = parsed_document_with_semantics("logger.\n");
+        let completions = completion_at_position(&document, position(0, 7));
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!document.parse_diagnostics().is_empty());
+        assert!(document.semantic_diagnostics().is_empty());
+        assert_eq!(
+            labels,
+            vec!["trace", "debug", "info", "warn", "error", "fatal", "child"]
+        );
+        assert!(completion_item(&completions, "Text").is_none());
+        assert!(completion_item(&completions, "logger").is_none());
+    }
+
+    #[test]
+    fn completion_at_seeded_logger_field_access_with_parse_error_returns_logger_methods() {
+        let document = parsed_document_with_semantics("logger.info\nbroken = \n");
+        let completions = completion_at_position(&document, position(0, 11));
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!document.parse_diagnostics().is_empty());
+        assert!(document.semantic_diagnostics().is_empty());
+        assert_eq!(
+            labels,
+            vec!["trace", "debug", "info", "warn", "error", "fatal", "child"]
+        );
+        assert!(completion_item(&completions, "Text").is_none());
+        assert!(completion_item(&completions, "logger").is_none());
+    }
+
+    #[test]
     fn completion_at_position_includes_visible_local_bindings() {
         let document =
             parsed_document_with_semantics("value =\n  local = \"hi\"\n  local\nother = 1\n");
@@ -2238,6 +2269,24 @@ mod tests {
         assert_eq!(name.detail.as_deref(), Some("Text"));
         assert_eq!(email.kind, Some(CompletionItemKind::FIELD));
         assert_eq!(email.detail.as_deref(), Some("Text"));
+        assert!(completion_item(&completions, "user").is_none());
+        assert!(completion_item(&completions, "Text").is_none());
+    }
+
+    #[test]
+    fn completion_at_local_record_field_access_with_parse_error_returns_record_fields() {
+        let document = parsed_document_with_semantics(
+            "user = { name: \"Ada\", email: \"ada@example.com\" }\nresult = user.name\nbroken = \n",
+        );
+        let completions = completion_at_position(&document, position(1, 18));
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!document.parse_diagnostics().is_empty());
+        assert!(document.semantic_diagnostics().is_empty());
+        assert_eq!(labels, vec!["name", "email"]);
         assert!(completion_item(&completions, "user").is_none());
         assert!(completion_item(&completions, "Text").is_none());
     }

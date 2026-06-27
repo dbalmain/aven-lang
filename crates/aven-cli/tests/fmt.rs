@@ -106,20 +106,24 @@ fn check_timings_reports_text_timings() {
 }
 
 #[test]
-fn check_timings_marks_skipped_semantic_phases() {
-    let file = TempFile::new("skipped-timings", "value = )\n");
+fn check_timings_reports_semantic_phases_after_parse_errors() {
+    let file = TempFile::new("parse-error-timings", "value = )\n");
 
     let output = run_aven(["check", "--timings"], file.path());
 
     assert_failure(&output);
     let stderr = stderr(&output);
     assert!(
-        stderr.contains("name: skipped"),
-        "expected skipped name timing, got:\n{stderr}"
+        stderr.contains("name:"),
+        "expected name timing, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("check: skipped"),
-        "expected skipped check timing, got:\n{stderr}"
+        stderr.contains("check:"),
+        "expected check timing, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("skipped"),
+        "expected semantic timings to be recorded, got:\n{stderr}"
     );
 }
 
@@ -298,8 +302,8 @@ fn check_json_timings_reports_structured_timings() {
 }
 
 #[test]
-fn check_json_timings_marks_skipped_semantic_phases() {
-    let file = TempFile::new("json-skipped-timings", "value = )\n");
+fn check_json_timings_reports_semantic_phases_after_parse_errors() {
+    let file = TempFile::new("json-parse-error-timings", "value = )\n");
 
     let output = run_aven(["check", "--format", "json", "--timings"], file.path());
 
@@ -309,8 +313,8 @@ fn check_json_timings_marks_skipped_semantic_phases() {
 
     assert_eq!(json["ok"], false);
     assert!(json["timingsMs"]["parse"].is_number());
-    assert!(json["timingsMs"]["name"].is_null());
-    assert!(json["timingsMs"]["check"].is_null());
+    assert!(json["timingsMs"]["name"].is_number());
+    assert!(json["timingsMs"]["check"].is_number());
     assert!(json["timingsMs"]["total"].is_number());
 }
 

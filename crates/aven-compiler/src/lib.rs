@@ -618,15 +618,7 @@ pub fn analyze_semantics_with_globals(
     parse: &ParseOutput,
     globals: &[(String, Type)],
 ) -> SemanticOutput {
-    if parse.diagnostics.iter().any(Diagnostic::is_error) {
-        return SemanticOutput {
-            diagnostics: Vec::new(),
-            inferred_types: Vec::new(),
-            name_duration: None,
-            check_duration: None,
-        };
-    }
-
+    let parse_has_errors = parse.diagnostics.iter().any(Diagnostic::is_error);
     let (name_analysis, name_duration) = timed(|| aven_parser::analyze_names(&parse.module));
     let (check_output, check_duration) =
         timed(|| aven_check::check_module_with_globals(&parse.module, globals));
@@ -634,11 +626,15 @@ pub fn analyze_semantics_with_globals(
         diagnostics: check_diagnostics,
         inferred_types,
     } = check_output;
-    let diagnostics = name_analysis
-        .diagnostics
-        .into_iter()
-        .chain(check_diagnostics)
-        .collect();
+    let diagnostics = if parse_has_errors {
+        Vec::new()
+    } else {
+        name_analysis
+            .diagnostics
+            .into_iter()
+            .chain(check_diagnostics)
+            .collect()
+    };
 
     SemanticOutput {
         diagnostics,
@@ -949,13 +945,33 @@ mod tests {
     }
 
     #[test]
-    fn checked_documents_skip_semantics_after_parse_errors() {
-        let checked = check_source_file(source_file("value = )\n"));
+    fn checked_documents_keep_inferred_types_after_parse_errors() {
+        let source = "x = 1\nbroken = \n";
+        let checked = check_source_file(source_file(source));
 
-        assert_eq!(checked.document.parse_diagnostics().len(), 1);
+        assert!(!checked.document.parse_diagnostics().is_empty());
+        assert!(
+            checked
+                .document
+                .parse_diagnostics()
+                .iter()
+                .any(Diagnostic::is_error)
+        );
+        assert_eq!(
+            checked.document.diagnostics().count(),
+            checked.document.parse_diagnostics().len()
+        );
         assert!(checked.document.semantic_diagnostics().is_empty());
-        assert!(checked.timings.name.is_none());
-        assert!(checked.timings.check.is_none());
+        assert!(checked.timings.name.is_some());
+        assert!(checked.timings.check.is_some());
+        assert!(!checked.document.inferred_types.is_empty());
+        assert_eq!(
+            checked
+                .document
+                .type_at(nth_span(source, "x", 0))
+                .map(Type::render),
+            Some("Int".to_owned())
+        );
     }
 
     #[test]
