@@ -4638,9 +4638,16 @@ impl<'a> Checker<'a> {
 
         // Seeded host globals have no binding to infer from; read their
         // published scheme so the inference path sees the same type as the
-        // directed-checking path.
-        if let Some(Some(scheme)) = self.value_types.get(name).cloned() {
-            return self.unifier.instantiate_scheme(&scheme);
+        // directed-checking path. A declared name whose published type was
+        // withheld (e.g. a duplicate top-level declaration, deferred until
+        // overload selection exists) is still *bound* — resolve it to a deferred
+        // type rather than letting it fall through and be reported as unbound,
+        // which would cascade an error onto every later use.
+        if let Some(scheme) = self.value_types.get(name).cloned() {
+            return match scheme {
+                Some(scheme) => self.unifier.instantiate_scheme(&scheme),
+                None => Type::Deferred,
+            };
         }
 
         if name_is_placeholder(name)

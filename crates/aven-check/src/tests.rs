@@ -3957,6 +3957,19 @@ fn optional_param_global_rejects_too_many_arguments() {
 }
 
 #[test]
+fn duplicate_top_level_declaration_does_not_report_later_uses_as_unbound() {
+    // A duplicated top-level name withholds its published type, but it is still
+    // bound. Later references must not cascade `name.unbound` errors.
+    let output = parse_module("x = \"a\"\nx = \"b\"\nlater = x\n");
+    let check = check_module(&output.module);
+
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::name::UNBOUND
+    ));
+}
+
+#[test]
 fn optional_params_render_with_default_marker() {
     assert_eq!(
         build::function_opt(vec![named("Text")], vec![named("Int")], named("Unit")).render(),
