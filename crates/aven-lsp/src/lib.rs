@@ -231,7 +231,7 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(document) = self.document(&uri) else {
+        let Some(document) = self.document_with_semantics(&uri) else {
             return Ok(None);
         };
 
@@ -241,7 +241,7 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let Some(document) = self.document(&uri) else {
+        let Some(document) = self.document_with_semantics(&uri) else {
             return Ok(None);
         };
 
@@ -267,7 +267,7 @@ impl LanguageServer for Backend {
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(document) = self.document(&uri) else {
+        let Some(document) = self.document_with_semantics(&uri) else {
             return Ok(None);
         };
 
@@ -275,7 +275,7 @@ impl LanguageServer for Backend {
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
-        let Some(document) = self.document(&params.text_document.uri) else {
+        let Some(document) = self.document_with_semantics(&params.text_document.uri) else {
             return Ok(None);
         };
 
@@ -321,6 +321,23 @@ impl Backend {
     fn document(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
         // A poisoned mutex degrades to "document missing" rather than crashing the LSP.
         self.store.lock().ok().and_then(|store| store.document(uri))
+    }
+
+    /// Fetch the document with semantics for its *current* revision, computing
+    /// them synchronously. Semantic analysis is otherwise produced by a
+    /// debounced background task (`SEMANTIC_DEBOUNCE`), so a freshly edited
+    /// document has no inferred types until that fires. Type-directed features
+    /// (completion, hover, signature help, inlay hints) must not depend on that
+    /// timing — completing right after typing `.` would otherwise see no type
+    /// and fall back to the bare identifier list. At embedded-script sizes a
+    /// re-check per request is cheap.
+    fn document_with_semantics(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
+        let document = self.document(uri)?;
+        let semantic = analyze_document_semantics(&document);
+        Some(Arc::new(document.with_semantic(
+            semantic.diagnostics,
+            semantic.inferred_types,
+        )))
     }
 
     fn schedule_semantic_diagnostics(&self, uri: Url, version: i32) {
@@ -1988,6 +2005,66 @@ mod tests {
         ));
         assert_eq!(hints[0].kind, Some(InlayHintKind::TYPE));
         assert_eq!(hints[0].padding_left, Some(true));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn completion_returns_fields_before_debounced_semantics() {
+        // Time is paused, so the debounced semantic pass never fires. Completion
+        // requested right after didOpen must still return type-directed fields,
+        // proving the handler computes semantics on demand rather than waiting
+        // for SEMANTIC_DEBOUNCE.
+        let (mut service, _socket) = LspService::new(test_backend);
+        let uri = test_uri();
+        let uri_text = uri.to_string();
+
+        let initialize = Request::build("initialize")
+            .params(json!({"capabilities": {}}))
+            .id(1)
+            .finish();
+        assert!(call_service(&mut service, initialize).await.is_some());
+
+        let did_open = Request::build("textDocument/didOpen")
+            .params(json!({
+                "textDocument": {
+                    "uri": uri_text.clone(),
+                    "languageId": "aven",
+                    "version": 1,
+                    "text": "r = { a: 1, b: 2 }\nx = r.\n"
+                }
+            }))
+            .finish();
+        assert!(call_service(&mut service, did_open).await.is_none());
+
+        let completion = Request::build("textDocument/completion")
+            .params(json!({
+                "textDocument": { "uri": uri_text },
+                "position": { "line": 1, "character": 6 }
+            }))
+            .id(2)
+            .finish();
+        let Some(response) = call_service(&mut service, completion).await else {
+            panic!("expected completion response");
+        };
+        let (_id, body) = response.into_parts();
+        let value = body.expect("successful completion response");
+        let labels = match serde_json::from_value::<CompletionResponse>(value)
+            .expect("completion response")
+        {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
+        }
+        .into_iter()
+        .map(|item| item.label)
+        .collect::<Vec<_>>();
+
+        assert!(
+            labels.contains(&"a".to_owned()) && labels.contains(&"b".to_owned()),
+            "expected record fields a/b before debounce, got {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"Int".to_owned()),
+            "expected field completion, not the identifier fallback, got {labels:?}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
