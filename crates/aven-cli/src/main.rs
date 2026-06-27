@@ -312,6 +312,10 @@ fn read_line_native() -> aven_eval::Value {
             return Err(format!("readLine expects 0 arguments, got {}", args.len()));
         }
 
+        // Flush pending stdout so a prompt written without a newline (e.g.
+        // `write("name: ")`) is visible before the read blocks.
+        let _ = io::stdout().flush();
+
         let mut line = String::new();
         let bytes = io::stdin()
             .lock()
@@ -336,6 +340,10 @@ fn read_all_native() -> aven_eval::Value {
         if !args.is_empty() {
             return Err(format!("readAll expects 0 arguments, got {}", args.len()));
         }
+
+        // Flush pending stdout so a prompt written without a newline is visible
+        // before the read blocks.
+        let _ = io::stdout().flush();
 
         let mut text = String::new();
         io::stdin()
