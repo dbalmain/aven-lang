@@ -1,4 +1,4 @@
 error name.duplicate-local: duplicate local binding `value`
   label 12..17: binding repeated here
   label 5..10: previous local binding with the same name
-  note: rename one binding, or use explicit shadowing syntax once it exists
+  note: rename one binding so each local binder has a distinct name

@@ -18,6 +18,8 @@ pub enum Item {
 pub struct Binding {
     pub name: String,
     pub name_span: Span,
+    /// True when this binding was introduced with explicit shadowing syntax.
+    pub shadow: bool,
     /// Optional `: type` ascription, parsed as an ordinary expression.
     pub annotation: Option<Expr>,
     pub value: Expr,
@@ -45,6 +47,12 @@ pub struct Param {
     /// checking, applying the default) are deferred to milestones D2/D3.
     pub default: Option<Expr>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindingOperator {
+    Assign,
+    Shadow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,10 +367,12 @@ impl Parser<'_> {
     }
 
     fn parse_item(&mut self) -> Option<Item> {
-        let equals = self.find_binding_equals();
+        let binding_operator = self.find_binding_operator();
 
-        if let Some(equals) = equals {
-            return self.parse_binding(equals).map(Item::Binding);
+        if let Some((operator_index, operator)) = binding_operator {
+            return self
+                .parse_binding(operator_index, operator)
+                .map(Item::Binding);
         }
 
         if self.is_signature_start() {
@@ -376,14 +386,22 @@ impl Parser<'_> {
         Some(Item::Expr(expr))
     }
 
-    fn parse_binding(&mut self, equals: usize) -> Option<Binding> {
-        if equals == self.cursor {
-            let span = self.tokens[equals].span;
+    fn parse_binding(
+        &mut self,
+        operator_index: usize,
+        operator: BindingOperator,
+    ) -> Option<Binding> {
+        if operator_index == self.cursor {
+            let span = self.tokens[operator_index].span;
             self.diagnostics.push(
                 Diagnostic::error("binding is missing a name")
                     .with_code(codes::parse::MISSING_BINDING_NAME)
                     .with_label(Label::primary(Span::point(span.start), "expected a name"))
-                    .with_note("add a name before `=`, for example `name = expr`"),
+                    .with_note(format!(
+                        "add a name before `{}`, for example `name {} expr`",
+                        operator.text(),
+                        operator.text()
+                    )),
             );
             self.recover_to_next_line();
             return None;
@@ -395,7 +413,10 @@ impl Parser<'_> {
                 (name.clone(), name_token.span)
             }
             _ => {
-                let span = Span::new(name_token.span.start, self.tokens[equals - 1].span.end);
+                let span = Span::new(
+                    name_token.span.start,
+                    self.tokens[operator_index - 1].span.end,
+                );
                 self.report_invalid_binding_name(span);
                 self.recover_to_next_line();
                 return None;
@@ -406,30 +427,32 @@ impl Parser<'_> {
 
         // `name : type = value`: the optional annotation occupies everything
         // between the name and the depth-0 `=`.
-        let annotation = if self.current_is_operator(":") {
+        let annotation = if operator == BindingOperator::Assign && self.current_is_operator(":") {
             self.advance();
             Some(self.parse_annotation_term())
         } else {
             None
         };
 
-        if self.cursor != equals {
-            // The name (and optional annotation) did not consume up to `=`;
+        if self.cursor != operator_index {
+            // The name (and optional annotation for `=`) did not consume up to
+            // the binding operator;
             // whatever is left is not a valid binding head.
-            let span = Span::new(name_span.start, self.tokens[equals - 1].span.end);
+            let span = Span::new(name_span.start, self.tokens[operator_index - 1].span.end);
             self.report_invalid_binding_name(span);
             self.recover_to_next_line();
             return None;
         }
 
-        self.cursor = equals + 1;
-        let value = self.parse_binding_value(self.tokens[equals].span.end);
+        self.cursor = operator_index + 1;
+        let value = self.parse_binding_value(self.tokens[operator_index].span.end);
         let span = name_span.merge(value.span);
         self.consume_newline();
 
         Some(Binding {
             name,
             name_span,
+            shadow: operator == BindingOperator::Shadow,
             annotation,
             value,
             span,
@@ -1803,7 +1826,7 @@ impl Parser<'_> {
         }
     }
 
-    fn find_binding_equals(&self) -> Option<usize> {
+    fn find_binding_operator(&self) -> Option<(usize, BindingOperator)> {
         let mut depth = 0usize;
 
         for index in self.cursor..self.tokens.len() {
@@ -1819,9 +1842,11 @@ impl Parser<'_> {
                     depth = depth.saturating_sub(1);
                 }
                 TokenKind::InterpolationEnd(_) => depth = depth.saturating_sub(1),
-                TokenKind::Operator(operator) if operator == "=" && depth == 0 => {
-                    return Some(index);
-                }
+                TokenKind::Operator(operator) if depth == 0 => match operator.as_str() {
+                    "=" => return Some((index, BindingOperator::Assign)),
+                    ":=" => return Some((index, BindingOperator::Shadow)),
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -1831,7 +1856,7 @@ impl Parser<'_> {
 
     fn is_signature_start(&self) -> bool {
         // A signature is `name : term` with no depth-0 `=` (callers check the
-        // no-`=` part via `find_binding_equals` first).
+        // no-binding-operator part via `find_binding_operator` first).
         matches!(
             self.current().map(|token| &token.kind),
             Some(TokenKind::Identifier(_) | TokenKind::ComptimeIdentifier(_))
@@ -2455,6 +2480,15 @@ fn record_entry_span(entry: &RecordEntry) -> Span {
     }
 }
 
+impl BindingOperator {
+    fn text(self) -> &'static str {
+        match self {
+            Self::Assign => "=",
+            Self::Shadow => ":=",
+        }
+    }
+}
+
 fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
     let precedence = match operator {
         "|>" => 1,
@@ -2634,6 +2668,22 @@ mod tests {
 
         assert_eq!(params.len(), 1);
         assert!(matches!(body.kind, ExprKind::Name(_)));
+    }
+
+    #[test]
+    fn parses_binding_shadow_flag_from_operator() {
+        let output = parse_module("plain = 1\nplain := 2\n");
+
+        assert!(output.diagnostics.is_empty());
+        let Some(Item::Binding(plain)) = output.module.items.first() else {
+            panic!("expected plain binding item");
+        };
+        let Some(Item::Binding(shadow)) = output.module.items.get(1) else {
+            panic!("expected shadow binding item");
+        };
+
+        assert!(!plain.shadow);
+        assert!(shadow.shadow);
     }
 
     #[test]

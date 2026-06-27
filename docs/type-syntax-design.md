@@ -57,8 +57,8 @@ function-type `->` only applies when parsing a value/term.
 - `Param` gained `annotation: Option<Expr>` (`(path : Path) => ...`).
 - New `Item::Signature { name, name_span, annotation: Expr, span }` for a
   top-level `name : term` with no `=`. Disambiguated like the reference:
-  `find_binding_equals` (depth-0 `=`) → annotated `Binding`; else
-  `is_signature_start` (ident + `:`, no depth-0 `=`) → `Signature`.
+  `find_binding_operator` (depth-0 `=` or `:=`) → `Binding`; else
+  `is_signature_start` (ident + `:`, no depth-0 binding operator) → `Signature`.
 
 Every `:` RHS is parsed with the normal expression entry point
 (`parse_annotation_term` → `parse_expression`), so `->`, `?`, `[]`, records and

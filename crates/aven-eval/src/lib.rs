@@ -2302,6 +2302,14 @@ mod tests {
     }
 
     #[test]
+    fn explicit_shadow_rhs_sees_old_binding_and_does_not_leak() {
+        assert_module_value(
+            "make = (value) =>\n  inner =\n    value := value + 1\n    value\n  (inner, value)\nmake(10)\n",
+            tuple_value(vec![Value::Int(11), Value::Int(10)]),
+        );
+    }
+
+    #[test]
     fn evaluates_block_without_trailing_expression_to_undefined() {
         assert_module_value("value =\n  x = 1\nvalue\n", Value::Undefined);
     }

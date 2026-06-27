@@ -23,6 +23,7 @@ struct ScopeBinding {
 
 #[derive(Debug, Default)]
 struct ScopeStack {
+    top_level: Vec<ScopeBinding>,
     scopes: Vec<Vec<ScopeBinding>>,
 }
 
@@ -32,12 +33,13 @@ enum BindingKind {
     Parameter,
     Pattern,
     Signature,
+    TopLevel,
 }
 
 pub fn analyze_names(module: &Module) -> NameAnalysis {
     let declarations = collect_declarations(module);
     let mut diagnostics = duplicate_top_level_diagnostics(&declarations);
-    let mut scopes = ScopeStack::default();
+    let mut scopes = ScopeStack::with_top_level_declarations(&declarations);
 
     for item in &module.items {
         analyze_item(item, &mut scopes, &mut diagnostics);
@@ -111,6 +113,9 @@ fn analyze_item(item: &Item, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
                 analyze_expr(annotation, scopes, diagnostics);
             }
             analyze_expr(&binding.value, scopes, diagnostics);
+            if binding.shadow {
+                scopes.diagnose_shadow_target(&binding.name, binding.name_span, diagnostics);
+            }
         }
         Item::Signature(signature) => analyze_expr(&signature.annotation, scopes, diagnostics),
         Item::Expr(expr) => analyze_expr(expr, scopes, diagnostics),
@@ -178,10 +183,10 @@ fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<
                     analyze_expr(annotation, scopes, diagnostics);
                 }
                 analyze_expr(&binding.value, scopes, diagnostics);
-                scopes.define(
+                scopes.define_local_binding(
                     &binding.name,
                     binding.name_span,
-                    BindingKind::Local,
+                    binding.shadow,
                     diagnostics,
                 );
             }
@@ -293,6 +298,23 @@ fn diagnose_uppercase_runtime_name(name: &str, span: Span, diagnostics: &mut Vec
 }
 
 impl ScopeStack {
+    fn with_top_level_declarations(declarations: &[Declaration]) -> Self {
+        let top_level = declarations
+            .iter()
+            .map(|declaration| ScopeBinding {
+                name: declaration.name.clone(),
+                span: declaration.name_span,
+                kind: BindingKind::TopLevel,
+                used: false,
+            })
+            .collect();
+
+        Self {
+            top_level,
+            scopes: Vec::new(),
+        }
+    }
+
     fn push(&mut self) {
         self.scopes.push(Vec::new());
     }
@@ -306,6 +328,39 @@ impl ScopeStack {
             if !binding.used && binding.kind.reports_unused() && !binding.name.starts_with('_') {
                 diagnostics.push(unused_binding_diagnostic(&binding));
             }
+        }
+    }
+
+    fn define_local_binding(
+        &mut self,
+        name: &str,
+        span: Span,
+        shadow: bool,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if name == "_" {
+            return;
+        }
+
+        let previous = self.find_visible_for_local_binding(name, span);
+        match (shadow, previous) {
+            (true, None) => diagnostics.push(shadow_unbound_diagnostic(name, span)),
+            (false, Some(previous)) => {
+                diagnostics.push(accidental_shadowing_diagnostic(name, span, previous.span))
+            }
+            (true, Some(_)) | (false, None) => {}
+        }
+
+        self.push_scope_binding(name, span, BindingKind::Local);
+    }
+
+    fn diagnose_shadow_target(&self, name: &str, span: Span, diagnostics: &mut Vec<Diagnostic>) {
+        if name == "_" {
+            return;
+        }
+
+        if self.find_visible_for_local_binding(name, span).is_none() {
+            diagnostics.push(shadow_unbound_diagnostic(name, span));
         }
     }
 
@@ -329,33 +384,13 @@ impl ScopeStack {
                         previous.span,
                         "previous local binding with the same name",
                     ))
-                    .with_note(
-                        "rename one binding, or use explicit shadowing syntax once it exists",
-                    ),
+                    .with_note("rename one binding so each local binder has a distinct name"),
             );
         } else if let Some(previous) = self.find_visible(name) {
-            diagnostics.push(
-                Diagnostic::error(format!("accidental shadowing of `{name}`"))
-                    .with_code(codes::name::ACCIDENTAL_SHADOWING)
-                    .with_label(Label::primary(span, "new binding shadows this name"))
-                    .with_label(Label::primary(
-                        previous.span,
-                        "existing binding with the same name",
-                    ))
-                    .with_note(
-                        "rename the binding, or use explicit shadowing syntax once it exists",
-                    ),
-            );
+            diagnostics.push(accidental_shadowing_diagnostic(name, span, previous.span));
         }
 
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.push(ScopeBinding {
-                name: name.to_owned(),
-                span,
-                kind,
-                used: false,
-            });
-        }
+        self.push_scope_binding(name, span, kind);
     }
 
     fn mark_used(&mut self, name: &str) {
@@ -388,6 +423,35 @@ impl ScopeStack {
             .skip(1)
             .find_map(|scope| scope.iter().rev().find(|binding| binding.name == name))
     }
+
+    fn find_visible_for_local_binding(&self, name: &str, span: Span) -> Option<&ScopeBinding> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| {
+                scope
+                    .iter()
+                    .rev()
+                    .find(|binding| binding.name == name && binding.span != span)
+            })
+            .or_else(|| {
+                self.top_level
+                    .iter()
+                    .rev()
+                    .find(|binding| binding.name == name && binding.span != span)
+            })
+    }
+
+    fn push_scope_binding(&mut self, name: &str, span: Span, kind: BindingKind) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.push(ScopeBinding {
+                name: name.to_owned(),
+                span,
+                kind,
+                used: false,
+            });
+        }
+    }
 }
 
 impl BindingKind {
@@ -413,7 +477,7 @@ fn unused_binding_diagnostic(binding: &ScopeBinding) -> Diagnostic {
             "pattern binding is never used",
             "replace the binding with `_` in the pattern if the value is intentionally ignored",
         ),
-        BindingKind::Signature => {
+        BindingKind::Signature | BindingKind::TopLevel => {
             unreachable!("unused_binding_diagnostic only receives kinds accepted by reports_unused")
         }
     };
@@ -422,6 +486,27 @@ fn unused_binding_diagnostic(binding: &ScopeBinding) -> Diagnostic {
         .with_code(codes::name::UNUSED_BINDING)
         .with_label(Label::primary(binding.span, label))
         .with_note(note)
+}
+
+fn accidental_shadowing_diagnostic(name: &str, span: Span, previous_span: Span) -> Diagnostic {
+    Diagnostic::error(format!("accidental shadowing of `{name}`"))
+        .with_code(codes::name::ACCIDENTAL_SHADOWING)
+        .with_label(Label::primary(span, "new binding shadows this name"))
+        .with_label(Label::primary(
+            previous_span,
+            "existing binding with the same name",
+        ))
+        .with_note("use `:=` to shadow intentionally, or rename the binding")
+}
+
+fn shadow_unbound_diagnostic(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(format!("cannot shadow `{name}`: no binding in scope"))
+        .with_code(codes::name::SHADOW_UNBOUND)
+        .with_label(Label::primary(
+            span,
+            "explicit shadowing needs an existing binding",
+        ))
+        .with_note("use `=` to introduce a new binding")
 }
 
 #[cfg(test)]
@@ -460,11 +545,91 @@ mod tests {
     }
 
     #[test]
-    fn allows_local_bindings_to_shadow_top_level_declarations() {
+    fn allows_parameters_to_match_top_level_declarations() {
         let output = parse_module("value = 1\nf = (value) => value\n");
         let analysis = analyze_names(&output.module);
 
         assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn allows_plain_binding_for_fresh_name() {
+        let output = parse_module("f = () =>\n  value = 1\n  value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn reports_plain_binding_shadowing_previous_local_binding() {
+        let output = parse_module("f = () =>\n  value = 1\n  value = 2\n  value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert_eq!(
+            analysis.diagnostics[0].code.as_deref(),
+            Some("name.accidental-shadowing")
+        );
+    }
+
+    #[test]
+    fn reports_plain_binding_shadowing_lambda_parameter() {
+        let output = parse_module("f = (value) =>\n  value = 1\n  value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert_eq!(
+            analysis.diagnostics[0].code.as_deref(),
+            Some("name.accidental-shadowing")
+        );
+    }
+
+    #[test]
+    fn reports_plain_binding_shadowing_top_level_declaration() {
+        let output = parse_module("value = 1\nf = () =>\n  value = 2\n  value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert_eq!(
+            analysis.diagnostics[0].code.as_deref(),
+            Some("name.accidental-shadowing")
+        );
+    }
+
+    #[test]
+    fn allows_explicit_shadowing_of_previous_local_binding() {
+        let output = parse_module("f = () =>\n  value = 1\n  value := value + 1\n  value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn allows_explicit_shadowing_of_lambda_parameter() {
+        let output = parse_module("f = (value) =>\n  value := value + 1\n  value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn allows_explicit_shadowing_of_top_level_declaration() {
+        let output = parse_module("value = 1\nf = () =>\n  value := value + 1\n  value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn reports_explicit_shadowing_without_visible_binding() {
+        let output = parse_module("f = () =>\n  value := 1\n  value\n");
+        let analysis = analyze_names(&output.module);
+
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert_eq!(
+            analysis.diagnostics[0].code.as_deref(),
+            Some("name.shadow-unbound")
+        );
     }
 
     #[test]

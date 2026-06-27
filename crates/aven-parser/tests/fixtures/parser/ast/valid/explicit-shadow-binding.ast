@@ -1,0 +1,11 @@
+module
+  binding value
+    value
+      number 1
+  binding value shadow=true
+    value
+      binary +
+        left
+          name value
+        right
+          number 1

@@ -30,6 +30,7 @@ impl<'a> Iterator for MergedItems<'a> {
             Item::Signature(signature) => {
                 if let Some(Item::Binding(binding)) = self.items.get(self.index + 1)
                     && binding.name == signature.name
+                    && !binding.shadow
                 {
                     self.index += 2;
                     return Some(MergedItem::Binding {

@@ -1,0 +1,5 @@
+shadowFreshType = (value: Int) =>
+  result =
+    value := "${value}"
+    value
+  (result, value)

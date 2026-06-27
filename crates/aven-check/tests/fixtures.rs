@@ -20,6 +20,14 @@ fn valid_check_fixtures_have_no_diagnostics() -> Result<(), Box<dyn Error>> {
             path.display()
         );
 
+        let name_errors = name_error_diagnostics(&parse.module);
+        assert!(
+            name_errors.is_empty(),
+            "{} unexpectedly produced name errors:\n{}",
+            path.display(),
+            render_diagnostics(&name_errors)
+        );
+
         let globals = fixture_globals();
         let check = aven_check::check_module_with_globals(&parse.module, &globals);
 
@@ -47,8 +55,10 @@ fn invalid_check_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Err
         );
 
         let globals = fixture_globals();
+        let mut diagnostics = name_error_diagnostics(&parse.module);
         let check = aven_check::check_module_with_globals(&parse.module, &globals);
-        let actual = render_diagnostics(&check.diagnostics);
+        diagnostics.extend(check.diagnostics);
+        let actual = render_diagnostics(&diagnostics);
         let expected_path = path.with_extension("diag");
         let expected = fs::read_to_string(&expected_path)?;
 
@@ -79,6 +89,14 @@ fn fixture_files(kind: &str) -> Result<Vec<PathBuf>, Box<dyn Error>> {
 
     paths.sort();
     Ok(paths)
+}
+
+fn name_error_diagnostics(module: &aven_parser::Module) -> Vec<Diagnostic> {
+    aven_parser::analyze_names(module)
+        .diagnostics
+        .into_iter()
+        .filter(Diagnostic::is_error)
+        .collect()
 }
 
 fn render_diagnostics(diagnostics: &[Diagnostic]) -> String {

@@ -68,7 +68,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::name::ACCIDENTAL_SHADOWING,
-        text: "A local binding reuses a name that is already visible in an enclosing local scope. Rename it, or use the explicit shadowing syntax once implemented.",
+        text: "A local binding introduced with = reuses a name that is already visible. Rename it, or use := to shadow the existing binding intentionally.",
     },
     DiagnosticExplanation {
         code: codes::name::DUPLICATE_DECLARATION,
@@ -77,6 +77,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::name::DUPLICATE_LOCAL,
         text: "Two local binders introduce the same name in one scope. Keep only one binding or rename one of them.",
+    },
+    DiagnosticExplanation {
+        code: codes::name::SHADOW_UNBOUND,
+        text: "An explicit shadow binding introduced with := has no visible binding to shadow. Use = to introduce a fresh binding, or move the shadow after the binding it replaces.",
     },
     DiagnosticExplanation {
         code: codes::name::UNBOUND,
