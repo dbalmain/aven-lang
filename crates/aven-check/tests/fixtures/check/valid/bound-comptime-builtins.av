@@ -1,0 +1,3 @@
+User = { name: Text }
+K = keysOf(User)
+P = pick(User, @{"name"})

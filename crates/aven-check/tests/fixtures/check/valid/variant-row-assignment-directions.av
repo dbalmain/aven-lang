@@ -13,3 +13,6 @@ direction = n ?>
 
 closedDirection : @{@Zero, @Pos} = direction
 openDirection : @{@Zero, @Pos, ..} = direction
+
+value = _
+n = _

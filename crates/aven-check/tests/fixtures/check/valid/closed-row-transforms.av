@@ -18,3 +18,5 @@ VariantOverwriteSpread : @{ @A(Int), :..@{@A(Text), @B} } = value
 
 DeferredRecord : { ..base, -missing, missing :: Text, missing -> renamed } = value
 DeferredVariant : @{ ..colors, -@Blue, @Blue -> @Cyan } = value
+
+value = _

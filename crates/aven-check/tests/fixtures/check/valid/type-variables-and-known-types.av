@@ -2,3 +2,5 @@ User = { name: Text }
 id : (a) -> a
 id = (value) => value
 user : User = value
+
+value = _

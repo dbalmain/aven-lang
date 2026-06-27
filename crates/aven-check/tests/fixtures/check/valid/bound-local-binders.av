@@ -1,0 +1,7 @@
+result =
+  base = 1
+  apply = (x) => x + base
+  apply(2)
+
+matched = @Some(1) ?>
+  @Some(n) => n

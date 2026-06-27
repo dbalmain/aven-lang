@@ -6,3 +6,5 @@ closedResult = closed ?>
 open = @A
 openResult = open ?>
   _ => 1
+
+value = _

@@ -1,3 +1,5 @@
 source : @{@A, @B} = value
 result = source ?>
   @A => 1
+
+value = _

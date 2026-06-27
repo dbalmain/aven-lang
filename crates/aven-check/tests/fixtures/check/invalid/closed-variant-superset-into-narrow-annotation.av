@@ -2,3 +2,5 @@ direction = n ?>
   0 => @Zero
   _ => @Pos
 value : @{@Zero} = direction
+
+n = _

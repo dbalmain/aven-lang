@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use aven_check::{Type, build};
 use aven_core::{Diagnostic, Severity};
 
 const CHECK_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/check");
@@ -19,7 +20,8 @@ fn valid_check_fixtures_have_no_diagnostics() -> Result<(), Box<dyn Error>> {
             path.display()
         );
 
-        let check = aven_check::check_module(&parse.module);
+        let globals = fixture_globals();
+        let check = aven_check::check_module_with_globals(&parse.module, &globals);
 
         assert!(
             check.diagnostics.is_empty(),
@@ -44,7 +46,8 @@ fn invalid_check_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Err
             path.display()
         );
 
-        let check = aven_check::check_module(&parse.module);
+        let globals = fixture_globals();
+        let check = aven_check::check_module_with_globals(&parse.module, &globals);
         let actual = render_diagnostics(&check.diagnostics);
         let expected_path = path.with_extension("diag");
         let expected = fs::read_to_string(&expected_path)?;
@@ -104,6 +107,42 @@ fn render_diagnostics(diagnostics: &[Diagnostic]) -> String {
     }
 
     output
+}
+
+fn fixture_globals() -> Vec<(String, Type)> {
+    let logger = build::record(vec![
+        ("info", logger_method_type()),
+        ("error", logger_method_type()),
+    ]);
+
+    vec![
+        ("logger".to_owned(), logger.clone()),
+        (
+            "Platform".to_owned(),
+            build::record(vec![
+                (
+                    "Console",
+                    build::record(vec![(
+                        "log",
+                        build::function(vec![build::text()], build::unit()),
+                    )]),
+                ),
+                ("Log", logger),
+            ]),
+        ),
+        (
+            "debug".to_owned(),
+            build::function(vec![build::var("a")], build::var("a")),
+        ),
+    ]
+}
+
+fn logger_method_type() -> Type {
+    build::function_opt(
+        vec![build::text()],
+        vec![build::open_record(vec![])],
+        build::unit(),
+    )
 }
 
 fn severity_name(severity: Severity) -> &'static str {

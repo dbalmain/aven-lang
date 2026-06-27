@@ -6,3 +6,5 @@ VariantOpenSpreadAdd : @{ ..r, @Extra } = value
 
 DeferredOpenDelete : { ..r, -x } = value
 DeferredOpenRename : { ..r, x -> y } = value
+
+value = _

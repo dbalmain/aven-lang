@@ -294,7 +294,7 @@ fn check_output_records_unannotated_local_inferred_types() {
 
 #[test]
 fn check_output_records_annotated_declared_types() {
-    let source = "person : { name: Text, .. } = current\n";
+    let source = "person : { name: Text, .. } = current\ncurrent = _\n";
     let output = parse_module(source);
     let check = check_module(&output.module);
 
@@ -330,7 +330,7 @@ fn check_output_records_concrete_expression_types() {
 
 #[test]
 fn check_output_type_at_returns_narrowest_containing_expression_type() {
-    let source = "name : { length: Int } = current\nvalue = name.length\n";
+    let source = "name : { length: Int } = current\nvalue = name.length\ncurrent = _\n";
     let output = parse_module(source);
     let check = check_module(&output.module);
     let field_access_span = binding_value_named(&output.module, "value").span;
@@ -361,7 +361,7 @@ fn lowercase_type_variables_are_not_unknown_names() {
 
 #[test]
 fn top_level_comptime_declarations_are_known_type_names() {
-    let output = parse_module("User = { name: Text }\nvalue : User = user\n");
+    let output = parse_module("User = { name: Text }\nvalue : User = user\nuser = _\n");
     let check = check_module(&output.module);
 
     assert!(check.diagnostics.is_empty());
@@ -1896,8 +1896,8 @@ fn bare_uppercase_values_do_not_infer_tags() {
 #[test]
 fn merged_variant_rows_widen_into_open_and_closed_annotations() {
     for source in [
-        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos} = direction\n",
-        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos, ..} = direction\n",
+        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos} = direction\nn = _\n",
+        "direction = n ?>\n  0 => @Zero\n  _ => @Pos\nvalue : @{@Zero, @Pos, ..} = direction\nn = _\n",
     ] {
         let accepted = parse_module(source);
         let accepted_check = check_module(&accepted.module);
@@ -3781,13 +3781,13 @@ fn seeded_global_reaches_inference_name_path() {
 }
 
 #[test]
-fn non_seeded_free_name_stays_unchecked() {
+fn non_seeded_free_name_reports_unbound() {
     let output = parse_module("mystery.foo()\n");
     let check = check_module_with_globals(&output.module, &logger_globals());
 
     assert!(
-        check.diagnostics.is_empty(),
-        "expected no diagnostics for non-seeded name, got {:?}",
+        has_diagnostic_code(&check.diagnostics, codes::name::UNBOUND),
+        "expected unbound-name diagnostic for non-seeded name, got {:?}",
         check.diagnostics
     );
 }
@@ -3804,6 +3804,30 @@ fn user_binding_shadows_seeded_global() {
         check.diagnostics.is_empty(),
         "expected the user binding to shadow the seed, got {:?}",
         check.diagnostics
+    );
+}
+
+#[test]
+fn unbound_name_diagnostic_keeps_bound_names_clean() {
+    let output = parse_module("x = y\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::name::UNBOUND), 1);
+
+    let forward = parse_module("a = b\nb = 1\n");
+    let forward_check = check_module(&forward.module);
+    assert!(
+        !has_diagnostic_code(&forward_check.diagnostics, codes::name::UNBOUND),
+        "expected forward reference to stay clean, got {:?}",
+        forward_check.diagnostics
+    );
+
+    let host = parse_module("logger.info(\"hi\")\n");
+    let host_check = check_module_with_globals(&host.module, &logger_globals());
+    assert!(
+        !has_diagnostic_code(&host_check.diagnostics, codes::name::UNBOUND),
+        "expected seeded host global to stay clean, got {:?}",
+        host_check.diagnostics
     );
 }
 

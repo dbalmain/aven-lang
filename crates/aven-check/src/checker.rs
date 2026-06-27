@@ -44,8 +44,16 @@ pub(crate) struct Checker<'a> {
     /// are checked through the same `value_types` paths as user declarations,
     /// which shadow them.
     globals: Vec<(String, Type)>,
+    report_unbound_names: bool,
+    reported_unbound_name_spans: HashSet<Span>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
+}
+
+#[derive(Clone)]
+struct DiagnosticSnapshot {
+    diagnostics_len: usize,
+    reported_unbound_name_spans: HashSet<Span>,
 }
 
 impl<'a> Checker<'a> {
@@ -68,6 +76,8 @@ impl<'a> Checker<'a> {
             in_progress: HashSet::new(),
             unifier: Unifier::default(),
             globals: Vec::new(),
+            report_unbound_names: true,
+            reported_unbound_name_spans: HashSet::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
         }
@@ -171,7 +181,7 @@ impl<'a> Checker<'a> {
 
             if let Some(annotation) = self.clean_declared_annotation(&name) {
                 types.insert(name.clone(), Some(TypeScheme::mono(annotation)));
-            } else if let Some(inferred) = self.infer_top_level(&name)
+            } else if let Some(inferred) = self.infer_top_level_without_unbound_names(&name)
                 && !type_contains_deferred(&inferred.ty)
             {
                 types.insert(name.clone(), Some(inferred));
@@ -238,8 +248,19 @@ impl<'a> Checker<'a> {
         }
 
         if !checked_value && let Some(binding) = binding {
-            self.check_value_expr(&binding.value);
+            if declaration.phase == DeclarationPhase::Comptime {
+                self.check_value_expr_without_unbound_names(&binding.value);
+            } else {
+                self.check_value_expr(&binding.value);
+            }
         }
+    }
+
+    fn check_value_expr_without_unbound_names(&mut self, expr: &Expr) {
+        let previous = self.report_unbound_names;
+        self.report_unbound_names = false;
+        self.check_value_expr(expr);
+        self.report_unbound_names = previous;
     }
 
     fn check_items(&mut self, items: &[Item]) {
@@ -319,10 +340,26 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        if self.is_unshadowed_record_selection_builtin_call(value) {
+            return;
+        }
+
         let lowering = self.lower_annotation_with_diagnostics(value);
         if lowering.diagnostics.is_empty() {
             self.report_comptime_evaluation_unsupported(value.span);
         }
+    }
+
+    fn is_unshadowed_record_selection_builtin_call(&self, value: &Expr) -> bool {
+        let ExprKind::Call { callee, .. } = &ungroup_expr(value).kind else {
+            return false;
+        };
+        let Some(name) = expr_name(callee) else {
+            return false;
+        };
+
+        comptime::RecordSelectionKind::from_name(name).is_some()
+            && !self.record_selection_builtin_is_shadowed(&TypeEnv::new(), name)
     }
 
     fn comptime_binding_is_artifact(&mut self, name: &str, visiting: &mut HashSet<String>) -> bool {
@@ -478,6 +515,18 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn diagnostic_snapshot(&self) -> DiagnosticSnapshot {
+        DiagnosticSnapshot {
+            diagnostics_len: self.diagnostics.len(),
+            reported_unbound_name_spans: self.reported_unbound_name_spans.clone(),
+        }
+    }
+
+    fn restore_diagnostic_snapshot(&mut self, snapshot: DiagnosticSnapshot) {
+        self.diagnostics.truncate(snapshot.diagnostics_len);
+        self.reported_unbound_name_spans = snapshot.reported_unbound_name_spans;
+    }
+
     fn check_value_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Record(entries) => {
@@ -502,17 +551,23 @@ impl<'a> Checker<'a> {
             } => {
                 self.check_value_field_access(receiver, field, expr.span);
             }
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
+                self.check_name_reference(name, expr.span);
+            }
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Undefined
             | ExprKind::Null
-            | ExprKind::Name(_)
-            | ExprKind::ComptimeName(_)
             | ExprKind::Tag(_) => {}
             _ => walk_expr_children(expr, &mut |child| {
                 self.check_value_expr(child);
             }),
         }
+    }
+
+    fn check_name_reference(&mut self, name: &str, span: Span) {
+        let env = self.local_types.inference_env();
+        self.infer_name_reference(&env, name, span);
     }
 
     /// Check a call expression in statement position. When the callee resolves
@@ -687,18 +742,28 @@ impl<'a> Checker<'a> {
                 }
                 RecordEntry::Iteration {
                     source,
+                    binder,
+                    binder_span,
                     guard,
                     body,
                     ..
                 } => {
                     self.check_value_expr(source);
+                    self.local_types.push();
+                    self.local_types.define(binder, LocalValueType::Unknown);
+                    self.record_local_value_type(*binder_span, &LocalValueType::Unknown);
                     if let Some(guard) = guard {
                         self.check_value_expr(guard);
                     }
                     self.walk_value_record_values(body);
+                    self.local_types.pop();
                 }
-                RecordEntry::Shorthand { .. }
-                | RecordEntry::Delete { .. }
+                RecordEntry::Shorthand {
+                    name, name_span, ..
+                } => {
+                    self.check_name_reference(name, *name_span);
+                }
+                RecordEntry::Delete { .. }
                 | RecordEntry::Rename { .. }
                 | RecordEntry::Open { .. } => {}
             }
@@ -870,21 +935,10 @@ impl<'a> Checker<'a> {
                 expected_result,
             ),
             (ExprKind::Name(name) | ExprKind::ComptimeName(name), _) => {
-                match self.local_types.get(name).cloned() {
-                    Some(LocalValueType::Known(actual)) => {
-                        self.check_type_against_type(expected, &actual, value.span);
-                    }
-                    Some(LocalValueType::Scheme(scheme)) => {
-                        let actual = self.unifier.instantiate_scheme(&scheme);
-                        self.check_type_against_type(expected, &actual, value.span);
-                    }
-                    Some(LocalValueType::Unknown) => {}
-                    None => {
-                        if let Some(Some(scheme)) = self.value_types.get(name).cloned() {
-                            let actual = self.unifier.instantiate_scheme(&scheme);
-                            self.check_type_against_type(expected, &actual, value.span);
-                        }
-                    }
+                let env = self.local_types.inference_env();
+                let actual = self.infer_name_reference(&env, name, value.span);
+                if !type_contains_deferred(&actual) {
+                    self.check_type_against_type(expected, &actual, value.span);
                 }
             }
             (_, Type::Optional(inner)) => {
@@ -1350,6 +1404,7 @@ impl<'a> Checker<'a> {
         };
 
         if let Some(actual) = literal_record_value(value_entries, value_span) {
+            self.check_literal_record_shorthands(&actual);
             let actual_fields: Vec<_> = actual
                 .fields
                 .iter()
@@ -1365,6 +1420,14 @@ impl<'a> Checker<'a> {
             self.check_type_against_type(&Type::Record(row.clone()), &actual, value_span);
         }
         self.walk_value_record_values(value_entries);
+    }
+
+    fn check_literal_record_shorthands(&mut self, record: &ValueRecordShape<'_>) {
+        for field in &record.fields {
+            if field.value.is_none() {
+                self.check_name_reference(field.name, field.name_span);
+            }
+        }
     }
 
     fn check_variant_value_against(
@@ -3594,6 +3657,14 @@ fn is_underscore_pattern(pattern: &Expr) -> bool {
     }
 }
 
+fn name_is_placeholder(name: &str) -> bool {
+    name == "_"
+}
+
+fn builtin_value_name_is_bound(name: &str) -> bool {
+    matches!(name, "keysOf" | "tagsOf" | "typeOf" | "pick" | "omit")
+}
+
 fn is_catch_all_pattern(pattern: &Expr) -> bool {
     match &pattern.kind {
         ExprKind::Group(inner) => is_catch_all_pattern(inner),
@@ -3737,6 +3808,14 @@ impl<'a> Checker<'a> {
         Some(scheme)
     }
 
+    fn infer_top_level_without_unbound_names(&mut self, name: &str) -> Option<TypeScheme> {
+        let previous = self.report_unbound_names;
+        self.report_unbound_names = false;
+        let scheme = self.infer_top_level(name);
+        self.report_unbound_names = previous;
+        scheme
+    }
+
     fn clean_declared_annotation(&self, name: &str) -> Option<Type> {
         let annotation = *self.annotations.get(name)?;
         let mut checker = self.fork_annotation_checker();
@@ -3762,7 +3841,7 @@ impl<'a> Checker<'a> {
                 }],
                 tail: RowTail::Closed,
             }),
-            ExprKind::ComptimeName(name) => self.infer_name_reference(env, name),
+            ExprKind::ComptimeName(name) => self.infer_name_reference(env, name, expr.span),
             ExprKind::Group(inner) => self.infer(env, inner),
             ExprKind::Tuple(elements) => Type::Tuple(
                 elements
@@ -3792,7 +3871,7 @@ impl<'a> Checker<'a> {
                     self.infer_record_entries(env, entries)
                 }
             }
-            ExprKind::Name(name) => self.infer_name_reference(env, name),
+            ExprKind::Name(name) => self.infer_name_reference(env, name, expr.span),
             ExprKind::Lambda {
                 params,
                 return_annotation,
@@ -3839,6 +3918,7 @@ impl<'a> Checker<'a> {
 
     fn infer_binary(&mut self, env: &TypeEnv, left: &Expr, operator: &str, right: &Expr) -> Type {
         let snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
         let left_type = self.infer(env, left);
         let right_type = self.infer(env, right);
 
@@ -3846,6 +3926,7 @@ impl<'a> Checker<'a> {
             result
         } else {
             self.unifier.restore(snapshot);
+            self.restore_diagnostic_snapshot(diagnostic_snapshot);
             Type::Deferred
         }
     }
@@ -3972,6 +4053,7 @@ impl<'a> Checker<'a> {
 
     fn infer_unary(&mut self, env: &TypeEnv, operator: &str, value: &Expr) -> Type {
         let snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
         let value_type = self.infer(env, value);
 
         let result = match operator {
@@ -3983,6 +4065,7 @@ impl<'a> Checker<'a> {
             result
         } else {
             self.unifier.restore(snapshot);
+            self.restore_diagnostic_snapshot(diagnostic_snapshot);
             Type::Deferred
         }
     }
@@ -4058,6 +4141,7 @@ impl<'a> Checker<'a> {
 
     fn infer_field_access(&mut self, env: &TypeEnv, receiver: &Expr, field: &str) -> Type {
         let snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
         let receiver_type = self.infer(env, receiver);
         let field_type = self.unifier.fresh();
         let tail = self.unifier.fresh_row_var();
@@ -4071,6 +4155,7 @@ impl<'a> Checker<'a> {
 
         if self.unifier.unify(&receiver_type, &required).is_err() {
             self.unifier.restore(snapshot);
+            self.restore_diagnostic_snapshot(diagnostic_snapshot);
             Type::Deferred
         } else {
             field_type
@@ -4538,7 +4623,7 @@ impl<'a> Checker<'a> {
         Some(members)
     }
 
-    fn infer_name_reference(&mut self, env: &TypeEnv, name: &str) -> Type {
+    fn infer_name_reference(&mut self, env: &TypeEnv, name: &str, span: Span) -> Type {
         if let Some(local) = env.get(name).cloned() {
             return match local {
                 LocalValueType::Known(ty) => ty,
@@ -4558,7 +4643,34 @@ impl<'a> Checker<'a> {
             return self.unifier.instantiate_scheme(&scheme);
         }
 
+        if name_is_placeholder(name)
+            || builtin_value_name_is_bound(name)
+            || self.known_types.contains(name)
+        {
+            return Type::Deferred;
+        }
+
+        self.report_unbound_name(name, span);
         Type::Deferred
+    }
+
+    fn report_unbound_name(&mut self, name: &str, span: Span) {
+        if !self.report_unbound_names {
+            return;
+        }
+
+        if !self.reported_unbound_name_spans.insert(span) {
+            return;
+        }
+
+        self.diagnostics.push(
+            Diagnostic::error(format!("unbound name `{name}`"))
+                .with_code(codes::name::UNBOUND)
+                .with_label(Label::primary(span, "this name is not bound"))
+                .with_note(format!(
+                    "check the spelling, or define `{name}` before it is used"
+                )),
+        );
     }
 
     fn infer_variant_constructor(&mut self, env: &TypeEnv, tag: &str, args: &[Expr]) -> Type {
@@ -4671,6 +4783,7 @@ impl<'a> Checker<'a> {
         }
 
         let snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
         let inferred_subject = self.infer(env, subject);
         let subject_type = self.resolve_if_concrete(&inferred_subject);
         let mut body_types = Vec::new();
@@ -4689,6 +4802,7 @@ impl<'a> Checker<'a> {
                 Ok(result_type) => result_type,
                 Err(()) => {
                     self.unifier.restore(snapshot);
+                    self.restore_diagnostic_snapshot(diagnostic_snapshot.clone());
                     Type::Deferred
                 }
             };
@@ -4698,6 +4812,7 @@ impl<'a> Checker<'a> {
         for body_type in body_types {
             if self.unifier.unify(&result_type, &body_type).is_err() {
                 self.unifier.restore(snapshot);
+                self.restore_diagnostic_snapshot(diagnostic_snapshot);
                 return Type::Deferred;
             }
         }
@@ -4805,10 +4920,10 @@ impl<'a> comptime::EvalContext<'a> for Checker<'a> {
     }
 
     fn infer_value_type(&mut self, expr: &Expr) -> Type {
-        let start = self.diagnostics.len();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
         let inferred = self.infer(&TypeEnv::new(), expr);
         let ty = self.normalize(&self.resolve_and_default(&inferred));
-        let _ = self.diagnostics.split_off(start);
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
         ty
     }
 

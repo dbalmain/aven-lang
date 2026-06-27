@@ -2456,7 +2456,12 @@ mod tests {
             panic!("expected logger host global in completion");
         };
         assert_eq!(logger.kind, Some(CompletionItemKind::VARIABLE));
-        assert!(logger.detail.as_deref().is_some_and(|d| d.contains("info:")));
+        assert!(
+            logger
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("info:"))
+        );
         assert!(completion_item(&completions, "Platform").is_some());
     }
 

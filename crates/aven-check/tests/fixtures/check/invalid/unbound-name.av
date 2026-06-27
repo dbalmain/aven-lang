@@ -1,0 +1,2 @@
+main =
+  logger.error("a is ${a}", a)

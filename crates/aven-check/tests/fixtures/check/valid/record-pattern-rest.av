@@ -11,3 +11,5 @@ nestedPatternInner : Bool = nestedPatternSource ?>
 openPatternSource : { x: Int, y: Text, .. } = value
 openPatternRest = openPatternSource ?>
   { x, ..rest } => rest.y
+
+value = _

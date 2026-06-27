@@ -13,3 +13,5 @@ variantDuplicateSpread : @{ @Red, ..Color } = value
 variantDeleteAbsent : @{ ..Color, -@Blue } = value
 variantRenameAbsent : @{ ..Color, @Blue -> @Cyan } = value
 variantRenameTarget : @{ ..Color, @Green -> @Red } = value
+
+value = undefined

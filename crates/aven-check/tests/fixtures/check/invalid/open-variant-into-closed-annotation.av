@@ -1,2 +1,4 @@
 openVariantValue : @{@Ok(Int), ..} = value
 result : @{@Ok(Int), @Err(Text)} = openVariantValue
+
+value = _

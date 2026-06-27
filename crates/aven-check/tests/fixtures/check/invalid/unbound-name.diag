@@ -1,0 +1,6 @@
+error name.unbound: unbound name `a`
+  label 30..31: this name is not bound
+  note: check the spelling, or define `a` before it is used
+error name.unbound: unbound name `a`
+  label 35..36: this name is not bound
+  note: check the spelling, or define `a` before it is used

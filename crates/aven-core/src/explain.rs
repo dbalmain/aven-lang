@@ -79,6 +79,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Two local binders introduce the same name in one scope. Keep only one binding or rename one of them.",
     },
     DiagnosticExplanation {
+        code: codes::name::UNBOUND,
+        text: "A runtime value expression referenced a name that is not bound by a local binding, top-level declaration, or host global. Check the spelling, or define the name before it is used.",
+    },
+    DiagnosticExplanation {
         code: codes::name::UNUSED_BINDING,
         text: "A local binding, parameter, or pattern binder is never used. Remove it, use it, or prefix the name with _ to mark the unused binding as intentional.",
     },
