@@ -588,6 +588,23 @@ fn identifier_completion_at_position(
         );
     }
 
+    // Host/library globals (e.g. `logger`, `Platform`) are bound in the value
+    // environment but have no in-document declaration, so offer them too. Pushed
+    // last, after locals and top-level declarations have claimed their names, so
+    // a user binding of the same name shadows the global.
+    for (name, ty) in aven_host::standard_check_globals() {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            CompletionItem {
+                label: name,
+                kind: Some(completion_kind_for_type(Some(&ty))),
+                detail: Some(ty.render()),
+                ..CompletionItem::default()
+            },
+        );
+    }
+
     items
 }
 
@@ -2428,6 +2445,19 @@ mod tests {
         assert_eq!(user.detail.as_deref(), Some("{ name: Text, email: Text }"));
         assert!(completion_item(&completions, "Text").is_some());
         assert!(completion_item(&completions, "name").is_none());
+    }
+
+    #[test]
+    fn completion_includes_host_globals() {
+        let document = parsed_document_with_semantics("main =\n  x = \n");
+        let completions = completion_at_position(&document, position(1, 6));
+
+        let Some(logger) = completion_item(&completions, "logger") else {
+            panic!("expected logger host global in completion");
+        };
+        assert_eq!(logger.kind, Some(CompletionItemKind::VARIABLE));
+        assert!(logger.detail.as_deref().is_some_and(|d| d.contains("info:")));
+        assert!(completion_item(&completions, "Platform").is_some());
     }
 
     #[test]
