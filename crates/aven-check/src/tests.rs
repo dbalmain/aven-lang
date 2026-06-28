@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::checker::comptime_rhs_needs_evaluation;
 use crate::*;
-use aven_core::{Diagnostic, Span, codes};
+use aven_core::{Diagnostic, Severity, Span, codes};
 use aven_parser::{ExprKind, Item, Literal, Module, collect_declarations, parse_module};
 
 fn annotation<'a>(module: &'a Module, name: &str) -> &'a Expr {
@@ -2624,6 +2624,80 @@ fn value_spread_conflict_reports_duplicate_label() {
 }
 
 #[test]
+fn unused_result_warns_for_non_final_top_level_bare_expression() {
+    let source = "mustUse()\n1\n";
+    let check = check_with_must_use_global(source);
+
+    assert_eq!(check.diagnostics.len(), 1);
+    let diagnostic = &check.diagnostics[0];
+    assert_eq!(diagnostic.severity, Severity::Warning);
+    assert_eq!(diagnostic.code.as_deref(), Some(codes::ty::UNUSED_RESULT));
+    assert_eq!(diagnostic.labels.len(), 1);
+    assert_eq!(diagnostic.labels[0].span, Span::new(0, "mustUse()".len()));
+    assert_eq!(diagnostic.labels[0].message, "this `Result` is unused");
+    assert_eq!(
+        diagnostic.notes,
+        vec![
+            "unwrap it with `?!` (panic on `@Err`), propagate it with `?^`, or discard it explicitly with `_ =`."
+        ]
+    );
+}
+
+#[test]
+fn unused_result_warns_for_non_final_block_bare_expression() {
+    let source = "value =\n  mustUse()\n  1\n";
+    let check = check_with_must_use_global(source);
+    let start = source
+        .find("mustUse()")
+        .expect("expected mustUse call in source");
+
+    assert_eq!(check.diagnostics.len(), 1);
+    assert_eq!(
+        check.diagnostics[0].code.as_deref(),
+        Some(codes::ty::UNUSED_RESULT)
+    );
+    assert_eq!(
+        check.diagnostics[0].labels[0].span,
+        Span::new(start, start + "mustUse()".len())
+    );
+}
+
+#[test]
+fn unused_result_allows_explicit_discard_binding() {
+    let check = check_with_must_use_global("_ = mustUse()\n1\n");
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn unused_result_allows_named_binding_capture() {
+    let check = check_with_must_use_global("x = mustUse()\n1\n");
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn unused_result_allows_panic_unwrap_as_non_final_item() {
+    let check = check_with_must_use_global("mustUse()?!\n1\n");
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn unused_result_allows_final_result_expression() {
+    let check = check_with_must_use_global("mustUse()\n");
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn unused_result_ignores_non_result_non_final_expression() {
+    let check = check_with_must_use_global("1\n2\n");
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
 fn infer_value_record_transforms_absorb_open_sources() {
     let output = parse_module(
         "source : { x: Int, .. } = current\n\
@@ -3664,6 +3738,25 @@ fn check_module_reports_type_only_entries_in_value_records() {
         check.diagnostics[0].code.as_deref(),
         Some(codes::ty::TYPE_ONLY_RECORD_ENTRY)
     );
+}
+
+fn check_with_must_use_global(source: &str) -> CheckOutput {
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics for {source:?}: {:?}",
+        output.diagnostics
+    );
+
+    let globals = must_use_globals();
+    check_module_with_globals(&output.module, &globals)
+}
+
+fn must_use_globals() -> Vec<(String, Type)> {
+    vec![(
+        "mustUse".to_owned(),
+        build::function(vec![], build::result(build::int(), build::text())),
+    )]
 }
 
 /// A small host-style logger global: `logger : { info: (Text) -> Unit }`.

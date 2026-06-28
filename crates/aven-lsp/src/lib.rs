@@ -256,7 +256,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let actions = spread_overwrite_code_actions(&document, &uri, &params.context);
+        let mut actions = spread_overwrite_code_actions(&document, &uri, &params.context);
+        actions.extend(unused_result_code_actions(&uri, &params.context));
         if actions.is_empty() {
             return Ok(None);
         }
@@ -497,6 +498,46 @@ fn is_duplicate_spread_label_diagnostic(diagnostic: &Diagnostic) -> bool {
     matches!(
         diagnostic.code.as_ref(),
         Some(NumberOrString::String(code)) if code == codes::ty::DUPLICATE_SPREAD_LABEL
+    )
+}
+
+fn unused_result_code_actions(uri: &Url, context: &CodeActionContext) -> Vec<CodeActionOrCommand> {
+    context
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            if !is_unused_result_diagnostic(diagnostic) {
+                return None;
+            }
+
+            let edit = TextEdit {
+                range: Range {
+                    start: diagnostic.range.end,
+                    end: diagnostic.range.end,
+                },
+                new_text: "?!".to_owned(),
+            };
+
+            Some(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Unwrap with `?!`".to_owned(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diagnostic.clone()]),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                is_preferred: Some(true),
+                ..CodeAction::default()
+            }))
+        })
+        .collect()
+}
+
+fn is_unused_result_diagnostic(diagnostic: &Diagnostic) -> bool {
+    matches!(
+        diagnostic.code.as_ref(),
+        Some(NumberOrString::String(code)) if code == codes::ty::UNUSED_RESULT
     )
 }
 
@@ -2729,6 +2770,31 @@ mod tests {
     }
 
     #[test]
+    fn unused_result_code_action_inserts_panic_unwrap_at_expression_end() {
+        let uri = test_uri();
+        let document = parsed_document_with_semantics("stdout.write(\"x\")\n1\n");
+        let diagnostics = document_diagnostics(&document);
+        let diagnostic = unused_result_diagnostic(&diagnostics);
+        let context = CodeActionContext {
+            diagnostics: diagnostics.clone(),
+            ..CodeActionContext::default()
+        };
+        let actions = unused_result_code_actions(&uri, &context);
+
+        let action = single_code_action(&actions);
+        assert_eq!(action.title, "Unwrap with `?!`");
+        assert_eq!(action.kind.as_ref(), Some(&CodeActionKind::QUICKFIX));
+        assert_eq!(action.is_preferred, Some(true));
+        assert_action_carries_diagnostic(action, diagnostic);
+
+        let edit = single_action_text_edit(action, &uri);
+        assert_eq!(edit.new_text, "?!");
+        assert_eq!(edit.range.start, diagnostic.range.end);
+        assert_eq!(edit.range.end, diagnostic.range.end);
+        assert_edit_inserts_text(&document, edit, "stdout.write(\"x\")?!\n1\n");
+    }
+
+    #[test]
     fn parsed_documents_keep_parse_diagnostics_separate() {
         let document = parsed_document("value = )\n".to_owned());
 
@@ -3127,6 +3193,13 @@ mod tests {
             .iter()
             .find(|diagnostic| is_duplicate_spread_label_diagnostic(diagnostic))
             .expect("expected duplicate spread label diagnostic")
+    }
+
+    fn unused_result_diagnostic(diagnostics: &[Diagnostic]) -> &Diagnostic {
+        diagnostics
+            .iter()
+            .find(|diagnostic| is_unused_result_diagnostic(diagnostic))
+            .expect("expected unused Result diagnostic")
     }
 
     fn single_code_action(actions: &[CodeActionOrCommand]) -> &CodeAction {

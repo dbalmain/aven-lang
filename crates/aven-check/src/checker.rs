@@ -211,8 +211,11 @@ impl<'a> Checker<'a> {
             self.check_declaration(module, &declaration);
         }
 
-        for item in &module.items {
+        for (index, item) in module.items.iter().enumerate() {
             if let Item::Expr(expr) = item {
+                if index + 1 != module.items.len() {
+                    self.report_unused_result_if_dropped(&TypeEnv::new(), expr);
+                }
                 self.check_value_expr(expr);
             }
         }
@@ -276,7 +279,13 @@ impl<'a> Checker<'a> {
                     self.local_types
                         .define(&signature.name, LocalValueType::Known(ty));
                 }
-                MergedItem::Expr(expr) => self.check_value_expr(expr),
+                MergedItem::Expr(expr) => {
+                    if !is_final_expr_item(items, expr) {
+                        let env = self.local_types.inference_env();
+                        self.report_unused_result_if_dropped(&env, expr);
+                    }
+                    self.check_value_expr(expr);
+                }
             }
         }
 
@@ -1068,7 +1077,11 @@ impl<'a> Checker<'a> {
                     self.local_types
                         .define(&signature.name, LocalValueType::Known(ty));
                 }
-                MergedItem::Expr(expr) => self.check_value_expr(expr),
+                MergedItem::Expr(expr) => {
+                    let env = self.local_types.inference_env();
+                    self.report_unused_result_if_dropped(&env, expr);
+                    self.check_value_expr(expr);
+                }
             }
         }
 
@@ -4699,6 +4712,32 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_unused_result_if_dropped(&mut self, env: &TypeEnv, expr: &Expr) {
+        let unifier_snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let inferred_types_len = self.inferred_types.len();
+        let inferred = self.infer(env, expr);
+        let resolved = self.resolve_and_default(&inferred);
+        self.unifier.restore(unifier_snapshot);
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
+        self.inferred_types.truncate(inferred_types_len);
+
+        if is_result_type(&resolved) {
+            self.report_unused_result(expr.span);
+        }
+    }
+
+    fn report_unused_result(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::warning("unused `Result`")
+                .with_code(codes::ty::UNUSED_RESULT)
+                .with_label(Label::primary(span, "this `Result` is unused"))
+                .with_note(
+                    "unwrap it with `?!` (panic on `@Err`), propagate it with `?^`, or discard it explicitly with `_ =`.",
+                ),
+        );
+    }
+
     fn infer_variant_constructor(&mut self, env: &TypeEnv, tag: &str, args: &[Expr]) -> Type {
         let mut payload = Vec::new();
 
@@ -4977,4 +5016,17 @@ fn ungroup_expr(mut expr: &Expr) -> &Expr {
         expr = inner;
     }
     expr
+}
+
+fn is_final_expr_item(items: &[Item], expr: &Expr) -> bool {
+    matches!(items.last(), Some(Item::Expr(final_expr)) if std::ptr::eq(final_expr, expr))
+}
+
+fn is_result_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Apply { callee, args }
+            if args.len() == 2
+                && matches!(callee.as_ref(), Type::Named(name) if name == "Result")
+    )
 }

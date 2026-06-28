@@ -781,16 +781,16 @@ fn run_bare_write_returns_record_while_handle_write_returns_result() {
 
 #[test]
 fn explain_prints_diagnostic_explanations() {
-    let output = run_aven_without_path(["explain", "parse.unclosed-delimiter"]);
+    let output = run_aven_without_path(["explain", "type.unused-result"]);
 
     assert_success(&output);
     let stdout = stdout(&output);
     assert!(
-        stdout.contains("parse.unclosed-delimiter"),
+        stdout.contains("type.unused-result"),
         "expected diagnostic code, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("opened but not closed"),
+        stdout.contains("assign it to `_`"),
         "expected explanation text, got:\n{stdout}"
     );
 }

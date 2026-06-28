@@ -307,6 +307,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A match arm can never run because its pattern is outside the statically known subject values. Remove the arm or change the subject type to include that value.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNUSED_RESULT,
+        text: "A Result value was produced in statement position and then dropped. Unwrap it with `?!` when an `@Err` should panic, propagate it with `?^`, handle it explicitly, or assign it to `_` to document an intentional discard.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::WIDE_VALUE_INTO_LITERAL_UNION,
         text: "A value with a base type such as Text or Int may contain values outside a narrower literal union. Keep the value at the literal-union type or use a fresh literal at the expected-type boundary.",
     },
@@ -327,6 +331,11 @@ mod tests {
             .expect("expected open variant explanation");
         assert_eq!(explanation.code, codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE);
         assert!(explanation.text.contains("open row tail"));
+
+        let explanation =
+            explain(codes::ty::UNUSED_RESULT).expect("expected unused Result explanation");
+        assert_eq!(explanation.code, codes::ty::UNUSED_RESULT);
+        assert!(explanation.text.contains("assign it to `_`"));
     }
 
     #[test]
