@@ -3818,6 +3818,17 @@ fn literal_pattern_value(pattern: &Expr) -> Option<(&Literal, Span)> {
     }
 }
 
+fn pattern_matches_comptime_value(pattern: &Expr, value: &comptime::ComptimeValue) -> bool {
+    match (&ungroup_expr(pattern).kind, value) {
+        (ExprKind::Name(_), _) => true,
+        (ExprKind::Literal(Literal::Bool(pattern)), comptime::ComptimeValue::Bool(value)) => {
+            pattern == value
+        }
+        (ExprKind::Literal(pattern), comptime::ComptimeValue::Literal(value)) => pattern == value,
+        _ => false,
+    }
+}
+
 pub(crate) fn comptime_rhs_needs_evaluation(value: &Expr) -> bool {
     let mut value = value;
     while let ExprKind::Group(inner) = &value.kind {
@@ -4936,6 +4947,17 @@ impl<'a> Checker<'a> {
             return Type::Deferred;
         }
 
+        if let Some(arm) = self.comptime_selected_match_arm(subject, arms) {
+            let inferred_subject = self.infer(env, subject);
+            let subject_type = self.resolve_if_concrete(&inferred_subject);
+            let mut arm_env = env.clone();
+            for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
+                arm_env.insert(name, ty);
+            }
+
+            return self.infer(&arm_env, &arm.body);
+        }
+
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let inferred_subject = self.infer(env, subject);
@@ -4972,6 +4994,26 @@ impl<'a> Checker<'a> {
         }
 
         result_type
+    }
+
+    fn comptime_selected_match_arm<'b>(
+        &self,
+        subject: &Expr,
+        arms: &'b [MatchArm],
+    ) -> Option<&'b MatchArm> {
+        let bindings = self.current_comptime_value_bindings();
+        let Evaluation::Evaluated(value) =
+            comptime::evaluate_runtime_value(subject, &bindings).evaluation
+        else {
+            return None;
+        };
+
+        match value {
+            comptime::ComptimeValue::Literal(_) | comptime::ComptimeValue::Bool(_) => arms
+                .iter()
+                .find(|arm| pattern_matches_comptime_value(&arm.pattern, &value)),
+            comptime::ComptimeValue::ReifiedType(_) | comptime::ComptimeValue::LabelSet(_) => None,
+        }
     }
 
     fn union_match_variant_arms(&mut self, body_types: &[Type]) -> Option<Result<Type, ()>> {

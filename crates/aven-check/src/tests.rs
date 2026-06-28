@@ -1788,6 +1788,105 @@ fn match_results_are_inferred_for_identifier_values() {
 }
 
 #[test]
+fn comptime_known_match_subject_selects_single_arm_result_type() {
+    let source = concat!(
+        "myFun = (@x: @{\"text\", \"int\"}) =>\n",
+        "  x ?>\n",
+        "    \"text\" => \"hello\"\n",
+        "    \"int\" => 42\n",
+        "v = myFun(\"text\")\n",
+        "w = myFun(\"int\")\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected check diagnostics: {:?}",
+        check.diagnostics
+    );
+
+    assert_eq!(
+        check.type_at(nth_span(source, "v", 0)).map(Type::render),
+        Some("Text".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "w", 0)).map(Type::render),
+        Some("Int".to_owned())
+    );
+}
+
+#[test]
+fn comptime_known_match_subject_selects_catch_all_arm() {
+    let source = concat!(
+        "wild = (@x: @{\"text\", \"int\"}) =>\n",
+        "  x ?>\n",
+        "    \"int\" => false\n",
+        "    _ => \"fallback\"\n",
+        "bound = (@x: @{\"text\", \"int\"}) =>\n",
+        "  x ?>\n",
+        "    \"int\" => false\n",
+        "    selected => selected\n",
+        "wildValue = wild(\"text\")\n",
+        "boundValue = bound(\"text\")\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected check diagnostics: {:?}",
+        check.diagnostics
+    );
+
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "wildValue", 0))
+            .map(Type::render),
+        Some("Text".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "boundValue", 0))
+            .map(Type::render),
+        Some("@{ \"text\" }".to_owned())
+    );
+}
+
+#[test]
+fn runtime_match_subject_still_defers_heterogeneous_arm_results() {
+    let source = concat!(
+        "source : @{\"text\", \"int\"} = runtime\n",
+        "result = source ?>\n",
+        "  \"text\" => \"hello\"\n",
+        "  \"int\" => 42\n",
+        "runtime = _\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected check diagnostics: {:?}",
+        check.diagnostics
+    );
+
+    assert!(check.type_at(nth_span(source, "result", 0)).is_none());
+}
+
+#[test]
 fn match_results_merge_closed_variant_rows() {
     let output = parse_module("classify = (n) =>\n  n ?>\n    0 => @Zero\n    _ => @Pos\n");
     let known_types = known_type_names(&output.module);
