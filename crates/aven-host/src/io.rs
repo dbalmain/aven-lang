@@ -552,6 +552,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use aven_check::Type;
+    use aven_core::{Span, codes};
     use aven_eval::eval_module_with_globals;
     use aven_parser::parse_module;
 
@@ -707,20 +708,26 @@ mod tests {
     }
 
     #[test]
-    fn open_with_a_non_mode_argument_yields_no_typed_handle() {
-        // The `Mode[h]` wrapper rejects a non-Mode second argument at unification:
-        // `5` (Int) cannot unify with `Mode[h]`, so the call resolves to
-        // `Deferred` and `handle` gets no inferred handle type. NOTE: no
-        // diagnostic is raised — the structural value-checker is lenient on a
-        // literal-vs-`Apply` mismatch and `infer_call` swallows the arg-unify
-        // failure, so `open("x", 5)` is not a hard error today. Surfacing one
-        // would need cross-constructor mismatch reporting in the checker (see the
-        // slice's done-note). The valid `Read` call, by contrast, resolves.
-        let bad = check_module("handle = open(\"x\", 5)\n");
-        assert!(bad.diagnostics.is_empty(), "lenient: {:?}", bad.diagnostics);
+    fn open_with_a_non_mode_argument_reports_argument_mismatch() {
+        let source = "handle = open(\"x\", 5)\n";
+        let bad = check_module(source);
+        assert_eq!(
+            bad.diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+                .count(),
+            1,
+            "expected one argument mismatch: {:?}",
+            bad.diagnostics
+        );
+        let bad_arg_start = source.find('5').expect("source contains the bad argument");
+        assert_eq!(
+            bad.diagnostics[0].labels[0].span,
+            Span::new(bad_arg_start, bad_arg_start + 1)
+        );
         assert!(
-            handle_binding_type(&bad, "handle").is_none(),
-            "a non-Mode arg yields no resolved handle type"
+            handle_binding_type(&bad, "handle").is_some(),
+            "a bad argument still leaves the call with its declared Result type"
         );
 
         let good = check_module("handle = open(\"x\", Read)\n");

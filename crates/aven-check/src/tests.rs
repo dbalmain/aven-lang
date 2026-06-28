@@ -3777,6 +3777,29 @@ fn generic_id_globals() -> Vec<(String, Type)> {
     )]
 }
 
+fn poly_mode_globals() -> Vec<(String, Type)> {
+    let handle = build::record(vec![("readLine", build::function(vec![], build::text()))]);
+    let io_error = build::variant(vec![("Other", vec![build::text()])]);
+
+    vec![
+        (
+            "f".to_owned(),
+            build::function(
+                vec![build::text(), build::apply("Mode", vec![build::var("h")])],
+                build::result(build::var("h"), io_error),
+            ),
+        ),
+        ("M".to_owned(), build::apply("Mode", vec![handle])),
+    ]
+}
+
+fn monomorphic_g_globals() -> Vec<(String, Type)> {
+    vec![(
+        "g".to_owned(),
+        build::function(vec![build::int()], build::int()),
+    )]
+}
+
 #[test]
 fn seeded_global_call_checks_ok() {
     let output = parse_module("logger.info(\"hi\")\n");
@@ -3795,6 +3818,52 @@ fn seeded_global_call_rejects_wrong_argument_type() {
     let check = check_module_with_globals(&output.module, &logger_globals());
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn polymorphic_resolved_function_call_reports_argument_mismatch() {
+    let source = "f(\"x\", 5)\n";
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &poly_mode_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+        .expect("expected one type mismatch");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "5", 0));
+
+    let accepted = parse_module("f(\"x\", M)\n");
+    let accepted_check = check_module_with_globals(&accepted.module, &poly_mode_globals());
+    assert!(
+        accepted_check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        accepted_check.diagnostics
+    );
+}
+
+#[test]
+fn monomorphic_resolved_function_call_reports_argument_mismatch() {
+    let source = "value = g(\"x\")\n";
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &monomorphic_g_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+        .expect("expected one type mismatch");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "\"x\"", 0));
+
+    let accepted = parse_module("value = g(1)\n");
+    let accepted_check = check_module_with_globals(&accepted.module, &monomorphic_g_globals());
+    assert!(
+        accepted_check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        accepted_check.diagnostics
+    );
 }
 
 #[test]

@@ -536,6 +536,42 @@ impl<'a> Checker<'a> {
         self.reported_unbound_name_spans = snapshot.reported_unbound_name_spans;
     }
 
+    fn push_type_mismatch_diagnostic(&mut self, diagnostic: Diagnostic) {
+        let primary_span = diagnostic.labels.first().map(|label| label.span);
+        if primary_span.is_some_and(|span| {
+            self.diagnostics.iter().any(|existing| {
+                existing.code.as_deref() == Some(codes::ty::MISMATCH)
+                    && existing.labels.first().map(|label| label.span) == Some(span)
+            })
+        }) {
+            return;
+        }
+
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn deduplicate_diagnostics_since(&mut self, start: usize) {
+        let mut index = start;
+        while index < self.diagnostics.len() {
+            let code = self.diagnostics[index].code.as_deref();
+            let primary_span = self.diagnostics[index]
+                .labels
+                .first()
+                .map(|label| label.span);
+            let duplicate = code.is_some()
+                && primary_span.is_some()
+                && self.diagnostics[..index].iter().any(|existing| {
+                    existing.code.as_deref() == code
+                        && existing.labels.first().map(|label| label.span) == primary_span
+                });
+            if duplicate {
+                self.diagnostics.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
     fn check_value_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Record(entries) => {
@@ -597,12 +633,19 @@ impl<'a> Checker<'a> {
             self.check_value_exprs(args);
             return;
         };
+        let required = *required;
         if !is_concrete_type(&callee_type) {
+            if required <= args.len() && args.len() <= params.len() {
+                let diagnostics_start = self.diagnostics.len();
+                let _ = self.infer_call(&env, callee, args);
+                self.check_value_exprs(args);
+                self.deduplicate_diagnostics_since(diagnostics_start);
+                return;
+            }
             self.check_value_exprs(args);
             return;
         }
 
-        let required = *required;
         if args.len() < required || args.len() > params.len() {
             self.report_function_arity_mismatch(required, params.len(), args.len(), callee.span);
             self.check_value_exprs(args);
@@ -1009,7 +1052,10 @@ impl<'a> Checker<'a> {
                 } else {
                     self.check_value_expr(value);
                     let env = self.local_types.inference_env();
-                    if let Some(actual) = self.infer_local_value(&env, value) {
+                    let diagnostics_start = self.diagnostics.len();
+                    let actual = self.infer_local_value(&env, value);
+                    self.deduplicate_diagnostics_since(diagnostics_start);
+                    if let Some(actual) = actual {
                         self.check_type_against_type(expected, &actual, value.span);
                     }
                 }
@@ -1047,7 +1093,10 @@ impl<'a> Checker<'a> {
             _ => {
                 self.check_value_expr(value);
                 let env = self.local_types.inference_env();
-                if let Some(actual) = self.infer_local_value(&env, value) {
+                let diagnostics_start = self.diagnostics.len();
+                let actual = self.infer_local_value(&env, value);
+                self.deduplicate_diagnostics_since(diagnostics_start);
+                if let Some(actual) = actual {
                     self.check_type_against_type(expected, &actual, value.span);
                 }
             }
@@ -1244,11 +1293,27 @@ impl<'a> Checker<'a> {
                     callee: actual_callee,
                     args: actual_args,
                 },
-            ) if expected_args.len() == actual_args.len() => {
+            ) => {
+                if expected_args.len() != actual_args.len()
+                    || applied_type_constructor_mismatch(expected_callee, actual_callee)
+                {
+                    self.report_type_mismatch_between_types(
+                        &expected.render(),
+                        &actual.render(),
+                        span,
+                    );
+                    return;
+                }
                 self.check_type_against_type(expected_callee, actual_callee, span);
                 for (expected, actual) in expected_args.iter().zip(actual_args) {
                     self.check_type_against_type(expected, actual, span);
                 }
+            }
+            (Type::Apply { .. }, actual) if reportable_type_shape(actual) => {
+                self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
+            }
+            (expected, Type::Apply { .. }) if reportable_type_shape(expected) => {
+                self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
             }
             (Type::Variant(expected), Type::Named(actual)) => {
                 self.check_named_type_against_variant(expected, actual, span);
@@ -2581,7 +2646,7 @@ impl<'a> Checker<'a> {
     }
 
     fn report_type_mismatch(&mut self, expected: &str, found: &'static str, span: Span) {
-        self.diagnostics.push(
+        self.push_type_mismatch_diagnostic(
             Diagnostic::error(format!("expected `{expected}`, found a {found}"))
                 .with_code(codes::ty::MISMATCH)
                 .with_label(Label::primary(span, format!("this is a {found}")))
@@ -2832,7 +2897,7 @@ impl<'a> Checker<'a> {
     }
 
     fn report_type_mismatch_between_types(&mut self, expected: &str, actual: &str, span: Span) {
-        self.diagnostics.push(
+        self.push_type_mismatch_diagnostic(
             Diagnostic::error(format!("expected `{expected}`, found `{actual}`"))
                 .with_code(codes::ty::MISMATCH)
                 .with_label(Label::primary(
@@ -3730,6 +3795,19 @@ fn scheme_from_global(ty: &Type, unifier: &mut Unifier) -> TypeScheme {
     }
 }
 
+fn applied_type_constructor_mismatch(expected: &Type, actual: &Type) -> bool {
+    match (expected, actual) {
+        (Type::Named(expected), Type::Named(actual)) => expected != actual,
+        (Type::Deferred | Type::Variable(_) | Type::Meta(_), _)
+        | (_, Type::Deferred | Type::Variable(_) | Type::Meta(_)) => false,
+        _ => expected != actual,
+    }
+}
+
+fn reportable_type_shape(ty: &Type) -> bool {
+    !matches!(ty, Type::Deferred | Type::Variable(_) | Type::Meta(_))
+}
+
 fn literal_pattern_value(pattern: &Expr) -> Option<(&Literal, Span)> {
     match &pattern.kind {
         ExprKind::Group(inner) => literal_pattern_value(inner),
@@ -4221,14 +4299,10 @@ impl<'a> Checker<'a> {
             result,
             required,
         } = &resolved
-            && required <= &arg_types.len()
+            && *required <= arg_types.len()
             && arg_types.len() <= params.len()
         {
-            for (arg, param) in arg_types.iter().zip(params) {
-                if self.unifier.unify(arg, param).is_err() {
-                    return Type::Deferred;
-                }
-            }
+            self.check_call_arg_types_against_params(args, &arg_types, params);
             return result.as_ref().clone();
         }
 
@@ -4243,6 +4317,21 @@ impl<'a> Checker<'a> {
             Type::Deferred
         } else {
             result_type
+        }
+    }
+
+    fn check_call_arg_types_against_params(
+        &mut self,
+        args: &[Expr],
+        arg_types: &[Type],
+        params: &[Type],
+    ) {
+        for ((arg, actual), expected) in args.iter().zip(arg_types).zip(params) {
+            if self.unifier.unify(actual, expected).is_err() {
+                let expected = self.normalize(&self.resolve_and_default(expected));
+                let actual = self.normalize(&self.resolve_and_default(actual));
+                self.check_type_against_type(&expected, &actual, arg.span);
+            }
         }
     }
 
