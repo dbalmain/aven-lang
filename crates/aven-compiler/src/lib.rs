@@ -13,7 +13,7 @@ use aven_parser::{
 };
 
 pub use aven_check::{
-    InferredType, RecordField, Type, function_signature, record_fields, variant_tags,
+    HostGlobals, InferredType, RecordField, Type, function_signature, record_fields, variant_tags,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -618,10 +618,19 @@ pub fn analyze_semantics_with_globals(
     parse: &ParseOutput,
     globals: &[(String, Type)],
 ) -> SemanticOutput {
+    analyze_semantics_with_host_globals(parse, &HostGlobals::types_only(globals))
+}
+
+/// Like [`analyze_semantics`], but also passes host comptime resolvers to the
+/// checker so registered host calls can refine result types from literal args.
+pub fn analyze_semantics_with_host_globals(
+    parse: &ParseOutput,
+    globals: &HostGlobals,
+) -> SemanticOutput {
     let parse_has_errors = parse.diagnostics.iter().any(Diagnostic::is_error);
     let (name_analysis, name_duration) = timed(|| aven_parser::analyze_names(&parse.module));
     let (check_output, check_duration) =
-        timed(|| aven_check::check_module_with_globals(&parse.module, globals));
+        timed(|| aven_check::check_module_with_host_globals(&parse.module, globals));
     let aven_check::CheckOutput {
         diagnostics: check_diagnostics,
         inferred_types,
@@ -651,7 +660,7 @@ pub struct CheckedDocument {
 }
 
 pub fn check_source_file(file: SourceFile) -> CheckedDocument {
-    check_source_file_at(Revision::default(), file, &[])
+    check_source_file_with_globals(file, &[])
 }
 
 /// Like [`check_source_file`], but seeds host/library `globals` into the checker.
@@ -659,18 +668,27 @@ pub fn check_source_file_with_globals(
     file: SourceFile,
     globals: &[(String, Type)],
 ) -> CheckedDocument {
+    check_source_file_with_host_globals(file, &HostGlobals::types_only(globals))
+}
+
+/// Like [`check_source_file`], but also passes host comptime resolvers to the
+/// checker.
+pub fn check_source_file_with_host_globals(
+    file: SourceFile,
+    globals: &HostGlobals,
+) -> CheckedDocument {
     check_source_file_at(Revision::default(), file, globals)
 }
 
 fn check_source_file_at(
     revision: Revision,
     file: SourceFile,
-    globals: &[(String, Type)],
+    globals: &HostGlobals,
 ) -> CheckedDocument {
     let total_start = Instant::now();
     let (parse, parse_duration) = timed(|| aven_parser::parse_source(&file));
     let document = DocumentSnapshot::from_parse(revision, file, parse);
-    let semantic = analyze_semantics_with_globals(document.parse_output(), globals);
+    let semantic = analyze_semantics_with_host_globals(document.parse_output(), globals);
     let document = document.with_semantic(semantic.diagnostics, semantic.inferred_types);
 
     CheckedDocument {

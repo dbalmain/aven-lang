@@ -14,6 +14,7 @@ use crate::env::{
     LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values,
     free_row_vars_in_local_values,
 };
+use crate::host_comptime::{ComptimeArg, ComptimeError, HostComptimeFnSpec, HostGlobals};
 use crate::lower::{
     DeclaredAnnotation, DeclaredAnnotationSource, TypeLowering, binding_for_declaration,
     declared_annotation_for_declaration,
@@ -44,6 +45,7 @@ pub(crate) struct Checker<'a> {
     /// are checked through the same `value_types` paths as user declarations,
     /// which shadow them.
     globals: Vec<(String, Type)>,
+    host_comptime_fns: HashMap<String, HostComptimeFnSpec>,
     report_unbound_names: bool,
     reported_unbound_name_spans: HashSet<Span>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -76,6 +78,7 @@ impl<'a> Checker<'a> {
             in_progress: HashSet::new(),
             unifier: Unifier::default(),
             globals: Vec::new(),
+            host_comptime_fns: HashMap::new(),
             report_unbound_names: true,
             reported_unbound_name_spans: HashSet::new(),
             diagnostics: Vec::new(),
@@ -99,17 +102,27 @@ impl<'a> Checker<'a> {
         type_definitions: HashMap<String, Type>,
         module: &'a Module,
     ) -> Self {
-        Self::with_module_and_globals(known_types, type_definitions, module, &[])
+        Self::with_module_and_host_globals(
+            known_types,
+            type_definitions,
+            module,
+            &HostGlobals::default(),
+        )
     }
 
-    pub(crate) fn with_module_and_globals(
+    pub(crate) fn with_module_and_host_globals(
         known_types: HashSet<String>,
         type_definitions: HashMap<String, Type>,
         module: &'a Module,
-        globals: &[(String, Type)],
+        globals: &HostGlobals,
     ) -> Self {
         let mut checker = Self::with_module_environment(known_types, type_definitions, module);
-        checker.globals = globals.to_vec();
+        checker.globals = globals.types.clone();
+        checker.host_comptime_fns = globals
+            .comptime_fns
+            .iter()
+            .map(|(name, spec)| (name.clone(), spec.clone()))
+            .collect();
         checker.build_value_types(module);
         checker.build_comptime_artifacts(module);
         checker
@@ -4292,6 +4305,10 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        if let Some(result) = self.infer_host_comptime_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_comptime_param_call(env, callee, args) {
             return result;
         }
@@ -4336,14 +4353,119 @@ impl<'a> Checker<'a> {
         args: &[Expr],
         arg_types: &[Type],
         params: &[Type],
-    ) {
+    ) -> bool {
+        let mut all_match = true;
         for ((arg, actual), expected) in args.iter().zip(arg_types).zip(params) {
             if self.unifier.unify(actual, expected).is_err() {
+                all_match = false;
                 let expected = self.normalize(&self.resolve_and_default(expected));
                 let actual = self.normalize(&self.resolve_and_default(actual));
                 self.check_type_against_type(&expected, &actual, arg.span);
             }
         }
+        all_match
+    }
+
+    fn infer_host_comptime_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let name = expr_name(callee)?;
+        let spec = self.host_comptime_fn(env, name)?;
+        let callee_type = self.infer(env, callee);
+        let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+        let resolved = self.unifier.resolve(&callee_type);
+
+        let Type::Function {
+            params, required, ..
+        } = resolved
+        else {
+            return Some(Type::Deferred);
+        };
+        if required > arg_types.len() || arg_types.len() > params.len() {
+            return Some(Type::Deferred);
+        }
+
+        let args_match = self.check_call_arg_types_against_params(args, &arg_types, &params);
+        if !self.host_comptime_args_match_params(&spec, args, &arg_types, &params) {
+            return Some(Type::Deferred);
+        }
+
+        let bindings = self.current_comptime_value_bindings();
+        let mut comptime_args = Vec::new();
+        let mut error_span = callee.span;
+        for index in &spec.comptime_params {
+            let Some(arg) = args.get(*index) else {
+                return Some(Type::Deferred);
+            };
+            let Some(argument) = self.evaluate_comptime_param_argument(arg, &bindings) else {
+                return Some(Type::Deferred);
+            };
+            error_span = arg.span;
+            comptime_args.push(ComptimeArg::from_comptime_value(argument.value));
+        }
+
+        if !args_match {
+            return Some(Type::Deferred);
+        }
+
+        match spec.resolver.resolve(&comptime_args) {
+            Ok(ty) => Some(ty),
+            Err(error) => {
+                self.report_host_comptime_error(error, error_span);
+                Some(Type::Deferred)
+            }
+        }
+    }
+
+    fn host_comptime_fn(&self, env: &TypeEnv, name: &str) -> Option<HostComptimeFnSpec> {
+        if env.get(name).is_some() || self.bindings.contains_key(name) {
+            return None;
+        }
+
+        self.host_comptime_fns.get(name).cloned()
+    }
+
+    fn host_comptime_args_match_params(
+        &mut self,
+        spec: &HostComptimeFnSpec,
+        args: &[Expr],
+        arg_types: &[Type],
+        params: &[Type],
+    ) -> bool {
+        spec.comptime_params.iter().all(|index| {
+            if args.get(*index).is_none() {
+                return false;
+            }
+            let Some(actual) = arg_types.get(*index) else {
+                return false;
+            };
+            let Some(expected) = params.get(*index) else {
+                return false;
+            };
+
+            let snapshot = self.unifier.snapshot();
+            let matches = self.unifier.unify(actual, expected).is_ok();
+            self.unifier.restore(snapshot);
+            matches
+        })
+    }
+
+    fn report_host_comptime_error(&mut self, error: ComptimeError, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(error.message)
+                .with_code(
+                    error
+                        .code
+                        .unwrap_or_else(|| codes::comptime::HOST_FUNCTION.to_owned()),
+                )
+                .with_label(Label::primary(
+                    span,
+                    "this compile-time host function call could not be resolved",
+                )),
+        );
     }
 
     fn infer_record_selection_builtin_call(

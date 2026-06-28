@@ -11,6 +11,7 @@ pub mod comptime {
     pub const EVALUATION_CYCLE: &str = "comptime.evaluation-cycle";
     pub const EVALUATION_LIMIT: &str = "comptime.evaluation-limit";
     pub const EVALUATION_UNSUPPORTED: &str = "comptime.evaluation-unsupported";
+    pub const HOST_FUNCTION: &str = "comptime.host-function";
     pub const NON_LIFTABLE_INTO_RUNTIME: &str = "comptime.non-liftable-into-runtime";
     pub const REFLECTION_TYPE_MISMATCH: &str = "comptime.reflection-type-mismatch";
 }
@@ -110,6 +111,7 @@ pub const ALL: &[&str] = &[
     comptime::EVALUATION_CYCLE,
     comptime::EVALUATION_LIMIT,
     comptime::EVALUATION_UNSUPPORTED,
+    comptime::HOST_FUNCTION,
     comptime::NON_LIFTABLE_INTO_RUNTIME,
     comptime::REFLECTION_TYPE_MISMATCH,
     layout::INCONSISTENT_INDENTATION,

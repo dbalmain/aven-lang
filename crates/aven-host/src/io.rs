@@ -4,7 +4,7 @@
 //! methods return `Result` instead of aborting — so any host wires platform IO
 //! with one call ([`Host::register_std_streams`] / [`Host::register_files`])
 //! instead of rebuilding the natives inline. The matching types live in the
-//! crate root ([`crate::stdout_handle_type`], [`crate::open_type`], …) so the
+//! crate root ([`crate::stdout_handle_type`], [`crate::open_base_type`], …) so the
 //! value and type halves can't drift.
 //!
 //! Files use drop-RAII auto-close: a handle is a closed record of method
@@ -18,6 +18,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::rc::Rc;
 
+use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, Type};
 use aven_eval::Value;
 
 use crate::Host;
@@ -41,30 +42,15 @@ impl Host {
         self.register("stdio", stdio_handle_value(), crate::stdio_handle_type());
     }
 
-    /// Register file IO: the single `open(path, mode)` plus the four phantom
-    /// mode constants. Each mode carries the handle shape its file exposes, so
-    /// `open` resolves the returned handle type from the mode by unification.
+    /// Register file IO: the single `open(path, mode)` where mode is a Text
+    /// literal (`"r"`, `"w"`, `"a"`, or `"rw"`) at check time.
     pub fn register_files(&mut self) {
-        self.register("open", open_native(), crate::open_type());
-        self.register(
-            "Read",
-            mode_value("Read"),
-            crate::mode_type(crate::stdin_handle_type()),
-        );
-        self.register(
-            "Write",
-            mode_value("Write"),
-            crate::mode_type(crate::stdout_handle_type()),
-        );
-        self.register(
-            "Append",
-            mode_value("Append"),
-            crate::mode_type(crate::stdout_handle_type()),
-        );
-        self.register(
-            "ReadWrite",
-            mode_value("ReadWrite"),
-            crate::mode_type(crate::stdio_handle_type()),
+        self.register_comptime_fn(
+            "open",
+            open_native(),
+            crate::open_base_type(),
+            vec![1],
+            open_comptime_resolver(),
         );
     }
 }
@@ -339,12 +325,34 @@ enum HandleKind {
     ReadWrite,
 }
 
-/// Build the runtime tag value for a mode constant (`@Read`, `@Write`, …).
-fn mode_value(name: &str) -> Value {
-    Value::Tag {
-        name: name.to_owned(),
-        payload: Vec::new(),
+struct OpenComptimeResolver;
+
+impl HostComptimeFn for OpenComptimeResolver {
+    fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
+        let [mode] = args else {
+            return Err(ComptimeError::new(
+                "open resolver expects one compile-time mode argument",
+            ));
+        };
+        let Some(mode) = mode.as_text() else {
+            return Err(ComptimeError::new(
+                "open mode must be a compile-time Text literal",
+            ));
+        };
+
+        let handle = match mode {
+            "r" => crate::stdin_handle_type(),
+            "w" | "a" => crate::stdout_handle_type(),
+            "rw" => crate::stdio_handle_type(),
+            other => return Err(ComptimeError::new(format!("unknown open mode `{other}`"))),
+        };
+
+        Ok(crate::build::result(handle, crate::io_error_type()))
     }
+}
+
+pub(crate) fn open_comptime_resolver() -> Rc<dyn HostComptimeFn> {
+    Rc::new(OpenComptimeResolver)
 }
 
 fn open_native() -> Value {
@@ -359,9 +367,9 @@ fn open_native() -> Value {
                 aven_value_type_name(&args[0])
             ));
         };
-        let Value::Tag { name: mode, .. } = &args[1] else {
+        let Value::Text(mode) = &args[1] else {
             return Err(format!(
-                "open expects a Mode, got {}",
+                "open expects a Text mode, got {}",
                 aven_value_type_name(&args[1])
             ));
         };
@@ -379,12 +387,12 @@ fn open_native() -> Value {
 fn open_file(path: &str, mode: &str) -> io::Result<Value> {
     let (state, kind) = match mode {
         // Read: must exist, read-only.
-        "Read" => (
+        "r" => (
             FileState::Read(BufReader::new(File::open(path)?)),
             HandleKind::Read,
         ),
         // Write: create or truncate.
-        "Write" => {
+        "w" => {
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -393,12 +401,12 @@ fn open_file(path: &str, mode: &str) -> io::Result<Value> {
             (FileState::Write(BufWriter::new(file)), HandleKind::Write)
         }
         // Append: create if absent, write at the end.
-        "Append" => {
+        "a" => {
             let file = OpenOptions::new().append(true).create(true).open(path)?;
             (FileState::Write(BufWriter::new(file)), HandleKind::Write)
         }
         // ReadWrite: open existing read+write, no create, no truncate.
-        "ReadWrite" => {
+        "rw" => {
             let file = OpenOptions::new().read(true).write(true).open(path)?;
             (FileState::ReadWrite(file), HandleKind::ReadWrite)
         }
@@ -617,14 +625,20 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        aven_check::check_module_with_globals(&parsed.module, &file_host().check_globals())
-            .diagnostics
+        aven_check::check_module_with_host_globals(
+            &parsed.module,
+            &file_host().check_host_globals(),
+        )
+        .diagnostics
     }
 
     fn check_module(source: &str) -> aven_check::CheckOutput {
         let parsed = parse_module(source);
         assert!(parsed.diagnostics.is_empty(), "program parses");
-        aven_check::check_module_with_globals(&parsed.module, &file_host().check_globals())
+        aven_check::check_module_with_host_globals(
+            &parsed.module,
+            &file_host().check_host_globals(),
+        )
     }
 
     /// The inferred type recorded for binding `name`, or `None` when the checker
@@ -639,8 +653,10 @@ mod tests {
     fn binding_type(source: &str, name: &str) -> Type {
         let parsed = parse_module(source);
         assert!(parsed.diagnostics.is_empty(), "program parses");
-        let checked =
-            aven_check::check_module_with_globals(&parsed.module, &file_host().check_globals());
+        let checked = aven_check::check_module_with_host_globals(
+            &parsed.module,
+            &file_host().check_host_globals(),
+        );
         assert!(
             checked.diagnostics.is_empty(),
             "program checks: {:?}",
@@ -664,21 +680,31 @@ mod tests {
 
     #[test]
     fn open_read_resolves_handle_shape_from_mode() {
-        let ty = binding_type("handle = open(\"x\", Read)\n", "handle");
+        let ty = binding_type("handle = open(\"x\", \"r\")\n", "handle");
         assert_eq!(
             ty,
             crate::build::result(crate::stdin_handle_type(), crate::io_error_type()),
-            "open(_, Read) returns Result[stdin handle, IoError]"
+            "open(_, \"r\") returns Result[stdin handle, IoError]"
         );
     }
 
     #[test]
     fn open_write_resolves_handle_shape_from_mode() {
-        let ty = binding_type("handle = open(\"x\", Write)\n", "handle");
+        let ty = binding_type("handle = open(\"x\", \"w\")\n", "handle");
         assert_eq!(
             ty,
             crate::build::result(crate::stdout_handle_type(), crate::io_error_type()),
-            "open(_, Write) returns Result[stdout handle, IoError]"
+            "open(_, \"w\") returns Result[stdout handle, IoError]"
+        );
+    }
+
+    #[test]
+    fn open_readwrite_resolves_all_handle_methods() {
+        let ty = binding_type("handle = open(\"x\", \"rw\")\n", "handle");
+        assert_eq!(
+            ty,
+            crate::build::result(crate::stdio_handle_type(), crate::io_error_type()),
+            "open(_, \"rw\") returns Result[stdio handle, IoError]"
         );
     }
 
@@ -687,7 +713,7 @@ mod tests {
         // `?!` unwraps the Result to the resolved read handle (no `write`), so
         // calling `write` on it is a missing-field error. The handle is bound
         // first because `?!.field` is not valid surface syntax.
-        let diagnostics = check_diagnostics("h = open(\"x\", Read)?!\n_ = h.write(\"y\")\n");
+        let diagnostics = check_diagnostics("h = open(\"x\", \"r\")?!\n_ = h.write(\"y\")\n");
         assert!(
             diagnostics
                 .iter()
@@ -698,7 +724,7 @@ mod tests {
 
     #[test]
     fn write_handle_lacks_read_method() {
-        let diagnostics = check_diagnostics("h = open(\"x\", Write)?!\n_ = h.readLine()\n");
+        let diagnostics = check_diagnostics("h = open(\"x\", \"w\")?!\n_ = h.readLine()\n");
         assert!(
             diagnostics
                 .iter()
@@ -708,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn open_with_a_non_mode_argument_reports_argument_mismatch() {
+    fn open_with_a_non_text_mode_argument_reports_argument_mismatch() {
         let source = "handle = open(\"x\", 5)\n";
         let bad = check_module(source);
         assert_eq!(
@@ -726,18 +752,46 @@ mod tests {
             Span::new(bad_arg_start, bad_arg_start + 1)
         );
         assert!(
-            handle_binding_type(&bad, "handle").is_some(),
-            "a bad argument still leaves the call with its declared Result type"
+            handle_binding_type(&bad, "handle").is_none(),
+            "a bad comptime mode argument leaves the call deferred"
         );
 
-        let good = check_module("handle = open(\"x\", Read)\n");
+        let good = check_module("handle = open(\"x\", \"r\")\n");
         assert_eq!(
             handle_binding_type(&good, "handle"),
             Some(crate::build::result(
                 crate::stdin_handle_type(),
                 crate::io_error_type()
             )),
-            "the valid Read call resolves to a handle Result"
+            "the valid \"r\" call resolves to a handle Result"
+        );
+    }
+
+    #[test]
+    fn open_unknown_mode_reports_host_comptime_error() {
+        let diagnostics = check_diagnostics("handle = open(\"x\", \"z\")\n");
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::comptime::HOST_FUNCTION)
+                    && diagnostic.message.contains("unknown open mode `z`")
+            }),
+            "unknown mode is rejected by the host resolver: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn open_with_runtime_mode_defers_without_diagnostic() {
+        let source = "m : Text = \"r\"\nhandle = open(\"x\", m)\n";
+        let checked = check_module(source);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "runtime mode should defer without an error: {:?}",
+            checked.diagnostics
+        );
+        let offset = source.find("handle").expect("source contains handle");
+        assert_eq!(
+            checked.type_at(Span::new(offset, offset + "handle".len())),
+            None
         );
     }
 
@@ -750,7 +804,7 @@ mod tests {
         // when the call returns. No explicit flush anywhere — the buffered line
         // must land via `Drop for FileState`.
         let source = format!(
-            "writeIt = () =>\n  h = open(\"{path}\", Write)?!\n  _ = h.writeLine(\"hello\")\n  {{}}\n_ = writeIt()\nr = open(\"{path}\", Read)?!\nr.readAll()?!\n",
+            "writeIt = () =>\n  h = open(\"{path}\", \"w\")?!\n  _ = h.writeLine(\"hello\")\n  {{}}\n_ = writeIt()\nr = open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
             path = path.as_str(),
         );
 
@@ -766,7 +820,7 @@ mod tests {
     fn write_then_read_round_trips() {
         let path = TempPath::new("roundtrip");
         let source = format!(
-            "w = open(\"{path}\", Write)?!\n_ = w.writeLine(\"line one\")?!\n_ = w.write(\"partial\")?!\n_ = w.flush()?!\nr = open(\"{path}\", Read)?!\nr.readAll()?!\n",
+            "w = open(\"{path}\", \"w\")?!\n_ = w.writeLine(\"line one\")?!\n_ = w.write(\"partial\")?!\n_ = w.flush()?!\nr = open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
             path = path.as_str(),
         );
         let value = run(&source);
@@ -778,7 +832,7 @@ mod tests {
         let path = TempPath::new("append");
         std::fs::write(path.as_str(), "first\n").expect("seed file");
         let source = format!(
-            "a = open(\"{path}\", Append)?!\n_ = a.writeLine(\"second\")?!\n_ = a.flush()?!\nr = open(\"{path}\", Read)?!\nr.readAll()?!\n",
+            "a = open(\"{path}\", \"a\")?!\n_ = a.writeLine(\"second\")?!\n_ = a.flush()?!\nr = open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
             path = path.as_str(),
         );
         let value = run(&source);
@@ -791,7 +845,7 @@ mod tests {
         std::fs::write(path.as_str(), "head\n").expect("seed file");
         // Open read+write: read the first line, then append more at the cursor.
         let source = format!(
-            "rw = open(\"{path}\", ReadWrite)?!\nfirst = rw.readLine()?!\n_ = rw.write(\"tail\")?!\nreread = open(\"{path}\", Read)?!\n{{ first: first, all: reread.readAll()?! }}\n",
+            "rw = open(\"{path}\", \"rw\")?!\nfirst = rw.readLine()?!\n_ = rw.write(\"tail\")?!\nreread = open(\"{path}\", \"r\")?!\n{{ first: first, all: reread.readAll()?! }}\n",
             path = path.as_str(),
         );
         let value = run(&source);
@@ -811,7 +865,7 @@ mod tests {
     #[test]
     fn open_missing_file_is_not_found() {
         let path = TempPath::new("missing");
-        let source = format!("open(\"{path}\", Read)\n", path = path.as_str());
+        let source = format!("open(\"{path}\", \"r\")\n", path = path.as_str());
         let value = run(&source);
         let Value::Tag { name, payload } = &value else {
             panic!("expected a Result tag, got {value:?}");
@@ -824,11 +878,26 @@ mod tests {
     }
 
     #[test]
+    fn open_unknown_runtime_mode_returns_error_result() {
+        let path = TempPath::new("unknown-mode");
+        let source = format!("open(\"{path}\", \"z\")\n", path = path.as_str());
+        let value = run(&source);
+        let Value::Tag { name, payload } = &value else {
+            panic!("expected a Result tag, got {value:?}");
+        };
+        assert_eq!(name, "Err", "unknown runtime mode errs");
+        let Value::Tag { name: kind, .. } = &payload[0] else {
+            panic!("expected an IoError tag, got {:?}", payload[0]);
+        };
+        assert_eq!(kind, "Other");
+    }
+
+    #[test]
     fn file_write_handle_unifies_with_open_write_row() {
         use crate::build;
 
         // The same row-poly path that accepts `stdout`: a function on an open
-        // `{ write | r }` accepts an `open(_, Write)?!` handle via width
+        // `{ write | r }` accepts an `open(_, "w")?!` handle via width
         // subtyping. The `needsWrite` global is built by hand (like the P2a
         // stream test) so the param row is exact, not a deferred user
         // annotation.
@@ -836,23 +905,25 @@ mod tests {
             vec![build::text()],
             build::result(build::empty_record(), crate::write_error_type()),
         );
-        let mut globals = file_host().check_globals();
-        globals.push((
+        let mut globals = file_host().check_host_globals();
+        globals.types.push((
             "needsWrite".to_owned(),
             build::function(
                 vec![build::open_record(vec![("write", write_method)])],
                 build::empty_record(),
             ),
         ));
-        globals.push(("stdout".to_owned(), crate::stdout_handle_type()));
+        globals
+            .types
+            .push(("stdout".to_owned(), crate::stdout_handle_type()));
 
         for source in [
-            "_ = needsWrite(open(\"x\", Write)?!)\n",
+            "_ = needsWrite(open(\"x\", \"w\")?!)\n",
             "_ = needsWrite(stdout)\n",
         ] {
             let parsed = parse_module(source);
             assert!(parsed.diagnostics.is_empty(), "{source} parses");
-            let checked = aven_check::check_module_with_globals(&parsed.module, &globals);
+            let checked = aven_check::check_module_with_host_globals(&parsed.module, &globals);
             assert!(
                 checked.diagnostics.is_empty(),
                 "{source} checks: {:?}",

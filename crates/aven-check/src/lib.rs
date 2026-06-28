@@ -1,6 +1,7 @@
 mod checker;
 mod comptime;
 mod env;
+mod host_comptime;
 mod lower;
 mod ty;
 mod unify;
@@ -8,6 +9,9 @@ mod unify;
 use aven_core::{Diagnostic, Span};
 use aven_parser::{Expr, Module};
 
+pub use host_comptime::{
+    ComptimeArg, ComptimeError, HostComptimeFn, HostComptimeFnSpec, HostGlobals,
+};
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
 pub use ty::{
@@ -79,11 +83,19 @@ pub fn check_module(module: &Module) -> CheckOutput {
 /// module unless a user top-level declaration shadows it. Free references to a
 /// seeded name are checked by the existing call/field/arity machinery.
 pub fn check_module_with_globals(module: &Module, globals: &[(String, Type)]) -> CheckOutput {
+    check_module_with_host_globals(module, &HostGlobals::types_only(globals))
+}
+
+/// Check `module` with host/library globals and host comptime resolvers. The
+/// ordinary type globals bind names and validate arguments; resolver entries can
+/// override a registered call's result type when the listed arguments are known
+/// at compile time.
+pub fn check_module_with_host_globals(module: &Module, globals: &HostGlobals) -> CheckOutput {
     let known_types = known_type_names(module);
     let type_definitions = type_definitions(module, &known_types);
     let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
     let mut checker =
-        Checker::with_module_and_globals(known_types, type_definitions, module, globals);
+        Checker::with_module_and_host_globals(known_types, type_definitions, module, globals);
 
     checker.diagnostics.extend(alias_diagnostics);
     checker.check_module(module);

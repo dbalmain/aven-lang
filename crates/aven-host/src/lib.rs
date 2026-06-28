@@ -13,7 +13,7 @@ mod marshal;
 
 use std::rc::Rc;
 
-use aven_check::Type;
+use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostGlobals, Type};
 
 pub use marshal::{AvenMarshal, IntoHostFn};
 
@@ -37,11 +37,22 @@ struct RuntimeOnlyEntry {
     value: Value,
 }
 
+/// A name registered with a runtime value, a base checker type, and a
+/// host-side comptime resolver that can refine call result types.
+struct ComptimeEntry {
+    name: String,
+    value: Value,
+    ty: Type,
+    resolver: Rc<dyn HostComptimeFn>,
+    comptime_params: Vec<usize>,
+}
+
 /// Registry of host/library globals seeded into the evaluator and the checker.
 #[derive(Default)]
 pub struct Host {
     typed: Vec<TypedEntry>,
     runtime_only: Vec<RuntimeOnlyEntry>,
+    comptime: Vec<ComptimeEntry>,
 }
 
 impl Host {
@@ -66,6 +77,26 @@ impl Host {
         self.runtime_only.push(RuntimeOnlyEntry {
             name: name.into(),
             value,
+        });
+    }
+
+    /// Register a host function whose ordinary base type binds the name and
+    /// checks arguments, while a Rust resolver computes the call result type
+    /// from the listed compile-time argument indexes.
+    pub fn register_comptime_fn(
+        &mut self,
+        name: impl Into<String>,
+        value: Value,
+        ty: Type,
+        comptime_params: Vec<usize>,
+        resolver: Rc<dyn HostComptimeFn>,
+    ) {
+        self.comptime.push(ComptimeEntry {
+            name: name.into(),
+            value,
+            ty,
+            resolver,
+            comptime_params,
         });
     }
 
@@ -94,6 +125,11 @@ impl Host {
             .iter()
             .map(|entry| (entry.name.clone(), entry.value.clone()))
             .chain(
+                self.comptime
+                    .iter()
+                    .map(|entry| (entry.name.clone(), entry.value.clone())),
+            )
+            .chain(
                 self.runtime_only
                     .iter()
                     .map(|entry| (entry.name.clone(), entry.value.clone())),
@@ -106,7 +142,31 @@ impl Host {
         self.typed
             .iter()
             .map(|entry| (entry.name.clone(), entry.ty.clone()))
+            .chain(
+                self.comptime
+                    .iter()
+                    .map(|entry| (entry.name.clone(), entry.ty.clone())),
+            )
             .collect()
+    }
+
+    /// Globals for the checker, including host comptime resolvers.
+    pub fn check_host_globals(&self) -> HostGlobals {
+        HostGlobals::new(
+            self.check_globals(),
+            self.comptime
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.name.clone(),
+                        HostComptimeFnSpec::new(
+                            Rc::clone(&entry.resolver),
+                            entry.comptime_params.clone(),
+                        ),
+                    )
+                })
+                .collect(),
+        )
     }
 }
 
@@ -197,24 +257,11 @@ pub fn io_error_type() -> Type {
     ])
 }
 
-/// The phantom `Mode[shape]` type: a mode constant carries the handle record
-/// `shape` its file will expose, so `open(path, mode)` can resolve the handle
-/// type from the mode by ordinary unification (no comptime). `Mode` is an
-/// opaque constructor — it appears only in host types, never user annotations.
-pub fn mode_type(shape: Type) -> Type {
-    build::apply("Mode", vec![shape])
-}
-
-/// The `open` type: `(Text, Mode[h]) -> Result[h, IoError]`. The free `h`
-/// (a [`build::var`]) is generalized by the checker and instantiated fresh per
-/// call, so `open(path, Read)` unifies `Mode[h]` against `Mode[stdin_handle]`,
-/// binds `h` to the read handle shape, and returns `Result[stdin_handle,
-/// IoError]`. Misusing the resulting handle is a `type.missing-field` error.
-pub fn open_type() -> Type {
-    build::function(
-        vec![build::text(), mode_type(build::var("h"))],
-        build::result(build::var("h"), io_error_type()),
-    )
+/// The base `open` type: `(Text, Text) -> ?`. The checker uses it for name
+/// binding, arity, and argument validation; the host comptime resolver refines
+/// the result from the second argument's mode string.
+pub fn open_base_type() -> Type {
+    build::function(vec![build::text(), build::text()], Type::Deferred)
 }
 
 /// `(Text) -> Result[{}, WriteError]` — a handle `write`/`writeLine` method.
@@ -285,7 +332,12 @@ pub fn stdio_handle_type() -> Type {
 
 /// Type globals for the standard host prelude used by `aven check` and the LSP.
 pub fn standard_check_globals() -> Vec<(String, Type)> {
-    vec![
+    standard_check_host_globals().types
+}
+
+/// Type globals plus host comptime resolvers for the standard host prelude.
+pub fn standard_check_host_globals() -> HostGlobals {
+    let types = vec![
         ("logger".to_owned(), logger_type()),
         ("dbg".to_owned(), dbg_type()),
         ("write".to_owned(), io_write_type()),
@@ -296,12 +348,16 @@ pub fn standard_check_globals() -> Vec<(String, Type)> {
         ("stderr".to_owned(), stderr_handle_type()),
         ("stdin".to_owned(), stdin_handle_type()),
         ("stdio".to_owned(), stdio_handle_type()),
-        ("open".to_owned(), open_type()),
-        ("Read".to_owned(), mode_type(stdin_handle_type())),
-        ("Write".to_owned(), mode_type(stdout_handle_type())),
-        ("Append".to_owned(), mode_type(stdout_handle_type())),
-        ("ReadWrite".to_owned(), mode_type(stdio_handle_type())),
-    ]
+        ("open".to_owned(), open_base_type()),
+    ];
+
+    HostGlobals::new(
+        types,
+        vec![(
+            "open".to_owned(),
+            HostComptimeFnSpec::new(io::open_comptime_resolver(), vec![1]),
+        )],
+    )
 }
 
 #[cfg(test)]
@@ -475,11 +531,7 @@ mod tests {
                 "stderr",
                 "stdin",
                 "stdio",
-                "open",
-                "Read",
-                "Write",
-                "Append",
-                "ReadWrite"
+                "open"
             ]
         );
 
@@ -535,6 +587,12 @@ mod tests {
         assert_eq!(function_required_arity(read_all), Some(0));
         assert!(read_all_params.is_empty());
         assert_eq!(read_all_result, build::text());
+
+        let open = global_type(&globals, "open");
+        let (open_params, open_result) = function_signature(open).expect("open is a function");
+        assert_eq!(function_required_arity(open), Some(2));
+        assert_eq!(open_params, vec![build::text(), build::text()]);
+        assert_eq!(open_result, Type::Deferred);
     }
 
     #[test]

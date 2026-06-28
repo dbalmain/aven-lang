@@ -153,8 +153,10 @@ fn explain(code: &str) -> Result<()> {
 
 fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
     let file = load_source_file(path)?;
-    let checked =
-        aven_compiler::check_source_file_with_globals(file, &aven_host::standard_check_globals());
+    let checked = aven_compiler::check_source_file_with_host_globals(
+        file,
+        &aven_host::standard_check_host_globals(),
+    );
     let timings = checked.timings;
     let file = checked.document.file();
 
@@ -875,6 +877,10 @@ mod tests {
         let host = build_host(&RunConfig::default())?;
 
         assert_eq!(host.check_globals(), aven_host::standard_check_globals());
+        assert_eq!(
+            host.check_host_globals().types,
+            aven_host::standard_check_host_globals().types
+        );
         Ok(())
     }
 }

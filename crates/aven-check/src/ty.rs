@@ -676,7 +676,7 @@ pub mod build {
     }
 
     /// An applied type `Callee[args...]` where `callee` is a named type
-    /// constructor (e.g. `Mode[shape]`, `Result[ok, err]`). The constructor is
+    /// constructor (e.g. `Boxed[value]`, `Result[ok, err]`). The constructor is
     /// opaque to unification: `Apply` unifies structurally by callee + args.
     pub fn apply(name: &str, args: Vec<Type>) -> Type {
         Type::Apply {

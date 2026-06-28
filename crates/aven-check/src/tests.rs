@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use crate::checker::comptime_rhs_needs_evaluation;
 use crate::*;
@@ -3884,11 +3885,11 @@ fn poly_mode_globals() -> Vec<(String, Type)> {
         (
             "f".to_owned(),
             build::function(
-                vec![build::text(), build::apply("Mode", vec![build::var("h")])],
+                vec![build::text(), build::apply("Boxed", vec![build::var("h")])],
                 build::result(build::var("h"), io_error),
             ),
         ),
-        ("M".to_owned(), build::apply("Mode", vec![handle])),
+        ("M".to_owned(), build::apply("Boxed", vec![handle])),
     ]
 }
 
@@ -3897,6 +3898,44 @@ fn monomorphic_g_globals() -> Vec<(String, Type)> {
         "g".to_owned(),
         build::function(vec![build::int()], build::int()),
     )]
+}
+
+struct TableTypeResolver;
+
+impl HostComptimeFn for TableTypeResolver {
+    fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
+        let [table] = args else {
+            return Err(ComptimeError::new(
+                "tableType expects one compile-time table name",
+            ));
+        };
+
+        match table.as_text() {
+            Some("users") => Ok(build::record(vec![
+                ("id", build::int()),
+                ("name", build::text()),
+            ])),
+            Some("orders") => Ok(build::record(vec![
+                ("id", build::int()),
+                ("total", build::int()),
+            ])),
+            Some(other) => Err(ComptimeError::new(format!("unknown table `{other}`"))),
+            None => Err(ComptimeError::new("tableType expects a Text table name")),
+        }
+    }
+}
+
+fn table_type_globals() -> HostGlobals {
+    HostGlobals::new(
+        vec![(
+            "tableType".to_owned(),
+            build::function(vec![build::text()], Type::Deferred),
+        )],
+        vec![(
+            "tableType".to_owned(),
+            HostComptimeFnSpec::new(Rc::new(TableTypeResolver), vec![0]),
+        )],
+    )
 }
 
 #[test]
@@ -4008,6 +4047,36 @@ fn generic_seeded_global_instantiates_fresh_per_use() {
         "expected no diagnostics, got {:?}",
         check.diagnostics
     );
+}
+
+#[test]
+fn host_comptime_fn_resolves_result_type_from_literal_argument() {
+    let source = "users = tableType(\"users\")\norders = tableType(\"orders\")\n";
+    let output = parse_module(source);
+    let check = check_module_with_host_globals(&output.module, &table_type_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+
+    let users = check
+        .type_at(nth_span(source, "users", 0))
+        .expect("users binding has a type");
+    let orders = check
+        .type_at(nth_span(source, "orders", 0))
+        .expect("orders binding has a type");
+
+    assert_eq!(
+        users,
+        &build::record(vec![("id", build::int()), ("name", build::text())])
+    );
+    assert_eq!(
+        orders,
+        &build::record(vec![("id", build::int()), ("total", build::int())])
+    );
+    assert_ne!(users, orders);
 }
 
 #[test]

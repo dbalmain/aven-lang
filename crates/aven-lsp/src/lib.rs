@@ -413,8 +413,8 @@ async fn publish_semantic_diagnostics(
 }
 
 fn analyze_document_semantics(document: &ParsedDocument) -> aven_compiler::SemanticOutput {
-    let globals = aven_host::standard_check_globals();
-    aven_compiler::analyze_semantics_with_globals(document.parse_output(), &globals)
+    let globals = aven_host::standard_check_host_globals();
+    aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals)
 }
 
 fn document_diagnostics(document: &ParsedDocument) -> Vec<Diagnostic> {
@@ -650,7 +650,7 @@ fn identifier_completion_at_position(
     // environment but have no in-document declaration, so offer them too. Pushed
     // last, after locals and top-level declarations have claimed their names, so
     // a user binding of the same name shadows the global.
-    for (name, ty) in aven_host::standard_check_globals() {
+    for (name, ty) in aven_host::standard_check_host_globals().types {
         push_completion_item(
             &mut items,
             &mut seen,

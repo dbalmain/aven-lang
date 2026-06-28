@@ -27,6 +27,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A compile-time binding has a right-hand side that must be evaluated, but the compile-time evaluator is not implemented yet. Use a literal type or value, or move runtime computations to lowercase bindings.",
     },
     DiagnosticExplanation {
+        code: codes::comptime::HOST_FUNCTION,
+        text: "A host-provided compile-time function could not resolve a result type for the supplied compile-time arguments. Check the argument value or the host function's accepted domain.",
+    },
+    DiagnosticExplanation {
         code: codes::comptime::NON_LIFTABLE_INTO_RUNTIME,
         text: "A lowercase runtime binding tried to store a compile-time-only artifact such as a type. Keep type artifacts under capitalized names, or compute a runtime-representable value instead.",
     },
