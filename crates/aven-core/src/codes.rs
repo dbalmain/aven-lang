@@ -90,6 +90,7 @@ pub mod ty {
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
     pub const DUPLICATE_SPREAD_LABEL: &str = "type.duplicate-spread-label";
+    pub const INCOMPATIBLE_MATCH_ARMS: &str = "type.incompatible-match-arms";
     pub const LITERAL_NOT_IN_UNION: &str = "type.literal-not-in-union";
     pub const LOWERCASE_VARIANT_TAG: &str = "type.lowercase-variant-tag";
     pub const MISMATCH: &str = "type.mismatch";
@@ -169,6 +170,7 @@ pub const ALL: &[&str] = &[
     ty::CYCLIC_ALIAS,
     ty::DELETE_ABSENT_FIELD,
     ty::DUPLICATE_SPREAD_LABEL,
+    ty::INCOMPATIBLE_MATCH_ARMS,
     ty::LITERAL_NOT_IN_UNION,
     ty::LOWERCASE_VARIANT_TAG,
     ty::MISMATCH,

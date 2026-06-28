@@ -2219,7 +2219,7 @@ fn comptime_known_match_subject_selects_catch_all_arm() {
 }
 
 #[test]
-fn runtime_match_subject_still_defers_heterogeneous_arm_results() {
+fn runtime_match_subject_reports_incompatible_arm_results() {
     let source = concat!(
         "source : @{\"text\", \"int\"} = runtime\n",
         "result = source ?>\n",
@@ -2234,13 +2234,147 @@ fn runtime_match_subject_still_defers_heterogeneous_arm_results() {
         output.diagnostics
     );
     let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::INCOMPATIBLE_MATCH_ARMS),
+        1,
+        "expected incompatible match-arm diagnostic: {:?}",
+        check.diagnostics
+    );
+    assert!(check.type_at(nth_span(source, "result", 0)).is_none());
+}
+
+#[test]
+fn runtime_match_subject_reports_plain_base_type_arm_conflicts() {
+    let source = concat!(
+        "text : Text = \"hello\"\n",
+        "number : Int = 42\n",
+        "source : @{\"text\", \"int\"} = runtime\n",
+        "result = source ?>\n",
+        "  \"text\" => text\n",
+        "  \"int\" => number\n",
+        "runtime = _\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::INCOMPATIBLE_MATCH_ARMS),
+        1,
+        "plain base-type arm conflict diagnostics: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn runtime_match_subject_accepts_homogeneous_arm_results() {
+    for (source, expected) in [
+        (
+            concat!(
+                "source : Int = runtime\n",
+                "result = source ?>\n",
+                "  0 => \"a\"\n",
+                "  _ => \"b\"\n",
+                "runtime = _\n",
+            ),
+            "@{ \"a\", \"b\" }",
+        ),
+        (
+            concat!(
+                "source : Int = runtime\n",
+                "result = source ?>\n",
+                "  0 => @A\n",
+                "  _ => @B\n",
+                "runtime = _\n",
+            ),
+            "@{ @A, @B }",
+        ),
+        (
+            concat!(
+                "left : Text = \"a\"\n",
+                "right : Text = \"b\"\n",
+                "source : Int = runtime\n",
+                "result = source ?>\n",
+                "  0 => left\n",
+                "  _ => right\n",
+                "runtime = _\n",
+            ),
+            "Text",
+        ),
+    ] {
+        let output = parse_module(source);
+        assert!(
+            output.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            output.diagnostics
+        );
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} unexpectedly produced diagnostics: {:?}",
+            check.diagnostics
+        );
+        assert_eq!(
+            check
+                .type_at(nth_span(source, "result", 0))
+                .map(Type::render),
+            Some(expected.to_owned())
+        );
+    }
+}
+
+#[test]
+fn comptime_selected_match_subject_allows_heterogeneous_arm_results() {
+    let source = concat!(
+        "result = \"text\" ?>\n",
+        "  \"text\" => \"hello\"\n",
+        "  _ => 42\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
     assert!(
         check.diagnostics.is_empty(),
         "unexpected check diagnostics: {:?}",
         check.diagnostics
     );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "result", 0))
+            .map(Type::render),
+        Some("@{ \"hello\" }".to_owned())
+    );
+}
 
-    assert!(check.type_at(nth_span(source, "result", 0)).is_none());
+#[test]
+fn unspecialized_comptime_param_match_allows_type_valued_arm_results() {
+    let source = concat!(
+        "typeFor = (@kind: @{\"text\", \"int\"}) =>\n",
+        "  kind ?>\n",
+        "    \"text\" => Text\n",
+        "    \"int\" => Int\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected check diagnostics: {:?}",
+        check.diagnostics
+    );
 }
 
 #[test]
@@ -2578,15 +2712,17 @@ fn match_result_inference_handles_block_arm_bodies() {
 }
 
 #[test]
-fn match_result_inference_defers_mixed_arm_types() {
+fn match_result_inference_reports_mixed_arm_types() {
     let output = parse_module(
         "result = source ?>\n  @Ok(_) => 1\n  @Err(_) => \"no\"\nvalue : Text = result\n",
     );
     let check = check_module(&output.module);
 
-    assert!(
-        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
-        "mixed match arm types should defer instead of reporting"
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::INCOMPATIBLE_MATCH_ARMS),
+        1,
+        "mixed match arm types should report incompatible arms: {:?}",
+        check.diagnostics
     );
 }
 

@@ -37,6 +37,7 @@ pub(crate) struct Checker<'a> {
     comptime_specializations: HashMap<comptime::SpecializationKey, comptime::EvaluationResult>,
     local_types: LocalTypeScopes,
     local_comptime_values: Vec<HashMap<String, comptime::ComptimeValue>>,
+    local_comptime_params: Vec<HashSet<String>>,
     bindings: HashMap<String, Option<&'a Binding>>,
     annotations: HashMap<String, &'a Expr>,
     memo: HashMap<String, TypeScheme>,
@@ -59,6 +60,31 @@ struct DiagnosticSnapshot {
     reported_unbound_name_spans: HashSet<Span>,
 }
 
+#[derive(Debug, Clone)]
+struct MatchArmBodyType {
+    span: Span,
+    ty: Type,
+}
+
+#[derive(Debug, Clone)]
+struct MatchArmTypeConflict {
+    earlier_ty: Type,
+    diverging_ty: Type,
+    diverging_span: Span,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeMatchArmTypeConflict {
+    earlier: String,
+    diverging: String,
+    diverging_span: Span,
+}
+
+enum MatchArmCombination {
+    Joined(Type),
+    Conflict(MatchArmTypeConflict),
+}
+
 impl<'a> Checker<'a> {
     pub(crate) fn with_type_definitions(
         known_types: HashSet<String>,
@@ -73,6 +99,7 @@ impl<'a> Checker<'a> {
             comptime_specializations: HashMap::new(),
             local_types: LocalTypeScopes::default(),
             local_comptime_values: Vec::new(),
+            local_comptime_params: Vec::new(),
             bindings: HashMap::new(),
             annotations: HashMap::new(),
             memo: HashMap::new(),
@@ -278,6 +305,16 @@ impl<'a> Checker<'a> {
         self.report_unbound_names = false;
         self.check_value_expr(expr);
         self.report_unbound_names = previous;
+    }
+
+    fn push_local_comptime_param_scope(&mut self, params: &[Param]) {
+        self.local_comptime_params.push(
+            params
+                .iter()
+                .filter(|param| param.comptime)
+                .map(|param| param.name.clone())
+                .collect(),
+        );
     }
 
     fn check_items(&mut self, items: &[Item]) {
@@ -797,11 +834,13 @@ impl<'a> Checker<'a> {
         }
 
         self.local_types.push();
+        self.push_local_comptime_param_scope(params);
         for (param, ty) in params.iter().zip(param_types) {
             self.record_local_value_type(param.name_span, &ty);
             self.local_types.define(&param.name, ty);
         }
         self.check_value_expr(body);
+        self.local_comptime_params.pop();
         self.local_types.pop();
     }
 
@@ -919,6 +958,7 @@ impl<'a> Checker<'a> {
         self.check_match_exhaustiveness(subject, arms, &resolved_subject);
         let subject_type = is_concrete_type(&resolved_subject).then_some(resolved_subject);
 
+        let mut body_types = Vec::new();
         for arm in arms {
             self.local_types.push();
             for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
@@ -932,9 +972,116 @@ impl<'a> Checker<'a> {
                 self.check_value_against(expected, &arm.body);
             } else {
                 self.check_value_expr(&arm.body);
+                let env = self.local_types.inference_env();
+                let ty = self.infer_match_arm_body_type_for_check(&env, &arm.body);
+                body_types.push(MatchArmBodyType {
+                    span: arm.body.span,
+                    ty,
+                });
             }
             self.local_types.pop();
         }
+
+        if expected.is_none() {
+            self.report_incompatible_match_arm_results(subject, arms, &body_types);
+        }
+    }
+
+    fn infer_match_arm_body_type_for_check(&mut self, env: &TypeEnv, body: &Expr) -> Type {
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let inferred_types_len = self.inferred_types.len();
+        let ty = self.infer(env, body);
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
+        self.inferred_types.truncate(inferred_types_len);
+        ty
+    }
+
+    fn report_incompatible_match_arm_results(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        body_types: &[MatchArmBodyType],
+    ) {
+        if body_types.len() < 2
+            || self.comptime_selected_match_arm(subject, arms).is_some()
+            || self.expr_references_unresolved_comptime_param(subject)
+        {
+            return;
+        }
+
+        let snapshot = self.unifier.snapshot();
+        let conflict = match self.combine_match_arm_body_types(body_types) {
+            MatchArmCombination::Joined(_) => None,
+            MatchArmCombination::Conflict(conflict) => {
+                self.runtime_match_arm_type_conflict(&conflict)
+            }
+        };
+        self.unifier.restore(snapshot);
+
+        if let Some(conflict) = conflict {
+            self.report_incompatible_match_arm_type_conflict(conflict);
+        }
+    }
+
+    fn runtime_match_arm_type_conflict(
+        &self,
+        conflict: &MatchArmTypeConflict,
+    ) -> Option<RuntimeMatchArmTypeConflict> {
+        let earlier = self.resolved_match_result_type(&conflict.earlier_ty);
+        let diverging = self.resolved_match_result_type(&conflict.diverging_ty);
+        if !is_resolved_value_type(&earlier) || !is_resolved_value_type(&diverging) {
+            return None;
+        }
+
+        Some(RuntimeMatchArmTypeConflict {
+            earlier: display_inferred_type(&earlier).render(),
+            diverging: display_inferred_type(&diverging).render(),
+            diverging_span: conflict.diverging_span,
+        })
+    }
+
+    fn report_incompatible_match_arm_type_conflict(
+        &mut self,
+        conflict: RuntimeMatchArmTypeConflict,
+    ) {
+        self.diagnostics.push(
+            Diagnostic::error("match arms produce incompatible types")
+                .with_code(codes::ty::INCOMPATIBLE_MATCH_ARMS)
+                .with_label(Label::primary(
+                    conflict.diverging_span,
+                    format!("this arm produces `{}`", conflict.diverging),
+                ))
+                .with_note(format!(
+                    "earlier arms produce `{}`; make all arms produce the same type, or annotate the match result type",
+                    conflict.earlier
+                )),
+        );
+    }
+
+    fn expr_references_unresolved_comptime_param(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
+                self.unresolved_comptime_param_is_in_scope(name)
+            }
+            _ => {
+                let mut found = false;
+                walk_expr_children(expr, &mut |child| {
+                    if !found && self.expr_references_unresolved_comptime_param(child) {
+                        found = true;
+                    }
+                });
+                found
+            }
+        }
+    }
+
+    fn unresolved_comptime_param_is_in_scope(&self, name: &str) -> bool {
+        self.lookup_comptime_value(name).is_none()
+            && self
+                .local_comptime_params
+                .iter()
+                .rev()
+                .any(|scope| scope.contains(name))
     }
 
     fn check_match_exhaustiveness(
@@ -1279,12 +1426,14 @@ impl<'a> Checker<'a> {
         };
 
         self.local_types.push();
+        self.push_local_comptime_param_scope(params);
         for (param, ty) in params.iter().zip(param_types) {
             self.record_inferred_type(param.name_span, ty.clone());
             self.local_types
                 .define(&param.name, LocalValueType::Known(ty));
         }
         self.check_value_against(&body_expected, body);
+        self.local_comptime_params.pop();
         self.local_types.pop();
     }
 
@@ -1916,6 +2065,7 @@ impl<'a> Checker<'a> {
         checker.comptime_artifacts = self.comptime_artifacts.clone();
         checker.comptime_specializations = self.comptime_specializations.clone();
         checker.local_comptime_values = self.local_comptime_values.clone();
+        checker.local_comptime_params = self.local_comptime_params.clone();
         checker.bindings = self.bindings.clone();
         checker.annotations = self.annotations.clone();
         checker
@@ -5251,30 +5401,20 @@ impl<'a> Checker<'a> {
                 arm_env.insert(name, ty);
             }
 
-            body_types.push(self.infer(&arm_env, &arm.body));
+            body_types.push(MatchArmBodyType {
+                span: arm.body.span,
+                ty: self.infer(&arm_env, &arm.body),
+            });
         }
 
-        if let Some(result) = self.union_match_variant_arms(&body_types) {
-            return match result {
-                Ok(result_type) => result_type,
-                Err(()) => {
-                    self.unifier.restore(snapshot);
-                    self.restore_diagnostic_snapshot(diagnostic_snapshot.clone());
-                    Type::Deferred
-                }
-            };
-        }
-
-        let result_type = self.unifier.fresh();
-        for body_type in body_types {
-            if self.unifier.unify(&result_type, &body_type).is_err() {
+        match self.combine_match_arm_body_types(&body_types) {
+            MatchArmCombination::Joined(result_type) => result_type,
+            MatchArmCombination::Conflict(_) => {
                 self.unifier.restore(snapshot);
                 self.restore_diagnostic_snapshot(diagnostic_snapshot);
-                return Type::Deferred;
+                Type::Deferred
             }
         }
-
-        result_type
     }
 
     fn comptime_selected_match_arm<'b>(
@@ -5297,29 +5437,74 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn union_match_variant_arms(&mut self, body_types: &[Type]) -> Option<Result<Type, ()>> {
+    fn combine_match_arm_body_types(
+        &mut self,
+        body_types: &[MatchArmBodyType],
+    ) -> MatchArmCombination {
+        if let Some(result) = self.union_match_variant_arm_body_types(body_types) {
+            return result;
+        }
+
+        self.unify_match_arm_body_types(body_types)
+    }
+
+    fn union_match_variant_arm_body_types(
+        &mut self,
+        body_types: &[MatchArmBodyType],
+    ) -> Option<MatchArmCombination> {
         let mut entries = Vec::new();
         let mut open = false;
         let mut kind = None;
+        let mut literal_kind = None;
 
         for body_type in body_types {
-            let Type::Variant(row) = self.unifier.resolve(body_type) else {
+            let Type::Variant(row) = self.unifier.resolve(&body_type.ty) else {
                 return None;
             };
 
-            if row.tail != RowTail::Closed {
-                open = true;
+            let prior = Type::Variant(Row {
+                entries: entries.clone(),
+                tail: if open { RowTail::Open } else { RowTail::Closed },
+            });
+            let mut arm_kind = None;
+            for entry in &row.entries {
+                let Some(entry_kind) = row_entry_variant_kind(entry) else {
+                    return Some(MatchArmCombination::Conflict(
+                        self.match_arm_type_conflict(prior, body_type),
+                    ));
+                };
+                if arm_kind.is_some_and(|existing| existing != entry_kind) {
+                    return Some(MatchArmCombination::Conflict(
+                        self.match_arm_type_conflict(prior, body_type),
+                    ));
+                }
+                arm_kind = Some(entry_kind);
+            }
+
+            if let (Some(existing), Some(incoming)) = (kind, arm_kind)
+                && existing != incoming
+            {
+                return Some(MatchArmCombination::Conflict(
+                    self.match_arm_type_conflict(prior, body_type),
+                ));
+            }
+            kind = kind.or(arm_kind);
+
+            if arm_kind == Some(VariantEntryKind::Literal) {
+                let Some(incoming) = literal_variant_base(&row) else {
+                    return Some(MatchArmCombination::Conflict(
+                        self.match_arm_type_conflict(prior, body_type),
+                    ));
+                };
+                if literal_kind.is_some_and(|existing| existing != incoming) {
+                    return Some(MatchArmCombination::Conflict(
+                        self.match_arm_type_conflict(prior, body_type),
+                    ));
+                }
+                literal_kind = Some(incoming);
             }
 
             for entry in row.entries {
-                let Some(entry_kind) = row_entry_variant_kind(&entry) else {
-                    return Some(Err(()));
-                };
-                if kind.is_some_and(|existing| existing != entry_kind) {
-                    return Some(Err(()));
-                }
-                kind = Some(entry_kind);
-
                 match entry {
                     RowEntry::Tag { name, payload } => {
                         let Some(index) = row_entry_index(&entries, &name) else {
@@ -5331,15 +5516,21 @@ impl<'a> Checker<'a> {
                             payload: existing, ..
                         } = &entries[index]
                         else {
-                            return Some(Err(()));
+                            return Some(MatchArmCombination::Conflict(
+                                self.match_arm_type_conflict(prior, body_type),
+                            ));
                         };
                         if existing.len() != payload.len() {
-                            return Some(Err(()));
+                            return Some(MatchArmCombination::Conflict(
+                                self.match_arm_type_conflict(prior, body_type),
+                            ));
                         }
 
                         for (expected, actual) in existing.iter().zip(&payload) {
                             if self.unifier.unify(expected, actual).is_err() {
-                                return Some(Err(()));
+                                return Some(MatchArmCombination::Conflict(
+                                    self.match_arm_type_conflict(prior, body_type),
+                                ));
                             }
                         }
                     }
@@ -5350,9 +5541,15 @@ impl<'a> Checker<'a> {
                         }
                     }
                     RowEntry::Field { .. } => {
-                        return Some(Err(()));
+                        return Some(MatchArmCombination::Conflict(
+                            self.match_arm_type_conflict(prior, body_type),
+                        ));
                     }
                 }
+            }
+
+            if row.tail != RowTail::Closed {
+                open = true;
             }
         }
 
@@ -5360,15 +5557,46 @@ impl<'a> Checker<'a> {
             entries,
             tail: if open { RowTail::Open } else { RowTail::Closed },
         });
-        if kind == Some(VariantEntryKind::Literal) {
-            let Type::Variant(row) = &result else {
-                unreachable!("match arm union constructs a variant");
-            };
-            if literal_variant_base(row).is_none() {
-                return Some(Err(()));
+        Some(MatchArmCombination::Joined(self.unifier.resolve(&result)))
+    }
+
+    fn unify_match_arm_body_types(
+        &mut self,
+        body_types: &[MatchArmBodyType],
+    ) -> MatchArmCombination {
+        let result_type = self.unifier.fresh();
+        let mut earlier_type = None;
+
+        for body_type in body_types {
+            if self.unifier.unify(&result_type, &body_type.ty).is_err() {
+                let earlier_ty = earlier_type.unwrap_or_else(|| result_type.clone());
+                return MatchArmCombination::Conflict(MatchArmTypeConflict {
+                    earlier_ty: self.resolved_match_result_type(&earlier_ty),
+                    diverging_ty: self.resolved_match_result_type(&body_type.ty),
+                    diverging_span: body_type.span,
+                });
             }
+
+            earlier_type = Some(self.resolved_match_result_type(&result_type));
         }
-        Some(Ok(self.unifier.resolve(&result)))
+
+        MatchArmCombination::Joined(result_type)
+    }
+
+    fn match_arm_type_conflict(
+        &self,
+        earlier_ty: Type,
+        diverging: &MatchArmBodyType,
+    ) -> MatchArmTypeConflict {
+        MatchArmTypeConflict {
+            earlier_ty: self.resolved_match_result_type(&earlier_ty),
+            diverging_ty: self.resolved_match_result_type(&diverging.ty),
+            diverging_span: diverging.span,
+        }
+    }
+
+    fn resolved_match_result_type(&self, ty: &Type) -> Type {
+        self.normalize(&self.resolve_and_default(ty))
     }
 
     fn lower_annotation_for_inference(&self, annotation: &Expr) -> Type {
