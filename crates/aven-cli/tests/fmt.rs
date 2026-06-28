@@ -712,6 +712,74 @@ fn run_panic_operator_exits_non_zero_with_runtime_panic() {
 }
 
 #[test]
+fn run_stdout_write_handle_prints_and_returns_ok() {
+    let file = TempFile::new("run-stdout-write", "stdout.write(\"hi\")\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    // `write` adds no newline; the non-trivial `@Ok({})` value is then printed.
+    assert_eq!(stdout(&output), "hi@Ok({})\n");
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn run_stdout_write_line_handle_prints_and_returns_ok() {
+    let file = TempFile::new("run-stdout-write-line", "stdout.writeLine(\"hi\")\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "hi\n@Ok({})\n");
+}
+
+#[test]
+fn run_stderr_write_handle_goes_to_stderr() {
+    let file = TempFile::new("run-stderr-write", "stderr.write(\"oops\")\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "@Ok({})\n");
+    assert_eq!(stderr(&output), "oops");
+}
+
+#[test]
+fn run_stdin_read_line_handle_returns_ok_line() {
+    let file = TempFile::new("run-stdin-read-line", "stdin.readLine()\n");
+
+    let output = run_aven_with_stdin(["run"], file.path(), "line\nrest\n");
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "@Ok(\"line\")\n");
+}
+
+#[test]
+fn run_stdin_read_line_handle_at_eof_returns_ok_undefined() {
+    let file = TempFile::new("run-stdin-read-line-eof", "stdin.readLine()\n");
+
+    let output = run_aven_with_stdin(["run"], file.path(), "");
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "@Ok(undefined)\n");
+}
+
+#[test]
+fn run_bare_write_returns_record_while_handle_write_returns_result() {
+    // The boundary, locked at runtime: bare `write` evaluates to the trivial
+    // `{}` (not printed), while `stdout.write` evaluates to `@Ok({})`.
+    let bare = TempFile::new("run-bare-write-shape", "write(\"x\")\n");
+    let bare_output = run_aven(["run"], bare.path());
+    assert_success(&bare_output);
+    assert_eq!(stdout(&bare_output), "x");
+
+    let handle = TempFile::new("run-handle-write-shape", "stdout.write(\"x\")\n");
+    let handle_output = run_aven(["run"], handle.path());
+    assert_success(&handle_output);
+    assert_eq!(stdout(&handle_output), "x@Ok({})\n");
+}
+
+#[test]
 fn explain_prints_diagnostic_explanations() {
     let output = run_aven_without_path(["explain", "parse.unclosed-delimiter"]);
 

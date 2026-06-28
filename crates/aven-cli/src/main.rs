@@ -263,7 +263,202 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     );
     host.register("readAll", read_all_native(), aven_host::io_read_all_type());
 
+    // Handle tier: process-stream handles whose methods return `Result` instead
+    // of aborting on a real IO error (the boundary the bare tier above hides).
+    host.register(
+        "stdout",
+        write_handle_value(WriteStream::Stdout),
+        aven_host::stdout_handle_type(),
+    );
+    host.register(
+        "stderr",
+        write_handle_value(WriteStream::Stderr),
+        aven_host::stderr_handle_type(),
+    );
+    host.register(
+        "stdin",
+        stdin_handle_value(),
+        aven_host::stdin_handle_type(),
+    );
+    host.register(
+        "stdio",
+        stdio_handle_value(),
+        aven_host::stdio_handle_type(),
+    );
+
     Ok(host)
+}
+
+/// Which process stream a write/flush handle method targets.
+#[derive(Debug, Clone, Copy)]
+enum WriteStream {
+    Stdout,
+    Stderr,
+}
+
+/// A write-side handle (`stdout`/`stderr`): a closed record of `write`,
+/// `writeLine`, and `flush` natives, each returning a `Result`.
+fn write_handle_value(stream: WriteStream) -> aven_eval::Value {
+    aven_eval::Value::record(vec![
+        ("write".to_owned(), write_handle_native(stream, false)),
+        ("writeLine".to_owned(), write_handle_native(stream, true)),
+        ("flush".to_owned(), flush_handle_native(stream)),
+    ])
+}
+
+/// The `stdin` handle: a closed record of read-side natives returning a
+/// `Result`.
+fn stdin_handle_value() -> aven_eval::Value {
+    aven_eval::Value::record(vec![
+        ("readLine".to_owned(), read_line_handle_native()),
+        ("readAll".to_owned(), read_all_handle_native()),
+    ])
+}
+
+/// The `stdio` handle: read- and write-side natives over stdout/stdin together.
+fn stdio_handle_value() -> aven_eval::Value {
+    aven_eval::Value::record(vec![
+        (
+            "write".to_owned(),
+            write_handle_native(WriteStream::Stdout, false),
+        ),
+        (
+            "writeLine".to_owned(),
+            write_handle_native(WriteStream::Stdout, true),
+        ),
+        ("readLine".to_owned(), read_line_handle_native()),
+        ("readAll".to_owned(), read_all_handle_native()),
+        ("flush".to_owned(), flush_handle_native(WriteStream::Stdout)),
+    ])
+}
+
+/// Build the `@Ok(value)` Result tag the handle methods return on success.
+fn ok_value(value: aven_eval::Value) -> aven_eval::Value {
+    aven_eval::Value::Tag {
+        name: "Ok".to_owned(),
+        payload: vec![value],
+    }
+}
+
+/// Build the `@Err(error)` Result tag the handle methods return on an IO error,
+/// where `error` is the closed error-variant tag (e.g. `@BrokenPipe("...")`).
+fn err_value(error: aven_eval::Value) -> aven_eval::Value {
+    aven_eval::Value::Tag {
+        name: "Err".to_owned(),
+        payload: vec![error],
+    }
+}
+
+/// Map an `io::Error` to a `WriteError` variant value carrying its message.
+fn write_error_value(error: &io::Error) -> aven_eval::Value {
+    let tag = match error.kind() {
+        io::ErrorKind::BrokenPipe => "BrokenPipe",
+        io::ErrorKind::PermissionDenied => "PermissionDenied",
+        _ => "Other",
+    };
+    error_variant(tag, error)
+}
+
+/// Map an `io::Error` to a `ReadError` variant value carrying its message.
+fn read_error_value(error: &io::Error) -> aven_eval::Value {
+    let tag = match error.kind() {
+        io::ErrorKind::UnexpectedEof => "UnexpectedEof",
+        _ => "Other",
+    };
+    error_variant(tag, error)
+}
+
+/// Map an `io::Error` to an `IoError` variant value carrying its message.
+fn io_error_value(error: &io::Error) -> aven_eval::Value {
+    let tag = match error.kind() {
+        io::ErrorKind::BrokenPipe => "BrokenPipe",
+        _ => "Other",
+    };
+    error_variant(tag, error)
+}
+
+/// A single-tag error variant value `@Tag(message)`.
+fn error_variant(tag: &str, error: &io::Error) -> aven_eval::Value {
+    aven_eval::Value::Tag {
+        name: tag.to_owned(),
+        payload: vec![aven_eval::Value::Text(error.to_string())],
+    }
+}
+
+fn write_handle_native(stream: WriteStream, newline: bool) -> aven_eval::Value {
+    aven_eval::Value::native(move |args| {
+        let name = if newline { "writeLine" } else { "write" };
+        let text = io_text_arg(name, args)?;
+        let result = match stream {
+            WriteStream::Stdout => write_text(&mut io::stdout().lock(), text, newline),
+            WriteStream::Stderr => write_text(&mut io::stderr().lock(), text, newline),
+        };
+        Ok(match result {
+            Ok(()) => ok_value(empty_record_value()),
+            Err(error) => err_value(write_error_value(&error)),
+        })
+    })
+}
+
+fn write_text(writer: &mut impl Write, text: &str, newline: bool) -> io::Result<()> {
+    if newline {
+        writeln!(writer, "{text}")
+    } else {
+        write!(writer, "{text}")
+    }
+}
+
+fn flush_handle_native(stream: WriteStream) -> aven_eval::Value {
+    aven_eval::Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!("flush expects 0 arguments, got {}", args.len()));
+        }
+
+        let result = match stream {
+            WriteStream::Stdout => io::stdout().flush(),
+            WriteStream::Stderr => io::stderr().flush(),
+        };
+        Ok(match result {
+            Ok(()) => ok_value(empty_record_value()),
+            Err(error) => err_value(io_error_value(&error)),
+        })
+    })
+}
+
+fn read_line_handle_native() -> aven_eval::Value {
+    aven_eval::Value::native(|args| {
+        if !args.is_empty() {
+            return Err(format!("readLine expects 0 arguments, got {}", args.len()));
+        }
+
+        flush_stdout_before_read();
+
+        let mut line = String::new();
+        Ok(match io::stdin().lock().read_line(&mut line) {
+            Ok(0) => ok_value(aven_eval::Value::Undefined),
+            Ok(_) => {
+                strip_trailing_newline(&mut line);
+                ok_value(aven_eval::Value::Text(line))
+            }
+            Err(error) => err_value(read_error_value(&error)),
+        })
+    })
+}
+
+fn read_all_handle_native() -> aven_eval::Value {
+    aven_eval::Value::native(|args| {
+        if !args.is_empty() {
+            return Err(format!("readAll expects 0 arguments, got {}", args.len()));
+        }
+
+        flush_stdout_before_read();
+
+        let mut text = String::new();
+        Ok(match io::stdin().lock().read_to_string(&mut text) {
+            Ok(_) => ok_value(aven_eval::Value::Text(text)),
+            Err(error) => err_value(read_error_value(&error)),
+        })
+    })
 }
 
 /// Writes each argument's `Display` to stderr (space-separated, newline-terminated)
@@ -312,9 +507,7 @@ fn read_line_native() -> aven_eval::Value {
             return Err(format!("readLine expects 0 arguments, got {}", args.len()));
         }
 
-        // Flush pending stdout so a prompt written without a newline (e.g.
-        // `write("name: ")`) is visible before the read blocks.
-        let _ = io::stdout().flush();
+        flush_stdout_before_read();
 
         let mut line = String::new();
         let bytes = io::stdin()
@@ -324,12 +517,7 @@ fn read_line_native() -> aven_eval::Value {
         if bytes == 0 {
             return Ok(aven_eval::Value::Undefined);
         }
-        if line.ends_with('\n') {
-            line.pop();
-            if line.ends_with('\r') {
-                line.pop();
-            }
-        }
+        strip_trailing_newline(&mut line);
 
         Ok(aven_eval::Value::Text(line))
     })
@@ -341,9 +529,7 @@ fn read_all_native() -> aven_eval::Value {
             return Err(format!("readAll expects 0 arguments, got {}", args.len()));
         }
 
-        // Flush pending stdout so a prompt written without a newline is visible
-        // before the read blocks.
-        let _ = io::stdout().flush();
+        flush_stdout_before_read();
 
         let mut text = String::new();
         io::stdin()
@@ -352,6 +538,25 @@ fn read_all_native() -> aven_eval::Value {
             .map_err(|error| error.to_string())?;
         Ok(aven_eval::Value::Text(text))
     })
+}
+
+/// Flush pending stdout so a prompt written without a trailing newline (e.g.
+/// `write("name: ")`) is visible before a blocking read. Shared by the bare and
+/// handle read natives.
+fn flush_stdout_before_read() {
+    let _ = io::stdout().flush();
+}
+
+/// Strip a single trailing `\n` (and a preceding `\r`) from a line read with
+/// `read_line`, matching shell line semantics. Shared by the bare and handle
+/// `readLine` natives.
+fn strip_trailing_newline(line: &mut String) {
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
 }
 
 fn io_text_arg<'a>(

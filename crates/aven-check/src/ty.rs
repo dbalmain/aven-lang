@@ -659,6 +659,32 @@ pub mod build {
         Type::Record(record_row(fields, RowTail::Closed))
     }
 
+    /// A closed variant `@{ Tag(payload...), ... }` built from `(tag, payload)`
+    /// pairs. Mirrors [`record`] for the variant side so hosts spell tagged
+    /// unions (e.g. closed error types) without hand-rolling rows.
+    pub fn variant(tags: Vec<(&str, Vec<Type>)>) -> Type {
+        Type::Variant(Row {
+            entries: tags
+                .into_iter()
+                .map(|(name, payload)| RowEntry::Tag {
+                    name: name.to_owned(),
+                    payload,
+                })
+                .collect(),
+            tail: RowTail::Closed,
+        })
+    }
+
+    /// The applied `Result[ok, err]` type. This is the surface representation of
+    /// `Result` in this codebase (`Apply { Result, [ok, err] }`); the runtime
+    /// inhabits it with `@Ok(ok)` / `@Err(err)` tag values.
+    pub fn result(ok: Type, err: Type) -> Type {
+        Type::Apply {
+            callee: Box::new(named("Result")),
+            args: vec![ok, err],
+        }
+    }
+
     /// The closed empty record `{}`.
     pub fn empty_record() -> Type {
         record(vec![])

@@ -163,6 +163,100 @@ pub fn io_read_all_type() -> Type {
     build::function(vec![], build::text())
 }
 
+/// The closed `WriteError` variant: write-side IO failures, each tag carrying a
+/// `Text` message. Tags mirror the `std::io::ErrorKind`s the CLI distinguishes.
+pub fn write_error_type() -> Type {
+    build::variant(vec![
+        ("BrokenPipe", vec![build::text()]),
+        ("PermissionDenied", vec![build::text()]),
+        ("Other", vec![build::text()]),
+    ])
+}
+
+/// The closed `ReadError` variant: read-side IO failures, each tag carrying a
+/// `Text` message. EOF is reported as `@Ok(undefined)`, not a `ReadError`.
+pub fn read_error_type() -> Type {
+    build::variant(vec![
+        ("UnexpectedEof", vec![build::text()]),
+        ("Other", vec![build::text()]),
+    ])
+}
+
+/// The closed `IoError` variant: generic stream failures (used by `flush`),
+/// each tag carrying a `Text` message.
+pub fn io_error_type() -> Type {
+    build::variant(vec![
+        ("BrokenPipe", vec![build::text()]),
+        ("Other", vec![build::text()]),
+    ])
+}
+
+/// `(Text) -> Result[{}, WriteError]` — a handle `write`/`writeLine` method.
+fn handle_write_type() -> Type {
+    build::function(
+        vec![build::text()],
+        build::result(build::empty_record(), write_error_type()),
+    )
+}
+
+/// `() -> Result[?Text, ReadError]` — a handle `readLine` method (EOF is
+/// `@Ok(undefined)`).
+fn handle_read_line_type() -> Type {
+    build::function(
+        vec![],
+        build::result(build::optional(build::text()), read_error_type()),
+    )
+}
+
+/// `() -> Result[Text, ReadError]` — a handle `readAll` method.
+fn handle_read_all_type() -> Type {
+    build::function(vec![], build::result(build::text(), read_error_type()))
+}
+
+/// `() -> Result[{}, IoError]` — a handle `flush` method.
+fn handle_flush_type() -> Type {
+    build::function(
+        vec![],
+        build::result(build::empty_record(), io_error_type()),
+    )
+}
+
+/// The `stdout` handle type: a closed record of write-side methods. `stderr`
+/// shares this shape. Callers annotate parameters as open records (e.g.
+/// `{ write : (Text) -> Result[{}, WriteError] | r }`), so width subtyping lets
+/// a function needing only `write` accept any of these handles.
+pub fn stdout_handle_type() -> Type {
+    build::record(vec![
+        ("write", handle_write_type()),
+        ("writeLine", handle_write_type()),
+        ("flush", handle_flush_type()),
+    ])
+}
+
+/// The `stderr` handle type (identical shape to [`stdout_handle_type`]).
+pub fn stderr_handle_type() -> Type {
+    stdout_handle_type()
+}
+
+/// The `stdin` handle type: a closed record of read-side methods.
+pub fn stdin_handle_type() -> Type {
+    build::record(vec![
+        ("readLine", handle_read_line_type()),
+        ("readAll", handle_read_all_type()),
+    ])
+}
+
+/// The `stdio` handle type: the union of read- and write-side methods.
+pub fn stdio_handle_type() -> Type {
+    build::record(vec![
+        ("write", handle_write_type()),
+        ("writeLine", handle_write_type()),
+        ("readLine", handle_read_line_type()),
+        ("readAll", handle_read_all_type()),
+        ("flush", handle_flush_type()),
+    ])
+}
+
 /// Type globals for the standard host prelude used by `aven check` and the LSP.
 pub fn standard_check_globals() -> Vec<(String, Type)> {
     vec![
@@ -172,6 +266,10 @@ pub fn standard_check_globals() -> Vec<(String, Type)> {
         ("writeLine".to_owned(), io_write_line_type()),
         ("readLine".to_owned(), io_read_line_type()),
         ("readAll".to_owned(), io_read_all_type()),
+        ("stdout".to_owned(), stdout_handle_type()),
+        ("stderr".to_owned(), stderr_handle_type()),
+        ("stdin".to_owned(), stdin_handle_type()),
+        ("stdio".to_owned(), stdio_handle_type()),
     ]
 }
 
@@ -179,7 +277,7 @@ pub fn standard_check_globals() -> Vec<(String, Type)> {
 mod tests {
     use super::*;
 
-    use aven_check::{function_required_arity, function_signature, record_fields};
+    use aven_check::{function_required_arity, function_signature, record_fields, variant_tags};
 
     struct NullSink;
 
@@ -335,7 +433,18 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["logger", "dbg", "write", "writeLine", "readLine", "readAll"]
+            vec![
+                "logger",
+                "dbg",
+                "write",
+                "writeLine",
+                "readLine",
+                "readAll",
+                "stdout",
+                "stderr",
+                "stdin",
+                "stdio"
+            ]
         );
 
         let logger = global_type(&globals, "logger");
@@ -390,6 +499,156 @@ mod tests {
         assert_eq!(function_required_arity(read_all), Some(0));
         assert!(read_all_params.is_empty());
         assert_eq!(read_all_result, build::text());
+    }
+
+    #[test]
+    fn standard_check_globals_list_handle_record_shapes() {
+        let globals = standard_check_globals();
+
+        for (handle, expected) in [
+            ("stdout", vec!["write", "writeLine", "flush"] as Vec<&str>),
+            ("stderr", vec!["write", "writeLine", "flush"]),
+            ("stdin", vec!["readLine", "readAll"]),
+            (
+                "stdio",
+                vec!["write", "writeLine", "readLine", "readAll", "flush"],
+            ),
+        ] {
+            let ty = global_type(&globals, handle);
+            let fields = record_fields(ty).unwrap_or_else(|| panic!("{handle} is a record"));
+            let names = fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(names, expected, "{handle} method record");
+        }
+
+        // The methods return `Result`, not the bare `{}` the top-level `write`
+        // returns — this is the boundary the handle tier introduces.
+        let stdout = global_type(&globals, "stdout");
+        let (write_params, write_result) =
+            function_signature(&record_field_type(stdout, "write")).expect("write is a function");
+        assert_eq!(write_params, vec![build::text()]);
+        assert_eq!(
+            write_result,
+            build::result(build::empty_record(), write_error_type())
+        );
+
+        let stdin = global_type(&globals, "stdin");
+        let (_, read_line_result) =
+            function_signature(&record_field_type(stdin, "readLine")).expect("readLine is a fn");
+        assert_eq!(
+            read_line_result,
+            build::result(build::optional(build::text()), read_error_type())
+        );
+
+        let (_, flush_result) =
+            function_signature(&record_field_type(stdout, "flush")).expect("flush is a function");
+        assert_eq!(
+            flush_result,
+            build::result(build::empty_record(), io_error_type())
+        );
+    }
+
+    #[test]
+    fn error_types_are_closed_variants_with_documented_tags() {
+        assert_eq!(
+            variant_tags(&write_error_type()),
+            Some(vec![
+                "BrokenPipe".to_owned(),
+                "PermissionDenied".to_owned(),
+                "Other".to_owned()
+            ])
+        );
+        assert_eq!(
+            variant_tags(&read_error_type()),
+            Some(vec!["UnexpectedEof".to_owned(), "Other".to_owned()])
+        );
+        assert_eq!(
+            variant_tags(&io_error_type()),
+            Some(vec!["BrokenPipe".to_owned(), "Other".to_owned()])
+        );
+
+        for ty in [write_error_type(), read_error_type(), io_error_type()] {
+            let Type::Variant(row) = ty else {
+                panic!("error type is a variant");
+            };
+            assert_eq!(
+                row.tail,
+                aven_check::RowTail::Closed,
+                "error variant is closed"
+            );
+            for entry in &row.entries {
+                let aven_check::RowEntry::Tag { payload, .. } = entry else {
+                    panic!("error variant entry is a tag");
+                };
+                assert_eq!(
+                    payload,
+                    &vec![build::text()],
+                    "each tag carries a Text message"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bare_write_and_handle_write_lock_the_result_boundary() {
+        // Bare `write` returns `{}`; `stdout.write` returns `Result` — the two
+        // shapes pinned together so the boundary can't silently drift.
+        let (_, bare_result) = function_signature(&io_write_type()).expect("write is a function");
+        assert_eq!(bare_result, build::empty_record());
+
+        let handle_write = record_field_type(&stdout_handle_type(), "write");
+        let (_, handle_result) =
+            function_signature(&handle_write).expect("stdout.write is a function");
+        assert_eq!(
+            handle_result,
+            build::result(build::empty_record(), write_error_type())
+        );
+        assert_ne!(bare_result, handle_result);
+    }
+
+    #[test]
+    fn open_write_record_param_accepts_write_handles_and_rejects_stdin() {
+        use aven_parser::parse_module;
+
+        // A function typed on an open `{ write | r }` record — the row-poly
+        // surface that handle width subtyping is meant to serve.
+        let globals = vec![
+            (
+                "needsWrite".to_owned(),
+                build::function(
+                    vec![build::open_record(vec![("write", handle_write_type())])],
+                    build::empty_record(),
+                ),
+            ),
+            ("stdout".to_owned(), stdout_handle_type()),
+            ("stdio".to_owned(), stdio_handle_type()),
+            ("stdin".to_owned(), stdin_handle_type()),
+        ];
+
+        for accepted in ["needsWrite(stdout)\n", "needsWrite(stdio)\n"] {
+            let module = parse_module(accepted);
+            assert!(module.diagnostics.is_empty(), "{accepted} parses");
+            let checked = aven_check::check_module_with_globals(&module.module, &globals);
+            assert!(
+                checked.diagnostics.is_empty(),
+                "{accepted} type-checks: {:?}",
+                checked.diagnostics
+            );
+        }
+
+        let module = parse_module("needsWrite(stdin)\n");
+        assert!(module.diagnostics.is_empty(), "stdin program parses");
+        let checked = aven_check::check_module_with_globals(&module.module, &globals);
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("type.missing-field")),
+            "stdin lacks `write`: {:?}",
+            checked.diagnostics
+        );
     }
 
     fn global_type<'a>(globals: &'a [(String, Type)], name: &str) -> &'a Type {
