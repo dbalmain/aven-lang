@@ -1030,6 +1030,63 @@ fn lowers_literal_variant_entries() {
 }
 
 #[test]
+fn lowers_bare_literal_and_tag_annotations_as_singleton_variants() {
+    let output = parse_module(
+        "text : \"hi\" = value\n\
+         text_set : @{\"hi\"} = value\n\
+         number : 1 = value\n\
+         number_set : @{1} = value\n\
+         tagged : @A = value\n\
+         tagged_set : @{@A} = value\n\
+         flag : true = value\n",
+    );
+
+    let text = lower_annotation(&output.module, annotation(&output.module, "text"));
+    let text_set = lower_annotation(&output.module, annotation(&output.module, "text_set"));
+    let number = lower_annotation(&output.module, annotation(&output.module, "number"));
+    let number_set = lower_annotation(&output.module, annotation(&output.module, "number_set"));
+    let tagged = lower_annotation(&output.module, annotation(&output.module, "tagged"));
+    let tagged_set = lower_annotation(&output.module, annotation(&output.module, "tagged_set"));
+    let flag = lower_annotation(&output.module, annotation(&output.module, "flag"));
+
+    assert_eq!(text.ty, text_set.ty);
+    assert_eq!(
+        text.ty,
+        Type::Variant(Row {
+            entries: vec![literal_string("\"hi\"")],
+            tail: RowTail::Closed,
+        })
+    );
+    assert!(text.diagnostics.is_empty());
+    assert!(text_set.diagnostics.is_empty());
+
+    assert_eq!(number.ty, number_set.ty);
+    assert_eq!(
+        number.ty,
+        Type::Variant(Row {
+            entries: vec![literal_number("1")],
+            tail: RowTail::Closed,
+        })
+    );
+    assert!(number.diagnostics.is_empty());
+    assert!(number_set.diagnostics.is_empty());
+
+    assert_eq!(tagged.ty, tagged_set.ty);
+    assert_eq!(
+        tagged.ty,
+        Type::Variant(Row {
+            entries: vec![tag("A", Vec::new())],
+            tail: RowTail::Closed,
+        })
+    );
+    assert!(tagged.diagnostics.is_empty());
+    assert!(tagged_set.diagnostics.is_empty());
+
+    assert_eq!(flag.ty, named("Bool"));
+    assert!(flag.diagnostics.is_empty());
+}
+
+#[test]
 fn lowers_open_row_extension_and_update_transforms() {
     let output = parse_module(
         "OpenBase = { host: Text, .. }\n\
@@ -1522,6 +1579,61 @@ fn fresh_literals_check_against_literal_unions_by_membership() {
     assert_eq!(
         matching_codes(&rejected_check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
         2
+    );
+}
+
+#[test]
+fn fresh_literals_check_against_bare_literal_annotations_by_membership() {
+    let source = concat!(
+        "v : \"hi\" = \"hi\"\n",
+        "w : @{\"hi\"} = \"hi\"\n",
+        "n : 1 = 1\n",
+        "m : @{1} = 1\n",
+    );
+    let accepted = parse_module(source);
+    let accepted_check = check_module(&accepted.module);
+    assert!(
+        accepted_check.diagnostics.is_empty(),
+        "unexpected check diagnostics: {:?}",
+        accepted_check.diagnostics
+    );
+
+    let v_type = accepted_check.type_at(nth_span(source, "v", 0));
+    let w_type = accepted_check.type_at(nth_span(source, "w", 0));
+    assert_eq!(v_type.map(Type::render), Some("@{ \"hi\" }".to_owned()));
+    assert_eq!(v_type, w_type);
+
+    let n_type = accepted_check.type_at(nth_span(source, "n", 0));
+    let m_type = accepted_check.type_at(nth_span(source, "m", 0));
+    assert_eq!(n_type.map(Type::render), Some("@{ 1 }".to_owned()));
+    assert_eq!(n_type, m_type);
+
+    let rejected = parse_module("v : \"hi\" = \"hello\"\nn : 1 = 2\n");
+    let rejected_check = check_module(&rejected.module);
+    assert_eq!(
+        matching_codes(&rejected_check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        2
+    );
+}
+
+#[test]
+fn literal_composite_values_stay_runtime_after_singleton_lowering() {
+    // Lowering bare literals to singleton variants (R1) also fires inside
+    // composite annotations, so a tuple/record of literals lowers to a concrete
+    // (non-Deferred) type. The artifact check must still treat such a value as a
+    // runtime value, not a comptime type artifact, so it remains usable.
+    let source = concat!(
+        "pair = (1, 2)\n",
+        "rec = { a = \"x\" }\n",
+        "usePair = pair\n",
+        "useRec = rec\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "literal-composite runtime bindings should check cleanly: {:?}",
+        check.diagnostics
     );
 }
 

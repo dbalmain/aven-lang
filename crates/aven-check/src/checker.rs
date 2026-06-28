@@ -411,6 +411,7 @@ impl<'a> Checker<'a> {
             ExprKind::Group(inner) => self.runtime_rhs_is_artifact(inner, visiting),
             ExprKind::ComptimeName(name) => self.comptime_reference_is_artifact(name, visiting),
             ExprKind::Name(_) => false,
+            _ if Self::literal_or_tag_value_shape(value) => false,
             _ => self.rhs_is_non_liftable_artifact(value, visiting),
         }
     }
@@ -435,6 +436,9 @@ impl<'a> Checker<'a> {
         match &value.kind {
             ExprKind::Group(inner) => {
                 return self.rhs_is_non_liftable_artifact(inner, visiting);
+            }
+            ExprKind::Literal(_) | ExprKind::Tag(_) => {
+                return false;
             }
             ExprKind::ComptimeName(name) => {
                 return self.comptime_reference_is_artifact(name, visiting);
@@ -501,6 +505,73 @@ impl<'a> Checker<'a> {
             }
         });
         found
+    }
+
+    fn literal_or_tag_value_shape(value: &Expr) -> bool {
+        match &ungroup_expr(value).kind {
+            ExprKind::Literal(_) | ExprKind::Tag(_) | ExprKind::Undefined | ExprKind::Null => true,
+            ExprKind::Tuple(items) | ExprKind::Array(items) => {
+                items.iter().all(Self::literal_or_tag_value_shape)
+            }
+            ExprKind::Record(entries) | ExprKind::Set(entries) => {
+                Self::row_literal_or_tag_value_shape(entries)
+            }
+            ExprKind::Call { callee, args }
+                if matches!(&ungroup_expr(callee).kind, ExprKind::Tag(_)) =>
+            {
+                args.iter().all(Self::literal_or_tag_value_shape)
+            }
+            ExprKind::Missing
+            | ExprKind::Interpolation(_)
+            | ExprKind::Name(_)
+            | ExprKind::ComptimeName(_)
+            | ExprKind::Group(_)
+            | ExprKind::Index { .. }
+            | ExprKind::Optional(_)
+            | ExprKind::Nullable(_)
+            | ExprKind::NonNull(_)
+            | ExprKind::Arrow { .. }
+            | ExprKind::FieldAccess { .. }
+            | ExprKind::Call { .. }
+            | ExprKind::Binary { .. }
+            | ExprKind::Unary { .. }
+            | ExprKind::Propagate { .. }
+            | ExprKind::Match { .. }
+            | ExprKind::Lambda { .. }
+            | ExprKind::Block(_) => false,
+        }
+    }
+
+    fn row_literal_or_tag_value_shape(entries: &[RecordEntry]) -> bool {
+        let mut has_value_entry = entries.is_empty();
+
+        for entry in entries {
+            match entry {
+                RecordEntry::Field { value, .. } | RecordEntry::Element(value) => {
+                    if !Self::literal_or_tag_value_shape(value) {
+                        return false;
+                    }
+                    has_value_entry = true;
+                }
+                RecordEntry::FieldComputed { key, value, .. } => {
+                    if !Self::literal_or_tag_value_shape(key)
+                        || !Self::literal_or_tag_value_shape(value)
+                    {
+                        return false;
+                    }
+                    has_value_entry = true;
+                }
+                RecordEntry::Shorthand { .. }
+                | RecordEntry::Spread { .. }
+                | RecordEntry::Delete { .. }
+                | RecordEntry::DeleteComputed { .. }
+                | RecordEntry::Rename { .. }
+                | RecordEntry::Iteration { .. }
+                | RecordEntry::Open { .. } => {}
+            }
+        }
+
+        has_value_entry
     }
 
     fn is_runtime_value_reference(&self, name: &str) -> bool {
@@ -1858,6 +1929,10 @@ impl<'a> Checker<'a> {
             ExprKind::Tuple(items) => Type::Tuple(self.lower_annotations(items)),
             ExprKind::Record(entries) => self.lower_row_entries(entries, RowKind::Record),
             ExprKind::Set(entries) => self.lower_row_entries(entries, RowKind::Variant),
+            ExprKind::Literal(Literal::Number(_) | Literal::String(_)) | ExprKind::Tag(_) => {
+                self.lower_singleton_variant_annotation(annotation)
+            }
+            ExprKind::Literal(Literal::Bool(_)) => named_builtin("Bool"),
             ExprKind::Call { .. } => self
                 .try_lower_comptime_annotation(annotation)
                 .unwrap_or_else(|| {
@@ -1869,7 +1944,6 @@ impl<'a> Checker<'a> {
             | ExprKind::Interpolation(_)
             | ExprKind::Undefined
             | ExprKind::Null
-            | ExprKind::Tag(_)
             | ExprKind::Array(_)
             | ExprKind::FieldAccess { .. }
             | ExprKind::Binary { .. }
@@ -1882,6 +1956,11 @@ impl<'a> Checker<'a> {
                 Type::Deferred
             }
         }
+    }
+
+    fn lower_singleton_variant_annotation(&mut self, annotation: &Expr) -> Type {
+        let entry = RecordEntry::Element(annotation.clone());
+        self.lower_row_entries(std::slice::from_ref(&entry), RowKind::Variant)
     }
 
     fn lower_annotations(&mut self, items: &[Expr]) -> Vec<Type> {
