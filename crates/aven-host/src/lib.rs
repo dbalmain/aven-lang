@@ -8,6 +8,7 @@
 //! Rust traits the platform implements, while the statically-known value+type is
 //! registered through helpers like [`Host::register_logger`].
 
+mod io;
 mod marshal;
 
 use std::rc::Rc;
@@ -182,13 +183,38 @@ pub fn read_error_type() -> Type {
     ])
 }
 
-/// The closed `IoError` variant: generic stream failures (used by `flush`),
-/// each tag carrying a `Text` message.
+/// The closed `IoError` variant: generic stream/file failures (used by `flush`
+/// and `open`), each tag carrying a `Text` message. The `open`-side kinds
+/// (`NotFound`/`PermissionDenied`/`AlreadyExists`) join the stream-side
+/// `BrokenPipe`/`Other` so one error type covers both surfaces.
 pub fn io_error_type() -> Type {
     build::variant(vec![
+        ("NotFound", vec![build::text()]),
+        ("PermissionDenied", vec![build::text()]),
+        ("AlreadyExists", vec![build::text()]),
         ("BrokenPipe", vec![build::text()]),
         ("Other", vec![build::text()]),
     ])
+}
+
+/// The phantom `Mode[shape]` type: a mode constant carries the handle record
+/// `shape` its file will expose, so `open(path, mode)` can resolve the handle
+/// type from the mode by ordinary unification (no comptime). `Mode` is an
+/// opaque constructor — it appears only in host types, never user annotations.
+pub fn mode_type(shape: Type) -> Type {
+    build::apply("Mode", vec![shape])
+}
+
+/// The `open` type: `(Text, Mode[h]) -> Result[h, IoError]`. The free `h`
+/// (a [`build::var`]) is generalized by the checker and instantiated fresh per
+/// call, so `open(path, Read)` unifies `Mode[h]` against `Mode[stdin_handle]`,
+/// binds `h` to the read handle shape, and returns `Result[stdin_handle,
+/// IoError]`. Misusing the resulting handle is a `type.missing-field` error.
+pub fn open_type() -> Type {
+    build::function(
+        vec![build::text(), mode_type(build::var("h"))],
+        build::result(build::var("h"), io_error_type()),
+    )
 }
 
 /// `(Text) -> Result[{}, WriteError]` — a handle `write`/`writeLine` method.
@@ -270,6 +296,11 @@ pub fn standard_check_globals() -> Vec<(String, Type)> {
         ("stderr".to_owned(), stderr_handle_type()),
         ("stdin".to_owned(), stdin_handle_type()),
         ("stdio".to_owned(), stdio_handle_type()),
+        ("open".to_owned(), open_type()),
+        ("Read".to_owned(), mode_type(stdin_handle_type())),
+        ("Write".to_owned(), mode_type(stdout_handle_type())),
+        ("Append".to_owned(), mode_type(stdout_handle_type())),
+        ("ReadWrite".to_owned(), mode_type(stdio_handle_type())),
     ]
 }
 
@@ -443,7 +474,12 @@ mod tests {
                 "stdout",
                 "stderr",
                 "stdin",
-                "stdio"
+                "stdio",
+                "open",
+                "Read",
+                "Write",
+                "Append",
+                "ReadWrite"
             ]
         );
 
@@ -566,7 +602,13 @@ mod tests {
         );
         assert_eq!(
             variant_tags(&io_error_type()),
-            Some(vec!["BrokenPipe".to_owned(), "Other".to_owned()])
+            Some(vec![
+                "NotFound".to_owned(),
+                "PermissionDenied".to_owned(),
+                "AlreadyExists".to_owned(),
+                "BrokenPipe".to_owned(),
+                "Other".to_owned()
+            ])
         );
 
         for ty in [write_error_type(), read_error_type(), io_error_type()] {

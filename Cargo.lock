@@ -150,6 +150,7 @@ name = "aven-host"
 version = "0.1.0"
 dependencies = [
  "aven-check",
+ "aven-core",
  "aven-eval",
  "aven-parser",
 ]

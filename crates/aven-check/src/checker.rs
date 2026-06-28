@@ -3894,16 +3894,35 @@ impl<'a> Checker<'a> {
             ExprKind::Block(items) => self.infer_block(env, items),
             ExprKind::Match { subject, arms, .. } => self.infer_match(env, subject, arms),
             ExprKind::Interpolation(segments) => self.infer_interpolation(env, segments),
+            ExprKind::Propagate { value, .. } => self.infer_propagate(env, value),
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Optional(_)
             | ExprKind::Nullable(_)
             | ExprKind::NonNull(_)
-            | ExprKind::Arrow { .. }
-            | ExprKind::Propagate { .. } => Type::Deferred,
+            | ExprKind::Arrow { .. } => Type::Deferred,
         };
         self.record_expr_type(expr.span, &ty);
         ty
+    }
+
+    /// Infer `value?!` / `value?^`. Both unwrap a `Result[ok, err]` to its `ok`
+    /// branch, so when the operand resolves to a concrete `Result` the result is
+    /// its ok type — this is what lets a phantom-typed `open(path, mode)?!` carry
+    /// the resolved handle record forward, so misusing it (a missing method) is a
+    /// real field error. A non-`Result` operand (still unknown) stays deferred.
+    fn infer_propagate(&mut self, env: &TypeEnv, value: &Expr) -> Type {
+        let inferred = self.infer(env, value);
+        let resolved = self.resolve_and_default(&inferred);
+        match &resolved {
+            Type::Apply { callee, args }
+                if args.len() == 2
+                    && matches!(callee.as_ref(), Type::Named(name) if name == "Result") =>
+            {
+                args[0].clone()
+            }
+            _ => Type::Deferred,
+        }
     }
 
     fn infer_interpolation(&mut self, env: &TypeEnv, segments: &[InterpolationSegment]) -> Type {

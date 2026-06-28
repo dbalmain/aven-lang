@@ -675,6 +675,16 @@ pub mod build {
         })
     }
 
+    /// An applied type `Callee[args...]` where `callee` is a named type
+    /// constructor (e.g. `Mode[shape]`, `Result[ok, err]`). The constructor is
+    /// opaque to unification: `Apply` unifies structurally by callee + args.
+    pub fn apply(name: &str, args: Vec<Type>) -> Type {
+        Type::Apply {
+            callee: Box::new(named(name)),
+            args,
+        }
+    }
+
     /// The applied `Result[ok, err]` type. This is the surface representation of
     /// `Result` in this codebase (`Apply { Result, [ok, err] }`); the runtime
     /// inhabits it with `@Ok(ok)` / `@Err(err)` tag values.
