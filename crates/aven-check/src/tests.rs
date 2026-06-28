@@ -129,6 +129,12 @@ fn nth_span(source: &str, needle: &str, occurrence: usize) -> Span {
     Span::new(start, start + needle.len())
 }
 
+fn render_top_level_value(checker: &mut Checker<'_>, name: &str) -> Option<String> {
+    checker
+        .infer_top_level_value(name)
+        .map(|ty| crate::ty::display_inferred_type(&ty).render())
+}
+
 #[test]
 fn renders_types_as_surface_syntax() {
     assert_eq!(
@@ -289,7 +295,7 @@ fn check_output_records_unannotated_local_inferred_types() {
         check
             .type_at(nth_span(source, "local", 0))
             .map(Type::render),
-        Some("Text".to_owned())
+        Some("@{ \"hi\" }".to_owned())
     );
 }
 
@@ -325,7 +331,7 @@ fn check_output_records_concrete_expression_types() {
         check
             .type_at(binding_value_named(&output.module, "config").span)
             .map(Type::render),
-        Some("{ name: Text }".to_owned())
+        Some("{ name: @{ \"Ada\" } }".to_owned())
     );
 }
 
@@ -1391,8 +1397,15 @@ fn inferred_identifier_values_accept_compatible_types() {
 
 #[test]
 fn int_and_float_identifier_values_are_not_interchangeable() {
+    let flexible = parse_module("other = 42\nvalue : Float = other\n");
+    let flexible_check = check_module(&flexible.module);
+    assert!(
+        flexible_check.diagnostics.is_empty(),
+        "unannotated number literal should stay Float-flexible: {:?}",
+        flexible_check.diagnostics
+    );
+
     for source in [
-        "other = 42\nvalue : Float = other\n",
         "other : Int = 1\nvalue : Float = other\n",
         "other : Float = 1\nvalue : Int = other\n",
     ] {
@@ -1714,14 +1727,169 @@ fn call_wide_value_into_literal_union_param_reports_wide_value() {
 }
 
 #[test]
-fn bare_literals_still_infer_base_types() {
-    let output = parse_module("x = 200\ns = \"hi\"\n");
+fn bare_value_literals_infer_rendered_singleton_types() {
+    let source = "x = 5\ns = \"hi\"\nb = true\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+
+    assert_eq!(
+        check.type_at(nth_span(source, "x", 0)).map(Type::render),
+        Some("@{ 5 }".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "s", 0)).map(Type::render),
+        Some("@{ \"hi\" }".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "b", 0)).map(Type::render),
+        Some("Bool".to_owned())
+    );
+
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let scheme = checker
+        .infer_top_level_scheme("x")
+        .expect("inferred x scheme");
+    let Type::Variant(row) = &scheme.ty else {
+        panic!("x should infer a literal variant row");
+    };
+    assert_eq!(row.tail, RowTail::Var(scheme.row_vars[0]));
+}
 
-    assert_eq!(checker.infer_top_level_value("x"), Some(named("Int")));
-    assert_eq!(checker.infer_top_level_value("s"), Some(named("Text")));
+#[test]
+fn literal_rows_widen_at_named_annotations() {
+    let source = "n : Int = 5\nf : Float = 1\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "n", 0)).map(Type::render),
+        Some("Int".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "f", 0)).map(Type::render),
+        Some("Float".to_owned())
+    );
+}
+
+#[test]
+fn base_operations_widen_literal_rows() {
+    let source = "c = 1 + 2\nt = \"a\" + \"b\"\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "c", 0)).map(Type::render),
+        Some("Int".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "t", 0)).map(Type::render),
+        Some("Text".to_owned())
+    );
+}
+
+#[test]
+fn polymorphic_arguments_join_literal_rows() {
+    let source = "joined = same(1, 2)\n";
+    let output = parse_module(source);
+    let globals = vec![(
+        "same".to_owned(),
+        build::function(vec![build::var("a"), build::var("a")], build::var("a")),
+    )];
+    let check = check_module_with_globals(&output.module, &globals);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "joined", 0))
+            .map(Type::render),
+        Some("@{ 1, 2 }".to_owned())
+    );
+}
+
+#[test]
+fn match_results_join_literal_rows() {
+    let source = concat!(
+        "classify = (n: Int) =>\n",
+        "  n ?>\n",
+        "    0 => \"zero\"\n",
+        "    _ => \"many\"\n",
+        "result = classify(5)\n",
+        "label : Text = result\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "result", 0))
+            .map(Type::render),
+        Some("@{ \"zero\", \"many\" }".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "label", 0))
+            .map(Type::render),
+        Some("Text".to_owned())
+    );
+}
+
+#[test]
+fn collections_join_literal_rows() {
+    let source = "nums = [1, 2, 3]\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "nums", 0)).map(Type::render),
+        Some("Array[@{ 1, 2, 3 }]".to_owned())
+    );
+}
+
+#[test]
+fn wide_value_still_cannot_flow_into_literal_union_param() {
+    let source = concat!(
+        "pick = (m: @{\"r\", \"w\"}) => m\n",
+        "bad : Text = \"x\"\n",
+        "result = pick(bad)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::WIDE_VALUE_INTO_LITERAL_UNION,),
+        1
+    );
 }
 
 #[test]
@@ -2001,11 +2169,11 @@ fn comptime_known_match_subject_selects_single_arm_result_type() {
 
     assert_eq!(
         check.type_at(nth_span(source, "v", 0)).map(Type::render),
-        Some("Text".to_owned())
+        Some("@{ \"hello\" }".to_owned())
     );
     assert_eq!(
         check.type_at(nth_span(source, "w", 0)).map(Type::render),
-        Some("Int".to_owned())
+        Some("@{ 42 }".to_owned())
     );
 }
 
@@ -2040,7 +2208,7 @@ fn comptime_known_match_subject_selects_catch_all_arm() {
         check
             .type_at(nth_span(source, "wildValue", 0))
             .map(Type::render),
-        Some("Text".to_owned())
+        Some("@{ \"fallback\" }".to_owned())
     );
     assert_eq!(
         check
@@ -2148,11 +2316,26 @@ fn tag_literals_and_constructors_infer_closed_variant_rows() {
             panic!("{binding} should infer a variant type");
         };
         assert_eq!(row.tail, RowTail::Closed);
-        assert!(scheme.row_vars.is_empty());
         assert!(matches!(
             row.entries.as_slice(),
             [RowEntry::Tag { name, .. }] if name == tag
         ));
+        if binding == "zero" {
+            assert!(scheme.row_vars.is_empty());
+        } else {
+            assert_eq!(scheme.row_vars.len(), 1);
+            assert!(matches!(
+                row.entries.as_slice(),
+                [RowEntry::Tag {
+                    payload,
+                    ..
+                }] if matches!(
+                    payload.as_slice(),
+                    [Type::Variant(payload_row)]
+                        if payload_row.tail == RowTail::Var(scheme.row_vars[0])
+                )
+            ));
+        }
     }
 
     assert_eq!(checker.infer_top_level_value("truth"), Some(named("Bool")));
@@ -2170,8 +2353,8 @@ fn bare_uppercase_values_do_not_infer_tags() {
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
     assert_eq!(
-        checker.infer_top_level_value("resolved"),
-        Some(named("Int"))
+        render_top_level_value(&mut checker, "resolved"),
+        Some("@{ 42 }".to_owned())
     );
     assert_eq!(
         checker
@@ -2782,20 +2965,8 @@ fn infer_value_synthesizes_literal_record_types() {
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
     assert_eq!(
-        checker.infer_top_level_value("other"),
-        Some(Type::Record(Row {
-            entries: vec![
-                RowEntry::Field {
-                    name: "id".to_owned(),
-                    ty: named("Int"),
-                },
-                RowEntry::Field {
-                    name: "name".to_owned(),
-                    ty: named("Text"),
-                },
-            ],
-            tail: RowTail::Closed,
-        }))
+        render_top_level_value(&mut checker, "other"),
+        Some("{ id: @{ 1 }, name: @{ \"Ada\" } }".to_owned())
     );
 }
 
@@ -2813,45 +2984,20 @@ fn infer_value_synthesizes_closed_record_transform_types() {
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
     assert_eq!(
-        checker.infer_top_level_value("added"),
-        Some(Type::Record(Row {
-            entries: vec![
-                field("x", named("Int")),
-                field("y", named("Text")),
-                field("old", named("Bool")),
-                field("z", named("Int")),
-            ],
-            tail: RowTail::Closed,
-        }))
+        render_top_level_value(&mut checker, "added"),
+        Some("{ x: @{ 1 }, y: @{ \"yes\" }, old: Bool, z: @{ 2 } }".to_owned())
     );
     assert_eq!(
-        checker.infer_top_level_value("replaced"),
-        Some(Type::Record(Row {
-            entries: vec![
-                field("x", named("Int")),
-                field("y", named("Text")),
-                field("old", named("Bool")),
-            ],
-            tail: RowTail::Closed,
-        }))
+        render_top_level_value(&mut checker, "replaced"),
+        Some("{ x: @{ 1 }, y: @{ \"changed\" }, old: Bool }".to_owned())
     );
     assert_eq!(
-        checker.infer_top_level_value("deleted"),
-        Some(Type::Record(Row {
-            entries: vec![field("x", named("Int")), field("old", named("Bool"))],
-            tail: RowTail::Closed,
-        }))
+        render_top_level_value(&mut checker, "deleted"),
+        Some("{ x: @{ 1 }, old: Bool }".to_owned())
     );
     assert_eq!(
-        checker.infer_top_level_value("renamed"),
-        Some(Type::Record(Row {
-            entries: vec![
-                field("x", named("Int")),
-                field("y", named("Text")),
-                field("flag", named("Bool")),
-            ],
-            tail: RowTail::Closed,
-        }))
+        render_top_level_value(&mut checker, "renamed"),
+        Some("{ x: @{ 1 }, y: @{ \"yes\" }, flag: Bool }".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -2864,11 +3010,8 @@ fn infer_value_synthesizes_disjoint_spread_union() {
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
     assert_eq!(
-        checker.infer_top_level_value("union"),
-        Some(Type::Record(Row {
-            entries: vec![field("x", named("Int")), field("y", named("Text"))],
-            tail: RowTail::Closed,
-        }))
+        render_top_level_value(&mut checker, "union"),
+        Some("{ x: @{ 1 }, y: @{ \"ok\" } }".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -2999,18 +3142,12 @@ fn infer_value_record_transforms_absorb_open_sources() {
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
     assert_eq!(
-        checker.infer_top_level_value("added"),
-        Some(Type::Record(Row {
-            entries: vec![field("x", named("Int")), field("y", named("Int"))],
-            tail: RowTail::Open,
-        }))
+        render_top_level_value(&mut checker, "added"),
+        Some("{ x: Int, y: @{ 1 }, .. }".to_owned())
     );
     assert_eq!(
-        checker.infer_top_level_value("updated"),
-        Some(Type::Record(Row {
-            entries: vec![field("x", named("Int"))],
-            tail: RowTail::Open,
-        }))
+        render_top_level_value(&mut checker, "updated"),
+        Some("{ x: @{ 2 }, .. }".to_owned())
     );
     assert_eq!(
         checker
@@ -3085,7 +3222,10 @@ fn computed_value_index_with_literal_key_infers_concrete_record_field_type() {
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
-    assert_eq!(checker.infer_top_level_value("name"), Some(named("Text")));
+    assert_eq!(
+        render_top_level_value(&mut checker, "name"),
+        Some("@{ \"Ada\" }".to_owned())
+    );
     assert!(checker.diagnostics.is_empty());
 }
 
@@ -3209,11 +3349,8 @@ fn comptime_omit_bulk_deletes_key_set_from_closed_record_type() {
         }))
     );
     assert_eq!(
-        checker.infer_top_level_value("without_password"),
-        Some(Type::Record(Row {
-            entries: vec![field("email", named("Text"))],
-            tail: RowTail::Closed,
-        }))
+        render_top_level_value(&mut checker, "without_password"),
+        Some("{ email: @{ \"ops@x.dev\" } }".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }

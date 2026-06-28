@@ -1,4 +1,4 @@
-config = { host: "x", port: 8080 }
+config : { host: Text, port: Int } = { host: "x", port: 8080 }
 partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }
 Patch = partial(typeOf(config))
 p : Patch = { host: "y" }

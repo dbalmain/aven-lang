@@ -1,7 +1,4 @@
 error type.mismatch: expected `Float`, found `Int`
-  label 36..44: this value has type `Int`
-  note: change the value to produce `Float`, or change the annotation to `Int`
-error type.mismatch: expected `Float`, found `Int`
   label 81..89: this value has type `Int`
   note: change the value to produce `Float`, or change the annotation to `Int`
 error type.mismatch: expected `Int`, found `Float`

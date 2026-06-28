@@ -1,5 +1,5 @@
-text = "waiting"
-number = 1
+text : Text = "waiting"
+number : Int = 1
 
 status : @{"waiting", "running"} = text
 code : @{0, 1, 2} = number

@@ -20,9 +20,10 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    Row, RowEntry, RowKind, RowTail, Type, TypeScheme, free_metas, generalize,
-    has_only_meta_unknowns, is_concrete_type, is_meta_type, is_null_value, is_undefined_value,
-    map_type, mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
+    LiteralBase, Row, RowEntry, RowKind, RowTail, Type, TypeScheme, display_inferred_type,
+    free_metas, generalize, has_only_meta_unknowns, is_concrete_type, is_meta_type, is_null_value,
+    is_resolved_value_type, is_undefined_value, literal_base, literal_variant_base, map_type,
+    mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
     numeric_type_name, render_literal_value, type_contains_deferred,
 };
 use crate::unify::Unifier;
@@ -260,7 +261,7 @@ impl<'a> Checker<'a> {
                 checked_value = true;
             }
         } else if let Some(Some(scheme)) = self.value_types.get(&declaration.name).cloned() {
-            self.record_inferred_type(declaration.name_span, scheme.ty);
+            self.record_synthesized_type(declaration.name_span, &scheme.ty);
         }
 
         if !checked_value && let Some(binding) = binding {
@@ -583,7 +584,7 @@ impl<'a> Checker<'a> {
         match value_type {
             LocalValueType::Known(ty) => self.record_inferred_type(name_span, ty.clone()),
             LocalValueType::Scheme(scheme) => {
-                self.record_inferred_type(name_span, scheme.ty.clone());
+                self.record_synthesized_type(name_span, &scheme.ty);
             }
             LocalValueType::Unknown => {}
         }
@@ -597,14 +598,18 @@ impl<'a> Checker<'a> {
         self.inferred_types.push(InferredType { name_span, ty });
     }
 
+    fn record_synthesized_type(&mut self, name_span: Span, ty: &Type) {
+        self.record_inferred_type(name_span, display_inferred_type(ty));
+    }
+
     fn record_expr_type(&mut self, span: Span, ty: &Type) {
         if span.is_empty() {
             return;
         }
 
         let ty = self.normalize(&self.resolve_and_default(ty));
-        if is_concrete_type(&ty) {
-            self.record_inferred_type(span, ty);
+        if is_resolved_value_type(&ty) {
+            self.record_synthesized_type(span, &ty);
         }
     }
 
@@ -1410,6 +1415,9 @@ impl<'a> Checker<'a> {
             (Type::Variant(expected), Type::Named(actual)) => {
                 self.check_named_type_against_variant(expected, actual, span);
             }
+            (Type::Named(expected), Type::Variant(actual)) => {
+                self.check_variant_type_against_named(expected, actual, span);
+            }
             (Type::Record(expected), Type::Record(actual)) => {
                 let (Some(expected), Some(actual)) =
                     (literal_record_type(expected), literal_record_type(actual))
@@ -1443,23 +1451,11 @@ impl<'a> Checker<'a> {
         let expected = self.resolve_variant_row(expected);
         let actual = self.resolve_variant_row(actual);
 
-        if expected.tail == RowTail::Closed && actual.tail != RowTail::Closed {
-            self.report_open_variant_not_assignable(span);
-            return;
-        }
-
-        if actual.tail != RowTail::Open
-            && self
-                .unifier
-                .unify(
-                    &Type::Variant(expected.clone()),
-                    &Type::Variant(actual.clone()),
-                )
-                .is_ok()
-        {
-            return;
-        }
-
+        // A literal value row carries an open tail purely so distinct literals can
+        // join during inference; at a boundary its known members are exhaustive,
+        // so it subsumes into a literal union by membership (R3) — not by the
+        // strict open-variant rule below, which exists for tag variants whose tail
+        // could carry tags the annotation does not allow.
         if row_has_literal_entries(&actual) {
             let Some(actual_literals) = literal_variant_members(&actual) else {
                 return;
@@ -1478,6 +1474,23 @@ impl<'a> Checker<'a> {
                     self.report_literal_not_in_union(literal, &expected_literals, span);
                 }
             }
+            return;
+        }
+
+        if expected.tail == RowTail::Closed && actual.tail != RowTail::Closed {
+            self.report_open_variant_not_assignable(span);
+            return;
+        }
+
+        if actual.tail != RowTail::Open
+            && self
+                .unifier
+                .unify(
+                    &Type::Variant(expected.clone()),
+                    &Type::Variant(actual.clone()),
+                )
+                .is_ok()
+        {
             return;
         }
 
@@ -1541,6 +1554,21 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn check_variant_type_against_named(&mut self, expected: &str, actual: &Row, span: Span) {
+        let actual = self.resolve_variant_row(actual);
+        let Some(base) = literal_variant_base(&actual) else {
+            return;
+        };
+
+        if !base.matches_named(expected) {
+            self.report_type_mismatch_between_types(
+                expected,
+                &display_inferred_type(&Type::Variant(actual)).render(),
+                span,
+            );
+        }
+    }
+
     fn check_literal_value_against_variant(&mut self, row: &Row, literal: &Literal, span: Span) {
         let row = self.resolve_variant_row(row);
         let Some(literals) = literal_variant_members(&row) else {
@@ -1551,6 +1579,17 @@ impl<'a> Checker<'a> {
             );
             return;
         };
+
+        if let Some(expected_base) = literal_variant_base(&row)
+            && literal_base(literal) != Some(expected_base)
+        {
+            self.report_type_mismatch(
+                &Type::Variant(row).render(),
+                literal_kind_name(literal),
+                span,
+            );
+            return;
+        }
 
         if row.tail != RowTail::Closed || literals.contains(&literal) {
             return;
@@ -3979,7 +4018,7 @@ impl<'a> Checker<'a> {
     /// synthesized value type never leaks an unsolved meta into checking.
     fn resolve_if_concrete(&self, ty: &Type) -> Option<Type> {
         let ty = self.normalize(&self.resolve_and_default(ty));
-        is_concrete_type(&ty).then_some(ty)
+        is_resolved_value_type(&ty).then_some(ty)
     }
 
     fn resolve_and_default(&self, ty: &Type) -> Type {
@@ -4031,8 +4070,9 @@ impl<'a> Checker<'a> {
 
     fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
         let ty = match &expr.kind {
-            ExprKind::Literal(Literal::Number(_)) => self.unifier.fresh_numeric(),
-            ExprKind::Literal(Literal::String(_)) => named_builtin("Text"),
+            ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
+                self.open_literal_variant(literal)
+            }
             ExprKind::Literal(Literal::Bool(_)) => named_builtin("Bool"),
             ExprKind::Undefined => named_builtin("Undefined"),
             ExprKind::Null => named_builtin("Null"),
@@ -4108,6 +4148,15 @@ impl<'a> Checker<'a> {
         ty
     }
 
+    fn open_literal_variant(&mut self, literal: &Literal) -> Type {
+        Type::Variant(Row {
+            entries: vec![RowEntry::Literal {
+                value: literal.clone(),
+            }],
+            tail: RowTail::Var(self.unifier.fresh_row_var()),
+        })
+    }
+
     /// Infer `value?!` / `value?^`. Both unwrap a `Result[ok, err]` to its `ok`
     /// branch, so when the operand resolves to a concrete `Result` the result is
     /// its ok type — this is what lets a phantom-typed `open(path, mode)?!` carry
@@ -4166,8 +4215,8 @@ impl<'a> Checker<'a> {
     }
 
     fn infer_numeric_binary_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
-        let left = self.unifier.resolve(left);
-        let right = self.unifier.resolve(right);
+        let left = self.widen_numeric_operand(left);
+        let right = self.widen_numeric_operand(right);
 
         if is_meta_type(&left)
             && is_meta_type(&right)
@@ -4205,8 +4254,8 @@ impl<'a> Checker<'a> {
         right: &Type,
         name: &'static str,
     ) -> Option<Type> {
-        let left = self.unifier.resolve(left);
-        let right = self.unifier.resolve(right);
+        let left = self.widen_same_named_operand(left, name);
+        let right = self.widen_same_named_operand(right, name);
 
         match (named_type_name(&left), named_type_name(&right)) {
             (Some(left_name), Some(right_name)) if left_name == name && right_name == name => {
@@ -4224,6 +4273,29 @@ impl<'a> Checker<'a> {
                 .map(|()| named_builtin(name)),
             _ => None,
         }
+    }
+
+    fn widen_numeric_operand(&mut self, ty: &Type) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        if let Type::Variant(row) = &resolved
+            && literal_variant_base(row) == Some(LiteralBase::Number)
+        {
+            return self.unifier.fresh_numeric();
+        }
+
+        resolved
+    }
+
+    fn widen_same_named_operand(&mut self, ty: &Type, name: &'static str) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        if name == "Text"
+            && let Type::Variant(row) = &resolved
+            && literal_variant_base(row) == Some(LiteralBase::Text)
+        {
+            return named_builtin("Text");
+        }
+
+        resolved
     }
 
     fn infer_equality_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
@@ -5057,7 +5129,7 @@ impl<'a> Checker<'a> {
                 && free_metas(&arg_type)
                     .into_iter()
                     .all(|id| self.unifier.is_numeric_meta(&Type::Meta(id)));
-            if !is_concrete_type(&arg_type) && !numeric_metas_only {
+            if !is_resolved_value_type(&arg_type) && !numeric_metas_only {
                 return Type::Deferred;
             }
             payload.push(arg_type);
@@ -5228,6 +5300,7 @@ impl<'a> Checker<'a> {
     fn union_match_variant_arms(&mut self, body_types: &[Type]) -> Option<Result<Type, ()>> {
         let mut entries = Vec::new();
         let mut open = false;
+        let mut kind = None;
 
         for body_type in body_types {
             let Type::Variant(row) = self.unifier.resolve(body_type) else {
@@ -5239,27 +5312,44 @@ impl<'a> Checker<'a> {
             }
 
             for entry in row.entries {
-                let RowEntry::Tag { name, payload } = entry else {
+                let Some(entry_kind) = row_entry_variant_kind(&entry) else {
                     return Some(Err(()));
                 };
-
-                let Some(index) = row_entry_index(&entries, &name) else {
-                    entries.push(RowEntry::Tag { name, payload });
-                    continue;
-                };
-
-                let RowEntry::Tag {
-                    payload: existing, ..
-                } = &entries[index]
-                else {
-                    return Some(Err(()));
-                };
-                if existing.len() != payload.len() {
+                if kind.is_some_and(|existing| existing != entry_kind) {
                     return Some(Err(()));
                 }
+                kind = Some(entry_kind);
 
-                for (expected, actual) in existing.iter().zip(&payload) {
-                    if self.unifier.unify(expected, actual).is_err() {
+                match entry {
+                    RowEntry::Tag { name, payload } => {
+                        let Some(index) = row_entry_index(&entries, &name) else {
+                            entries.push(RowEntry::Tag { name, payload });
+                            continue;
+                        };
+
+                        let RowEntry::Tag {
+                            payload: existing, ..
+                        } = &entries[index]
+                        else {
+                            return Some(Err(()));
+                        };
+                        if existing.len() != payload.len() {
+                            return Some(Err(()));
+                        }
+
+                        for (expected, actual) in existing.iter().zip(&payload) {
+                            if self.unifier.unify(expected, actual).is_err() {
+                                return Some(Err(()));
+                            }
+                        }
+                    }
+                    RowEntry::Literal { value } => {
+                        let label = render_literal_value(&value);
+                        if row_entry_index(&entries, label).is_none() {
+                            entries.push(RowEntry::Literal { value });
+                        }
+                    }
+                    RowEntry::Field { .. } => {
                         return Some(Err(()));
                     }
                 }
@@ -5270,6 +5360,14 @@ impl<'a> Checker<'a> {
             entries,
             tail: if open { RowTail::Open } else { RowTail::Closed },
         });
+        if kind == Some(VariantEntryKind::Literal) {
+            let Type::Variant(row) = &result else {
+                unreachable!("match arm union constructs a variant");
+            };
+            if literal_variant_base(row).is_none() {
+                return Some(Err(()));
+            }
+        }
         Some(Ok(self.unifier.resolve(&result)))
     }
 
@@ -5329,7 +5427,7 @@ impl<'a> comptime::EvalContext<'a> for Checker<'a> {
         let inferred = self.infer(&TypeEnv::new(), expr);
         let ty = self.normalize(&self.resolve_and_default(&inferred));
         self.restore_diagnostic_snapshot(diagnostic_snapshot);
-        ty
+        display_inferred_type(&ty)
     }
 
     fn type_is_unresolved(&self, ty: &Type) -> bool {

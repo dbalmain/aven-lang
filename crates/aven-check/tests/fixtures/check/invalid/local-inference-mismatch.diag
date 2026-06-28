@@ -1,3 +1,3 @@
-error type.mismatch: expected `Text`, found `Int`
-  label 39..44: this value has type `Int`
-  note: change the value to produce `Text`, or change the annotation to `Int`
+error type.mismatch: expected `Text`, found `@{ 1 }`
+  label 39..44: this value has type `@{ 1 }`
+  note: change the value to produce `Text`, or change the annotation to `@{ 1 }`

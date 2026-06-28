@@ -170,6 +170,21 @@ pub(crate) enum RowKind {
     Variant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiteralBase {
+    Text,
+    Number,
+}
+
+impl LiteralBase {
+    pub(crate) fn matches_named(self, name: &str) -> bool {
+        match self {
+            Self::Text => name == "Text",
+            Self::Number => matches!(name, "Int" | "Float"),
+        }
+    }
+}
+
 pub fn render_type(ty: &Type) -> String {
     TypeRenderer::default().render_type(ty)
 }
@@ -592,6 +607,85 @@ pub(crate) fn type_contains_deferred(ty: &Type) -> bool {
 
 pub(crate) fn named_builtin(name: &str) -> Type {
     Type::Named(name.to_owned())
+}
+
+pub(crate) fn literal_variant_base(row: &Row) -> Option<LiteralBase> {
+    let mut base = None;
+
+    for entry in &row.entries {
+        let incoming = match entry {
+            RowEntry::Literal { value } => literal_base(value)?,
+            RowEntry::Field { .. } | RowEntry::Tag { .. } => return None,
+        };
+
+        match base {
+            None => base = Some(incoming),
+            Some(existing) if existing == incoming => {}
+            Some(_) => return None,
+        }
+    }
+
+    base
+}
+
+pub(crate) fn literal_base(literal: &Literal) -> Option<LiteralBase> {
+    match literal {
+        Literal::String(_) => Some(LiteralBase::Text),
+        Literal::Number(_) => Some(LiteralBase::Number),
+        Literal::Bool(_) | Literal::Regex(_) | Literal::Path(_) => None,
+    }
+}
+
+pub(crate) fn open_literal_variant_base(row: &Row) -> Option<LiteralBase> {
+    if row.tail == RowTail::Closed {
+        return None;
+    }
+
+    literal_variant_base(row)
+}
+
+pub(crate) fn is_resolved_value_type(ty: &Type) -> bool {
+    match ty {
+        Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
+        Type::Named(_) => true,
+        Type::Apply { callee, args } => {
+            is_resolved_value_type(callee) && args.iter().all(is_resolved_value_type)
+        }
+        Type::Function { params, result, .. } => {
+            params.iter().all(is_resolved_value_type) && is_resolved_value_type(result)
+        }
+        Type::Optional(inner) | Type::Nullable(inner) => is_resolved_value_type(inner),
+        Type::Tuple(items) => items.iter().all(is_resolved_value_type),
+        Type::Record(row) => {
+            !matches!(row.tail, RowTail::Var(_))
+                && row.entries.iter().all(|entry| match entry {
+                    RowEntry::Field { ty, .. } => is_resolved_value_type(ty),
+                    RowEntry::Tag { .. } | RowEntry::Literal { .. } => false,
+                })
+        }
+        Type::Variant(row) if literal_variant_base(row).is_some() => true,
+        Type::Variant(row) => {
+            !matches!(row.tail, RowTail::Var(_))
+                && row.entries.iter().all(|entry| match entry {
+                    RowEntry::Tag { payload, .. } => payload.iter().all(is_resolved_value_type),
+                    RowEntry::Field { .. } | RowEntry::Literal { .. } => false,
+                })
+        }
+    }
+}
+
+pub(crate) fn display_inferred_type(ty: &Type) -> Type {
+    map_type(ty, &mut |node| {
+        if let Type::Variant(row) = node
+            && literal_variant_base(row).is_some()
+        {
+            let mut displayed = row.clone();
+            displayed.tail = RowTail::Closed;
+            return Some(Type::Variant(displayed));
+        }
+
+        None
+    })
 }
 
 /// Public type builders so hosts and tests can spell Aven types in Rust

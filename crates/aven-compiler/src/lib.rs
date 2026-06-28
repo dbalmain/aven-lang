@@ -988,7 +988,7 @@ mod tests {
                 .document
                 .type_at(nth_span(source, "x", 0))
                 .map(Type::render),
-            Some("Int".to_owned())
+            Some("@{ 1 }".to_owned())
         );
     }
 
@@ -1002,7 +1002,7 @@ mod tests {
                 .document
                 .type_at(nth_span(source, "value", 0))
                 .map(Type::render),
-            Some("Text".to_owned())
+            Some("@{ \"hi\" }".to_owned())
         );
     }
 

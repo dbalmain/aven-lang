@@ -1,0 +1,5 @@
+mode = "r"
+pick = (m: @{"r", "w"}) => m
+
+viaCall = pick(mode)
+viaAssign : @{"r", "w"} = mode

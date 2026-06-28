@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ty::{
-    Row, RowEntry, RowTail, Type, TypeScheme, free_row_vars, map_type, map_type_with_rows,
-    render_literal_value, type_contains_meta,
+    LiteralBase, Row, RowEntry, RowTail, Type, TypeScheme, free_row_vars, literal_variant_base,
+    map_type, map_type_with_rows, open_literal_variant_base, render_literal_value,
+    type_contains_meta,
 };
 
 #[derive(Debug, Default)]
@@ -104,8 +105,19 @@ impl Unifier {
 
         match (&left, &right) {
             (Type::Meta(left), Type::Meta(right)) if left == right => Ok(()),
+            (Type::Meta(id), Type::Variant(row)) | (Type::Variant(row), Type::Meta(id))
+                if self.numeric.contains(id)
+                    && open_literal_variant_base(row) == Some(LiteralBase::Number) =>
+            {
+                Ok(())
+            }
             (Type::Meta(id), ty) | (ty, Type::Meta(id)) => self.bind(*id, ty),
             (Type::Named(left), Type::Named(right)) if left == right => Ok(()),
+            (Type::Variant(row), Type::Named(name)) | (Type::Named(name), Type::Variant(row))
+                if open_literal_variant_base(row).is_some_and(|base| base.matches_named(name)) =>
+            {
+                Ok(())
+            }
             (Type::Variable(left), Type::Variable(right)) if left == right => Ok(()),
             (
                 Type::Apply {
@@ -186,6 +198,12 @@ impl Unifier {
     fn unify_rows(&mut self, left: &Row, right: &Row) -> Result<(), ()> {
         let left = self.resolve_row(left);
         let right = self.resolve_row(right);
+        if let (Some(left_base), Some(right_base)) =
+            (literal_variant_base(&left), literal_variant_base(&right))
+            && left_base != right_base
+        {
+            return Err(());
+        }
         let mut right_entries = right.entries;
         let mut left_only = Vec::new();
 
@@ -356,6 +374,8 @@ fn row_entry_label(entry: &RowEntry) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use aven_parser::Literal;
+
     use super::*;
 
     fn named(name: &str) -> Type {
@@ -373,6 +393,18 @@ mod tests {
         RowEntry::Tag {
             name: name.to_owned(),
             payload,
+        }
+    }
+
+    fn literal_number(raw: &str) -> RowEntry {
+        RowEntry::Literal {
+            value: Literal::Number(raw.to_owned()),
+        }
+    }
+
+    fn literal_string(raw: &str) -> RowEntry {
+        RowEntry::Literal {
+            value: Literal::String(raw.to_owned()),
         }
     }
 
@@ -492,6 +524,72 @@ mod tests {
         assert!(resolved.entries.contains(&tag("Zero", Vec::new())));
         assert!(resolved.entries.contains(&tag("Pos", Vec::new())));
         assert!(matches!(resolved.tail, RowTail::Var(_)));
+    }
+
+    #[test]
+    fn variant_unification_merges_open_literal_rows() {
+        let mut unifier = Unifier::default();
+        let left_tail = unifier.fresh_row_var();
+        let right_tail = unifier.fresh_row_var();
+        let left = Type::Variant(Row {
+            entries: vec![literal_number("1")],
+            tail: RowTail::Var(left_tail),
+        });
+        let right = Type::Variant(Row {
+            entries: vec![literal_number("2")],
+            tail: RowTail::Var(right_tail),
+        });
+
+        assert_eq!(unifier.unify(&left, &right), Ok(()));
+        let Type::Variant(resolved) = unifier.resolve(&left) else {
+            panic!("variant resolution should preserve the outer type");
+        };
+        assert!(resolved.entries.contains(&literal_number("1")));
+        assert!(resolved.entries.contains(&literal_number("2")));
+        assert!(matches!(resolved.tail, RowTail::Var(_)));
+    }
+
+    #[test]
+    fn variant_unification_rejects_mixed_literal_bases_without_merging() {
+        let mut unifier = Unifier::default();
+        let left_tail = unifier.fresh_row_var();
+        let right_tail = unifier.fresh_row_var();
+        let left = Type::Variant(Row {
+            entries: vec![literal_number("1")],
+            tail: RowTail::Var(left_tail),
+        });
+        let right = Type::Variant(Row {
+            entries: vec![literal_string("\"one\"")],
+            tail: RowTail::Var(right_tail),
+        });
+
+        assert_eq!(unifier.unify(&left, &right), Err(()));
+        assert_eq!(unifier.resolve(&left), left);
+    }
+
+    #[test]
+    fn open_literal_rows_widen_to_matching_base_types() {
+        let mut unifier = Unifier::default();
+        let tail = unifier.fresh_row_var();
+        let open_text = Type::Variant(Row {
+            entries: vec![literal_string("\"hi\"")],
+            tail: RowTail::Var(tail),
+        });
+        let closed_text = Type::Variant(Row {
+            entries: vec![literal_string("\"hi\"")],
+            tail: RowTail::Closed,
+        });
+        let numeric = unifier.fresh_numeric();
+        let number_tail = unifier.fresh_row_var();
+        let open_number = Type::Variant(Row {
+            entries: vec![literal_number("1")],
+            tail: RowTail::Var(number_tail),
+        });
+
+        assert_eq!(unifier.unify(&open_text, &named("Text")), Ok(()));
+        assert_eq!(unifier.unify(&closed_text, &named("Text")), Err(()));
+        assert_eq!(unifier.unify(&open_number, &numeric), Ok(()));
+        assert!(unifier.is_numeric_meta(&numeric));
     }
 
     #[test]

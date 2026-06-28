@@ -1,3 +1,3 @@
-config = { host: "x", port: 8080 }
+config : { host: Text, port: Int } = { host: "x", port: 8080 }
 T = typeOf(config)
 other : T = { host: "z", port: 1 }
