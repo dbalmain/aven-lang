@@ -669,7 +669,7 @@ impl<'a> Checker<'a> {
         // provided argument against its corresponding param.
         let params = params.clone();
         for (expected, arg) in params.iter().zip(args) {
-            self.check_value_against(expected, arg);
+            self.check_call_arg_against_param(expected, arg);
         }
     }
 
@@ -1220,6 +1220,14 @@ impl<'a> Checker<'a> {
         for element in elements {
             self.check_value_against(element_type, element);
         }
+    }
+
+    fn check_call_arg_against_param(&mut self, expected: &Type, arg: &Expr) -> bool {
+        let diagnostics_start = self.diagnostics.len();
+        self.check_value_against(expected, arg);
+        let reported_diagnostic = self.diagnostics.len() > diagnostics_start;
+        self.deduplicate_diagnostics_since(diagnostics_start);
+        !reported_diagnostic
     }
 
     fn check_type_against_type(&mut self, expected: &Type, actual: &Type, span: Span) {
@@ -4357,10 +4365,10 @@ impl<'a> Checker<'a> {
         let mut all_match = true;
         for ((arg, actual), expected) in args.iter().zip(arg_types).zip(params) {
             if self.unifier.unify(actual, expected).is_err() {
-                all_match = false;
                 let expected = self.normalize(&self.resolve_and_default(expected));
-                let actual = self.normalize(&self.resolve_and_default(actual));
-                self.check_type_against_type(&expected, &actual, arg.span);
+                if !self.check_call_arg_against_param(&expected, arg) {
+                    all_match = false;
+                }
             }
         }
         all_match

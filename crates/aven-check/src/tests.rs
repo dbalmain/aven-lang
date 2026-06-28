@@ -1526,6 +1526,82 @@ fn fresh_literals_check_against_literal_unions_by_membership() {
 }
 
 #[test]
+fn call_member_literal_checks_literal_union_param_by_membership() {
+    let source = concat!(
+        "myFun = (mode: @{\"text\", \"int\"}) => mode\n",
+        "result = myFun(\"text\")\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected check diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "result", 0))
+            .map(Type::render),
+        Some("@{ \"text\", \"int\" }".to_owned())
+    );
+}
+
+#[test]
+fn call_non_member_literal_reports_literal_not_in_union() {
+    let source = concat!(
+        "myFun = (mode: @{\"text\", \"int\"}) => mode\n",
+        "result = myFun(\"nope\")\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let check = check_module(&output.module);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        1
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::WIDE_VALUE_INTO_LITERAL_UNION),
+        0
+    );
+}
+
+#[test]
+fn call_wide_value_into_literal_union_param_reports_wide_value() {
+    let source = concat!(
+        "myFun = (mode: @{\"r\", \"w\"}) => mode\n",
+        "fromText = (s: Text) => myFun(s)\n",
+        "result = fromText(\"r\")\n",
+    );
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+
+    let check = check_module(&output.module);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::WIDE_VALUE_INTO_LITERAL_UNION),
+        1
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        0
+    );
+}
+
+#[test]
 fn bare_literals_still_infer_base_types() {
     let output = parse_module("x = 200\ns = \"hi\"\n");
     let known_types = known_type_names(&output.module);
