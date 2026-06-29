@@ -1,0 +1,5 @@
+Mode = @{"r", "w", "a"}
+
+mode : Mode = "r"
+result = mode ?>
+  "r" | "w" => 1
