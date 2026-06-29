@@ -1,0 +1,7 @@
+main = () =>
+  merge = (a, b) => { ..a, ..b }
+  u : { name: Text } = { name: "Ada" }
+  m : { age: Int } = { age: 3 }
+  both = merge(u, m)
+  bad : Text = both.age
+  both

@@ -20,11 +20,11 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    LiteralBase, Row, RowEntry, RowKind, RowTail, Type, TypeScheme, display_inferred_type,
-    free_metas, generalize, has_only_meta_unknowns, is_concrete_type, is_meta_type, is_null_value,
-    is_resolved_value_type, is_undefined_value, literal_base, literal_variant_base, map_type,
-    mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
-    numeric_type_name, render_literal_value, type_contains_deferred,
+    LiteralBase, Row, RowEntry, RowKind, RowMergeSource, RowTail, Type, TypeScheme,
+    display_inferred_type, free_metas, generalize, has_only_meta_unknowns, is_concrete_type,
+    is_meta_type, is_null_value, is_resolved_value_type, is_undefined_value, literal_base,
+    literal_variant_base, map_type, mismatched_literal_kind, named_builtin, named_type_mismatch,
+    named_type_name, numeric_type_name, render_literal_value, type_contains_deferred,
 };
 use crate::unify::Unifier;
 
@@ -395,7 +395,7 @@ impl<'a> Checker<'a> {
             let env_row_vars = self
                 .local_types
                 .free_row_vars(|ty| self.unifier.resolve(ty));
-            let scheme = generalize(resolved, &env_metas, &env_row_vars);
+            let scheme = self.generalize_with_row_merges(resolved, &env_metas, &env_row_vars);
             let diagnostics_start = self.diagnostics.len();
             self.check_value_expr(&binding.value);
             self.report_unresolved_runtime_binding_if_stuck(binding, &scheme.ty, diagnostics_start);
@@ -676,6 +676,32 @@ impl<'a> Checker<'a> {
         Some(self.normalize(&self.resolve_and_default(&ty)))
     }
 
+    fn generalize_with_row_merges(
+        &self,
+        resolved: Type,
+        env_metas: &[u32],
+        env_row_vars: &[u32],
+    ) -> TypeScheme {
+        let mut scheme = generalize(resolved, env_metas, env_row_vars);
+        scheme.row_merges = self
+            .unifier
+            .row_merge_closure(&scheme.row_vars, env_row_vars);
+        let mut seen: HashSet<_> = scheme.row_vars.iter().copied().collect();
+        for constraint in &scheme.row_merges {
+            if seen.insert(constraint.result) {
+                scheme.row_vars.push(constraint.result);
+            }
+            for source in &constraint.sources {
+                for id in crate::ty::free_row_vars(&Type::Record(source.row.clone())) {
+                    if seen.insert(id) {
+                        scheme.row_vars.push(id);
+                    }
+                }
+            }
+        }
+        scheme
+    }
+
     fn report_unresolved_runtime_binding_if_stuck(
         &mut self,
         binding: &Binding,
@@ -728,11 +754,9 @@ impl<'a> Checker<'a> {
     /// Collect spans a prior diagnostic could plausibly explain this binding's
     /// value through: the value expression itself plus, transitively, the value
     /// spans of any top-level binding this value (or its sub-expressions) reach
-    /// by name. The transitive chase is what lets R6 see diagnostics that
-    /// inference emitted inside a called binding's body (for example the
-    /// `duplicate-spread-label` recorded while re-running a record-spread
-    /// lambda's body during this binding's value inference), whose label span
-    /// lives outside this binding's own value span.
+    /// by name. The transitive chase is what lets R6 see diagnostics whose
+    /// primary label lives on a called helper binding rather than on this
+    /// binding's value.
     fn collect_value_diagnostic_spans(
         &self,
         value: &Expr,
@@ -3005,7 +3029,7 @@ impl<'a> Checker<'a> {
             }
         }
 
-        row.tail = merge_row_tails(row.tail, source_tail);
+        row.tail = self.merge_row_tails(row.tail, source_tail, overwrite, span);
 
         Ok(())
     }
@@ -3032,6 +3056,41 @@ impl<'a> Checker<'a> {
 
         self.check_type_against_type(base_ty, &inner, span);
         true
+    }
+
+    fn merge_row_tails(
+        &mut self,
+        accumulated: RowTail,
+        incoming: RowTail,
+        overwrite: bool,
+        span: Span,
+    ) -> RowTail {
+        match (accumulated, incoming) {
+            (tail, RowTail::Closed) | (RowTail::Closed, tail) => tail,
+            (RowTail::Open, _) | (_, RowTail::Open) => RowTail::Open,
+            (RowTail::Var(left), RowTail::Var(right)) if left == right => RowTail::Var(left),
+            (RowTail::Var(left), RowTail::Var(right)) => {
+                let result = self.unifier.fresh_row_merge(vec![
+                    RowMergeSource {
+                        row: Row {
+                            entries: Vec::new(),
+                            tail: RowTail::Var(left),
+                        },
+                        overwrite: false,
+                        span,
+                    },
+                    RowMergeSource {
+                        row: Row {
+                            entries: Vec::new(),
+                            tail: RowTail::Var(right),
+                        },
+                        overwrite,
+                        span,
+                    },
+                ]);
+                RowTail::Var(result)
+            }
+        }
     }
 
     fn check_homogeneous_variant_entry(
@@ -3488,6 +3547,13 @@ impl<'a> Checker<'a> {
         span: Span,
         context: DuplicateRowLabelContext,
     ) {
+        if self.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::DUPLICATE_SPREAD_LABEL)
+                && diagnostic.labels.first().map(|label| label.span) == Some(span)
+        }) {
+            return;
+        }
+
         let (label, note) = match context {
             DuplicateRowLabelContext::RecordAdd => (
                 "this label is already present in the accumulated row",
@@ -3780,15 +3846,6 @@ fn row_entry_index(entries: &[RowEntry], label: &str) -> Option<usize> {
         .position(|entry| row_entry_label(entry) == label)
 }
 
-fn merge_row_tails(accumulated: RowTail, incoming: RowTail) -> RowTail {
-    match (accumulated, incoming) {
-        (tail, RowTail::Closed) | (RowTail::Closed, tail) => tail,
-        (RowTail::Open, _) | (_, RowTail::Open) => RowTail::Open,
-        (RowTail::Var(left), RowTail::Var(right)) if left == right => RowTail::Var(left),
-        (RowTail::Var(_), RowTail::Var(_)) => RowTail::Open,
-    }
-}
-
 fn relabel_row_entry(entry: &RowEntry, label: &str) -> RowEntry {
     match entry {
         RowEntry::Field { ty, .. } => RowEntry::Field {
@@ -3877,17 +3934,6 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
             | RecordEntry::Open { .. } => None,
         })
         .collect()
-}
-
-fn record_entries_are_param_spreads(entries: &[RecordEntry], params: &[Param]) -> bool {
-    let param_names: HashSet<_> = params.iter().map(|param| param.name.as_str()).collect();
-    !entries.is_empty()
-        && entries.iter().all(|entry| {
-            let RecordEntry::Spread { value, .. } = entry else {
-                return false;
-            };
-            matches!(&ungroup_expr(value).kind, ExprKind::Name(name) if param_names.contains(name.as_str()))
-        })
 }
 
 fn union_annotation_entries(expr: &Expr) -> Vec<RecordEntry> {
@@ -4649,6 +4695,7 @@ fn scheme_from_global(ty: &Type, unifier: &mut Unifier) -> TypeScheme {
         TypeScheme {
             vars,
             row_vars: Vec::new(),
+            row_merges: Vec::new(),
             ty: generalized,
         }
     }
@@ -4768,7 +4815,7 @@ impl<'a> Checker<'a> {
             TypeScheme::mono(annotation)
         } else {
             let ty = self.infer(&TypeEnv::new(), &binding.value);
-            generalize(self.resolve_and_default(&ty), &[], &[])
+            self.generalize_with_row_merges(self.resolve_and_default(&ty), &[], &[])
         };
 
         self.in_progress.remove(name);
@@ -5207,9 +5254,6 @@ impl<'a> Checker<'a> {
 
         let callee_type = self.infer(env, callee);
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
-        if let Some(result) = self.infer_record_spread_lambda_call(env, callee, args, &arg_types) {
-            return result;
-        }
 
         // When the callee already resolves to a function (e.g. a host global or
         // a lambda with defaults), unify each supplied argument against the
@@ -5226,7 +5270,7 @@ impl<'a> Checker<'a> {
             && arg_types.len() <= params.len()
         {
             self.check_call_arg_types_against_params(args, &arg_types, params);
-            return result.as_ref().clone();
+            return self.resolve_row_merge_call_result(result);
         }
 
         let result_type = self.unifier.fresh();
@@ -5239,84 +5283,21 @@ impl<'a> Checker<'a> {
         if self.unifier.unify(&callee_type, &expected_callee).is_err() {
             Type::Deferred
         } else {
-            result_type
+            self.resolve_row_merge_call_result(&result_type)
         }
     }
 
-    fn infer_record_spread_lambda_call(
-        &mut self,
-        env: &TypeEnv,
-        callee: &Expr,
-        args: &[Expr],
-        arg_types: &[Type],
-    ) -> Option<Type> {
-        let (params, entries) = self.record_spread_lambda_callee(env, callee)?;
-        if params.len() != args.len() {
-            return None;
+    fn resolve_row_merge_call_result(&mut self, result: &Type) -> Type {
+        if let Some(conflict) = self.unifier.row_merge_conflict_in_type(result) {
+            self.report_duplicate_row_label(
+                &conflict.label,
+                conflict.span,
+                DuplicateRowLabelContext::Spread,
+            );
+            Type::Deferred
+        } else {
+            self.unifier.resolve(result)
         }
-        if !record_entries_are_param_spreads(entries, params) {
-            return None;
-        }
-        if args
-            .iter()
-            .any(|arg| self.expr_is_type_artifact_reference(arg))
-        {
-            return None;
-        }
-
-        let mut body_env = TypeEnv::new();
-        for (param, arg_type) in params.iter().zip(arg_types) {
-            let actual = self.normalize(&self.resolve_and_default(arg_type));
-            if !matches!(actual, Type::Record(_)) {
-                return None;
-            }
-            body_env.insert(param.name.clone(), LocalValueType::Known(actual));
-        }
-
-        Some(self.infer_record_entries(&body_env, entries))
-    }
-
-    fn expr_is_type_artifact_reference(&self, expr: &Expr) -> bool {
-        match &ungroup_expr(expr).kind {
-            ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
-                self.known_types.contains(name)
-                    || self.comptime_artifacts.get(name).copied().unwrap_or(false)
-            }
-            _ => false,
-        }
-    }
-
-    fn record_spread_lambda_callee(
-        &self,
-        env: &TypeEnv,
-        callee: &Expr,
-    ) -> Option<(&'a [Param], &'a [RecordEntry])> {
-        let name = expr_name(callee)?;
-        if env.contains_key(name) {
-            return None;
-        }
-
-        let binding = (*self.bindings.get(name)?)?;
-        let ExprKind::Lambda {
-            params,
-            return_annotation: None,
-            body,
-        } = &ungroup_expr(&binding.value).kind
-        else {
-            return None;
-        };
-        if params
-            .iter()
-            .any(|param| param.comptime || param.annotation.is_some() || param.default.is_some())
-        {
-            return None;
-        }
-
-        let ExprKind::Record(entries) = &ungroup_expr(body).kind else {
-            return None;
-        };
-
-        Some((params, entries))
     }
 
     fn check_call_arg_types_against_params(
@@ -6063,7 +6044,11 @@ impl<'a> Checker<'a> {
                                 free_row_vars_in_local_values(next_env.values(), |ty| {
                                     self.unifier.resolve(ty)
                                 });
-                            let scheme = generalize(resolved, &env_metas, &env_row_vars);
+                            let scheme = self.generalize_with_row_merges(
+                                resolved,
+                                &env_metas,
+                                &env_row_vars,
+                            );
                             if type_contains_deferred(&scheme.ty) {
                                 LocalValueType::Unknown
                             } else {

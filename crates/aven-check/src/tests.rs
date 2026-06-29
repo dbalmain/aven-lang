@@ -3546,8 +3546,9 @@ fn unannotated_record_spread_lambda_call_infers_merged_result() {
     let scheme = checker
         .infer_top_level_scheme("merge")
         .expect("inferred merge scheme");
-    assert_eq!(scheme.row_vars.len(), 2);
-    let Type::Function { params, .. } = &scheme.ty else {
+    assert_eq!(scheme.row_vars.len(), 3);
+    assert_eq!(scheme.row_merges.len(), 1);
+    let Type::Function { params, result, .. } = &scheme.ty else {
         panic!("merge should infer a function type");
     };
     assert!(params.iter().all(|param| {
@@ -3559,6 +3560,69 @@ fn unannotated_record_spread_lambda_call_infers_merged_result() {
             }) if entries.is_empty() && scheme.row_vars.contains(id)
         )
     }));
+    assert!(matches!(
+        result.as_ref(),
+        Type::Record(Row {
+            entries,
+            tail: RowTail::Var(id),
+        }) if entries.is_empty() && scheme.row_vars.contains(id)
+    ));
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn local_record_spread_lambda_call_infers_merged_result() {
+    let output = parse_module(
+        "main = () =>\n  merge = (a, b) => { ..a, ..b }\n  u : { name: Text } = { name: \"Ada\" }\n  m : { age: Int } = { age: 3 }\n  both = merge(u, m)\n  both\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "main"),
+        Some("() -> { name: Text, age: Int }".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn local_record_spread_lambda_result_reports_field_type_mismatch() {
+    let output = parse_module(
+        "main = () =>\n  merge = (a, b) => { ..a, ..b }\n  u : { name: Text } = { name: \"Ada\" }\n  m : { age: Int } = { age: 3 }\n  both = merge(u, m)\n  bad : Text = both.age\n  both\n",
+    );
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::ty::UNRESOLVED_BINDING
+    ));
+}
+
+#[test]
+fn record_spread_lambda_instantiates_fresh_rows_per_call() {
+    let output = parse_module(
+        "merge = (a, b) => { ..a, ..b }\n\
+         u : { name: Text } = { name: \"Ada\" }\n\
+         m : { age: Int } = { age: 3 }\n\
+         left : { title: Text } = { title: \"Dr\" }\n\
+         right : { active: Bool } = { active: true }\n\
+         both = merge(u, m)\n\
+         other = merge(left, right)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "both"),
+        Some("{ name: Text, age: Int }".to_owned())
+    );
+    assert_eq!(
+        render_top_level_value(&mut checker, "other"),
+        Some("{ title: Text, active: Bool }".to_owned())
+    );
     assert!(checker.diagnostics.is_empty());
 }
 
