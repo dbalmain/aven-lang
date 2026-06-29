@@ -2042,7 +2042,7 @@ mod tests {
         assert_eq!(hints[0].position, position(0, 1));
         assert!(matches!(
             &hints[0].label,
-            InlayHintLabel::String(label) if label == ": @{ 1 }"
+            InlayHintLabel::String(label) if label == ": 1"
         ));
         assert_eq!(hints[0].kind, Some(InlayHintKind::TYPE));
         assert_eq!(hints[0].padding_left, Some(true));
@@ -2249,7 +2249,7 @@ mod tests {
 
         assert_eq!(format.detail.as_deref(), Some("Int -> Text"));
         assert_eq!(format.kind, Some(CompletionItemKind::FUNCTION));
-        assert_eq!(count.detail.as_deref(), Some("@{ 1 }"));
+        assert_eq!(count.detail.as_deref(), Some("1"));
         assert_eq!(count.kind, Some(CompletionItemKind::VARIABLE));
     }
 
@@ -2355,7 +2355,7 @@ mod tests {
             panic!("expected local completion");
         };
 
-        assert_eq!(local.detail.as_deref(), Some("@{ \"hi\" }"));
+        assert_eq!(local.detail.as_deref(), Some("\"hi\""));
         assert_eq!(local.kind, Some(CompletionItemKind::VARIABLE));
     }
 
@@ -2379,7 +2379,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(value_items.len(), 1);
-        assert_eq!(value_items[0].detail.as_deref(), Some("@{ \"hi\" }"));
+        assert_eq!(value_items[0].detail.as_deref(), Some("\"hi\""));
     }
 
     #[test]
@@ -3104,7 +3104,7 @@ mod tests {
             panic!("expected hover");
         };
 
-        assert_hover_value(hover, "```aven\nvalue : @{ \"hi\" }\n```");
+        assert_hover_value(hover, "```aven\nvalue : \"hi\"\n```");
     }
 
     #[test]
@@ -3115,7 +3115,7 @@ mod tests {
             panic!("expected hover");
         };
 
-        assert_hover_value(hover, "```aven\nlocal : @{ \"hi\" }\n```");
+        assert_hover_value(hover, "```aven\nlocal : \"hi\"\n```");
     }
 
     #[test]
@@ -3137,7 +3137,7 @@ mod tests {
             panic!("expected hover");
         };
 
-        assert_hover_value(hover, "```aven\n@{ \"hi\" }\n```");
+        assert_hover_value(hover, "```aven\n\"hi\"\n```");
     }
 
     #[test]

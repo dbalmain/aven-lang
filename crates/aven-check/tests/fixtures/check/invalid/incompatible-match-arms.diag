@@ -1,3 +1,3 @@
 error type.incompatible-match-arms: match arms produce incompatible types
-  label 86..88: this arm produces `@{ 42 }`
-  note: earlier arms produce `@{ "hello" }`; make all arms produce the same type, or annotate the match result type
+  label 86..88: this arm produces `42`
+  note: earlier arms produce `"hello"`; make all arms produce the same type, or annotate the match result type

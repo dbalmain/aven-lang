@@ -106,6 +106,10 @@ fn literal_number(raw: &str) -> RowEntry {
     }
 }
 
+fn variant_type(entries: Vec<RowEntry>, tail: RowTail) -> Type {
+    Type::Variant(Row { entries, tail })
+}
+
 fn row_label(entry: &RowEntry) -> &str {
     match entry {
         RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
@@ -170,7 +174,7 @@ fn renders_types_as_surface_syntax() {
             tail: RowTail::Var(0),
         })
         .render(),
-        "@{ @Ok(t), @Err(e), @Done, .. }"
+        "@Ok(t) | @Err(e) | @Done | .."
     );
     assert_eq!(
         Type::Variant(Row {
@@ -178,7 +182,7 @@ fn renders_types_as_surface_syntax() {
             tail: RowTail::Closed,
         })
         .render(),
-        "@{ \"waiting\", \"running\" }"
+        "\"waiting\" | \"running\""
     );
     assert_eq!(
         Type::Variant(Row {
@@ -190,7 +194,7 @@ fn renders_types_as_surface_syntax() {
             tail: RowTail::Closed,
         })
         .render(),
-        "@{ 0, 1, 2 }"
+        "0 | 1 | 2"
     );
     assert_eq!(
         function(
@@ -221,6 +225,73 @@ fn renders_types_as_surface_syntax() {
         Type::Tuple(vec![Type::Meta(10), Type::Meta(10), Type::Deferred]).render(),
         "(a, a, ?)"
     );
+}
+
+#[test]
+fn renders_variant_types_as_surface_unions() {
+    let string_union = || {
+        variant_type(
+            vec![literal_string("\"a\""), literal_string("\"b\"")],
+            RowTail::Closed,
+        )
+    };
+
+    assert_eq!(
+        variant_type(vec![literal_number("2")], RowTail::Closed).render(),
+        "2"
+    );
+    assert_eq!(
+        variant_type(vec![literal_string("\"r\"")], RowTail::Closed).render(),
+        "\"r\""
+    );
+    assert_eq!(
+        variant_type(
+            vec![literal_string("\"r\""), literal_string("\"w\"")],
+            RowTail::Closed,
+        )
+        .render(),
+        "\"r\" | \"w\""
+    );
+    assert_eq!(
+        variant_type(
+            vec![
+                tag("Red", Vec::new()),
+                tag("Green", Vec::new()),
+                tag("Blue", Vec::new()),
+            ],
+            RowTail::Closed,
+        )
+        .render(),
+        "@Red | @Green | @Blue"
+    );
+    assert_eq!(
+        variant_type(vec![tag("Ok", vec![named("Int")])], RowTail::Open).render(),
+        "@Ok(Int) | .."
+    );
+    assert_eq!(optional(string_union()).render(), "?(\"a\" | \"b\")");
+    assert_eq!(nullable(string_union()).render(), "(\"a\" | \"b\")?");
+    assert_eq!(
+        function(vec![string_union()], named("Int")).render(),
+        "\"a\" | \"b\" -> Int"
+    );
+    assert_eq!(
+        function(vec![named("Int")], string_union()).render(),
+        "Int -> \"a\" | \"b\""
+    );
+    assert_eq!(
+        Type::Tuple(vec![string_union(), named("Int")]).render(),
+        "(\"a\" | \"b\", Int)"
+    );
+    assert_eq!(
+        Type::Record(Row {
+            entries: vec![field("mode", string_union())],
+            tail: RowTail::Closed,
+        })
+        .render(),
+        "{ mode: \"a\" | \"b\" }"
+    );
+    assert_eq!(variant_type(Vec::new(), RowTail::Closed).render(), "@{}");
+    assert_eq!(variant_type(Vec::new(), RowTail::Open).render(), "@{ .. }");
 }
 
 #[test]
@@ -295,7 +366,7 @@ fn check_output_records_unannotated_local_inferred_types() {
         check
             .type_at(nth_span(source, "local", 0))
             .map(Type::render),
-        Some("@{ \"hi\" }".to_owned())
+        Some("\"hi\"".to_owned())
     );
 }
 
@@ -331,7 +402,7 @@ fn check_output_records_concrete_expression_types() {
         check
             .type_at(binding_value_named(&output.module, "config").span)
             .map(Type::render),
-        Some("{ name: @{ \"Ada\" } }".to_owned())
+        Some("{ name: \"Ada\" }".to_owned())
     );
 }
 
@@ -556,7 +627,7 @@ fn comptime_param_call_infers_reflection_domain_for_runtime_binding() {
         check
             .type_at(binding_value_named(&output.module, "selected").span)
             .map(Type::render),
-        Some("@{ \"Red\", \"Blue\" }".to_owned())
+        Some("\"Red\" | \"Blue\"".to_owned())
     );
 }
 
@@ -1689,12 +1760,12 @@ fn fresh_literals_check_against_bare_literal_annotations_by_membership() {
 
     let v_type = accepted_check.type_at(nth_span(source, "v", 0));
     let w_type = accepted_check.type_at(nth_span(source, "w", 0));
-    assert_eq!(v_type.map(Type::render), Some("@{ \"hi\" }".to_owned()));
+    assert_eq!(v_type.map(Type::render), Some("\"hi\"".to_owned()));
     assert_eq!(v_type, w_type);
 
     let n_type = accepted_check.type_at(nth_span(source, "n", 0));
     let m_type = accepted_check.type_at(nth_span(source, "m", 0));
-    assert_eq!(n_type.map(Type::render), Some("@{ 1 }".to_owned()));
+    assert_eq!(n_type.map(Type::render), Some("1".to_owned()));
     assert_eq!(n_type, m_type);
 
     let rejected = parse_module("v : \"hi\" = \"hello\"\nn : 1 = 2\n");
@@ -1749,7 +1820,7 @@ fn call_member_literal_checks_literal_union_param_by_membership() {
         check
             .type_at(nth_span(source, "result", 0))
             .map(Type::render),
-        Some("@{ \"text\", \"int\" }".to_owned())
+        Some("\"text\" | \"int\"".to_owned())
     );
 }
 
@@ -1815,11 +1886,11 @@ fn bare_value_literals_infer_rendered_singleton_types() {
 
     assert_eq!(
         check.type_at(nth_span(source, "x", 0)).map(Type::render),
-        Some("@{ 5 }".to_owned())
+        Some("5".to_owned())
     );
     assert_eq!(
         check.type_at(nth_span(source, "s", 0)).map(Type::render),
-        Some("@{ \"hi\" }".to_owned())
+        Some("\"hi\"".to_owned())
     );
     assert_eq!(
         check.type_at(nth_span(source, "b", 0)).map(Type::render),
@@ -1899,7 +1970,7 @@ fn polymorphic_arguments_join_literal_rows() {
         check
             .type_at(nth_span(source, "joined", 0))
             .map(Type::render),
-        Some("@{ 1, 2 }".to_owned())
+        Some("1 | 2".to_owned())
     );
 }
 
@@ -1925,7 +1996,7 @@ fn match_results_join_literal_rows() {
         check
             .type_at(nth_span(source, "result", 0))
             .map(Type::render),
-        Some("@{ \"zero\", \"many\" }".to_owned())
+        Some("\"zero\" | \"many\"".to_owned())
     );
     assert_eq!(
         check
@@ -1948,7 +2019,7 @@ fn collections_join_literal_rows() {
     );
     assert_eq!(
         check.type_at(nth_span(source, "nums", 0)).map(Type::render),
-        Some("Array[@{ 1, 2, 3 }]".to_owned())
+        Some("Array[1 | 2 | 3]".to_owned())
     );
 }
 
@@ -2162,7 +2233,7 @@ fn unannotated_constructor_match_resolves_payload_binder() {
         check
             .type_at(nth_span(source, "matched", 0))
             .map(Type::render),
-        Some("@{ 1 }".to_owned())
+        Some("1".to_owned())
     );
 }
 
@@ -2181,7 +2252,7 @@ fn unannotated_multi_arm_constructor_match_resolves_payload_binders() {
         check
             .type_at(nth_span(source, "matched", 0))
             .map(Type::render),
-        Some("@{ 1, 0 }".to_owned())
+        Some("1 | 0".to_owned())
     );
 }
 
@@ -2289,11 +2360,11 @@ fn comptime_known_match_subject_selects_single_arm_result_type() {
 
     assert_eq!(
         check.type_at(nth_span(source, "v", 0)).map(Type::render),
-        Some("@{ \"hello\" }".to_owned())
+        Some("\"hello\"".to_owned())
     );
     assert_eq!(
         check.type_at(nth_span(source, "w", 0)).map(Type::render),
-        Some("@{ 42 }".to_owned())
+        Some("42".to_owned())
     );
 }
 
@@ -2328,13 +2399,13 @@ fn comptime_known_match_subject_selects_catch_all_arm() {
         check
             .type_at(nth_span(source, "wildValue", 0))
             .map(Type::render),
-        Some("@{ \"fallback\" }".to_owned())
+        Some("\"fallback\"".to_owned())
     );
     assert_eq!(
         check
             .type_at(nth_span(source, "boundValue", 0))
             .map(Type::render),
-        Some("@{ \"text\" }".to_owned())
+        Some("\"text\"".to_owned())
     );
 }
 
@@ -2402,7 +2473,7 @@ fn runtime_match_subject_accepts_homogeneous_arm_results() {
                 "  _ => \"b\"\n",
                 "runtime = _\n",
             ),
-            "@{ \"a\", \"b\" }",
+            "\"a\" | \"b\"",
         ),
         (
             concat!(
@@ -2412,7 +2483,7 @@ fn runtime_match_subject_accepts_homogeneous_arm_results() {
                 "  _ => @B\n",
                 "runtime = _\n",
             ),
-            "@{ @A, @B }",
+            "@A | @B",
         ),
         (
             concat!(
@@ -2471,7 +2542,7 @@ fn comptime_selected_match_subject_allows_heterogeneous_arm_results() {
         check
             .type_at(nth_span(source, "result", 0))
             .map(Type::render),
-        Some("@{ \"hello\" }".to_owned())
+        Some("\"hello\"".to_owned())
     );
 }
 
@@ -2608,7 +2679,7 @@ fn bare_uppercase_values_do_not_infer_tags() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "resolved"),
-        Some("@{ 42 }".to_owned())
+        Some("42".to_owned())
     );
     assert_eq!(
         checker
@@ -3222,7 +3293,7 @@ fn infer_value_synthesizes_literal_record_types() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "other"),
-        Some("{ id: @{ 1 }, name: @{ \"Ada\" } }".to_owned())
+        Some("{ id: 1, name: \"Ada\" }".to_owned())
     );
 }
 
@@ -3241,19 +3312,19 @@ fn infer_value_synthesizes_closed_record_transform_types() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "added"),
-        Some("{ x: @{ 1 }, y: @{ \"yes\" }, old: Bool, z: @{ 2 } }".to_owned())
+        Some("{ x: 1, y: \"yes\", old: Bool, z: 2 }".to_owned())
     );
     assert_eq!(
         render_top_level_value(&mut checker, "replaced"),
-        Some("{ x: @{ 1 }, y: @{ \"changed\" }, old: Bool }".to_owned())
+        Some("{ x: 1, y: \"changed\", old: Bool }".to_owned())
     );
     assert_eq!(
         render_top_level_value(&mut checker, "deleted"),
-        Some("{ x: @{ 1 }, old: Bool }".to_owned())
+        Some("{ x: 1, old: Bool }".to_owned())
     );
     assert_eq!(
         render_top_level_value(&mut checker, "renamed"),
-        Some("{ x: @{ 1 }, y: @{ \"yes\" }, flag: Bool }".to_owned())
+        Some("{ x: 1, y: \"yes\", flag: Bool }".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -3267,7 +3338,7 @@ fn infer_value_synthesizes_disjoint_spread_union() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "union"),
-        Some("{ x: @{ 1 }, y: @{ \"ok\" } }".to_owned())
+        Some("{ x: 1, y: \"ok\" }".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -3423,11 +3494,11 @@ fn infer_value_record_transforms_absorb_open_sources() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "added"),
-        Some("{ x: Int, y: @{ 1 }, .. }".to_owned())
+        Some("{ x: Int, y: 1, .. }".to_owned())
     );
     assert_eq!(
         render_top_level_value(&mut checker, "updated"),
-        Some("{ x: @{ 2 }, .. }".to_owned())
+        Some("{ x: 2, .. }".to_owned())
     );
     assert_eq!(
         checker
@@ -3573,7 +3644,7 @@ fn computed_value_index_with_literal_key_infers_concrete_record_field_type() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "name"),
-        Some("@{ \"Ada\" }".to_owned())
+        Some("\"Ada\"".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -3699,7 +3770,7 @@ fn comptime_omit_bulk_deletes_key_set_from_closed_record_type() {
     );
     assert_eq!(
         render_top_level_value(&mut checker, "without_password"),
-        Some("{ email: @{ \"ops@x.dev\" } }".to_owned())
+        Some("{ email: \"ops@x.dev\" }".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }

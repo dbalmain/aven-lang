@@ -201,12 +201,6 @@ enum TypePrecedence {
     Postfix,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowRenderKind {
-    Record,
-    Variant,
-}
-
 impl TypeRenderer {
     fn render_type(&mut self, ty: &Type) -> String {
         self.render_type_with_precedence(ty, TypePrecedence::Arrow)
@@ -292,8 +286,15 @@ impl TypeRenderer {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Type::Record(row) => self.render_row(RowRenderKind::Record, row),
-            Type::Variant(row) => self.render_row(RowRenderKind::Variant, row),
+            Type::Record(row) => self.render_record_row(row),
+            Type::Variant(row) => {
+                let (rendered, is_multi_part_union) = self.render_variant_row(row);
+                if is_multi_part_union && parent > TypePrecedence::Arrow {
+                    format!("({rendered})")
+                } else {
+                    rendered
+                }
+            }
         }
     }
 
@@ -304,7 +305,7 @@ impl TypeRenderer {
         }
     }
 
-    fn render_row(&mut self, kind: RowRenderKind, row: &Row) -> String {
+    fn render_record_row(&mut self, row: &Row) -> String {
         let mut parts = row
             .entries
             .iter()
@@ -315,12 +316,34 @@ impl TypeRenderer {
             parts.push(row.tail.render());
         }
 
-        match (kind, parts.is_empty()) {
-            (RowRenderKind::Record, true) => "{}".to_owned(),
-            (RowRenderKind::Record, false) => format!("{{ {} }}", parts.join(", ")),
-            (RowRenderKind::Variant, true) => "@{}".to_owned(),
-            (RowRenderKind::Variant, false) => format!("@{{ {} }}", parts.join(", ")),
+        if parts.is_empty() {
+            "{}".to_owned()
+        } else {
+            format!("{{ {} }}", parts.join(", "))
         }
+    }
+
+    fn render_variant_row(&mut self, row: &Row) -> (String, bool) {
+        if row.entries.is_empty() {
+            return if row.tail == RowTail::Closed {
+                ("@{}".to_owned(), false)
+            } else {
+                ("@{ .. }".to_owned(), false)
+            };
+        }
+
+        let mut parts = row
+            .entries
+            .iter()
+            .map(|entry| self.render_row_entry(entry))
+            .collect::<Vec<_>>();
+
+        if row.tail != RowTail::Closed {
+            parts.push(row.tail.render());
+        }
+
+        let is_multi_part_union = parts.len() >= 2;
+        (parts.join(" | "), is_multi_part_union)
     }
 
     fn render_row_entry(&mut self, entry: &RowEntry) -> String {
