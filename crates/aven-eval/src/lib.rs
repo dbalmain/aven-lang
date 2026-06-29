@@ -1485,8 +1485,34 @@ fn apply_binary(
         "-" | "*" | "/" | "%" => numeric_arithmetic(left, operator, right, right_span, span),
         "==" | "!=" => equality(left, operator, right, span),
         "<" | ">" | "<=" | ">=" => numeric_comparison(left, operator, right, span),
+        "|" => Ok(set_union(left, right)),
         _ => Err(unsupported_operator(operator, operator_span)),
     }
+}
+
+/// Set union with singleton-promotion: each operand contributes its members if
+/// it is already a `Set`, otherwise it contributes itself as a single element.
+/// Duplicates are removed (first occurrence wins) using `contains_value`, the
+/// same equality `eval_set` uses so `|` and `{..}` agree on element identity.
+fn set_union(left: Value, right: Value) -> Value {
+    let mut members: Vec<Value> = Vec::new();
+    for operand in [left, right] {
+        match operand {
+            Value::Set(items) => {
+                for item in items.iter() {
+                    if !contains_value(&members, item) {
+                        members.push(item.clone());
+                    }
+                }
+            }
+            other => {
+                if !contains_value(&members, &other) {
+                    members.push(other);
+                }
+            }
+        }
+    }
+    Value::Set(Rc::new(members))
 }
 
 fn add(left: Value, right: Value, span: Span) -> Result<Value, Diagnostic> {
@@ -2671,6 +2697,34 @@ mod tests {
             ),
             "@{ 1, 2, 3 }"
         );
+    }
+
+    #[test]
+    fn evaluates_set_union_promotes_singletons() {
+        assert_eval(
+            "\"r\" | \"w\"",
+            set_value(vec![
+                Value::Text("r".to_owned()),
+                Value::Text("w".to_owned()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn evaluates_set_union_splices_set_operands() {
+        assert_eval(
+            "@{ 1, 2 } | 3",
+            set_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+        assert_eval(
+            "@{ 1, 2 } | @{ 2, 3 }",
+            set_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+    }
+
+    #[test]
+    fn evaluates_set_union_deduplicates() {
+        assert_eval("1 | 1", set_value(vec![Value::Int(1)]));
     }
 
     #[test]
