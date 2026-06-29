@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use aven_core::Span;
 use aven_parser::{Expr, ExprKind, Literal};
 
 use crate::CHECKED_NAMED_TYPES;
@@ -122,6 +123,7 @@ pub fn function_required_arity(ty: &Type) -> Option<usize> {
 pub(crate) struct TypeScheme {
     pub(crate) vars: Vec<u32>,
     pub(crate) row_vars: Vec<u32>,
+    pub(crate) row_merges: Vec<RowMergeConstraint>,
     pub(crate) ty: Type,
 }
 
@@ -130,9 +132,23 @@ impl TypeScheme {
         Self {
             vars: Vec::new(),
             row_vars: Vec::new(),
+            row_merges: Vec::new(),
             ty,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RowMergeConstraint {
+    pub(crate) result: u32,
+    pub(crate) sources: Vec<RowMergeSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RowMergeSource {
+    pub(crate) row: Row,
+    pub(crate) overwrite: bool,
+    pub(crate) span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -566,6 +582,7 @@ pub(crate) fn generalize(resolved: Type, env_metas: &[u32], env_row_vars: &[u32]
     TypeScheme {
         vars,
         row_vars,
+        row_merges: Vec::new(),
         ty: resolved,
     }
 }

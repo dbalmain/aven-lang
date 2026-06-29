@@ -1,15 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
+use aven_core::Span;
+
 use crate::ty::{
-    LiteralBase, Row, RowEntry, RowTail, Type, TypeScheme, free_row_vars, literal_variant_base,
-    map_type, map_type_with_rows, open_literal_variant_base, render_literal_value,
-    type_contains_meta,
+    LiteralBase, Row, RowEntry, RowMergeConstraint, RowMergeSource, RowTail, Type, TypeScheme,
+    free_row_vars, literal_variant_base, map_type, map_type_with_rows, open_literal_variant_base,
+    render_literal_value, type_contains_meta,
 };
 
 #[derive(Debug, Default)]
 pub(crate) struct Unifier {
     substitution: Vec<Option<Type>>,
     row_subst: Vec<Option<Row>>,
+    row_merges: Vec<RowMergeConstraint>,
     numeric: HashSet<u32>,
 }
 
@@ -17,7 +20,14 @@ pub(crate) struct Unifier {
 pub(crate) struct UnifierSnapshot {
     substitution: Vec<Option<Type>>,
     row_subst: Vec<Option<Row>>,
+    row_merges: Vec<RowMergeConstraint>,
     numeric: HashSet<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RowMergeConflict {
+    pub(crate) label: String,
+    pub(crate) span: Span,
 }
 
 impl Unifier {
@@ -41,7 +51,18 @@ impl Unifier {
         id
     }
 
+    pub(crate) fn fresh_row_merge(&mut self, sources: Vec<RowMergeSource>) -> u32 {
+        let result = self.fresh_row_var();
+        self.row_merges.push(RowMergeConstraint { result, sources });
+        result
+    }
+
     pub(crate) fn resolve(&self, ty: &Type) -> Type {
+        let mut visiting_row_merges = HashSet::new();
+        self.resolve_with_visited(ty, &mut visiting_row_merges)
+    }
+
+    fn resolve_with_visited(&self, ty: &Type, visiting_row_merges: &mut HashSet<u32>) -> Type {
         map_type_with_rows(
             ty,
             &mut |node| match node {
@@ -55,7 +76,12 @@ impl Unifier {
                 RowTail::Var(id) => self
                     .row_subst
                     .get(id as usize)
-                    .and_then(|bound| bound.clone()),
+                    .and_then(|bound| bound.clone())
+                    .or_else(|| {
+                        self.resolve_row_merge(id, visiting_row_merges)
+                            .ok()
+                            .flatten()
+                    }),
                 RowTail::Closed | RowTail::Open => None,
             },
         )
@@ -79,6 +105,7 @@ impl Unifier {
         UnifierSnapshot {
             substitution: self.substitution.clone(),
             row_subst: self.row_subst.clone(),
+            row_merges: self.row_merges.clone(),
             numeric: self.numeric.clone(),
         }
     }
@@ -86,6 +113,7 @@ impl Unifier {
     pub(crate) fn restore(&mut self, snapshot: UnifierSnapshot) {
         self.substitution = snapshot.substitution;
         self.row_subst = snapshot.row_subst;
+        self.row_merges = snapshot.row_merges;
         self.numeric = snapshot.numeric;
     }
 
@@ -337,6 +365,106 @@ impl Unifier {
         row
     }
 
+    pub(crate) fn row_merge_conflict_in_type(&self, ty: &Type) -> Option<RowMergeConflict> {
+        let mut conflict = None;
+        visit_type_row_tails(ty, &mut |tail| {
+            if conflict.is_some() {
+                return;
+            }
+            let RowTail::Var(id) = tail else {
+                return;
+            };
+            let mut visiting = HashSet::new();
+            if let Err(found) = self.resolve_row_merge(id, &mut visiting) {
+                conflict = Some(found);
+            }
+        });
+        conflict
+    }
+
+    pub(crate) fn row_merge_closure(
+        &self,
+        roots: &[u32],
+        env_row_vars: &[u32],
+    ) -> Vec<RowMergeConstraint> {
+        let env_row_vars: HashSet<_> = env_row_vars.iter().copied().collect();
+        let mut needed: HashSet<_> = roots.iter().copied().collect();
+        let mut constraints = Vec::new();
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for constraint in &self.row_merges {
+                if !needed.contains(&constraint.result)
+                    || constraints
+                        .iter()
+                        .any(|included: &RowMergeConstraint| included.result == constraint.result)
+                {
+                    continue;
+                }
+
+                let mut constraint_vars = free_row_vars_in_merge_constraint(constraint);
+                if constraint_vars.iter().any(|id| env_row_vars.contains(id)) {
+                    continue;
+                }
+
+                constraint_vars.retain(|id| needed.insert(*id));
+                changed = changed || !constraint_vars.is_empty();
+                constraints.push(constraint.clone());
+            }
+        }
+
+        constraints
+    }
+
+    fn resolve_row_merge(
+        &self,
+        id: u32,
+        visiting: &mut HashSet<u32>,
+    ) -> Result<Option<Row>, RowMergeConflict> {
+        let Some(constraint) = self
+            .row_merges
+            .iter()
+            .rev()
+            .find(|constraint| constraint.result == id)
+        else {
+            return Ok(None);
+        };
+        if !visiting.insert(id) {
+            return Ok(None);
+        }
+
+        let result = (|| {
+            let mut row = Row {
+                entries: Vec::new(),
+                tail: RowTail::Closed,
+            };
+            for source in &constraint.sources {
+                let source_row = self.resolve_merge_source_row(&source.row, visiting);
+                if matches!(source_row.tail, RowTail::Var(_)) {
+                    return Ok(None);
+                }
+                merge_resolved_row(&mut row, source_row, source.overwrite, source.span)?;
+            }
+
+            if matches!(row.tail, RowTail::Var(_)) {
+                Ok(None)
+            } else {
+                Ok(Some(row))
+            }
+        })();
+        visiting.remove(&id);
+        result
+    }
+
+    fn resolve_merge_source_row(&self, row: &Row, visiting: &mut HashSet<u32>) -> Row {
+        let Type::Record(row) = self.resolve_with_visited(&Type::Record(row.clone()), visiting)
+        else {
+            unreachable!("record resolution preserves the outer type")
+        };
+        row
+    }
+
     pub(crate) fn instantiate_scheme(&mut self, scheme: &TypeScheme) -> Type {
         let mut replacements: HashMap<u32, Type> = HashMap::new();
         for id in &scheme.vars {
@@ -348,7 +476,7 @@ impl Unifier {
             row_replacements.insert(*id, self.fresh_row_var());
         }
 
-        map_type_with_rows(
+        let ty = map_type_with_rows(
             &scheme.ty,
             &mut |node| match node {
                 Type::Meta(id) => replacements.get(id).cloned(),
@@ -361,8 +489,164 @@ impl Unifier {
                 }),
                 RowTail::Closed | RowTail::Open => None,
             },
-        )
+        );
+
+        let instantiated_merges = scheme
+            .row_merges
+            .iter()
+            .map(|constraint| {
+                instantiate_row_merge_constraint(constraint, &replacements, &row_replacements)
+            })
+            .collect::<Vec<_>>();
+        self.row_merges.extend(instantiated_merges);
+
+        ty
     }
+}
+
+fn instantiate_row_merge_constraint(
+    constraint: &RowMergeConstraint,
+    replacements: &HashMap<u32, Type>,
+    row_replacements: &HashMap<u32, u32>,
+) -> RowMergeConstraint {
+    RowMergeConstraint {
+        result: row_replacements
+            .get(&constraint.result)
+            .copied()
+            .unwrap_or(constraint.result),
+        sources: constraint
+            .sources
+            .iter()
+            .map(|source| RowMergeSource {
+                row: instantiate_row_merge_source(&source.row, replacements, row_replacements),
+                overwrite: source.overwrite,
+                span: source.span,
+            })
+            .collect(),
+    }
+}
+
+fn instantiate_row_merge_source(
+    row: &Row,
+    replacements: &HashMap<u32, Type>,
+    row_replacements: &HashMap<u32, u32>,
+) -> Row {
+    let Type::Record(row) = map_type_with_rows(
+        &Type::Record(row.clone()),
+        &mut |node| match node {
+            Type::Meta(id) => replacements.get(id).cloned(),
+            _ => None,
+        },
+        &mut |tail| match tail {
+            RowTail::Var(id) => row_replacements.get(&id).map(|replacement| Row {
+                entries: Vec::new(),
+                tail: RowTail::Var(*replacement),
+            }),
+            RowTail::Closed | RowTail::Open => None,
+        },
+    ) else {
+        unreachable!("record mapping preserves the outer type")
+    };
+    row
+}
+
+fn free_row_vars_in_merge_constraint(constraint: &RowMergeConstraint) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    let mut vars = Vec::new();
+    if seen.insert(constraint.result) {
+        vars.push(constraint.result);
+    }
+    for source in &constraint.sources {
+        for id in free_row_vars(&Type::Record(source.row.clone())) {
+            if seen.insert(id) {
+                vars.push(id);
+            }
+        }
+    }
+    vars
+}
+
+fn merge_resolved_row(
+    row: &mut Row,
+    source: Row,
+    overwrite: bool,
+    span: Span,
+) -> Result<(), RowMergeConflict> {
+    for entry in source.entries {
+        let label = row_entry_label(&entry).to_owned();
+        if let Some(index) = row_entry_index(&row.entries, &label) {
+            if optional_record_patch_field_matches(&row.entries[index], &entry) {
+                continue;
+            }
+            if !overwrite {
+                return Err(RowMergeConflict { label, span });
+            }
+            row.entries[index] = entry;
+        } else {
+            row.entries.push(entry);
+        }
+    }
+
+    row.tail = merge_resolved_row_tails(row.tail, source.tail);
+    Ok(())
+}
+
+fn optional_record_patch_field_matches(base: &RowEntry, incoming: &RowEntry) -> bool {
+    let (
+        RowEntry::Field { ty: base_ty, .. },
+        RowEntry::Field {
+            ty: Type::Optional(incoming_inner),
+            ..
+        },
+    ) = (base, incoming)
+    else {
+        return false;
+    };
+
+    base_ty == incoming_inner.as_ref()
+}
+
+fn merge_resolved_row_tails(accumulated: RowTail, incoming: RowTail) -> RowTail {
+    match (accumulated, incoming) {
+        (tail, RowTail::Closed) | (RowTail::Closed, tail) => tail,
+        (RowTail::Open, _) | (_, RowTail::Open) => RowTail::Open,
+        (RowTail::Var(left), RowTail::Var(right)) if left == right => RowTail::Var(left),
+        (RowTail::Var(_), RowTail::Var(_)) => RowTail::Open,
+    }
+}
+
+fn visit_type_row_tails(ty: &Type, visit: &mut impl FnMut(RowTail)) {
+    match ty {
+        Type::Apply { callee, args } => {
+            visit_type_row_tails(callee, visit);
+            args.iter().for_each(|arg| visit_type_row_tails(arg, visit));
+        }
+        Type::Function { params, result, .. } => {
+            params
+                .iter()
+                .for_each(|param| visit_type_row_tails(param, visit));
+            visit_type_row_tails(result, visit);
+        }
+        Type::Optional(inner) | Type::Nullable(inner) => visit_type_row_tails(inner, visit),
+        Type::Tuple(items) => items
+            .iter()
+            .for_each(|item| visit_type_row_tails(item, visit)),
+        Type::Record(row) | Type::Variant(row) => visit_row_tails(row, visit),
+        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => {}
+    }
+}
+
+fn visit_row_tails(row: &Row, visit: &mut impl FnMut(RowTail)) {
+    for entry in &row.entries {
+        match entry {
+            RowEntry::Field { ty, .. } => visit_type_row_tails(ty, visit),
+            RowEntry::Tag { payload, .. } => payload
+                .iter()
+                .for_each(|ty| visit_type_row_tails(ty, visit)),
+            RowEntry::Literal { .. } => {}
+        }
+    }
+    visit(row.tail);
 }
 
 fn row_entry_label(entry: &RowEntry) -> &str {
@@ -370,6 +654,12 @@ fn row_entry_label(entry: &RowEntry) -> &str {
         RowEntry::Field { name, .. } | RowEntry::Tag { name, .. } => name,
         RowEntry::Literal { value } => render_literal_value(value),
     }
+}
+
+fn row_entry_index(entries: &[RowEntry], label: &str) -> Option<usize> {
+    entries
+        .iter()
+        .position(|entry| row_entry_label(entry) == label)
 }
 
 #[cfg(test)]
