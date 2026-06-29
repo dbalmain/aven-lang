@@ -2101,6 +2101,44 @@ fn variant_match_payload_types_feed_result_inference() {
 }
 
 #[test]
+fn unannotated_constructor_match_resolves_payload_binder() {
+    let source = "matched = @Some(1) ?>\n  @Some(n) => n\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "matched", 0))
+            .map(Type::render),
+        Some("@{ 1 }".to_owned())
+    );
+}
+
+#[test]
+fn unannotated_multi_arm_constructor_match_resolves_payload_binders() {
+    let source = "matched = @Some(1) ?>\n  @Some(n) => n\n  @None => 0\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::UNRESOLVED_BINDING),
+        "payload binder left unresolved: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "matched", 0))
+            .map(Type::render),
+        Some("@{ 1, 0 }".to_owned())
+    );
+}
+
+#[test]
 fn record_match_pattern_binders_use_subject_field_and_rest_types() {
     let output = parse_module(
         "source : { x: Int, y: Text, z: Bool } = value\n\

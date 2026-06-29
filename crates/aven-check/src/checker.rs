@@ -1114,7 +1114,7 @@ impl<'a> Checker<'a> {
         let inferred_subject = self.infer(&env, subject);
         let resolved_subject = self.normalize(&self.resolve_and_default(&inferred_subject));
         self.check_match_exhaustiveness(subject, arms, &resolved_subject);
-        let subject_type = is_concrete_type(&resolved_subject).then_some(resolved_subject);
+        let subject_type = is_resolved_value_type(&resolved_subject).then_some(resolved_subject);
 
         let mut body_types = Vec::new();
         for arm in arms {
@@ -3934,7 +3934,7 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
         (_, Type::Nullable(inner)) if empty_value_pattern(pattern) != Some(EmptyValue::Null) => {
             collect_known_pattern_types(pattern, inner, known);
         }
-        (ExprKind::Name(name), _) if name != "_" && is_concrete_type(expected) => {
+        (ExprKind::Name(name), _) if name != "_" && is_resolved_value_type(expected) => {
             known.insert(name.clone(), expected.clone());
         }
         (ExprKind::Call { callee, args }, Type::Variant(entries)) => {
