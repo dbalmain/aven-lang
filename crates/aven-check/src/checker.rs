@@ -5363,6 +5363,7 @@ impl<'a> Checker<'a> {
 
         let mut type_bindings = HashMap::new();
         let mut body_env = TypeEnv::new();
+        let mut param_var_metas = HashMap::new();
 
         for (param, arg) in params.iter().zip(args).filter(|(param, _)| !param.comptime) {
             let inferred = self.infer(env, arg);
@@ -5370,7 +5371,16 @@ impl<'a> Checker<'a> {
 
             if let Some(annotation) = &param.annotation {
                 collect_comptime_type_bindings(annotation, &actual, &mut type_bindings);
+                // A lowercase type variable in the parameter annotation (e.g.
+                // `variant: v`, linked to a comptime domain `tagsOf(v)`) is a
+                // generic binder, not a concrete type. Instantiate its
+                // variables to fresh unification metas — shared across params so
+                // repeated names stay consistent — before checking the argument,
+                // so a rigid `Type::Variable` does not spuriously reject every
+                // call.
                 let expected = self.lower_annotation_for_inference(annotation);
+                let expected =
+                    self.instantiate_annotation_type_variables(&expected, &mut param_var_metas);
                 if self.unifier.unify(&expected, &actual).is_err() {
                     return Some(Type::Deferred);
                 }
@@ -6106,6 +6116,25 @@ impl<'a> Checker<'a> {
         let mut checker = self.fork_annotation_checker();
         let ty = checker.lower_annotation(annotation);
         checker.normalize(&ty)
+    }
+
+    /// Replace each `Type::Variable` (a generic type binder from a parameter
+    /// annotation) with a fresh unification meta, reusing `metas` so a name that
+    /// appears in several positions instantiates to the same meta.
+    fn instantiate_annotation_type_variables(
+        &mut self,
+        ty: &Type,
+        metas: &mut HashMap<String, Type>,
+    ) -> Type {
+        map_type(ty, &mut |node| match node {
+            Type::Variable(name) => Some(
+                metas
+                    .entry(name.clone())
+                    .or_insert_with(|| self.unifier.fresh())
+                    .clone(),
+            ),
+            _ => None,
+        })
     }
 }
 
