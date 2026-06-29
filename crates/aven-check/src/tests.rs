@@ -535,6 +535,53 @@ fn comptime_tagsof_variant_reifies_sorted_literal_union() {
 }
 
 #[test]
+fn comptime_param_call_infers_reflection_domain_for_runtime_binding() {
+    // A comptime `@param` whose domain reflects on a runtime parameter's type
+    // (`tagsOf(v)`) infers a concrete literal-union type for the runtime
+    // binding, with no annotation required. The generic parameter type variable
+    // `v` is instantiated per call rather than rejected as a rigid type.
+    let source = "Color = @{ @Red, @Green, @Blue }\n\
+         color : Color = @Red\n\
+         select = (variant: v, @tags: tagsOf(v)@{}) => tags\n\
+         selected = select(color, @{\"Red\", \"Blue\"})\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(binding_value_named(&output.module, "selected").span)
+            .map(Type::render),
+        Some("@{ \"Red\", \"Blue\" }".to_owned())
+    );
+}
+
+#[test]
+fn comptime_param_call_still_rejects_value_outside_reflection_domain() {
+    // The instantiation fix must not weaken domain validation: a comptime
+    // `@param` argument outside the reflected tag set is still rejected.
+    let source = "Color = @{ @Red, @Green, @Blue }\n\
+         color : Color = @Red\n\
+         select = (variant: v, @tags: tagsOf(v)@{}) => tags\n\
+         selected = select(color, @{\"Red\", \"Purple\"})\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::LITERAL_NOT_IN_UNION)),
+        "expected literal-not-in-union diagnostic, got: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn comptime_typeof_top_level_value_reifies_normalized_record_type() {
     let output = parse_module(
         "Config = { host: Text, port: Int }\n\
