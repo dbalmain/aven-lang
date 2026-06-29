@@ -3366,8 +3366,77 @@ fn infer_value_record_transforms_absorb_open_sources() {
         .map(|entry| row_label(entry).to_owned())
         .collect();
     assert_eq!(labels, HashSet::from(["x".to_owned(), "y".to_owned()]));
-    assert_eq!(row.tail, RowTail::Open);
+    assert!(matches!(row.tail, RowTail::Var(id) if row_var_scheme.row_vars.contains(&id)));
     assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn unannotated_record_spread_lambda_call_infers_merged_result() {
+    let output = parse_module(
+        "merge = (a, b) => { ..a, ..b }\n\
+         u : { name: Text } = { name: \"Ada\" }\n\
+         m : { age: Int } = { age: 3 }\n\
+         both = merge(u, m)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "both"),
+        Some("{ name: Text, age: Int }".to_owned())
+    );
+
+    let scheme = checker
+        .infer_top_level_scheme("merge")
+        .expect("inferred merge scheme");
+    assert_eq!(scheme.row_vars.len(), 2);
+    let Type::Function { params, .. } = &scheme.ty else {
+        panic!("merge should infer a function type");
+    };
+    assert!(params.iter().all(|param| {
+        matches!(
+            param,
+            Type::Record(Row {
+                entries,
+                tail: RowTail::Var(id),
+            }) if entries.is_empty() && scheme.row_vars.contains(id)
+        )
+    }));
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn unannotated_record_spread_lambda_call_infers_overwrite_merge_result() {
+    let output = parse_module(
+        "merge = (a, b) => { ..a, :..b }\n\
+         left : { id: Text, v: Int } = { id: \"a\", v: 1 }\n\
+         right : { v: Text } = { v: \"hi\" }\n\
+         both = merge(left, right)\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "both"),
+        Some("{ id: Text, v: Text }".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn type_level_record_spread_lambda_merge_still_specializes() {
+    let output = parse_module(
+        "User = { name: Text }\n\
+         Meta = { age: Int }\n\
+         merge = (a, b) => { ..a, ..b }\n\
+         Both = merge(User, Meta)\n\
+         value : Both = { name: \"Ada\", age: 3 }\n",
+    );
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty());
 }
 
 #[test]
