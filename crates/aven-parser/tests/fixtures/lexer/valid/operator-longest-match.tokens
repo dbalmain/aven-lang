@@ -37,3 +37,13 @@
 103..105 operator `:=`
 106..107 operator `:`
 107..108 newline
+108..113 identifier `union`
+114..115 operator `=`
+116..120 identifier `left`
+121..122 operator `|`
+123..128 identifier `right`
+129..131 operator `||`
+132..140 identifier `fallback`
+141..143 operator `|>`
+144..150 identifier `render`
+150..151 newline

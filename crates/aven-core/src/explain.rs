@@ -315,6 +315,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A match arm can never run because its pattern is outside the statically known subject values. Remove the arm or change the subject type to include that value.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNSUPPORTED_PATTERN,
+        text: "The pattern uses syntax reserved for a future pattern feature. Rewrite the arm as separate cases until the pattern form is implemented.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::UNUSED_RESULT,
         text: "A Result value was produced in statement position and then dropped. Unwrap it with `?!` when an `@Err` should panic, propagate it with `?^`, handle it explicitly, or assign it to `_` to document an intentional discard.",
     },

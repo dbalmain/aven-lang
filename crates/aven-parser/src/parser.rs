@@ -2149,7 +2149,7 @@ impl Parser<'_> {
                     token.span,
                     "this syntax is not supported by the core parser yet",
                 ))
-                .with_note("custom operators are not supported yet; supported operators are `|>`, `??`, `||`, `&&`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, and `^`"),
+                .with_note("custom operators are not supported yet; supported operators are `|`, `|>`, `??`, `||`, `&&`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, and `^`"),
         );
         self.recover_to_next_line();
     }
@@ -2493,14 +2493,15 @@ impl BindingOperator {
 
 fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
     let precedence = match operator {
-        "|>" => 1,
-        "??" => 2,
-        "||" => 3,
-        "&&" => 4,
-        "==" | "!=" | "<" | "<=" | ">" | ">=" => 5,
-        "+" | "-" => 6,
-        "*" | "/" | "%" => 7,
-        "^" => return Some((8, 8)),
+        "|" => 1,
+        "|>" => 2,
+        "??" => 3,
+        "||" => 4,
+        "&&" => 5,
+        "==" | "!=" | "<" | "<=" | ">" | ">=" => 6,
+        "+" | "-" => 7,
+        "*" | "/" | "%" => 8,
+        "^" => return Some((9, 9)),
         _ => return None,
     };
 
@@ -2948,6 +2949,75 @@ mod tests {
                 ..
             } if operator == "*"
         ));
+    }
+
+    #[test]
+    fn parses_union_looser_than_pipeline_into_ast_nodes() {
+        let output = parse_module("value = a | b |> c\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Binary {
+            operator,
+            left,
+            right,
+            ..
+        } = binding_value(&output, 0)
+        else {
+            panic!("expected binary union expression");
+        };
+
+        assert_eq!(operator, "|");
+        assert!(matches!(&left.kind, ExprKind::Name(name) if name == "a"));
+        assert!(matches!(
+            &right.kind,
+            ExprKind::Binary {
+                operator,
+                ..
+            } if operator == "|>"
+        ));
+    }
+
+    #[test]
+    fn parses_union_chains_left_associatively() {
+        let output = parse_module("value = a | b | c\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Binary {
+            operator,
+            left,
+            right,
+            ..
+        } = binding_value(&output, 0)
+        else {
+            panic!("expected binary union expression");
+        };
+
+        assert_eq!(operator, "|");
+        assert!(matches!(
+            &left.kind,
+            ExprKind::Binary {
+                operator,
+                ..
+            } if operator == "|"
+        ));
+        assert!(matches!(&right.kind, ExprKind::Name(name) if name == "c"));
+    }
+
+    #[test]
+    fn parses_set_literal_union_and_logical_or_distinctly() {
+        let output = parse_module("union = @{a, b} | c\nlogic = left || right\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Binary { operator, left, .. } = binding_value(&output, 0) else {
+            panic!("expected binary union expression");
+        };
+        assert_eq!(operator, "|");
+        assert!(matches!(&left.kind, ExprKind::Set(_)));
+
+        let ExprKind::Binary { operator, .. } = binding_value(&output, 1) else {
+            panic!("expected logical-or expression");
+        };
+        assert_eq!(operator, "||");
     }
 
     #[test]

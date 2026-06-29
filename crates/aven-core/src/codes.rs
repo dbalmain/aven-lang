@@ -104,6 +104,7 @@ pub mod ty {
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
     pub const UNREACHABLE_MATCH_ARM: &str = "type.unreachable-match-arm";
+    pub const UNSUPPORTED_PATTERN: &str = "type.unsupported-pattern";
     pub const UNUSED_RESULT: &str = "type.unused-result";
     pub const WIDE_VALUE_INTO_LITERAL_UNION: &str = "type.wide-value-into-literal-union";
 }
@@ -184,6 +185,7 @@ pub const ALL: &[&str] = &[
     ty::UNEXPECTED_FIELD,
     ty::UNKNOWN_NAME,
     ty::UNREACHABLE_MATCH_ARM,
+    ty::UNSUPPORTED_PATTERN,
     ty::UNUSED_RESULT,
     ty::WIDE_VALUE_INTO_LITERAL_UNION,
 ];

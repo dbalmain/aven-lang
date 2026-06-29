@@ -720,6 +720,7 @@ impl Lexer<'_> {
             Some(b'=') => self.scan_reserved_operator("=", &["=>", "==", "="]),
             Some(b':') => self.scan_reserved_operator(":", &[":..", "::", ":=", ":"]),
             Some(b'.') => self.scan_reserved_operator(".", &["..", "."]),
+            Some(b'|') => self.scan_reserved_operator("|", &["|>", "||", "|"]),
             _ => self.scan_custom_operator(),
         }
     }
@@ -772,7 +773,7 @@ impl Lexer<'_> {
                     Span::new(start, self.offset),
                     "this operator namespace is reserved by the language",
                 ))
-                .with_note("custom operators cannot start with `=`, `:`, `.`, `?`, or `@`"),
+                .with_note("custom operators cannot start with `=`, `:`, `.`, `?`, `@`, or `|`"),
         );
     }
 
@@ -944,6 +945,7 @@ fn reserved_operator_continues(prefix: &str, byte: u8) -> bool {
         "=" => byte == b'=',
         ":" => matches!(byte, b':' | b'.' | b'?' | b'='),
         "." => is_custom_operator_continue_byte(byte) || matches!(byte, b'.' | b'?'),
+        "|" => is_operator_run_byte(byte),
         _ => false,
     }
 }

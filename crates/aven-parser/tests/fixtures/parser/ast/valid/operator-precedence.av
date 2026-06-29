@@ -1,2 +1,5 @@
 value = 1 + 2 * 3
 pipe = users?.active |> toJson()
+union = a | b | c
+mixed = @{a, b} | c + d
+logical = left || right

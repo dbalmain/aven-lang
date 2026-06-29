@@ -22,3 +22,36 @@ module
             callee
               name toJson
             args
+  binding union
+    value
+      binary |
+        left
+          binary |
+            left
+              name a
+            right
+              name b
+        right
+          name c
+  binding mixed
+    value
+      binary |
+        left
+          set
+            element
+              name a
+            element
+              name b
+        right
+          binary +
+            left
+              name c
+            right
+              name d
+  binding logical
+    value
+      binary ||
+        left
+          name left
+        right
+          name right

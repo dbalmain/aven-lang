@@ -1093,6 +1093,35 @@ fn lowers_bare_literal_and_tag_annotations_as_singleton_variants() {
 }
 
 #[test]
+fn lowers_pipe_union_annotations_like_set_literals() {
+    let output = parse_module(
+        "mode_pipe : \"r\" | \"w\" | \"rw\" = value\n\
+         mode_set : @{\"r\", \"w\", \"rw\"} = value\n\
+         tags_pipe : @A | @B = value\n\
+         tags_set : @{@A, @B} = value\n\
+         spliced_pipe : @{\"r\", \"w\"} | \"rw\" = value\n\
+         spliced_set : @{\"r\", \"w\", \"rw\"} = value\n",
+    );
+
+    let mode_pipe = lower_annotation(&output.module, annotation(&output.module, "mode_pipe"));
+    let mode_set = lower_annotation(&output.module, annotation(&output.module, "mode_set"));
+    let tags_pipe = lower_annotation(&output.module, annotation(&output.module, "tags_pipe"));
+    let tags_set = lower_annotation(&output.module, annotation(&output.module, "tags_set"));
+    let spliced_pipe = lower_annotation(&output.module, annotation(&output.module, "spliced_pipe"));
+    let spliced_set = lower_annotation(&output.module, annotation(&output.module, "spliced_set"));
+
+    assert_eq!(mode_pipe.ty, mode_set.ty);
+    assert!(mode_pipe.diagnostics.is_empty());
+    assert!(mode_set.diagnostics.is_empty());
+    assert_eq!(tags_pipe.ty, tags_set.ty);
+    assert!(tags_pipe.diagnostics.is_empty());
+    assert!(tags_set.diagnostics.is_empty());
+    assert_eq!(spliced_pipe.ty, spliced_set.ty);
+    assert!(spliced_pipe.diagnostics.is_empty());
+    assert!(spliced_set.diagnostics.is_empty());
+}
+
+#[test]
 fn lowers_open_row_extension_and_update_transforms() {
     let output = parse_module(
         "OpenBase = { host: Text, .. }\n\
@@ -3149,6 +3178,30 @@ fn infer_value_synthesizes_disjoint_spread_union() {
         render_top_level_value(&mut checker, "union"),
         Some("{ x: @{ 1 }, y: @{ \"ok\" } }".to_owned())
     );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn infer_value_pipe_union_like_set_literals() {
+    let output = parse_module(
+        "pipe = \"r\" | \"w\" | \"rw\"\n\
+         set = @{\"r\", \"w\", \"rw\"}\n\
+         left = @{1}\n\
+         right = @{2}\n\
+         set_operands = left | right\n\
+         set_literal = @{1, 2}\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    let pipe = render_top_level_value(&mut checker, "pipe");
+    let set = render_top_level_value(&mut checker, "set");
+    let set_operands = render_top_level_value(&mut checker, "set_operands");
+    let set_literal = render_top_level_value(&mut checker, "set_literal");
+
+    assert_eq!(pipe, set);
+    assert_eq!(set_operands, set_literal);
     assert!(checker.diagnostics.is_empty());
 }
 

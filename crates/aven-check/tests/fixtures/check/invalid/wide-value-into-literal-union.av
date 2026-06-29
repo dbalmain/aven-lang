@@ -3,3 +3,4 @@ number : Int = 1
 
 status : @{"waiting", "running"} = text
 code : @{0, 1, 2} = number
+spelled : "waiting" | "running" = text

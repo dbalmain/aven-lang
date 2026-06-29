@@ -961,8 +961,12 @@ impl<'a> Checker<'a> {
         let mut body_types = Vec::new();
         for arm in arms {
             self.local_types.push();
-            for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
-                self.local_types.define(&name, ty);
+            if pattern_contains_or_pattern(&arm.pattern) {
+                self.report_unsupported_or_patterns(&arm.pattern);
+            } else {
+                for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
+                    self.local_types.define(&name, ty);
+                }
             }
             let bool_type = named_builtin("Bool");
             for guard in &arm.guards {
@@ -2118,6 +2122,9 @@ impl<'a> Checker<'a> {
             ExprKind::Tuple(items) => Type::Tuple(self.lower_annotations(items)),
             ExprKind::Record(entries) => self.lower_row_entries(entries, RowKind::Record),
             ExprKind::Set(entries) => self.lower_row_entries(entries, RowKind::Variant),
+            ExprKind::Binary { operator, .. } if operator == "|" => {
+                self.lower_union_annotation(annotation)
+            }
             ExprKind::Literal(Literal::Number(_) | Literal::String(_)) | ExprKind::Tag(_) => {
                 self.lower_singleton_variant_annotation(annotation)
             }
@@ -2145,6 +2152,11 @@ impl<'a> Checker<'a> {
                 Type::Deferred
             }
         }
+    }
+
+    fn lower_union_annotation(&mut self, annotation: &Expr) -> Type {
+        let entries = union_annotation_entries(annotation);
+        self.lower_row_entries(&entries, RowKind::Variant)
     }
 
     fn lower_singleton_variant_annotation(&mut self, annotation: &Expr) -> Type {
@@ -3336,6 +3348,32 @@ impl<'a> Checker<'a> {
                 )),
         );
     }
+
+    fn report_unsupported_or_patterns(&mut self, pattern: &Expr) {
+        let mut spans = Vec::new();
+        collect_or_pattern_spans(pattern, &mut spans);
+
+        for span in spans {
+            if self.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::ty::UNSUPPORTED_PATTERN)
+                    && diagnostic.labels.first().map(|label| label.span) == Some(span)
+            }) {
+                continue;
+            }
+
+            self.diagnostics.push(
+                Diagnostic::error("or-patterns are not supported yet")
+                    .with_code(codes::ty::UNSUPPORTED_PATTERN)
+                    .with_label(Label::primary(
+                        span,
+                        "`|` in pattern position is reserved for or-patterns",
+                    ))
+                    .with_note(
+                        "or-patterns are planned, but this checker slice does not lower them yet",
+                    ),
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3366,6 +3404,24 @@ impl RowSource {
 enum RowFoldMode<'a> {
     Annotation,
     Value { env: &'a TypeEnv },
+}
+
+#[derive(Clone, Copy)]
+enum SetUnionPart<'a> {
+    Operand(&'a Expr),
+    Element(&'a Expr),
+}
+
+impl<'a> SetUnionPart<'a> {
+    fn expr(self) -> &'a Expr {
+        match self {
+            Self::Operand(expr) | Self::Element(expr) => expr,
+        }
+    }
+
+    fn promotes_singleton(self) -> bool {
+        matches!(self, Self::Element(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3589,7 +3645,65 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
         .collect()
 }
 
+fn union_annotation_entries(expr: &Expr) -> Vec<RecordEntry> {
+    let mut entries = Vec::new();
+    collect_union_annotation_entries(expr, &mut entries);
+    entries
+}
+
+fn collect_union_annotation_entries(expr: &Expr, entries: &mut Vec<RecordEntry>) {
+    match &ungroup_expr(expr).kind {
+        ExprKind::Binary {
+            left,
+            operator,
+            right,
+            ..
+        } if operator == "|" => {
+            collect_union_annotation_entries(left, entries);
+            collect_union_annotation_entries(right, entries);
+        }
+        ExprKind::Set(set_entries) => entries.extend(set_entries.iter().cloned()),
+        _ => entries.push(RecordEntry::Element(expr.clone())),
+    }
+}
+
+fn value_set_union_parts(expr: &Expr) -> Option<Vec<SetUnionPart<'_>>> {
+    let mut parts = Vec::new();
+    collect_value_set_union_parts(expr, &mut parts)?;
+    Some(parts)
+}
+
+fn collect_value_set_union_parts<'a>(
+    expr: &'a Expr,
+    parts: &mut Vec<SetUnionPart<'a>>,
+) -> Option<()> {
+    match &ungroup_expr(expr).kind {
+        ExprKind::Binary {
+            left,
+            operator,
+            right,
+            ..
+        } if operator == "|" => {
+            collect_value_set_union_parts(left, parts)?;
+            collect_value_set_union_parts(right, parts)
+        }
+        ExprKind::Set(entries) => {
+            let elements = literal_set_elements(entries)?;
+            parts.extend(elements.into_iter().map(SetUnionPart::Element));
+            Some(())
+        }
+        _ => {
+            parts.push(SetUnionPart::Operand(expr));
+            Some(())
+        }
+    }
+}
+
 fn pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> Vec<(String, LocalValueType)> {
+    if pattern_contains_or_pattern(pattern) {
+        return Vec::new();
+    }
+
     let mut known = HashMap::new();
     if let Some(expected) = expected {
         collect_known_pattern_types(pattern, expected, &mut known);
@@ -3769,6 +3883,10 @@ fn collect_comptime_type_bindings(
         }
         (ExprKind::Record(entries), Type::Record(row)) => {
             collect_record_comptime_type_bindings(entries, row, bindings);
+        }
+        (ExprKind::Binary { operator, .. }, Type::Variant(row)) if operator == "|" => {
+            let entries = union_annotation_entries(annotation);
+            collect_variant_comptime_type_bindings(&entries, row, bindings);
         }
         (ExprKind::Set(entries), Type::Variant(row)) => {
             collect_variant_comptime_type_bindings(entries, row, bindings);
@@ -4040,6 +4158,35 @@ fn is_catch_all_pattern(pattern: &Expr) -> bool {
     }
 }
 
+fn pattern_contains_or_pattern(pattern: &Expr) -> bool {
+    let mut spans = Vec::new();
+    collect_or_pattern_spans(pattern, &mut spans);
+    !spans.is_empty()
+}
+
+fn collect_or_pattern_spans(pattern: &Expr, spans: &mut Vec<Span>) {
+    match &pattern.kind {
+        ExprKind::Group(inner) => collect_or_pattern_spans(inner, spans),
+        ExprKind::Binary {
+            left,
+            operator,
+            operator_span,
+            right,
+        } => {
+            if operator == "|" {
+                spans.push(*operator_span);
+            }
+            collect_or_pattern_spans(left, spans);
+            collect_or_pattern_spans(right, spans);
+        }
+        _ => {
+            walk_expr_children(pattern, &mut |child| {
+                collect_or_pattern_spans(child, spans);
+            });
+        }
+    }
+}
+
 fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
     match &pattern.kind {
         ExprKind::Group(inner) => variant_pattern_tag(inner),
@@ -4274,6 +4421,12 @@ impl<'a> Checker<'a> {
             ExprKind::FieldAccess {
                 receiver, field, ..
             } => self.infer_field_access(env, receiver, field),
+            ExprKind::Binary {
+                left,
+                operator,
+                right,
+                ..
+            } if operator == "|" => self.infer_set_union(env, expr),
             ExprKind::Binary {
                 left,
                 operator,
@@ -5303,6 +5456,47 @@ impl<'a> Checker<'a> {
             return Type::Deferred;
         };
         self.infer_collection(env, elements, "Set")
+    }
+
+    fn infer_set_union(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
+        let Some(parts) = value_set_union_parts(expr) else {
+            return Type::Deferred;
+        };
+
+        let element_type = self.unifier.fresh();
+        for part in parts {
+            let item_type = self.infer_set_union_part_type(env, part);
+            if self.unifier.unify(&element_type, &item_type).is_err() {
+                return Type::Deferred;
+            }
+        }
+
+        Type::Apply {
+            callee: Box::new(Type::Named("Set".to_owned())),
+            args: vec![element_type],
+        }
+    }
+
+    fn infer_set_union_part_type(&mut self, env: &TypeEnv, part: SetUnionPart<'_>) -> Type {
+        let ty = self.infer(env, part.expr());
+        if part.promotes_singleton() {
+            return ty;
+        }
+
+        self.set_operand_element_type(&ty).unwrap_or(ty)
+    }
+
+    fn set_operand_element_type(&mut self, ty: &Type) -> Option<Type> {
+        let resolved = self.resolve_and_default(ty);
+        match self.normalize(&resolved) {
+            Type::Apply { callee, args }
+                if args.len() == 1
+                    && matches!(callee.as_ref(), Type::Named(name) if name == "Set") =>
+            {
+                Some(args[0].clone())
+            }
+            _ => None,
+        }
     }
 
     fn infer_collection<'b>(

@@ -5,6 +5,8 @@ ZeroOne = @{0, 1}
 
 status : Status = "waiting"
 code : Codes = 1
+mode : "r" | "w" | "rw" = "r"
+variant : @A | @B = @A
 
 waiting : Waiting = "waiting"
 wideStatus : Status = waiting

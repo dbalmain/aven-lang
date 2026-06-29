@@ -3,3 +3,4 @@ safe = a?.b
 compare = left <=> right
 entries = {one: 1; two: 2}
 reserved = :.. :: := :
+union = left | right || fallback |> render
