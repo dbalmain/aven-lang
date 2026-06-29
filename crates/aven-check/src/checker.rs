@@ -2892,14 +2892,25 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn value_record_source(&self, ty: &Type) -> Option<RowSource> {
+    fn value_record_source(&mut self, ty: &Type) -> Option<RowSource> {
         let resolved = self.unifier.resolve(ty);
         match self.normalize(&resolved) {
             Type::Record(row) => Some(RowSource::from_row(row)),
+            Type::Meta(_) => {
+                let tail = self.unifier.fresh_row_var();
+                let source = Type::Record(Row {
+                    entries: Vec::new(),
+                    tail: RowTail::Var(tail),
+                });
+                self.unifier.unify(&resolved, &source).ok()?;
+                let Type::Record(row) = source else {
+                    unreachable!("source was constructed as a record")
+                };
+                Some(RowSource::Open(row))
+            }
             Type::Deferred
             | Type::Named(_)
             | Type::Variable(_)
-            | Type::Meta(_)
             | Type::Apply { .. }
             | Type::Function { .. }
             | Type::Optional(_)
@@ -2917,10 +2928,10 @@ impl<'a> Checker<'a> {
         span: Span,
         kind: RowKind,
     ) -> Result<(), ()> {
-        let (source, source_is_open) = match source {
-            RowSource::Closed(row) => (row, false),
-            RowSource::Open(row) => (row, true),
+        let source = match source {
+            RowSource::Closed(row) | RowSource::Open(row) => row,
         };
+        let source_tail = source.tail;
 
         for entry in source.entries {
             if kind == RowKind::Variant {
@@ -2945,9 +2956,7 @@ impl<'a> Checker<'a> {
             }
         }
 
-        if source_is_open {
-            row.tail = RowTail::Open;
-        }
+        row.tail = merge_row_tails(row.tail, source_tail);
 
         Ok(())
     }
@@ -3725,6 +3734,15 @@ fn row_entry_index(entries: &[RowEntry], label: &str) -> Option<usize> {
         .position(|entry| row_entry_label(entry) == label)
 }
 
+fn merge_row_tails(accumulated: RowTail, incoming: RowTail) -> RowTail {
+    match (accumulated, incoming) {
+        (tail, RowTail::Closed) | (RowTail::Closed, tail) => tail,
+        (RowTail::Open, _) | (_, RowTail::Open) => RowTail::Open,
+        (RowTail::Var(left), RowTail::Var(right)) if left == right => RowTail::Var(left),
+        (RowTail::Var(_), RowTail::Var(_)) => RowTail::Open,
+    }
+}
+
 fn relabel_row_entry(entry: &RowEntry, label: &str) -> RowEntry {
     match entry {
         RowEntry::Field { ty, .. } => RowEntry::Field {
@@ -3813,6 +3831,17 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
             | RecordEntry::Open { .. } => None,
         })
         .collect()
+}
+
+fn record_entries_are_param_spreads(entries: &[RecordEntry], params: &[Param]) -> bool {
+    let param_names: HashSet<_> = params.iter().map(|param| param.name.as_str()).collect();
+    !entries.is_empty()
+        && entries.iter().all(|entry| {
+            let RecordEntry::Spread { value, .. } = entry else {
+                return false;
+            };
+            matches!(&ungroup_expr(value).kind, ExprKind::Name(name) if param_names.contains(name.as_str()))
+        })
 }
 
 fn union_annotation_entries(expr: &Expr) -> Vec<RecordEntry> {
@@ -4978,6 +5007,9 @@ impl<'a> Checker<'a> {
 
         let callee_type = self.infer(env, callee);
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+        if let Some(result) = self.infer_record_spread_lambda_call(env, callee, args, &arg_types) {
+            return result;
+        }
 
         // When the callee already resolves to a function (e.g. a host global or
         // a lambda with defaults), unify each supplied argument against the
@@ -5009,6 +5041,82 @@ impl<'a> Checker<'a> {
         } else {
             result_type
         }
+    }
+
+    fn infer_record_spread_lambda_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+        arg_types: &[Type],
+    ) -> Option<Type> {
+        let (params, entries) = self.record_spread_lambda_callee(env, callee)?;
+        if params.len() != args.len() {
+            return None;
+        }
+        if !record_entries_are_param_spreads(entries, params) {
+            return None;
+        }
+        if args
+            .iter()
+            .any(|arg| self.expr_is_type_artifact_reference(arg))
+        {
+            return None;
+        }
+
+        let mut body_env = TypeEnv::new();
+        for (param, arg_type) in params.iter().zip(arg_types) {
+            let actual = self.normalize(&self.resolve_and_default(arg_type));
+            if !matches!(actual, Type::Record(_)) {
+                return None;
+            }
+            body_env.insert(param.name.clone(), LocalValueType::Known(actual));
+        }
+
+        Some(self.infer_record_entries(&body_env, entries))
+    }
+
+    fn expr_is_type_artifact_reference(&self, expr: &Expr) -> bool {
+        match &ungroup_expr(expr).kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
+                self.known_types.contains(name)
+                    || self.comptime_artifacts.get(name).copied().unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    fn record_spread_lambda_callee(
+        &self,
+        env: &TypeEnv,
+        callee: &Expr,
+    ) -> Option<(&'a [Param], &'a [RecordEntry])> {
+        let name = expr_name(callee)?;
+        if env.contains_key(name) {
+            return None;
+        }
+
+        let binding = (*self.bindings.get(name)?)?;
+        let ExprKind::Lambda {
+            params,
+            return_annotation: None,
+            body,
+        } = &ungroup_expr(&binding.value).kind
+        else {
+            return None;
+        };
+        if params
+            .iter()
+            .any(|param| param.comptime || param.annotation.is_some() || param.default.is_some())
+        {
+            return None;
+        }
+
+        let ExprKind::Record(entries) = &ungroup_expr(body).kind else {
+            return None;
+        };
+
+        Some((params, entries))
     }
 
     fn check_call_arg_types_against_params(
