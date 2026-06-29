@@ -703,10 +703,45 @@ impl<'a> Checker<'a> {
         binding: &Binding,
         diagnostics_start: usize,
     ) -> bool {
+        let mut spans = Vec::new();
+        let mut visiting = HashSet::new();
+        self.collect_value_diagnostic_spans(&binding.value, &mut visiting, &mut spans);
+
         self.diagnostics[..diagnostics_start]
             .iter()
             .filter_map(|diagnostic| diagnostic.labels.first())
-            .any(|label| binding.value.span.contains(label.span))
+            .any(|label| spans.iter().any(|span| span.contains(label.span)))
+    }
+
+    /// Collect spans a prior diagnostic could plausibly explain this binding's
+    /// value through: the value expression itself plus, transitively, the value
+    /// spans of any top-level binding this value (or its sub-expressions) reach
+    /// by name. The transitive chase is what lets R6 see diagnostics that
+    /// inference emitted inside a called binding's body (for example the
+    /// `duplicate-spread-label` recorded while re-running a record-spread
+    /// lambda's body during this binding's value inference), whose label span
+    /// lives outside this binding's own value span.
+    fn collect_value_diagnostic_spans(
+        &self,
+        value: &Expr,
+        visiting: &mut HashSet<String>,
+        spans: &mut Vec<Span>,
+    ) {
+        spans.push(value.span);
+
+        walk_expr_children(value, &mut |child| {
+            self.collect_value_diagnostic_spans(child, visiting, spans);
+        });
+
+        let value = ungroup_expr(value);
+        if let ExprKind::Name(name) = &value.kind
+            && visiting.insert(name.clone())
+        {
+            if let Some(Some(other)) = self.bindings.get(name) {
+                self.collect_value_diagnostic_spans(&other.value, visiting, spans);
+            }
+            visiting.remove(name);
+        }
     }
 
     fn binding_value_is_bare_placeholder(value: &Expr) -> bool {

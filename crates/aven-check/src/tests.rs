@@ -5081,6 +5081,30 @@ fn unresolved_local_runtime_binding_reports_when_value_stays_deferred() {
 }
 
 #[test]
+fn overlapping_label_spread_merge_reports_only_duplicate_label() {
+    // A record spread/merge with an overlapping label is one specific error
+    // (`type.duplicate-spread-label`). It must not also fire the R6
+    // `type.unresolved-binding` rule, even though the value's inferred type
+    // finalizes to `Type::Deferred` and the duplicate diagnostic was emitted
+    // during inference (inside the re-run spread-lambda body), so its label
+    // lives on the helper binding's value, not on this binding's value.
+    let output = parse_module("merge = (a, b) => { ..a, ..b }\nover = merge({ k: 1 }, { k: 2 })\n");
+    let check = check_module(&output.module);
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::UNRESOLVED_BINDING),
+        "expected no unresolved-binding diagnostic: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::DUPLICATE_SPREAD_LABEL),
+        1,
+        "expected exactly one duplicate-spread-label: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn optional_params_render_with_default_marker() {
     assert_eq!(
         build::function_opt(vec![named("Text")], vec![named("Int")], named("Unit")).render(),
