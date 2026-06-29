@@ -1,0 +1,3 @@
+error type.unresolved-binding: cannot determine a type for this binding
+  label 105..113: this binding's type could not be inferred
+  note: add a type annotation, or change the value so its type resolves

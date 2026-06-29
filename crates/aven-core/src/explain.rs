@@ -315,6 +315,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A match arm can never run because its pattern is outside the statically known subject values. Remove the arm or change the subject type to include that value.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNRESOLVED_BINDING,
+        text: "A runtime binding reached the end of checking without a concrete inferred type and without another diagnostic explaining why. Add a type annotation, or change the value so inference can resolve it.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::UNSUPPORTED_PATTERN,
         text: "The pattern uses syntax reserved for a future pattern feature. Rewrite the arm as separate cases until the pattern form is implemented.",
     },

@@ -2140,11 +2140,10 @@ fn nested_record_match_pattern_binders_use_subject_field_types() {
 
 #[test]
 fn open_record_match_rest_binder_stays_unconstrained() {
-    let output = parse_module(
-        "source : { x: Int, y: Text, .. } = value\n\
+    let source = "source : { x: Int, y: Text, .. } = value\n\
          picked = source ?>\n  { x, ..rest } => x\n\
-         remaining = source ?>\n  { x, ..rest } => rest.y\n",
-    );
+         remaining = source ?>\n  { x, ..rest } => rest.y\n";
+    let output = parse_module(source);
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
@@ -2152,6 +2151,13 @@ fn open_record_match_rest_binder_stays_unconstrained() {
     assert_eq!(checker.infer_top_level_value("picked"), Some(named("Int")));
     assert_eq!(checker.infer_top_level_value("remaining"), None);
     assert!(checker.diagnostics.is_empty());
+
+    let check = check_module(&output.module);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::UNRESOLVED_BINDING),
+        "open record rest binder should stay intentionally unknown: {:?}",
+        check.diagnostics
+    );
 }
 
 #[test]
@@ -4594,6 +4600,20 @@ fn host_comptime_fn_resolves_result_type_from_literal_argument() {
 }
 
 #[test]
+fn host_comptime_fn_runtime_argument_defers_without_unresolved_binding() {
+    let source = "table : Text = \"users\"\nusers = tableType(table)\n";
+    let output = parse_module(source);
+    let check = check_module_with_host_globals(&output.module, &table_type_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "runtime host-comptime argument should stay intentionally deferred: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(check.type_at(nth_span(source, "users", 0)), None);
+}
+
+#[test]
 fn seeded_global_rejects_unknown_field() {
     let output = parse_module("logger.nope\n");
     let check = check_module_with_globals(&output.module, &logger_globals());
@@ -4811,6 +4831,99 @@ fn duplicate_top_level_declaration_does_not_report_later_uses_as_unbound() {
         &check.diagnostics,
         codes::name::UNBOUND
     ));
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::ty::UNRESOLVED_BINDING
+    ));
+}
+
+#[test]
+fn unresolved_top_level_runtime_binding_reports_when_value_stays_deferred() {
+    let source = "someUndefinedName = _\nx = someUndefinedName()\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::UNRESOLVED_BINDING),
+        1,
+        "expected unresolved-binding diagnostic: {:?}",
+        check.diagnostics
+    );
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::name::UNBOUND
+    ));
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNRESOLVED_BINDING))
+        .expect("expected unresolved-binding diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "x", 0));
+}
+
+#[test]
+fn bare_placeholder_runtime_binding_remains_clean() {
+    let output = parse_module("runtime = _\n");
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "bare placeholder should stay valid: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn comptime_deferred_binding_does_not_report_unresolved_binding() {
+    let output = parse_module("Value = make()\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+        1
+    );
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::ty::UNRESOLVED_BINDING
+    ));
+}
+
+#[test]
+fn binding_with_upstream_diagnostic_does_not_double_report_unresolved_binding() {
+    let output = parse_module("x = y\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(check.diagnostics.len(), 1, "{:?}", check.diagnostics);
+    assert_eq!(matching_codes(&check.diagnostics, codes::name::UNBOUND), 1);
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::ty::UNRESOLVED_BINDING
+    ));
+}
+
+#[test]
+fn unresolved_local_runtime_binding_reports_when_value_stays_deferred() {
+    let source = concat!(
+        "someUndefinedName = _\n",
+        "result =\n",
+        "  x = someUndefinedName()\n",
+        "  1\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::UNRESOLVED_BINDING),
+        1,
+        "expected unresolved local binding diagnostic: {:?}",
+        check.diagnostics
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNRESOLVED_BINDING))
+        .expect("expected unresolved-binding diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "x", 0));
 }
 
 #[test]

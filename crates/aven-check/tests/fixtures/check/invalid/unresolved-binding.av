@@ -1,0 +1,2 @@
+someUndefinedName = _
+x = someUndefinedName()

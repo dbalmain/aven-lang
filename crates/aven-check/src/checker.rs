@@ -49,6 +49,7 @@ pub(crate) struct Checker<'a> {
     globals: Vec<(String, Type)>,
     host_comptime_fns: HashMap<String, HostComptimeFnSpec>,
     report_unbound_names: bool,
+    report_unresolved_bindings: bool,
     reported_unbound_name_spans: HashSet<Span>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
@@ -108,6 +109,7 @@ impl<'a> Checker<'a> {
             globals: Vec::new(),
             host_comptime_fns: HashMap::new(),
             report_unbound_names: true,
+            report_unresolved_bindings: true,
             reported_unbound_name_spans: HashSet::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
@@ -265,6 +267,8 @@ impl<'a> Checker<'a> {
     fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
         let binding = binding_for_declaration(module, declaration);
         let mut checked_value = false;
+        let declared_annotation = declared_annotation_for_declaration(module, declaration);
+        let has_declared_annotation = declared_annotation.is_some();
 
         if declaration.phase == DeclarationPhase::Runtime
             && let Some(binding) = binding
@@ -278,7 +282,7 @@ impl<'a> Checker<'a> {
             self.check_comptime_binding_evaluation_support(&binding.value);
         }
 
-        if let Some(source) = declared_annotation_for_declaration(module, declaration) {
+        if let Some(source) = declared_annotation {
             let declared_type = self.lower_annotation(source.annotation);
             let expected_type = self.normalize(&declared_type);
             self.record_inferred_type(declaration.name_span, expected_type.clone());
@@ -292,19 +296,32 @@ impl<'a> Checker<'a> {
         }
 
         if !checked_value && let Some(binding) = binding {
+            let diagnostics_start = self.diagnostics.len();
             if declaration.phase == DeclarationPhase::Comptime {
                 self.check_value_expr_without_unbound_names(&binding.value);
             } else {
                 self.check_value_expr(&binding.value);
+                if !has_declared_annotation
+                    && let Some(ty) = self.top_level_binding_final_type(&declaration.name)
+                {
+                    self.report_unresolved_runtime_binding_if_stuck(
+                        binding,
+                        &ty,
+                        diagnostics_start,
+                    );
+                }
             }
         }
     }
 
     fn check_value_expr_without_unbound_names(&mut self, expr: &Expr) {
-        let previous = self.report_unbound_names;
+        let previous_unbound = self.report_unbound_names;
+        let previous_unresolved = self.report_unresolved_bindings;
         self.report_unbound_names = false;
+        self.report_unresolved_bindings = false;
         self.check_value_expr(expr);
-        self.report_unbound_names = previous;
+        self.report_unbound_names = previous_unbound;
+        self.report_unresolved_bindings = previous_unresolved;
     }
 
     fn push_local_comptime_param_scope(&mut self, params: &[Param]) {
@@ -367,7 +384,9 @@ impl<'a> Checker<'a> {
                 .local_types
                 .free_row_vars(|ty| self.unifier.resolve(ty));
             let scheme = generalize(resolved, &env_metas, &env_row_vars);
+            let diagnostics_start = self.diagnostics.len();
             self.check_value_expr(&binding.value);
+            self.report_unresolved_runtime_binding_if_stuck(binding, &scheme.ty, diagnostics_start);
             if type_contains_deferred(&scheme.ty) {
                 LocalValueType::Unknown
             } else {
@@ -637,6 +656,145 @@ impl<'a> Checker<'a> {
 
     fn record_synthesized_type(&mut self, name_span: Span, ty: &Type) {
         self.record_inferred_type(name_span, display_inferred_type(ty));
+    }
+
+    fn top_level_binding_final_type(&mut self, name: &str) -> Option<Type> {
+        let scheme = self.memo.get(name).cloned()?;
+        let ty = self.unifier.instantiate_scheme(&scheme);
+        Some(self.normalize(&self.resolve_and_default(&ty)))
+    }
+
+    fn report_unresolved_runtime_binding_if_stuck(
+        &mut self,
+        binding: &Binding,
+        ty: &Type,
+        diagnostics_start: usize,
+    ) {
+        if !self.report_unresolved_bindings
+            || self.diagnostics.len() != diagnostics_start
+            || self.binding_value_had_prior_diagnostic(binding, diagnostics_start)
+        {
+            return;
+        }
+
+        let ty = self.normalize(&self.resolve_and_default(ty));
+        if !matches!(ty, Type::Deferred) {
+            return;
+        }
+
+        if Self::binding_value_is_bare_placeholder(&binding.value)
+            || self.binding_value_is_overload_selection_pending(&binding.value)
+            || self.binding_value_is_host_comptime_runtime_arg_deferral(&binding.value)
+            || self.binding_value_is_open_record_rest_match_unknown(&binding.value)
+        {
+            return;
+        }
+
+        let mut visiting = HashSet::new();
+        if self.runtime_rhs_is_artifact(&binding.value, &mut visiting) {
+            return;
+        }
+
+        self.report_unresolved_binding(binding.name_span);
+    }
+
+    fn binding_value_had_prior_diagnostic(
+        &self,
+        binding: &Binding,
+        diagnostics_start: usize,
+    ) -> bool {
+        self.diagnostics[..diagnostics_start]
+            .iter()
+            .filter_map(|diagnostic| diagnostic.labels.first())
+            .any(|label| binding.value.span.contains(label.span))
+    }
+
+    fn binding_value_is_bare_placeholder(value: &Expr) -> bool {
+        match &ungroup_expr(value).kind {
+            ExprKind::Name(name) if name_is_placeholder(name) => true,
+            ExprKind::Missing => true,
+            _ => false,
+        }
+    }
+
+    fn binding_value_is_overload_selection_pending(&self, value: &Expr) -> bool {
+        match &ungroup_expr(value).kind {
+            ExprKind::Name(name) => self.name_is_deferred_overload(name),
+            ExprKind::Call { callee, .. } => {
+                self.binding_value_is_overload_selection_pending(callee)
+            }
+            _ => false,
+        }
+    }
+
+    fn name_is_deferred_overload(&self, name: &str) -> bool {
+        self.bindings
+            .get(name)
+            .is_some_and(|binding| binding.is_none())
+            && self
+                .value_types
+                .get(name)
+                .is_some_and(|scheme| scheme.is_none())
+    }
+
+    fn binding_value_is_host_comptime_runtime_arg_deferral(&self, value: &Expr) -> bool {
+        let ExprKind::Call { callee, args } = &ungroup_expr(value).kind else {
+            return false;
+        };
+        let Some(name) = expr_name(callee) else {
+            return false;
+        };
+        let env = self.local_types.inference_env();
+        let Some(spec) = self.host_comptime_fn(&env, name) else {
+            return false;
+        };
+
+        let bindings = self.current_comptime_value_bindings();
+        spec.comptime_params.iter().any(|index| {
+            let Some(arg) = args.get(*index) else {
+                return false;
+            };
+
+            self.evaluate_comptime_param_argument(arg, &bindings)
+                .is_none()
+        })
+    }
+
+    fn binding_value_is_open_record_rest_match_unknown(&mut self, value: &Expr) -> bool {
+        let ExprKind::Match { subject, arms, .. } = &ungroup_expr(value).kind else {
+            return false;
+        };
+        let Some(subject_row) = self.infer_record_subject_row_for_exemption(subject) else {
+            return false;
+        };
+        if subject_row.tail == RowTail::Closed {
+            return false;
+        }
+
+        arms.iter().any(|arm| {
+            let mut rest_binders = Vec::new();
+            collect_record_pattern_rest_binders(&arm.pattern, &mut rest_binders);
+            rest_binders
+                .iter()
+                .any(|binder| expr_references_name(&arm.body, binder))
+        })
+    }
+
+    fn infer_record_subject_row_for_exemption(&mut self, subject: &Expr) -> Option<Row> {
+        let unifier_snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let inferred_types_len = self.inferred_types.len();
+        let env = self.local_types.inference_env();
+        let inferred = self.infer(&env, subject);
+        let resolved = self.normalize(&self.resolve_and_default(&inferred));
+        self.unifier.restore(unifier_snapshot);
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
+        self.inferred_types.truncate(inferred_types_len);
+
+        match resolved {
+            Type::Record(row) => Some(row),
+            _ => None,
+        }
     }
 
     fn record_expr_type(&mut self, span: Span, ty: &Type) {
@@ -2946,6 +3104,18 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_unresolved_binding(&mut self, name_span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("cannot determine a type for this binding")
+                .with_code(codes::ty::UNRESOLVED_BINDING)
+                .with_label(Label::primary(
+                    name_span,
+                    "this binding's type could not be inferred",
+                ))
+                .with_note("add a type annotation, or change the value so its type resolves"),
+        );
+    }
+
     fn report_type_mismatch(&mut self, expected: &str, found: &'static str, span: Span) {
         self.push_type_mismatch_diagnostic(
             Diagnostic::error(format!("expected `{expected}`, found a {found}"))
@@ -3720,6 +3890,37 @@ fn pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> Vec<(String, 
             (binding.name.to_owned(), ty)
         })
         .collect()
+}
+
+fn collect_record_pattern_rest_binders(pattern: &Expr, binders: &mut Vec<String>) {
+    let ExprKind::Record(entries) = &ungroup_expr(pattern).kind else {
+        return;
+    };
+
+    for entry in entries {
+        if let RecordEntry::Spread { value, .. } = entry
+            && let ExprKind::Name(name) = &value.kind
+            && !name_is_placeholder(name)
+        {
+            binders.push(name.clone());
+        }
+    }
+}
+
+fn expr_references_name(expr: &Expr, name: &str) -> bool {
+    if let ExprKind::Name(current) = &expr.kind
+        && current == name
+    {
+        return true;
+    }
+
+    let mut found = false;
+    walk_expr_children(expr, &mut |child| {
+        if !found && expr_references_name(child, name) {
+            found = true;
+        }
+    });
+    found
 }
 
 fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut HashMap<String, Type>) {
