@@ -475,6 +475,9 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
             name,
             span: pattern.span,
         }),
+        ExprKind::Binary { operator, .. } if operator == "|" => {
+            collect_or_pattern_bindings(pattern, bindings);
+        }
         ExprKind::Record(entries) | ExprKind::Set(entries) => {
             collect_pattern_bindings_from_record_entries(entries, bindings);
         }
@@ -497,6 +500,46 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
                 collect_pattern_bindings(child, bindings);
             });
         }
+    }
+}
+
+fn collect_or_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSite<'a>>) {
+    let mut alternatives = Vec::new();
+    collect_or_pattern_alternatives(pattern, &mut alternatives);
+
+    let mut names = Vec::new();
+    for alternative in alternatives {
+        let mut alternative_bindings = Vec::new();
+        collect_pattern_bindings(alternative, &mut alternative_bindings);
+
+        let mut names_in_alternative = Vec::new();
+        for binding in alternative_bindings {
+            if names_in_alternative.contains(&binding.name) || !names.contains(&binding.name) {
+                bindings.push(binding);
+            }
+            if !names_in_alternative.contains(&binding.name) {
+                names_in_alternative.push(binding.name);
+            }
+            if !names.contains(&binding.name) {
+                names.push(binding.name);
+            }
+        }
+    }
+}
+
+fn collect_or_pattern_alternatives<'a>(pattern: &'a Expr, alternatives: &mut Vec<&'a Expr>) {
+    match &pattern.kind {
+        ExprKind::Group(inner) => collect_or_pattern_alternatives(inner, alternatives),
+        ExprKind::Binary {
+            left,
+            operator,
+            right,
+            ..
+        } if operator == "|" => {
+            collect_or_pattern_alternatives(left, alternatives);
+            collect_or_pattern_alternatives(right, alternatives);
+        }
+        _ => alternatives.push(pattern),
     }
 }
 

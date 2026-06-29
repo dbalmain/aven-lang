@@ -291,6 +291,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "An inferred variant with an open row tail may carry tags not listed in a closed annotation. Make the annotation open with `..` or constrain the value to a closed variant row before assigning it.",
     },
     DiagnosticExplanation {
+        code: codes::ty::OR_PATTERN_BINDING_MISMATCH,
+        text: "Every alternative in an or-pattern must bind the same names. Rename, add, or remove binders so the match arm body sees one consistent local environment.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::RENAME_ABSENT_FIELD,
         text: "A row transform tried to rename a missing label, or rename onto a label that already exists in the closed row accumulated so far. Make the source label present and the target label absent before the rename.",
     },
@@ -317,10 +321,6 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::UNRESOLVED_BINDING,
         text: "A runtime binding reached the end of checking without a concrete inferred type and without another diagnostic explaining why. Add a type annotation, or change the value so inference can resolve it.",
-    },
-    DiagnosticExplanation {
-        code: codes::ty::UNSUPPORTED_PATTERN,
-        text: "The pattern uses syntax reserved for a future pattern feature. Rewrite the arm as separate cases until the pattern form is implemented.",
     },
     DiagnosticExplanation {
         code: codes::ty::UNUSED_RESULT,

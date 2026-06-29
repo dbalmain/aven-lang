@@ -1,0 +1,6 @@
+Color = @{@Red, @Green, @Blue}
+
+color : Color = @Red
+result = color ?>
+  @Red | @Green => "warm"
+  @Blue => "cool"

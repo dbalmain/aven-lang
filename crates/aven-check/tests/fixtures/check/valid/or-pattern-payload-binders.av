@@ -1,0 +1,3 @@
+source : @{@Ok(Int), @Err(Int)} = @Ok(1)
+result : Int = source ?>
+  @Ok(item) | @Err(item) => item

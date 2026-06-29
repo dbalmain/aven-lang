@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
@@ -79,6 +79,18 @@ struct RuntimeMatchArmTypeConflict {
     earlier: String,
     diverging: String,
     diverging_span: Span,
+}
+
+#[derive(Debug, Clone)]
+struct PatternLocalTypes {
+    bindings: Vec<(String, LocalValueType)>,
+    mismatches: Vec<OrPatternBindingMismatch>,
+}
+
+#[derive(Debug, Clone)]
+struct OrPatternBindingMismatch {
+    span: Span,
+    names: Vec<String>,
 }
 
 enum MatchArmCombination {
@@ -1154,12 +1166,12 @@ impl<'a> Checker<'a> {
         let mut body_types = Vec::new();
         for arm in arms {
             self.local_types.push();
-            if pattern_contains_or_pattern(&arm.pattern) {
-                self.report_unsupported_or_patterns(&arm.pattern);
-            } else {
-                for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
-                    self.local_types.define(&name, ty);
-                }
+            let local_types = checked_pattern_local_types(&arm.pattern, subject_type.as_ref());
+            for mismatch in &local_types.mismatches {
+                self.report_or_pattern_binding_mismatch(mismatch);
+            }
+            for (name, ty) in local_types.bindings {
+                self.local_types.define(&name, ty);
             }
             let bool_type = named_builtin("Bool");
             for guard in &arm.guards {
@@ -1329,7 +1341,7 @@ impl<'a> Checker<'a> {
 
         let has_default = arms
             .iter()
-            .any(|arm| arm.guards.is_empty() && is_catch_all_pattern(&arm.pattern));
+            .any(|arm| arm.guards.is_empty() && pattern_has_catch_all_alternative(&arm.pattern));
         if has_default {
             return;
         }
@@ -1344,7 +1356,7 @@ impl<'a> Checker<'a> {
                 let covered: HashSet<_> = arms
                     .iter()
                     .filter(|arm| arm.guards.is_empty())
-                    .filter_map(|arm| variant_pattern_tag(&arm.pattern))
+                    .flat_map(|arm| arm_covered_tags(&arm.pattern))
                     .collect();
                 let mut seen = HashSet::new();
                 let missing: Vec<_> = row
@@ -1370,8 +1382,10 @@ impl<'a> Checker<'a> {
                 let covered: Vec<_> = arms
                     .iter()
                     .filter(|arm| arm.guards.is_empty())
-                    .filter_map(|arm| {
-                        literal_pattern_value(&arm.pattern).map(|(literal, _)| literal)
+                    .flat_map(|arm| {
+                        arm_covered_literals(&arm.pattern)
+                            .into_iter()
+                            .map(|(literal, _)| literal)
                     })
                     .collect();
                 let mut missing = Vec::new();
@@ -3322,11 +3336,10 @@ impl<'a> Checker<'a> {
         };
 
         for arm in arms {
-            let Some((literal, span)) = literal_pattern_value(&arm.pattern) else {
-                continue;
-            };
-            if !members.contains(&literal) {
-                self.report_unreachable_literal_match_arm(literal, span);
+            for (literal, span) in arm_covered_literals(&arm.pattern) {
+                if !members.contains(&literal) {
+                    self.report_unreachable_literal_match_arm(literal, span);
+                }
             }
         }
     }
@@ -3563,30 +3576,28 @@ impl<'a> Checker<'a> {
         );
     }
 
-    fn report_unsupported_or_patterns(&mut self, pattern: &Expr) {
-        let mut spans = Vec::new();
-        collect_or_pattern_spans(pattern, &mut spans);
+    fn report_or_pattern_binding_mismatch(&mut self, mismatch: &OrPatternBindingMismatch) {
+        let names = mismatch
+            .names
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let note = if mismatch.names.len() == 1 {
+            format!("binder {names} must be bound by every alternative")
+        } else {
+            format!("binders {names} must be bound by every alternative")
+        };
 
-        for span in spans {
-            if self.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code.as_deref() == Some(codes::ty::UNSUPPORTED_PATTERN)
-                    && diagnostic.labels.first().map(|label| label.span) == Some(span)
-            }) {
-                continue;
-            }
-
-            self.diagnostics.push(
-                Diagnostic::error("or-patterns are not supported yet")
-                    .with_code(codes::ty::UNSUPPORTED_PATTERN)
-                    .with_label(Label::primary(
-                        span,
-                        "`|` in pattern position is reserved for or-patterns",
-                    ))
-                    .with_note(
-                        "or-patterns are planned, but this checker slice does not lower them yet",
-                    ),
-            );
-        }
+        self.diagnostics.push(
+            Diagnostic::error("or-pattern alternatives bind different names")
+                .with_code(codes::ty::OR_PATTERN_BINDING_MISMATCH)
+                .with_label(Label::primary(
+                    mismatch.span,
+                    "this alternative binds a different set of names",
+                ))
+                .with_note(note),
+        );
     }
 }
 
@@ -3934,10 +3945,78 @@ fn collect_value_set_union_parts<'a>(
 }
 
 fn pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> Vec<(String, LocalValueType)> {
-    if pattern_contains_or_pattern(pattern) {
-        return Vec::new();
+    checked_pattern_local_types(pattern, expected).bindings
+}
+
+fn checked_pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> PatternLocalTypes {
+    let mut mismatches = Vec::new();
+    collect_or_pattern_binding_mismatches(pattern, &mut mismatches);
+
+    PatternLocalTypes {
+        bindings: merged_pattern_local_types(pattern, expected),
+        mismatches,
+    }
+}
+
+fn merged_pattern_local_types(
+    pattern: &Expr,
+    expected: Option<&Type>,
+) -> Vec<(String, LocalValueType)> {
+    let alternatives = flatten_or_alternatives(pattern);
+    if alternatives.len() == 1 {
+        return single_pattern_local_types(pattern, expected);
     }
 
+    let alternative_types = alternatives
+        .iter()
+        .map(|alternative| single_pattern_local_type_map(alternative, expected))
+        .collect::<Vec<_>>();
+    let names = alternative_types
+        .iter()
+        .flat_map(|types| types.keys().cloned())
+        .collect::<BTreeSet<_>>();
+
+    names
+        .into_iter()
+        .map(|name| {
+            let ty = merged_or_pattern_local_type(&name, &alternative_types);
+            (name, ty)
+        })
+        .collect()
+}
+
+fn single_pattern_local_type_map(
+    pattern: &Expr,
+    expected: Option<&Type>,
+) -> HashMap<String, LocalValueType> {
+    single_pattern_local_types(pattern, expected)
+        .into_iter()
+        .collect()
+}
+
+fn merged_or_pattern_local_type(
+    name: &str,
+    alternative_types: &[HashMap<String, LocalValueType>],
+) -> LocalValueType {
+    let Some(first) = alternative_types.first().and_then(|types| types.get(name)) else {
+        return LocalValueType::Unknown;
+    };
+
+    if alternative_types
+        .iter()
+        .all(|types| types.get(name) == Some(first))
+        && matches!(first, LocalValueType::Known(_))
+    {
+        first.clone()
+    } else {
+        LocalValueType::Unknown
+    }
+}
+
+fn single_pattern_local_types(
+    pattern: &Expr,
+    expected: Option<&Type>,
+) -> Vec<(String, LocalValueType)> {
     let mut known = HashMap::new();
     if let Some(expected) = expected {
         collect_known_pattern_types(pattern, expected, &mut known);
@@ -3953,6 +4032,55 @@ fn pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> Vec<(String, 
                 .unwrap_or(LocalValueType::Unknown);
             (binding.name.to_owned(), ty)
         })
+        .collect()
+}
+
+fn collect_or_pattern_binding_mismatches(
+    pattern: &Expr,
+    mismatches: &mut Vec<OrPatternBindingMismatch>,
+) {
+    match &ungroup_expr(pattern).kind {
+        ExprKind::Binary { operator, .. } if operator == "|" => {
+            let alternatives = flatten_or_alternatives(pattern);
+            collect_flat_or_pattern_binding_mismatches(&alternatives, mismatches);
+            for alternative in alternatives {
+                collect_or_pattern_binding_mismatches(alternative, mismatches);
+            }
+        }
+        _ => {
+            walk_expr_children(pattern, &mut |child| {
+                collect_or_pattern_binding_mismatches(child, mismatches);
+            });
+        }
+    }
+}
+
+fn collect_flat_or_pattern_binding_mismatches(
+    alternatives: &[&Expr],
+    mismatches: &mut Vec<OrPatternBindingMismatch>,
+) {
+    let Some((first, rest)) = alternatives.split_first() else {
+        return;
+    };
+
+    let expected = pattern_binding_names(first);
+    for alternative in rest {
+        let actual = pattern_binding_names(alternative);
+        if actual == expected {
+            continue;
+        }
+
+        mismatches.push(OrPatternBindingMismatch {
+            span: alternative.span,
+            names: expected.symmetric_difference(&actual).cloned().collect(),
+        });
+    }
+}
+
+fn pattern_binding_names(pattern: &Expr) -> BTreeSet<String> {
+    pattern_bindings(pattern)
+        .into_iter()
+        .map(|binding| binding.name.to_owned())
         .collect()
 }
 
@@ -4000,6 +4128,18 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
         }
         (ExprKind::Name(name), _) if name != "_" && is_resolved_value_type(expected) => {
             known.insert(name.clone(), expected.clone());
+        }
+        (
+            ExprKind::Binary {
+                left,
+                operator,
+                right,
+                ..
+            },
+            _,
+        ) if operator == "|" => {
+            collect_known_pattern_types(left, expected, known);
+            collect_known_pattern_types(right, expected, known);
         }
         (ExprKind::Call { callee, args }, Type::Variant(entries)) => {
             let ExprKind::Tag(tag) = &callee.kind else {
@@ -4385,8 +4525,8 @@ fn peel_empty_values(ty: &Type) -> (Vec<EmptyValue>, &Type) {
 fn empty_value_is_covered(arms: &[MatchArm], value: EmptyValue) -> bool {
     arms.iter().any(|arm| {
         arm.guards.is_empty()
-            && (empty_value_pattern(&arm.pattern) == Some(value)
-                || is_underscore_pattern(&arm.pattern))
+            && (arm_covered_empty_values(&arm.pattern).contains(&value)
+                || pattern_has_underscore_alternative(&arm.pattern))
     })
 }
 
@@ -4423,33 +4563,51 @@ fn is_catch_all_pattern(pattern: &Expr) -> bool {
     }
 }
 
-fn pattern_contains_or_pattern(pattern: &Expr) -> bool {
-    let mut spans = Vec::new();
-    collect_or_pattern_spans(pattern, &mut spans);
-    !spans.is_empty()
+fn pattern_has_catch_all_alternative(pattern: &Expr) -> bool {
+    flatten_or_alternatives(pattern)
+        .into_iter()
+        .any(is_catch_all_pattern)
 }
 
-fn collect_or_pattern_spans(pattern: &Expr, spans: &mut Vec<Span>) {
-    match &pattern.kind {
-        ExprKind::Group(inner) => collect_or_pattern_spans(inner, spans),
+fn pattern_has_underscore_alternative(pattern: &Expr) -> bool {
+    flatten_or_alternatives(pattern)
+        .into_iter()
+        .any(is_underscore_pattern)
+}
+
+fn flatten_or_alternatives(pattern: &Expr) -> Vec<&Expr> {
+    let mut alternatives = Vec::new();
+    collect_or_alternatives(pattern, &mut alternatives);
+    alternatives
+}
+
+fn collect_or_alternatives<'a>(pattern: &'a Expr, alternatives: &mut Vec<&'a Expr>) {
+    match &ungroup_expr(pattern).kind {
         ExprKind::Binary {
             left,
             operator,
-            operator_span,
             right,
-        } => {
-            if operator == "|" {
-                spans.push(*operator_span);
-            }
-            collect_or_pattern_spans(left, spans);
-            collect_or_pattern_spans(right, spans);
+            ..
+        } if operator == "|" => {
+            collect_or_alternatives(left, alternatives);
+            collect_or_alternatives(right, alternatives);
         }
-        _ => {
-            walk_expr_children(pattern, &mut |child| {
-                collect_or_pattern_spans(child, spans);
-            });
-        }
+        _ => alternatives.push(pattern),
     }
+}
+
+fn arm_covered_empty_values(pattern: &Expr) -> Vec<EmptyValue> {
+    flatten_or_alternatives(pattern)
+        .into_iter()
+        .filter_map(empty_value_pattern)
+        .collect()
+}
+
+fn arm_covered_tags(pattern: &Expr) -> Vec<&str> {
+    flatten_or_alternatives(pattern)
+        .into_iter()
+        .filter_map(variant_pattern_tag)
+        .collect()
 }
 
 fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
@@ -4517,6 +4675,13 @@ fn literal_pattern_value(pattern: &Expr) -> Option<(&Literal, Span)> {
         }
         _ => None,
     }
+}
+
+fn arm_covered_literals(pattern: &Expr) -> Vec<(&Literal, Span)> {
+    flatten_or_alternatives(pattern)
+        .into_iter()
+        .filter_map(literal_pattern_value)
+        .collect()
 }
 
 fn pattern_matches_comptime_value(pattern: &Expr, value: &comptime::ComptimeValue) -> bool {

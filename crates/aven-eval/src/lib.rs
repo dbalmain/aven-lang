@@ -662,6 +662,12 @@ fn match_pattern(
         ExprKind::Undefined => Ok((value == &Value::Undefined).then_some(Vec::new())),
         ExprKind::Null => Ok((value == &Value::Null).then_some(Vec::new())),
         ExprKind::Literal(literal) => match_literal_pattern(literal, pattern.span, value),
+        ExprKind::Binary {
+            left,
+            operator,
+            right,
+            ..
+        } if operator == "|" => match_or_pattern(left, right, value, env),
         ExprKind::Tag(name) => match value {
             Value::Tag {
                 name: value_name,
@@ -674,6 +680,19 @@ fn match_pattern(
         ExprKind::Tuple(items) => match_tuple_pattern(items, value, env),
         _ => Ok(None),
     }
+}
+
+fn match_or_pattern(
+    left: &Expr,
+    right: &Expr,
+    value: &Value,
+    env: &Environment,
+) -> Result<Option<Vec<(String, Value)>>, Diagnostic> {
+    if let Some(bindings) = match_pattern(left, value, env)? {
+        return Ok(Some(bindings));
+    }
+
+    match_pattern(right, value, env)
 }
 
 fn bind_pattern_name(name: &str, value: &Value) -> Option<Vec<(String, Value)>> {
@@ -2780,6 +2799,24 @@ mod tests {
         assert_eval(
             "1 ?>\n  0 => \"zero\"\n  1 => \"one\"\n  _ => \"many\"\n",
             Value::Text("one".to_owned()),
+        );
+    }
+
+    #[test]
+    fn evaluates_literal_or_pattern_first_alternative() {
+        assert_eval("\"r\" ?>\n  \"r\" | \"w\" => 1\n  _ => 0\n", Value::Int(1));
+    }
+
+    #[test]
+    fn evaluates_literal_or_pattern_second_alternative() {
+        assert_eval("\"w\" ?>\n  \"r\" | \"w\" => 1\n  _ => 0\n", Value::Int(1));
+    }
+
+    #[test]
+    fn evaluates_tag_or_pattern() {
+        assert_eval(
+            "@Green ?>\n  @Red | @Green => 1\n  @Blue => 0\n",
+            Value::Int(1),
         );
     }
 

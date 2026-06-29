@@ -1,3 +1,0 @@
-error type.unsupported-pattern: or-patterns are not supported yet
-  label 21..22: `|` in pattern position is reserved for or-patterns
-  note: or-patterns are planned, but this checker slice does not lower them yet
