@@ -679,33 +679,48 @@ fn field_completion_at_position(
         .operator_span
         .start
         .checked_sub(1)
-        .and_then(|offset| document.type_at(Span::point(offset)));
-    let fields = if let Some(receiver_type) = receiver_type {
-        aven_compiler::record_fields(receiver_type)?
-    } else {
-        // The receiver's type may not be recorded — a host-record global whose
-        // field type is comptime-resolved (e.g. `File`, whose `open` returns a
-        // `Deferred` base type) is not a fully resolved value type, so it never
-        // lands in the type table. Fall back to an in-document definition, then
-        // to the host global directly, mirroring hover/signature-help.
-        let receiver = access.receiver.as_ref()?;
-        let receiver_type = definition_span_for_identifier(document, receiver)
-            .and_then(|span| document.type_at(span).cloned())
-            .or_else(|| host_global_type(&receiver.name))?;
-        aven_compiler::record_fields(&receiver_type)?
-    };
+        .and_then(|offset| document.type_at(Span::point(offset)).cloned())
+        .or_else(|| {
+            // The receiver's type may not be recorded — a host-record global whose
+            // field type is comptime-resolved (e.g. `File`, whose `open` returns a
+            // `Deferred` base type) is not a fully resolved value type, so it never
+            // lands in the type table. Fall back to an in-document definition, then
+            // to the host global directly, mirroring hover/signature-help.
+            let receiver = access.receiver.as_ref()?;
+            definition_span_for_identifier(document, receiver)
+                .and_then(|span| document.type_at(span).cloned())
+                .or_else(|| host_global_type(&receiver.name))
+        })?;
+    let fields = aven_compiler::record_fields(&receiver_type)?;
+
+    // When the receiver is itself optional/nullable, accessing a field needs
+    // `?.`. If the user typed a plain `.`, offer an edit that inserts the `?`
+    // alongside each field so accepting a completion yields `?.field`.
+    let null_safe_edit =
+        (type_is_empty_wrapped(&receiver_type) && !access.null_safe).then(|| TextEdit {
+            range: exact_offset_range(document, Span::point(access.operator_span.start)),
+            new_text: "?".to_owned(),
+        });
+
     let mut items = Vec::new();
     let mut seen = HashSet::new();
 
     for field in fields {
-        push_completion_item(
-            &mut items,
-            &mut seen,
-            completion_item_for_record_field(field),
-        );
+        let mut item = completion_item_for_record_field(field);
+        if let Some(edit) = &null_safe_edit {
+            item.additional_text_edits = Some(vec![edit.clone()]);
+        }
+        push_completion_item(&mut items, &mut seen, item);
     }
 
     Some(items)
+}
+
+fn type_is_empty_wrapped(ty: &aven_compiler::Type) -> bool {
+    matches!(
+        ty,
+        aven_compiler::Type::Optional(_) | aven_compiler::Type::Nullable(_)
+    )
 }
 
 fn construction_completion_at_position(
@@ -1804,6 +1819,7 @@ fn significant_tokens(document: &ParsedDocument) -> Vec<&aven_parser::Token> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FieldAccessAtPosition {
     operator_span: Span,
+    null_safe: bool,
     receiver: Option<IdentifierAtPosition>,
 }
 
@@ -1876,6 +1892,7 @@ fn field_access_at_operator(
 ) -> FieldAccessAtPosition {
     FieldAccessAtPosition {
         operator_span: tokens[operator_index].span,
+        null_safe: is_null_safe_field_access_operator(tokens[operator_index]),
         receiver: receiver_name_before_field_operator(tokens, operator_index),
     }
 }
@@ -1914,6 +1931,10 @@ fn identifier_from_token(token: &aven_parser::Token) -> Option<IdentifierAtPosit
 
 fn is_field_access_operator(token: &aven_parser::Token) -> bool {
     matches!(&token.kind, aven_parser::TokenKind::Operator(operator) if operator == "." || operator == "?.")
+}
+
+fn is_null_safe_field_access_operator(token: &aven_parser::Token) -> bool {
+    matches!(&token.kind, aven_parser::TokenKind::Operator(operator) if operator == "?.")
 }
 
 fn is_trivia_token(token: &aven_parser::Token) -> bool {
@@ -2964,6 +2985,52 @@ mod tests {
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>();
         assert_eq!(labels, vec!["open"]);
+    }
+
+    #[test]
+    fn completion_through_optional_receiver_inserts_null_safe_operator() {
+        // `p.headers[0]` is `?{ name, value }` (an array element), so completing
+        // a field through a plain `.` offers an edit inserting `?` before the
+        // operator — accepting `name` yields `p.headers[0]?.name`.
+        let document = parsed_document_with_semantics("p = Http.get(\"u\")?^\nx = p.headers[0].\n");
+        let completions = completion_at_position(&document, position(1, 17));
+        let item = completions
+            .iter()
+            .find(|item| item.label == "name")
+            .expect("expected a `name` completion");
+        let edits = item
+            .additional_text_edits
+            .as_ref()
+            .expect("expected a `?` insertion edit");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "?");
+        assert_eq!(edits[0].range.start, position(1, 16));
+        assert_eq!(edits[0].range.end, position(1, 16));
+    }
+
+    #[test]
+    fn completion_through_already_null_safe_receiver_adds_no_edit() {
+        // The user already typed `?.`, so no extra `?` should be inserted.
+        let document =
+            parsed_document_with_semantics("p = Http.get(\"u\")?^\nx = p.headers[0]?.\n");
+        let completions = completion_at_position(&document, position(1, 18));
+        let item = completions
+            .iter()
+            .find(|item| item.label == "name")
+            .expect("expected a `name` completion");
+        assert!(item.additional_text_edits.is_none());
+    }
+
+    #[test]
+    fn completion_through_plain_record_receiver_adds_no_edit() {
+        // A non-optional record receiver completes fields with no `?` edit.
+        let document = parsed_document_with_semantics("user = { name: \"Ada\" }\nx = user.\n");
+        let completions = completion_at_position(&document, position(1, 9));
+        let item = completions
+            .iter()
+            .find(|item| item.label == "name")
+            .expect("expected a `name` completion");
+        assert!(item.additional_text_edits.is_none());
     }
 
     #[test]
