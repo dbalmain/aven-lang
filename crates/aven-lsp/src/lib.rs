@@ -2833,6 +2833,69 @@ mod tests {
     }
 
     #[test]
+    fn completion_at_host_record_field_access_returns_member_fields() {
+        // `Http` is a capitalized host-record global; field access on it offers
+        // the record's members the same way `logger.`/`stdout.` do, because the
+        // document is checked with host globals and the receiver's type is
+        // recorded at its span.
+        let document = parsed_document_with_semantics("res = Http.get(\"u\")\n");
+        let completions = completion_at_position(&document, position(0, 11));
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["get"]);
+    }
+
+    #[test]
+    fn signature_help_at_host_record_field_call_returns_member_signature() {
+        let document = parsed_document_with_semantics("res = Http.get(\"u\")\n");
+        let Some(help) = signature_help_at_position(&document, position(0, 15)) else {
+            panic!("expected signature help inside Http.get(");
+        };
+        assert!(
+            help.signatures[0]
+                .label
+                .starts_with("Http.get(Text, { headers:"),
+            "unexpected signature label: {}",
+            help.signatures[0].label
+        );
+        assert_eq!(help.active_parameter, Some(0));
+    }
+
+    #[test]
+    fn hover_at_host_record_field_shows_member_signature() {
+        let document = parsed_document_with_semantics("res = Http.get(\"u\")\n");
+        let Some(hover) = hover_at_position(&document, position(0, 12)) else {
+            panic!("expected hover on the `get` member");
+        };
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markup hover");
+        };
+        assert!(
+            markup.value.contains("(Text, { headers:") && markup.value.contains("-> Result["),
+            "unexpected member hover: {}",
+            markup.value
+        );
+    }
+
+    #[test]
+    fn hover_at_host_record_global_shows_record_type() {
+        let document = parsed_document_with_semantics("res = Http.get(\"u\")\n");
+        let Some(hover) = hover_at_position(&document, position(0, 7)) else {
+            panic!("expected hover on the `Http` global");
+        };
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markup hover");
+        };
+        assert!(
+            markup.value.contains("Http : { get:"),
+            "unexpected global hover: {}",
+            markup.value
+        );
+    }
+
+    #[test]
     fn signature_help_at_open_call_uses_host_global_signature() {
         let document = parsed_document_with_semantics("open(\"x\", )\n");
 
