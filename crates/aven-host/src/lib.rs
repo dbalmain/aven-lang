@@ -283,12 +283,13 @@ pub fn http_response_type() -> Type {
     ])
 }
 
-/// `(Text, ?{ headers: ?Array[Header] }) -> Result[Response, HttpError]`.
+/// `(Text, ?{ headers: ?{..}, params: ?{..} }) -> Result[Response, HttpError]`.
 pub fn http_get_type() -> Type {
-    let options = build::record(vec![(
-        "headers",
-        build::optional(build::array(http_header_type())),
-    )]);
+    let text_value_record = || build::optional(build::open_record(vec![]));
+    let options = build::record(vec![
+        ("headers", text_value_record()),
+        ("params", text_value_record()),
+    ]);
     build::function_opt(
         vec![build::text()],
         vec![options],

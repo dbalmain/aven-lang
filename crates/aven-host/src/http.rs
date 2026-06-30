@@ -4,6 +4,7 @@
 //! handle shape: fields are native functions and the crate root owns the
 //! matching record type.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::error::Error as StdError;
 use std::io::{self, BufRead, BufReader, Read};
@@ -24,9 +25,28 @@ impl Host {
 type BodyReader = Rc<RefCell<BufReader<Box<dyn Read>>>>;
 
 #[derive(Debug, Clone, Copy)]
-struct HeaderArg<'a> {
+struct QueryArg<'a> {
     name: &'a str,
     value: &'a str,
+}
+
+#[derive(Debug, Clone)]
+struct HeaderArg<'a> {
+    name: &'a str,
+    value: Cow<'a, str>,
+}
+
+#[derive(Debug, Clone)]
+enum OptionTextValue<'a> {
+    Single(&'a str),
+    Multiple(Vec<&'a str>),
+}
+
+#[derive(Debug, Clone)]
+struct HttpGetArgs<'a> {
+    url: &'a str,
+    headers: Vec<HeaderArg<'a>>,
+    params: Vec<QueryArg<'a>>,
 }
 
 fn http_value() -> Value {
@@ -35,10 +55,13 @@ fn http_value() -> Value {
 
 fn http_get_native() -> Value {
     Value::native(|args| {
-        let (url, headers) = http_get_args(args)?;
-        let mut request = ureq::get(url);
-        for header in headers {
-            request = request.set(header.name, header.value);
+        let args = http_get_args(args)?;
+        let mut request = ureq::get(args.url);
+        for header in args.headers {
+            request = request.set(header.name, header.value.as_ref());
+        }
+        for param in args.params {
+            request = request.query(param.name, param.value);
         }
 
         Ok(match request.call() {
@@ -50,7 +73,7 @@ fn http_get_native() -> Value {
     })
 }
 
-fn http_get_args(args: &[Value]) -> Result<(&str, Vec<HeaderArg<'_>>), String> {
+fn http_get_args(args: &[Value]) -> Result<HttpGetArgs<'_>, String> {
     if !(1..=2).contains(&args.len()) {
         return Err(format!(
             "Http.get expects 1 or 2 arguments, got {}",
@@ -65,9 +88,9 @@ fn http_get_args(args: &[Value]) -> Result<(&str, Vec<HeaderArg<'_>>), String> {
         ));
     };
 
-    let headers = match args.get(1) {
-        None => Vec::new(),
-        Some(Value::Record(fields)) => options_headers(fields.as_ref())?,
+    let (headers, params) = match args.get(1) {
+        None => (Vec::new(), Vec::new()),
+        Some(Value::Record(fields)) => parse_options(fields.as_ref())?,
         Some(other) => {
             return Err(format!(
                 "Http.get expects options Record, got {}",
@@ -76,55 +99,97 @@ fn http_get_args(args: &[Value]) -> Result<(&str, Vec<HeaderArg<'_>>), String> {
         }
     };
 
-    Ok((url, headers))
+    Ok(HttpGetArgs {
+        url,
+        headers,
+        params,
+    })
 }
 
-fn options_headers(fields: &[(String, Value)]) -> Result<Vec<HeaderArg<'_>>, String> {
-    match record_field(fields, "headers") {
+fn parse_options(
+    fields: &[(String, Value)],
+) -> Result<(Vec<HeaderArg<'_>>, Vec<QueryArg<'_>>), String> {
+    Ok((parse_header_options(fields)?, parse_param_options(fields)?))
+}
+
+fn parse_header_options(fields: &[(String, Value)]) -> Result<Vec<HeaderArg<'_>>, String> {
+    let values = option_text_values(fields, "headers")?;
+    let mut headers = Vec::with_capacity(values.len());
+    for (name, value) in values {
+        let value = match value {
+            OptionTextValue::Single(value) => Cow::Borrowed(value),
+            // RFC 7230 treats repeated header fields as comma-equivalent for most
+            // headers. Cookie uses "; "; callers needing that pass a pre-joined string.
+            OptionTextValue::Multiple(values) => Cow::Owned(values.join(", ")),
+        };
+        headers.push(HeaderArg { name, value });
+    }
+    Ok(headers)
+}
+
+fn parse_param_options(fields: &[(String, Value)]) -> Result<Vec<QueryArg<'_>>, String> {
+    let values = option_text_values(fields, "params")?;
+    let mut params = Vec::new();
+    for (name, value) in values {
+        match value {
+            OptionTextValue::Single(value) => params.push(QueryArg { name, value }),
+            OptionTextValue::Multiple(values) => {
+                params.extend(values.into_iter().map(|value| QueryArg { name, value }))
+            }
+        }
+    }
+    Ok(params)
+}
+
+fn option_text_values<'a>(
+    fields: &'a [(String, Value)],
+    option_name: &str,
+) -> Result<Vec<(&'a str, OptionTextValue<'a>)>, String> {
+    match record_field(fields, option_name) {
         None | Some(Value::Undefined) => Ok(Vec::new()),
-        Some(Value::Array(headers)) => parse_header_args(headers.as_ref()),
+        Some(Value::Record(fields)) => parse_text_value_record(option_name, fields.as_ref()),
         Some(other) => Err(format!(
-            "Http.get options.headers expects Array, got {}",
+            "Http.get options.{option_name} expects Record, got {}",
             aven_value_type_name(other)
         )),
     }
 }
 
-fn parse_header_args(values: &[Value]) -> Result<Vec<HeaderArg<'_>>, String> {
-    values
+fn parse_text_value_record<'a>(
+    option_name: &str,
+    fields: &'a [(String, Value)],
+) -> Result<Vec<(&'a str, OptionTextValue<'a>)>, String> {
+    fields
         .iter()
-        .enumerate()
-        .map(|(index, value)| parse_header_arg(index, value))
+        .map(|(name, value)| {
+            parse_option_text_value(option_name, name, value).map(|value| (name.as_str(), value))
+        })
         .collect()
 }
 
-fn parse_header_arg(index: usize, value: &Value) -> Result<HeaderArg<'_>, String> {
-    let Value::Record(fields) = value else {
-        return Err(format!(
-            "Http.get options.headers[{index}] expects Record, got {}",
-            aven_value_type_name(value)
-        ));
-    };
-
-    Ok(HeaderArg {
-        name: header_text_field(fields.as_ref(), index, "name")?,
-        value: header_text_field(fields.as_ref(), index, "value")?,
-    })
-}
-
-fn header_text_field<'a>(
-    fields: &'a [(String, Value)],
-    index: usize,
-    name: &str,
-) -> Result<&'a str, String> {
-    match record_field(fields, name) {
-        Some(Value::Text(text)) => Ok(text),
-        Some(other) => Err(format!(
-            "Http.get options.headers[{index}].{name} expects Text, got {}",
+fn parse_option_text_value<'a>(
+    option_name: &str,
+    field_name: &str,
+    value: &'a Value,
+) -> Result<OptionTextValue<'a>, String> {
+    match value {
+        Value::Text(text) => Ok(OptionTextValue::Single(text)),
+        Value::Array(values) => {
+            let mut texts = Vec::with_capacity(values.len());
+            for (index, value) in values.iter().enumerate() {
+                let Value::Text(text) = value else {
+                    return Err(format!(
+                        "Http.get options.{option_name}.{field_name} expects Text or Array Text, got Array with {} at index {index}",
+                        aven_value_type_name(value)
+                    ));
+                };
+                texts.push(text.as_str());
+            }
+            Ok(OptionTextValue::Multiple(texts))
+        }
+        other => Err(format!(
+            "Http.get options.{option_name}.{field_name} expects Text or Array Text, got {}",
             aven_value_type_name(other)
-        )),
-        None => Err(format!(
-            "Http.get options.headers[{index}].{name} expects Text, got Undefined"
         )),
     }
 }
@@ -366,7 +431,24 @@ mod tests {
 
     #[test]
     fn http_get_checks_with_headers_options() {
-        assert_checks("res = Http.get(\"u\", { headers: [{ name: \"A\", value: \"b\" }] })\n");
+        assert_checks("res = Http.get(\"u\", { headers: { Authorization: \"A\" } })\n");
+    }
+
+    #[test]
+    fn http_get_checks_with_params_options() {
+        assert_checks("res = Http.get(\"u\", { params: { tag: [\"a\", \"b\"] } })\n");
+    }
+
+    #[test]
+    fn http_get_checks_with_computed_hyphenated_header_key() {
+        assert_checks("res = Http.get(\"u\", { headers: { [\"Content-Type\"]: \"x\" } })\n");
+    }
+
+    #[test]
+    fn http_get_checks_with_headers_and_params_options() {
+        assert_checks(
+            "res = Http.get(\"u\", { headers: { [\"Content-Type\"]: \"x\" }, params: { page: \"2\" } })\n",
+        );
     }
 
     #[test]
@@ -436,6 +518,25 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error, "Http.get expects a Text URL, got Int");
+    }
+
+    #[test]
+    fn http_get_native_rejects_non_text_header_value() {
+        let Value::Native(get) = http_get_native() else {
+            panic!("Http.get is native");
+        };
+        let options = Value::record(vec![(
+            "headers".to_owned(),
+            Value::record(vec![("Authorization".to_owned(), Value::Int(5))]),
+        )]);
+        let error = match get(&[Value::Text("https://example.com".to_owned()), options]) {
+            Ok(value) => panic!("expected native arg error, got {value:?}"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            "Http.get options.headers.Authorization expects Text or Array Text, got Int"
+        );
     }
 
     fn record_field_type(ty: &Type, name: &str) -> Type {
