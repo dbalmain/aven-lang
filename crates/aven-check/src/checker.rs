@@ -3258,6 +3258,37 @@ impl<'a> Checker<'a> {
         );
     }
 
+    fn report_tuple_index_not_comptime(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("tuple index must be known at compile time")
+                .with_code(codes::ty::TUPLE_INDEX_NOT_COMPTIME)
+                .with_label(Label::primary(
+                    span,
+                    "this index is not a compile-time integer",
+                ))
+                .with_note(
+                    "tuple indices must be known at compile time; convert to an array for runtime indexing, or use a comptime index",
+                ),
+        );
+    }
+
+    fn report_tuple_index_out_of_range(&mut self, span: Span, index: usize, arity: usize) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("tuple index `{index}` is out of range"))
+                .with_code(codes::ty::TUPLE_INDEX_OUT_OF_RANGE)
+                .with_label(Label::primary(
+                    span,
+                    format!(
+                        "this tuple has {arity} element{}",
+                        if arity == 1 { "" } else { "s" }
+                    ),
+                ))
+                .with_note(
+                    "use an in-range compile-time index, or convert the tuple to an array for runtime indexing",
+                ),
+        );
+    }
+
     fn report_function_arity_mismatch(
         &mut self,
         required: usize,
@@ -5716,20 +5747,50 @@ impl<'a> Checker<'a> {
 
         let callee_type = self.infer(env, callee);
         let callee_type = self.normalize(&self.unifier.resolve(&callee_type));
-        let Type::Record(row) = callee_type else {
-            return Type::Deferred;
-        };
+        match callee_type {
+            Type::Record(row) => self.infer_record_index(&row, arg),
+            Type::Tuple(elements) => self.infer_tuple_index(&elements, arg),
+            Type::Apply { callee, args }
+                if args.len() == 1
+                    && matches!(callee.as_ref(), Type::Named(name) if name == "Array") =>
+            {
+                // Array indexing accepts a runtime index that may be out of
+                // bounds, so the result is optional (`?a`): an absent element
+                // yields `undefined`.
+                Type::Optional(Box::new(args[0].clone()))
+            }
+            _ => Type::Deferred,
+        }
+    }
+
+    /// Record indexing with a comptime-known key reads the exact field type from
+    /// a closed row, just like `record.field`.
+    fn infer_record_index(&self, row: &Row, arg: &Expr) -> Type {
         if row.tail != RowTail::Closed {
             return Type::Deferred;
         }
-
         let Some(label) = self.comptime_known_label(arg) else {
             return Type::Deferred;
         };
-
-        row_field_type(&row, &label)
+        row_field_type(row, &label)
             .cloned()
             .unwrap_or(Type::Deferred)
+    }
+
+    /// Tuple projection requires a comptime-known integer index and returns the
+    /// element type directly (an in-range element is always present, so no `?`).
+    fn infer_tuple_index(&mut self, elements: &[Type], arg: &Expr) -> Type {
+        let Some(index) = comptime_known_tuple_index(arg) else {
+            self.report_tuple_index_not_comptime(arg.span);
+            return Type::Deferred;
+        };
+        match elements.get(index) {
+            Some(ty) => ty.clone(),
+            None => {
+                self.report_tuple_index_out_of_range(arg.span, index, elements.len());
+                Type::Deferred
+            }
+        }
     }
 
     fn comptime_known_label(&self, expr: &Expr) -> Option<String> {
@@ -6421,6 +6482,15 @@ fn expr_name(expr: &Expr) -> Option<&str> {
         ExprKind::Name(name) => Some(name),
         _ => None,
     }
+}
+
+/// A tuple index must be a comptime-known non-negative integer literal. Floats,
+/// negatives, and runtime expressions are rejected (the caller diagnoses them).
+fn comptime_known_tuple_index(expr: &Expr) -> Option<usize> {
+    let ExprKind::Literal(Literal::Number(number)) = &ungroup_expr(expr).kind else {
+        return None;
+    };
+    number.parse::<usize>().ok()
 }
 
 fn ungroup_expr(mut expr: &Expr) -> &Expr {

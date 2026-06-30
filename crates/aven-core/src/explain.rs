@@ -303,6 +303,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A row transform used replacement syntax for a label that is not present in the closed row accumulated so far. Use an add form or spread a closed row containing that label first.",
     },
     DiagnosticExplanation {
+        code: codes::ty::TUPLE_INDEX_NOT_COMPTIME,
+        text: "A tuple was indexed with a value that is not a compile-time integer. Tuple projection needs a literal index; convert the tuple to an array for runtime indexing, or supply a comptime index.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::TUPLE_INDEX_OUT_OF_RANGE,
+        text: "A tuple index points past the tuple's last element. Use an in-range compile-time index, or convert the tuple to an array for runtime indexing.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::TYPE_ONLY_RECORD_ENTRY,
         text: "This record entry form is only meaningful in type position. Use it inside an annotation or replace it with a value-level record entry.",
     },

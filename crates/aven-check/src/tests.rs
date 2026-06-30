@@ -3783,6 +3783,77 @@ fn computed_value_index_with_non_record_receiver_defers_without_diagnostic() {
 }
 
 #[test]
+fn array_index_infers_optional_element_type() {
+    let output = parse_module("arr = [1, 2, 3]\na1 = arr[1]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    // The element type of `[1, 2, 3]` is the open literal union `1 | 2 | 3`, and
+    // array indexing wraps it in `?` (an absent index yields `undefined`).
+    let scheme = checker.infer_top_level_scheme("a1").expect("scheme for a1");
+    assert!(
+        matches!(&scheme.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::Variant(_))),
+        "expected `?(1 | 2 | 3)`, got {:?}",
+        scheme.ty
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn tuple_index_with_literal_infers_exact_element_type() {
+    let output = parse_module("pair = (\"Ada\", 36)\nname = pair[0]\nage = pair[1]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    // Tuple projection returns the exact element type — including its literal.
+    assert_eq!(
+        render_top_level_value(&mut checker, "name"),
+        Some("\"Ada\"".to_owned())
+    );
+    assert_eq!(
+        render_top_level_value(&mut checker, "age"),
+        Some("36".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn tuple_index_out_of_range_reports_diagnostic() {
+    let output = parse_module("pair = (\"Ada\", 36)\nx = pair[2]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    let _ = checker.infer_top_level_scheme("x");
+    assert!(
+        checker
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref()
+                == Some(codes::ty::TUPLE_INDEX_OUT_OF_RANGE))
+    );
+}
+
+#[test]
+fn tuple_index_with_runtime_index_reports_not_comptime() {
+    let output = parse_module("pair = (\"Ada\", 36)\ni = 1\nx = pair[i]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    let _ = checker.infer_top_level_scheme("x");
+    assert!(
+        checker
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref()
+                == Some(codes::ty::TUPLE_INDEX_NOT_COMPTIME))
+    );
+}
+
+#[test]
 fn comptime_pick_unrolls_key_set_to_closed_record_type() {
     let output = parse_module(
         "User = { name: Text, email: Text }\n\
