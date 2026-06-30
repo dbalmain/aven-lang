@@ -768,24 +768,31 @@ mod tests {
     }
 
     #[test]
-    fn open_unknown_mode_reports_host_comptime_error() {
-        let diagnostics = check_diagnostics("handle = open(\"x\", \"z\")\n");
+    fn open_unknown_mode_reports_literal_union_error() {
+        let diagnostics = check_diagnostics("handle = open(\"path\", \"x\")\n");
         assert!(
             diagnostics.iter().any(|diagnostic| {
-                diagnostic.code.as_deref() == Some(codes::comptime::HOST_FUNCTION)
-                    && diagnostic.message.contains("unknown open mode `z`")
+                diagnostic.code.as_deref() == Some(codes::ty::LITERAL_NOT_IN_UNION)
             }),
-            "unknown mode is rejected by the host resolver: {diagnostics:?}"
+            "unknown mode is rejected by the checker: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().all(|diagnostic| {
+                diagnostic.code.as_deref() != Some(codes::comptime::HOST_FUNCTION)
+            }),
+            "unknown mode should not reach the host resolver: {diagnostics:?}"
         );
     }
 
     #[test]
-    fn open_with_runtime_mode_defers_without_diagnostic() {
+    fn open_with_runtime_mode_reports_literal_union_error() {
         let source = "m : Text = \"r\"\nhandle = open(\"x\", m)\n";
         let checked = check_module(source);
         assert!(
-            checked.diagnostics.is_empty(),
-            "runtime mode should defer without an error: {:?}",
+            checked.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::ty::WIDE_VALUE_INTO_LITERAL_UNION)
+            }),
+            "runtime mode should be rejected by the checker: {:?}",
             checked.diagnostics
         );
         let offset = source.find("handle").expect("source contains handle");

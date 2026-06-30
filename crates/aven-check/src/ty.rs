@@ -92,6 +92,30 @@ pub fn variant_tags(ty: &Type) -> Option<Vec<String>> {
     )
 }
 
+/// The text-literal members of a closed literal-union type, in order.
+/// `None` for any type that is not a closed all-`Literal` variant row.
+pub fn literal_union_members(ty: &Type) -> Option<Vec<String>> {
+    let mut ty = ty;
+    while let Type::Optional(inner) | Type::Nullable(inner) = ty {
+        ty = inner;
+    }
+
+    let Type::Variant(row) = ty else {
+        return None;
+    };
+    if row.tail != RowTail::Closed {
+        return None;
+    }
+
+    row.entries
+        .iter()
+        .map(|entry| match entry {
+            RowEntry::Literal { value } => Some(render_literal_value(value).to_owned()),
+            RowEntry::Field { .. } | RowEntry::Tag { .. } => None,
+        })
+        .collect()
+}
+
 pub fn function_signature(ty: &Type) -> Option<(Vec<Type>, Type)> {
     let mut ty = ty;
     while let Type::Optional(inner) | Type::Nullable(inner) = ty {
@@ -747,6 +771,19 @@ pub mod build {
 
     pub fn text() -> Type {
         named("Text")
+    }
+
+    /// A closed literal-union type `"a" | "b" | ...` (text singletons).
+    pub fn text_literals(values: &[&str]) -> Type {
+        Type::Variant(Row {
+            entries: values
+                .iter()
+                .map(|value| RowEntry::Literal {
+                    value: aven_parser::Literal::String(format!("{value:?}")),
+                })
+                .collect(),
+            tail: RowTail::Closed,
+        })
     }
 
     pub fn int() -> Type {

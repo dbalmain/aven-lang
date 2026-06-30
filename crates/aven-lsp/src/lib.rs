@@ -600,6 +600,10 @@ fn completion_at_position(document: &ParsedDocument, position: Position) -> Vec<
         return items;
     }
 
+    if let Some(items) = argument_literal_completion_at_position(document, position) {
+        return items;
+    }
+
     identifier_completion_at_position(document, position)
 }
 
@@ -766,6 +770,37 @@ fn construction_completion_at_position(
     Some(items)
 }
 
+fn argument_literal_completion_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<Vec<CompletionItem>> {
+    let offset = position_to_offset(document, position)?;
+    let significant_tokens = significant_tokens(document);
+    let call = enclosing_call_at_offset(&significant_tokens, offset)?;
+    let active_parameter =
+        active_parameter_for_call(&significant_tokens, call.open_index, offset) as usize;
+    let (params, _) = function_signature_for_call(document, &call)?;
+    let members = aven_compiler::literal_union_members(params.get(active_parameter)?)?;
+
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    for member in members {
+        push_completion_item(
+            &mut items,
+            &mut seen,
+            CompletionItem {
+                label: member.clone(),
+                kind: Some(CompletionItemKind::VALUE),
+                insert_text: Some(member),
+                ..CompletionItem::default()
+            },
+        );
+    }
+
+    Some(items)
+}
+
 fn expected_type_for_construction_binding<'a>(
     document: &'a ParsedDocument,
     binding: &aven_parser::Binding,
@@ -785,6 +820,13 @@ fn declared_type_for_definition(
         .zip(document.declaration_artifacts())
         .find(|(declaration, _)| declaration.name_span == definition)
         .and_then(|(_, artifact)| artifact.declared_type())
+}
+
+fn host_global_type(name: &str) -> Option<aven_compiler::Type> {
+    aven_host::standard_check_host_globals()
+        .types
+        .into_iter()
+        .find_map(|(global, ty)| (global == name).then_some(ty))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1009,18 +1051,7 @@ fn signature_help_at_position(
     let offset = position_to_offset(document, position)?;
     let significant_tokens = significant_tokens(document);
     let call = enclosing_call_at_offset(&significant_tokens, offset)?;
-    let callee_type = call
-        .open_span
-        .start
-        .checked_sub(1)
-        .and_then(|offset| document.type_at(Span::point(offset)));
-    let (params, result) = if let Some(callee_type) = callee_type {
-        aven_compiler::function_signature(callee_type)?
-    } else {
-        let callee = call.fallback_callee.as_ref()?;
-        let callee_span = definition_span_for_identifier(document, callee)?;
-        aven_compiler::function_signature(document.type_at(callee_span)?)?
-    };
+    let (params, result) = function_signature_for_call(document, &call)?;
     let callee_label = callee_label_for_call(document, &call);
     let active_parameter = active_parameter_for_call(&significant_tokens, call.open_index, offset);
 
@@ -1034,6 +1065,35 @@ fn signature_help_at_position(
         active_signature: Some(0),
         active_parameter: Some(active_parameter),
     })
+}
+
+fn function_signature_for_call(
+    document: &ParsedDocument,
+    call: &CallAtPosition,
+) -> Option<(Vec<aven_compiler::Type>, aven_compiler::Type)> {
+    let callee_type = callee_type_for_call(document, call)?;
+    aven_compiler::function_signature(&callee_type)
+}
+
+fn callee_type_for_call(
+    document: &ParsedDocument,
+    call: &CallAtPosition,
+) -> Option<aven_compiler::Type> {
+    if let Some(callee_type) = call
+        .open_span
+        .start
+        .checked_sub(1)
+        .and_then(|offset| document.type_at(Span::point(offset)))
+    {
+        return Some(callee_type.clone());
+    }
+
+    let callee = call.fallback_callee.as_ref()?;
+    if let Some(callee_span) = definition_span_for_identifier(document, callee) {
+        return document.type_at(callee_span).cloned();
+    }
+
+    host_global_type(&callee.name)
 }
 
 fn signature_information(
@@ -1510,18 +1570,21 @@ fn identifier_hover_at_position(
     position: Position,
 ) -> Option<HoverCandidate> {
     let identifier = identifier_at_position(document, position)?;
-    let definition = definition_span_for_identifier(document, &identifier)?;
 
-    let rendered = if let Some(annotation) =
-        aven_parser::annotation_for_definition(&document.parse_output().module, definition)
-    {
-        let rendered = aven_parser::render_annotation(document.source(), annotation);
-        if rendered.is_empty() {
-            return None;
+    let rendered = if let Some(definition) = definition_span_for_identifier(document, &identifier) {
+        if let Some(annotation) =
+            aven_parser::annotation_for_definition(&document.parse_output().module, definition)
+        {
+            let rendered = aven_parser::render_annotation(document.source(), annotation);
+            if rendered.is_empty() {
+                return None;
+            }
+            rendered
+        } else {
+            document.type_at(definition)?.render()
         }
-        rendered
     } else {
-        document.type_at(definition)?.render()
+        host_global_type(&identifier.name)?.render()
     };
 
     Some(HoverCandidate {
@@ -2589,6 +2652,25 @@ mod tests {
     }
 
     #[test]
+    fn completion_at_open_mode_argument_returns_mode_literals() {
+        let completions = completions_at_marker("open(\"x\", |)\n");
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["\"r\"", "\"w\"", "\"a\"", "\"rw\""]);
+        for label in labels {
+            let Some(item) = completion_item(&completions, label) else {
+                panic!("expected {label} completion");
+            };
+
+            assert_eq!(item.kind, Some(CompletionItemKind::VALUE));
+            assert_eq!(item.insert_text.as_deref(), Some(label));
+        }
+    }
+
+    #[test]
     fn signature_help_at_name_call_returns_signature_and_active_parameter() {
         let document = parsed_document_with_semantics(
             "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, 2)\n",
@@ -2652,6 +2734,29 @@ mod tests {
             .expect("expected parameter labels");
         assert_eq!(parameters[0].label, ParameterLabel::LabelOffsets([10, 13]));
         assert_eq!(parameters[1].label, ParameterLabel::LabelOffsets([15, 18]));
+    }
+
+    #[test]
+    fn signature_help_at_open_call_uses_host_global_signature() {
+        let document = parsed_document_with_semantics("open(\"x\", )\n");
+
+        let Some(help) = signature_help_at_position(&document, position(0, 9)) else {
+            panic!("expected signature help");
+        };
+
+        assert_eq!(help.active_parameter, Some(1));
+        assert_eq!(
+            help.signatures[0].label,
+            "open(Text, \"r\" | \"w\" | \"a\" | \"rw\") -> ?"
+        );
+
+        let parameters = help.signatures[0]
+            .parameters
+            .as_ref()
+            .expect("expected parameter labels");
+        assert_eq!(parameters.len(), 2);
+        assert_eq!(parameters[0].label, ParameterLabel::LabelOffsets([5, 9]));
+        assert_eq!(parameters[1].label, ParameterLabel::LabelOffsets([11, 33]));
     }
 
     #[test]
@@ -3085,6 +3190,19 @@ mod tests {
         };
 
         assert_hover_value(hover, "```aven\ndouble : (Int) -> Int\n```");
+    }
+
+    #[test]
+    fn hover_at_position_shows_open_host_global_signature() {
+        let document = parsed_document_with_semantics("open(\"x\", \"r\")\n");
+        let Some(hover) = hover_at_position(&document, position(0, 1)) else {
+            panic!("expected hover");
+        };
+
+        assert_hover_value(
+            hover,
+            "```aven\nopen : (Text, \"r\" | \"w\" | \"a\" | \"rw\") -> ?\n```",
+        );
     }
 
     #[test]

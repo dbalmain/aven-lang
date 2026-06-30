@@ -257,11 +257,14 @@ pub fn io_error_type() -> Type {
     ])
 }
 
-/// The base `open` type: `(Text, Text) -> ?`. The checker uses it for name
-/// binding, arity, and argument validation; the host comptime resolver refines
-/// the result from the second argument's mode string.
+/// The base `open` type: `(Text, "r" | "w" | "a" | "rw") -> ?`. The checker
+/// uses it for name binding, arity, and argument validation; the host comptime
+/// resolver refines the result from the second argument's mode string.
 pub fn open_base_type() -> Type {
-    build::function(vec![build::text(), build::text()], Type::Deferred)
+    build::function(
+        vec![build::text(), build::text_literals(&["r", "w", "a", "rw"])],
+        Type::Deferred,
+    )
 }
 
 /// `(Text) -> Result[{}, WriteError]` — a handle `write`/`writeLine` method.
@@ -591,7 +594,10 @@ mod tests {
         let open = global_type(&globals, "open");
         let (open_params, open_result) = function_signature(open).expect("open is a function");
         assert_eq!(function_required_arity(open), Some(2));
-        assert_eq!(open_params, vec![build::text(), build::text()]);
+        assert_eq!(
+            open_params,
+            vec![build::text(), build::text_literals(&["r", "w", "a", "rw"])]
+        );
         assert_eq!(open_result, Type::Deferred);
     }
 

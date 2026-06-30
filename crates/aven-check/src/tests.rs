@@ -342,6 +342,43 @@ fn variant_tags_query_enumerates_variant_tags_and_peels_wrappers() {
 }
 
 #[test]
+fn text_literals_builder_round_trips_literal_union_members() {
+    let union = build::text_literals(&["r", "w", "a", "rw"]);
+    let expected = vec![
+        "\"r\"".to_owned(),
+        "\"w\"".to_owned(),
+        "\"a\"".to_owned(),
+        "\"rw\"".to_owned(),
+    ];
+
+    assert_eq!(union.render(), "\"r\" | \"w\" | \"a\" | \"rw\"");
+    assert_eq!(literal_union_members(&union), Some(expected.clone()));
+    assert_eq!(
+        literal_union_members(&optional(union.clone())),
+        Some(expected.clone())
+    );
+    assert_eq!(literal_union_members(&nullable(union)), Some(expected));
+}
+
+#[test]
+fn literal_union_members_rejects_open_rows_and_tag_variants() {
+    assert_eq!(
+        literal_union_members(&variant_type(
+            vec![literal_string("\"r\""), literal_string("\"w\"")],
+            RowTail::Open,
+        )),
+        None
+    );
+    assert_eq!(
+        literal_union_members(&variant_type(
+            vec![tag("Ok", vec![named("Text")])],
+            RowTail::Closed,
+        )),
+        None
+    );
+}
+
+#[test]
 fn function_signature_query_returns_params_and_result_and_peels_wrappers() {
     let signature = function(vec![named("Int"), named("Text")], named("Bool"));
     let expected = Some((vec![named("Int"), named("Text")], named("Bool")));
