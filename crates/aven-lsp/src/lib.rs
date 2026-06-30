@@ -1132,12 +1132,19 @@ fn callee_type_for_call(
         return Some(callee_type.clone());
     }
 
-    let callee = call.fallback_callee.as_ref()?;
-    if let Some(callee_span) = definition_span_for_identifier(document, callee) {
-        return document.type_at(callee_span).cloned();
+    if let Some(callee) = &call.fallback_callee {
+        if let Some(callee_span) = definition_span_for_identifier(document, callee) {
+            return document.type_at(callee_span).cloned();
+        }
+
+        if let Some(ty) = host_global_type(&callee.name) {
+            return Some(ty);
+        }
     }
 
-    host_global_type(&callee.name)
+    call.fallback_field_callee
+        .as_ref()
+        .and_then(|callee| field_type_for_access(document, callee))
 }
 
 fn signature_information(
@@ -1185,6 +1192,7 @@ fn signature_label_offset(label: &str) -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallAtPosition {
     fallback_callee: Option<IdentifierAtPosition>,
+    fallback_field_callee: Option<FieldAccessIdentifiers>,
     open_index: usize,
     open_span: Span,
 }
@@ -1239,6 +1247,7 @@ fn call_before_open(tokens: &[&aven_parser::Token], open_index: usize) -> Option
 
     Some(CallAtPosition {
         fallback_callee: bare_identifier_callee_before_open(tokens, callee_index),
+        fallback_field_callee: field_callee_before_open(tokens, callee_index),
         open_index,
         open_span: tokens[open_index].span,
     })
@@ -1257,6 +1266,20 @@ fn bare_identifier_callee_before_open(
     }
 
     Some(identifier)
+}
+
+fn field_callee_before_open(
+    tokens: &[&aven_parser::Token],
+    callee_index: usize,
+) -> Option<FieldAccessIdentifiers> {
+    let field = identifier_from_token(tokens[callee_index])?;
+    let operator_index = callee_index.checked_sub(1)?;
+    if !is_field_access_operator(tokens[operator_index]) {
+        return None;
+    }
+
+    let receiver = receiver_name_before_field_operator(tokens, operator_index)?;
+    Some(FieldAccessIdentifiers { receiver, field })
 }
 
 fn token_can_end_callee_expression(token: &aven_parser::Token) -> bool {
@@ -1287,6 +1310,11 @@ fn callee_label_for_call(document: &ParsedDocument, call: &CallAtPosition) -> Op
             call.fallback_callee
                 .as_ref()
                 .map(|callee| callee.name.clone())
+                .or_else(|| {
+                    call.fallback_field_callee
+                        .as_ref()
+                        .map(|callee| callee.label())
+                })
         })
 }
 
@@ -1615,7 +1643,26 @@ fn identifier_hover_at_position(
 ) -> Option<HoverCandidate> {
     let identifier = identifier_at_position(document, position)?;
 
-    let rendered = if let Some(definition) = definition_span_for_identifier(document, &identifier) {
+    let rendered = if let Some(field_access) =
+        field_access_identifier_at_position(document, position)
+        && field_access.field.span == identifier.span
+        && let Some(field_type) = field_type_for_access(document, &field_access)
+    {
+        return Some(HoverCandidate {
+            span: identifier.span,
+            hover: Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!(
+                        "```aven\n{} : {}\n```",
+                        field_access.label(),
+                        field_type.render()
+                    ),
+                }),
+                range: Some(span_to_range(document, identifier.span)),
+            },
+        });
+    } else if let Some(definition) = definition_span_for_identifier(document, &identifier) {
         if let Some(annotation) =
             aven_parser::annotation_for_definition(&document.parse_output().module, definition)
         {
@@ -1753,6 +1800,18 @@ struct FieldAccessAtPosition {
     receiver: Option<IdentifierAtPosition>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FieldAccessIdentifiers {
+    receiver: IdentifierAtPosition,
+    field: IdentifierAtPosition,
+}
+
+impl FieldAccessIdentifiers {
+    fn label(&self) -> String {
+        format!("{}.{}", self.receiver.name, self.field.name)
+    }
+}
+
 fn field_access_at_position(
     document: &ParsedDocument,
     position: Position,
@@ -1779,6 +1838,31 @@ fn field_access_at_position(
     None
 }
 
+fn field_access_identifier_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<FieldAccessIdentifiers> {
+    let offset = position_to_offset(document, position)?;
+    let significant_tokens = significant_tokens(document);
+
+    for (index, token) in significant_tokens.iter().enumerate() {
+        if offset < token.span.start || offset >= token.span.end {
+            continue;
+        }
+
+        let field = identifier_from_token(token)?;
+        let operator_index = index.checked_sub(1)?;
+        if !is_field_access_operator(significant_tokens[operator_index]) {
+            return None;
+        }
+
+        let receiver = receiver_name_before_field_operator(&significant_tokens, operator_index)?;
+        return Some(FieldAccessIdentifiers { receiver, field });
+    }
+
+    None
+}
+
 fn field_access_at_operator(
     tokens: &[&aven_parser::Token],
     operator_index: usize,
@@ -1795,6 +1879,19 @@ fn receiver_name_before_field_operator(
 ) -> Option<IdentifierAtPosition> {
     let receiver_index = operator_index.checked_sub(1)?;
     identifier_from_token(tokens[receiver_index])
+}
+
+fn field_type_for_access(
+    document: &ParsedDocument,
+    access: &FieldAccessIdentifiers,
+) -> Option<aven_compiler::Type> {
+    let receiver_type = definition_span_for_identifier(document, &access.receiver)
+        .and_then(|span| document.type_at(span).cloned())
+        .or_else(|| host_global_type(&access.receiver.name))?;
+
+    aven_compiler::record_fields(&receiver_type)?
+        .into_iter()
+        .find_map(|field| (field.name == access.field.name).then_some(field.ty))
 }
 
 fn identifier_from_token(token: &aven_parser::Token) -> Option<IdentifierAtPosition> {
@@ -2709,7 +2806,7 @@ mod tests {
 
     #[test]
     fn completion_at_open_mode_argument_returns_mode_literals() {
-        let completions = completions_at_marker("open(\"x\", |)\n");
+        let completions = completions_at_marker("File.open(\"x\", |)\n");
         let labels = completions
             .iter()
             .map(|item| item.label.as_str())
@@ -2735,7 +2832,7 @@ mod tests {
     fn completion_after_typed_quote_replaces_the_quote() {
         // Triggered by the `"` itself: the edit replaces the lone quote so the
         // result is exactly `"r"`, not `""r"`.
-        let completions = completions_at_marker("open(\"x\", \"|)\n");
+        let completions = completions_at_marker("File.open(\"x\", \"|)\n");
         let Some(item) = completion_item(&completions, "\"r\"") else {
             panic!("expected \"r\" completion");
         };
@@ -2745,15 +2842,15 @@ mod tests {
         };
         assert_eq!(edit.new_text, "\"r\"");
         // Range spans the single opening quote before the cursor.
-        assert_eq!(edit.range.start.character, 10);
-        assert_eq!(edit.range.end.character, 11);
+        assert_eq!(edit.range.start.character, 15);
+        assert_eq!(edit.range.end.character, 16);
     }
 
     #[test]
     fn completion_inside_autopaired_quotes_consumes_the_closing_quote() {
-        // With autopairs the buffer is `open("x", "")` and the cursor sits
+        // With autopairs the buffer is `File.open("x", "")` and the cursor sits
         // between the quotes; the edit must replace both so we get `"r"`.
-        let completions = completions_at_marker("open(\"x\", \"|\")\n");
+        let completions = completions_at_marker("File.open(\"x\", \"|\")\n");
         let Some(item) = completion_item(&completions, "\"r\"") else {
             panic!("expected \"r\" completion");
         };
@@ -2762,8 +2859,8 @@ mod tests {
             panic!("expected a text edit");
         };
         assert_eq!(edit.new_text, "\"r\"");
-        assert_eq!(edit.range.start.character, 10);
-        assert_eq!(edit.range.end.character, 12);
+        assert_eq!(edit.range.start.character, 15);
+        assert_eq!(edit.range.end.character, 17);
     }
 
     #[test]
@@ -2897,16 +2994,16 @@ mod tests {
 
     #[test]
     fn signature_help_at_open_call_uses_host_global_signature() {
-        let document = parsed_document_with_semantics("open(\"x\", )\n");
+        let document = parsed_document_with_semantics("File.open(\"x\", )\n");
 
-        let Some(help) = signature_help_at_position(&document, position(0, 9)) else {
+        let Some(help) = signature_help_at_position(&document, position(0, 14)) else {
             panic!("expected signature help");
         };
 
         assert_eq!(help.active_parameter, Some(1));
         assert_eq!(
             help.signatures[0].label,
-            "open(Text, \"r\" | \"w\" | \"a\" | \"rw\") -> ?"
+            "File.open(Text, \"r\" | \"w\" | \"a\" | \"rw\") -> ?"
         );
 
         let parameters = help.signatures[0]
@@ -2914,8 +3011,8 @@ mod tests {
             .as_ref()
             .expect("expected parameter labels");
         assert_eq!(parameters.len(), 2);
-        assert_eq!(parameters[0].label, ParameterLabel::LabelOffsets([5, 9]));
-        assert_eq!(parameters[1].label, ParameterLabel::LabelOffsets([11, 33]));
+        assert_eq!(parameters[0].label, ParameterLabel::LabelOffsets([10, 14]));
+        assert_eq!(parameters[1].label, ParameterLabel::LabelOffsets([16, 38]));
     }
 
     #[test]
@@ -3353,14 +3450,14 @@ mod tests {
 
     #[test]
     fn hover_at_position_shows_open_host_global_signature() {
-        let document = parsed_document_with_semantics("open(\"x\", \"r\")\n");
-        let Some(hover) = hover_at_position(&document, position(0, 1)) else {
+        let document = parsed_document_with_semantics("File.open(\"x\", \"r\")\n");
+        let Some(hover) = hover_at_position(&document, position(0, 6)) else {
             panic!("expected hover");
         };
 
         assert_hover_value(
             hover,
-            "```aven\nopen : (Text, \"r\" | \"w\" | \"a\" | \"rw\") -> ?\n```",
+            "```aven\nFile.open : (Text, \"r\" | \"w\" | \"a\" | \"rw\") -> ?\n```",
         );
     }
 

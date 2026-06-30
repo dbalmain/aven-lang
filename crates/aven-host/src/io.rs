@@ -4,7 +4,7 @@
 //! methods return `Result` instead of aborting — so any host wires platform IO
 //! with one call ([`Host::register_std_streams`] / [`Host::register_files`])
 //! instead of rebuilding the natives inline. The matching types live in the
-//! crate root ([`crate::stdout_handle_type`], [`crate::open_base_type`], …) so the
+//! crate root ([`crate::stdout_handle_type`], [`crate::file_type`], …) so the
 //! value and type halves can't drift.
 //!
 //! Files use drop-RAII auto-close: a handle is a closed record of method
@@ -42,16 +42,11 @@ impl Host {
         self.register("stdio", stdio_handle_value(), crate::stdio_handle_type());
     }
 
-    /// Register file IO: the single `open(path, mode)` where mode is a Text
+    /// Register file IO: the single `File.open(path, mode)` where mode is a Text
     /// literal (`"r"`, `"w"`, `"a"`, or `"rw"`) at check time.
     pub fn register_files(&mut self) {
-        self.register_comptime_fn(
-            "open",
-            open_native(),
-            crate::open_base_type(),
-            vec![1],
-            open_comptime_resolver(),
-        );
+        self.register("File", file_value(), crate::file_type());
+        self.register_comptime_resolver("File.open", vec![1], open_comptime_resolver());
     }
 }
 
@@ -370,6 +365,10 @@ pub(crate) fn open_comptime_resolver() -> Rc<dyn HostComptimeFn> {
     Rc::new(OpenComptimeResolver)
 }
 
+fn file_value() -> Value {
+    Value::record(vec![("open".to_owned(), open_native())])
+}
+
 fn open_native() -> Value {
     Value::native(|args| {
         if args.len() != 2 {
@@ -684,32 +683,43 @@ mod tests {
     }
 
     #[test]
+    fn bare_open_is_not_a_host_global() {
+        let diagnostics = check_diagnostics("handle = open(\"x\", \"r\")\n");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::name::UNBOUND)),
+            "bare open is no longer registered: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn open_read_resolves_handle_shape_from_mode() {
-        let ty = binding_type("handle = open(\"x\", \"r\")\n", "handle");
+        let ty = binding_type("handle = File.open(\"x\", \"r\")\n", "handle");
         assert_eq!(
             ty,
             crate::build::result(crate::stdin_handle_type(), crate::io_error_type()),
-            "open(_, \"r\") returns Result[stdin handle, IoError]"
+            "File.open(_, \"r\") returns Result[stdin handle, IoError]"
         );
     }
 
     #[test]
     fn open_write_resolves_handle_shape_from_mode() {
-        let ty = binding_type("handle = open(\"x\", \"w\")\n", "handle");
+        let ty = binding_type("handle = File.open(\"x\", \"w\")\n", "handle");
         assert_eq!(
             ty,
             crate::build::result(crate::stdout_handle_type(), crate::io_error_type()),
-            "open(_, \"w\") returns Result[stdout handle, IoError]"
+            "File.open(_, \"w\") returns Result[stdout handle, IoError]"
         );
     }
 
     #[test]
     fn open_readwrite_resolves_all_handle_methods() {
-        let ty = binding_type("handle = open(\"x\", \"rw\")\n", "handle");
+        let ty = binding_type("handle = File.open(\"x\", \"rw\")\n", "handle");
         assert_eq!(
             ty,
             crate::build::result(crate::stdio_handle_type(), crate::io_error_type()),
-            "open(_, \"rw\") returns Result[stdio handle, IoError]"
+            "File.open(_, \"rw\") returns Result[stdio handle, IoError]"
         );
     }
 
@@ -718,7 +728,7 @@ mod tests {
         // `?!` unwraps the Result to the resolved read handle (no `write`), so
         // calling `write` on it is a missing-field error. The handle is bound
         // first because `?!.field` is not valid surface syntax.
-        let diagnostics = check_diagnostics("h = open(\"x\", \"r\")?!\n_ = h.write(\"y\")\n");
+        let diagnostics = check_diagnostics("h = File.open(\"x\", \"r\")?!\n_ = h.write(\"y\")\n");
         assert!(
             diagnostics
                 .iter()
@@ -729,7 +739,7 @@ mod tests {
 
     #[test]
     fn write_handle_lacks_read_method() {
-        let diagnostics = check_diagnostics("h = open(\"x\", \"w\")?!\n_ = h.readLine()\n");
+        let diagnostics = check_diagnostics("h = File.open(\"x\", \"w\")?!\n_ = h.readLine()\n");
         assert!(
             diagnostics
                 .iter()
@@ -740,7 +750,7 @@ mod tests {
 
     #[test]
     fn open_with_a_non_text_mode_argument_reports_argument_mismatch() {
-        let source = "handle = open(\"x\", 5)\n";
+        let source = "handle = File.open(\"x\", 5)\n";
         let bad = check_module(source);
         assert_eq!(
             bad.diagnostics
@@ -761,7 +771,7 @@ mod tests {
             "a bad comptime mode argument leaves the call deferred"
         );
 
-        let good = check_module("handle = open(\"x\", \"r\")\n");
+        let good = check_module("handle = File.open(\"x\", \"r\")\n");
         assert_eq!(
             handle_binding_type(&good, "handle"),
             Some(crate::build::result(
@@ -774,7 +784,7 @@ mod tests {
 
     #[test]
     fn open_unknown_mode_reports_literal_union_error() {
-        let diagnostics = check_diagnostics("handle = open(\"path\", \"x\")\n");
+        let diagnostics = check_diagnostics("handle = File.open(\"path\", \"x\")\n");
         assert!(
             diagnostics.iter().any(|diagnostic| {
                 diagnostic.code.as_deref() == Some(codes::ty::LITERAL_NOT_IN_UNION)
@@ -791,7 +801,7 @@ mod tests {
 
     #[test]
     fn open_with_runtime_mode_reports_literal_union_error() {
-        let source = "m : Text = \"r\"\nhandle = open(\"x\", m)\n";
+        let source = "m : Text = \"r\"\nhandle = File.open(\"x\", m)\n";
         let checked = check_module(source);
         assert!(
             checked.diagnostics.iter().any(|diagnostic| {
@@ -808,6 +818,23 @@ mod tests {
     }
 
     #[test]
+    fn user_file_binding_shadowing_namespace_uses_user_field_type() {
+        let source =
+            "File = { open: (p : Text, m : Text) => p }\nhandle = File.open(\"x\", \"z\")\n";
+        let checked = check_module(source);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "shadowed File should use the user field type: {:?}",
+            checked.diagnostics
+        );
+        let offset = source.find("handle").expect("source contains handle");
+        assert_eq!(
+            checked.type_at(Span::new(offset, offset + "handle".len())),
+            Some(&crate::build::text())
+        );
+    }
+
+    #[test]
     fn raii_flushes_buffered_write_when_handle_drops() {
         // The headline guarantee: the buffered write lands because the scope-local
         // handle goes OUT OF SCOPE, with no explicit flush call anywhere.
@@ -816,7 +843,7 @@ mod tests {
         // when the call returns. No explicit flush anywhere — the buffered line
         // must land via `Drop for FileState`.
         let source = format!(
-            "writeIt = () =>\n  h = open(\"{path}\", \"w\")?!\n  _ = h.writeLine(\"hello\")\n  {{}}\n_ = writeIt()\nr = open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
+            "writeIt = () =>\n  h = File.open(\"{path}\", \"w\")?!\n  _ = h.writeLine(\"hello\")\n  {{}}\n_ = writeIt()\nr = File.open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
             path = path.as_str(),
         );
 
@@ -832,7 +859,7 @@ mod tests {
     fn write_then_read_round_trips() {
         let path = TempPath::new("roundtrip");
         let source = format!(
-            "w = open(\"{path}\", \"w\")?!\n_ = w.writeLine(\"line one\")?!\n_ = w.write(\"partial\")?!\n_ = w.flush()?!\nr = open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
+            "w = File.open(\"{path}\", \"w\")?!\n_ = w.writeLine(\"line one\")?!\n_ = w.write(\"partial\")?!\n_ = w.flush()?!\nr = File.open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
             path = path.as_str(),
         );
         let value = run(&source);
@@ -844,7 +871,7 @@ mod tests {
         let path = TempPath::new("append");
         std::fs::write(path.as_str(), "first\n").expect("seed file");
         let source = format!(
-            "a = open(\"{path}\", \"a\")?!\n_ = a.writeLine(\"second\")?!\n_ = a.flush()?!\nr = open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
+            "a = File.open(\"{path}\", \"a\")?!\n_ = a.writeLine(\"second\")?!\n_ = a.flush()?!\nr = File.open(\"{path}\", \"r\")?!\nr.readAll()?!\n",
             path = path.as_str(),
         );
         let value = run(&source);
@@ -857,7 +884,7 @@ mod tests {
         std::fs::write(path.as_str(), "head\n").expect("seed file");
         // Open read+write: read the first line, then append more at the cursor.
         let source = format!(
-            "rw = open(\"{path}\", \"rw\")?!\nfirst = rw.readLine()?!\n_ = rw.write(\"tail\")?!\nreread = open(\"{path}\", \"r\")?!\n{{ first: first, all: reread.readAll()?! }}\n",
+            "rw = File.open(\"{path}\", \"rw\")?!\nfirst = rw.readLine()?!\n_ = rw.write(\"tail\")?!\nreread = File.open(\"{path}\", \"r\")?!\n{{ first: first, all: reread.readAll()?! }}\n",
             path = path.as_str(),
         );
         let value = run(&source);
@@ -877,7 +904,7 @@ mod tests {
     #[test]
     fn open_missing_file_is_not_found() {
         let path = TempPath::new("missing");
-        let source = format!("open(\"{path}\", \"r\")\n", path = path.as_str());
+        let source = format!("File.open(\"{path}\", \"r\")\n", path = path.as_str());
         let value = run(&source);
         let Value::Tag { name, payload } = &value else {
             panic!("expected a Result tag, got {value:?}");
@@ -892,7 +919,7 @@ mod tests {
     #[test]
     fn open_unknown_runtime_mode_returns_error_result() {
         let path = TempPath::new("unknown-mode");
-        let source = format!("open(\"{path}\", \"z\")\n", path = path.as_str());
+        let source = format!("File.open(\"{path}\", \"z\")\n", path = path.as_str());
         let value = run(&source);
         let Value::Tag { name, payload } = &value else {
             panic!("expected a Result tag, got {value:?}");
@@ -909,7 +936,7 @@ mod tests {
         use crate::build;
 
         // The same row-poly path that accepts `stdout`: a function on an open
-        // `{ write | r }` accepts an `open(_, "w")?!` handle via width
+        // `{ write | r }` accepts a `File.open(_, "w")?!` handle via width
         // subtyping. The `needsWrite` global is built by hand (like the P2a
         // stream test) so the param row is exact, not a deferred user
         // annotation.
@@ -930,7 +957,7 @@ mod tests {
             .push(("stdout".to_owned(), crate::stdout_handle_type()));
 
         for source in [
-            "_ = needsWrite(open(\"x\", \"w\")?!)\n",
+            "_ = needsWrite(File.open(\"x\", \"w\")?!)\n",
             "_ = needsWrite(stdout)\n",
         ] {
             let parsed = parse_module(source);

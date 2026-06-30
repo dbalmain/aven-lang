@@ -812,11 +812,11 @@ impl<'a> Checker<'a> {
         let ExprKind::Call { callee, args } = &ungroup_expr(value).kind else {
             return false;
         };
-        let Some(name) = expr_name(callee) else {
+        let env = self.local_types.inference_env();
+        let Some(name) = self.comptime_callee_name(&env, callee) else {
             return false;
         };
-        let env = self.local_types.inference_env();
-        let Some(spec) = self.host_comptime_fn(&env, name) else {
+        let Some(spec) = self.host_comptime_fn(&env, &name) else {
             return false;
         };
 
@@ -4939,9 +4939,10 @@ impl<'a> Checker<'a> {
 
     /// Infer `value?!` / `value?^`. Both unwrap a `Result[ok, err]` to its `ok`
     /// branch, so when the operand resolves to a concrete `Result` the result is
-    /// its ok type — this is what lets a phantom-typed `open(path, mode)?!` carry
-    /// the resolved handle record forward, so misusing it (a missing method) is a
-    /// real field error. A non-`Result` operand (still unknown) stays deferred.
+    /// its ok type — this is what lets a phantom-typed `File.open(path, mode)?!`
+    /// carry the resolved handle record forward, so misusing it (a missing
+    /// method) is a real field error. A non-`Result` operand (still unknown)
+    /// stays deferred.
     fn infer_propagate(&mut self, env: &TypeEnv, value: &Expr) -> Type {
         let inferred = self.infer(env, value);
         let resolved = self.resolve_and_default(&inferred);
@@ -5324,8 +5325,8 @@ impl<'a> Checker<'a> {
         callee: &Expr,
         args: &[Expr],
     ) -> Option<Type> {
-        let name = expr_name(callee)?;
-        let spec = self.host_comptime_fn(env, name)?;
+        let name = self.comptime_callee_name(env, callee)?;
+        let spec = self.host_comptime_fn(env, &name)?;
         let callee_type = self.infer(env, callee);
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
         let resolved = self.unifier.resolve(&callee_type);
@@ -5369,6 +5370,34 @@ impl<'a> Checker<'a> {
                 self.report_host_comptime_error(error, error_span);
                 Some(Type::Deferred)
             }
+        }
+    }
+
+    /// The dotted key under which a callee's host comptime resolver is
+    /// registered: a bare name (`open`) or a `Receiver.field` path
+    /// (`File.open`) when `Receiver` is an unshadowed host-record global.
+    /// `None` otherwise.
+    fn comptime_callee_name(&self, env: &TypeEnv, callee: &Expr) -> Option<String> {
+        match &ungroup_expr(callee).kind {
+            ExprKind::Name(name) => Some(name.clone()),
+            ExprKind::FieldAccess {
+                receiver,
+                field,
+                null_safe: false,
+                ..
+            } => {
+                let receiver_name = match &ungroup_expr(receiver).kind {
+                    ExprKind::Name(name) | ExprKind::ComptimeName(name) => name,
+                    _ => return None,
+                };
+                if env.get(receiver_name).is_some() || self.bindings.contains_key(receiver_name) {
+                    return None;
+                }
+
+                let key = format!("{receiver_name}.{field}");
+                self.host_comptime_fns.contains_key(&key).then_some(key)
+            }
+            _ => None,
         }
     }
 

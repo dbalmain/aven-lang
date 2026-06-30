@@ -48,12 +48,21 @@ struct ComptimeEntry {
     comptime_params: Vec<usize>,
 }
 
+/// A host-side comptime resolver keyed independently from runtime value/type
+/// registration, for resolvers that live under fields of typed host records.
+struct ComptimeResolverEntry {
+    key: String,
+    resolver: Rc<dyn HostComptimeFn>,
+    comptime_params: Vec<usize>,
+}
+
 /// Registry of host/library globals seeded into the evaluator and the checker.
 #[derive(Default)]
 pub struct Host {
     typed: Vec<TypedEntry>,
     runtime_only: Vec<RuntimeOnlyEntry>,
     comptime: Vec<ComptimeEntry>,
+    comptime_resolvers: Vec<ComptimeResolverEntry>,
 }
 
 impl Host {
@@ -96,6 +105,21 @@ impl Host {
             name: name.into(),
             value,
             ty,
+            resolver,
+            comptime_params,
+        });
+    }
+
+    /// Register a comptime resolver under an arbitrary checker key, without a
+    /// matching runtime value/type entry.
+    pub fn register_comptime_resolver(
+        &mut self,
+        key: impl Into<String>,
+        comptime_params: Vec<usize>,
+        resolver: Rc<dyn HostComptimeFn>,
+    ) {
+        self.comptime_resolvers.push(ComptimeResolverEntry {
+            key: key.into(),
             resolver,
             comptime_params,
         });
@@ -166,6 +190,15 @@ impl Host {
                         ),
                     )
                 })
+                .chain(self.comptime_resolvers.iter().map(|entry| {
+                    (
+                        entry.key.clone(),
+                        HostComptimeFnSpec::new(
+                            Rc::clone(&entry.resolver),
+                            entry.comptime_params.clone(),
+                        ),
+                    )
+                }))
                 .collect(),
         )
     }
@@ -312,6 +345,11 @@ pub fn open_base_type() -> Type {
     )
 }
 
+/// The `File` platform namespace record.
+pub fn file_type() -> Type {
+    build::record(vec![("open", open_base_type())])
+}
+
 /// `(Text) -> Result[{}, WriteError]` — a handle `write`/`writeLine` method.
 fn handle_write_type() -> Type {
     build::function(
@@ -396,14 +434,14 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ("stderr".to_owned(), stderr_handle_type()),
         ("stdin".to_owned(), stdin_handle_type()),
         ("stdio".to_owned(), stdio_handle_type()),
+        ("File".to_owned(), file_type()),
         ("Http".to_owned(), http_type()),
-        ("open".to_owned(), open_base_type()),
     ];
 
     HostGlobals::new(
         types,
         vec![(
-            "open".to_owned(),
+            "File.open".to_owned(),
             HostComptimeFnSpec::new(io::open_comptime_resolver(), vec![1]),
         )],
     )
@@ -580,8 +618,8 @@ mod tests {
                 "stderr",
                 "stdin",
                 "stdio",
-                "Http",
-                "open"
+                "File",
+                "Http"
             ]
         );
 
@@ -638,9 +676,18 @@ mod tests {
         assert!(read_all_params.is_empty());
         assert_eq!(read_all_result, build::text());
 
-        let open = global_type(&globals, "open");
-        let (open_params, open_result) = function_signature(open).expect("open is a function");
-        assert_eq!(function_required_arity(open), Some(2));
+        let file = global_type(&globals, "File");
+        let file_fields = record_fields(file).expect("File is a record");
+        let file_field_names = file_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(file_field_names, vec!["open"]);
+
+        let open = record_field_type(file, "open");
+        let (open_params, open_result) =
+            function_signature(&open).expect("File.open is a function");
+        assert_eq!(function_required_arity(&open), Some(2));
         assert_eq!(
             open_params,
             vec![build::text(), build::text_literals(&["r", "w", "a", "rw"])]
