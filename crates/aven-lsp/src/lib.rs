@@ -8,17 +8,17 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
-    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind, MessageType,
-    NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position, Range, RenameParams,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
-    SignatureHelpParams, SignatureInformation, SymbolKind, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
+    CompletionOptions, CompletionParams, CompletionResponse, CompletionTextEdit, Diagnostic,
+    DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
+    InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind,
+    MessageType, NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position, Range,
+    RenameParams, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -125,7 +125,7 @@ impl LanguageServer for Backend {
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_owned(), "@".to_owned()]),
+                    trigger_characters: Some(vec![".".to_owned(), "@".to_owned(), "\"".to_owned()]),
                     ..CompletionOptions::default()
                 }),
                 signature_help_provider: Some(SignatureHelpOptions {
@@ -782,6 +782,16 @@ fn argument_literal_completion_at_position(
     let (params, _) = function_signature_for_call(document, &call)?;
     let members = aven_compiler::literal_union_members(params.get(active_parameter)?)?;
 
+    // Completing `"r"` etc. inserts the whole quoted literal. Replace any quote
+    // (and partial text) the user has already typed so the result never doubles
+    // the quote — including the closing quote an autopairs plugin inserts. Build
+    // the range with exact offsets: `span_to_range` floors the width at 1 for
+    // diagnostic highlighting, which would turn a bare insert into a replace.
+    let range = exact_offset_range(
+        document,
+        literal_argument_replace_span(document.source(), offset),
+    );
+
     let mut items = Vec::new();
     let mut seen = HashSet::new();
 
@@ -792,13 +802,47 @@ fn argument_literal_completion_at_position(
             CompletionItem {
                 label: member.clone(),
                 kind: Some(CompletionItemKind::VALUE),
-                insert_text: Some(member),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range,
+                    new_text: member,
+                })),
                 ..CompletionItem::default()
             },
         );
     }
 
     Some(items)
+}
+
+/// The source range a literal-argument completion should replace: from an
+/// opening quote the user has already typed (if any) through the cursor,
+/// extended over a directly-following quote so an inserted `"x"` never doubles
+/// the quote an autopairs plugin added. With no opening quote yet the range is
+/// the empty span at the cursor (a plain insert).
+fn literal_argument_replace_span(source: &str, cursor: usize) -> Span {
+    let bytes = source.as_bytes();
+
+    let mut start = cursor;
+    let mut found_quote = false;
+    while start > 0 {
+        let byte = bytes[start - 1];
+        if byte == b'"' {
+            start -= 1;
+            found_quote = true;
+            break;
+        }
+        if matches!(byte, b' ' | b'\t' | b'(' | b',') {
+            break;
+        }
+        start -= 1;
+    }
+
+    let mut end = cursor;
+    if found_quote && bytes.get(end) == Some(&b'"') {
+        end += 1;
+    }
+
+    Span::new(start, end)
 }
 
 fn expected_type_for_construction_binding<'a>(
@@ -1793,6 +1837,18 @@ fn span_to_range(document: &ParsedDocument, span: Span) -> Range {
     }
 }
 
+/// Convert a byte span to an LSP range using exact offsets. Unlike
+/// [`span_to_range`], it preserves a zero-width span (an insertion point) rather
+/// than flooring the width at one character.
+fn exact_offset_range(document: &ParsedDocument, span: Span) -> Range {
+    let line_index = document.file().line_index();
+    let source = document.source();
+    Range {
+        start: to_lsp_position(line_index.offset_to_position(source, span.start)),
+        end: to_lsp_position(line_index.offset_to_position(source, span.end)),
+    }
+}
+
 fn position_to_offset(document: &ParsedDocument, target: Position) -> Option<usize> {
     document.file().line_index().position_to_offset(
         document.source(),
@@ -2666,8 +2722,48 @@ mod tests {
             };
 
             assert_eq!(item.kind, Some(CompletionItemKind::VALUE));
-            assert_eq!(item.insert_text.as_deref(), Some(label));
+            // No quote typed yet: the edit is an empty-span insert of the literal.
+            let Some(CompletionTextEdit::Edit(edit)) = &item.text_edit else {
+                panic!("expected a text edit for {label}");
+            };
+            assert_eq!(edit.new_text, label);
+            assert_eq!(edit.range.start, edit.range.end);
         }
+    }
+
+    #[test]
+    fn completion_after_typed_quote_replaces_the_quote() {
+        // Triggered by the `"` itself: the edit replaces the lone quote so the
+        // result is exactly `"r"`, not `""r"`.
+        let completions = completions_at_marker("open(\"x\", \"|)\n");
+        let Some(item) = completion_item(&completions, "\"r\"") else {
+            panic!("expected \"r\" completion");
+        };
+
+        let Some(CompletionTextEdit::Edit(edit)) = &item.text_edit else {
+            panic!("expected a text edit");
+        };
+        assert_eq!(edit.new_text, "\"r\"");
+        // Range spans the single opening quote before the cursor.
+        assert_eq!(edit.range.start.character, 10);
+        assert_eq!(edit.range.end.character, 11);
+    }
+
+    #[test]
+    fn completion_inside_autopaired_quotes_consumes_the_closing_quote() {
+        // With autopairs the buffer is `open("x", "")` and the cursor sits
+        // between the quotes; the edit must replace both so we get `"r"`.
+        let completions = completions_at_marker("open(\"x\", \"|\")\n");
+        let Some(item) = completion_item(&completions, "\"r\"") else {
+            panic!("expected \"r\" completion");
+        };
+
+        let Some(CompletionTextEdit::Edit(edit)) = &item.text_edit else {
+            panic!("expected a text edit");
+        };
+        assert_eq!(edit.new_text, "\"r\"");
+        assert_eq!(edit.range.start.character, 10);
+        assert_eq!(edit.range.end.character, 12);
     }
 
     #[test]
