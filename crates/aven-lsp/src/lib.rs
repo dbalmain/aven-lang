@@ -683,9 +683,16 @@ fn field_completion_at_position(
     let fields = if let Some(receiver_type) = receiver_type {
         aven_compiler::record_fields(receiver_type)?
     } else {
+        // The receiver's type may not be recorded — a host-record global whose
+        // field type is comptime-resolved (e.g. `File`, whose `open` returns a
+        // `Deferred` base type) is not a fully resolved value type, so it never
+        // lands in the type table. Fall back to an in-document definition, then
+        // to the host global directly, mirroring hover/signature-help.
         let receiver = access.receiver.as_ref()?;
-        let receiver_span = definition_span_for_identifier(document, receiver)?;
-        aven_compiler::record_fields(document.type_at(receiver_span)?)?
+        let receiver_type = definition_span_for_identifier(document, receiver)
+            .and_then(|span| document.type_at(span).cloned())
+            .or_else(|| host_global_type(&receiver.name))?;
+        aven_compiler::record_fields(&receiver_type)?
     };
     let mut items = Vec::new();
     let mut seen = HashSet::new();
@@ -2942,6 +2949,21 @@ mod tests {
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>();
         assert_eq!(labels, vec!["get"]);
+    }
+
+    #[test]
+    fn completion_at_comptime_field_host_record_returns_member_fields() {
+        // `File`'s `open` field is comptime-resolved (its base result is
+        // `Deferred`), so `File`'s record type is never recorded in the type
+        // table. Field completion must still offer `open` by falling back to the
+        // host global — a regression guard for `File.` showing generic context.
+        let document = parsed_document_with_semantics("h = File.\n");
+        let completions = completion_at_position(&document, position(0, 9));
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["open"]);
     }
 
     #[test]
