@@ -3820,6 +3820,44 @@ fn tuple_index_with_literal_infers_exact_element_type() {
 }
 
 #[test]
+fn null_safe_field_access_through_array_element_propagates_optional() {
+    let output = parse_module("rows = [{ name: \"Ada\" }]\nfirst = rows[0]\nlabel = first?.name\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    // `rows[0]` is `?{ name: ... }`, so `?.name` yields an optional field type.
+    let scheme = checker
+        .infer_top_level_scheme("label")
+        .expect("scheme for label");
+    assert!(
+        matches!(&scheme.ty, Type::Optional(_)),
+        "expected an optional field type, got {:?}",
+        scheme.ty
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn plain_field_access_through_array_element_reports_unguarded_empty() {
+    let output = parse_module("rows = [{ name: \"Ada\" }]\nfirst = rows[0]\nlabel = first.name\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    let _ = checker.infer_top_level_scheme("label");
+    assert!(
+        checker
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref()
+                == Some(codes::ty::UNGUARDED_EMPTY_ACCESS)),
+        "expected an unguarded-empty-access diagnostic, got {:?}",
+        checker.diagnostics
+    );
+}
+
+#[test]
 fn tuple_index_out_of_range_reports_diagnostic() {
     let output = parse_module("pair = (\"Ada\", 36)\nx = pair[2]\n");
     let known_types = known_type_names(&output.module);

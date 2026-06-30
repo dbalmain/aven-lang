@@ -319,6 +319,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A closed record value contains a field that is not present in its declared type. Remove the field or open the record type with `..`.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNGUARDED_EMPTY_ACCESS,
+        text: "A field was accessed on a value that may be `undefined` or `null` (for example an array element) without `?.`. Use `?.` to propagate the empty, `??` to supply a default, or match the empty before access.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::UNKNOWN_NAME,
         text: "A type annotation references an uppercase name that is not a known builtin or in-scope compile-time declaration. Define it or correct the spelling.",
     },

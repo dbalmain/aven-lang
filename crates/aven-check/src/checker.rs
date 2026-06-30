@@ -4599,6 +4599,26 @@ fn peel_empty_values(ty: &Type) -> (Vec<EmptyValue>, &Type) {
     }
 }
 
+/// Re-apply a peeled empty-value stack (outermost first) to a type, the inverse
+/// of [`peel_empty_values`].
+fn rewrap_empty_values(mut ty: Type, empties: &[EmptyValue]) -> Type {
+    for empty in empties.iter().rev() {
+        ty = match empty {
+            EmptyValue::Undefined => Type::Optional(Box::new(ty)),
+            EmptyValue::Null => Type::Nullable(Box::new(ty)),
+        };
+    }
+    ty
+}
+
+fn render_empty_values(empties: &[EmptyValue]) -> String {
+    empties
+        .iter()
+        .map(|empty| empty.render())
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
 fn empty_value_is_covered(arms: &[MatchArm], value: EmptyValue) -> bool {
     arms.iter().any(|arm| {
         arm.guards.is_empty()
@@ -4927,8 +4947,11 @@ impl<'a> Checker<'a> {
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
             ExprKind::Index { callee, args } => self.infer_value_index(env, callee, args),
             ExprKind::FieldAccess {
-                receiver, field, ..
-            } => self.infer_field_access(env, receiver, field),
+                receiver,
+                field,
+                field_span,
+                null_safe,
+            } => self.infer_field_access(env, receiver, field, *null_safe, *field_span),
             ExprKind::Binary {
                 left,
                 operator,
@@ -5244,10 +5267,26 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn infer_field_access(&mut self, env: &TypeEnv, receiver: &Expr, field: &str) -> Type {
+    fn infer_field_access(
+        &mut self,
+        env: &TypeEnv,
+        receiver: &Expr,
+        field: &str,
+        null_safe: bool,
+        field_span: Span,
+    ) -> Type {
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let receiver_type = self.infer(env, receiver);
+
+        // A `?T` / `T?` receiver (e.g. an array element, `arr[0]`) carries the
+        // field behind one or more empties. Peel them, read the field off the
+        // underlying record, then re-wrap the result with the same empties so the
+        // access propagates the emptiness (`?.email : ?Text`).
+        let resolved = self.normalize(&self.unifier.resolve(&receiver_type));
+        let (empties, core) = peel_empty_values(&resolved);
+        let core = core.clone();
+
         let field_type = self.unifier.fresh();
         let tail = self.unifier.fresh_row_var();
         let required = Type::Record(Row {
@@ -5258,13 +5297,39 @@ impl<'a> Checker<'a> {
             tail: RowTail::Var(tail),
         });
 
-        if self.unifier.unify(&receiver_type, &required).is_err() {
+        if self.unifier.unify(&core, &required).is_err() {
             self.unifier.restore(snapshot);
             self.restore_diagnostic_snapshot(diagnostic_snapshot);
-            Type::Deferred
-        } else {
-            field_type
+            return Type::Deferred;
         }
+
+        if empties.is_empty() {
+            return field_type;
+        }
+
+        // The receiver may be empty: a plain `.field` would use the wrapped value
+        // as its underlying `T`, which is unsound — require `?.`.
+        if !null_safe {
+            self.report_unguarded_empty_field_access(field_span, &empties);
+        }
+        rewrap_empty_values(field_type, &empties)
+    }
+
+    fn report_unguarded_empty_field_access(&mut self, span: Span, empties: &[EmptyValue]) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "this value may be {}; accessing a field through it needs `?.`",
+                render_empty_values(empties)
+            ))
+            .with_code(codes::ty::UNGUARDED_EMPTY_ACCESS)
+            .with_label(Label::primary(
+                span,
+                "field accessed without guarding the empty",
+            ))
+            .with_note(
+                "use `?.` to propagate the empty, `??` to supply a default, or match the empty before access",
+            ),
+        );
     }
 
     fn infer_call(&mut self, env: &TypeEnv, callee: &Expr, args: &[Expr]) -> Type {

@@ -102,6 +102,7 @@ pub mod ty {
     pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
     pub const REPLACE_ABSENT_FIELD: &str = "type.replace-absent-field";
     pub const TUPLE_INDEX_NOT_COMPTIME: &str = "type.tuple-index-not-comptime";
+    pub const UNGUARDED_EMPTY_ACCESS: &str = "type.unguarded-empty-access";
     pub const TUPLE_INDEX_OUT_OF_RANGE: &str = "type.tuple-index-out-of-range";
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
@@ -189,6 +190,7 @@ pub const ALL: &[&str] = &[
     ty::TUPLE_INDEX_OUT_OF_RANGE,
     ty::TYPE_ONLY_RECORD_ENTRY,
     ty::UNEXPECTED_FIELD,
+    ty::UNGUARDED_EMPTY_ACCESS,
     ty::UNKNOWN_NAME,
     ty::UNREACHABLE_MATCH_ARM,
     ty::UNRESOLVED_BINDING,
