@@ -4611,6 +4611,45 @@ fn rewrap_empty_values(mut ty: Type, empties: &[EmptyValue]) -> Type {
     ty
 }
 
+/// A compact source-like rendering of a receiver expression for diagnostics
+/// (`headers[0]`, `user?.profile`). Returns `None` for shapes not worth naming,
+/// so the caller can fall back to a generic phrasing.
+fn describe_receiver_expr(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Group(inner) => describe_receiver_expr(inner),
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name.clone()),
+        ExprKind::FieldAccess {
+            receiver,
+            field,
+            null_safe,
+            ..
+        } => {
+            let receiver = describe_receiver_expr(receiver)?;
+            let operator = if *null_safe { "?." } else { "." };
+            Some(format!("{receiver}{operator}{field}"))
+        }
+        ExprKind::Index { callee, args } => {
+            let callee = describe_receiver_expr(callee)?;
+            let args = args
+                .iter()
+                .map(describe_index_arg)
+                .collect::<Option<Vec<_>>>()?
+                .join(", ");
+            Some(format!("{callee}[{args}]"))
+        }
+        _ => None,
+    }
+}
+
+fn describe_index_arg(expr: &Expr) -> Option<String> {
+    match &ungroup_expr(expr).kind {
+        ExprKind::Literal(Literal::Number(number)) => Some(number.clone()),
+        ExprKind::Literal(Literal::String(text)) => Some(format!("\"{text}\"")),
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
 fn render_empty_values(empties: &[EmptyValue]) -> String {
     empties
         .iter()
@@ -5310,15 +5349,25 @@ impl<'a> Checker<'a> {
         // The receiver may be empty: a plain `.field` would use the wrapped value
         // as its underlying `T`, which is unsound — require `?.`.
         if !null_safe {
-            self.report_unguarded_empty_field_access(field_span, &empties);
+            self.report_unguarded_empty_field_access(receiver, field_span, &empties);
         }
         rewrap_empty_values(field_type, &empties)
     }
 
-    fn report_unguarded_empty_field_access(&mut self, span: Span, empties: &[EmptyValue]) {
+    fn report_unguarded_empty_field_access(
+        &mut self,
+        receiver: &Expr,
+        field_span: Span,
+        empties: &[EmptyValue],
+    ) {
+        // Underline the access (`.field`), not just the field name, and name the
+        // receiver when its shape is renderable (`headers[0] may be ...`).
+        let span = Span::point(receiver.span.end).merge(field_span);
+        let subject = describe_receiver_expr(receiver)
+            .map_or_else(|| "this value".to_owned(), |text| format!("`{text}`"));
         self.diagnostics.push(
             Diagnostic::error(format!(
-                "this value may be {}; accessing a field through it needs `?.`",
+                "{subject} may be {}; accessing a field through it needs `?.`",
                 render_empty_values(empties)
             ))
             .with_code(codes::ty::UNGUARDED_EMPTY_ACCESS)

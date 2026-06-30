@@ -3846,14 +3846,21 @@ fn plain_field_access_through_array_element_reports_unguarded_empty() {
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
     let _ = checker.infer_top_level_scheme("label");
+    let diagnostic = checker
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNGUARDED_EMPTY_ACCESS))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an unguarded-empty-access diagnostic, got {:?}",
+                checker.diagnostics
+            )
+        });
+    // The message names the receiver expression rather than "this value".
     assert!(
-        checker
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code.as_deref()
-                == Some(codes::ty::UNGUARDED_EMPTY_ACCESS)),
-        "expected an unguarded-empty-access diagnostic, got {:?}",
-        checker.diagnostics
+        diagnostic.message.contains("`first`"),
+        "expected the receiver to be named, got {:?}",
+        diagnostic.message
     );
 }
 
