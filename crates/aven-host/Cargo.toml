@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 aven-check.workspace = true
 aven-eval.workspace = true
+ureq = "2.12"
 
 [dev-dependencies]
 aven-core.workspace = true

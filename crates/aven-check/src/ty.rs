@@ -866,6 +866,14 @@ pub mod build {
         }
     }
 
+    /// The collection type `Array elem` (`Apply Named("Array") [elem]`).
+    pub fn array(element: Type) -> Type {
+        Type::Apply {
+            callee: Box::new(Type::Named("Array".to_owned())),
+            args: vec![element],
+        }
+    }
+
     /// The closed empty record `{}`.
     pub fn empty_record() -> Type {
         record(vec![])
@@ -970,4 +978,20 @@ pub(crate) fn is_undefined_value(value: &Expr) -> bool {
 
 pub(crate) fn is_null_value(value: &Expr) -> bool {
     matches!(&value.kind, ExprKind::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Type, build};
+
+    #[test]
+    fn build_array_round_trips_through_apply() {
+        assert_eq!(
+            build::array(build::text()),
+            Type::Apply {
+                callee: Box::new(Type::Named("Array".to_owned())),
+                args: vec![build::text()],
+            }
+        );
+    }
 }

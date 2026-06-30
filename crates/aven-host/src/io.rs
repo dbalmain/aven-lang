@@ -58,7 +58,7 @@ impl Host {
 // --- shared Result/error construction -------------------------------------
 
 /// Build the `@Ok(value)` Result tag a handle method returns on success.
-fn ok_value(value: Value) -> Value {
+pub(crate) fn ok_value(value: Value) -> Value {
     Value::Tag {
         name: "Ok".to_owned(),
         payload: vec![value],
@@ -67,7 +67,7 @@ fn ok_value(value: Value) -> Value {
 
 /// Build the `@Err(error)` Result tag a handle method returns on an IO error,
 /// where `error` is the closed error-variant tag (e.g. `@BrokenPipe("...")`).
-fn err_value(error: Value) -> Value {
+pub(crate) fn err_value(error: Value) -> Value {
     Value::Tag {
         name: "Err".to_owned(),
         payload: vec![error],
@@ -118,6 +118,29 @@ fn empty_record_value() -> Value {
     Value::record(vec![])
 }
 
+/// Map a `read_line` outcome to the handle's `Result` value:
+/// `Ok(0)` -> `@Ok(undefined)` (EOF), `Ok(_)` -> `@Ok(Text)`
+/// (newline-stripped), `Err` -> `@Err(ReadError)`.
+pub(crate) fn read_line_value(result: io::Result<usize>, mut line: String) -> Value {
+    match result {
+        Ok(0) => ok_value(Value::Undefined),
+        Ok(_) => {
+            strip_trailing_newline(&mut line);
+            ok_value(Value::Text(line))
+        }
+        Err(error) => err_value(read_error_value(&error)),
+    }
+}
+
+/// Map a `read_to_string` outcome: `Ok(_)` -> `@Ok(Text)`, `Err` ->
+/// `@Err(ReadError)`.
+pub(crate) fn read_all_value(result: io::Result<usize>, text: String) -> Value {
+    match result {
+        Ok(_) => ok_value(Value::Text(text)),
+        Err(error) => err_value(read_error_value(&error)),
+    }
+}
+
 fn write_text(writer: &mut impl Write, text: &str, newline: bool) -> io::Result<()> {
     if newline {
         writeln!(writer, "{text}")
@@ -158,7 +181,7 @@ fn io_text_arg<'a>(name: &str, args: &'a [Value]) -> Result<&'a str, String> {
     Ok(text)
 }
 
-fn aven_value_type_name(value: &Value) -> &'static str {
+pub(crate) fn aven_value_type_name(value: &Value) -> &'static str {
     match value {
         Value::Int(_) => "Int",
         Value::Float(_) => "Float",
@@ -263,14 +286,8 @@ fn read_line_handle_native() -> Value {
         flush_stdout_before_read();
 
         let mut line = String::new();
-        Ok(match io::stdin().lock().read_line(&mut line) {
-            Ok(0) => ok_value(Value::Undefined),
-            Ok(_) => {
-                strip_trailing_newline(&mut line);
-                ok_value(Value::Text(line))
-            }
-            Err(error) => err_value(read_error_value(&error)),
-        })
+        let result = io::stdin().lock().read_line(&mut line);
+        Ok(read_line_value(result, line))
     })
 }
 
@@ -283,10 +300,8 @@ fn read_all_handle_native() -> Value {
         flush_stdout_before_read();
 
         let mut text = String::new();
-        Ok(match io::stdin().lock().read_to_string(&mut text) {
-            Ok(_) => ok_value(Value::Text(text)),
-            Err(error) => err_value(read_error_value(&error)),
-        })
+        let result = io::stdin().lock().read_to_string(&mut text);
+        Ok(read_all_value(result, text))
     })
 }
 
@@ -476,14 +491,7 @@ fn file_read_line_native(state: &Rc<RefCell<FileState>>) -> Value {
             // Unreachable: `readLine` is only wired for read-capable handles.
             FileState::Write(_) => Err(io::Error::other("read on a write-only handle")),
         };
-        Ok(match result {
-            Ok(0) => ok_value(Value::Undefined),
-            Ok(_) => {
-                strip_trailing_newline(&mut line);
-                ok_value(Value::Text(line))
-            }
-            Err(error) => err_value(read_error_value(&error)),
-        })
+        Ok(read_line_value(result, line))
     })
 }
 
@@ -501,10 +509,7 @@ fn file_read_all_native(state: &Rc<RefCell<FileState>>) -> Value {
             // Unreachable: `readAll` is only wired for read-capable handles.
             FileState::Write(_) => Err(io::Error::other("read on a write-only handle")),
         };
-        Ok(match result {
-            Ok(_) => ok_value(Value::Text(text)),
-            Err(error) => err_value(read_error_value(&error)),
-        })
+        Ok(read_all_value(result, text))
     })
 }
 

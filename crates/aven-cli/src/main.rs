@@ -270,6 +270,7 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     // owned by the CLI (process-level concerns / config).
     host.register_std_streams();
     host.register_files();
+    host.register_http();
 
     Ok(host)
 }

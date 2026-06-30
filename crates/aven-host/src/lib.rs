@@ -8,6 +8,7 @@
 //! Rust traits the platform implements, while the statically-known value+type is
 //! registered through helpers like [`Host::register_logger`].
 
+mod http;
 mod io;
 mod marshal;
 
@@ -257,6 +258,49 @@ pub fn io_error_type() -> Type {
     ])
 }
 
+/// An HTTP header as surfaced on requests and responses.
+pub fn http_header_type() -> Type {
+    build::record(vec![("name", build::text()), ("value", build::text())])
+}
+
+/// The closed `HttpError` variant: transport failures from `Http.get`, each tag
+/// carrying a `Text` message. HTTP status codes are response data, not errors.
+pub fn http_error_type() -> Type {
+    build::variant(vec![
+        ("Timeout", vec![build::text()]),
+        ("ConnectionFailed", vec![build::text()]),
+        ("InvalidUrl", vec![build::text()]),
+        ("Other", vec![build::text()]),
+    ])
+}
+
+/// The `Http.get` response record.
+pub fn http_response_type() -> Type {
+    build::record(vec![
+        ("status", build::int()),
+        ("headers", build::array(http_header_type())),
+        ("body", stdin_handle_type()),
+    ])
+}
+
+/// `(Text, ?{ headers: ?Array[Header] }) -> Result[Response, HttpError]`.
+pub fn http_get_type() -> Type {
+    let options = build::record(vec![(
+        "headers",
+        build::optional(build::array(http_header_type())),
+    )]);
+    build::function_opt(
+        vec![build::text()],
+        vec![options],
+        build::result(http_response_type(), http_error_type()),
+    )
+}
+
+/// The `Http` platform namespace record.
+pub fn http_type() -> Type {
+    build::record(vec![("get", http_get_type())])
+}
+
 /// The base `open` type: `(Text, "r" | "w" | "a" | "rw") -> ?`. The checker
 /// uses it for name binding, arity, and argument validation; the host comptime
 /// resolver refines the result from the second argument's mode string.
@@ -351,6 +395,7 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ("stderr".to_owned(), stderr_handle_type()),
         ("stdin".to_owned(), stdin_handle_type()),
         ("stdio".to_owned(), stdio_handle_type()),
+        ("Http".to_owned(), http_type()),
         ("open".to_owned(), open_base_type()),
     ];
 
@@ -534,6 +579,7 @@ mod tests {
                 "stderr",
                 "stdin",
                 "stdio",
+                "Http",
                 "open"
             ]
         );
