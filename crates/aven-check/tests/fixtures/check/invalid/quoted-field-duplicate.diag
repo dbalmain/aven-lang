@@ -1,0 +1,3 @@
+error type.duplicate-spread-label: duplicate row label `name`
+  label 20..29: this label is already present in the accumulated row
+  note: use `name := ...` to replace the existing label, or remove one `name` entry

@@ -1,0 +1,10 @@
+module
+  binding headers
+    value
+      record
+        field content-type overwrite=false
+          string "application/json"
+  expr
+    field-access content-type null_safe=false
+      receiver
+        name headers

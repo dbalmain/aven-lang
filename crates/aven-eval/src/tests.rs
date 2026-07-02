@@ -463,6 +463,18 @@ fn evaluates_record_literals_and_field_access() {
 }
 
 #[test]
+fn evaluates_quoted_record_field_names() {
+    assert_module_value(
+        "headers = { \"content-type\": \"application/json\", \"x-request-id\": \"abc\" }\nheaders.\"content-type\"\n",
+        Value::Text("application/json".to_owned()),
+    );
+    assert_module_value(
+        "headers = { \"content-type\": \"application/json\" }\nheaders?.\"content-type\"\n",
+        Value::Text("application/json".to_owned()),
+    );
+}
+
+#[test]
 fn evaluates_record_spread_with_overwrite() {
     assert_module_value(
         "user = { name: \"Ada\", age: 36 }\nolder = { ..user, age :: 37 }\nolder.age\n",

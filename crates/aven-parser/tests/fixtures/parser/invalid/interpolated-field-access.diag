@@ -1,0 +1,3 @@
+error parse.unsupported-syntax: interpolated string cannot be used as a field name
+  label 8..9: computed field names use `[expr]: value`
+  note: use a string literal for a static name, or `[expr]: value` for a computed key

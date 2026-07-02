@@ -1,0 +1,11 @@
+Headers = {
+  "content-type": Text
+  "x-request-id": Text
+}
+
+headers : Headers = {
+  "content-type": "application/json"
+  "x-request-id": "abc"
+}
+
+contentType = headers."content-type"
