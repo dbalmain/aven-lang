@@ -10,6 +10,7 @@
 
 mod http;
 mod io;
+mod json;
 mod marshal;
 
 use std::rc::Rc;
@@ -38,6 +39,12 @@ struct RuntimeOnlyEntry {
     value: Value,
 }
 
+/// A checker-visible named type alias with no runtime value.
+struct TypeDefinitionEntry {
+    name: String,
+    ty: Type,
+}
+
 /// A name registered with a runtime value, a base checker type, and a
 /// host-side comptime resolver that can refine call result types.
 struct ComptimeEntry {
@@ -61,6 +68,7 @@ struct ComptimeResolverEntry {
 pub struct Host {
     typed: Vec<TypedEntry>,
     runtime_only: Vec<RuntimeOnlyEntry>,
+    type_definitions: Vec<TypeDefinitionEntry>,
     comptime: Vec<ComptimeEntry>,
     comptime_resolvers: Vec<ComptimeResolverEntry>,
 }
@@ -87,6 +95,15 @@ impl Host {
         self.runtime_only.push(RuntimeOnlyEntry {
             name: name.into(),
             value,
+        });
+    }
+
+    /// Register a named type alias visible to the checker, without adding a
+    /// runtime value to the host prelude.
+    pub fn register_type_definition(&mut self, name: impl Into<String>, ty: Type) {
+        self.type_definitions.push(TypeDefinitionEntry {
+            name: name.into(),
+            ty,
         });
     }
 
@@ -199,6 +216,12 @@ impl Host {
                         ),
                     )
                 }))
+                .collect(),
+        )
+        .with_type_definitions(
+            self.type_definitions
+                .iter()
+                .map(|entry| (entry.name.clone(), entry.ty.clone()))
                 .collect(),
         )
     }
@@ -335,6 +358,45 @@ pub fn http_type() -> Type {
     build::record(vec![("get", http_get_type())])
 }
 
+/// The closed `JsonError` variant returned by `Json.decode`.
+pub fn json_error_type() -> Type {
+    build::variant(vec![
+        (
+            "Parse",
+            vec![build::record(vec![("message", build::text())])],
+        ),
+        (
+            "Shape",
+            vec![build::record(vec![
+                ("path", build::text()),
+                ("expected", build::text()),
+                ("found", build::text()),
+            ])],
+        ),
+    ])
+}
+
+/// `(a) -> Text` — `Json.encode` accepts any checked value and validates JSON
+/// encodability at runtime.
+pub fn json_encode_type() -> Type {
+    build::function(vec![build::var("a")], build::text())
+}
+
+/// The base `Json.decode` type: `(Text, ?) -> ?`. The checker uses it for
+/// arity and the input text argument; the host comptime resolver refines the
+/// result from the trailing type argument.
+pub fn json_decode_base_type() -> Type {
+    build::function(vec![build::text(), Type::Deferred], Type::Deferred)
+}
+
+/// The `Json` platform namespace record.
+pub fn json_type() -> Type {
+    build::record(vec![
+        ("encode", json_encode_type()),
+        ("decode", json_decode_base_type()),
+    ])
+}
+
 /// The base `open` type: `(Text, "r" | "w" | "a" | "rw") -> ?`. The checker
 /// uses it for name binding, arity, and argument validation; the host comptime
 /// resolver refines the result from the second argument's mode string.
@@ -436,15 +498,23 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ("stdio".to_owned(), stdio_handle_type()),
         ("File".to_owned(), file_type()),
         ("Http".to_owned(), http_type()),
+        ("Json".to_owned(), json_type()),
     ];
 
     HostGlobals::new(
         types,
-        vec![(
-            "File.open".to_owned(),
-            HostComptimeFnSpec::new(io::open_comptime_resolver(), vec![1]),
-        )],
+        vec![
+            (
+                "File.open".to_owned(),
+                HostComptimeFnSpec::new(io::open_comptime_resolver(), vec![1]),
+            ),
+            (
+                "Json.decode".to_owned(),
+                HostComptimeFnSpec::new(json::decode_comptime_resolver(), vec![1]),
+            ),
+        ],
     )
+    .with_type_definitions(vec![("JsonError".to_owned(), json_error_type())])
 }
 
 #[cfg(test)]
@@ -619,7 +689,8 @@ mod tests {
                 "stdin",
                 "stdio",
                 "File",
-                "Http"
+                "Http",
+                "Json"
             ]
         );
 
@@ -693,6 +764,28 @@ mod tests {
             vec![build::text(), build::text_literals(&["r", "w", "a", "rw"])]
         );
         assert_eq!(open_result, Type::Deferred);
+
+        let json = global_type(&globals, "Json");
+        let json_fields = record_fields(json).expect("Json is a record");
+        let json_field_names = json_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(json_field_names, vec!["encode", "decode"]);
+
+        let encode = record_field_type(json, "encode");
+        let (encode_params, encode_result) =
+            function_signature(&encode).expect("Json.encode is a function");
+        assert_eq!(function_required_arity(&encode), Some(1));
+        assert_eq!(encode_params, vec![build::var("a")]);
+        assert_eq!(encode_result, build::text());
+
+        let decode = record_field_type(json, "decode");
+        let (decode_params, decode_result) =
+            function_signature(&decode).expect("Json.decode is a function");
+        assert_eq!(function_required_arity(&decode), Some(2));
+        assert_eq!(decode_params, vec![build::text(), Type::Deferred]);
+        assert_eq!(decode_result, Type::Deferred);
     }
 
     #[test]
@@ -767,6 +860,10 @@ mod tests {
                 "BrokenPipe".to_owned(),
                 "Other".to_owned()
             ])
+        );
+        assert_eq!(
+            variant_tags(&json_error_type()),
+            Some(vec!["Parse".to_owned(), "Shape".to_owned()])
         );
 
         for ty in [write_error_type(), read_error_type(), io_error_type()] {

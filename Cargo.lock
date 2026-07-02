@@ -159,6 +159,7 @@ dependencies = [
  "aven-core",
  "aven-eval",
  "aven-parser",
+ "serde_json",
  "ureq",
 ]
 

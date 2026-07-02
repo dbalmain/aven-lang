@@ -676,6 +676,33 @@ fn run_threads_result_with_propagation_operator() {
 }
 
 #[test]
+fn run_loads_user_json_file_with_typed_decode_and_propagation() {
+    let data = TempFile::new(
+        "run-load-user-json-data",
+        "{\"name\":\"Ada\",\"nick\":null}\n",
+    );
+    let data_path = data.path().to_string_lossy().into_owned();
+    let source = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\nloadUser(\"{data_path}\")\n",
+        "User = { name: Text, email: ?Text, nick: Text? }",
+        "loadUser = (path: Text) =>",
+        "  file = File.open(path, \"r\")?^",
+        "  text = file.readAll()?^",
+        "  user = Json.decode(text, User)?^",
+        "  @Ok(user)",
+    );
+    let file = TempFile::new("run-load-user-json-source", &source);
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "@Ok({ name: \"Ada\", email: undefined, nick: null })\n"
+    );
+}
+
+#[test]
 fn run_final_err_value_exits_non_zero_and_writes_stderr() {
     let file = TempFile::new("run-final-err", "@Err(\"boom\")\n");
 

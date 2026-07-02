@@ -737,7 +737,7 @@ impl<'a> Checker<'a> {
                 return false;
             };
 
-            self.evaluate_comptime_param_argument(arg, &bindings)
+            self.evaluate_comptime_runtime_argument(arg, &bindings)
                 .is_none()
         })
     }

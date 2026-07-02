@@ -642,7 +642,7 @@ fn omit_runs_uniformly_on_a_type_record() {
     // types, so `omit` runs at runtime over it with no special casing.
     assert_module_value(
         "omit({ name: Text, email: Text }, @{\"name\"})\n",
-        record_value(vec![("email", Value::Type("Text".to_owned()))]),
+        record_value(vec![("email", Value::named_type("Text"))]),
     );
 }
 
@@ -970,15 +970,15 @@ fn reports_field_access_on_non_record() {
 
 #[test]
 fn primitive_type_name_evaluates_to_type_value() {
-    assert_module_value("Text\n", Value::Type("Text".to_owned()));
-    assert_eq!(format!("{}", Value::Type("Text".to_owned())), "Text");
+    assert_module_value("Text\n", Value::named_type("Text"));
+    assert_eq!(format!("{}", Value::named_type("Text")), "Text");
 }
 
 #[test]
 fn record_of_types_evaluates_and_displays_as_type_record() {
     let expected = record_value(vec![
-        ("name", Value::Type("Text".to_owned())),
-        ("age", Value::Type("Int".to_owned())),
+        ("name", Value::named_type("Text")),
+        ("age", Value::named_type("Int")),
     ]);
     assert_module_value("{ name: Text, age: Int }\n", expected.clone());
     assert_eq!(format!("{expected}"), "{ name: Text, age: Int }");
@@ -989,8 +989,8 @@ fn type_alias_binding_yields_record_of_types_and_keysof() {
     assert_module_value(
         "User = { name: Text, email: Text }\nUser\n",
         record_value(vec![
-            ("name", Value::Type("Text".to_owned())),
-            ("email", Value::Type("Text".to_owned())),
+            ("name", Value::named_type("Text")),
+            ("email", Value::named_type("Text")),
         ]),
     );
     assert_module_value(
@@ -1006,6 +1006,29 @@ fn type_alias_binding_yields_record_of_types_and_keysof() {
 fn type_values_compare_by_name() {
     assert_module_value("Text == Text\n", Value::Bool(true));
     assert_module_value("Text == Int\n", Value::Bool(false));
+}
+
+#[test]
+fn composite_type_expressions_evaluate_to_type_values() {
+    assert_module_value(
+        "?Text\n",
+        Value::Type(super::RuntimeType::Optional(Box::new(Value::named_type(
+            "Text",
+        )))),
+    );
+    assert_module_value(
+        "Text?\n",
+        Value::Type(super::RuntimeType::Nullable(Box::new(Value::named_type(
+            "Text",
+        )))),
+    );
+    assert_module_value(
+        "Array[{ name: Text }]\n",
+        Value::Type(super::RuntimeType::Array(Box::new(record_value(vec![(
+            "name",
+            Value::named_type("Text"),
+        )])))),
+    );
 }
 
 #[test]

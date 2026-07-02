@@ -33,6 +33,7 @@ const BUILTIN_TYPES: &[&str] = &[
     // Seeded std names until import resolution provides them.
     "Array",
     "Json",
+    "JsonError",
     "Result",
     "Set",
     "Yaml",
@@ -91,9 +92,20 @@ pub fn check_module_with_globals(module: &Module, globals: &[(String, Type)]) ->
 /// override a registered call's result type when the listed arguments are known
 /// at compile time.
 pub fn check_module_with_host_globals(module: &Module, globals: &HostGlobals) -> CheckOutput {
-    let known_types = known_type_names(module);
-    let type_definitions = type_definitions(module, &known_types);
+    let mut known_types = known_type_names(module);
+    known_types.extend(
+        globals
+            .type_definitions
+            .iter()
+            .map(|(name, _)| name.clone()),
+    );
+    let mut type_definitions = type_definitions(module, &known_types);
     let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
+    for (name, ty) in &globals.type_definitions {
+        type_definitions
+            .entry(name.clone())
+            .or_insert_with(|| ty.clone());
+    }
     let mut checker =
         Checker::with_module_and_host_globals(known_types, type_definitions, module, globals);
 

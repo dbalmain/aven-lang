@@ -271,6 +271,7 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     host.register_std_streams();
     host.register_files();
     host.register_http();
+    host.register_json();
 
     Ok(host)
 }
@@ -574,7 +575,7 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
         }),
         aven_eval::Value::Closure(_) => JsonValue::String("<function>".to_owned()),
         aven_eval::Value::Native(_) => JsonValue::String("<native>".to_owned()),
-        aven_eval::Value::Type(name) => JsonValue::String(name.clone()),
+        aven_eval::Value::Type(ty) => JsonValue::String(ty.to_string()),
         aven_eval::Value::Undefined | aven_eval::Value::Null => JsonValue::Null,
     }
 }
@@ -881,6 +882,10 @@ mod tests {
         assert_eq!(
             host.check_host_globals().types,
             aven_host::standard_check_host_globals().types
+        );
+        assert_eq!(
+            host.check_host_globals().type_definitions,
+            aven_host::standard_check_host_globals().type_definitions
         );
         Ok(())
     }

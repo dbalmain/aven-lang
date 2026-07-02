@@ -124,6 +124,7 @@ impl HostComptimeFnSpec {
 #[derive(Clone, Default)]
 pub struct HostGlobals {
     pub types: Vec<(String, Type)>,
+    pub type_definitions: Vec<(String, Type)>,
     pub comptime_fns: Vec<(String, HostComptimeFnSpec)>,
 }
 
@@ -134,13 +135,20 @@ impl HostGlobals {
     ) -> Self {
         Self {
             types,
+            type_definitions: Vec::new(),
             comptime_fns,
         }
+    }
+
+    pub fn with_type_definitions(mut self, type_definitions: Vec<(String, Type)>) -> Self {
+        self.type_definitions = type_definitions;
+        self
     }
 
     pub fn types_only(types: &[(String, Type)]) -> Self {
         Self {
             types: types.to_vec(),
+            type_definitions: Vec::new(),
             comptime_fns: Vec::new(),
         }
     }

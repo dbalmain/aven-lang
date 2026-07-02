@@ -46,6 +46,14 @@ struct ClosureParam {
     default: Option<Rc<Expr>>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeType {
+    Named(String),
+    Optional(Box<Value>),
+    Nullable(Box<Value>),
+    Array(Box<Value>),
+}
+
 impl fmt::Debug for Closure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Closure")
@@ -71,17 +79,27 @@ pub enum Value {
     },
     Closure(Closure),
     Native(NativeFn),
-    /// An opaque named type value (e.g. `Text`). Types are first-class runtime
-    /// values: this holds only the name; the real type IR lives in `aven-check`.
-    Type(String),
+    /// A runtime type descriptor. The evaluator keeps this intentionally small:
+    /// named types plus the composite shapes JSON decode needs. Record types
+    /// remain ordinary `Value::Record` values whose fields are type values.
+    Type(RuntimeType),
     Undefined,
     Null,
 }
 
-/// Atomic primitive type names bound as `Value::Type` intrinsics. Matches
-/// `CHECKED_NAMED_TYPES` in `aven-check`.
-const PRIMITIVE_TYPE_NAMES: [&str; 7] =
-    ["Bool", "Float", "Int", "Null", "Text", "Undefined", "Unit"];
+/// Type names bound as `Value::Type` intrinsics. `Array` is included so
+/// `Array[T]` can evaluate to the minimal composite type value JSON decode
+/// needs at runtime.
+const TYPE_VALUE_NAMES: [&str; 8] = [
+    "Array",
+    "Bool",
+    "Float",
+    "Int",
+    "Null",
+    "Text",
+    "Undefined",
+    "Unit",
+];
 
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -101,7 +119,7 @@ impl fmt::Debug for Value {
                 .finish(),
             Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
             Self::Native(_) => f.write_str("Native(<native>)"),
-            Self::Type(name) => f.debug_tuple("Type").field(name).finish(),
+            Self::Type(ty) => f.debug_tuple("Type").field(ty).finish(),
             Self::Undefined => f.write_str("Undefined"),
             Self::Null => f.write_str("Null"),
         }
@@ -152,7 +170,7 @@ impl fmt::Display for Value {
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::Closure(_) => write!(f, "<function>"),
             Self::Native(_) => write!(f, "<native>"),
-            Self::Type(name) => write!(f, "{name}"),
+            Self::Type(ty) => write!(f, "{ty}"),
             Self::Undefined => write!(f, "undefined"),
             Self::Null => write!(f, "null"),
         }
@@ -166,6 +184,10 @@ impl Value {
 
     pub fn record(fields: Vec<(String, Value)>) -> Self {
         Self::Record(Rc::new(fields))
+    }
+
+    pub fn named_type(name: impl Into<String>) -> Self {
+        Self::Type(RuntimeType::Named(name.into()))
     }
 
     pub fn unit() -> Self {
@@ -192,6 +214,17 @@ impl Value {
             Self::Type(_) => "Type",
             Self::Undefined => "Undefined",
             Self::Null => "Null",
+        }
+    }
+}
+
+impl fmt::Display for RuntimeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Named(name) => write!(f, "{name}"),
+            Self::Optional(inner) => write!(f, "?{inner}"),
+            Self::Nullable(inner) => write!(f, "{inner}?"),
+            Self::Array(inner) => write!(f, "Array[{inner}]"),
         }
     }
 }
@@ -424,9 +457,9 @@ fn bind_intrinsics(env: &Environment) {
 }
 
 fn intrinsics() -> Vec<(String, Value)> {
-    let mut intrinsics: Vec<(String, Value)> = PRIMITIVE_TYPE_NAMES
+    let mut intrinsics: Vec<(String, Value)> = TYPE_VALUE_NAMES
         .iter()
-        .map(|name| ((*name).to_owned(), Value::Type((*name).to_owned())))
+        .map(|name| ((*name).to_owned(), Value::named_type(*name)))
         .collect();
 
     intrinsics.push((
@@ -560,6 +593,12 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
             .lookup(name)
             .ok_or_else(|| one_diagnostic(unbound_name(name, expr.span))),
         ExprKind::Group(inner) => eval_expr_many(inner, env),
+        ExprKind::Optional(inner) => {
+            eval_type_wrapper(inner, expr.span, env, RuntimeType::Optional)
+        }
+        ExprKind::Nullable(inner) => {
+            eval_type_wrapper(inner, expr.span, env, RuntimeType::Nullable)
+        }
         ExprKind::Unary {
             operator, value, ..
         } => eval_unary(operator, value, expr.span, env),
@@ -1194,6 +1233,21 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
 
     let callee_value = eval_expr_many(callee, env)?;
     let arg_value = eval_expr_many(&args[0], env)?;
+    if let (Value::Type(RuntimeType::Named(name)), arg_value) = (&callee_value, &arg_value)
+        && name == "Array"
+    {
+        if runtime_type_target(arg_value) {
+            return Ok(Value::Type(RuntimeType::Array(Box::new(arg_value.clone()))));
+        }
+
+        return Err(one_diagnostic(record_type_error(
+            args[0].span,
+            "array type construction",
+            arg_value.type_name(),
+            "Type",
+        )));
+    }
+
     match callee_value {
         Value::Array(values) => {
             let Value::Int(index) = arg_value else {
@@ -1240,6 +1294,35 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
             value.type_name(),
             "Array, Tuple, or Record",
         ))),
+    }
+}
+
+fn eval_type_wrapper(
+    inner: &Expr,
+    span: Span,
+    env: &Environment,
+    wrap: fn(Box<Value>) -> RuntimeType,
+) -> Eval {
+    let value = eval_expr_many(inner, env)?;
+    if runtime_type_target(&value) {
+        Ok(Value::Type(wrap(Box::new(value))))
+    } else {
+        Err(one_diagnostic(record_type_error(
+            span,
+            "type construction",
+            value.type_name(),
+            "Type",
+        )))
+    }
+}
+
+fn runtime_type_target(value: &Value) -> bool {
+    match value {
+        Value::Type(_) => true,
+        Value::Record(fields) => fields
+            .iter()
+            .all(|(_, field_value)| runtime_type_target(field_value)),
+        _ => false,
     }
 }
 

@@ -849,6 +849,12 @@ impl<'a> Checker<'a> {
             return Some(Type::Deferred);
         };
         if required > arg_types.len() || arg_types.len() > params.len() {
+            self.report_function_arity_mismatch(
+                required,
+                params.len(),
+                arg_types.len(),
+                callee.span,
+            );
             return Some(Type::Deferred);
         }
 
@@ -937,6 +943,10 @@ impl<'a> Checker<'a> {
             let Some(expected) = params.get(*index) else {
                 return false;
             };
+
+            if matches!(expected, Type::Deferred) {
+                return true;
+            }
 
             let snapshot = self.unifier.snapshot();
             let matches = self.unifier.unify(actual, expected).is_ok();
@@ -1173,6 +1183,33 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn evaluate_comptime_param_argument(
+        &mut self,
+        arg: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<ComptimeArgument> {
+        if let Some(argument) = self.evaluate_comptime_runtime_argument(arg, bindings) {
+            return Some(argument);
+        }
+
+        let members = self.concrete_label_set_members(arg, bindings);
+        if let Some(members) = members {
+            let labels = members.iter().map(|member| member.label.clone()).collect();
+            return Some(ComptimeArgument {
+                value: comptime::ComptimeValue::LabelSet(labels),
+                label_set_members: Some(members),
+            });
+        }
+
+        if let Some(ty) = self.evaluate_comptime_type_argument(arg, bindings) {
+            return Some(ComptimeArgument {
+                value: comptime::ComptimeValue::ReifiedType(ty),
+                label_set_members: None,
+            });
+        }
+        None
+    }
+
+    pub(super) fn evaluate_comptime_runtime_argument(
         &self,
         arg: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
@@ -1187,12 +1224,26 @@ impl<'a> Checker<'a> {
             Evaluation::Deferred | Evaluation::Unsupported => {}
         }
 
-        let members = self.concrete_label_set_members(arg, bindings)?;
-        let labels = members.iter().map(|member| member.label.clone()).collect();
-        Some(ComptimeArgument {
-            value: comptime::ComptimeValue::LabelSet(labels),
-            label_set_members: Some(members),
-        })
+        None
+    }
+
+    fn evaluate_comptime_type_argument(
+        &mut self,
+        arg: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<Type> {
+        let start = self.diagnostics.len();
+        self.local_comptime_values.push(bindings.clone());
+        let ty = self.lower_annotation(arg);
+        self.local_comptime_values.pop();
+        let diagnostics = self.diagnostics.split_off(start);
+        let has_diagnostics = !diagnostics.is_empty();
+        self.diagnostics.extend(diagnostics);
+        if has_diagnostics {
+            return None;
+        }
+
+        is_concrete_type(&ty).then_some(ty)
     }
 
     pub(super) fn comptime_param_function(&self, callee: &Expr) -> Option<(&'a [Param], &'a Expr)> {
