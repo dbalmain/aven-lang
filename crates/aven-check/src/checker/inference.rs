@@ -645,6 +645,12 @@ impl<'a> Checker<'a> {
         let (Some((expected_ok, expected_error)), Some((actual_ok, actual_error))) =
             (result_type_args(&expected), result_type_args(&actual))
         else {
+            // A variant-row body (e.g. a bare `@Ok(1)` final expression) fits a
+            // `Result` annotation by the same boundary rule the checking
+            // direction uses; raw unification cannot equate the two shapes.
+            if is_result_type(&expected) && matches!(actual, Type::Variant(_)) {
+                return self.type_fits_boundary_without_reporting(&expected, &actual);
+            }
             return self.unifier.unify(&actual, &expected).is_ok();
         };
         let expected_ok = expected_ok.clone();

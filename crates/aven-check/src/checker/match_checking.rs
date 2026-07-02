@@ -170,9 +170,10 @@ impl<'a> Checker<'a> {
             }
         }
 
-        let Type::Variant(row) = payload_type else {
+        let Some(row) = subject_variant_row(payload_type) else {
             return;
         };
+        let row = row.as_ref();
 
         let entry_kind = if row
             .entries
@@ -208,6 +209,24 @@ impl<'a> Checker<'a> {
 
         match entry_kind {
             VariantEntryKind::Tag => {
+                if row.tail == RowTail::Closed {
+                    let allowed_tags = row
+                        .entries
+                        .iter()
+                        .filter_map(|entry| match entry {
+                            RowEntry::Tag { name, .. } => Some(name.as_str()),
+                            RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
+                        })
+                        .collect::<HashSet<_>>();
+                    for arm in arms {
+                        for tag in arm_covered_tags(&arm.pattern) {
+                            if !allowed_tags.contains(tag) {
+                                self.report_variant_tag_mismatch(tag, arm.pattern.span);
+                            }
+                        }
+                    }
+                }
+
                 let covered: HashSet<_> = arms
                     .iter()
                     .filter(|arm| arm.guards.is_empty())

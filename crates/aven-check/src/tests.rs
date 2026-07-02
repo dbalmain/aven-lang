@@ -2256,6 +2256,204 @@ fn variant_match_payload_types_feed_result_inference() {
 }
 
 #[test]
+fn result_subject_match_reproduction_checks_clean() {
+    let source = concat!(
+        "g : () -> Result[Int, @{@Nope}]\n",
+        "g = () => @Ok(1)\n",
+        "r = g() ?>\n",
+        "  @Ok(v) => v\n",
+        "  @Err(_) => 0\n",
+        "writeLine(\"done\")\n",
+    );
+    let output = parse_module(source);
+    let globals = vec![(
+        "writeLine".to_owned(),
+        build::function(vec![build::text()], build::unit()),
+    )];
+    let check = check_module_with_globals(&output.module, &globals);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "r", 0)).map(Type::render),
+        Some("Int".to_owned())
+    );
+}
+
+#[test]
+fn result_subject_match_with_inline_return_annotation_checks_clean() {
+    // Same reproduction as above, but the Result annotation is written inline
+    // on the lambda (`(): Result[...] =>`), which resolves through the
+    // inference-direction fit check rather than the declared-signature path: a
+    // variant-row body (`@Ok(1)`) must fit the Result annotation by the
+    // boundary rule.
+    let source = concat!(
+        "g = (): Result[Int, @{@Nope}] => @Ok(1)\n",
+        "r = g() ?>\n",
+        "  @Ok(v) => v\n",
+        "  @Err(_) => 0\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "r", 0)).map(Type::render),
+        Some("Int".to_owned())
+    );
+}
+
+#[test]
+fn result_match_payload_binders_use_result_type_arguments() {
+    let source = concat!(
+        "source : Result[Text, @{@Nope}] = @Ok(\"ok\")\n",
+        "matched = source ?>\n",
+        "  @Ok(v) => v\n",
+        "  @Err(_) => \"fallback\"\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "matched", 0))
+            .map(Type::render),
+        Some("Text".to_owned())
+    );
+}
+
+#[test]
+fn result_match_exhaustiveness_uses_result_tags() {
+    let missing = parse_module(concat!(
+        "source : Result[Int, @{@Nope}] = @Ok(1)\n",
+        "r = source ?>\n",
+        "  @Ok(v) => v\n",
+    ));
+    let missing_check = check_module(&missing.module);
+    assert_eq!(
+        matching_codes(&missing_check.diagnostics, codes::ty::NON_EXHAUSTIVE_MATCH),
+        1,
+        "missing Err arm should be non-exhaustive: {:?}",
+        missing_check.diagnostics
+    );
+
+    for source in [
+        concat!(
+            "source : Result[Int, @{@Nope}] = @Ok(1)\n",
+            "r = source ?>\n",
+            "  @Ok(v) => v\n",
+            "  @Err(_) => 0\n",
+        ),
+        concat!(
+            "source : Result[Int, @{@Nope}] = @Ok(1)\n",
+            "r = source ?>\n",
+            "  @Ok(v) => v\n",
+            "  _ => 0\n",
+        ),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::NON_EXHAUSTIVE_MATCH),
+            "{source} unexpectedly reported non-exhaustive match: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn result_match_reports_impossible_tag_arm() {
+    let source = concat!(
+        "source : Result[Int, @{@Nope}] = @Ok(1)\n",
+        "r = source ?>\n",
+        "  @Ok(v) => v\n",
+        "  @Other(_) => 0\n",
+        "  @Err(_) => 0\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "unexpected tag arm should report a mismatch: {:?}",
+        check.diagnostics
+    );
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::ty::NON_EXHAUSTIVE_MATCH
+    ));
+}
+
+#[test]
+fn result_match_supports_nested_error_payload_patterns() {
+    let source = concat!(
+        "source : Result[Int, @{@Nope}] = @Err(@Nope)\n",
+        "r = source ?>\n",
+        "  @Ok(v) => v\n",
+        "  @Err(@Nope) => 0\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn result_match_handles_json_decode_shaped_global() {
+    let source = concat!(
+        "JsonError = @{@Decode(Text)}\n",
+        "userName = Json.decode(\"{}\") ?>\n",
+        "  @Ok(user) => user.name\n",
+        "  @Err(err) => err ?>\n",
+        "    @Decode(message) => message\n",
+    );
+    let output = parse_module(source);
+    let globals = vec![(
+        "Json".to_owned(),
+        build::record(vec![(
+            "decode",
+            build::function(
+                vec![build::text()],
+                build::result(
+                    build::record(vec![("name", build::text())]),
+                    build::named("JsonError"),
+                ),
+            ),
+        )]),
+    )];
+    let check = check_module_with_globals(&output.module, &globals);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "userName", 0))
+            .map(Type::render),
+        Some("Text".to_owned())
+    );
+}
+
+#[test]
 fn unannotated_constructor_match_resolves_payload_binder() {
     let source = "matched = @Some(1) ?>\n  @Some(n) => n\n";
     let output = parse_module(source);

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 
 use aven_core::{Diagnostic, Label, Span, codes};
@@ -642,11 +643,14 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
             collect_known_pattern_types(left, expected, known);
             collect_known_pattern_types(right, expected, known);
         }
-        (ExprKind::Call { callee, args }, Type::Variant(entries)) => {
+        (ExprKind::Call { callee, args }, _) => {
             let ExprKind::Tag(tag) = &callee.kind else {
                 return;
             };
-            let Some(payload) = literal_variant_payload(entries, tag) else {
+            let Some(row) = subject_variant_row(expected) else {
+                return;
+            };
+            let Some(payload) = literal_variant_payload(&row, tag) else {
                 return;
             };
             if payload.len() != args.len() {
@@ -659,7 +663,7 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
         (ExprKind::Record(entries), Type::Record(row)) => {
             collect_known_record_pattern_types(entries, row, known);
         }
-        (ExprKind::Tag(_), Type::Variant(_)) => {}
+        (ExprKind::Tag(_), _) if subject_variant_row(expected).is_some() => {}
         _ => {}
     }
 }
@@ -884,6 +888,27 @@ fn literal_union_domain_row(domain: &Type) -> Option<&Row> {
         }
         _ => None,
     }
+}
+
+fn subject_variant_row(ty: &Type) -> Option<Cow<'_, Row>> {
+    if let Type::Variant(row) = ty {
+        return Some(Cow::Borrowed(row));
+    }
+
+    let (ok_ty, err_ty) = result_type_args(ty)?;
+    Some(Cow::Owned(Row {
+        entries: vec![
+            RowEntry::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![ok_ty.clone()],
+            },
+            RowEntry::Tag {
+                name: "Err".to_owned(),
+                payload: vec![err_ty.clone()],
+            },
+        ],
+        tail: RowTail::Closed,
+    }))
 }
 
 pub(crate) fn string_literal_label(text: &str) -> Option<String> {
