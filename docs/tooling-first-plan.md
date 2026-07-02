@@ -28,17 +28,31 @@ without changing the user-facing commands every milestone.
 
 ## Current Baseline
 
-The repository currently has:
+As of 2026-07-02 the workspace has:
 
-- `aven-core` with `Span`, `SourceMap`, and structured diagnostics
-- `aven-parser` with a raw lexer, layout pass, and core expression parser
-- `aven-fmt` with a minimal whitespace formatter
-- `aven-lsp` with diagnostics and document formatting
-- `aven` CLI with `check`, `tokens`, `layout`, `fmt`, and `lsp`
+- `aven-core` — spans, `SourceMap`, structured diagnostics, the diagnostic-code
+  registry, and the `aven explain` texts
+- `aven-parser` — raw lexer, layout pass, unified-grammar parser (types and
+  patterns are ordinary `Expr` terms), declaration collection, name analysis
+- `aven-fmt` — layout reindentation plus token-driven expression spacing
+- `aven-check` — annotation lowering to a semantic `Type` IR, bidirectional
+  checking, Hindley-Milner inference with let-generalization, row-polymorphic
+  records/variants, literal types, the comptime evaluator slices, and the
+  null/undefined model
+- `aven-compiler` — the compiler database: document snapshots, timings,
+  declaration-keyed artifacts and invalidation
+- `aven-eval` — tree-walking evaluator (records, variants, collections, match,
+  closures/recursion, `?^`/`?!`, structured logging, platform natives)
+- `aven-host` — the typed host boundary: value+type registration, typed-fn
+  adapter, host comptime resolvers, file/stream/HTTP capabilities
+- `aven-lsp` — diagnostics, formatting, symbols, goto, rename, semantic tokens,
+  hover, inlay hints, completion (identifier/field/label/literal), signature
+  help, quick fixes
+- `aven` CLI — `check` (text/JSON, timings), `fmt`, `tokens`, `layout`,
+  `explain`, `run` (with log configuration), `lsp`
 
-This is enough to exercise the toolchain shape, but it is not yet a complete
-language parser. `aven check` currently validates lexical, layout, and core
-parse structure, not name resolution, types, or runtime semantics.
+`aven check` covers parse, name, annotation, and inference checks; `aven run`
+executes programs against the host prelude.
 
 ## Library Direction
 
@@ -102,29 +116,28 @@ Status: done
 
 Goal: make source files and diagnostics robust enough for parser work.
 
-Progress: fixture-based parser diagnostic assertions landed alongside
-Milestone 8 setup. The "tests assert structured diagnostics, not terminal
-snapshots" done-when is satisfied. `aven check --format json` now emits
-machine-readable diagnostics with severity, code, message, labels, byte spans,
-and notes, so tools do not need to scrape terminal output. `aven-core` now owns
-the shared `LineIndex` stored on `SourceFile`; the LSP uses that structural
-source/index pair for offset/range conversion instead of rescanning the source
-for every request. Parser output now carries a `FileId`, and `parse_source`
-threads the id from `SourceFile` into `ParseOutput`; LSP documents keep stable
-file ids across edits to the same URI. Diagnostics stay file-agnostic while
-they are produced; `DiagnosticReport` attaches the stable `FileId` at the CLI
-rendering boundary, while the LSP stores a merged diagnostics vector on each
-parsed document and publishes it by URI without per-publish cloning.
-The LSP now uses a single `DocumentStore` mutex that keeps a URI-to-`FileId`
-table and parsed documents; each `ParsedDocument` owns its `SourceFile`.
-`SourceMap` remains core infrastructure for future multi-file work, but the
-single-file CLI and Arc-per-document LSP path do not store sources in it yet.
-Lexer and layout stay string/token utilities; `parse_source(&SourceFile)` is the
-file-aware parser entry point. `aven explain <code>` looks up a short
-diagnostic explanation from the shared core table, so humans and AI agents can
-get repair context without scraping terminal output. Emitted diagnostic codes
-now come from an `aven-core` registry, and the explanation table has a coverage
-test against that registry.
+Progress: fixture-based parser diagnostic assertions landed alongside Milestone
+8 setup. The "tests assert structured diagnostics, not terminal snapshots"
+done-when is satisfied. `aven check --format json` now emits machine-readable
+diagnostics with severity, code, message, labels, byte spans, and notes, so
+tools do not need to scrape terminal output. `aven-core` now owns the shared
+`LineIndex` stored on `SourceFile`; the LSP uses that structural source/index
+pair for offset/range conversion instead of rescanning the source for every
+request. Parser output now carries a `FileId`, and `parse_source` threads the id
+from `SourceFile` into `ParseOutput`; LSP documents keep stable file ids across
+edits to the same URI. Diagnostics stay file-agnostic while they are produced;
+`DiagnosticReport` attaches the stable `FileId` at the CLI rendering boundary,
+while the LSP stores a merged diagnostics vector on each parsed document and
+publishes it by URI without per-publish cloning. The LSP now uses a single
+`DocumentStore` mutex that keeps a URI-to-`FileId` table and parsed documents;
+each `ParsedDocument` owns its `SourceFile`. `SourceMap` remains core
+infrastructure for future multi-file work, but the single-file CLI and
+Arc-per-document LSP path do not store sources in it yet. Lexer and layout stay
+string/token utilities; `parse_source(&SourceFile)` is the file-aware parser
+entry point. `aven explain <code>` looks up a short diagnostic explanation from
+the shared core table, so humans and AI agents can get repair context without
+scraping terminal output. Emitted diagnostic codes now come from an `aven-core`
+registry, and the explanation table has a coverage test against that registry.
 
 Even though incremental compilation is deferred, this milestone should make the
 data-shape decisions that keep incremental tooling possible:
@@ -160,9 +173,10 @@ aven check --format json examples/hello.av
 aven explain parse.unclosed-delimiter
 ```
 
-  Each diagnostic code should have a short generated documentation paragraph.
-  CLI diagnostics and LSP diagnostics should carry the code so humans and AI
-  agents can look up the explanation.
+Each diagnostic code should have a short generated documentation paragraph. CLI
+diagnostics and LSP diagnostics should carry the code so humans and AI agents
+can look up the explanation.
+
 - switch CLI rendering from `codespan-reporting` to `ariadne`
 - keep LSP rendering independent of `ariadne`
 - establish fixture assertions for structured diagnostic data: code, severity,
@@ -184,8 +198,8 @@ widths, comments, and basic lexer diagnostics. Operators use maximal-munch
 symbolic runs so custom operators can be tokenized without feeding declarations
 back into the lexer. The language-reserved operator starts `=`, `:`, `.`, `?`,
 and `@` reject unknown symbolic runs instead of silently splitting them. The
-lexer feeds the layout pass, which in turn feeds the Milestone 4 parser.
-Normal double-quoted string interpolation is implemented with lexer-driven
+lexer feeds the layout pass, which in turn feeds the Milestone 4 parser. Normal
+double-quoted string interpolation is implemented with lexer-driven
 `InterpolationStart`/`InterpolationMiddle`/`InterpolationEnd` tokens and a
 dedicated `ExprKind::Interpolation` node; interpolation bodies are ordinary
 expressions and are auto-stringified to `Text`. Triple-quoted/raw strings and
@@ -225,13 +239,12 @@ Tasks:
 - add lexical recovery for unterminated strings, regexes, and delimiters
 - emit tokens with spans and trivia spans
 - keep lexing context-free: custom operator fixity belongs to parser/semantic
-  phases, not the lexer; custom operators cannot start with `=`, `:`, `.`,
-  `?`, or `@`
+  phases, not the lexer; custom operators cannot start with `=`, `:`, `.`, `?`,
+  or `@`
 
 Recommended approach:
 
-- keep the raw lexer hand-written unless a library demonstrably improves
-  clarity
+- keep the raw lexer hand-written unless a library demonstrably improves clarity
 - defer the parser-library decision until the Milestone 4a parser starts
 - keep the token representation owned by `aven-parser`
 - expose a debug CLI command once useful:
@@ -252,9 +265,9 @@ Status: in progress
 
 Progress: a first hand-written layout pass converts raw lexer indentation and
 newline trivia into parser-facing `Indent`, `Dedent`, and `Newline` tokens. It
-skips blank/comment-only lines, emits EOF dedents, reports inconsistent
-dedents, and is exposed through `aven layout` for debugging. The core parser now
-consumes the layout stream.
+skips blank/comment-only lines, emits EOF dedents, reports inconsistent dedents,
+and is exposed through `aven layout` for debugging. The core parser now consumes
+the layout stream.
 
 Goal: support meaningful whitespace before deep expression parsing.
 
@@ -403,8 +416,8 @@ reuse `Expr`/`ExprKind` rather than a separate `TypeExpr` tree. Function arrows,
 `[]` applications, `T?` nullable, record/variant rows, and tuple forms are all
 parsed as ordinary expressions. Annotations and signatures are `:` ascriptions
 whose right-hand side is an ordinary term. Record, set, and variant brace forms
-share one entry parser (spreads, deletes, renames, open-row `.._`, optional-field
-markers), matching the language's concept-reuse goal.
+share one entry parser (spreads, deletes, renames, open-row `.._`,
+optional-field markers), matching the language's concept-reuse goal.
 
 Deferred to semantics: two checks that would be parse-time errors in a
 separate-`TypeExpr` design are deferred to later semantic phases (no semantic
@@ -497,10 +510,10 @@ Tasks:
 format(format(source)) == format(source)
 ```
 
-  Idempotence and totality are load-bearing beyond formatter hygiene: a total,
-  idempotent formatter is the canonical-form bridge that lets agents emit an
-  unambiguous explicit-delimiter form and have it normalized back to layout. See
-  [`agent-syntax-ergonomics.md`](agent-syntax-ergonomics.md).
+Idempotence and totality are load-bearing beyond formatter hygiene: a total,
+idempotent formatter is the canonical-form bridge that lets agents emit an
+unambiguous explicit-delimiter form and have it normalized back to layout. See
+[`agent-syntax-ergonomics.md`](agent-syntax-ergonomics.md).
 
 - add `aven fmt --check` tests
 - wire LSP formatting to the same formatter
@@ -544,15 +557,21 @@ shadowing diagnostics for top-level declarations, local bindings, lambda
 parameters, and match-arm pattern binders; the CLI and LSP publish these
 diagnostics alongside parse diagnostics. For now, name analysis runs only after
 a clean parse, and local bindings are allowed to shadow top-level declarations;
-both choices are covered by fixtures so they can be revisited deliberately.
-The LSP rename provider now renames same-file local bindings by reusing the
-parser's local-reference resolver; top-level rename is intentionally deferred
-until module/export semantics exist. The LSP now advertises full-document
-semantic tokens and serves them from the cached raw token stream plus a small
-declaration overlay. This first slice highlights comments, literals, paths,
-regexes, labels, operators, runtime names, comptime names, top-level
-definitions, and lambda parameters without adding a Tree-sitter or TextMate
-grammar.
+both choices are covered by fixtures so they can be revisited deliberately. The
+LSP rename provider now renames same-file local bindings by reusing the parser's
+local-reference resolver; top-level rename is intentionally deferred until
+module/export semantics exist. The LSP now advertises full-document semantic
+tokens and serves them from the cached raw token stream plus a small declaration
+overlay. This first slice highlights comments, literals, paths, regexes, labels,
+operators, runtime names, comptime names, top-level definitions, and lambda
+parameters without adding a Tree-sitter or TextMate grammar.
+
+Scoping semantics firmed up later (2026-06-23): the top level is one
+mutually-recursive scope with no shadowing; `:=` is the explicit rebind form and
+is block-only (a top-level `:=` gets a dedicated diagnostic anchored on the
+operator); unbound value names are reported at check time; and a
+duplicate-declared name stays bound, so no unbound-name cascade follows.
+`aven run` stays lenient (parse + eval), while check/LSP remain the static gate.
 
 Goal: enable editor features before full type inference.
 
@@ -603,23 +622,23 @@ Decisions to lock before starting:
   rather than by hover. Revisit only if hover must show normalized/computed
   types rather than the author's written annotation.
 - builtin type set: M7 knows a fixed primitive set (`Int`, `Text`, `Bool`,
-  `Unit`, `Undefined`, ...) and nothing else. Records-as-types, variants/rows, `[a]`
-  application semantics, and comptime type computation stay deferred to their
-  milestones.
+  `Unit`, `Undefined`, ...) and nothing else. Records-as-types, variants/rows,
+  `[a]` application semantics, and comptime type computation stay deferred to
+  their milestones.
 
 Tasks:
 
 - add an `aven-check` crate for semantic validation over the parser AST (no new
   syntactic tree; annotations stay `Expr`)
 - define the builtin type-name set; treat lowercase names in type position as
-  type variables, not unknown types (same phase subtlety as the uppercase-runtime
-  check — design it in, do not patch it later)
+  type variables, not unknown types (same phase subtlety as the
+  uppercase-runtime check — design it in, do not patch it later)
 - validate annotation terms: report `type.unknown-name` for unresolved uppercase
   type names, reusing top-level declaration collection for the in-scope comptime
   set
-- pick up the two checks Milestone 4d deferred to here: lowercase variant tags in
-  `@{ ... }`, and type-vs-value legality of record entries (`optional` marker,
-  `.._` open row)
+- pick up the two checks Milestone 4d deferred to here: lowercase variant tags
+  in `@{ ... }`, and type-vs-value legality of record entries (`optional`
+  marker, `.._` open row)
 - add LSP hover that renders an annotated binding's type by reusing the local
   resolver (`identifier_at_position` + `resolve_local_definition`) plus
   annotation pretty-printing
@@ -708,12 +727,12 @@ lines, not 100k-line files. At that size a hand-written recursive-descent parse
 is well under a millisecond, so (1) optimizes the cheap half. The latency a
 developer feels after an edit comes from name resolution, HM inference, and
 comptime evaluation — not the parse. The incrementality that pays is therefore
-memoized *computation* plus strong error recovery (2), not an incremental
+memoized _computation_ plus strong error recovery (2), not an incremental
 parser.
 
 Decision: do not build tree-sitter/Roslyn-grade incremental re-parsing. Two
-reasons beyond file size. First, an incremental GLR engine or a red-green CST
-is a large amount of code that works against the "compiler fits in an agent's
+reasons beyond file size. First, an incremental GLR engine or a red-green CST is
+a large amount of code that works against the "compiler fits in an agent's
 context" budget. Second, the layout pass makes subtree reuse unsound-prone:
 editing indentation can change `Indent`/`Dedent`/`Newline` tokens and block
 structure far from the edit, so a reused subtree's boundaries are not local to
@@ -730,20 +749,20 @@ Approach, in order:
   edit to one binding invalidates only that binding's analysis. The
   `collect_declarations` pass is the seam for this.
 - draw the synchronous/debounced line by cost, not by phase. The per-edit
-  (synchronous) path may carry the artifact bookkeeping and *cheap structural*
+  (synchronous) path may carry the artifact bookkeeping and _cheap structural_
   per-declaration results — declaration keys, fingerprints, dependency edges,
   and declared-annotation `Type` lowering (a structural `Expr -> Type` walk).
-  *Expensive* analysis — name resolution and type inference — stays in the
+  _Expensive_ analysis — name resolution and type inference — stays in the
   debounced semantic pass and reuses prior results across revisions via the
   `invalidated_declarations` set. The `DeclarationArtifact` is the invalidation
-  *key*; it is not where expensive analysis runs. Inference is the slice that
+  _key_; it is not where expensive analysis runs. Inference is the slice that
   finally consumes the invalidation closure, in the debounced lane.
 - keep investing in error recovery; recovery quality drives per-keystroke DX
   more than reparse speed
 - only if profiling shows the parse itself is the bottleneck: add incremental
-  *lexing* (re-lex from the edit until the token stream resynchronizes, which
-  is layout-pass friendly), and adopt a red-green / lossless CST (e.g. rowan)
-  only if the CST is un-deferred for other reasons
+  _lexing_ (re-lex from the edit until the token stream resynchronizes, which is
+  layout-pass friendly), and adopt a red-green / lossless CST (e.g. rowan) only
+  if the CST is un-deferred for other reasons
 
 Revisit triggers: real scripts routinely exceed ~10k lines; profiling shows
 parse latency (not semantic analysis) dominating edit-to-feedback time; or a
@@ -790,30 +809,30 @@ formatting now calls `aven_fmt::format_parsed_source` with the cached
 `ParseOutput`, so formatting no longer reparses the document through
 `format_source`. The second M9 slice split cheap `parse.diagnostics` from
 expensive `semantic_diagnostics`; LSP publishing still streams the combined
-diagnostics, but later debounce/cancellation can now skip or delay semantic
-work without changing the parse cache shape. The third M9 slice added
+diagnostics, but later debounce/cancellation can now skip or delay semantic work
+without changing the parse cache shape. The third M9 slice added
 `aven check --timings`, which reports parse/name/check/total timings in text
 mode and a `timingsMs` object in JSON mode. The fourth M9 slice made LSP
 documents parse-first: `didOpen`/`didChange` publish parse diagnostics
 immediately, schedule semantic diagnostics behind a short debounce, abort the
 previous pending semantic task for the same URI, and reject stale semantic
-results by document version before publishing.
-The fifth M9 slice introduced `aven-compiler` as the thin compiler database
-boundary: it owns immutable `DocumentSnapshot`s, parse/name/check timing,
-semantic diagnostic analysis, and a generic revision-keyed document cache. The
-CLI and LSP now consume that API instead of each reassembling the
-parse/name/check pipeline. The sixth M9 slice added declaration-keyed artifacts:
-each top-level declaration now has a stable name/phase/ordinal key, a source
-fingerprint, and conservative dependency edges to other top-level declarations.
-The compiler database reuses unchanged artifacts across document revisions only
-when both the declaration's source fingerprint and dependency list match.
-Snapshots also expose the dependency-aware invalidation closure: if a changed
-artifact has unchanged dependents, those dependents are marked invalidated too,
-including transitively. Whole-module semantic diagnostics still run as before;
-this only establishes the invalidation unit future inference/comptime caches can
-use. The closure is still not a recomputation order or a complete semantic cache
-key: future slices that reuse declaration-level semantic results must account for
-the invalidated set and compute an explicit dependency-aware schedule.
+results by document version before publishing. The fifth M9 slice introduced
+`aven-compiler` as the thin compiler database boundary: it owns immutable
+`DocumentSnapshot`s, parse/name/check timing, semantic diagnostic analysis, and
+a generic revision-keyed document cache. The CLI and LSP now consume that API
+instead of each reassembling the parse/name/check pipeline. The sixth M9 slice
+added declaration-keyed artifacts: each top-level declaration now has a stable
+name/phase/ordinal key, a source fingerprint, and conservative dependency edges
+to other top-level declarations. The compiler database reuses unchanged
+artifacts across document revisions only when both the declaration's source
+fingerprint and dependency list match. Snapshots also expose the
+dependency-aware invalidation closure: if a changed artifact has unchanged
+dependents, those dependents are marked invalidated too, including transitively.
+Whole-module semantic diagnostics still run as before; this only establishes the
+invalidation unit future inference/comptime caches can use. The closure is still
+not a recomputation order or a complete semantic cache key: future slices that
+reuse declaration-level semantic results must account for the invalidated set
+and compute an explicit dependency-aware schedule.
 
 ## Milestone 10: Type IR And Annotation Lowering
 
@@ -823,8 +842,8 @@ Goal: introduce the first real semantic type representation without starting
 unification yet. Milestone 7 deliberately kept annotations as parser `Expr`
 terms because hover and simple diagnostics did not need a semantic `Type`. The
 inference phase does need one, so the next step is to lower written annotations
-into a compact `Type` IR while continuing to validate the original syntax through
-the same path.
+into a compact `Type` IR while continuing to validate the original syntax
+through the same path.
 
 Tasks:
 
@@ -866,8 +885,8 @@ runs at the declaration level, so inline annotations and adjacent
 signature-plus-binding declarations share the same declared annotation lookup
 instead of drifting by surface syntax. The value check is now recursive in the
 checking direction: literals and tuple elements are checked against expected
-types, and nullable values are accepted when they are `Undefined` or satisfy the inner
-type. Identifier values are checked when a top-level declaration value
+types, and nullable values are accepted when they are `Undefined` or satisfy the
+inner type. Identifier values are checked when a top-level declaration value
 references another top-level binding with a single clean declared annotation or
 synthesized concrete type. Direct applications written under an annotation are
 also synthesized and compared when inference produces a concrete type. Local
@@ -877,28 +896,27 @@ types, and unannotated sequential locals acquire a concrete type when the
 monomorphic inference engine can synthesize one. Unsolved locals, unannotated
 parameters, and match-pattern binders remain explicit unknown entries.
 Nearest-scope lookup can therefore check inferred locals without ever borrowing
-a same-named top-level type. Expected function annotations now seed
-unannotated lambda parameters and check lambda bodies against expected return
-types, so `(x) => x` can be checked as `(Int) -> Text` without full
-generalization. Ambiguous overloads, unsolved identifier-valued bindings,
-unsupported operator shapes, match-bodied values, recursive/generic bindings,
-and full unification remain deferred. Literal record value checking now covers rows of
-only fields and the open marker: wrong field types, missing required fields, and
-unexpected fields on closed records. The open/closed rule is fixed by the spec
-(records are closed by default; `.._` opens them, lowered to
-`TypeRowEntry::Open`). The same field-set comparator handles literal record
-values and record-type comparisons, so a synthesized or declared record type can
-be checked structurally against an expected record type. Rows carrying spreads,
-deletes, renames, or overwrites defer until row computation, and checking
-explicit fields through a value spread is a follow-up. Open actual record types
-and optional-field subtyping also defer until the row engine. Variant value arms
-start in Milestone 11 with direct constructor values against literal variant
-rows; row-computed variants still defer. Transparent comptime aliases are now
-normalized before value checking, including alias chains and nested aliases.
-`opaque(...)` lowers to an irreducible deferred type until comptime evaluation
-and module-aware opacity exist. Cyclic aliases terminate silently for now;
-reporting cycles and validating type-definition bodies are separate follow-up
-slices.
+a same-named top-level type. Expected function annotations now seed unannotated
+lambda parameters and check lambda bodies against expected return types, so
+`(x) => x` can be checked as `(Int) -> Text` without full generalization.
+Ambiguous overloads, unsolved identifier-valued bindings, unsupported operator
+shapes, match-bodied values, recursive/generic bindings, and full unification
+remain deferred. Literal record value checking now covers rows of only fields
+and the open marker: wrong field types, missing required fields, and unexpected
+fields on closed records. The open/closed rule is fixed by the spec (records are
+closed by default; `.._` opens them, lowered to `TypeRowEntry::Open`). The same
+field-set comparator handles literal record values and record-type comparisons,
+so a synthesized or declared record type can be checked structurally against an
+expected record type. Rows carrying spreads, deletes, renames, or overwrites
+defer until row computation, and checking explicit fields through a value spread
+is a follow-up. Open actual record types and optional-field subtyping also defer
+until the row engine. Variant value arms start in Milestone 11 with direct
+constructor values against literal variant rows; row-computed variants still
+defer. Transparent comptime aliases are now normalized before value checking,
+including alias chains and nested aliases. `opaque(...)` lowers to an
+irreducible deferred type until comptime evaluation and module-aware opacity
+exist. Cyclic aliases terminate silently for now; reporting cycles and
+validating type-definition bodies are separate follow-up slices.
 
 ## Milestone 11: Monomorphic Value Inference
 
@@ -921,8 +939,8 @@ Tasks:
   every meta solves; generic top-level functions instantiate freshly at each use
 - share a scoped known/unknown environment between checking and inference:
   annotated locals are checked, concrete unannotated local values are
-  synthesized in source order, and every unsolved binder still shadows
-  top-level declarations
+  synthesized in source order, and every unsolved binder still shadows top-level
+  declarations
 - check lambda values contextually against expected function types: seed
   unannotated params from the expected type, compare explicit param and return
   annotations, and check the body against the expected result
@@ -939,7 +957,8 @@ Done when:
 
 - a binding whose value applies an inferred lambda is checked against its
   annotation through the shared comparator
-- inference produces no diagnostics and never a false positive on deferred shapes
+- inference produces no diagnostics and never a false positive on deferred
+  shapes
 - full Hindley-Milner (let-generalization, full row unification, numeric
   defaulting) remains explicitly deferred to later milestones
 
@@ -958,20 +977,19 @@ inference extends a local environment in source order and uses the final
 expression as the block type. The checking direction now tracks local scopes
 through the parser's shared `merged_items` and `pattern_bindings` views.
 Annotated lambda parameters, adjacent or inline local annotations, and
-standalone local signatures enter the nearest scope with known normalized
-types. Unannotated sequential bindings are synthesized against the same
-nearest-scope environment; concrete literal, tuple, record, collection, block,
-lambda, and application results become known to later items and nested scopes.
-Unsolved bindings, unannotated parameters, and match-pattern binders remain
-explicitly unknown, so both checking and inference stop before any same-named
-top-level declaration. Block scope spreads and other destructuring block items
-are not represented in the parser AST yet, so they remain deferred. Metas never
-escape into
-`value_types`: synthesis resolves a value to a concrete type or defers. Direct
-applications written under annotations now use the same synthesis engine and are
-compared against the declared type when the call result is concrete. Direct
-lambda values are checked contextually against function annotations: expected
-parameter types seed unannotated lambda parameters, explicit parameter
+standalone local signatures enter the nearest scope with known normalized types.
+Unannotated sequential bindings are synthesized against the same nearest-scope
+environment; concrete literal, tuple, record, collection, block, lambda, and
+application results become known to later items and nested scopes. Unsolved
+bindings, unannotated parameters, and match-pattern binders remain explicitly
+unknown, so both checking and inference stop before any same-named top-level
+declaration. Block scope spreads and other destructuring block items are not
+represented in the parser AST yet, so they remain deferred. Metas never escape
+into `value_types`: synthesis resolves a value to a concrete type or defers.
+Direct applications written under annotations now use the same synthesis engine
+and are compared against the declared type when the call result is concrete.
+Direct lambda values are checked contextually against function annotations:
+expected parameter types seed unannotated lambda parameters, explicit parameter
 annotations are compared contravariantly, and return annotations plus bodies are
 checked covariantly against the expected result. Contextual block checking now
 uses the same bidirectional checker path as ordinary local bindings: prefix
@@ -984,33 +1002,31 @@ the expected result type into each arm body, and guards are checked against
 `Bool`. When the match subject has a known literal variant row, simple
 constructor patterns such as `@Ok(value)` give their payload binders known types
 inside guards, arm bodies, and match-result synthesis; otherwise pattern binders
-still enter as explicit unknown locals.
-Unannotated match expressions also synthesize a result when all arm bodies
-unify to one concrete type, so match-valued bindings can feed later identifier
-checks. Direct variant constructor values such as `@Ok(1)` and nullary tags such
-as `@Done` are checked against literal variant rows, and inferred singleton
-variant constructor types feed the identifier path. Variant rows carrying
-spreads, deletes, renames, or other row computation still defer. Function
-comparison is structural: arity mismatches report `type.mismatch`, parameters
-compare contravariantly, and results compare covariantly.
-The first built-in operator subset now synthesizes concrete results for numeric
-arithmetic, text `+`, numeric comparisons, equality over concrete compatible
-operands, boolean `&&`/`||`, and unary numeric `-`. Unknown operands and
-deliberately unknown binders resolve to deferred types rather than bindable
-metas, so an expression such as `missing + 1` or a match-pattern binder used in
-an operator body cannot fabricate a concrete type.
+still enter as explicit unknown locals. Unannotated match expressions also
+synthesize a result when all arm bodies unify to one concrete type, so
+match-valued bindings can feed later identifier checks. Direct variant
+constructor values such as `@Ok(1)` and nullary tags such as `@Done` are checked
+against literal variant rows, and inferred singleton variant constructor types
+feed the identifier path. Variant rows carrying spreads, deletes, renames, or
+other row computation still defer. Function comparison is structural: arity
+mismatches report `type.mismatch`, parameters compare contravariantly, and
+results compare covariantly. The first built-in operator subset now synthesizes
+concrete results for numeric arithmetic, text `+`, numeric comparisons, equality
+over concrete compatible operands, boolean `&&`/`||`, and unary numeric `-`.
+Unknown operands and deliberately unknown binders resolve to deferred types
+rather than bindable metas, so an expression such as `missing + 1` or a
+match-pattern binder used in an operator body cannot fabricate a concrete type.
 Applied types compare structurally when their arities match, so `Array[Int]` vs
 `Array[Text]` reports through the same recursive comparator that handles tuples
-and records. Recursive bindings and
-self-application terminate through an in-progress guard and the occurs-check.
-Custom operators, unsupported operand shapes, general match subject/pattern
-typing, mixed or unknown match-arm results, tag-sets, row-computed collections,
-and recursive or still-generic results defer. The shared
-`map_type`/`visit_type` traversals back substitution, instantiation, and the
-occurs/concreteness predicates so the engine grows with the `Type` grammar in
-one place.
-Consolidation C1 surfaces per-binder inferred types from `aven-check` and adds a
-stable `Type` renderer, enabling inference-driven LSP hover and completion.
+and records. Recursive bindings and self-application terminate through an
+in-progress guard and the occurs-check. Custom operators, unsupported operand
+shapes, general match subject/pattern typing, mixed or unknown match-arm
+results, tag-sets, row-computed collections, and recursive or still-generic
+results defer. The shared `map_type`/`visit_type` traversals back substitution,
+instantiation, and the occurs/concreteness predicates so the engine grows with
+the `Type` grammar in one place. Consolidation C1 surfaces per-binder inferred
+types from `aven-check` and adds a stable `Type` renderer, enabling
+inference-driven LSP hover and completion.
 
 ## Milestone 12: Hindley-Milner Generalization
 
@@ -1020,11 +1036,11 @@ Goal: turn the monomorphic engine from Milestone 11 into real Hindley-Milner
 let-polymorphism. M11 synthesizes a concrete type or defers; its only
 "polymorphism" is the heuristic that any metavariable left in a memoized
 top-level type is treated as generic and freshened at each use, and
-`resolve_if_concrete` then drops anything with a leftover meta — so a polymorphic
-value such as `id = (x) => x` defers instead of being usable. M12 replaces that
-heuristic with principled generalization over type schemes, so polymorphic values
-are accepted and reusable, and adds numeric-literal defaulting so an
-unconstrained number resolves instead of blocking.
+`resolve_if_concrete` then drops anything with a leftover meta — so a
+polymorphic value such as `id = (x) => x` defers instead of being usable. M12
+replaces that heuristic with principled generalization over type schemes, so
+polymorphic values are accepted and reusable, and adds numeric-literal
+defaulting so an unconstrained number resolves instead of blocking.
 
 Design decisions locked before starting:
 
@@ -1032,9 +1048,9 @@ Design decisions locked before starting:
   embedded-script sizes the `ftv(env)` scan is cheap and far clearer than
   level-tracking; revisit only if profiling shows generalization dominates.
 - Scheme representation: a `TypeScheme { vars: Vec<u32>, ty: Type }` (quantified
-  metavariable ids), instantiated to fresh metas at each use. `Type` itself gains
-  no quantifier node; quantification lives only in the scheme, so the checker's
-  structural comparators are unchanged.
+  metavariable ids), instantiated to fresh metas at each use. `Type` itself
+  gains no quantifier node; quantification lives only in the scheme, so the
+  checker's structural comparators are unchanged.
 - A generalized scheme is "concrete enough" to feed the checking direction even
   when it has quantified vars: `id = (x) => x` becomes `forall a. (a) -> a` and
   is usable at `(Int) -> Int` and `(Text) -> Text` instead of deferring.
@@ -1083,19 +1099,19 @@ Design decisions locked before starting:
 - Semantic row representation: introduce a normalized `Row { fields, tail }` in
   the type IR, where `tail` is `Closed` or a row metavariable `Var(u32)`
   (distinct from ordinary `Type::Meta`). `Type::Record`/`Type::Variant` carry a
-  `Row`. This replaces the surface-flavoured `Vec<TypeRowEntry>` for *lowered*
+  `Row`. This replaces the surface-flavoured `Vec<TypeRowEntry>` for _lowered_
   types; the parser AST and `RecordEntry` are unchanged. Selection, extension,
   and restriction are primitive on this row; there is no `Lacks` predicate.
 - Lowering normalizes only the simple forms first (plain fields, plus the `.._`
   open marker producing a fresh row var). Surface transforms (spreads, deletes,
-  renames, overwrites) are *row computation* and are lowered in slice 13.4; until
-  then a transform row lowers to a deferred row tail rather than being silently
-  accepted.
+  renames, overwrites) are _row computation_ and are lowered in slice 13.4;
+  until then a transform row lowers to a deferred row tail rather than being
+  silently accepted.
 - Row unification is the Leijen rewrite algorithm: to unify rows, match each
   field of one against a same-label field of the other (rewriting the other's
   tail to surface a missing label), then unify the tails. A closed tail unified
-  with a row var binds the var to the remaining fields; two closed rows must have
-  equal field sets.
+  with a row var binds the var to the remaining fields; two closed rows must
+  have equal field sets.
 - Duplicate surface labels stay a parser/elaborator error (unchanged); the
   scoped-label leftmost-wins rule only governs the internal solver.
 
@@ -1103,40 +1119,45 @@ Slices:
 
 - 13.1 — checking-direction open records (done): open-record width subtyping
   already worked — `compare_record` skips unexpected-field reports when the
-  expected row is open, so `{ .._, name: Text }` accepts any record with at least
-  `name: Text`, while a missing required field and an extra field on a closed
-  record still error. This slice only locked that behavior with fixtures; the
-  row-variable machinery for the *inference* direction is 13.2.
+  expected row is open, so `{ .._, name: Text }` accepts any record with at
+  least `name: Text`, while a missing required field and an extra field on a
+  closed record still error. This slice only locked that behavior with fixtures;
+  the row-variable machinery for the _inference_ direction is 13.2.
 - 13.2a — structured row IR migration: replace `Type::Record`/`Type::Variant`'s
-  `Vec<TypeRowEntry>` with a normalized `Type::Record(Row)` / `Type::Variant(Row)`
-  where `Row { entries, tail }`, `entries` are labelled `RowEntry::Field`/`Tag`,
-  and `tail` is `Closed` or `Open` (anonymous open marker, preserving today's
-  `open: bool` semantics). Surface transforms (spreads, deletes, renames,
-  overwrites) and any non-normalizable row lower to `Type::Deferred` while still
-  walking children for nested diagnostics — preserving today's behavior exactly.
-  Mechanical, behavior-preserving, guarded by the existing suite.
+  `Vec<TypeRowEntry>` with a normalized `Type::Record(Row)` /
+  `Type::Variant(Row)` where `Row { entries, tail }`, `entries` are labelled
+  `RowEntry::Field`/`Tag`, and `tail` is `Closed` or `Open` (anonymous open
+  marker, preserving today's `open: bool` semantics). Surface transforms
+  (spreads, deletes, renames, overwrites) and any non-normalizable row lower to
+  `Type::Deferred` while still walking children for nested diagnostics —
+  preserving today's behavior exactly. Mechanical, behavior-preserving, guarded
+  by the existing suite.
 - 13.2b — row variable + open-row inference: refine `RowTail::Open` into a row
-  metavariable `Var(u32)` with a row substitution in the unifier; implement Leijen
-  record-row unification; make field access `r.x` constrain `r` to an open row
-  containing `x`, so `length = (p) => sqrt(p.x * p.x + p.y * p.y)` infers a
-  polymorphic open-record parameter. Record literals stay closed.
-- 13.3 — variant rows: the same row machinery for `@{...}` tagged variants — open
-  variant requirements `@{ ..r, @Circle(Float), ... }`, constructor checking
-  against open variant rows, and match exhaustiveness that requires a `_` arm on
-  an open variant.
-- 13.4 — record transforms as row computation (done): 13.4a lowers
-  closed record and variant row transforms — spreads (`..source`/`:..source`),
-  adds, replaces, deletes (`-field`), and renames (`old -> new`) — when every
-  source row is statically known and closed, with structured diagnostics for
-  closed-row conflicts. 13.4b adds the A-lite path for extension and update over
-  open or row-variable-shaped sources, absorbing the abstract remainder as an
-  open tail. 13.4c adds value-direction record-literal transform inference for
-  closed sources and the same A-lite extension/update behavior for open inferred
+  metavariable `Var(u32)` with a row substitution in the unifier; implement
+  Leijen record-row unification; make field access `r.x` constrain `r` to an
+  open row containing `x`, so `length = (p) => sqrt(p.x * p.x + p.y * p.y)`
+  infers a polymorphic open-record parameter. Record literals stay closed.
+- 13.3 — variant rows: the same row machinery for `@{...}` tagged variants —
+  open variant requirements `@{ ..r, @Circle(Float), ... }`, constructor
+  checking against open variant rows, and match exhaustiveness that requires a
+  `_` arm on an open variant.
+- 13.4 — record transforms as row computation (done): 13.4a lowers closed record
+  and variant row transforms — spreads (`..source`/`:..source`), adds, replaces,
+  deletes (`-field`), and renames (`old -> new`) — when every source row is
+  statically known and closed, with structured diagnostics for closed-row
+  conflicts. 13.4b adds the A-lite path for extension and update over open or
+  row-variable-shaped sources, absorbing the abstract remainder as an open tail.
+  13.4c adds value-direction record-literal transform inference for closed
+  sources and the same A-lite extension/update behavior for open inferred
   sources. 13.4d seeds record-pattern binder types from known subject rows,
   including closed residual records for field-rest patterns like
   `{ x, ..rest }`. Open-row field-rest restriction remains deferred to the
   comptime era, so open or row-variable `..rest` binders stay unconstrained
   without a diagnostic.
+- 13.5 (addendum, 2026-06-24) — general row-polymorphic spread/merge inference:
+  unannotated lambdas whose bodies spread/merge open parameter rows now infer
+  row-polymorphic function types, extending 13.4's A-lite path to the
+  inference-direction lambda results (merged as `fix/rowpoly-general`).
 
 Done when:
 
@@ -1152,7 +1173,7 @@ Done when:
 
 Status: in progress
 
-Goal: advance the comptime surface *without* committing the evaluation engine.
+Goal: advance the comptime surface _without_ committing the evaluation engine.
 Comptime evaluation proper (a staged compile-time interpreter, types as
 first-class values) is the architectural keystone and stays deferred until these
 low-lock-in slices land and the evaluation model is reviewed separately. Each
@@ -1168,28 +1189,28 @@ until the evaluator exists.
 
 Slices:
 
-- 14.1 — comptime RHS artifact detection: detect when a capitalized
-  (comptime) binding's right-hand side certainly denotes a **non-liftable
-  comptime artifact** (record/variant *types*, type aliases, modules), and
-  treat everything else as unknown until evaluation exists. Use the artifact
-  result to diagnose the liftability errors the spec specifies — a lowercase
-  runtime binding cannot hold a non-liftable artifact (`config = User`,
+- 14.1 — comptime RHS artifact detection: detect when a capitalized (comptime)
+  binding's right-hand side certainly denotes a **non-liftable comptime
+  artifact** (record/variant _types_, type aliases, modules), and treat
+  everything else as unknown until evaluation exists. Use the artifact result to
+  diagnose the liftability errors the spec specifies — a lowercase runtime
+  binding cannot hold a non-liftable artifact (`config = User`,
   `userType = User`) — while runtime bindings initialized from non-artifact or
   deferred comptime values remain accepted (`httpOk = HttpOk`). No evaluator:
   detection is structural plus alias-following across top-level comptime
-  bindings; ambiguous RHSs defer silently.
-  Done: `aven-check` detects non-liftable comptime artifacts and emits
-  `comptime.non-liftable-into-runtime` for lowercase runtime bindings holding
-  type artifacts. The liftable-value lattice is deferred to the evaluator.
+  bindings; ambiguous RHSs defer silently. Done: `aven-check` detects
+  non-liftable comptime artifacts and emits `comptime.non-liftable-into-runtime`
+  for lowercase runtime bindings holding type artifacts. The liftable-value
+  lattice is deferred to the evaluator.
 - 14.2 — comptime-binding surface + honest diagnostics: ensure capitalized
   bindings whose RHS needs evaluation (rather than a structural type/value)
   produce an honest "comptime evaluation not yet supported" diagnostic with a
-  Milestone 14 reference, instead of silently passing.
-  Done: `aven-check` now emits `comptime.evaluation-unsupported` for top-level
-  comptime RHS computation forms; nested computations inside aggregate literals
-  such as `{ port: getPort() }` are a deliberate follow-up gap outside this
-  shallow trigger.
-- 14.3 — comptime utility-type *terms*: parse `Pick`/`Omit`/`Merge`/`Partial`
+  Milestone 14 reference, instead of silently passing. Done: `aven-check` now
+  emits `comptime.evaluation-unsupported` for top-level comptime RHS computation
+  forms; nested computations inside aggregate literals such as
+  `{ port: getPort() }` are a deliberate follow-up gap outside this shallow
+  trigger.
+- 14.3 — comptime utility-type _terms_: parse `Pick`/`Omit`/`Merge`/`Partial`
   applications as ordinary type terms (the unified grammar already parses the
   application shape) and lower them to `Type::Deferred` with a structured
   "evaluated once comptime lands" note — locking the surface and diagnostics
@@ -1212,20 +1233,23 @@ Goal: string and number literal types (`@{'waiting', 'running'}`, `@{0, 1, 2}`)
 reusing the **variant-row machinery** — closed singleton rows that widen by the
 same boundary-subtyping rule as tags (see `../../docs/language-spec.md` →
 "Comptime, literal types, and labels" and "Assignment and subtyping"). A new row
-*entry kind*, not a new type system; only tags carry payloads.
+_entry kind_, not a new type system; only tags carry payloads.
 
-Scope decision: this milestone covers the **type/annotation and checking
-directions only**. Number/text literal *value* inference stays at the base type
-(`Int`/`Text`) — making a bare literal infer its singleton would break ordinary
-arithmetic and reimport TypeScript's widening rules. Literal-union types arise
-from annotations; a fresh literal value checks against them by membership. Value
-inference producing literal singletons is deferred (it only matters once
-`keysOf`/comptime lands).
+Scope decision (original, superseded): the milestone first covered only the
+type/annotation and checking directions, keeping bare literal value inference at
+the base types (`Int`/`Text`) to avoid TypeScript-style widening rules.
+**Superseded 2026-06-30 — the value-position flip landed.** Bare string/number
+literal values now infer open singleton variant rows (`a = 2` gives `a : 2`);
+base operations widen literals back to their base (`1 + 2 : Int`), so ordinary
+arithmetic is unaffected, and open tails let distinct producers join by row
+unification. The rule-by-rule model (R1–R6, the `|` operator) and per-slice
+commits are recorded in `../../docs/literal-types.md` — all done. `Bool`
+literals still infer `Bool` (no bool singletons yet — see 15.3).
 
 Slices:
 
-- 15.1 — literal-union types + checking: lower `@{ <string/number literals> }` in
-  type position to a `Type::Variant` row of literal entries (closed); a fresh
+- 15.1 — literal-union types + checking: lower `@{ <string/number literals> }`
+  in type position to a `Type::Variant` row of literal entries (closed); a fresh
   literal value checks against a literal-union annotation by **membership**
   (reusing the fresh-literal path), and literal-union vs literal-union widens by
   **subset** (reusing variant widening). A wide base-typed value (`Text`/`Int`)
@@ -1236,21 +1260,40 @@ Slices:
 - 15.2 — literal-union match exhaustiveness: when a `?>` match subject has a
   closed literal-union type, require each member literal to be covered by a
   literal-pattern arm or a `_` catch-all, reusing the existing closed-variant
-  exhaustiveness path (`type.non-exhaustive-match`). A literal-pattern arm covers
-  its member; an arm matching a literal outside the subject union is reported as
-  unreachable. Open literal unions require `_` (same as open variants). Scope is
-  exhaustiveness/coverage only — no new inference.
+  exhaustiveness path (`type.non-exhaustive-match`). A literal-pattern arm
+  covers its member; an arm matching a literal outside the subject union is
+  reported as unreachable. Open literal unions require `_` (same as open
+  variants). Scope is exhaustiveness/coverage only — no new inference.
+
+- 15.3 — bool singletons: `true`/`false` infer singleton rows like other
+  literals, so comptime guards and literal-union machinery treat all three
+  literal kinds uniformly. Requires a bool literal row-entry base kind;
+  `Bool`-typed APIs are unaffected via the R3/R4 widening rules.
+
+- 15.4 — comptime const-folding of base operations: `c = 1 + 2` infers `3`
+  (singleton) instead of widening to `Int` (the recorded watch item in
+  `literal-types.md`). Fold only comptime-known operands of the built-in
+  operator subset; everything else keeps R4 widening.
+
+- 15.5 — literal-argument diagnostics completion: close the deferred
+  `open("x", 5)` gap (a base-kind-mismatched literal argument against a
+  literal-union domain reports membership failure instead of deferring silently)
+  and fix the recorded double-report wart (an overlapping-label spread merge
+  reporting both `duplicate-spread-label` and `unresolved-binding`).
 
 Done when:
 
-- a binding annotated with a literal union accepts a member literal and rejects a
-  non-member literal and a wide base-typed value, all with structured diagnostics
+- a binding annotated with a literal union accepts a member literal and rejects
+  a non-member literal and a wide base-typed value, all with structured
+  diagnostics
 - a narrower literal union widens into a wider one at a boundary; fixtures lock
   each direction
-- bare number/text literal inference still yields `Int`/`Text` (no singletons)
-- a `?>` match on a closed literal union is non-exhaustive unless every member or
-  a `_` is covered; an out-of-union literal arm is reported unreachable; fixtures
-  lock both
+- ~~bare number/text literal inference still yields `Int`/`Text`~~ superseded:
+  bare literals infer open singleton rows that widen to `Int`/`Text` at
+  boundaries and base operations (the 2026-06-30 flip; `literal-types.md`)
+- a `?>` match on a closed literal union is non-exhaustive unless every member
+  or a `_` is covered; an out-of-union literal arm is reported unreachable;
+  fixtures lock both
 
 ## Milestone 16: Comptime Evaluator
 
@@ -1258,11 +1301,11 @@ Status: in progress
 
 Goal: the comptime evaluator that M14.2's `comptime.evaluation-unsupported`
 diagnostic stands in for — the engine that resolves `Type::Deferred` sites by
-running comptime-position expressions at check time. Design: `../../docs/
-language-spec.md` → "Comptime, literal types, and labels" and the
+running comptime-position expressions at check time. Design:
+`../../docs/ language-spec.md` → "Comptime, literal types, and labels" and the
 `comptime-evaluator-design` notes (two-stage staging; `ComptimeValue` domain
-whose liftable arm is `Value`; types reify as the checker's `crate::ty::Type`
-IR — no second representation; camelCase reflection `typeOf`/`keysOf`/`fieldsOf`/
+whose liftable arm is `Value`; types reify as the checker's `crate::ty::Type` IR
+— no second representation; camelCase reflection `typeOf`/`keysOf`/`fieldsOf`/
 `tagsOf`; specialization-time/demand-driven evaluation reusing `Deferred`). The
 evaluator lives as a module **inside `aven-check`** (checker → evaluator →
 checker for types) until it earns its own crate.
@@ -1274,19 +1317,19 @@ slice.
 Slices:
 
 - 16.1 — thinnest reflection slice: resolve the simplest `Type::Deferred` /
-  `comptime.evaluation-unsupported` case — a **capitalized binding whose RHS is a
-  reflection call on a concrete type**, starting with `keysOf` on a record. The
-  evaluator runs `keysOf` at check time, reads the record's field labels, and
-  reifies the result as a literal-union `Type::Variant` (the type-position face
-  of a comptime label set), so the binding gets a concrete type with no
+  `comptime.evaluation-unsupported` case — a **capitalized binding whose RHS is
+  a reflection call on a concrete type**, starting with `keysOf` on a record.
+  The evaluator runs `keysOf` at check time, reads the record's field labels,
+  and reifies the result as a literal-union `Type::Variant` (the type-position
+  face of a comptime label set), so the binding gets a concrete type with no
   `Deferred` and no unsupported diagnostic. A new `ComptimeValue` domain
   (minimal: enough for a label set and a reified `Type`) and an evaluator module
   in `aven-check`. `keysOf` on a non-record concrete type is a structured
   diagnostic; a non-concrete argument defers (M11 discipline). No `@param`, no
-  specialization, no other reflection functions yet.
-  Done: `aven-check` now evaluates `keysOf(<closed record type>)` in comptime
-  type position, reifies the sorted field-name set as a closed literal-union
-  variant, defers non-concrete subjects without diagnostics, and reports
+  specialization, no other reflection functions yet. Done: `aven-check` now
+  evaluates `keysOf(<closed record type>)` in comptime type position, reifies
+  the sorted field-name set as a closed literal-union variant, defers
+  non-concrete subjects without diagnostics, and reports
   `comptime.reflection-type-mismatch` for concrete non-record subjects.
 
 - 16.2 — comptime function application + specialization (type position only):
@@ -1298,34 +1341,38 @@ Slices:
   binding parameters to the evaluated comptime arguments and evaluating the body
   in that environment. Supported arguments: a **type** (e.g. `User` → reified
   `Type`); non-concrete arguments defer (M11 discipline). The body grammar is
-  small and honest — a parameter reference, a reflection built-in call (`keysOf`)
-  on an in-scope value, a nested comptime-function call, or a literal type term;
-  anything else flows to the existing deferred / `comptime.evaluation-unsupported`
-  path. **Specialize (memoize) per distinct `(function, comptime-arg-tuple)`** —
-  the monomorphization point and the cycle key. Recursion is bounded two ways: a
-  visited-set over `(fn, args)` catches a specialization that depends on its own
-  in-progress result (`comptime.evaluation-cycle`), and a fuel budget bounds
-  deep-but-finite evaluation (`comptime.evaluation-limit`); either reports a
-  structured diagnostic and recovers by treating the site as `Deferred`. The
-  body's `ComptimeValue` reifies into `crate::ty::Type` (reuse
-  `reify_type_position`). Out of scope: `@param` marker, parser changes,
-  runtime-position specialization, computed keys, comprehensions, general
-  value-parameter specialization (all → M16.3).
-  Done: `aven-check` now specializes top-level lambda bindings in type-position
-  calls, threads a minimal comptime parameter environment through bodies,
-  memoizes by function and comptime argument tuple, reports bounded recursion
-  with `comptime.evaluation-cycle` / `comptime.evaluation-limit`, and reifies
-  `keyUnion(User)`-style results to concrete literal unions.
+  small and honest — a parameter reference, a reflection built-in call
+  (`keysOf`) on an in-scope value, a nested comptime-function call, or a literal
+  type term; anything else flows to the existing deferred /
+  `comptime.evaluation-unsupported` path. **Specialize (memoize) per distinct
+  `(function, comptime-arg-tuple)`** — the monomorphization point and the cycle
+  key. Recursion is bounded two ways: a visited-set over `(fn, args)` catches a
+  specialization that depends on its own in-progress result
+  (`comptime.evaluation-cycle`), and a fuel budget bounds deep-but-finite
+  evaluation (`comptime.evaluation-limit`); either reports a structured
+  diagnostic and recovers by treating the site as `Deferred`. The body's
+  `ComptimeValue` reifies into `crate::ty::Type` (reuse `reify_type_position`).
+  Out of scope: `@param` marker, parser changes, runtime-position
+  specialization, computed keys, comprehensions, general value-parameter
+  specialization (all → M16.3). Done: `aven-check` now specializes top-level
+  lambda bindings in type-position calls, threads a minimal comptime parameter
+  environment through bodies, memoizes by function and comptime argument tuple,
+  reports bounded recursion with `comptime.evaluation-cycle` /
+  `comptime.evaluation-limit`, and reifies `keyUnion(User)`-style results to
+  concrete literal unions.
 
 - 16.3 — `@param` marker + runtime-position specialization (single computed-key
   access): the first **runtime-position** comptime slice. Thinnest end-to-end
   target:
+
   ```
   get = (o: {..r}, @key: keysOf(r)) => o[key]
   get(user, "name")    # result type: the type of user's `name` field
   get(user, "phone")   # error: "phone" is not a key of r
   ```
+
   Pieces:
+
   - **Parser (`aven-parser`):** lex `@<lowercase>` in parameter position as a
     comptime-param marker (repurposing the now-dead `@lowercase` `LabelPath`
     label-literal production; `@` outside a parameter declaration is a
@@ -1339,39 +1386,43 @@ Slices:
     membership (`"name" ∈ keysOf(r)`); out-of-domain reports a structured
     diagnostic. **Specialize** the call per comptime-arg tuple (reuse the M16.2
     `SpecializationKey` machinery) to compute the result type. Handle
-    `ExprKind::Index` in **value** position (`o[k]`) where the callee infers to a
-    concrete record and the single arg is a **comptime-known label** → that
+    `ExprKind::Index` in **value** position (`o[k]`) where the callee infers to
+    a concrete record and the single arg is a **comptime-known label** → that
     field's type; defer otherwise (do not disturb the type-position `Array[Int]`
-    `Type::Apply` meaning of the same node). The result type flows into inference
-    (M11). Membership guarantees the field exists, so access is exact (no
-    nullability in this slice).
-	  - Out of scope (later slices): record comprehensions (`{ keys -> k; ... }`),
-	    `pick`/`omit`, key-**union** access (`o[k]` over a key set → field-type
-	    union), runtime-`Text`-key access (→ nullable), computed transforms
-	    (`[k]=v`, `-[k]`, `[k]->[k2]`), other reflection functions.
-	  Done: `aven-parser` now treats `@lowercase` as a declaration-only comptime
-	  parameter marker with structured recovery, `aven-fmt` round-trips `@key`,
-	  and `aven-check` evaluates literal comptime arguments, specializes
-	  `keysOf(r)` domains from runtime argument types, reuses literal-union
-	  membership for out-of-domain keys, and infers exact field types for
-	  single computed-key record access when the key is comptime-known.
+    `Type::Apply` meaning of the same node). The result type flows into
+    inference (M11). Membership guarantees the field exists, so access is exact
+    (no nullability in this slice).
+    - Out of scope (later slices): record comprehensions (`{ keys -> k; ... }`),
+      `pick`/`omit`, key-**union** access (`o[k]` over a key set → field-type
+      union), runtime-`Text`-key access (→ nullable), computed transforms
+      (`[k]=v`, `-[k]`, `[k]->[k2]`), other reflection functions. Done:
+      `aven-parser` now treats `@lowercase` as a declaration-only comptime
+      parameter marker with structured recovery, `aven-fmt` round-trips `@key`,
+      and `aven-check` evaluates literal comptime arguments, specializes
+      `keysOf(r)` domains from runtime argument types, reuses literal-union
+      membership for out-of-domain keys, and infers exact field types for single
+      computed-key record access when the key is comptime-known.
 
 - 16.4 — record comprehension + comptime unrolling (thinnest: `pick`): the first
   comprehension slice. Thinnest end-to-end target:
+
   ```
   pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }
   pick(user, @{"name", "email"})    # result type: { name: Text, email: Text }
   ```
+
   Pieces:
+
   - **Parser (`aven-parser`):** add a record-body **iteration** item
-    `source -> binder; body` as `RecordEntry::Iteration { source, binder, body:
-    Vec<RecordEntry> }` — `body` reuses `RecordEntry` recursively (iteration
-    repeats sub-items; no parallel tree). Disambiguate from the existing rename
-    `from -> to`: a trailing `;` (with sub-items) marks iteration, bare `a -> b`
-    stays a rename. A `(k, v)` tuple in a record/comprehension body is an
-    **add-entry** item (reuse the tuple `Element`; the checker interprets a
-    2-tuple as add-field). Thread `walk`/`resolve`/`names` (the binder is an
-    ordinary binder) and `aven-fmt` (round-trip the iteration form).
+    `source -> binder; body` as
+    `RecordEntry::Iteration { source, binder, body: Vec<RecordEntry> }` — `body`
+    reuses `RecordEntry` recursively (iteration repeats sub-items; no parallel
+    tree). Disambiguate from the existing rename `from -> to`: a trailing `;`
+    (with sub-items) marks iteration, bare `a -> b` stays a rename. A `(k, v)`
+    tuple in a record/comprehension body is an **add-entry** item (reuse the
+    tuple `Element`; the checker interprets a 2-tuple as add-field). Thread
+    `walk`/`resolve`/`names` (the binder is an ordinary binder) and `aven-fmt`
+    (round-trip the iteration form).
   - **Checker (`aven-check`):** extend `@param` to a key **set**
     (`@keys: keysOf(r)@{}`): the comptime argument is a set literal
     (`@{"name","email"}`) → a `LabelSet`, each member checked against the domain
@@ -1389,23 +1440,23 @@ Slices:
   Done: `aven-parser` now parses `source -> binder; body` as
   `RecordEntry::Iteration` while preserving bare `a -> b` renames, `aven-fmt`
   round-trips the comprehension form, and `aven-check` accepts concrete
-  label-set comptime arguments for `keysOf(r)@{}`, checks each member against the
-  literal-union domain, and unrolls record iterations so `pick(user,
-  @{"name", "email"})` infers `{ name: Text, email: Text }` while non-concrete
-  key sets defer.
+  label-set comptime arguments for `keysOf(r)@{}`, checks each member against
+  the literal-union domain, and unrolls record iterations so
+  `pick(user, @{"name", "email"})` infers `{ name: Text, email: Text }` while
+  non-concrete key sets defer.
 
 - 16.5 — postfix collection-type sugar `X[]` / `X@{}`: a trailing **empty** `[]`
   or `@{}` after a type is sugar for the named collection generic (decided
   2026-06-20) — `X[]` ≡ `Array[X]`, `X@{}` ≡ `Set[X]` (`Set`/`Array` are already
   builtin types). Non-empty `X[a]` stays type application. Desugar to the
-  named-generic application (reuse the `Array[a]`/`Set[a]` path; **no new Type IR
-  variant**), which also fixes the current loose `X[]` → `Apply{X, []}` lowering.
-  `pick`/`omit`'s key parameter becomes `@keys: keysOf(r)@{}` (== `Set[keysOf(r)]`),
-  matching the `@{...}` set value; update the checker's `literal_union_domain_row`
-  to unwrap `Set[<literal union>]`. Parser + fmt round-trip the postfix forms;
-  the `@{}` postfix is the empty set adjacent to a type (mirroring the empty `[]`
-  postfix), distinct from a `@{...}` set literal. `aven-parser` + `aven-fmt` +
-  `aven-check`.
+  named-generic application (reuse the `Array[a]`/`Set[a]` path; **no new Type
+  IR variant**), which also fixes the current loose `X[]` → `Apply{X, []}`
+  lowering. `pick`/`omit`'s key parameter becomes `@keys: keysOf(r)@{}` (==
+  `Set[keysOf(r)]`), matching the `@{...}` set value; update the checker's
+  `literal_union_domain_row` to unwrap `Set[<literal union>]`. Parser + fmt
+  round-trip the postfix forms; the `@{}` postfix is the empty set adjacent to a
+  type (mirroring the empty `[]` postfix), distinct from a `@{...}` set literal.
+  `aven-parser` + `aven-fmt` + `aven-check`.
 
   Done: `aven-parser` desugars empty postfix `[]` and adjacent empty postfix
   `@{}` to existing `Array[...]`/`Set[...]` applications, `aven-fmt` round-trips
@@ -1414,9 +1465,10 @@ Slices:
 
 - 16.6 — `omit` via bulk computed delete `-keys`: the `pick` dual for closed
   record transforms. A bare delete name that resolves to a comptime label set
-  deletes every member from the current closed row, while ordinary static deletes
-  like `-password` keep their existing single-field behavior. Out-of-domain key
-  sets remain rejected by the existing `@param` literal-union membership check.
+  deletes every member from the current closed row, while ordinary static
+  deletes like `-password` keep their existing single-field behavior.
+  Out-of-domain key sets remain rejected by the existing `@param` literal-union
+  membership check.
 
   Done: `aven-check` now resolves bare delete names to in-scope comptime label
   sets before falling back to static delete, applies the existing closed-row and
@@ -1429,20 +1481,20 @@ Slices:
   comptime `Bool` values; `true` folds the body, `false` skips it, and anything
   unsupported or not comptime-known defers through the existing row-entry path.
 
-  Done: `aven-parser` carries `guard: Option<Expr>` on
-  `RecordEntry::Iteration` and preserves rename disambiguation, shared AST
-  walkers/name resolution include the guard in binder scope, `aven-fmt`
-  round-trips guarded comprehensions, and `aven-check` filters unrolled record
-  members so `omit2(user, @{"name"})` infers `{ email: Text }`.
+  Done: `aven-parser` carries `guard: Option<Expr>` on `RecordEntry::Iteration`
+  and preserves rename disambiguation, shared AST walkers/name resolution
+  include the guard in binder scope, `aven-fmt` round-trips guarded
+  comprehensions, and `aven-check` filters unrolled record members so
+  `omit2(user, @{"name"})` infers `{ email: Text }`.
 
-- 16.9 — type-position record comprehension foundation:
-  comptime functions whose body is a record comprehension can now specialize in
-  type position and lower to a record type. The evaluator threads parameter
-  bindings into annotation lowering, `fold_iteration_entry` unrolls closed
-  `keysOf` label sets in annotation mode, and computed type-position field
-  reads like `object[k]` resolve to the selected field type. This enables the
-  identity record type map (`clone(User)`) while leaving optional computed field
-  modifiers for the next slice.
+- 16.9 — type-position record comprehension foundation: comptime functions whose
+  body is a record comprehension can now specialize in type position and lower
+  to a record type. The evaluator threads parameter bindings into annotation
+  lowering, `fold_iteration_entry` unrolls closed `keysOf` label sets in
+  annotation mode, and computed type-position field reads like `object[k]`
+  resolve to the selected field type. This enables the identity record type map
+  (`clone(User)`) while leaving optional computed field modifiers for the next
+  slice.
 
   Done: `clone = (object) => { keysOf(object) -> k; (k, object[k]) }` applied to
   a closed record type lowers to the corresponding closed record type in
@@ -1450,28 +1502,26 @@ Slices:
   non-record `keysOf` subjects reuse the existing reflection type-mismatch
   diagnostic.
 
-- 16.10 — computed field-add for record type maps:
-  record entries can now add fields with computed keys via `[k]: v`. Parser,
-  formatter, reference/name/scope walkers, LSP token handling, compiler
-  references, and checker row folding all thread `RecordEntry::FieldComputed`;
-  in annotation mode the checker resolves the computed key with
-  `comptime_known_label` and folds `object[k]` through the M16.9 type-position
-  index path.
+- 16.10 — computed field-add for record type maps: record entries can now add
+  fields with computed keys via `[k]: v`. Parser, formatter,
+  reference/name/scope walkers, LSP token handling, compiler references, and
+  checker row folding all thread `RecordEntry::FieldComputed`; in annotation
+  mode the checker resolves the computed key with `comptime_known_label` and
+  folds `object[k]` through the M16.9 type-position index path.
 
   Superseded by N3: optionality no longer lives on field labels, so `partial`
   now uses `partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }`.
 
-- 16.11 — `required` type modifier (strip Optional):
-  Restored by N5. The old implementation stripped optional field flags; after N3
-  removed field-level optionality, `required` is now expressed as a comptime type
-  map using prefix `!` to strip the `Optional` wrapper from each field type:
+- 16.11 — `required` type modifier (strip Optional): Restored by N5. The old
+  implementation stripped optional field flags; after N3 removed field-level
+  optionality, `required` is now expressed as a comptime type map using prefix
+  `!` to strip the `Optional` wrapper from each field type:
   `{ keysOf(object) -> k; [k]: !object[k] }`.
 
-- 16.12 — `tagsOf` reflection for variant constructor tags:
-  `tagsOf(variant)` mirrors `keysOf(record)`, reflecting a closed variant type's
-  constructor tag names into the same comptime label-set value so it works in
-  type-position bindings, `@param` domains, and record-comprehension iteration
-  sources.
+- 16.12 — `tagsOf` reflection for variant constructor tags: `tagsOf(variant)`
+  mirrors `keysOf(record)`, reflecting a closed variant type's constructor tag
+  names into the same comptime label-set value so it works in type-position
+  bindings, `@param` domains, and record-comprehension iteration sources.
 
   Done: `aven-check` now evaluates `tagsOf(<closed tag variant type>)` through
   the shared comptime label-set machinery, reifies it as a sorted closed
@@ -1488,14 +1538,14 @@ Slices:
   built-in distinct from `keysOf`/`tagsOf`'s type-subject label reflection. The
   evaluator infers the argument through a checker hook, resolves/defaults and
   normalizes the result, reifies concrete resolved types, and defers unresolved
-  subjects without diagnostics. This enables `partial(typeOf(config))` and direct
-  annotations such as `T = typeOf(config)`. The current hook uses a fresh
+  subjects without diagnostics. This enables `partial(typeOf(config))` and
+  direct annotations such as `T = typeOf(config)`. The current hook uses a fresh
   top-level environment, so top-level bindings and self-contained literals work;
   subjects depending on active local bindings still defer until a follow-up
   threads the active `TypeEnv` into the query, matching the M16.9-style context
   threading.
 
-	Done when:
+  Done when:
 
 - `Keys = keysOf(SomeRecord)` lowers to the literal union of that record's field
   names, usable as a type, with no `Deferred` and no
@@ -1504,23 +1554,23 @@ Slices:
   `keysOf` call whose argument is not yet concrete defers without diagnostic
 - the evaluator is a self-contained module in `aven-check`; reified types are
   the checker's own `Type` IR (no parallel representation)
-- `keyUnion = (r) => keysOf(r)` with `Keys = keyUnion(User)` lowers `Keys` to the
-  literal union of `User`'s field names, usable as a type, with no `Deferred` and
-  no `comptime.evaluation-unsupported`; a fixture locks it
+- `keyUnion = (r) => keysOf(r)` with `Keys = keyUnion(User)` lowers `Keys` to
+  the literal union of `User`'s field names, usable as a type, with no
+  `Deferred` and no `comptime.evaluation-unsupported`; a fixture locks it
 - a comptime function applied to a non-concrete type argument defers without a
-  diagnostic; a self- or mutually-recursive comptime function that cannot resolve
-  is bounded and reports `comptime.evaluation-cycle` (or
+  diagnostic; a self- or mutually-recursive comptime function that cannot
+  resolve is bounded and reports `comptime.evaluation-cycle` (or
   `comptime.evaluation-limit`); fixtures lock both
 - `@key` parses as a declaration-only comptime parameter (a `Param` comptime
   flag), `aven-fmt` round-trips it, and `@` outside a parameter declaration
   diagnoses; fixtures lock parse + fmt
-- `get = (o: {..r}, @key: keysOf(r)) => o[key]` with `get(user, "name")` types as
-  the `name` field's type; `get(user, "phone")` reports the out-of-domain
+- `get = (o: {..r}, @key: keysOf(r)) => o[key]` with `get(user, "name")` types
+  as the `name` field's type; `get(user, "phone")` reports the out-of-domain
   membership diagnostic; `o[k]` for a comptime-known label on a concrete record
   yields the field type and defers otherwise; fixtures lock each
 - a record-body iteration `source -> binder; body` parses to
-  `RecordEntry::Iteration` (distinct from rename), `aven-fmt` round-trips it, and
-  the binder resolves as an ordinary binder; fixtures lock parse + fmt
+  `RecordEntry::Iteration` (distinct from rename), `aven-fmt` round-trips it,
+  and the binder resolves as an ordinary binder; fixtures lock parse + fmt
 - `pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }` with
   `pick(user, @{"name", "email"})` types as `{ name: Text, email: Text }`; an
   out-of-domain key in the set reports the membership diagnostic; a non-concrete
@@ -1534,15 +1584,15 @@ Slices:
 
 Status: later
 
-The tooling skeleton is in place, the semantic type IR and value-inference engine
-landed (M10, M11), Hindley-Milner generalization is complete (M12), row
-polymorphism is complete (M13), comptime tooling-first slices are underway (M14),
-and literal types are underway (M15). The remaining hard semantic systems are
-still deliberately out of scope for this plan.
+The tooling skeleton is in place, the semantic type IR and value-inference
+engine landed (M10, M11), Hindley-Milner generalization is complete (M12), row
+polymorphism is complete (M13), comptime tooling-first slices are underway
+(M14), and literal types are underway (M15). The remaining hard semantic systems
+are still deliberately out of scope for this plan.
 
 Phase 2 work not planned here:
 
-- comptime evaluation *engine* (the staged interpreter; M14 covers only the
+- comptime evaluation _engine_ (the staged interpreter; M14 covers only the
   tooling-first surface/classification slices ahead of it)
 - requirement/interface resolution
 - opaque types
@@ -1591,8 +1641,8 @@ Completed parser groundwork:
 - formatter raw-token emitter handles simple expression spacing
 - lexer uses maximal-munch operators with comma/semicolon as dedicated
   separators, so custom operators do not require lexer registration
-- reserved operator starts `=`, `:`, `.`, `?`, and `@` produce lexer
-  diagnostics for unknown runs instead of silently splitting
+- reserved operator starts `=`, `:`, `.`, `?`, and `@` produce lexer diagnostics
+  for unknown runs instead of silently splitting
 - LSP document symbols expose top-level bindings/signatures, merging adjacent
   annotated bindings into one outline entry
 - `aven-parser` exposes a first declaration collection pass for top-level
@@ -1604,8 +1654,8 @@ Completed parser groundwork:
 - declaration collection shares the lexer's uppercase/lowercase identifier rule
   instead of reimplementing the phase split
 - `aven-parser` exposes a first local definition resolver for lambda parameters,
-  sequential block bindings, and match-arm pattern binders; LSP
-  go-to-definition uses it before falling back to the top-level declaration list
+  sequential block bindings, and match-arm pattern binders; LSP go-to-definition
+  uses it before falling back to the top-level declaration list
 - declaration fixtures include shallow parser-level callable shapes, giving
   duplicate/shadowing diagnostics enough information to avoid false positives on
   plausible typed overloads while deferring overload disjointness to M7
@@ -1638,29 +1688,29 @@ Completed parser groundwork:
   under annotations are checked when synthesis or structural literal checking
   produces a concrete result. Function types compare structurally with arity
   diagnostics, contravariant parameters, and covariant results; applied types
-  compare structurally when their arities match. Local checking
-  and inference now share parser-backed scoped known/unknown bindings.
-  Unannotated sequential locals acquire concrete synthesized types when
-  possible; unresolved locals and pattern binders still block top-level
-  fallback. Expected function annotations seed unannotated lambda parameters and
-  check lambda return values. Contextual block checking now uses prefix locals
-  to check final expressions, including final calls. Contextual match checking
-  now pushes the expected result type into each arm body; guarded match arms
-  check each guard against `Bool`. Simple variant patterns use a known literal
-  variant subject type to seed payload binders, direct constructor values check
-  against literal variant rows, and unannotated match expressions synthesize a
-  concrete type when their arm body types agree. At embedded-script sizes
-  whole-module re-inference is cheap, so consuming artifact invalidation for
-  inferred results stays deferred until profiling shows it pays off.
+  compare structurally when their arities match. Local checking and inference
+  now share parser-backed scoped known/unknown bindings. Unannotated sequential
+  locals acquire concrete synthesized types when possible; unresolved locals and
+  pattern binders still block top-level fallback. Expected function annotations
+  seed unannotated lambda parameters and check lambda return values. Contextual
+  block checking now uses prefix locals to check final expressions, including
+  final calls. Contextual match checking now pushes the expected result type
+  into each arm body; guarded match arms check each guard against `Bool`. Simple
+  variant patterns use a known literal variant subject type to seed payload
+  binders, direct constructor values check against literal variant rows, and
+  unannotated match expressions synthesize a concrete type when their arm body
+  types agree. At embedded-script sizes whole-module re-inference is cheap, so
+  consuming artifact invalidation for inferred results stays deferred until
+  profiling shows it pays off.
 - Consolidation C2: LSP hover now shows inferred types for unannotated bindings,
   sourced from compiler snapshots and building on C1's inferred-types API.
 - Consolidation C3: LSP completion now offers identifier names from in-scope
   locals, top-level declarations with inferred-type detail, and builtin type
   names. Type-directed field, record-label, and tag completion remains a later
   slice.
-- Consolidation C6: goto-definition and completion local-scope queries now
-  share one position-scoped traversal that yields visible bindings plus the
-  binder, if any, under the cursor.
+- Consolidation C6: goto-definition and completion local-scope queries now share
+  one position-scoped traversal that yields visible bindings plus the binder, if
+  any, under the cursor.
 - Consolidation C5: variant constructors now infer closed singleton rows, match
   expressions infer the closed union of variant-valued arms, and variant
   assignment widens by requiring the actual tags to be a subset of the expected
@@ -1675,40 +1725,56 @@ Completed parser groundwork:
   literal entries in the variant row, fresh literals check by membership,
   literal-union rows widen by subset at boundaries, wide `Text`/`Int` values are
   rejected against narrower literal unions, and mixed tag/literal rows diagnose
-  as unsupported for now. Bare string/number literal inference remains `Text` and
-  `Int`.
+  as unsupported for now. Bare string/number literal inference initially
+  remained `Text`/`Int`; the 2026-06-30 flip (R1–R6 in
+  `../../docs/literal-types.md`) later made value-position literals infer open
+  singleton rows that widen at boundaries and base operations.
 - Milestone 15.2 done: closed literal-union matches reuse the variant
   exhaustiveness path, literal arms cover matching members, open literal unions
   require a default arm, and out-of-union literal arms report
   `type.unreachable-match-arm`.
 
+### Current queue (2026-07-02)
+
+The authoritative order for what comes next:
+
+1. Milestone Q — typed `?^` error propagation (soundness; see below)
+2. Milestone S — structural consolidation (checker split, one string decoder,
+   escape diagnostics)
+3. Milestone J — JSON codec (IO Phase 3)
+4. Milestone X — example suite and live verification
+5. Milestone K — Map type
+6. Milestone 15.3–15.5 — literal-types completion (bool singletons,
+   const-folding, literal-argument gaps)
+7. Milestone H — HTTP methods
+8. Milestone Z — modules and imports (design pass first)
+
 ## Milestone N — null/undefined model
 
-- N1 done: `true`, `false`, `null`, and `undefined` are reserved value
-  keywords. `true`/`false` infer and evaluate as `Bool`; `undefined` is the
-  renamed unset empty with type `Undefined`; `null` is a distinct deliberate
-  empty with type `Null`. The old `Nil` builtin/value surface is removed from
-  checker/tooling fixtures. Postfix `T?` still means the existing
-  `Type::Nullable(T)` shape and, for N1, still admits `Undefined`; prefix `?`,
-  `Optional`, optional-field changes, and spread semantics remain deferred to
-  later N milestones.
-- N2 done: prefix `?T` now lowers to `Type::Optional(T)` and admits
-  `undefined`; postfix `T?` remains `Type::Nullable(T)` and now admits `null`.
-  The composed `?T?` form normalizes as `Optional(Nullable(T))`, subtype
-  widening flows from `T`, `?T`, and `T?` into `?T?`, and matches peel the
-  required `undefined`/`null` arms before binding the payload.
+- N1 done: `true`, `false`, `null`, and `undefined` are reserved value keywords.
+  `true`/`false` infer and evaluate as `Bool`; `undefined` is the renamed unset
+  empty with type `Undefined`; `null` is a distinct deliberate empty with type
+  `Null`. The old `Nil` builtin/value surface is removed from checker/tooling
+  fixtures. Postfix `T?` still means the existing `Type::Nullable(T)` shape and,
+  for N1, still admits `Undefined`; prefix `?`, `Optional`, optional-field
+  changes, and spread semantics remain deferred to later N milestones.
+- N2 done: prefix `?T` now lowers to `Type::Optional(T)` and admits `undefined`;
+  postfix `T?` remains `Type::Nullable(T)` and now admits `null`. The composed
+  `?T?` form normalizes as `Optional(Nullable(T))`, subtype widening flows from
+  `T`, `?T`, and `T?` into `?T?`, and matches peel the required
+  `undefined`/`null` arms before binding the payload.
 - N3 done: the optional field flag and `x?:` / computed-field optional marker
   syntax are removed. Record rows always carry `name: T`; a record literal may
-  omit a field only when the normalized field type is `Optional`, so `{ name:
-  Text, phone: ?Text }` accepts `{ name: "Ada" }` while non-`Optional` missing
-  fields keep the existing `type.missing-field` diagnostic. `partial` is now
-  written as `{ keysOf(object) -> k; [k]: ?object[k] }`; N5 later restores
+  omit a field only when the normalized field type is `Optional`, so
+  `{ name: Text, phone: ?Text }` accepts `{ name: "Ada" }` while non-`Optional`
+  missing fields keep the existing `type.missing-field` diagnostic. `partial` is
+  now written as `{ keysOf(object) -> k; [k]: ?object[k] }`; N5 later restores
   `required` with prefix `!`.
 - N4 done: record spreads are undefined-transparent for optional patch fields.
   When an incoming spread field is `?T` and the base already has that label, the
   base field type survives while the present `T` is checked against it; ordinary
-  and nullable values still overwrite through the existing spread rules. Explicit
-  value-record fields such as `x: undefined` now emit
+  and nullable values still overwrite through the existing spread rules.
+  Explicit value-record fields such as `x: undefined` now emit
   `record.redundant-undefined` and suggest omission or `-x` deletion.
 - N5 done: `!` now neutralizes `?` in type position, independently on the
   optional and nullable sides. Prefix `!T` strips the normalized outer
@@ -1717,6 +1783,15 @@ Completed parser groundwork:
   shapes without adding a new type variant. This restores `required` as
   `{ keysOf(object) -> k; [k]: !object[k] }`, so `required(partial(User))`
   lowers back to `User`.
+- N6 done (2026-07-01): value indexing is typed. `array[i]` returns `?a`
+  (Optional element — out-of-bounds is `undefined`, matching the runtime); tuple
+  indexing requires a comptime-known index and projects the exact element type
+  including literals (`("Ada", 36)[1] : 36`); out-of-range and non-comptime
+  tuple indexes report structured diagnostics.
+- N7 done (2026-07-01): field access peels `Optional`/`Nullable` wrappers,
+  re-wraps the result, and honors `?.`: a plain `.` through an empty-wrapped
+  receiver reports `type.unguarded-empty-access`, naming the receiver expression
+  and spanning the `.field`, with `?.`/`??`/match repairs suggested.
 
 ## Milestone T — editor type intelligence
 
@@ -1728,39 +1803,53 @@ Completed parser groundwork:
   receivers keep the previous identifier-list fallback.
 - T2 done: LSP inlay hints now render cached inferred types for unannotated
   binders as `: Type` at the end of the binder name. The server advertises
-  `inlayHintProvider`, answers `textDocument/inlayHint` from the stored
-  semantic snapshot without re-parsing or re-checking, and, because the current
-  snapshot also contains declared annotation types, suppresses hints for binders
-  that already have a written annotation.
+  `inlayHintProvider`, answers `textDocument/inlayHint` from the stored semantic
+  snapshot without re-parsing or re-checking, and, because the current snapshot
+  also contains declared annotation types, suppresses hints for binders that
+  already have a written annotation.
 - T3 done: LSP signature help now advertises `(` and `,` triggers and answers
   `textDocument/signatureHelp` from the cached parse plus inferred-type
   snapshot. Name callees resolve through the shared definition query, callable
   types are exposed through the checker/compiler `function_signature` accessor
-  with `Optional`/`Nullable` wrappers peeled, and the active parameter is counted
-  from depth-aware top-level commas inside the enclosing call.
+  with `Optional`/`Nullable` wrappers peeled, and the active parameter is
+  counted from depth-aware top-level commas inside the enclosing call.
 - T4 done: the inferred-type snapshot now records concrete expression spans in
-  addition to binder spans, and `type_at` returns the narrowest containing span so
-  hover can target calls, literals, records, fields, indexes, and other inferred
-  sub-expressions without regressing name hover. Expression entries are recorded
-  only when the type is concrete at inference time after resolve/default/normalize;
-  expressions that become concrete only through later unification are still
-  omitted until a future record-then-resolve pass.
+  addition to binder spans, and `type_at` returns the narrowest containing span
+  so hover can target calls, literals, records, fields, indexes, and other
+  inferred sub-expressions without regressing name hover. Expression entries are
+  recorded only when the type is concrete at inference time after
+  resolve/default/normalize; expressions that become concrete only through later
+  unification are still omitted until a future record-then-resolve pass.
 - T5 done: LSP field completion and signature help now query the cached
   expression-type snapshot at the receiver/callee boundary before `.` / `(`, so
-  non-name expressions such as call results, index results, and higher-order call
-  callees participate without re-parsing or re-checking. Bare-name definition
-  resolution remains only as a fallback when the positional snapshot has no type,
-  and signature labels prefer the callee source text while preserving name-callee
-  labels.
+  non-name expressions such as call results, index results, and higher-order
+  call callees participate without re-parsing or re-checking. Bare-name
+  definition resolution remains only as a fallback when the positional snapshot
+  has no type, and signature labels prefer the callee source text while
+  preserving name-callee labels.
 - T6 done: LSP completion now recognizes direct annotated construction sites:
   record literal binding values offer missing declared labels with field type
   details, and variant set literal binding values offer declared `@` tags. The
   server advertises `@` as a completion trigger, uses checker/compiler accessors
-  for record fields and variant tags instead of row destructuring, and falls back
-  to identifier completion when the cursor is inside an existing entry value or
-  when no declared expected shape is available. Nested construction sites inside
-  calls, tuples, or other expressions remain future work because they need
-  expected-type propagation.
+  for record fields and variant tags instead of row destructuring, and falls
+  back to identifier completion when the cursor is inside an existing entry
+  value or when no declared expected shape is available. Nested construction
+  sites inside calls, tuples, or other expressions remain future work because
+  they need expected-type propagation.
+- T7 done: identifier completion keeps working during parse errors (recovery
+  keeps the cached snapshot usable) and offers host globals seeded from
+  `aven-host::standard_check_globals()`.
+- T8 done: literal-argument completion triggers on `"` and is quote-aware, so
+  `File.open(path, "` offers the mode literals from the parameter's
+  literal-union domain.
+- T9 done: field completion works on host-record globals and records carrying
+  comptime fields (`File.` completes `open`).
+- T10 done: field completion through `Optional`/`Nullable` receivers inserts the
+  `?.` operator via an additional text edit when the receiver is empty-wrapped
+  and the typed operator is `.`; already-null-safe and plain-record receivers
+  are unchanged.
+- Quick fixes so far: a colliding spread offers an overwrite-merge (`:..`)
+  rewrite; a dropped `Result` value warns and offers a `?!` insertion.
 
 ## Milestone E — tree-walking evaluator
 
@@ -1776,26 +1865,28 @@ the later bytecode/runtime work.
   text concatenation. `aven run <path>` now parses a file, renders parse/runtime
   diagnostics through the existing CLI renderer, and prints the last expression
   value on success.
-- E2 done: added evaluator environments for sequential module bindings, block-local
-  bindings, name lookup, and block result values. Item evaluation is sequential:
-  bindings are visible only to later items, a module value is produced only by a
-  trailing expression, and a block with no trailing expression evaluates as
-  `undefined`. Block scopes can shadow outer bindings without leaking mutations
-  back out. Forward references and mutual recursion remain out of scope until E3
-  closures; a reference to a later binding reports `runtime.unbound-name`.
+- E2 done: added evaluator environments for sequential module bindings,
+  block-local bindings, name lookup, and block result values. Item evaluation is
+  sequential: bindings are visible only to later items, a module value is
+  produced only by a trailing expression, and a block with no trailing
+  expression evaluates as `undefined`. Block scopes can shadow outer bindings
+  without leaking mutations back out. Forward references and mutual recursion
+  remain out of scope until E3 closures; a reference to a later binding reports
+  `runtime.unbound-name`.
 - E3 done: added lambda closures and function calls. Closures capture shared
   environment scopes, so top-level function bodies see sibling functions added
-  after the closure was created, enabling self and mutual recursion once E5 match
-  adds base-case branching. This letrec-style behavior applies to functions; eager
-  value forward references such as `a = b` before `b = 1` still report
-  `runtime.unbound-name`.
+  after the closure was created, enabling self and mutual recursion once E5
+  match adds base-case branching. This letrec-style behavior applies to
+  functions; eager value forward references such as `a = b` before `b = 1` still
+  report `runtime.unbound-name`.
 - E4 done: added runtime record and variant values. Records preserve insertion
-  order for display while comparing structurally by field name, and the evaluator
-  now handles record construction, spread/overwrite, delete, rename, shorthand,
-  computed fields/deletes, field access, and text-key record indexing. Variant
-  tags evaluate as `@Tag`/`@Tag(payload...)` values. Missing field lookup reports
-  `runtime.missing-field`; nil-safe access, record comprehensions, and tuple/array
-  indexing remain explicit `runtime.unsupported` follow-ups.
+  order for display while comparing structurally by field name, and the
+  evaluator now handles record construction, spread/overwrite, delete, rename,
+  shorthand, computed fields/deletes, field access, and text-key record
+  indexing. Variant tags evaluate as `@Tag`/`@Tag(payload...)` values. Missing
+  field lookup reports `runtime.missing-field`; nil-safe access, record
+  comprehensions, and tuple/array indexing remain explicit `runtime.unsupported`
+  follow-ups.
 - E5 done: added runtime `?>` pattern matching over literals, wildcards,
   nullable empties, variant tags and payloads, record field patterns, and guard
   expressions. Match evaluation reports `runtime.no-match` if the checker safety
@@ -1817,177 +1908,193 @@ the later bytecode/runtime work.
   loggers, context merging, W3C trace-context fields, and the host-agnostic
   `LogSink` trait; the CLI host owns stdout JSON-line output, timestamps, and
   `/dev/urandom` root trace/span id generation. CLI IO Phase 1 later kept
-  `logger` ambient and removed `Platform.Log`. Deferred: per-child span-id generation, full
-  `tracestate` semantics, and HTTP `traceparent` header extraction when the HTTP
-  platform lands.
+  `logger` ambient and removed `Platform.Log`. Deferred: per-child span-id
+  generation, full `tracestate` semantics, and HTTP `traceparent` header
+  extraction when the HTTP platform lands.
 - E9 done: `aven run` now injects a host-curated ambient prelude as ordinary
-  base-scope bindings. The root structured logger is available directly as `logger`
-  (originally also through `Platform.Log`, since removed); normal scoping still
-  applies, so user bindings may shadow prelude names. Roc-style selective imports
-  are deferred until a module system exists.
+  base-scope bindings. The root structured logger is available directly as
+  `logger` (originally also through `Platform.Log`, since removed); normal
+  scoping still applies, so user bindings may shadow prelude names. Roc-style
+  selective imports are deferred until a module system exists.
 - E10 done: runtime record comprehensions now evaluate through the shared record
-  entry folder, so tuple-emits like `(k, object[k])` can insert or replace fields
-  across comprehension iterations. `aven-eval` also provides the pure `keysOf`
-  intrinsic for record labels and `.has` methods on Set/Array values through the
-  existing field-access-plus-call path. The parsed single-identifier binder
-  iterates Set/Array elements or Record field labels as `Text`; the spec's
-  `(k, v)` tuple-binder form is not parsed yet and remains deferred.
+  entry folder, so tuple-emits like `(k, object[k])` can insert or replace
+  fields across comprehension iterations. `aven-eval` also provides the pure
+  `keysOf` intrinsic for record labels and `.has` methods on Set/Array values
+  through the existing field-access-plus-call path. The parsed single-identifier
+  binder iterates Set/Array elements or Record field labels as `Text`; the
+  spec's `(k, v)` tuple-binder form is not parsed yet and remains deferred.
 - E11 done: types are first-class runtime values, mirroring the Layer-2 comptime
-  premise (Zig-style, types as values). `aven-eval` adds one opaque `Value::Type`
-  (a bare name; the real type IR stays in `aven-check`, no dependency added) and
-  binds the atomic primitive type names (`Bool`, `Float`, `Int`, `Null`, `Text`,
-  `Undefined`, `Unit`) as intrinsics next to `keysOf`, seeded before host globals
-  so a user binding may shadow them. Record-as-type reuses `Value::Record`, so
-  `User = { name: Text }` evaluates to a record of type-values and the canonical
-  annotated `pick`/`omit` programs now run honestly with no type-alias erasure.
-  `dbg` is a CLI-host native that writes each argument's `Display` to stderr and
-  returns its single argument unchanged, keeping stdout clean. Function types
-  (`->`), open rows (`{..r}`), and type application (`Array[a]`) only make sense in
-  the full type language and appear only in ignored annotations; in bound value
-  position they remain unsupported via the existing `runtime.unbound-name` /
-  `runtime.unsupported` paths. A staged Core IR with type *erasure* is the
-  eventual VM-phase answer (deferred to the VM milestone).
+  premise (Zig-style, types as values). `aven-eval` adds one opaque
+  `Value::Type` (a bare name; the real type IR stays in `aven-check`, no
+  dependency added) and binds the atomic primitive type names (`Bool`, `Float`,
+  `Int`, `Null`, `Text`, `Undefined`, `Unit`) as intrinsics next to `keysOf`,
+  seeded before host globals so a user binding may shadow them. Record-as-type
+  reuses `Value::Record`, so `User = { name: Text }` evaluates to a record of
+  type-values and the canonical annotated `pick`/`omit` programs now run
+  honestly with no type-alias erasure. `dbg` is a CLI-host native that writes
+  each argument's `Display` to stderr and returns its single argument unchanged,
+  keeping stdout clean. Function types (`->`), open rows (`{..r}`), and type
+  application (`Array[a]`) only make sense in the full type language and appear
+  only in ignored annotations; in bound value position they remain unsupported
+  via the existing `runtime.unbound-name` / `runtime.unsupported` paths. A
+  staged Core IR with type _erasure_ is the eventual VM-phase answer (deferred
+  to the VM milestone).
 - E12 done: error propagation operators `?^` (`ExprKind::Propagate` /
-  `PropagationMode::ReturnError`) and `?!` (`Panic`) evaluate. `Result` stays the
-  ordinary tagged value `@Ok(v)` / `@Err(e)` (no dedicated Result value); both
-  operators just inspect the `Value::Tag`. The mechanism is a control-flow channel:
-  the evaluator's internal result type migrates to `type Eval = Result<Value, Flow>`
-  with `Flow::{Fail(Vec<Diagnostic>), Propagate(Value)}`, so `?^`'s non-local early
-  return bubbles through `?` automatically. `Flow::Propagate` is caught at exactly
-  two boundaries — the closure body in `eval_call` (the `@Err` becomes the
-  function's return value) and the top-level item loop (the `@Err` becomes the
-  program value and stops further items). Blocks deliberately do *not* catch it:
-  `eval_block` lets `Propagate` pass through so a `?^` inside a binding-value block
-  early-returns the enclosing function rather than landing in the binding.
-  Existing `Flow::Fail` recovery (collecting diagnostics across items) is
-  preserved. `?^` on `@Ok(v)` yields `v`; `@Err` early-returns; `?!` on `@Err`
-  raises a new `runtime.panic` diagnostic embedding the payload's `Display`; either
-  operator on a non-Result raises `runtime.type-error`. Deferred: annotated
-  error-type fitting / `mapError` (a checker concern) and any finer block-level
-  exit semantics — function-level propagation is what's implemented.
+  `PropagationMode::ReturnError`) and `?!` (`Panic`) evaluate. `Result` stays
+  the ordinary tagged value `@Ok(v)` / `@Err(e)` (no dedicated Result value);
+  both operators just inspect the `Value::Tag`. The mechanism is a control-flow
+  channel: the evaluator's internal result type migrates to
+  `type Eval = Result<Value, Flow>` with
+  `Flow::{Fail(Vec<Diagnostic>), Propagate(Value)}`, so `?^`'s non-local early
+  return bubbles through `?` automatically. `Flow::Propagate` is caught at
+  exactly two boundaries — the closure body in `eval_call` (the `@Err` becomes
+  the function's return value) and the top-level item loop (the `@Err` becomes
+  the program value and stops further items). Blocks deliberately do _not_ catch
+  it: `eval_block` lets `Propagate` pass through so a `?^` inside a
+  binding-value block early-returns the enclosing function rather than landing
+  in the binding. Existing `Flow::Fail` recovery (collecting diagnostics across
+  items) is preserved. `?^` on `@Ok(v)` yields `v`; `@Err` early-returns; `?!`
+  on `@Err` raises a new `runtime.panic` diagnostic embedding the payload's
+  `Display`; either operator on a non-Result raises `runtime.type-error`.
+  Deferred: annotated error-type fitting / `mapError` (a checker concern) and
+  any finer block-level exit semantics — function-level propagation is what's
+  implemented.
 - E13 done: CLI IO Phase 1 replaced the old standard platform namespace with the
-  bare panic-on-error convenience tier. Standard globals are now `logger`, `dbg`,
-  `write : Text -> {}`, `writeLine : Text -> {}`, `readLine : () -> ?Text`, and
-  `readAll : () -> Text`; `Platform`/`Console` are no longer seeded. `logger`
-  remains ambient and `aven-host::standard_check_globals()` is the checker/LSP
-  source of truth. `aven run --log <stdout|stderr|path|syslog>` selects the logger
-  sink (`stdout` default; files append; `syslog`/`journald` are explicit
-  not-yet-implemented stubs) and `--log-format <json|text>` selects JSON lines or
-  a simple `LEVEL message key=value` rendering. A final `@Err(...)` program value
-  now prints to stderr and exits non-zero.
+  bare panic-on-error convenience tier. Standard globals are now `logger`,
+  `dbg`, `write : Text -> {}`, `writeLine : Text -> {}`,
+  `readLine : () -> ?Text`, and `readAll : () -> Text`; `Platform`/`Console` are
+  no longer seeded. `logger` remains ambient and
+  `aven-host::standard_check_globals()` is the checker/LSP source of truth.
+  `aven run --log <stdout|stderr|path|syslog>` selects the logger sink (`stdout`
+  default; files append; `syslog`/`journald` are explicit not-yet-implemented
+  stubs) and `--log-format <json|text>` selects JSON lines or a simple
+  `LEVEL message key=value` rendering. A final `@Err(...)` program value now
+  prints to stderr and exits non-zero.
 
 ## Milestone P — typed platform boundary
 
 Aven's differentiator is a type-safe host/script boundary: a host (or a
 Rust-implemented library) registers named values with their Aven types, and
-`aven check` type-checks uses of those names. This milestone builds that boundary
-in thin, self-contained slices.
+`aven check` type-checks uses of those names. This milestone builds that
+boundary in thin, self-contained slices.
 
 - **P1a done (`aven-check` only).** The checker can seed a typed global
-  environment via `check_module_with_globals(module, globals)`, where `globals:
-  &[(String, Type)]` are monomorphic host/library values; `check_module`
-  delegates with `&[]`. Seeds flow into the existing top-level `value_types`
-  map (each as `TypeScheme::mono`) for names no user declaration claims, so a
-  user top-level binding **shadows** a seed (runtime-prelude scoping). Seeded
-  names are then checked by the **existing** call/field/arity machinery — both
-  the directed `check_value_against` path and the inference `Name` path read
-  them (the latter via a `value_types` fallback in `infer_name_reference`, and
-  seeds are populated before user-declaration inference so a binding like
-  `x = logger.info` resolves the global). Statement-position calls and field
-  accesses are now checked against a *concretely-known* callee/receiver type
+  environment via `check_module_with_globals(module, globals)`, where
+  `globals: &[(String, Type)]` are monomorphic host/library values;
+  `check_module` delegates with `&[]`. Seeds flow into the existing top-level
+  `value_types` map (each as `TypeScheme::mono`) for names no user declaration
+  claims, so a user top-level binding **shadows** a seed (runtime-prelude
+  scoping). Seeded names are then checked by the **existing** call/field/arity
+  machinery — both the directed `check_value_against` path and the inference
+  `Name` path read them (the latter via a `value_types` fallback in
+  `infer_name_reference`, and seeds are populated before user-declaration
+  inference so a binding like `x = logger.info` resolves the global).
+  Statement-position calls and field accesses are now checked against a
+  _concretely-known_ callee/receiver type
   (`check_value_call`/`check_value_field_access`), surfacing argument/arity and
   missing-field errors through the existing `report_*` helpers instead of
   silently deferring; an unknown/free receiver keeps today's permissive
   behaviour, so non-seeded names produce no false errors. A small public type
-  builder surface (`build::named/text/int/float/bool/unit/function/record/
-  open_record/optional/nullable`) lets hosts and tests spell Aven types in Rust
-  without reaching into row internals; `TypeScheme` stays private. `keysOf`,
-  `pick`, and `omit` remain checker-native/runtime comptime builtins — they are
-  **not** host globals and are unchanged.
+  builder surface
+  (`build::named/text/int/float/bool/unit/function/record/ open_record/optional/nullable`)
+  lets hosts and tests spell Aven types in Rust without reaching into row
+  internals; `TypeScheme` stays private. `keysOf`, `pick`, and `omit` remain
+  checker-native/runtime comptime builtins — they are **not** host globals and
+  are unchanged.
 - **P1b done (`aven-host` + wiring).** A new `aven-host` crate sits above both
-  `aven-eval` and `aven-check` and holds a `Host` registry. `register(name,
-  value, type)` binds a runtime value and its Aven type in **one** call (the same
-  API for libraries and platforms, so the two halves can't drift);
-  `register_runtime_only(name, value)` is the escape hatch for not-yet-typeable
-  generics (runs but isn't checked); `eval_globals()`/`check_globals()` feed the
-  evaluator (all values) and checker (typed only). Required capabilities are Rust
-  traits the platform implements: `register_logger(sink, trace)` takes the
-  existing `aven_eval::logging::LogSink` impl, builds the logger value, and
-  registers it under `logger` with the statically-known type (`logger_type()`,
-  built from `aven_check::build::*`). `aven-compiler` threads globals through
+  `aven-eval` and `aven-check` and holds a `Host` registry.
+  `register(name, value, type)` binds a runtime value and its Aven type in
+  **one** call (the same API for libraries and platforms, so the two halves
+  can't drift); `register_runtime_only(name, value)` is the escape hatch for
+  not-yet-typeable generics (runs but isn't checked);
+  `eval_globals()`/`check_globals()` feed the evaluator (all values) and checker
+  (typed only). Required capabilities are Rust traits the platform implements:
+  `register_logger(sink, trace)` takes the existing
+  `aven_eval::logging::LogSink` impl, builds the logger value, and registers it
+  under `logger` with the statically-known type (`logger_type()`, built from
+  `aven_check::build::*`). `aven-compiler` threads globals through
   `analyze_semantics_with_globals` / `check_source_file_with_globals` (the
   no-global versions delegate with `&[]`; the incremental artifact path is
   unchanged). This first demonstrated the typed boundary with a `Platform`
-  namespace; CLI IO Phase 1 later removed that standard namespace and moved IO to
-  bare globals. (P1b registered `logger` runtime-only until default params
-  existed; D4 re-types it through the typed path — see below.) Remaining P-thread
-  follow-ups: deriving generic host-fn types through the
-  typed-fn adapter; the recursive `Logger` type (`child` returns an open record);
-  and checking calls in expression (non-statement) position.
-- **P2 done (`aven-host`).** A typed-fn adapter derives both the Aven `Type` and a
-  marshalling `Value::native` from a monomorphic Rust closure, so a host fn's value
-  and type can't drift — register a closure once and both halves are generated from
-  the signature. `AvenMarshal` is the single source pairing a Rust type with its
-  Aven type (`aven_type()` via `build::*`) and the conversions in both directions
-  (`to_value`/`from_value`); implemented for `i64`→`Int`, `f64`→`Float`,
-  `String`→`Text`, `bool`→`Bool`, `()`→`Unit`, with `from_value` returning a clear
-  shape-mismatch `Err` ("expected Int, got Text") that surfaces as
-  `runtime.platform-error` through the native path. A sealed `IntoHostFn<Args>`
-  (macro-implemented for `Fn(A0..A3) -> R + 'static` where every type is
-  `AvenMarshal`, arities 0..=4) yields `into_host_fn() -> (Type, Value)`: an
-  all-required `Type::Function` plus a native that arity-checks (`expected N
-  arguments, got M`), unmarshals each arg, calls the closure, and marshals the
-  result. `Host::register_fn(name, f)` routes that pair through the existing
-  `register`, so it lands in both `eval_globals` and `check_globals` with no new
-  registry path. Verified end to end: `register_fn("add", |a: i64, b: i64| a + b)`
-  makes `add(2, 3)` check and evaluate to `5` while `add("x", 3)` is a check-time
-  type error. The then-existing `logger`/platform/`debug` registrations were
-  **not** migrated in this slice (logger is a record of optional-arg methods and
-  `debug` was generic; P4 later typed it through the ordinary register path, and
-  CLI IO Phase 1 renamed it to `dbg`). Deferred: generic host-fn derivation
-  (`Value` passthrough mapped to type variables), compound marshalling
-  (records↔structs, `Vec`↔Array, `Option`↔`?T`, `Result`↔Aven `Result`),
-  optional params via the adapter, arities above 4, and migrating the existing
-  host regs.
+  namespace; CLI IO Phase 1 later removed that standard namespace and moved IO
+  to bare globals. (P1b registered `logger` runtime-only until default params
+  existed; D4 re-types it through the typed path — see below.) Remaining
+  P-thread follow-ups: deriving generic host-fn types through the typed-fn
+  adapter; the recursive `Logger` type (`child` returns an open record); and
+  checking calls in expression (non-statement) position.
+- **P2 done (`aven-host`).** A typed-fn adapter derives both the Aven `Type` and
+  a marshalling `Value::native` from a monomorphic Rust closure, so a host fn's
+  value and type can't drift — register a closure once and both halves are
+  generated from the signature. `AvenMarshal` is the single source pairing a
+  Rust type with its Aven type (`aven_type()` via `build::*`) and the
+  conversions in both directions (`to_value`/`from_value`); implemented for
+  `i64`→`Int`, `f64`→`Float`, `String`→`Text`, `bool`→`Bool`, `()`→`Unit`, with
+  `from_value` returning a clear shape-mismatch `Err` ("expected Int, got Text")
+  that surfaces as `runtime.platform-error` through the native path. A sealed
+  `IntoHostFn<Args>` (macro-implemented for `Fn(A0..A3) -> R + 'static` where
+  every type is `AvenMarshal`, arities 0..=4) yields
+  `into_host_fn() -> (Type, Value)`: an all-required `Type::Function` plus a
+  native that arity-checks (`expected N arguments, got M`), unmarshals each arg,
+  calls the closure, and marshals the result. `Host::register_fn(name, f)`
+  routes that pair through the existing `register`, so it lands in both
+  `eval_globals` and `check_globals` with no new registry path. Verified end to
+  end: `register_fn("add", |a: i64, b: i64| a + b)` makes `add(2, 3)` check and
+  evaluate to `5` while `add("x", 3)` is a check-time type error. The
+  then-existing `logger`/platform/`debug` registrations were **not** migrated in
+  this slice (logger is a record of optional-arg methods and `debug` was
+  generic; P4 later typed it through the ordinary register path, and CLI IO
+  Phase 1 renamed it to `dbg`). Deferred: generic host-fn derivation (`Value`
+  passthrough mapped to type variables), compound marshalling (records↔structs,
+  `Vec`↔Array, `Option`↔`?T`, `Result`↔Aven `Result`), optional params via
+  the adapter, arities above 4, and migrating the existing host regs.
 - **P3 done (`aven-eval`).** `pick` and `omit` are now predefined runtime
-  intrinsics alongside `keysOf`, seeded before host globals so a user binding may
-  shadow them. Each takes `(record, labels)` — a `Value::Record` and a
-  `Value::Set` of `Value::Text` labels (the shape `keysOf` and `@{...}` produce) —
-  and returns a new record: `pick` keeps the fields whose names are in the set,
-  `omit` removes them, both preserving the source record's field order; a label
-  absent from the record is skipped (intersection semantics, lenient at runtime).
-  Because a record *type* is just a record whose values are type-values, the same
-  natives run uniformly on data and type records with no special casing — e.g.
-  `omit({ name: Text, email: Text }, @{"name"})` ⇒ `{ email: Text }`. Wrong arity,
-  a non-Record first arg, a non-Set second arg, or a non-Text set member each
-  surface as `runtime.platform-error`. These are language builtins (like
-  `keysOf`), **not** host-registered through `aven-host`. Deferred: the
-  comptime-typed-builtin form — so `pick(user, @{...})` *infers* the precise picked
-  row without a user definition — which is a larger checker-side follow-on.
-- **P4 done (`aven-check` + `aven-cli`).** Seeded host/library globals still use the
-  existing `&[(String, Type)]` plumbing, but seeding now generalizes free named
-  `Type::Variable`s (spelled by hosts as `build::var("a")`) into `TypeScheme`
-  quantified metas before inserting into `value_types`. The existing
-  `instantiate_scheme` read path freshens those metas per use site, so generic
-  host/library functions type-check without a parallel generics mechanism:
-  `debug : (a) -> a` (later renamed `dbg`) accepts any argument type while its
-  result type still flows through inference and annotations. The CLI registers it
-  through the typed `Host::register` path and no longer treats it as runtime-only.
-  Still deferred: teaching the P2 typed-fn adapter to derive generic types from
-  `Value` passthrough positions by assigning distinct per-position type vars, and
-  migrating other host registrations where the adapter can own the type.
+  intrinsics alongside `keysOf`, seeded before host globals so a user binding
+  may shadow them. Each takes `(record, labels)` — a `Value::Record` and a
+  `Value::Set` of `Value::Text` labels (the shape `keysOf` and `@{...}` produce)
+  — and returns a new record: `pick` keeps the fields whose names are in the
+  set, `omit` removes them, both preserving the source record's field order; a
+  label absent from the record is skipped (intersection semantics, lenient at
+  runtime). Because a record _type_ is just a record whose values are
+  type-values, the same natives run uniformly on data and type records with no
+  special casing — e.g. `omit({ name: Text, email: Text }, @{"name"})` ⇒
+  `{ email: Text }`. Wrong arity, a non-Record first arg, a non-Set second arg,
+  or a non-Text set member each surface as `runtime.platform-error`. These are
+  language builtins (like `keysOf`), **not** host-registered through
+  `aven-host`. Deferred: the comptime-typed-builtin form — so
+  `pick(user, @{...})` _infers_ the precise picked row without a user definition
+  — which is a larger checker-side follow-on.
+- **P4 done (`aven-check` + `aven-cli`).** Seeded host/library globals still use
+  the existing `&[(String, Type)]` plumbing, but seeding now generalizes free
+  named `Type::Variable`s (spelled by hosts as `build::var("a")`) into
+  `TypeScheme` quantified metas before inserting into `value_types`. The
+  existing `instantiate_scheme` read path freshens those metas per use site, so
+  generic host/library functions type-check without a parallel generics
+  mechanism: `debug : (a) -> a` (later renamed `dbg`) accepts any argument type
+  while its result type still flows through inference and annotations. The CLI
+  registers it through the typed `Host::register` path and no longer treats it
+  as runtime-only. Still deferred: teaching the P2 typed-fn adapter to derive
+  generic types from `Value` passthrough positions by assigning distinct
+  per-position type vars, and migrating other host registrations where the
+  adapter can own the type.
 - **P5 done (`aven-host` + `aven-cli` + `aven-lsp`).** The standard host
-  type-globals now live in one place:
-  `aven_host::standard_check_globals()` returns the current standard host
-  interface used by editor analysis (`logger`, `dbg`, `write`, `writeLine`,
-  `readLine`, `readAll`). The LSP seeds semantic
+  type-globals now live in one place: `aven_host::standard_check_globals()`
+  returns the current standard host interface used by editor analysis (`logger`,
+  `dbg`, `write`, `writeLine`, `readLine`, `readAll`). The LSP seeds semantic
   analysis with those globals, so diagnostics and cached inferred types cover
-  host globals the same way `aven check` does; hover, field
-  completion, and signature-help paths can now read host global types from the
-  same `type_at` snapshot as user code. The CLI still owns the runtime values
-  and effects, but its registered check globals are compared against
-  `standard_check_globals()` in a drift-guard test so CLI and LSP host types
-  cannot silently diverge.
+  host globals the same way `aven check` does; hover, field completion, and
+  signature-help paths can now read host global types from the same `type_at`
+  snapshot as user code. The CLI still owns the runtime values and effects, but
+  its registered check globals are compared against `standard_check_globals()`
+  in a drift-guard test so CLI and LSP host types cannot silently diverge.
+- **P6 done (`aven-check` + `aven-host`).** Host comptime functions: a host can
+  register a comptime type resolver alongside a value
+  (`register_comptime_fn`/`register_comptime_resolver`; `HostComptimeFnSpec`
+  records which parameters are comptime). The checker evaluates the
+  comptime-known arguments (`ComptimeArg`) and asks the resolver for the call's
+  result type. This types `File.open(path, mode)`: the mode literal
+  (`"r" | "w" | "a" | "rw"`) selects a phantom-typed handle record, so read
+  methods exist only on readable handles. A base-kind-mismatched literal such as
+  `open("x", 5)` still defers today (see 15.5).
 
 ## Milestone D — default/optional parameters
 
@@ -2003,16 +2110,17 @@ site. Sliced parser-first; semantics follow.
   after the annotation in both the ordinary-identifier and comptime-param arms.
   The default is an ordinary **value** expression (parsed via the same value
   entry as a call argument, not the type-term parser), so it naturally stops at
-  the `,` or `)` that delimits the parameter; the `Param`'s span extends to cover
-  it. Defaults must be **trailing**: a required parameter following a defaulted
-  one emits a recoverable `parse.required-param-after-default` diagnostic (primary
-  label on the offending parameter, repair note) and parsing continues. `walk.rs`
-  visits the default so name resolution sees it. The token-based formatter already
-  renders `name: Type = default` / `name = default` with normal `=`/`:` spacing
-  (round-trip is stable); no fmt rendering change was needed beyond a guarding
-  test. The checker and evaluator ignore the new field for now, so a defaulted
-  lambda still type-checks/evaluates with today's arity behaviour — a call that
-  omits a defaulted argument still errors until D3 (acceptable for this slice).
+  the `,` or `)` that delimits the parameter; the `Param`'s span extends to
+  cover it. Defaults must be **trailing**: a required parameter following a
+  defaulted one emits a recoverable `parse.required-param-after-default`
+  diagnostic (primary label on the offending parameter, repair note) and parsing
+  continues. `walk.rs` visits the default so name resolution sees it. The
+  token-based formatter already renders `name: Type = default` /
+  `name = default` with normal `=`/`:` spacing (round-trip is stable); no fmt
+  rendering change was needed beyond a guarding test. The checker and evaluator
+  ignore the new field for now, so a defaulted lambda still
+  type-checks/evaluates with today's arity behaviour — a call that omits a
+  defaulted argument still errors until D3 (acceptable for this slice).
 - **D2 done (`aven-check`).** `Type::Function` carries a `required: usize`
   (`params[required..]` are the optional/defaulted trailing params; invariant
   `required <= params.len()`). Lambda inference derives `required` from the
@@ -2022,14 +2130,15 @@ site. Sliced parser-first; semantics follow.
   infers its type from the default via unification. Calls arity-check the
   `required..=total` range — both statement-position `check_value_call` and
   inference `infer_call` accept an omitted trailing optional; arguments are
-  checked against `params[0..args.len()]`. `report_function_arity_mismatch` grew a
-  range message ("expected between {required} and {total} arguments…") for
+  checked against `params[0..args.len()]`. `report_function_arity_mismatch` grew
+  a range message ("expected between {required} and {total} arguments…") for
   `required != total`, keeping the exact-count wording otherwise. Unify requires
-  equal total length **and** equal `required` (conservative). `build::function_opt`
-  lets a host spell optional trailing params (e.g. `logger.info` with an optional
-  fields record). D3 = evaluator applies defaults at call time; D4 = re-type
-  `logger`. Deferred: function subtyping (accepting a fewer-required function where
-  a more-required one is expected) and standalone function-*type* default syntax.
+  equal total length **and** equal `required` (conservative).
+  `build::function_opt` lets a host spell optional trailing params (e.g.
+  `logger.info` with an optional fields record). D3 = evaluator applies defaults
+  at call time; D4 = re-type `logger`. Deferred: function subtyping (accepting a
+  fewer-required function where a more-required one is expected) and standalone
+  function-_type_ default syntax.
 - **D3 done (`aven-eval`).** The closure now carries each param's optional
   default (`ClosureParam { name, default: Option<Rc<Expr>> }`). At call time the
   evaluator accepts `required..=total` args (`required` = leading params with no
@@ -2038,28 +2147,257 @@ site. Sliced parser-first; semantics follow.
   keeping the exact-count wording when equal. Provided args bind first; each
   omitted trailing param then has its default evaluated **in the call env, in
   order** (so a later default may reference an earlier param, e.g.
-  `(x, y = x + 1)`), and only when omitted (a supplied arg never triggers default
-  evaluation, so a failing default like `1 / 0` stays inert). Default failures
-  propagate through the existing `Flow` channel. Native functions are unaffected
-  (they default their own args in Rust).
+  `(x, y = x + 1)`), and only when omitted (a supplied arg never triggers
+  default evaluation, so a failing default like `1 / 0` stays inert). Default
+  failures propagate through the existing `Flow` channel. Native functions are
+  unaffected (they default their own args in Rust).
 - **D4 done (`aven-host` + `aven-cli`).** `logger` is now **typed** via
   `function_opt`: each level method (`trace`/`debug`/`info`/`warn`/`error`/
-  `fatal`) is `(Text, ?{..}) -> Unit` — one required message, an optional trailing
-  fields record — so `logger.info("msg")` and `logger.info("msg", { .. })` both
-  check, `logger.info(42)` is a `type.mismatch` (Int vs Text), and `logger.info()`
-  is a `type.mismatch` arity error ("expected between 1 and 2 arguments"). The CLI
-  registers `logger` through the typed path (`host.register("logger", …,
-  logger_type())`). This slice also restored a closed `Platform` record at the
-  time, but CLI IO Phase 1 later removed `Platform` from the standard globals.
-  The typed host boundary now covers the required logging capability end to end.
-  Remaining P-thread follow-ups: generic host fns via the typed-fn adapter (P2), the
-  recursive `Logger` type (`child` still returns an open record), and
-  expression-position call checking.
+  `fatal`) is `(Text, ?{..}) -> Unit` — one required message, an optional
+  trailing fields record — so `logger.info("msg")` and
+  `logger.info("msg", { .. })` both check, `logger.info(42)` is a
+  `type.mismatch` (Int vs Text), and `logger.info()` is a `type.mismatch` arity
+  error ("expected between 1 and 2 arguments"). The CLI registers `logger`
+  through the typed path (`host.register("logger", …, logger_type())`). This
+  slice also restored a closed `Platform` record at the time, but CLI IO Phase 1
+  later removed `Platform` from the standard globals. The typed host boundary
+  now covers the required logging capability end to end. Remaining P-thread
+  follow-ups: generic host fns via the typed-fn adapter (P2), the recursive
+  `Logger` type (`child` still returns an open record), and expression-position
+  call checking.
 
-Deferred: writing a literal default inside a standalone function-*type*
+Deferred: writing a literal default inside a standalone function-_type_
 annotation (e.g. `(Text, Record = {}) -> Unit` as a bare type) is out of scope.
-A function type's optionality will be represented in the D2 type IR, derived from
-the lambda, not from type-annotation syntax.
+A function type's optionality will be represented in the D2 type IR, derived
+from the lambda, not from type-annotation syntax.
+
+## Milestone IO — platform IO
+
+Status: phases 1–2 done; phase 3 is Milestone J
+
+Goal: real input/output through the typed platform boundary, layered in tiers: a
+bare panic-on-error convenience tier for scripts, `Result`-returning stream
+handles for programs that handle failure, and codecs for structured data.
+
+- Phase 1 done: bare tier + CLI plumbing. Standard globals `write`, `writeLine`,
+  `readLine`, `readAll` (panic-on-error), `logger`, `dbg`;
+  `aven run --log/--log-format`; stdout flushed before stdin reads; a final
+  `@Err` program value prints to stderr and exits non-zero. (Also recorded under
+  E13/P5.)
+- Phase 2 done: Result-tier handles and files. `stdout`/`stderr`/`stdin`/
+  `stdio` handle records whose `write`/`writeLine`/`readLine`/`readAll`/ `flush`
+  return `Result[..., WriteError/ReadError/IoError]`; `File.open(path, mode)`
+  with a literal-union mode and phantom-typed handles via host comptime
+  resolution (P6), drop-RAII on unconsumed handles, and a must-use warning;
+  `Http.get(url, ?{ headers, params })` with a streaming body handle. File
+  handling lives in `aven-host` for reuse by other hosts.
+- Phase 3 — JSON codec: next; specified as Milestone J below.
+
+Watch item: the two write tiers (`writeLine` panics; `stdout.writeLine()`
+returns a `Result`) are two implementations of one effect. Once the surface
+settles, define the bare tier in terms of the handles
+(`write = stdout.write (_)?!`-style) so the tiers cannot drift.
+
+## Milestone Q — typed `?^` error propagation
+
+Status: next
+
+Goal: close the check/run soundness gap around `?^`. Today `infer_propagate`
+unwraps `Result[a, e]` to `a` and discards `e`; nothing requires the containing
+function to return a `Result`, so `aven check` passes programs that return
+`@Err` where the checker inferred the success type (a runtime `type-error` when
+the caller uses the value). The spec ("Errors and Partials") requires: the
+containing function returns a compatible `Result`, and inferred error types
+union across propagation sites
+(`loadUser : Path -> Result[User, @{..FileError, ..JsonError}]`).
+
+Decision (2026-07-02): **explicit `@Ok`** — a body that uses `?^` must have a
+`Result`-typed final expression. The evaluator is unchanged: a correct body
+already yields a `Result`, and `?^` early-returns `@Err` exactly as today.
+
+Tasks:
+
+- collect propagated error types per function body: each `?^` site contributes
+  its subject's `Result` error type; union them with the existing variant-row
+  join machinery (the match-arm row-union path)
+- infer the function result as the body's `Result` type with the error side
+  widened to the union of the body's own error row and all propagated rows
+- diagnose a concrete non-`Result` final expression in a `?^`-using body with
+  `type.propagate-needs-result` (label the final expression; note suggests
+  wrapping it in `@Ok(...)`)
+- `?^`/`?!` on a subject whose concrete type is not a `Result` reports a
+  structured diagnostic instead of silently deferring; non-concrete subjects
+  still defer (M11 discipline)
+- `?!` stays exempt from the `Result`-body rule (panic tier; usable anywhere)
+- annotated returns: each propagated error row must widen into the annotated
+  error type by the existing boundary rule; a non-fitting error reports at the
+  offending `?^` site (`mapError` remains future library work)
+- module top level: a `?^` in a top-level item keeps today's behavior (the
+  program exits with the error)
+- update existing fixtures/tests that use `?^` in function bodies without a
+  `Result` final expression — expected fallout of the new rule, done
+  deliberately
+
+Done when:
+
+- a function using `?^` without a `Result` final expression is diagnosed with a
+  repair note; adding `@Ok(...)` fixes it; fixtures lock both directions
+- a `loadUser`-style body infers `Result[T, <union>]` with the error union built
+  by row join; a fixture locks the rendered type
+- `File.open(...)?^` + `readAll()?^` + string concatenation on the call result
+  is a check-time error, not a runtime type-error
+- annotated error types accept fitting propagated errors and reject non-fitting
+  ones with the span on the offending `?^`
+
+## Milestone S — structural consolidation
+
+Status: after Q
+
+Goal: pay down the structural debt of the 06-18→07-01 sprint before it
+compounds. No behavior change except where noted (escape diagnostics).
+
+Tasks:
+
+- split `aven-check/src/checker.rs` (6.6k lines, one impl block, 317 fns) into
+  focused submodules behind the same `Checker` type — suggested seams: match
+  checking, record rows/transforms, literal rows/boundaries, field
+  access/indexing, diagnostics/reporting. Mechanical moves only; the existing
+  suite is the guard
+- one string-literal decoder: move decoding into `aven-parser` (the lexer owns
+  string syntax), expose it, and delete the four copies
+  (`checker.rs::string_literal_label`, `comptime.rs::string_literal_label`,
+  `host_comptime.rs::decode_string_literal`, `aven-eval::decode_string_literal`)
+- implement the spec's `\u{H}` escape in that one decoder, and make unknown
+  escapes a lexer diagnostic (`lex.unknown-escape`) instead of silently passing
+  the bare character through (today `"\u{41}"` silently yields `u{41}`)
+- move the inline test modules out of `aven-eval/src/lib.rs` and
+  `aven-lsp/src/lib.rs` if the churn stays mechanical; deeper splits of those
+  files are their own later slice
+
+Done when:
+
+- no source file in `aven-check` exceeds ~2k lines; `cargo test` is untouched
+  except for new escape fixtures
+- exactly one string-literal decode implementation exists in the workspace
+- `"\u{41}"` evaluates to `"A"`; `"\q"` reports `lex.unknown-escape` with the
+  escape's span; fixtures lock both
+
+## Milestone J — JSON codec (IO Phase 3)
+
+Status: after S
+
+Goal: the spec's headline glue workflow — typed JSON decode/encode.
+
+Decision (2026-07-02): the decode target type is an ordinary trailing comptime
+argument (`Json.decode(text, User)`), reusing the host-comptime resolver seam
+(P6) exactly as `File.open`'s mode does — no type-application syntax.
+
+Tasks:
+
+- `Json.encode(value) : Text` — encode records, arrays, tuples and sets (as
+  arrays), `Text`/`Int`/`Float`/`Bool`, and `null` (from `T?`);
+  `undefined`-valued optional fields are omitted; a non-encodable value
+  (function, handle, type, NaN/infinite float) is a structured runtime error
+- `Json.decode(text, T) : Result[T, JsonError]` — parse, then shape-check the
+  parsed value against the target type. `JsonError` is a named variant along the
+  lines of
+  `@{ @Parse({ message: Text }), @Shape({ path: Text, expected: Text, found: Text }) }`
+  — keep the payload structured and the JSON path precise
+- optional/nullable mapping: absent key → `undefined` for `?T` fields; JSON
+  `null` → `null` for `T?` fields; `null` into a non-nullable field is a shape
+  error
+- checker side: a host comptime resolver types `Json.decode`'s result from the
+  comptime type argument; a non-comptime-known type argument defers
+- runtime side: `aven run` is checker-free, so decode shape-checks against the
+  runtime type value (E11 records-as-types). This needs a minimal extension of
+  the runtime type grammar — `?T`, `T?`, and `Array[T]` in value position should
+  build composite `Value::Type` shapes instead of erroring — scoped to exactly
+  what decode needs
+- `Json` registers through `aven-host` like `File`/`Http`; the JSON parser
+  dependency (or hand-rolled parser) stays behind the `aven-host` boundary
+- defer: the one-argument dynamic `Json.decode(text)` form until a dynamic JSON
+  value shape or `Map` exists (Milestone K)
+
+Done when:
+
+- `user = Json.decode(text, User)?^` checks with result type `User` and
+  round-trips `Json.encode(user)`; fixtures lock encode and decode including
+  optional/nullable fields
+- decode errors carry the JSON path plus expected/found shapes
+- the spec's `loadUser` (read + decode + `?^` + `@Ok`) checks and runs end to
+  end — the combined Q + J payoff example
+
+## Milestone X — example suite and live verification
+
+Status: after J
+
+Goal: lock the sprint surface into committed, executable examples — "prefer
+committed tests over ad-hoc checks" applied to the whole platform surface — and
+verify the editor features live (unit tests bypass the LSP scheduler).
+
+Tasks:
+
+- an `examples/` set covering: a file read/transform/write pipeline, HTTP
+  fetch + decode, `pick`/`omit`/`partial`/`required`, literal-union modes, `?^`
+  chains ending in `@Ok`, and logger usage
+- CLI integration tests `aven check` every example; hermetic examples (file IO
+  in a temp dir, no network) are also `aven run` with output assertions; network
+  examples are check-only in tests and runnable by hand
+- a live nvim pass over hover, inlay hints, field completion (including `?.`
+  insertion, `File.`, and mode-literal completion), signature help, and quick
+  fixes; record findings rather than fixing inline
+- fix or file everything the sweep surfaces
+
+Done when:
+
+- `cargo test` fails if any example stops checking (or running, for hermetic
+  ones)
+- the live sweep is recorded and every finding has a fix or a filed follow-up
+
+## Milestone K — Map type
+
+Status: after X
+
+Goal: `Map[Key, Value]` — the runtime-key counterpart to records (spec → Maps).
+Needed for headers, query params, grouping, and dynamic JSON.
+
+Tasks:
+
+- runtime `Value::Map` with insertion-order-preserving display and structural
+  equality; construction via `Map.empty()` / `Map.from([(k, v), ...])` (literal
+  syntax deferred)
+- core operations: `get(key) : ?v` (matching the array-indexing rule), `set`,
+  `delete`, `has`, `keys`, `values`, `entries`, `size`, `merge`
+- checker: `Map[k, v]` as an ordinary generic application; operations typed
+  through the existing host/builtin scheme machinery
+- `record[runtimeTextKey]` stays deferred/dynamic — maps are the sanctioned
+  runtime-key structure
+- revisit `Http.get` headers/params and the dynamic `Json.decode(text)` form
+  once Map exists
+
+Done when:
+
+- a grouping example (fold an array into `Map[Text, Int]`) checks and runs;
+  `get` misses type as `?v`; fixtures lock the operation types
+
+## Milestone H — HTTP methods
+
+Status: after K
+
+Goal: round out `Http` beyond `get`: `post`/`put`/`delete`, request bodies
+(`Text` or Json-encodable via Milestone J), response status/headers (headers as
+`Map[Text, Text]` once K lands), and timeout options. Design the options record
+once across methods; keep the HTTP client behind `aven-host`.
+
+## Milestone Z — modules and imports (sketch)
+
+Status: later; needs a design pass first
+
+Goal: host-controlled module resolution per the spec (`import(./lib/Text)`,
+`Std = import("std")`). Before slicing, design: module identity and caching in
+the compiler database, the host resolver API in `aven-host`, cross-file
+diagnostics/goto in the LSP, and the export model. Do not start until the stdlib
+shape (J/K/H) has settled enough to know what modules must express.
 
 ## To investigate later
 
