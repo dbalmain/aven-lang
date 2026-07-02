@@ -1,0 +1,12 @@
+# File read/transform/write pipeline with ?^ error propagation.
+# Reads input.txt, prepends a header, and writes output.txt.
+copy = (src: Text, dst: Text) =>
+  file = File.open(src, "r")?^
+  content = file.readAll()?^
+  out = File.open(dst, "w")?^
+  out.write("header: ${content}")?^
+  @Ok({})
+
+writeLine("copying...")
+copy("input.txt", "output.txt")?^
+writeLine("done")

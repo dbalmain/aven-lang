@@ -1,0 +1,10 @@
+# Literal-union parameter, exhaustive ?> match, and literal-argument checking.
+apply = (mode: "add" | "remove") =>
+  mode ?>
+    "add" => 1
+    "remove" => 0
+
+# Literal-argument checking: File.open accepts only "r" | "w" | "a" | "rw".
+openRead = (path: Text) => File.open(path, "r")
+
+writeLine("${apply("add")}")

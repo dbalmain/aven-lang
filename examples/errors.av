@@ -1,0 +1,26 @@
+# Error propagation with ?^, explicit @Ok, @Ok/@Err matching, and ?! panic.
+Config = { name: Text, version: Text }
+
+# No return annotation needed: `?^` propagation infers
+# Result[Config, <union of the open/read/decode error variants>].
+loadConfig = (path: Text) =>
+  file = File.open(path, "r")?^
+  text = file.readAll()?^
+  config = Json.decode(text, Config)?^
+  @Ok(config)
+
+onErr = (err) => writeLine("error: ${err}")
+
+demo = () =>
+  loadConfig("missing.json") ?>
+    @Ok(config) => writeLine("config: ${config}")
+    @Err(err) => onErr(err)
+
+  loadConfig("config.json") ?>
+    @Ok(config) => writeLine("loaded: ${config}")
+    @Err(err) => onErr(err)
+
+  boom : Result[Unit, Text] = @Err("demo")
+  boom?!
+
+demo()

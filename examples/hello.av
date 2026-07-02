@@ -1,5 +1,3 @@
+# writeLine and string interpolation.
 name = "Aven"
-message = "hello ${name}"
-
-print(message)
-
+writeLine("hello, ${name}")

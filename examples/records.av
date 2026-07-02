@@ -1,0 +1,28 @@
+# Record transforms, pick/omit, partial/required, keysOf.
+User = { name: Text, email: Text, age: Int }
+
+# Comptime type maps (checked at annotation level).
+Keys = keysOf(User)
+k : Keys = "name"
+p : partial(User) = { name: "Ada" }
+r : required(partial(User)) = { name: "Ada", email: "ada@x.dev", age: 36 }
+
+# Value-level record operations.
+user : User = { name: "Ada", email: "ada@x.dev", age: 36 }
+
+picked = pick(user, @{"name", "email"})
+omitted = omit(user, @{"email"})
+deleted = { ..user, -email }
+renamed = { ..user, name -> fullName }
+replaced = { ..user, age :: 38 }
+
+writeLine("picked:")
+writeLine("${picked}")
+writeLine("omitted:")
+writeLine("${omitted}")
+writeLine("deleted:")
+writeLine("${deleted}")
+writeLine("renamed:")
+writeLine("${renamed}")
+writeLine("replaced:")
+writeLine("${replaced}")

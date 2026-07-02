@@ -1,0 +1,6 @@
+# Logger levels, child loggers, and fields records.
+logger.info("starting")
+logger.debug("detail", { count: 1 })
+
+child = logger.child({ requestId: "abc" })
+child.warn("slow query", { ms: 42 })

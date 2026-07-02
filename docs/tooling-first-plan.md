@@ -2354,6 +2354,25 @@ Done when:
   ones)
 - the live sweep is recorded and every finding has a fix or a filed follow-up
 
+Progress: the committed-examples half is done (2026-07-03). Eight examples under
+`examples/` (hello, file-pipeline, records, literal-modes, json, http-fetch,
+logging, errors) are locked by `crates/aven-cli/tests/examples.rs` — every
+example must `aven check` cleanly; hermetic ones also `aven run` with output
+assertions; `http-fetch` is check-only (network). `errors.av` demonstrates Q's
+inferred error unions with no return annotation. The live nvim sweep is still
+open. Gaps found while writing the examples (follow-ups):
+
+- variant/set spread in **runtime value position** is unsupported —
+  `colors = @{..a, ..b}` hits `runtime.unsupported` (the evaluator's set
+  literals only take element entries)
+- `partial(User)` / `required(partial(User))` as standalone comptime
+  **bindings** report `comptime.evaluation-unsupported`; the same calls work in
+  annotation position
+- quoted record field names (`{ "content-type": v }`) are a parse error — the
+  spec supports quoted non-identifier field keys; the parser does not yet
+- multi-line match-arm bodies inside lambda bodies need fiddly indentation —
+  layout ergonomics worth a look
+
 ## Milestone K — Map type
 
 Status: after X

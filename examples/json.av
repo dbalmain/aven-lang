@@ -1,0 +1,18 @@
+# Json.decode with optional/nullable fields, ?> error handling, Json.encode round-trip.
+User = { name: Text, email: ?Text, nick: Text? }
+
+parseUser = (text: Text) =>
+  user = Json.decode(text, User)?^
+  @Ok(user)
+
+onParsed = (user) =>
+  writeLine("parsed: ${user}")
+  encoded = Json.encode(user)
+  writeLine("encoded: ${encoded}")
+
+onError = (err) => writeLine("error: ${err}")
+
+parsed = parseUser("{\"name\":\"Ada\",\"nick\":null}")
+parsed ?>
+  @Ok(user) => onParsed(user)
+  @Err(err) => onError(err)
