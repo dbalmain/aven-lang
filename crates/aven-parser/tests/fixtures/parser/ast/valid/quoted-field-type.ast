@@ -1,0 +1,8 @@
+module
+  binding Headers
+    value
+      record
+        field content-type overwrite=false
+          comptime Text
+        field x-request-id overwrite=false
+          comptime Text

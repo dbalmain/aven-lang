@@ -1,6 +1,6 @@
 use aven_core::{Diagnostic, FileId, Label, SourceFile, Span, codes};
 
-use crate::{Keyword, Token, TokenKind, lex_then_layout};
+use crate::{Keyword, Token, TokenKind, decode_string_literal, lex_then_layout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
@@ -1120,7 +1120,21 @@ impl Parser<'_> {
         let null_safe = self.current_is_operator("?.");
         self.advance();
 
-        let Some((field, field_span)) = self.parse_label_name() else {
+        if self.current_is_interpolation_start() {
+            self.report_interpolated_field_name(self.current_span());
+            self.skip_interpolation();
+            return Expr {
+                span: receiver.span.merge(operator_span),
+                kind: ExprKind::FieldAccess {
+                    receiver: Box::new(receiver),
+                    field: String::new(),
+                    field_span: Span::point(operator_span.end),
+                    null_safe,
+                },
+            };
+        }
+
+        let Some((field, field_span)) = self.parse_field_name() else {
             self.report_expected_field_name(self.current_span());
             return Expr {
                 span: receiver.span.merge(operator_span),
@@ -1610,7 +1624,14 @@ impl Parser<'_> {
             return Some(RecordEntry::Element(term));
         }
 
-        let Some((name, name_span)) = self.parse_label_name() else {
+        if self.current_is_interpolation_start() {
+            self.report_interpolated_field_name(self.current_span());
+            self.skip_interpolation();
+            self.recover_record_entry();
+            return None;
+        }
+
+        let Some((name, name_span)) = self.parse_field_name() else {
             self.report_expected_record_entry(self.current_span());
             self.recover_record_entry();
             return None;
@@ -1793,6 +1814,21 @@ impl Parser<'_> {
             TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name) => {
                 self.advance();
                 Some((name, token.span))
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_field_name(&mut self) -> Option<(String, Span)> {
+        let token = self.current()?.clone();
+        match token.kind {
+            TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name) => {
+                self.advance();
+                Some((name, token.span))
+            }
+            TokenKind::StringLiteral(text) => {
+                self.advance();
+                Some((decode_string_literal(&text), token.span))
             }
             _ => None,
         }
@@ -2102,6 +2138,20 @@ impl Parser<'_> {
         );
     }
 
+    fn report_interpolated_field_name(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("interpolated string cannot be used as a field name")
+                .with_code(codes::parse::UNSUPPORTED_SYNTAX)
+                .with_label(Label::primary(
+                    span,
+                    "computed field names use `[expr]: value`",
+                ))
+                .with_note(
+                    "use a string literal for a static name, or `[expr]: value` for a computed key",
+                ),
+        );
+    }
+
     fn report_unexpected_separator(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("unexpected separator")
@@ -2212,6 +2262,33 @@ impl Parser<'_> {
     fn current_is_operator(&self, expected: &str) -> bool {
         self.current()
             .is_some_and(|token| token.is_operator(expected))
+    }
+
+    fn current_is_interpolation_start(&self) -> bool {
+        matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::InterpolationStart(_))
+        )
+    }
+
+    fn skip_interpolation(&mut self) {
+        self.advance();
+        let mut depth = 1usize;
+        while !self.at_end() {
+            match self.current().map(|token| &token.kind) {
+                Some(TokenKind::InterpolationStart(_)) => depth += 1,
+                Some(TokenKind::InterpolationEnd(_)) => {
+                    depth -= 1;
+                    self.advance();
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            self.advance();
+        }
     }
 
     fn next_is_operator(&self, expected: &str) -> bool {

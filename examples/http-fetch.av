@@ -1,6 +1,10 @@
 # HTTP fetch with JSON body decoding.
 # NETWORK: this example checks cleanly but is NOT run in tests.
 fetchJson = (url: Text) =>
-  response = Http.get(url)?^
+  headers = {
+    "content-type": "application/json"
+    "x-request-id": "abc"
+  }
+  response = Http.get(url, { headers })?^
   body = response.body.readAll()?^
   @Ok(body)

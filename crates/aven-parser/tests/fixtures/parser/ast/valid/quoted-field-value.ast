@@ -1,0 +1,8 @@
+module
+  binding headers
+    value
+      record
+        field content-type overwrite=false
+          string "application/json"
+        field x-request-id overwrite=false
+          name id

@@ -1,5 +1,10 @@
-use aven_core::Diagnostic;
-use aven_parser::{ParseOutput, Token, TokenKind, parse_module};
+use std::collections::HashMap;
+
+use aven_core::{Diagnostic, Span};
+use aven_parser::{
+    Expr, ExprKind, Item, Module, ParseOutput, RecordEntry, Token, TokenKind, is_identifier,
+    parse_module, walk_expr_children,
+};
 
 const INDENT_WIDTH: usize = 2;
 
@@ -13,6 +18,7 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
         return Err(parse.diagnostics.clone());
     }
 
+    let field_name_spans = collect_field_name_spans(&parse.module);
     let line_count = source.lines().count();
     let line_starts = line_starts(source);
     let mut line_indents = layout_line_indents(line_count, &line_starts, &parse.layout_tokens);
@@ -29,7 +35,7 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
 
         let indent = line_indents.get(line_index).copied().flatten().unwrap_or(0);
         output.push_str(&" ".repeat(indent * INDENT_WIDTH));
-        emit_line(&mut output, source, tokens);
+        emit_line(&mut output, source, tokens, &field_name_spans);
         output.push('\n');
     }
 
@@ -113,7 +119,12 @@ fn content_tokens_by_line<'a>(
     lines
 }
 
-fn emit_line(output: &mut String, source: &str, tokens: &[&Token]) {
+fn emit_line(
+    output: &mut String,
+    source: &str,
+    tokens: &[&Token],
+    field_name_spans: &HashMap<Span, &str>,
+) {
     for (index, token) in tokens.iter().enumerate() {
         let previous = index
             .checked_sub(1)
@@ -129,11 +140,17 @@ fn emit_line(output: &mut String, source: &str, tokens: &[&Token]) {
             output.push(' ');
         }
 
-        output.push_str(&token_text(source, token));
+        output.push_str(&token_text(source, token, field_name_spans));
     }
 }
 
-fn token_text(source: &str, token: &Token) -> String {
+fn token_text(source: &str, token: &Token, field_name_spans: &HashMap<Span, &str>) -> String {
+    if let Some(&name) = field_name_spans.get(&token.span)
+        && is_identifier(name)
+    {
+        return name.to_owned();
+    }
+
     match &token.kind {
         TokenKind::InterpolationStart(text) => return format!("{text}${{"),
         TokenKind::InterpolationMiddle(text) => return format!("}}{text}${{"),
@@ -345,6 +362,91 @@ fn is_prefix_minus(token: &Token, previous_previous: Option<&Token>) -> bool {
     previous_previous.is_none_or(|previous| {
         is_open_delimiter(previous) || is_separator(previous) || is_binary_operator(previous)
     })
+}
+
+fn collect_field_name_spans(module: &Module) -> HashMap<Span, &str> {
+    let mut spans = HashMap::new();
+    for item in &module.items {
+        collect_item_field_names(item, &mut spans);
+    }
+    spans
+}
+
+fn collect_item_field_names<'a>(item: &'a Item, spans: &mut HashMap<Span, &'a str>) {
+    match item {
+        Item::Binding(binding) => {
+            if let Some(annotation) = &binding.annotation {
+                collect_expr_field_names(annotation, spans);
+            }
+            collect_expr_field_names(&binding.value, spans);
+        }
+        Item::Signature(signature) => collect_expr_field_names(&signature.annotation, spans),
+        Item::Expr(expr) => collect_expr_field_names(expr, spans),
+    }
+}
+
+fn collect_expr_field_names<'a>(expr: &'a Expr, spans: &mut HashMap<Span, &'a str>) {
+    match &expr.kind {
+        ExprKind::FieldAccess {
+            receiver,
+            field,
+            field_span,
+            ..
+        } => {
+            spans.insert(*field_span, field.as_str());
+            collect_expr_field_names(receiver, spans);
+        }
+        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+            for entry in entries {
+                collect_record_entry_field_names(entry, spans);
+            }
+        }
+        _ => walk_expr_children(expr, &mut |child| collect_expr_field_names(child, spans)),
+    }
+}
+
+fn collect_record_entry_field_names<'a>(
+    entry: &'a RecordEntry,
+    spans: &mut HashMap<Span, &'a str>,
+) {
+    match entry {
+        RecordEntry::Field {
+            name,
+            name_span,
+            value,
+            ..
+        } => {
+            spans.insert(*name_span, name.as_str());
+            collect_expr_field_names(value, spans);
+        }
+        RecordEntry::FieldComputed { key, value, .. } => {
+            collect_expr_field_names(key, spans);
+            collect_expr_field_names(value, spans);
+        }
+        RecordEntry::Spread { value, .. }
+        | RecordEntry::DeleteComputed { key: value, .. }
+        | RecordEntry::Element(value) => {
+            collect_expr_field_names(value, spans);
+        }
+        RecordEntry::Iteration {
+            source,
+            guard,
+            body,
+            ..
+        } => {
+            collect_expr_field_names(source, spans);
+            if let Some(guard) = guard {
+                collect_expr_field_names(guard, spans);
+            }
+            for body_entry in body {
+                collect_record_entry_field_names(body_entry, spans);
+            }
+        }
+        RecordEntry::Shorthand { .. }
+        | RecordEntry::Delete { .. }
+        | RecordEntry::Rename { .. }
+        | RecordEntry::Open { .. } => {}
+    }
 }
 
 fn line_starts(source: &str) -> Vec<usize> {

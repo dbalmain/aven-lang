@@ -337,6 +337,7 @@ fn literal_record_type(row: &Row) -> Option<ExpectedRecordShape<'_>> {
 
 fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueRecordShape<'_>> {
     let mut fields = Vec::new();
+    let mut seen = HashSet::new();
 
     for entry in entries {
         match entry {
@@ -346,18 +347,28 @@ fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueReco
                 value,
                 overwrite: false,
                 ..
-            } => fields.push(ValueRecordField {
-                name,
-                name_span: *name_span,
-                value: Some(value),
-            }),
+            } => {
+                if !seen.insert(name) {
+                    return None;
+                }
+                fields.push(ValueRecordField {
+                    name,
+                    name_span: *name_span,
+                    value: Some(value),
+                });
+            }
             RecordEntry::Shorthand {
                 name, name_span, ..
-            } => fields.push(ValueRecordField {
-                name,
-                name_span: *name_span,
-                value: None,
-            }),
+            } => {
+                if !seen.insert(name) {
+                    return None;
+                }
+                fields.push(ValueRecordField {
+                    name,
+                    name_span: *name_span,
+                    value: None,
+                });
+            }
             RecordEntry::Field {
                 overwrite: true, ..
             }
