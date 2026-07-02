@@ -119,6 +119,7 @@ name = "aven-check"
 version = "0.1.0"
 dependencies = [
  "aven-core",
+ "aven-eval",
  "aven-parser",
 ]
 

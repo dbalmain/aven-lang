@@ -698,6 +698,22 @@ impl<'a> Checker<'a> {
         let (empties, core) = peel_empty_values(&resolved);
         let core = core.clone();
 
+        if let Some(method_type) = builtin_collection_method_type(&core, field) {
+            if empties.is_empty() {
+                return method_type;
+            }
+            if !null_safe {
+                self.report_unguarded_empty_field_access(receiver, field_span, &empties);
+            }
+            return rewrap_empty_values(method_type, &empties);
+        }
+
+        if is_map_receiver_type(&core) {
+            self.unifier.restore(snapshot);
+            self.restore_diagnostic_snapshot(diagnostic_snapshot);
+            return Type::Deferred;
+        }
+
         let field_type = self.unifier.fresh();
         let tail = self.unifier.fresh_row_var();
         let required = Type::Record(Row {

@@ -106,14 +106,14 @@ impl<'a> Checker<'a> {
             .into_iter()
             .map(|declaration| declaration.name)
             .collect();
-        let mut types: HashMap<String, Option<TypeScheme>> = self
-            .globals
-            .iter()
+        let mut types: HashMap<String, Option<TypeScheme>> = builtin_value_types()
+            .into_iter()
+            .chain(self.globals.iter().cloned())
             .filter(|(name, _)| !declared.contains(name))
             .map(|(name, ty)| {
                 (
                     name.clone(),
-                    Some(scheme_from_global(ty, &mut self.unifier)),
+                    Some(scheme_from_global(&ty, &mut self.unifier)),
                 )
             })
             .collect();

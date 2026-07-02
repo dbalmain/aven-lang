@@ -34,6 +34,7 @@ const BUILTIN_TYPES: &[&str] = &[
     "Array",
     "Json",
     "JsonError",
+    "Map",
     "Result",
     "Set",
     "Yaml",

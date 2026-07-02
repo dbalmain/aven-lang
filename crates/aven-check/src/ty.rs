@@ -47,28 +47,121 @@ pub struct RecordField {
     pub ty: Type,
 }
 
+pub const MAP_METHOD_NAMES: &[&str] = &[
+    "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
+];
+
 pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
     let mut ty = ty;
     while let Type::Optional(inner) | Type::Nullable(inner) = ty {
         ty = inner;
     }
 
-    let Type::Record(row) = ty else {
-        return None;
-    };
+    match ty {
+        Type::Record(row) => Some(
+            row.entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    RowEntry::Field { name, ty } => Some(RecordField {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                    }),
+                    RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+                })
+                .collect(),
+        ),
+        Type::Apply { .. } => builtin_collection_fields(ty),
+        Type::Deferred
+        | Type::Named(_)
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Function { .. }
+        | Type::Optional(_)
+        | Type::Nullable(_)
+        | Type::Tuple(_)
+        | Type::Variant(_) => None,
+    }
+}
 
+pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Type> {
+    let (key, value) = map_type_args(receiver)?;
+    match name {
+        "get" => Some(function(
+            vec![key.clone()],
+            Type::Optional(Box::new(value.clone())),
+        )),
+        "set" => Some(function(
+            vec![key.clone(), value.clone()],
+            map_apply(key.clone(), value.clone()),
+        )),
+        "delete" => Some(function(
+            vec![key.clone()],
+            map_apply(key.clone(), value.clone()),
+        )),
+        "has" => Some(function(vec![key.clone()], named_builtin("Bool"))),
+        "keys" => Some(function(Vec::new(), array_apply(key.clone()))),
+        "values" => Some(function(Vec::new(), array_apply(value.clone()))),
+        "entries" => Some(function(
+            Vec::new(),
+            array_apply(Type::Tuple(vec![key.clone(), value.clone()])),
+        )),
+        "size" => Some(function(Vec::new(), named_builtin("Int"))),
+        "merge" => Some(function(
+            vec![map_apply(key.clone(), value.clone())],
+            map_apply(key.clone(), value.clone()),
+        )),
+        _ => None,
+    }
+}
+
+fn builtin_collection_fields(receiver: &Type) -> Option<Vec<RecordField>> {
+    map_type_args(receiver)?;
     Some(
-        row.entries
+        MAP_METHOD_NAMES
             .iter()
-            .filter_map(|entry| match entry {
-                RowEntry::Field { name, ty } => Some(RecordField {
-                    name: name.clone(),
-                    ty: ty.clone(),
-                }),
-                RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+            .map(|name| RecordField {
+                name: (*name).to_owned(),
+                ty: builtin_collection_method_type(receiver, name)
+                    .expect("MAP_METHOD_NAMES contains only typed Map methods"),
             })
             .collect(),
     )
+}
+
+fn map_type_args(ty: &Type) -> Option<(&Type, &Type)> {
+    let Type::Apply { callee, args } = ty else {
+        return None;
+    };
+    if !matches!(callee.as_ref(), Type::Named(name) if name == "Map") {
+        return None;
+    }
+    let [key, value] = args.as_slice() else {
+        return None;
+    };
+    Some((key, value))
+}
+
+fn map_apply(key: Type, value: Type) -> Type {
+    Type::Apply {
+        callee: Box::new(named_builtin("Map")),
+        args: vec![key, value],
+    }
+}
+
+fn array_apply(element: Type) -> Type {
+    Type::Apply {
+        callee: Box::new(named_builtin("Array")),
+        args: vec![element],
+    }
+}
+
+fn function(params: Vec<Type>, result: Type) -> Type {
+    let required = params.len();
+    Type::Function {
+        params,
+        result: Box::new(result),
+        required,
+    }
 }
 
 pub fn variant_tags(ty: &Type) -> Option<Vec<String>> {

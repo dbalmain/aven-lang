@@ -3337,6 +3337,119 @@ fn set_inference_defers_empty_tag_and_spread_literals() {
 }
 
 #[test]
+fn map_empty_global_is_generalized() {
+    let output = parse_module(
+        "texts : Map[Text, Int] = Map.empty()\n\
+         ints : Map[Int, Text] = Map.empty()\n",
+    );
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty());
+}
+
+#[test]
+fn map_from_infers_map_key_and_value_types() {
+    let output = parse_module("m = Map.from([(\"a\", 1)])\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "m"),
+        Some("Map[\"a\", 1]".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn map_get_infers_optional_value_type() {
+    let output = parse_module("m = Map.from([(\"a\", 1)])\nvalue = m.get(\"a\")\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "value"),
+        Some("?1".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn map_get_rejects_wrong_key_type() {
+    let output = parse_module("m : Map[Text, Int] = Map.empty()\nvalue = m.get(1)\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn map_unknown_method_reports_missing_field() {
+    let output = parse_module("m : Map[Text, Int] = Map.empty()\nvalue = m.nope()\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+        1
+    );
+}
+
+#[test]
+fn map_wrong_arity_application_lowers_like_ordinary_apply() {
+    let output = parse_module("value : Map[Text] = Map.empty()\n");
+    let check = check_module(&output.module);
+    let lowering = lower_annotation(&output.module, annotation(&output.module, "value"));
+
+    assert!(check.diagnostics.is_empty());
+    assert_eq!(lowering.ty.render(), "Map[Text]");
+    assert!(lowering.diagnostics.is_empty());
+}
+
+#[test]
+fn map_method_field_query_returns_typed_methods() {
+    let fields =
+        record_fields(&apply(named("Map"), vec![named("Text"), named("Int")])).expect("Map fields");
+    let get = fields
+        .iter()
+        .find(|field| field.name == "get")
+        .expect("get method");
+    let entries = fields
+        .iter()
+        .find(|field| field.name == "entries")
+        .expect("entries method");
+
+    assert_eq!(
+        get.ty.render(),
+        "Text -> ?Int",
+        "get should preserve key/value type args"
+    );
+    assert_eq!(entries.ty.render(), "() -> Array[(Text, Int)]");
+}
+
+#[test]
+fn map_method_names_match_evaluator_dispatch() {
+    assert_eq!(crate::ty::MAP_METHOD_NAMES, aven_eval::MAP_METHOD_NAMES);
+}
+
+#[test]
+fn map_grouping_example_checks() {
+    let output = parse_module(concat!(
+        "words = [\"red\", \"blue\", \"red\"]\n",
+        "count = (items: Array[Text], index: Int, acc: Map[Text, Int]) =>\n",
+        "  next = items[index]\n",
+        "  next ?>\n",
+        "    undefined => acc\n",
+        "    _ =>\n",
+        "      word : Text = next ?? \"\"\n",
+        "      count(items, index + 1, acc.set(word, (acc.get(word) ?? 0) + 1))\n",
+        "counts : Map[Text, Int] = count(words, 0, Map.empty())\n",
+    ));
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn variant_values_are_checked_against_annotations() {
     for source in [
         "value : @{@Ok(Int), @Err(Text)} = @Ok(1)\n",

@@ -23,10 +23,11 @@ use crate::lower::{
 };
 use crate::ty::{
     LiteralBase, Row, RowEntry, RowKind, RowMergeSource, RowTail, Type, TypeScheme,
-    display_inferred_type, free_metas, generalize, has_only_meta_unknowns, is_concrete_type,
-    is_meta_type, is_null_value, is_resolved_value_type, is_undefined_value, literal_base,
-    literal_variant_base, map_type, mismatched_literal_kind, named_builtin, named_type_mismatch,
-    named_type_name, numeric_type_name, render_literal_value, type_contains_deferred,
+    builtin_collection_method_type, display_inferred_type, free_metas, generalize,
+    has_only_meta_unknowns, is_concrete_type, is_meta_type, is_null_value, is_resolved_value_type,
+    is_undefined_value, literal_base, literal_variant_base, map_type, mismatched_literal_kind,
+    named_builtin, named_type_mismatch, named_type_name, numeric_type_name, render_literal_value,
+    type_contains_deferred,
 };
 use crate::unify::Unifier;
 
@@ -1136,7 +1137,18 @@ fn name_is_placeholder(name: &str) -> bool {
 }
 
 fn builtin_value_name_is_bound(name: &str) -> bool {
-    matches!(name, "keysOf" | "tagsOf" | "typeOf" | "pick" | "omit")
+    matches!(
+        name,
+        "keysOf" | "tagsOf" | "typeOf" | "pick" | "omit" | "Map"
+    )
+}
+
+fn is_map_receiver_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Apply { callee, args }
+            if args.len() == 2 && matches!(callee.as_ref(), Type::Named(name) if name == "Map")
+    )
 }
 
 fn is_catch_all_pattern(pattern: &Expr) -> bool {
@@ -1203,6 +1215,47 @@ fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn builtin_value_types() -> Vec<(String, Type)> {
+    vec![("Map".to_owned(), map_global_type())]
+}
+
+fn map_global_type() -> Type {
+    let key = Type::Variable("k".to_owned());
+    let value = Type::Variable("v".to_owned());
+    let map_type = Type::Apply {
+        callee: Box::new(Type::Named("Map".to_owned())),
+        args: vec![key.clone(), value.clone()],
+    };
+    let entry_type = Type::Tuple(vec![key.clone(), value.clone()]);
+    let entries_type = Type::Apply {
+        callee: Box::new(Type::Named("Array".to_owned())),
+        args: vec![entry_type],
+    };
+
+    Type::Record(Row {
+        entries: vec![
+            RowEntry::Field {
+                name: "empty".to_owned(),
+                ty: function_type(Vec::new(), map_type.clone()),
+            },
+            RowEntry::Field {
+                name: "from".to_owned(),
+                ty: function_type(vec![entries_type], map_type),
+            },
+        ],
+        tail: RowTail::Closed,
+    })
+}
+
+fn function_type(params: Vec<Type>, result: Type) -> Type {
+    let required = params.len();
+    Type::Function {
+        params,
+        result: Box::new(result),
+        required,
     }
 }
 

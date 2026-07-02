@@ -1549,6 +1549,7 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
     "Int",
     "Json",
     "JsonError",
+    "Map",
     "Null",
     "Result",
     "Set",

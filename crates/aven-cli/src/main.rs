@@ -401,6 +401,7 @@ fn aven_value_type_name(value: &aven_eval::Value) -> &'static str {
         aven_eval::Value::Array(_) => "Array",
         aven_eval::Value::Tuple(_) => "Tuple",
         aven_eval::Value::Set(_) => "Set",
+        aven_eval::Value::Map(_) => "Map",
         aven_eval::Value::Record(_) => "Record",
         aven_eval::Value::Tag { .. } => "Tag",
         aven_eval::Value::Closure(_) => "Function",
@@ -562,6 +563,14 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
         | aven_eval::Value::Set(values) => {
             JsonValue::Array(values.iter().map(aven_value_json).collect())
         }
+        aven_eval::Value::Map(entries) => JsonValue::Array(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    JsonValue::Array(vec![aven_value_json(key), aven_value_json(value)])
+                })
+                .collect(),
+        ),
         aven_eval::Value::Record(fields) => {
             let mut output = JsonMap::new();
             for (name, value) in fields.iter() {

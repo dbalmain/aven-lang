@@ -702,6 +702,179 @@ fn user_binding_shadows_pick_builtin() {
 }
 
 #[test]
+fn map_constructs_empty_and_from_entries() {
+    assert_module_value("Map.empty()\n", map_value(vec![]));
+    assert_module_value(
+        "Map.from([(\"a\", 1), (\"b\", 2)])\n",
+        map_value(vec![
+            (Value::Text("a".to_owned()), Value::Int(1)),
+            (Value::Text("b".to_owned()), Value::Int(2)),
+        ]),
+    );
+}
+
+#[test]
+fn map_display_uses_insertion_order() {
+    assert_module_value(
+        "\"${Map.from([(\"a\", 1), (\"b\", 2)])}\"\n",
+        Value::Text("Map{ \"a\": 1, \"b\": 2 }".to_owned()),
+    );
+}
+
+#[test]
+fn map_from_deduplicates_keys_with_last_value_and_first_order() {
+    assert_module_value(
+        "Map.from([(\"a\", 1), (\"b\", 2), (\"a\", 3)]).entries()\n",
+        array_value(vec![
+            tuple_value(vec![Value::Text("a".to_owned()), Value::Int(3)]),
+            tuple_value(vec![Value::Text("b".to_owned()), Value::Int(2)]),
+        ]),
+    );
+}
+
+#[test]
+fn map_get_hit_and_miss() {
+    assert_module_value(
+        "m = Map.from([(\"a\", 1)])\n[m.get(\"a\"), m.get(\"z\")]\n",
+        array_value(vec![Value::Int(1), Value::Undefined]),
+    );
+}
+
+#[test]
+fn map_set_and_delete_return_new_maps() {
+    assert_module_value(
+        "m = Map.from([(\"a\", 1)])\n\
+         n = m.set(\"a\", 2).set(\"b\", 3)\n\
+         d = n.delete(\"a\")\n\
+         [m.entries(), n.entries(), d.entries(), d.delete(\"missing\").entries()]\n",
+        array_value(vec![
+            array_value(vec![tuple_value(vec![
+                Value::Text("a".to_owned()),
+                Value::Int(1),
+            ])]),
+            array_value(vec![
+                tuple_value(vec![Value::Text("a".to_owned()), Value::Int(2)]),
+                tuple_value(vec![Value::Text("b".to_owned()), Value::Int(3)]),
+            ]),
+            array_value(vec![tuple_value(vec![
+                Value::Text("b".to_owned()),
+                Value::Int(3),
+            ])]),
+            array_value(vec![tuple_value(vec![
+                Value::Text("b".to_owned()),
+                Value::Int(3),
+            ])]),
+        ]),
+    );
+}
+
+#[test]
+fn map_methods_report_membership_size_keys_values_and_entries() {
+    assert_module_value(
+        "m = Map.from([(\"a\", 1), (\"b\", 2)])\n\
+         [m.has(\"a\"), m.has(\"z\"), m.size(), m.keys(), m.values(), m.entries()]\n",
+        array_value(vec![
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Int(2),
+            array_value(vec![
+                Value::Text("a".to_owned()),
+                Value::Text("b".to_owned()),
+            ]),
+            array_value(vec![Value::Int(1), Value::Int(2)]),
+            array_value(vec![
+                tuple_value(vec![Value::Text("a".to_owned()), Value::Int(1)]),
+                tuple_value(vec![Value::Text("b".to_owned()), Value::Int(2)]),
+            ]),
+        ]),
+    );
+}
+
+#[test]
+fn map_merge_uses_right_hand_conflicts_and_left_order() {
+    assert_module_value(
+        "left = Map.from([(\"a\", 1), (\"b\", 2)])\n\
+         right = Map.from([(\"b\", 20), (\"c\", 30)])\n\
+         left.merge(right).entries()\n",
+        array_value(vec![
+            tuple_value(vec![Value::Text("a".to_owned()), Value::Int(1)]),
+            tuple_value(vec![Value::Text("b".to_owned()), Value::Int(20)]),
+            tuple_value(vec![Value::Text("c".to_owned()), Value::Int(30)]),
+        ]),
+    );
+}
+
+#[test]
+fn map_equality_is_order_independent() {
+    assert_module_value(
+        "Map.from([(\"a\", 1), (\"b\", 2)]) == Map.from([(\"b\", 2), (\"a\", 1)])\n",
+        Value::Bool(true),
+    );
+}
+
+#[test]
+fn map_keys_use_structural_equality() {
+    assert_module_value(
+        "m = Map.from([((\"x\", 1), \"hit\")])\n\
+         m.get((\"x\", 1))\n",
+        Value::Text("hit".to_owned()),
+    );
+}
+
+#[test]
+fn map_from_bad_shape_reports_platform_error() {
+    for source in [
+        "Map.from(\"no\")\n",
+        "Map.from([1])\n",
+        "Map.from([(\"a\", 1, 2)])\n",
+    ] {
+        let diagnostic = module_error(source);
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+    }
+}
+
+#[test]
+fn map_rejects_function_keys() {
+    let diagnostic = module_error("Map.from([((x) => x, 1)])\n");
+
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::PLATFORM_ERROR)
+    );
+}
+
+#[test]
+fn map_grouping_example_runs() {
+    assert_module_value(
+        concat!(
+            "words = [\"red\", \"blue\", \"red\"]\n",
+            "count = (items: Array[Text], index: Int, acc: Map[Text, Int]) =>\n",
+            "  next = items[index]\n",
+            "  next ?>\n",
+            "    undefined => acc\n",
+            "    _ =>\n",
+            "      word : Text = next ?? \"\"\n",
+            "      count(items, index + 1, acc.set(word, (acc.get(word) ?? 0) + 1))\n",
+            "counts : Map[Text, Int] = count(words, 0, Map.empty())\n",
+            "counts.entries()\n",
+        ),
+        array_value(vec![
+            tuple_value(vec![Value::Text("red".to_owned()), Value::Int(2)]),
+            tuple_value(vec![Value::Text("blue".to_owned()), Value::Int(1)]),
+        ]),
+    );
+}
+
+#[test]
+fn user_binding_shadows_map_builtin() {
+    assert_module_value("Map = 5\nMap\n", Value::Int(5));
+}
+
+#[test]
 fn set_and_array_has_report_membership() {
     assert_eval("@{\"name\", \"email\"}.has(\"name\")", Value::Bool(true));
     assert_eval("@{\"name\", \"email\"}.has(\"age\")", Value::Bool(false));
@@ -1209,6 +1382,10 @@ fn tuple_value(values: Vec<Value>) -> Value {
 
 fn set_value(values: Vec<Value>) -> Value {
     Value::Set(Rc::new(values))
+}
+
+fn map_value(entries: Vec<(Value, Value)>) -> Value {
+    Value::Map(Rc::new(entries))
 }
 
 fn host_with(name: &str, function: Value) -> Value {

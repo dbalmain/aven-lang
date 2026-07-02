@@ -121,6 +121,7 @@ fn encode_value(
         Value::Array(values) | Value::Tuple(values) | Value::Set(values) => {
             encode_sequence(values, output)?;
         }
+        Value::Map(_) => return Err("Json.encode cannot encode Map".to_owned()),
         Value::Record(fields) => encode_record(fields, output)?,
         Value::Undefined => match position {
             EncodePosition::RecordField => {}

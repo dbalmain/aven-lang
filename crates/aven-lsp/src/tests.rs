@@ -497,6 +497,7 @@ fn completion_at_position_includes_builtin_type_names() {
         "Bool",
         "Float",
         "Int",
+        "Map",
         "Null",
         "Text",
         "U8",
@@ -641,6 +642,26 @@ fn completion_at_field_access_returns_record_fields() {
     assert_eq!(email.detail.as_deref(), Some("Text"));
     assert!(completion_item(&completions, "user").is_none());
     assert!(completion_item(&completions, "Text").is_none());
+}
+
+#[test]
+fn completion_at_map_field_access_returns_builtin_methods() {
+    let completions = completions_at_marker("m : Map[Text, Int] = Map.empty()\nm.|");
+    let labels = completions
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        labels,
+        vec![
+            "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge"
+        ]
+    );
+    let Some(get) = completion_item(&completions, "get") else {
+        panic!("expected Map.get completion");
+    };
+    assert_eq!(get.detail.as_deref(), Some("Text -> ?Int"));
 }
 
 #[test]

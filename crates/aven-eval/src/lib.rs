@@ -72,6 +72,7 @@ pub enum Value {
     Array(Rc<Vec<Value>>),
     Tuple(Rc<Vec<Value>>),
     Set(Rc<Vec<Value>>),
+    Map(Rc<Vec<(Value, Value)>>),
     Record(Rc<Vec<(String, Value)>>),
     Tag {
         name: String,
@@ -101,6 +102,10 @@ const TYPE_VALUE_NAMES: [&str; 8] = [
     "Unit",
 ];
 
+pub const MAP_METHOD_NAMES: &[&str] = &[
+    "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
+];
+
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -111,6 +116,7 @@ impl fmt::Debug for Value {
             Self::Array(values) => f.debug_tuple("Array").field(values).finish(),
             Self::Tuple(values) => f.debug_tuple("Tuple").field(values).finish(),
             Self::Set(values) => f.debug_tuple("Set").field(values).finish(),
+            Self::Map(entries) => f.debug_tuple("Map").field(entries).finish(),
             Self::Record(fields) => f.debug_tuple("Record").field(fields).finish(),
             Self::Tag { name, payload } => f
                 .debug_struct("Tag")
@@ -136,6 +142,7 @@ impl PartialEq for Value {
             (Self::Array(left), Self::Array(right)) => left == right,
             (Self::Tuple(left), Self::Tuple(right)) => left == right,
             (Self::Set(left), Self::Set(right)) => sets_equal(left, right),
+            (Self::Map(left), Self::Map(right)) => maps_equal(left, right),
             (Self::Record(left), Self::Record(right)) => records_equal(left, right),
             (
                 Self::Tag {
@@ -166,6 +173,7 @@ impl fmt::Display for Value {
             Self::Array(values) => fmt_array(values, f),
             Self::Tuple(values) => fmt_tuple(values, f),
             Self::Set(values) => fmt_set(values, f),
+            Self::Map(entries) => fmt_map(entries, f),
             Self::Record(fields) => fmt_record(fields, f),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::Closure(_) => write!(f, "<function>"),
@@ -207,6 +215,7 @@ impl Value {
             Self::Array(_) => "Array",
             Self::Tuple(_) => "Tuple",
             Self::Set(_) => "Set",
+            Self::Map(_) => "Map",
             Self::Record(_) => "Record",
             Self::Tag { .. } => "Tag",
             Self::Closure(_) => "Function",
@@ -235,6 +244,13 @@ fn sets_equal(left: &[Value], right: &[Value]) -> bool {
 
 fn contains_value(values: &[Value], needle: &Value) -> bool {
     values.iter().any(|value| value == needle)
+}
+
+fn maps_equal(left: &[(Value, Value)], right: &[(Value, Value)]) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(key, value)| {
+            map_entry_value(right, key).is_some_and(|right_value| value == right_value)
+        })
 }
 
 fn records_equal(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
@@ -284,6 +300,24 @@ fn fmt_set(values: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "}}")
 }
 
+fn fmt_map(entries: &[(Value, Value)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "Map{{")?;
+    for (index, (key, value)) in entries.iter().enumerate() {
+        if index == 0 {
+            write!(f, " ")?;
+        } else {
+            write!(f, ", ")?;
+        }
+        fmt_nested_value(key, f)?;
+        write!(f, ": ")?;
+        fmt_nested_value(value, f)?;
+    }
+    if !entries.is_empty() {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
 fn fmt_record(fields: &[(String, Value)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "{{")?;
     for (index, (name, value)) in fields.iter().enumerate() {
@@ -322,6 +356,7 @@ fn fmt_nested_value(value: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Value::Array(values) => fmt_array(values, f),
         Value::Tuple(values) => fmt_tuple(values, f),
         Value::Set(values) => fmt_set(values, f),
+        Value::Map(entries) => fmt_map(entries, f),
         Value::Record(fields) => fmt_record(fields, f),
         Value::Tag { name, payload } => fmt_tag(name, payload, f),
         value => write!(f, "{value}"),
@@ -485,6 +520,8 @@ fn intrinsics() -> Vec<(String, Value)> {
         }),
     ));
 
+    intrinsics.push(("Map".to_owned(), map_namespace()));
+
     intrinsics.push((
         "pick".to_owned(),
         Value::native(|args| select_record_fields("pick", args, true)),
@@ -496,6 +533,54 @@ fn intrinsics() -> Vec<(String, Value)> {
     ));
 
     intrinsics
+}
+
+fn map_namespace() -> Value {
+    Value::record(vec![
+        ("empty".to_owned(), Value::native(map_empty_intrinsic)),
+        ("from".to_owned(), Value::native(map_from_intrinsic)),
+    ])
+}
+
+fn map_empty_intrinsic(args: &[Value]) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!("Map.empty expects 0 arguments, got {}", args.len()));
+    }
+
+    Ok(Value::Map(Rc::new(Vec::new())))
+}
+
+fn map_from_intrinsic(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("Map.from expects 1 argument, got {}", args.len()));
+    }
+
+    let Value::Array(items) = &args[0] else {
+        return Err(format!(
+            "Map.from expects an Array of key/value tuples, got {}",
+            args[0].type_name()
+        ));
+    };
+
+    let mut entries = Vec::new();
+    for item in items.iter() {
+        let Value::Tuple(values) = item else {
+            return Err(format!(
+                "Map.from expects (key, value) tuple entries, got {}",
+                item.type_name()
+            ));
+        };
+        let [key, value] = values.as_slice() else {
+            return Err(format!(
+                "Map.from expects 2-item tuples, got tuple with {} items",
+                values.len()
+            ));
+        };
+        ensure_map_key(key, "Map.from")?;
+        insert_or_replace_map_entry(&mut entries, key.clone(), value.clone());
+    }
+
+    Ok(Value::Map(Rc::new(entries)))
 }
 
 /// Shared body of the `pick`/`omit` intrinsics. Both take `(record, labels)` —
@@ -1209,6 +1294,15 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
     match (receiver, field) {
         (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),
         (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
+        (Value::Map(entries), "get") => Some(map_get_method(Rc::clone(entries))),
+        (Value::Map(entries), "set") => Some(map_set_method(Rc::clone(entries))),
+        (Value::Map(entries), "delete") => Some(map_delete_method(Rc::clone(entries))),
+        (Value::Map(entries), "has") => Some(map_has_method(Rc::clone(entries))),
+        (Value::Map(entries), "keys") => Some(map_keys_method(Rc::clone(entries))),
+        (Value::Map(entries), "values") => Some(map_values_method(Rc::clone(entries))),
+        (Value::Map(entries), "entries") => Some(map_entries_method(Rc::clone(entries))),
+        (Value::Map(entries), "size") => Some(map_size_method(Rc::clone(entries))),
+        (Value::Map(entries), "merge") => Some(map_merge_method(Rc::clone(entries))),
         _ => None,
     }
 }
@@ -1220,6 +1314,134 @@ fn collection_has_method(kind: &'static str, items: Rc<Vec<Value>>) -> Value {
         }
 
         Ok(Value::Bool(contains_value(&items, &args[0])))
+    })
+}
+
+fn map_get_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Map.get expects 1 argument, got {}", args.len()));
+        }
+        ensure_map_key(&args[0], "Map.get")?;
+
+        Ok(map_entry_value(&entries, &args[0])
+            .cloned()
+            .unwrap_or(Value::Undefined))
+    })
+}
+
+fn map_set_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!("Map.set expects 2 arguments, got {}", args.len()));
+        }
+        ensure_map_key(&args[0], "Map.set")?;
+
+        let mut next = entries.as_ref().clone();
+        insert_or_replace_map_entry(&mut next, args[0].clone(), args[1].clone());
+        Ok(Value::Map(Rc::new(next)))
+    })
+}
+
+fn map_delete_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Map.delete expects 1 argument, got {}", args.len()));
+        }
+        ensure_map_key(&args[0], "Map.delete")?;
+
+        let mut next = entries.as_ref().clone();
+        remove_map_entry(&mut next, &args[0]);
+        Ok(Value::Map(Rc::new(next)))
+    })
+}
+
+fn map_has_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Map.has expects 1 argument, got {}", args.len()));
+        }
+        ensure_map_key(&args[0], "Map.has")?;
+
+        Ok(Value::Bool(map_entry_value(&entries, &args[0]).is_some()))
+    })
+}
+
+fn map_keys_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!("Map.keys expects 0 arguments, got {}", args.len()));
+        }
+
+        Ok(Value::Array(Rc::new(
+            entries.iter().map(|(key, _)| key.clone()).collect(),
+        )))
+    })
+}
+
+fn map_values_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Map.values expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+
+        Ok(Value::Array(Rc::new(
+            entries.iter().map(|(_, value)| value.clone()).collect(),
+        )))
+    })
+}
+
+fn map_entries_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Map.entries expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+
+        Ok(Value::Array(Rc::new(
+            entries
+                .iter()
+                .map(|(key, value)| Value::Tuple(Rc::new(vec![key.clone(), value.clone()])))
+                .collect(),
+        )))
+    })
+}
+
+fn map_size_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!("Map.size expects 0 arguments, got {}", args.len()));
+        }
+
+        Ok(Value::Int(entries.len() as i64))
+    })
+}
+
+fn map_merge_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Map.merge expects 1 argument, got {}", args.len()));
+        }
+
+        let Value::Map(other) = &args[0] else {
+            return Err(format!(
+                "Map.merge expects a Map, got {}",
+                args[0].type_name()
+            ));
+        };
+
+        let mut next = entries.as_ref().clone();
+        // Mirrors record `:..` overwrite-spread: the right-hand map wins on
+        // conflicts while existing left-hand insertion positions are retained.
+        for (key, value) in other.iter() {
+            insert_or_replace_map_entry(&mut next, key.clone(), value.clone());
+        }
+        Ok(Value::Map(Rc::new(next)))
     })
 }
 
@@ -1329,6 +1551,62 @@ fn runtime_type_target(value: &Value) -> bool {
 fn indexed_value(values: &[Value], index: i64) -> Option<Value> {
     let index = usize::try_from(index).ok()?;
     values.get(index).cloned()
+}
+
+fn ensure_map_key(key: &Value, context: &str) -> Result<(), String> {
+    if map_key_is_comparable(key) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} cannot use {} as a Map key",
+            key.type_name()
+        ))
+    }
+}
+
+fn map_key_is_comparable(key: &Value) -> bool {
+    match key {
+        Value::Closure(_) | Value::Native(_) => false,
+        Value::Array(values) | Value::Tuple(values) | Value::Set(values) => {
+            values.iter().all(map_key_is_comparable)
+        }
+        Value::Map(entries) => entries
+            .iter()
+            .all(|(key, value)| map_key_is_comparable(key) && map_key_is_comparable(value)),
+        Value::Record(fields) => fields.iter().all(|(_, value)| map_key_is_comparable(value)),
+        Value::Tag { payload, .. } => payload.iter().all(map_key_is_comparable),
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Text(_)
+        | Value::Bool(_)
+        | Value::Type(_)
+        | Value::Undefined
+        | Value::Null => true,
+    }
+}
+
+fn map_entry_index(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
+    entries.iter().position(|(entry_key, _)| entry_key == key)
+}
+
+fn map_entry_value<'a>(entries: &'a [(Value, Value)], key: &Value) -> Option<&'a Value> {
+    entries
+        .iter()
+        .find_map(|(entry_key, value)| (entry_key == key).then_some(value))
+}
+
+fn insert_or_replace_map_entry(entries: &mut Vec<(Value, Value)>, key: Value, value: Value) {
+    if let Some(index) = map_entry_index(entries, &key) {
+        entries[index] = (key, value);
+    } else {
+        entries.push((key, value));
+    }
+}
+
+fn remove_map_entry(entries: &mut Vec<(Value, Value)>, key: &Value) {
+    if let Some(index) = map_entry_index(entries, key) {
+        entries.remove(index);
+    }
 }
 
 fn eval_text_key(expr: &Expr, span: Span, env: &Environment) -> Eval<String> {
@@ -1687,6 +1965,7 @@ fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Val
         (Value::Array(_), Value::Array(_)) => left == right,
         (Value::Tuple(_), Value::Tuple(_)) => left == right,
         (Value::Set(_), Value::Set(_)) => left == right,
+        (Value::Map(_), Value::Map(_)) => left == right,
         (Value::Record(_), Value::Record(_)) => left == right,
         (Value::Tag { .. }, Value::Tag { .. }) => left == right,
         (Value::Type(left), Value::Type(right)) => left == right,

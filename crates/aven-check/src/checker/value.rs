@@ -101,6 +101,14 @@ impl<'a> Checker<'a> {
         let env = self.local_types.inference_env();
         let inferred = self.infer(&env, receiver);
         let receiver_type = self.normalize(&self.resolve_and_default(&inferred));
+        if builtin_collection_method_type(&receiver_type, field).is_some() {
+            return;
+        }
+        if is_map_receiver_type(&receiver_type) && is_concrete_type(&receiver_type) {
+            self.report_missing_field(field, span);
+            return;
+        }
+
         let Type::Record(row) = &receiver_type else {
             return;
         };
