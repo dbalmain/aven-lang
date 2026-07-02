@@ -1,0 +1,2 @@
+merge = (a, b) => { ..a, ..b }
+over = merge({ k: 1 }, { k: 2 })

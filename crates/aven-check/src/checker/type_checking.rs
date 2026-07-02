@@ -51,10 +51,7 @@ impl<'a> Checker<'a> {
                     self.report_type_mismatch(name, found, value.span);
                 }
             }
-            (
-                ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))),
-                Type::Variant(row),
-            ) => {
+            (ExprKind::Literal(literal), Type::Variant(row)) => {
                 self.check_literal_value_against_variant(row, literal, value.span);
             }
             (ExprKind::Tuple(elements), Type::Tuple(element_types)) => {
@@ -579,14 +576,13 @@ impl<'a> Checker<'a> {
             return;
         };
 
-        if let Some(expected_base) = literal_variant_base(&row)
-            && literal_base(literal) != Some(expected_base)
-        {
-            self.report_type_mismatch(
-                &Type::Variant(row).render(),
-                literal_kind_name(literal),
-                span,
-            );
+        let base_mismatch =
+            literal_variant_base(&row).is_some_and(|expected_base| match literal_base(literal) {
+                Some(actual_base) => actual_base != expected_base,
+                None => true,
+            });
+        if base_mismatch {
+            self.report_literal_not_in_union(literal, &literals, span);
             return;
         }
 

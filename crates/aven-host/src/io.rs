@@ -750,16 +750,18 @@ mod tests {
     }
 
     #[test]
-    fn open_with_a_non_text_mode_argument_reports_argument_mismatch() {
+    fn open_with_a_non_text_mode_argument_reports_literal_union_error() {
         let source = "handle = File.open(\"x\", 5)\n";
         let bad = check_module(source);
         assert_eq!(
             bad.diagnostics
                 .iter()
-                .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+                .filter(|diagnostic| {
+                    diagnostic.code.as_deref() == Some(codes::ty::LITERAL_NOT_IN_UNION)
+                })
                 .count(),
             1,
-            "expected one argument mismatch: {:?}",
+            "expected one literal-union membership diagnostic: {:?}",
             bad.diagnostics
         );
         let bad_arg_start = source.find('5').expect("source contains the bad argument");

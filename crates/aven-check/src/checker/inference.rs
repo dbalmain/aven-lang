@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use super::*;
 
 impl<'a> Checker<'a> {
@@ -85,10 +87,9 @@ impl<'a> Checker<'a> {
 
     pub(super) fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
         let ty = match &expr.kind {
-            ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
-                self.open_literal_variant(literal)
-            }
-            ExprKind::Literal(Literal::Bool(_)) => named_builtin("Bool"),
+            ExprKind::Literal(
+                literal @ (Literal::Bool(_) | Literal::Number(_) | Literal::String(_)),
+            ) => self.open_literal_variant(literal),
             ExprKind::Undefined => named_builtin("Undefined"),
             ExprKind::Null => named_builtin("Null"),
             ExprKind::Tag(name) => Type::Variant(Row {
@@ -235,6 +236,10 @@ impl<'a> Checker<'a> {
         let left_type = self.infer(env, left);
         let right_type = self.infer(env, right);
 
+        if let Some(literal) = self.fold_binary_literal(operator, &left_type, &right_type) {
+            return self.open_literal_variant(&literal);
+        }
+
         if let Some(result) = self.infer_binary_type(operator, &left_type, &right_type) {
             result
         } else {
@@ -260,6 +265,19 @@ impl<'a> Checker<'a> {
             "&&" | "||" => self.infer_same_named_binary_type(left, right, "Bool"),
             _ => None,
         }
+    }
+
+    pub(super) fn fold_binary_literal(
+        &self,
+        operator: &str,
+        left: &Type,
+        right: &Type,
+    ) -> Option<Literal> {
+        let resolved_left = self.unifier.resolve(left);
+        let resolved_right = self.unifier.resolve(right);
+        let left = singleton_literal_type(&resolved_left)?;
+        let right = singleton_literal_type(&resolved_right)?;
+        fold_binary_literals(operator, left, right)
     }
 
     pub(super) fn infer_numeric_binary_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
@@ -332,6 +350,11 @@ impl<'a> Checker<'a> {
         if let Type::Variant(row) = &resolved
             && literal_variant_base(row) == Some(LiteralBase::Number)
         {
+            if let Some(Literal::Number(number)) = singleton_literal_type(&resolved)
+                && is_float_literal_text(number)
+            {
+                return named_builtin("Float");
+            }
             return self.unifier.fresh_numeric();
         }
 
@@ -346,13 +369,19 @@ impl<'a> Checker<'a> {
         {
             return named_builtin("Text");
         }
+        if name == "Bool"
+            && let Type::Variant(row) = &resolved
+            && literal_variant_base(row) == Some(LiteralBase::Bool)
+        {
+            return named_builtin("Bool");
+        }
 
         resolved
     }
 
     pub(super) fn infer_equality_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
-        let left = self.unifier.resolve(left);
-        let right = self.unifier.resolve(right);
+        let left = self.widen_equality_operand(left);
+        let right = self.widen_equality_operand(right);
 
         if is_meta_type(&left) && is_meta_type(&right) {
             if self.unifier.is_numeric_meta(&left) || self.unifier.is_numeric_meta(&right) {
@@ -396,13 +425,32 @@ impl<'a> Checker<'a> {
         None
     }
 
+    pub(super) fn widen_equality_operand(&mut self, ty: &Type) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        if let Type::Variant(row) = &resolved {
+            match literal_variant_base(row) {
+                Some(LiteralBase::Bool) => return named_builtin("Bool"),
+                Some(LiteralBase::Text) => return named_builtin("Text"),
+                Some(LiteralBase::Number) => return self.widen_numeric_operand(&resolved),
+                None => {}
+            }
+        }
+
+        resolved
+    }
+
     pub(super) fn infer_unary(&mut self, env: &TypeEnv, operator: &str, value: &Expr) -> Type {
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let value_type = self.infer(env, value);
 
+        if let Some(literal) = self.fold_unary_literal(operator, &value_type) {
+            return self.open_literal_variant(&literal);
+        }
+
         let result = match operator {
             "-" => self.infer_numeric_unary_type(&value_type),
+            "!" => self.infer_same_named_unary_type(&value_type, "Bool"),
             _ => None,
         };
 
@@ -416,11 +464,34 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn infer_numeric_unary_type(&mut self, value: &Type) -> Option<Type> {
-        let value = self.unifier.resolve(value);
+        let value = self.widen_numeric_operand(value);
         if let Some(name) = numeric_type_name(&value) {
             return Some(named_builtin(name));
         }
         self.unifier.is_numeric_meta(&value).then_some(value)
+    }
+
+    pub(super) fn infer_same_named_unary_type(
+        &mut self,
+        value: &Type,
+        name: &'static str,
+    ) -> Option<Type> {
+        let value = self.widen_same_named_operand(value, name);
+        match named_type_name(&value) {
+            Some(value_name) if value_name == name => Some(named_builtin(name)),
+            None if is_meta_type(&value) => self
+                .unifier
+                .unify(&value, &named_builtin(name))
+                .ok()
+                .map(|()| named_builtin(name)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn fold_unary_literal(&self, operator: &str, value: &Type) -> Option<Literal> {
+        let resolved = self.unifier.resolve(value);
+        let value = singleton_literal_type(&resolved)?;
+        fold_unary_literal(operator, value)
     }
 
     pub(super) fn infer_lambda(
@@ -1179,7 +1250,14 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
-                    comptime::ComptimeValue::ReifiedType(_) | comptime::ComptimeValue::Bool(_) => {}
+                    comptime::ComptimeValue::Bool(value) => {
+                        self.check_literal_value_against_variant(
+                            row,
+                            &Literal::Bool(*value),
+                            arg.span,
+                        );
+                    }
+                    comptime::ComptimeValue::ReifiedType(_) => {}
                 }
             }
             if self.diagnostics.len() > diagnostics_before_domain_check {
@@ -1760,4 +1838,198 @@ impl<'a> Checker<'a> {
             _ => None,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FoldNumber {
+    Int(i64),
+    Float(f64),
+}
+
+fn singleton_literal_type(ty: &Type) -> Option<&Literal> {
+    let Type::Variant(row) = ty else {
+        return None;
+    };
+    if row.tail == RowTail::Open {
+        return None;
+    }
+
+    let [RowEntry::Literal { value }] = row.entries.as_slice() else {
+        return None;
+    };
+    Some(value)
+}
+
+fn fold_binary_literals(operator: &str, left: &Literal, right: &Literal) -> Option<Literal> {
+    match (operator, left, right) {
+        ("&&", Literal::Bool(left), Literal::Bool(right)) => Some(Literal::Bool(*left && *right)),
+        ("||", Literal::Bool(left), Literal::Bool(right)) => Some(Literal::Bool(*left || *right)),
+        ("+", Literal::String(left), Literal::String(right)) => {
+            let mut text = decode_string_literal(left);
+            text.push_str(&decode_string_literal(right));
+            Some(Literal::String(quote_string_literal(&text)))
+        }
+        ("+" | "-" | "*" | "/", Literal::Number(left), Literal::Number(right)) => {
+            fold_number_arithmetic(operator, left, right)
+        }
+        ("==" | "!=", Literal::Bool(left), Literal::Bool(right)) => {
+            Some(Literal::Bool(compare_equal(operator, left == right)))
+        }
+        ("==" | "!=", Literal::String(left), Literal::String(right)) => {
+            let equal = decode_string_literal(left) == decode_string_literal(right);
+            Some(Literal::Bool(compare_equal(operator, equal)))
+        }
+        ("==" | "!=" | "<" | "<=" | ">" | ">=", Literal::Number(left), Literal::Number(right)) => {
+            fold_number_comparison(operator, left, right).map(Literal::Bool)
+        }
+        _ => None,
+    }
+}
+
+fn fold_unary_literal(operator: &str, value: &Literal) -> Option<Literal> {
+    match (operator, value) {
+        ("!", Literal::Bool(value)) => Some(Literal::Bool(!value)),
+        ("-", Literal::Number(value)) => fold_number_negation(value),
+        _ => None,
+    }
+}
+
+fn fold_number_arithmetic(operator: &str, left: &str, right: &str) -> Option<Literal> {
+    match (parse_fold_number(left)?, parse_fold_number(right)?) {
+        (FoldNumber::Int(left), FoldNumber::Int(right)) => {
+            fold_int_arithmetic(operator, left, right)
+                .map(|value| Literal::Number(value.to_string()))
+        }
+        (FoldNumber::Float(left), FoldNumber::Float(right)) => {
+            fold_float_arithmetic(operator, left, right)
+                .and_then(format_float_literal)
+                .map(Literal::Number)
+        }
+        (FoldNumber::Int(_), FoldNumber::Float(_)) | (FoldNumber::Float(_), FoldNumber::Int(_)) => {
+            None
+        }
+    }
+}
+
+fn fold_int_arithmetic(operator: &str, left: i64, right: i64) -> Option<i64> {
+    if operator == "/" && right == 0 {
+        return None;
+    }
+
+    match operator {
+        "+" => left.checked_add(right),
+        "-" => left.checked_sub(right),
+        "*" => left.checked_mul(right),
+        "/" => left.checked_div(right),
+        _ => None,
+    }
+}
+
+fn fold_float_arithmetic(operator: &str, left: f64, right: f64) -> Option<f64> {
+    if operator == "/" && is_float_zero(right) {
+        return None;
+    }
+
+    match operator {
+        "+" => Some(left + right),
+        "-" => Some(left - right),
+        "*" => Some(left * right),
+        "/" => Some(left / right),
+        _ => None,
+    }
+}
+
+fn fold_number_negation(value: &str) -> Option<Literal> {
+    match parse_fold_number(value)? {
+        FoldNumber::Int(value) => value
+            .checked_neg()
+            .map(|value| Literal::Number(value.to_string())),
+        FoldNumber::Float(value) => format_float_literal(-value).map(Literal::Number),
+    }
+}
+
+fn fold_number_comparison(operator: &str, left: &str, right: &str) -> Option<bool> {
+    match (parse_fold_number(left)?, parse_fold_number(right)?) {
+        (FoldNumber::Int(left), FoldNumber::Int(right)) => {
+            Some(compare_ordering(operator, left.cmp(&right)))
+        }
+        (FoldNumber::Float(left), FoldNumber::Float(right)) => {
+            numeric_ordering(left, right).map(|ordering| compare_ordering(operator, ordering))
+        }
+        (FoldNumber::Int(_), FoldNumber::Float(_)) | (FoldNumber::Float(_), FoldNumber::Int(_)) => {
+            None
+        }
+    }
+}
+
+fn compare_ordering(operator: &str, ordering: Ordering) -> bool {
+    match operator {
+        "==" => compare_equal(operator, ordering == Ordering::Equal),
+        "!=" => compare_equal(operator, ordering == Ordering::Equal),
+        "<" => ordering == Ordering::Less,
+        "<=" => ordering != Ordering::Greater,
+        ">" => ordering == Ordering::Greater,
+        ">=" => ordering != Ordering::Less,
+        _ => false,
+    }
+}
+
+fn compare_equal(operator: &str, equal: bool) -> bool {
+    if operator == "==" { equal } else { !equal }
+}
+
+fn parse_fold_number(text: &str) -> Option<FoldNumber> {
+    let normalized = text.replace('_', "");
+    if is_float_literal_text(text) {
+        normalized.parse::<f64>().ok().map(FoldNumber::Float)
+    } else {
+        normalized.parse::<i64>().ok().map(FoldNumber::Int)
+    }
+}
+
+fn format_float_literal(value: f64) -> Option<String> {
+    if !value.is_finite() {
+        return None;
+    }
+
+    let mut text = value.to_string();
+    if !is_float_literal_text(&text) {
+        text.push_str(".0");
+    }
+    if text.parse::<f64>().ok()?.to_bits() == value.to_bits() {
+        Some(text)
+    } else {
+        None
+    }
+}
+
+fn numeric_ordering(left: f64, right: f64) -> Option<Ordering> {
+    left.partial_cmp(&right)
+}
+
+fn is_float_zero(value: f64) -> bool {
+    value.to_bits() << 1 == 0
+}
+
+fn is_float_literal_text(text: &str) -> bool {
+    text.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
+}
+
+fn quote_string_literal(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            character if character.is_control() => {
+                quoted.push_str(&format!("\\u{{{:x}}}", character as u32));
+            }
+            character => quoted.push(character),
+        }
+    }
+    quoted.push('"');
+    quoted
 }

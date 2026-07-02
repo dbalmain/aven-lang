@@ -185,7 +185,7 @@ pub fn variant_tags(ty: &Type) -> Option<Vec<String>> {
     )
 }
 
-/// The text-literal members of a closed literal-union type, in order.
+/// The literal members of a closed literal-union type, in order.
 /// `None` for any type that is not a closed all-`Literal` variant row.
 pub fn literal_union_members(ty: &Type) -> Option<Vec<String>> {
     let mut ty = ty;
@@ -305,6 +305,7 @@ pub(crate) enum RowKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LiteralBase {
+    Bool,
     Text,
     Number,
 }
@@ -312,6 +313,7 @@ pub(crate) enum LiteralBase {
 impl LiteralBase {
     pub(crate) fn matches_named(self, name: &str) -> bool {
         match self {
+            Self::Bool => name == "Bool",
             Self::Text => name == "Text",
             Self::Number => matches!(name, "Int" | "Float"),
         }
@@ -787,9 +789,10 @@ pub(crate) fn literal_variant_base(row: &Row) -> Option<LiteralBase> {
 
 pub(crate) fn literal_base(literal: &Literal) -> Option<LiteralBase> {
     match literal {
+        Literal::Bool(_) => Some(LiteralBase::Bool),
         Literal::String(_) => Some(LiteralBase::Text),
         Literal::Number(_) => Some(LiteralBase::Number),
-        Literal::Bool(_) | Literal::Regex(_) | Literal::Path(_) => None,
+        Literal::Regex(_) | Literal::Path(_) => None,
     }
 }
 

@@ -249,10 +249,8 @@ impl<'a> Checker<'a> {
             ExprKind::Binary { operator, .. } if operator == "|" => {
                 self.lower_union_annotation(annotation)
             }
-            ExprKind::Literal(Literal::Number(_) | Literal::String(_)) | ExprKind::Tag(_) => {
-                self.lower_singleton_variant_annotation(annotation)
-            }
-            ExprKind::Literal(Literal::Bool(_)) => named_builtin("Bool"),
+            ExprKind::Literal(Literal::Bool(_) | Literal::Number(_) | Literal::String(_))
+            | ExprKind::Tag(_) => self.lower_singleton_variant_annotation(annotation),
             ExprKind::Call { .. } => self
                 .try_lower_comptime_annotation(annotation)
                 .unwrap_or_else(|| {

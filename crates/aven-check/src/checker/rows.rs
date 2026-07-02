@@ -669,11 +669,11 @@ impl<'a> Checker<'a> {
                 name: name.clone(),
                 payload: Vec::new(),
             }),
-            ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
-                Some(RowEntry::Literal {
-                    value: literal.clone(),
-                })
-            }
+            ExprKind::Literal(
+                literal @ (Literal::Bool(_) | Literal::Number(_) | Literal::String(_)),
+            ) => Some(RowEntry::Literal {
+                value: literal.clone(),
+            }),
             ExprKind::Name(name) => {
                 self.report_lowercase_variant_tag(name, tag.span);
                 Some(RowEntry::Tag {

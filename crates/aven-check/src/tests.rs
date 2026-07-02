@@ -106,6 +106,12 @@ fn literal_number(raw: &str) -> RowEntry {
     }
 }
 
+fn literal_bool(value: bool) -> RowEntry {
+    RowEntry::Literal {
+        value: Literal::Bool(value),
+    }
+}
+
 fn variant_type(entries: Vec<RowEntry>, tail: RowTail) -> Type {
     Type::Variant(Row { entries, tail })
 }
@@ -1243,7 +1249,13 @@ fn lowers_bare_literal_and_tag_annotations_as_singleton_variants() {
     assert!(tagged.diagnostics.is_empty());
     assert!(tagged_set.diagnostics.is_empty());
 
-    assert_eq!(flag.ty, named("Bool"));
+    assert_eq!(
+        flag.ty,
+        Type::Variant(Row {
+            entries: vec![literal_bool(true)],
+            tail: RowTail::Closed,
+        })
+    );
     assert!(flag.diagnostics.is_empty());
 }
 
@@ -1886,6 +1898,36 @@ fn call_non_member_literal_reports_literal_not_in_union() {
 }
 
 #[test]
+fn call_base_kind_mismatched_literal_reports_literal_not_in_union() {
+    let source = concat!(
+        "myFun = (mode: @{\"r\", \"w\"}) => mode\n",
+        "result = myFun(5)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        1,
+        "expected membership diagnostic for mismatched literal kind: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        0,
+        "mismatched literal kind should not use generic mismatch: {:?}",
+        check.diagnostics
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::LITERAL_NOT_IN_UNION))
+        .expect("literal-not-in-union diagnostic");
+    assert!(diagnostic.message.contains("literal 5 is not one of"));
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "5", 0));
+}
+
+#[test]
 fn call_wide_value_into_literal_union_param_reports_wide_value() {
     let source = concat!(
         "myFun = (mode: @{\"r\", \"w\"}) => mode\n",
@@ -1931,7 +1973,7 @@ fn bare_value_literals_infer_rendered_singleton_types() {
     );
     assert_eq!(
         check.type_at(nth_span(source, "b", 0)).map(Type::render),
-        Some("Bool".to_owned())
+        Some("true".to_owned())
     );
 
     let known_types = known_type_names(&output.module);
@@ -1944,11 +1986,20 @@ fn bare_value_literals_infer_rendered_singleton_types() {
         panic!("x should infer a literal variant row");
     };
     assert_eq!(row.tail, RowTail::Var(scheme.row_vars[0]));
+
+    let scheme = checker
+        .infer_top_level_scheme("b")
+        .expect("inferred b scheme");
+    let Type::Variant(row) = &scheme.ty else {
+        panic!("b should infer a literal variant row");
+    };
+    assert_eq!(row.entries, vec![literal_bool(true)]);
+    assert_eq!(row.tail, RowTail::Var(scheme.row_vars[0]));
 }
 
 #[test]
 fn literal_rows_widen_at_named_annotations() {
-    let source = "n : Int = 5\nf : Float = 1\n";
+    let source = "n : Int = 5\nf : Float = 1\nb : Bool = true\n";
     let output = parse_module(source);
     let check = check_module(&output.module);
 
@@ -1965,11 +2016,85 @@ fn literal_rows_widen_at_named_annotations() {
         check.type_at(nth_span(source, "f", 0)).map(Type::render),
         Some("Float".to_owned())
     );
+    assert_eq!(
+        check.type_at(nth_span(source, "b", 0)).map(Type::render),
+        Some("Bool".to_owned())
+    );
 }
 
 #[test]
-fn base_operations_widen_literal_rows() {
-    let source = "c = 1 + 2\nt = \"a\" + \"b\"\n";
+fn bool_singletons_widen_at_bool_params_and_fold_boolean_ops() {
+    let source = concat!(
+        "accept = (input: Bool) => input\n",
+        "arg = accept(true)\n",
+        "flag = true\n",
+        "x = flag && false\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "arg", 0)).map(Type::render),
+        Some("Bool".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "flag", 0)).map(Type::render),
+        Some("true".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "x", 0)).map(Type::render),
+        Some("false".to_owned())
+    );
+}
+
+#[test]
+fn bool_base_match_exhaustiveness_uses_true_false_members() {
+    let complete = parse_module(concat!(
+        "source : Bool = value\n",
+        "result = source ?>\n",
+        "  true => 1\n",
+        "  false => 2\n",
+    ));
+    let complete_check = check_module(&complete.module);
+    assert!(
+        !has_diagnostic_code(&complete_check.diagnostics, codes::ty::NON_EXHAUSTIVE_MATCH),
+        "complete Bool match produced diagnostics: {:?}",
+        complete_check.diagnostics
+    );
+
+    let missing = parse_module(concat!(
+        "source : Bool = value\n",
+        "result = source ?>\n",
+        "  true => 1\n",
+    ));
+    assert_eq!(
+        matching_codes(
+            &check_module(&missing.module).diagnostics,
+            codes::ty::NON_EXHAUSTIVE_MATCH,
+        ),
+        1
+    );
+}
+
+#[test]
+fn base_operations_fold_comptime_singleton_literals() {
+    let source = concat!(
+        "c = 1 + 2\n",
+        "nested = (1 + 2) * 3\n",
+        "concat = \"a\" + \"b\"\n",
+        "less = 1 < 2\n",
+        "equal = 1 == 2\n",
+        "text_equal = \"a\" == \"a\"\n",
+        "escape_equal = \"\\n\" == \"\\u{0a}\"\n",
+        "bool_not_equal = true != false\n",
+        "not = !false\n",
+        "neg = -1\n",
+    );
     let output = parse_module(source);
     let check = check_module(&output.module);
 
@@ -1980,11 +2105,106 @@ fn base_operations_widen_literal_rows() {
     );
     assert_eq!(
         check.type_at(nth_span(source, "c", 0)).map(Type::render),
+        Some("3".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "nested", 0))
+            .map(Type::render),
+        Some("9".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "concat", 0))
+            .map(Type::render),
+        Some("\"ab\"".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "less", 0)).map(Type::render),
+        Some("true".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "equal", 0))
+            .map(Type::render),
+        Some("false".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "text_equal", 0))
+            .map(Type::render),
+        Some("true".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "escape_equal", 0))
+            .map(Type::render),
+        Some("true".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "bool_not_equal", 0))
+            .map(Type::render),
+        Some("true".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "not", 0)).map(Type::render),
+        Some("true".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "neg", 0)).map(Type::render),
+        Some("-1".to_owned())
+    );
+}
+
+#[test]
+fn non_foldable_base_operations_keep_widened_types() {
+    let source = "x : Int = 2\nruntime = 1 + x\nzero = 1 / 0\nmixed = 1 + 2.0\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "runtime", 0))
+            .map(Type::render),
         Some("Int".to_owned())
     );
     assert_eq!(
-        check.type_at(nth_span(source, "t", 0)).map(Type::render),
-        Some("Text".to_owned())
+        check.type_at(nth_span(source, "zero", 0)).map(Type::render),
+        Some("Int".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "mixed", 0))
+            .map(Type::render),
+        Some("Float".to_owned())
+    );
+}
+
+#[test]
+fn folded_results_widen_and_check_like_written_literals() {
+    let source = "c = 1 + 2\nd : Int = c\ne : 4 = c\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        check.type_at(nth_span(source, "c", 0)).map(Type::render),
+        Some("3".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "d", 0)).map(Type::render),
+        Some("Int".to_owned())
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        1,
+        "expected folded literal membership failure: {:?}",
+        check.diagnostics
     );
 }
 
@@ -2898,7 +3118,10 @@ fn tag_literals_and_constructors_infer_closed_variant_rows() {
         }
     }
 
-    assert_eq!(checker.infer_top_level_value("truth"), Some(named("Bool")));
+    assert_eq!(
+        render_top_level_value(&mut checker, "truth"),
+        Some("true".to_owned())
+    );
     assert_eq!(
         checker.infer_top_level_value("absent"),
         Some(named("Undefined"))
@@ -3566,9 +3789,12 @@ fn builtin_operator_results_are_inferred() {
         "value : Float = 42\n",
         "value : Int = 1\n",
         "sum : Int = 1 + 2\n",
+        "flo : Float = 1 + 2\n",
         "value : Text = \"a\" + \"b\"\n",
         "value : Bool = 1 == 2\n",
         "value : Bool = 1 < 2\n",
+        "left : Bool = true\nvalue : Bool = left == true\n",
+        "text : Text = \"a\"\nvalue : Bool = text == \"b\"\n",
         "left : Bool = true\nright : Bool = false\nvalue : Bool = left && right\n",
         "f = (floatParam : Float) =>\n  mix : Float = floatParam + 1\n  mix\n",
         "f = (intParam : Int) =>\n  sum : Int = intParam + 1\n  sum\n",
@@ -3583,7 +3809,6 @@ fn builtin_operator_results_are_inferred() {
     }
 
     for source in [
-        "flo : Float = 1 + 2\n",
         "result = 1 + 2\nvalue : Text = result\n",
         "result = \"a\" + \"b\"\nvalue : Int = result\n",
         "result = 1 < 2\nvalue : Text = result\n",
@@ -3602,13 +3827,16 @@ fn builtin_operator_results_are_inferred() {
 }
 
 #[test]
-fn numeric_binary_literals_synthesize_int_after_defaulting() {
+fn numeric_binary_literals_synthesize_folded_singleton() {
     let output = parse_module("n = 1 + 2\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
-    assert_eq!(checker.infer_top_level_value("n"), Some(named("Int")));
+    assert_eq!(
+        render_top_level_value(&mut checker, "n"),
+        Some("3".to_owned())
+    );
 }
 
 #[test]
@@ -3660,19 +3888,19 @@ fn infer_value_synthesizes_closed_record_transform_types() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "added"),
-        Some("{ x: 1, y: \"yes\", old: Bool, z: 2 }".to_owned())
+        Some("{ x: 1, y: \"yes\", old: true, z: 2 }".to_owned())
     );
     assert_eq!(
         render_top_level_value(&mut checker, "replaced"),
-        Some("{ x: 1, y: \"changed\", old: Bool }".to_owned())
+        Some("{ x: 1, y: \"changed\", old: true }".to_owned())
     );
     assert_eq!(
         render_top_level_value(&mut checker, "deleted"),
-        Some("{ x: 1, old: Bool }".to_owned())
+        Some("{ x: 1, old: true }".to_owned())
     );
     assert_eq!(
         render_top_level_value(&mut checker, "renamed"),
-        Some("{ x: 1, y: \"yes\", flag: Bool }".to_owned())
+        Some("{ x: 1, y: \"yes\", flag: true }".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -5421,6 +5649,30 @@ fn table_type_globals() -> HostGlobals {
     )
 }
 
+struct ModeTypeResolver;
+
+impl HostComptimeFn for ModeTypeResolver {
+    fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
+        match args {
+            [mode] if mode.as_text().is_some() => Ok(build::text()),
+            _ => Err(ComptimeError::new("modeType expects one mode literal")),
+        }
+    }
+}
+
+fn mode_type_globals() -> HostGlobals {
+    HostGlobals::new(
+        vec![(
+            "modeType".to_owned(),
+            build::function(vec![build::text_literals(&["r", "w"])], Type::Deferred),
+        )],
+        vec![(
+            "modeType".to_owned(),
+            HostComptimeFnSpec::new(Rc::new(ModeTypeResolver), vec![0]),
+        )],
+    )
+}
+
 #[test]
 fn seeded_global_call_checks_ok() {
     let output = parse_module("logger.info(\"hi\")\n");
@@ -5574,6 +5826,27 @@ fn host_comptime_fn_runtime_argument_defers_without_unresolved_binding() {
         check.diagnostics
     );
     assert_eq!(check.type_at(nth_span(source, "users", 0)), None);
+}
+
+#[test]
+fn host_comptime_domain_base_kind_mismatch_reports_literal_not_in_union() {
+    let source = "value = modeType(5)\n";
+    let output = parse_module(source);
+    let check = check_module_with_host_globals(&output.module, &mode_type_globals());
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        1,
+        "expected membership diagnostic for host-comptime domain: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        0,
+        "host-comptime domain mismatch should not use generic mismatch: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(check.type_at(nth_span(source, "value", 0)), None);
 }
 
 #[test]
@@ -5735,7 +6008,10 @@ fn unannotated_default_infers_parameter_type() {
 
     let mismatch = parse_module("g = (x = 5) => x\ng(\"no\")\n");
     let check = check_module(&mismatch.module);
-    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        1
+    );
 }
 
 #[test]

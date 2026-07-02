@@ -23,7 +23,9 @@ impl ComptimeValue {
             ComptimeValue::ReifiedType(ty) => ComptimeValue::ReifiedType(ty),
             ComptimeValue::LabelSet(labels) => ComptimeValue::ReifiedType(label_set_type(labels)),
             ComptimeValue::Literal(literal) => ComptimeValue::ReifiedType(literal_type(literal)),
-            ComptimeValue::Bool(value) => ComptimeValue::Bool(value),
+            ComptimeValue::Bool(value) => {
+                ComptimeValue::ReifiedType(literal_type(Literal::Bool(value)))
+            }
         }
     }
 

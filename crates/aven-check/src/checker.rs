@@ -896,6 +896,20 @@ fn subject_variant_row(ty: &Type) -> Option<Cow<'_, Row>> {
         return Some(Cow::Borrowed(row));
     }
 
+    if matches!(ty, Type::Named(name) if name == "Bool") {
+        return Some(Cow::Owned(Row {
+            entries: vec![
+                RowEntry::Literal {
+                    value: Literal::Bool(true),
+                },
+                RowEntry::Literal {
+                    value: Literal::Bool(false),
+                },
+            ],
+            tail: RowTail::Closed,
+        }));
+    }
+
     let (ok_ty, err_ty) = result_type_args(ty)?;
     Some(Cow::Owned(Row {
         entries: vec![
@@ -998,7 +1012,9 @@ fn literal_union_accepts_base_type(literals: &[&Literal], base: &str) -> bool {
     literals.iter().any(|literal| {
         matches!(
             (literal, base),
-            (Literal::String(_), "Text") | (Literal::Number(_), "Int" | "Float")
+            (Literal::Bool(_), "Bool")
+                | (Literal::String(_), "Text")
+                | (Literal::Number(_), "Int" | "Float")
         )
     })
 }
@@ -1308,9 +1324,9 @@ fn reportable_type_shape(ty: &Type) -> bool {
 fn literal_pattern_value(pattern: &Expr) -> Option<(&Literal, Span)> {
     match &pattern.kind {
         ExprKind::Group(inner) => literal_pattern_value(inner),
-        ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
-            Some((literal, pattern.span))
-        }
+        ExprKind::Literal(
+            literal @ (Literal::Bool(_) | Literal::Number(_) | Literal::String(_)),
+        ) => Some((literal, pattern.span)),
         _ => None,
     }
 }

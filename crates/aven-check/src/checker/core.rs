@@ -392,6 +392,7 @@ impl<'a> Checker<'a> {
             ExprKind::ComptimeName(name) => self.comptime_reference_is_artifact(name, visiting),
             ExprKind::Name(_) => false,
             _ if Self::literal_or_tag_value_shape(value) => false,
+            _ if Self::literal_operation_value_shape(value) => false,
             _ => self.rhs_is_non_liftable_artifact(value, visiting),
         }
     }
@@ -519,6 +520,33 @@ impl<'a> Checker<'a> {
             | ExprKind::Match { .. }
             | ExprKind::Lambda { .. }
             | ExprKind::Block(_) => false,
+        }
+    }
+
+    pub(super) fn literal_operation_value_shape(value: &Expr) -> bool {
+        match &ungroup_expr(value).kind {
+            ExprKind::Unary {
+                operator, value, ..
+            } if matches!(operator.as_str(), "-" | "!") => {
+                Self::literal_or_tag_value_shape(value)
+                    || Self::literal_operation_value_shape(value)
+            }
+            ExprKind::Binary {
+                left,
+                operator,
+                right,
+                ..
+            } if matches!(
+                operator.as_str(),
+                "+" | "-" | "*" | "/" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+            ) =>
+            {
+                (Self::literal_or_tag_value_shape(left)
+                    || Self::literal_operation_value_shape(left))
+                    && (Self::literal_or_tag_value_shape(right)
+                        || Self::literal_operation_value_shape(right))
+            }
+            _ => false,
         }
     }
 
