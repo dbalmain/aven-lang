@@ -1,0 +1,1690 @@
+use super::*;
+
+impl<'a> Checker<'a> {
+    /// Instantiate and fully resolve a top-level binding's inferred type, used by
+    /// white-box synthesis tests. Production code consumes the generalized scheme
+    /// from `infer_top_level` directly.
+    #[cfg(test)]
+    pub(crate) fn comptime_rhs_is_non_liftable_artifact(&self, name: &str) -> bool {
+        self.comptime_artifacts.get(name).copied().unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
+        let scheme = self.infer_top_level(name)?;
+        let ty = self.unifier.instantiate_scheme(&scheme);
+        self.resolve_if_concrete(&ty)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn infer_top_level_scheme(&mut self, name: &str) -> Option<TypeScheme> {
+        self.infer_top_level(name)
+    }
+
+    pub(super) fn infer_local_value(&mut self, env: &TypeEnv, value: &Expr) -> Option<Type> {
+        let ty = self.infer(env, value);
+        self.resolve_if_concrete(&ty)
+    }
+
+    /// Fully resolve `ty`; keep it only when no metavariable remains, so a
+    /// synthesized value type never leaks an unsolved meta into checking.
+    pub(super) fn resolve_if_concrete(&self, ty: &Type) -> Option<Type> {
+        let ty = self.normalize(&self.resolve_and_default(ty));
+        is_resolved_value_type(&ty).then_some(ty)
+    }
+
+    pub(super) fn resolve_and_default(&self, ty: &Type) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        self.unifier.default_numerics(&resolved)
+    }
+
+    pub(super) fn infer_top_level(&mut self, name: &str) -> Option<TypeScheme> {
+        if let Some(scheme) = self.memo.get(name).cloned() {
+            return Some(scheme);
+        }
+        if self.in_progress.contains(name) {
+            return Some(TypeScheme::mono(Type::Deferred));
+        }
+
+        let binding = (*self.bindings.get(name)?)?;
+        self.in_progress.insert(name.to_owned());
+
+        let scheme = if let Some(annotation) = self.clean_declared_annotation(name) {
+            TypeScheme::mono(annotation)
+        } else {
+            let ty = self.infer(&TypeEnv::new(), &binding.value);
+            self.generalize_with_row_merges(self.resolve_and_default(&ty), &[], &[])
+        };
+
+        self.in_progress.remove(name);
+        self.memo.insert(name.to_owned(), scheme.clone());
+        Some(scheme)
+    }
+
+    pub(super) fn infer_top_level_without_unbound_names(
+        &mut self,
+        name: &str,
+    ) -> Option<TypeScheme> {
+        let previous = self.report_unbound_names;
+        self.report_unbound_names = false;
+        let scheme = self.infer_top_level(name);
+        self.report_unbound_names = previous;
+        scheme
+    }
+
+    pub(super) fn clean_declared_annotation(&self, name: &str) -> Option<Type> {
+        let annotation = *self.annotations.get(name)?;
+        let mut checker = self.fork_annotation_checker();
+        let lowering = checker.lower_annotation_with_diagnostics(annotation);
+        if lowering.diagnostics.is_empty() {
+            Some(checker.normalize(&lowering.ty))
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
+        let ty = match &expr.kind {
+            ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
+                self.open_literal_variant(literal)
+            }
+            ExprKind::Literal(Literal::Bool(_)) => named_builtin("Bool"),
+            ExprKind::Undefined => named_builtin("Undefined"),
+            ExprKind::Null => named_builtin("Null"),
+            ExprKind::Tag(name) => Type::Variant(Row {
+                entries: vec![RowEntry::Tag {
+                    name: name.clone(),
+                    payload: Vec::new(),
+                }],
+                tail: RowTail::Closed,
+            }),
+            ExprKind::ComptimeName(name) => self.infer_name_reference(env, name, expr.span),
+            ExprKind::Group(inner) => self.infer(env, inner),
+            ExprKind::Tuple(elements) => Type::Tuple(
+                elements
+                    .iter()
+                    .map(|element| self.infer(env, element))
+                    .collect(),
+            ),
+            ExprKind::Array(elements) => self.infer_array(env, elements),
+            ExprKind::Set(entries) => self.infer_set(env, entries),
+            ExprKind::Record(entries) => {
+                if let Some(shape) = literal_record_value(entries, expr.span) {
+                    let mut fields = Vec::new();
+                    for field in &shape.fields {
+                        let Some(value) = field.value else {
+                            return Type::Deferred;
+                        };
+                        fields.push(RowEntry::Field {
+                            name: field.name.to_owned(),
+                            ty: self.infer(env, value),
+                        });
+                    }
+                    Type::Record(Row {
+                        entries: fields,
+                        tail: RowTail::Closed,
+                    })
+                } else {
+                    self.infer_record_entries(env, entries)
+                }
+            }
+            ExprKind::Name(name) => self.infer_name_reference(env, name, expr.span),
+            ExprKind::Lambda {
+                params,
+                return_annotation,
+                body,
+            } => self.infer_lambda(env, params, return_annotation.as_deref(), body),
+            ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
+            ExprKind::Index { callee, args } => self.infer_value_index(env, callee, args),
+            ExprKind::FieldAccess {
+                receiver,
+                field,
+                field_span,
+                null_safe,
+            } => self.infer_field_access(env, receiver, field, *null_safe, *field_span),
+            ExprKind::Binary {
+                left,
+                operator,
+                right,
+                ..
+            } if operator == "|" => self.infer_set_union(env, expr),
+            ExprKind::Binary {
+                left,
+                operator,
+                right,
+                ..
+            } => self.infer_binary(env, left, operator, right),
+            ExprKind::Unary {
+                operator, value, ..
+            } => self.infer_unary(env, operator, value),
+            ExprKind::Block(items) => self.infer_block(env, items),
+            ExprKind::Match { subject, arms, .. } => self.infer_match(env, subject, arms),
+            ExprKind::Interpolation(segments) => self.infer_interpolation(env, segments),
+            ExprKind::Propagate {
+                value,
+                operator_span,
+                mode,
+            } => self.infer_propagate(env, value, *operator_span, *mode),
+            ExprKind::Missing
+            | ExprKind::Literal(_)
+            | ExprKind::Optional(_)
+            | ExprKind::Nullable(_)
+            | ExprKind::NonNull(_)
+            | ExprKind::Arrow { .. } => Type::Deferred,
+        };
+        self.record_expr_type(expr.span, &ty);
+        ty
+    }
+
+    pub(super) fn open_literal_variant(&mut self, literal: &Literal) -> Type {
+        Type::Variant(Row {
+            entries: vec![RowEntry::Literal {
+                value: literal.clone(),
+            }],
+            tail: RowTail::Var(self.unifier.fresh_row_var()),
+        })
+    }
+
+    /// Infer `value?!` / `value?^`. Both unwrap a `Result[ok, err]` to its `ok`
+    /// branch. `?^` additionally contributes the error type to the current
+    /// lambda-body propagation context; top-level `?^` has no active context and
+    /// keeps the old "unwrap to ok" typing behavior.
+    pub(super) fn infer_propagate(
+        &mut self,
+        env: &TypeEnv,
+        value: &Expr,
+        operator_span: Span,
+        mode: PropagationMode,
+    ) -> Type {
+        let inferred = self.infer(env, value);
+        let resolved = self.normalize(&self.resolve_and_default(&inferred));
+        if let Some((ok_ty, err_ty)) = result_type_args(&resolved) {
+            if mode == PropagationMode::ReturnError {
+                self.record_propagation_site(operator_span, err_ty.clone());
+            }
+            ok_ty.clone()
+        } else {
+            self.report_propagate_not_result_if_concrete(&resolved, value.span);
+            Type::Deferred
+        }
+    }
+
+    pub(super) fn infer_interpolation(
+        &mut self,
+        env: &TypeEnv,
+        segments: &[InterpolationSegment],
+    ) -> Type {
+        for segment in segments {
+            if let InterpolationSegment::Expr(expr) = segment {
+                self.infer(env, expr);
+            }
+        }
+
+        named_builtin("Text")
+    }
+
+    pub(super) fn infer_binary(
+        &mut self,
+        env: &TypeEnv,
+        left: &Expr,
+        operator: &str,
+        right: &Expr,
+    ) -> Type {
+        let snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let left_type = self.infer(env, left);
+        let right_type = self.infer(env, right);
+
+        if let Some(result) = self.infer_binary_type(operator, &left_type, &right_type) {
+            result
+        } else {
+            self.unifier.restore(snapshot);
+            self.restore_diagnostic_snapshot(diagnostic_snapshot);
+            Type::Deferred
+        }
+    }
+
+    pub(super) fn infer_binary_type(
+        &mut self,
+        operator: &str,
+        left: &Type,
+        right: &Type,
+    ) -> Option<Type> {
+        match operator {
+            "+" => self
+                .infer_numeric_binary_type(left, right)
+                .or_else(|| self.infer_same_named_binary_type(left, right, "Text")),
+            "-" | "*" | "/" | "%" | "^" => self.infer_numeric_binary_type(left, right),
+            "<" | "<=" | ">" | ">=" => self.infer_numeric_comparison_type(left, right),
+            "==" | "!=" => self.infer_equality_type(left, right),
+            "&&" | "||" => self.infer_same_named_binary_type(left, right, "Bool"),
+            _ => None,
+        }
+    }
+
+    pub(super) fn infer_numeric_binary_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
+        let left = self.widen_numeric_operand(left);
+        let right = self.widen_numeric_operand(right);
+
+        if is_meta_type(&left)
+            && is_meta_type(&right)
+            && (self.unifier.is_numeric_meta(&left) || self.unifier.is_numeric_meta(&right))
+        {
+            self.unifier.unify(&left, &right).ok()?;
+            return Some(self.unifier.resolve(&left));
+        }
+
+        match (numeric_type_name(&left), numeric_type_name(&right)) {
+            (Some("Float"), Some(_)) | (Some(_), Some("Float")) => Some(named_builtin("Float")),
+            (Some("Int"), Some("Int")) => Some(named_builtin("Int")),
+            (None, Some(right_name)) if is_meta_type(&left) => self
+                .unifier
+                .unify(&left, &named_builtin(right_name))
+                .ok()
+                .map(|()| named_builtin(right_name)),
+            (Some(left_name), None) if is_meta_type(&right) => self
+                .unifier
+                .unify(&right, &named_builtin(left_name))
+                .ok()
+                .map(|()| named_builtin(left_name)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn infer_numeric_comparison_type(
+        &mut self,
+        left: &Type,
+        right: &Type,
+    ) -> Option<Type> {
+        self.infer_numeric_binary_type(left, right)
+            .map(|_| named_builtin("Bool"))
+    }
+
+    pub(super) fn infer_same_named_binary_type(
+        &mut self,
+        left: &Type,
+        right: &Type,
+        name: &'static str,
+    ) -> Option<Type> {
+        let left = self.widen_same_named_operand(left, name);
+        let right = self.widen_same_named_operand(right, name);
+
+        match (named_type_name(&left), named_type_name(&right)) {
+            (Some(left_name), Some(right_name)) if left_name == name && right_name == name => {
+                Some(named_builtin(name))
+            }
+            (None, Some(right_name)) if right_name == name && is_meta_type(&left) => self
+                .unifier
+                .unify(&left, &named_builtin(name))
+                .ok()
+                .map(|()| named_builtin(name)),
+            (Some(left_name), None) if left_name == name && is_meta_type(&right) => self
+                .unifier
+                .unify(&right, &named_builtin(name))
+                .ok()
+                .map(|()| named_builtin(name)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn widen_numeric_operand(&mut self, ty: &Type) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        if let Type::Variant(row) = &resolved
+            && literal_variant_base(row) == Some(LiteralBase::Number)
+        {
+            return self.unifier.fresh_numeric();
+        }
+
+        resolved
+    }
+
+    pub(super) fn widen_same_named_operand(&mut self, ty: &Type, name: &'static str) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        if name == "Text"
+            && let Type::Variant(row) = &resolved
+            && literal_variant_base(row) == Some(LiteralBase::Text)
+        {
+            return named_builtin("Text");
+        }
+
+        resolved
+    }
+
+    pub(super) fn infer_equality_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
+        let left = self.unifier.resolve(left);
+        let right = self.unifier.resolve(right);
+
+        if is_meta_type(&left) && is_meta_type(&right) {
+            if self.unifier.is_numeric_meta(&left) || self.unifier.is_numeric_meta(&right) {
+                return self
+                    .unifier
+                    .unify(&left, &right)
+                    .ok()
+                    .map(|()| named_builtin("Bool"));
+            }
+            return None;
+        }
+
+        if numeric_type_name(&left).is_some() && numeric_type_name(&right).is_some() {
+            return Some(named_builtin("Bool"));
+        }
+
+        if is_meta_type(&left) && is_concrete_type(&right) {
+            return self
+                .unifier
+                .unify(&left, &right)
+                .ok()
+                .map(|()| named_builtin("Bool"));
+        }
+
+        if is_meta_type(&right) && is_concrete_type(&left) {
+            return self
+                .unifier
+                .unify(&right, &left)
+                .ok()
+                .map(|()| named_builtin("Bool"));
+        }
+
+        if is_concrete_type(&left) && is_concrete_type(&right) {
+            return self
+                .unifier
+                .unify(&left, &right)
+                .ok()
+                .map(|()| named_builtin("Bool"));
+        }
+
+        None
+    }
+
+    pub(super) fn infer_unary(&mut self, env: &TypeEnv, operator: &str, value: &Expr) -> Type {
+        let snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let value_type = self.infer(env, value);
+
+        let result = match operator {
+            "-" => self.infer_numeric_unary_type(&value_type),
+            _ => None,
+        };
+
+        if let Some(result) = result {
+            result
+        } else {
+            self.unifier.restore(snapshot);
+            self.restore_diagnostic_snapshot(diagnostic_snapshot);
+            Type::Deferred
+        }
+    }
+
+    pub(super) fn infer_numeric_unary_type(&mut self, value: &Type) -> Option<Type> {
+        let value = self.unifier.resolve(value);
+        if let Some(name) = numeric_type_name(&value) {
+            return Some(named_builtin(name));
+        }
+        self.unifier.is_numeric_meta(&value).then_some(value)
+    }
+
+    pub(super) fn infer_lambda(
+        &mut self,
+        env: &TypeEnv,
+        params: &[Param],
+        return_annotation: Option<&Expr>,
+        body: &Expr,
+    ) -> Type {
+        let mut next_env = env.clone();
+        let mut param_types = Vec::new();
+        // Defaults are trailing (per D1): the required-arity is the count of
+        // leading params without a default.
+        let mut required = params.len();
+
+        for (index, param) in params.iter().enumerate() {
+            let ty = if let Some(annotation) = &param.annotation {
+                self.lower_annotation_for_inference(annotation)
+            } else {
+                self.unifier.fresh()
+            };
+
+            if let Some(default) = &param.default {
+                required = required.min(index);
+                // Check the default against the param's type. An annotated
+                // param's default must match the annotation (a normal `type.*`
+                // diagnostic on the default); an unannotated param infers its
+                // type from the default. The default cannot reference the param
+                // itself, so use the env without it bound.
+                if param.annotation.is_some() {
+                    self.check_value_against(&ty, default);
+                } else {
+                    let inferred = self.infer(&next_env, default);
+                    let _ = self.unifier.unify(&ty, &inferred);
+                }
+            }
+
+            next_env.insert(param.name.clone(), LocalValueType::Known(ty.clone()));
+            param_types.push(ty);
+        }
+
+        self.propagation_contexts
+            .push(PropagationContext::default());
+        let body_type = self.infer(&next_env, body);
+        let propagation = self.pop_propagation_context();
+        let body_type = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
+        let result_type = if let Some(annotation) = return_annotation {
+            // A body that contradicts its return annotation defers rather than
+            // reporting here: inference only synthesizes types, and diagnosing
+            // the mismatch is a later return-annotation-checking slice.
+            let expected = self.lower_annotation_for_inference(annotation);
+            self.report_propagated_errors_against_annotation(&expected, &propagation);
+            if !self.inferred_return_type_fits_annotation(&expected, &body_type) {
+                Type::Deferred
+            } else {
+                expected
+            }
+        } else {
+            body_type
+        };
+
+        Type::Function {
+            params: param_types,
+            result: Box::new(result_type),
+            required,
+        }
+    }
+
+    pub(super) fn pop_propagation_context(&mut self) -> PropagationContext {
+        self.propagation_contexts.pop().unwrap_or_default()
+    }
+
+    pub(super) fn record_propagation_site(&mut self, span: Span, error_ty: Type) {
+        let Some(context) = self.propagation_contexts.last_mut() else {
+            return;
+        };
+        if context.sites.iter().any(|site| site.span == span) {
+            return;
+        }
+
+        context.sites.push(PropagationSite { span, error_ty });
+    }
+
+    pub(super) fn infer_body_type_for_propagation_check(&mut self, body: &Expr) -> Type {
+        let diagnostics_len = self.diagnostics.len();
+        let reported_unbound_name_spans = self.reported_unbound_name_spans.clone();
+        let inferred_types_len = self.inferred_types.len();
+        let env = self.local_types.inference_env();
+        let inferred = self.infer(&env, body);
+        let body_type = self.resolve_and_default(&inferred);
+        self.diagnostics.truncate(diagnostics_len);
+        self.reported_unbound_name_spans = reported_unbound_name_spans;
+        self.inferred_types.truncate(inferred_types_len);
+        body_type
+    }
+
+    pub(super) fn apply_propagation_context_to_body_type(
+        &mut self,
+        body: &Expr,
+        body_type: Type,
+        propagation: &PropagationContext,
+    ) -> Type {
+        if propagation.sites.is_empty() {
+            return body_type;
+        }
+
+        let Some(body_result) = self.propagation_body_result_type(body, &body_type) else {
+            let resolved = self.normalize(&self.resolve_and_default(&body_type));
+            if is_resolved_value_type(&resolved) {
+                self.report_propagate_needs_result(final_result_span(body));
+            }
+            return body_type;
+        };
+
+        let Some((ok_ty, body_error_ty)) = result_type_args(&body_result) else {
+            return body_result;
+        };
+        let ok_ty = ok_ty.clone();
+        let body_error_ty = body_error_ty.clone();
+        let error_ty = self.union_propagated_error_types(
+            std::iter::once(body_error_ty)
+                .chain(propagation.sites.iter().map(|site| site.error_ty.clone())),
+        );
+        result_type(ok_ty, error_ty)
+    }
+
+    pub(super) fn propagation_body_result_type(
+        &self,
+        body: &Expr,
+        body_type: &Type,
+    ) -> Option<Type> {
+        let resolved = self.normalize(&self.resolve_and_default(body_type));
+        if result_type_args(&resolved).is_some() {
+            return Some(resolved);
+        }
+
+        self.final_result_constructor_type(body, &resolved)
+    }
+
+    pub(super) fn final_result_constructor_type(
+        &self,
+        body: &Expr,
+        body_type: &Type,
+    ) -> Option<Type> {
+        let final_expr = final_value_expr(body)?;
+        let ExprKind::Call { callee, args } = &ungroup_expr(final_expr).kind else {
+            return None;
+        };
+        if args.len() != 1 {
+            return None;
+        }
+        let ExprKind::Tag(tag) = &ungroup_expr(callee).kind else {
+            return None;
+        };
+        let payload_ty = single_tag_payload_type(body_type, tag)?;
+
+        match tag.as_str() {
+            "Ok" => Some(result_type(payload_ty, empty_variant_type())),
+            "Err" => Some(result_type(Type::Deferred, payload_ty)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn union_propagated_error_types(
+        &mut self,
+        types: impl IntoIterator<Item = Type>,
+    ) -> Type {
+        let types: Vec<_> = types
+            .into_iter()
+            .map(|ty| self.normalize(&self.resolve_and_default(&ty)))
+            .collect();
+        let Some(first) = types.first() else {
+            return Type::Deferred;
+        };
+        if types.iter().all(|ty| ty == first) {
+            return first.clone();
+        }
+        if types.iter().any(|ty| !matches!(ty, Type::Variant(_))) {
+            return Type::Deferred;
+        }
+
+        let body_types: Vec<_> = types
+            .into_iter()
+            .map(|ty| MatchArmBodyType {
+                span: Span::new(0, 0),
+                ty,
+            })
+            .collect();
+        match self.union_match_variant_arm_body_types(&body_types) {
+            Some(MatchArmCombination::Joined(ty)) => self.normalize(&self.resolve_and_default(&ty)),
+            Some(MatchArmCombination::Conflict(_)) | None => Type::Deferred,
+        }
+    }
+
+    pub(super) fn report_propagated_errors_against_annotation(
+        &mut self,
+        expected: &Type,
+        propagation: &PropagationContext,
+    ) {
+        if propagation.sites.is_empty() {
+            return;
+        }
+
+        let expected = self.normalize(&self.resolve_and_default(expected));
+        let Some((_, expected_error_ty)) = result_type_args(&expected) else {
+            return;
+        };
+        let expected_error_ty = expected_error_ty.clone();
+        for site in &propagation.sites {
+            let actual = self.normalize(&self.resolve_and_default(&site.error_ty));
+            self.check_type_against_type(&expected_error_ty, &actual, site.span);
+        }
+    }
+
+    pub(super) fn inferred_return_type_fits_annotation(
+        &mut self,
+        expected: &Type,
+        actual: &Type,
+    ) -> bool {
+        let expected = self.normalize(&self.resolve_and_default(expected));
+        let actual = self.normalize(&self.resolve_and_default(actual));
+        let (Some((expected_ok, expected_error)), Some((actual_ok, actual_error))) =
+            (result_type_args(&expected), result_type_args(&actual))
+        else {
+            return self.unifier.unify(&actual, &expected).is_ok();
+        };
+        let expected_ok = expected_ok.clone();
+        let expected_error = expected_error.clone();
+        let actual_ok = actual_ok.clone();
+        let actual_error = actual_error.clone();
+
+        self.unifier.unify(&actual_ok, &expected_ok).is_ok()
+            && self.type_fits_boundary_without_reporting(&expected_error, &actual_error)
+    }
+
+    pub(super) fn type_fits_boundary_without_reporting(
+        &mut self,
+        expected: &Type,
+        actual: &Type,
+    ) -> bool {
+        let unifier_snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        self.check_type_against_type(expected, actual, Span::new(0, 0));
+        let accepted = self.diagnostics.len() == diagnostic_snapshot.diagnostics_len;
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
+        if !accepted {
+            self.unifier.restore(unifier_snapshot);
+        }
+        accepted
+    }
+
+    pub(super) fn infer_field_access(
+        &mut self,
+        env: &TypeEnv,
+        receiver: &Expr,
+        field: &str,
+        null_safe: bool,
+        field_span: Span,
+    ) -> Type {
+        let snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let receiver_type = self.infer(env, receiver);
+
+        // A `?T` / `T?` receiver (e.g. an array element, `arr[0]`) carries the
+        // field behind one or more empties. Peel them, read the field off the
+        // underlying record, then re-wrap the result with the same empties so the
+        // access propagates the emptiness (`?.email : ?Text`).
+        let resolved = self.normalize(&self.unifier.resolve(&receiver_type));
+        let (empties, core) = peel_empty_values(&resolved);
+        let core = core.clone();
+
+        let field_type = self.unifier.fresh();
+        let tail = self.unifier.fresh_row_var();
+        let required = Type::Record(Row {
+            entries: vec![RowEntry::Field {
+                name: field.to_owned(),
+                ty: field_type.clone(),
+            }],
+            tail: RowTail::Var(tail),
+        });
+
+        if self.unifier.unify(&core, &required).is_err() {
+            self.unifier.restore(snapshot);
+            self.restore_diagnostic_snapshot(diagnostic_snapshot);
+            return Type::Deferred;
+        }
+
+        if empties.is_empty() {
+            return field_type;
+        }
+
+        // The receiver may be empty: a plain `.field` would use the wrapped value
+        // as its underlying `T`, which is unsound — require `?.`.
+        if !null_safe {
+            self.report_unguarded_empty_field_access(receiver, field_span, &empties);
+        }
+        rewrap_empty_values(field_type, &empties)
+    }
+
+    pub(super) fn report_unguarded_empty_field_access(
+        &mut self,
+        receiver: &Expr,
+        field_span: Span,
+        empties: &[EmptyValue],
+    ) {
+        // Underline the access (`.field`), not just the field name, and name the
+        // receiver when its shape is renderable (`headers[0] may be ...`).
+        let span = Span::point(receiver.span.end).merge(field_span);
+        let subject = describe_receiver_expr(receiver)
+            .map_or_else(|| "this value".to_owned(), |text| format!("`{text}`"));
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "{subject} may be {}; accessing a field through it needs `?.`",
+                render_empty_values(empties)
+            ))
+            .with_code(codes::ty::UNGUARDED_EMPTY_ACCESS)
+            .with_label(Label::primary(
+                span,
+                "field accessed without guarding the empty",
+            ))
+            .with_note(
+                "use `?.` to propagate the empty, `??` to supply a default, or match the empty before access",
+            ),
+        );
+    }
+
+    pub(super) fn infer_call(&mut self, env: &TypeEnv, callee: &Expr, args: &[Expr]) -> Type {
+        if let ExprKind::Tag(tag) = &callee.kind {
+            return self.infer_variant_constructor(env, tag, args);
+        }
+
+        if let Some(result) = self.infer_record_selection_builtin_call(env, callee, args) {
+            return result;
+        }
+
+        if let Some(result) = self.infer_host_comptime_call(env, callee, args) {
+            return result;
+        }
+
+        if let Some(result) = self.infer_comptime_param_call(env, callee, args) {
+            return result;
+        }
+
+        let callee_type = self.infer(env, callee);
+        let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+
+        // When the callee already resolves to a function (e.g. a host global or
+        // a lambda with defaults), unify each supplied argument against the
+        // matching param and keep the function's own result. This admits an
+        // omitted trailing optional param, which a fixed-arity synthetic
+        // function type could not.
+        let resolved = self.unifier.resolve(&callee_type);
+        if let Type::Function {
+            params,
+            result,
+            required,
+        } = &resolved
+            && *required <= arg_types.len()
+            && arg_types.len() <= params.len()
+        {
+            self.check_call_arg_types_against_params(args, &arg_types, params);
+            return self.resolve_row_merge_call_result(result);
+        }
+
+        let result_type = self.unifier.fresh();
+        let expected_callee = Type::Function {
+            params: arg_types,
+            result: Box::new(result_type.clone()),
+            required: args.len(),
+        };
+
+        if self.unifier.unify(&callee_type, &expected_callee).is_err() {
+            Type::Deferred
+        } else {
+            self.resolve_row_merge_call_result(&result_type)
+        }
+    }
+
+    pub(super) fn resolve_row_merge_call_result(&mut self, result: &Type) -> Type {
+        if let Some(conflict) = self.unifier.row_merge_conflict_in_type(result) {
+            self.report_duplicate_row_label(
+                &conflict.label,
+                conflict.span,
+                DuplicateRowLabelContext::Spread,
+            );
+            Type::Deferred
+        } else {
+            self.unifier.resolve(result)
+        }
+    }
+
+    pub(super) fn check_call_arg_types_against_params(
+        &mut self,
+        args: &[Expr],
+        arg_types: &[Type],
+        params: &[Type],
+    ) -> bool {
+        let mut all_match = true;
+        for ((arg, actual), expected) in args.iter().zip(arg_types).zip(params) {
+            if self.unifier.unify(actual, expected).is_err() {
+                let expected = self.normalize(&self.resolve_and_default(expected));
+                if !self.check_call_arg_against_param(&expected, arg) {
+                    all_match = false;
+                }
+            }
+        }
+        all_match
+    }
+
+    pub(super) fn infer_host_comptime_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let name = self.comptime_callee_name(env, callee)?;
+        let spec = self.host_comptime_fn(env, &name)?;
+        let callee_type = self.infer(env, callee);
+        let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+        let resolved = self.unifier.resolve(&callee_type);
+
+        let Type::Function {
+            params, required, ..
+        } = resolved
+        else {
+            return Some(Type::Deferred);
+        };
+        if required > arg_types.len() || arg_types.len() > params.len() {
+            return Some(Type::Deferred);
+        }
+
+        let args_match = self.check_call_arg_types_against_params(args, &arg_types, &params);
+        if !self.host_comptime_args_match_params(&spec, args, &arg_types, &params) {
+            return Some(Type::Deferred);
+        }
+
+        let bindings = self.current_comptime_value_bindings();
+        let mut comptime_args = Vec::new();
+        let mut error_span = callee.span;
+        for index in &spec.comptime_params {
+            let Some(arg) = args.get(*index) else {
+                return Some(Type::Deferred);
+            };
+            let Some(argument) = self.evaluate_comptime_param_argument(arg, &bindings) else {
+                return Some(Type::Deferred);
+            };
+            error_span = arg.span;
+            comptime_args.push(ComptimeArg::from_comptime_value(argument.value));
+        }
+
+        if !args_match {
+            return Some(Type::Deferred);
+        }
+
+        match spec.resolver.resolve(&comptime_args) {
+            Ok(ty) => Some(ty),
+            Err(error) => {
+                self.report_host_comptime_error(error, error_span);
+                Some(Type::Deferred)
+            }
+        }
+    }
+
+    /// The dotted key under which a callee's host comptime resolver is
+    /// registered: a bare name (`open`) or a `Receiver.field` path
+    /// (`File.open`) when `Receiver` is an unshadowed host-record global.
+    /// `None` otherwise.
+    pub(super) fn comptime_callee_name(&self, env: &TypeEnv, callee: &Expr) -> Option<String> {
+        match &ungroup_expr(callee).kind {
+            ExprKind::Name(name) => Some(name.clone()),
+            ExprKind::FieldAccess {
+                receiver,
+                field,
+                null_safe: false,
+                ..
+            } => {
+                let receiver_name = match &ungroup_expr(receiver).kind {
+                    ExprKind::Name(name) | ExprKind::ComptimeName(name) => name,
+                    _ => return None,
+                };
+                if env.get(receiver_name).is_some() || self.bindings.contains_key(receiver_name) {
+                    return None;
+                }
+
+                let key = format!("{receiver_name}.{field}");
+                self.host_comptime_fns.contains_key(&key).then_some(key)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn host_comptime_fn(&self, env: &TypeEnv, name: &str) -> Option<HostComptimeFnSpec> {
+        if env.get(name).is_some() || self.bindings.contains_key(name) {
+            return None;
+        }
+
+        self.host_comptime_fns.get(name).cloned()
+    }
+
+    pub(super) fn host_comptime_args_match_params(
+        &mut self,
+        spec: &HostComptimeFnSpec,
+        args: &[Expr],
+        arg_types: &[Type],
+        params: &[Type],
+    ) -> bool {
+        spec.comptime_params.iter().all(|index| {
+            if args.get(*index).is_none() {
+                return false;
+            }
+            let Some(actual) = arg_types.get(*index) else {
+                return false;
+            };
+            let Some(expected) = params.get(*index) else {
+                return false;
+            };
+
+            let snapshot = self.unifier.snapshot();
+            let matches = self.unifier.unify(actual, expected).is_ok();
+            self.unifier.restore(snapshot);
+            matches
+        })
+    }
+
+    pub(super) fn report_host_comptime_error(&mut self, error: ComptimeError, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(error.message)
+                .with_code(
+                    error
+                        .code
+                        .unwrap_or_else(|| codes::comptime::HOST_FUNCTION.to_owned()),
+                )
+                .with_label(Label::primary(
+                    span,
+                    "this compile-time host function call could not be resolved",
+                )),
+        );
+    }
+
+    pub(super) fn infer_record_selection_builtin_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let name = expr_name(callee)?;
+        let kind = comptime::RecordSelectionKind::from_name(name)?;
+        if self.record_selection_builtin_is_shadowed(env, name) {
+            return None;
+        }
+
+        let [subject_arg, labels_arg] = args else {
+            return Some(Type::Deferred);
+        };
+
+        let subject = self.infer_record_selection_subject(env, subject_arg);
+        let subject_is_unresolved = self.reflection_subject_is_unresolved(&subject);
+        if subject_is_unresolved || !is_concrete_type(&subject) {
+            return Some(Type::Deferred);
+        }
+
+        if !matches!(subject, Type::Record(_)) {
+            let evaluation = comptime::evaluate_record_selection(
+                &subject,
+                &[],
+                subject_arg.span,
+                subject_is_unresolved,
+                kind,
+            );
+            self.diagnostics.extend(evaluation.diagnostics);
+            return Some(Type::Deferred);
+        }
+
+        let Some(labels) = self.evaluate_record_selection_labels(env, labels_arg) else {
+            return Some(Type::Deferred);
+        };
+
+        let evaluation = comptime::evaluate_record_selection(
+            &subject,
+            &labels,
+            subject_arg.span,
+            subject_is_unresolved,
+            kind,
+        );
+        self.diagnostics.extend(evaluation.diagnostics);
+
+        match evaluation.evaluation {
+            Evaluation::Evaluated(value) => value.into_reified_type().or(Some(Type::Deferred)),
+            Evaluation::Deferred | Evaluation::Unsupported => Some(Type::Deferred),
+        }
+    }
+
+    pub(super) fn record_selection_builtin_is_shadowed(&self, env: &TypeEnv, name: &str) -> bool {
+        env.get(name).is_some()
+            || self.bindings.contains_key(name)
+            || self.value_types.contains_key(name)
+    }
+
+    pub(super) fn infer_record_selection_subject(&mut self, env: &TypeEnv, arg: &Expr) -> Type {
+        let inferred = self.infer(env, arg);
+        let subject = self.normalize(&self.resolve_and_default(&inferred));
+        if is_concrete_type(&subject) {
+            return subject;
+        }
+
+        let mut checker = self.fork_annotation_checker();
+        let lowered = checker.lower_annotation(arg);
+        if checker.diagnostics.is_empty() {
+            let lowered = checker.normalize(&lowered);
+            if is_concrete_type(&lowered) {
+                return lowered;
+            }
+        }
+
+        subject
+    }
+
+    pub(super) fn evaluate_record_selection_labels(
+        &mut self,
+        env: &TypeEnv,
+        arg: &Expr,
+    ) -> Option<Vec<String>> {
+        let bindings = self.current_comptime_value_bindings();
+        if let Some(argument) = self.evaluate_comptime_param_argument(arg, &bindings)
+            && let comptime::ComptimeValue::LabelSet(labels) = argument.value
+        {
+            return Some(labels);
+        }
+
+        if let Some(labels) =
+            self.comptime_known_label_set_for_mode(arg, RowFoldMode::Value { env })
+        {
+            return Some(labels);
+        }
+
+        let evaluation = comptime::evaluate_type_position_with_bindings(self, arg, &bindings);
+        self.diagnostics.extend(evaluation.diagnostics);
+
+        match evaluation.evaluation {
+            Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) => Some(labels),
+            Evaluation::Evaluated(
+                comptime::ComptimeValue::ReifiedType(_)
+                | comptime::ComptimeValue::Literal(_)
+                | comptime::ComptimeValue::Bool(_),
+            )
+            | Evaluation::Deferred
+            | Evaluation::Unsupported => None,
+        }
+    }
+
+    pub(super) fn infer_comptime_param_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let (params, body) = self.comptime_param_function(callee)?;
+        if params.len() != args.len() {
+            return Some(Type::Deferred);
+        }
+
+        let mut type_bindings = HashMap::new();
+        let mut body_env = TypeEnv::new();
+        let mut param_var_metas = HashMap::new();
+
+        for (param, arg) in params.iter().zip(args).filter(|(param, _)| !param.comptime) {
+            let inferred = self.infer(env, arg);
+            let actual = self.normalize(&self.resolve_and_default(&inferred));
+
+            if let Some(annotation) = &param.annotation {
+                collect_comptime_type_bindings(annotation, &actual, &mut type_bindings);
+                // A lowercase type variable in the parameter annotation (e.g.
+                // `variant: v`, linked to a comptime domain `tagsOf(v)`) is a
+                // generic binder, not a concrete type. Instantiate its
+                // variables to fresh unification metas — shared across params so
+                // repeated names stay consistent — before checking the argument,
+                // so a rigid `Type::Variable` does not spuriously reject every
+                // call.
+                let expected = self.lower_annotation_for_inference(annotation);
+                let expected =
+                    self.instantiate_annotation_type_variables(&expected, &mut param_var_metas);
+                if self.unifier.unify(&expected, &actual).is_err() {
+                    return Some(Type::Deferred);
+                }
+            }
+
+            body_env.insert(param.name.clone(), LocalValueType::Known(actual));
+        }
+
+        let runtime_value_bindings = self.current_comptime_value_bindings();
+        let mut body_comptime_values = HashMap::new();
+
+        for (param, arg) in params.iter().zip(args).filter(|(param, _)| param.comptime) {
+            let Some(argument) =
+                self.evaluate_comptime_param_argument(arg, &runtime_value_bindings)
+            else {
+                return Some(Type::Deferred);
+            };
+            let value = argument.value.clone();
+
+            let domain = param.annotation.as_ref().and_then(|annotation| {
+                self.evaluate_comptime_param_domain(annotation, &type_bindings)
+            });
+
+            let diagnostics_before_domain_check = self.diagnostics.len();
+            if let Some(row) = domain.as_ref().and_then(literal_union_domain_row) {
+                match &value {
+                    comptime::ComptimeValue::Literal(literal) => {
+                        self.check_literal_value_against_variant(row, literal, arg.span);
+                    }
+                    comptime::ComptimeValue::LabelSet(labels) => {
+                        if let Some(members) = &argument.label_set_members {
+                            for member in members {
+                                self.check_literal_value_against_variant(
+                                    row,
+                                    &member.literal,
+                                    member.span,
+                                );
+                            }
+                        } else {
+                            for label in labels {
+                                let literal = label_literal(label);
+                                self.check_literal_value_against_variant(row, &literal, arg.span);
+                            }
+                        }
+                    }
+                    comptime::ComptimeValue::ReifiedType(_) | comptime::ComptimeValue::Bool(_) => {}
+                }
+            }
+            if self.diagnostics.len() > diagnostics_before_domain_check {
+                return Some(Type::Deferred);
+            }
+
+            let value_type = value
+                .clone()
+                .reify_type_position()
+                .into_reified_type()
+                .or(domain)
+                .unwrap_or(Type::Deferred);
+
+            body_env.insert(param.name.clone(), LocalValueType::Known(value_type));
+            body_comptime_values.insert(param.name.clone(), value.clone());
+        }
+
+        self.local_comptime_values.push(body_comptime_values);
+        let result = self.infer(&body_env, body);
+        self.local_comptime_values.pop();
+
+        Some(self.resolve_and_default(&result))
+    }
+
+    pub(super) fn evaluate_comptime_param_argument(
+        &self,
+        arg: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<ComptimeArgument> {
+        match comptime::evaluate_runtime_value(arg, bindings).evaluation {
+            Evaluation::Evaluated(value) => {
+                return Some(ComptimeArgument {
+                    value,
+                    label_set_members: None,
+                });
+            }
+            Evaluation::Deferred | Evaluation::Unsupported => {}
+        }
+
+        let members = self.concrete_label_set_members(arg, bindings)?;
+        let labels = members.iter().map(|member| member.label.clone()).collect();
+        Some(ComptimeArgument {
+            value: comptime::ComptimeValue::LabelSet(labels),
+            label_set_members: Some(members),
+        })
+    }
+
+    pub(super) fn comptime_param_function(&self, callee: &Expr) -> Option<(&'a [Param], &'a Expr)> {
+        let name = expr_name(callee)?;
+        let binding = (*self.bindings.get(name)?)?;
+        let (params, body) = lambda_parts(&binding.value)?;
+        params
+            .iter()
+            .any(|param| param.comptime)
+            .then_some((params, body))
+    }
+
+    pub(super) fn evaluate_comptime_param_domain(
+        &mut self,
+        annotation: &Expr,
+        type_bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<Type> {
+        let evaluation =
+            comptime::evaluate_type_position_with_bindings(self, annotation, type_bindings);
+        self.diagnostics.extend(evaluation.diagnostics);
+
+        match evaluation.evaluation {
+            Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
+            Evaluation::Deferred | Evaluation::Unsupported => None,
+        }
+    }
+
+    pub(super) fn infer_value_index(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Type {
+        let [arg] = args else {
+            return Type::Deferred;
+        };
+
+        let callee_type = self.infer(env, callee);
+        let callee_type = self.normalize(&self.unifier.resolve(&callee_type));
+        match callee_type {
+            Type::Record(row) => self.infer_record_index(&row, arg),
+            Type::Tuple(elements) => self.infer_tuple_index(&elements, arg),
+            Type::Apply { callee, args }
+                if args.len() == 1
+                    && matches!(callee.as_ref(), Type::Named(name) if name == "Array") =>
+            {
+                // Array indexing accepts a runtime index that may be out of
+                // bounds, so the result is optional (`?a`): an absent element
+                // yields `undefined`.
+                Type::Optional(Box::new(args[0].clone()))
+            }
+            _ => Type::Deferred,
+        }
+    }
+
+    /// Record indexing with a comptime-known key reads the exact field type from
+    /// a closed row, just like `record.field`.
+    pub(super) fn infer_record_index(&self, row: &Row, arg: &Expr) -> Type {
+        if row.tail != RowTail::Closed {
+            return Type::Deferred;
+        }
+        let Some(label) = self.comptime_known_label(arg) else {
+            return Type::Deferred;
+        };
+        row_field_type(row, &label)
+            .cloned()
+            .unwrap_or(Type::Deferred)
+    }
+
+    /// Tuple projection requires a comptime-known integer index and returns the
+    /// element type directly (an in-range element is always present, so no `?`).
+    pub(super) fn infer_tuple_index(&mut self, elements: &[Type], arg: &Expr) -> Type {
+        let Some(index) = comptime_known_tuple_index(arg) else {
+            self.report_tuple_index_not_comptime(arg.span);
+            return Type::Deferred;
+        };
+        match elements.get(index) {
+            Some(ty) => ty.clone(),
+            None => {
+                self.report_tuple_index_out_of_range(arg.span, index, elements.len());
+                Type::Deferred
+            }
+        }
+    }
+
+    pub(super) fn comptime_known_label(&self, expr: &Expr) -> Option<String> {
+        match &ungroup_expr(expr).kind {
+            ExprKind::Literal(Literal::String(text)) => string_literal_label(text),
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => self
+                .lookup_comptime_value(name)
+                .and_then(comptime_value_label),
+            _ => None,
+        }
+    }
+
+    pub(super) fn comptime_known_label_set(&self, expr: &Expr) -> Option<Vec<String>> {
+        match &ungroup_expr(expr).kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => self
+                .lookup_comptime_value(name)
+                .and_then(comptime_value_label_set),
+            ExprKind::Set(_) => {
+                let bindings = self.current_comptime_value_bindings();
+                self.concrete_label_set_members(expr, &bindings)
+                    .map(|members| members.into_iter().map(|member| member.label).collect())
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn comptime_known_label_set_for_mode(
+        &self,
+        expr: &Expr,
+        mode: RowFoldMode<'_>,
+    ) -> Option<Vec<String>> {
+        self.comptime_known_label_set(expr).or_else(|| match mode {
+            RowFoldMode::Annotation => self.comptime_known_reflection_reified_type(expr),
+            RowFoldMode::Value { env } => self.comptime_known_reflection_value(expr, env),
+        })
+    }
+
+    pub(super) fn comptime_known_reflection_reified_type(
+        &self,
+        expr: &Expr,
+    ) -> Option<Vec<String>> {
+        let ExprKind::Call { callee, args } = &ungroup_expr(expr).kind else {
+            return None;
+        };
+        let reflection = LabelReflection::from_name(expr_name(callee)?)?;
+
+        let [arg] = args.as_slice() else {
+            return None;
+        };
+        let subject = self.lookup_comptime_reified_type_expr(arg)?;
+        let subject = self.normalize(&subject);
+
+        let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) = reflection
+            .evaluate(
+                &subject,
+                arg.span,
+                self.reflection_subject_is_unresolved(&subject),
+            )
+            .evaluation
+        else {
+            return None;
+        };
+
+        Some(labels)
+    }
+
+    pub(super) fn comptime_known_reflection_value(
+        &self,
+        expr: &Expr,
+        env: &TypeEnv,
+    ) -> Option<Vec<String>> {
+        let ExprKind::Call { callee, args } = &ungroup_expr(expr).kind else {
+            return None;
+        };
+        let reflection = LabelReflection::from_name(expr_name(callee)?)?;
+
+        let [arg] = args.as_slice() else {
+            return None;
+        };
+        let name = expr_name(arg)?;
+        let LocalValueType::Known(subject) = env.get(name)? else {
+            return None;
+        };
+        let subject = self.normalize(&self.unifier.resolve(subject));
+
+        let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) = reflection
+            .evaluate(
+                &subject,
+                arg.span,
+                self.reflection_subject_is_unresolved(&subject),
+            )
+            .evaluation
+        else {
+            return None;
+        };
+
+        Some(labels)
+    }
+
+    pub(super) fn lookup_comptime_value(&self, name: &str) -> Option<&comptime::ComptimeValue> {
+        self.local_comptime_values
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+    }
+
+    pub(super) fn current_comptime_value_bindings(
+        &self,
+    ) -> HashMap<String, comptime::ComptimeValue> {
+        let mut bindings = HashMap::new();
+        for scope in &self.local_comptime_values {
+            bindings.extend(scope.clone());
+        }
+        bindings
+    }
+
+    pub(super) fn concrete_label_set_members(
+        &self,
+        expr: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<Vec<LabelSetMember>> {
+        let ExprKind::Set(entries) = &ungroup_expr(expr).kind else {
+            return None;
+        };
+        let elements = literal_set_elements(entries)?;
+        let mut members = Vec::new();
+
+        for element in elements {
+            let Evaluation::Evaluated(comptime::ComptimeValue::Literal(literal)) =
+                comptime::evaluate_runtime_value(element, bindings).evaluation
+            else {
+                return None;
+            };
+            let Literal::String(text) = &literal else {
+                return None;
+            };
+            let label = string_literal_label(text)?;
+            members.push(LabelSetMember {
+                label,
+                literal,
+                span: element.span,
+            });
+        }
+
+        Some(members)
+    }
+
+    pub(super) fn infer_name_reference(&mut self, env: &TypeEnv, name: &str, span: Span) -> Type {
+        if let Some(local) = env.get(name).cloned() {
+            return match local {
+                LocalValueType::Known(ty) => ty,
+                LocalValueType::Scheme(scheme) => self.unifier.instantiate_scheme(&scheme),
+                LocalValueType::Unknown => Type::Deferred,
+            };
+        }
+
+        if let Some(scheme) = self.infer_top_level(name) {
+            return self.unifier.instantiate_scheme(&scheme);
+        }
+
+        // Seeded host globals have no binding to infer from; read their
+        // published scheme so the inference path sees the same type as the
+        // directed-checking path. A declared name whose published type was
+        // withheld (e.g. a duplicate top-level declaration, deferred until
+        // overload selection exists) is still *bound* — resolve it to a deferred
+        // type rather than letting it fall through and be reported as unbound,
+        // which would cascade an error onto every later use.
+        if let Some(scheme) = self.value_types.get(name).cloned() {
+            return match scheme {
+                Some(scheme) => self.unifier.instantiate_scheme(&scheme),
+                None => Type::Deferred,
+            };
+        }
+
+        if name_is_placeholder(name)
+            || builtin_value_name_is_bound(name)
+            || self.known_types.contains(name)
+        {
+            return Type::Deferred;
+        }
+
+        self.report_unbound_name(name, span);
+        Type::Deferred
+    }
+
+    pub(super) fn report_unbound_name(&mut self, name: &str, span: Span) {
+        if !self.report_unbound_names {
+            return;
+        }
+
+        if !self.reported_unbound_name_spans.insert(span) {
+            return;
+        }
+
+        self.diagnostics.push(
+            Diagnostic::error(format!("unbound name `{name}`"))
+                .with_code(codes::name::UNBOUND)
+                .with_label(Label::primary(span, "this name is not bound"))
+                .with_note(format!(
+                    "check the spelling, or define `{name}` before it is used"
+                )),
+        );
+    }
+
+    pub(super) fn report_unused_result_if_dropped(&mut self, env: &TypeEnv, expr: &Expr) {
+        let unifier_snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let inferred_types_len = self.inferred_types.len();
+        let inferred = self.infer(env, expr);
+        let resolved = self.resolve_and_default(&inferred);
+        self.unifier.restore(unifier_snapshot);
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
+        self.inferred_types.truncate(inferred_types_len);
+
+        if is_result_type(&resolved) {
+            self.report_unused_result(expr.span);
+        }
+    }
+
+    pub(super) fn report_unused_result(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::warning("unused `Result`")
+                .with_code(codes::ty::UNUSED_RESULT)
+                .with_label(Label::primary(span, "this `Result` is unused"))
+                .with_note(
+                    "unwrap it with `?!` (panic on `@Err`), propagate it with `?^`, or discard it explicitly with `_ =`.",
+                ),
+        );
+    }
+
+    pub(super) fn infer_variant_constructor(
+        &mut self,
+        env: &TypeEnv,
+        tag: &str,
+        args: &[Expr],
+    ) -> Type {
+        let mut payload = Vec::new();
+
+        for arg in args {
+            let arg_type = self.infer(env, arg);
+            let arg_type = self.unifier.resolve(&arg_type);
+            let numeric_metas_only = has_only_meta_unknowns(&arg_type)
+                && free_metas(&arg_type)
+                    .into_iter()
+                    .all(|id| self.unifier.is_numeric_meta(&Type::Meta(id)));
+            if !is_resolved_value_type(&arg_type) && !numeric_metas_only {
+                return Type::Deferred;
+            }
+            payload.push(arg_type);
+        }
+
+        Type::Variant(Row {
+            entries: vec![RowEntry::Tag {
+                name: tag.to_owned(),
+                payload,
+            }],
+            tail: RowTail::Closed,
+        })
+    }
+
+    pub(super) fn infer_array(&mut self, env: &TypeEnv, elements: &[Expr]) -> Type {
+        self.infer_collection(env, elements, "Array")
+    }
+
+    pub(super) fn infer_set(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
+        let Some(elements) = literal_set_elements(entries) else {
+            return Type::Deferred;
+        };
+        self.infer_collection(env, elements, "Set")
+    }
+
+    pub(super) fn infer_set_union(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
+        let Some(parts) = value_set_union_parts(expr) else {
+            return Type::Deferred;
+        };
+
+        let element_type = self.unifier.fresh();
+        for part in parts {
+            let item_type = self.infer_set_union_part_type(env, part);
+            if self.unifier.unify(&element_type, &item_type).is_err() {
+                return Type::Deferred;
+            }
+        }
+
+        Type::Apply {
+            callee: Box::new(Type::Named("Set".to_owned())),
+            args: vec![element_type],
+        }
+    }
+
+    pub(super) fn infer_set_union_part_type(
+        &mut self,
+        env: &TypeEnv,
+        part: SetUnionPart<'_>,
+    ) -> Type {
+        let ty = self.infer(env, part.expr());
+        if part.promotes_singleton() {
+            return ty;
+        }
+
+        self.set_operand_element_type(&ty).unwrap_or(ty)
+    }
+
+    pub(super) fn set_operand_element_type(&mut self, ty: &Type) -> Option<Type> {
+        let resolved = self.resolve_and_default(ty);
+        match self.normalize(&resolved) {
+            Type::Apply { callee, args }
+                if args.len() == 1
+                    && matches!(callee.as_ref(), Type::Named(name) if name == "Set") =>
+            {
+                Some(args[0].clone())
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn infer_collection<'b>(
+        &mut self,
+        env: &TypeEnv,
+        elements: impl IntoIterator<Item = &'b Expr>,
+        name: &str,
+    ) -> Type {
+        let element_type = self.unifier.fresh();
+        for element in elements {
+            let item_type = self.infer(env, element);
+            if self.unifier.unify(&element_type, &item_type).is_err() {
+                return Type::Deferred;
+            }
+        }
+
+        Type::Apply {
+            callee: Box::new(Type::Named(name.to_owned())),
+            args: vec![element_type],
+        }
+    }
+
+    pub(super) fn infer_block(&mut self, env: &TypeEnv, items: &[Item]) -> Type {
+        let mut next_env = env.clone();
+
+        for item in merged_items(items) {
+            match item {
+                MergedItem::Binding { signature, binding } => {
+                    let local_type = signature
+                        .map(|signature| self.lower_annotation_for_inference(&signature.annotation))
+                        .or_else(|| {
+                            binding
+                                .annotation
+                                .as_ref()
+                                .map(|annotation| self.lower_annotation_for_inference(annotation))
+                        })
+                        .map(LocalValueType::Known)
+                        .unwrap_or_else(|| {
+                            let inferred = self.infer(&next_env, &binding.value);
+                            let resolved = self.resolve_and_default(&inferred);
+                            let env_metas = free_metas_in_local_values(next_env.values(), |ty| {
+                                self.unifier.resolve(ty)
+                            });
+                            let env_row_vars =
+                                free_row_vars_in_local_values(next_env.values(), |ty| {
+                                    self.unifier.resolve(ty)
+                                });
+                            let scheme = self.generalize_with_row_merges(
+                                resolved,
+                                &env_metas,
+                                &env_row_vars,
+                            );
+                            if type_contains_deferred(&scheme.ty) {
+                                LocalValueType::Unknown
+                            } else {
+                                LocalValueType::Scheme(scheme)
+                            }
+                        });
+                    next_env.insert(binding.name.clone(), local_type);
+                }
+                MergedItem::Signature(signature) => {
+                    let ty = self.lower_annotation_for_inference(&signature.annotation);
+                    next_env.insert(signature.name.clone(), LocalValueType::Known(ty));
+                }
+                MergedItem::Expr(_) => {}
+            }
+        }
+
+        match items.last() {
+            Some(Item::Expr(expr)) => self.infer(&next_env, expr),
+            _ => Type::Deferred,
+        }
+    }
+    pub(super) fn lower_annotation_for_inference(&self, annotation: &Expr) -> Type {
+        let mut checker = self.fork_annotation_checker();
+        let ty = checker.lower_annotation(annotation);
+        checker.normalize(&ty)
+    }
+
+    /// Replace each `Type::Variable` (a generic type binder from a parameter
+    /// annotation) with a fresh unification meta, reusing `metas` so a name that
+    /// appears in several positions instantiates to the same meta.
+    pub(super) fn instantiate_annotation_type_variables(
+        &mut self,
+        ty: &Type,
+        metas: &mut HashMap<String, Type>,
+    ) -> Type {
+        map_type(ty, &mut |node| match node {
+            Type::Variable(name) => Some(
+                metas
+                    .entry(name.clone())
+                    .or_insert_with(|| self.unifier.fresh())
+                    .clone(),
+            ),
+            _ => None,
+        })
+    }
+}

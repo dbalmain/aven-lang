@@ -5,6 +5,7 @@ mod lexer;
 mod names;
 mod parser;
 mod resolve;
+mod strings;
 mod walk;
 
 pub use declarations::{
@@ -24,4 +25,6 @@ pub use parser::{
 };
 pub use resolve::{BindingSite, annotation_for_definition, pattern_bindings, render_annotation};
 pub use resolve::{resolve_local_definition, resolve_local_references, visible_local_bindings};
+pub(crate) use strings::decode_string_fragment;
+pub use strings::decode_string_literal;
 pub use walk::{find_map_expr_children, walk_expr_children};

@@ -1262,7 +1262,9 @@ impl Parser<'_> {
                 TokenKind::InterpolationMiddle(text) => {
                     self.advance();
                     end = token.span.end;
-                    segments.push(InterpolationSegment::Text(text));
+                    segments.push(InterpolationSegment::Text(crate::decode_string_fragment(
+                        &text,
+                    )));
                 }
                 TokenKind::InterpolationEnd(text) => {
                     self.advance();
@@ -2434,11 +2436,11 @@ fn literal_expr(literal: Literal, span: Span) -> Expr {
 }
 
 fn interpolation_start_text(text: &str) -> String {
-    text.strip_prefix('"').unwrap_or(text).to_owned()
+    crate::decode_string_fragment(text.strip_prefix('"').unwrap_or(text))
 }
 
 fn interpolation_end_text(text: &str) -> String {
-    text.strip_suffix('"').unwrap_or(text).to_owned()
+    crate::decode_string_fragment(text.strip_suffix('"').unwrap_or(text))
 }
 
 fn collection_type_application(

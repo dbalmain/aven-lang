@@ -59,6 +59,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "The lexer found a character that is not part of Aven source syntax. Remove it or rewrite it using a supported literal, identifier, or operator form.",
     },
     DiagnosticExplanation {
+        code: codes::lex::UNKNOWN_ESCAPE,
+        text: "A string literal contains an unsupported or malformed escape sequence. Use one of the supported escapes: \\\\, \\\", \\n, \\r, \\t, or \\u{H} with a valid Unicode scalar value.",
+    },
+    DiagnosticExplanation {
         code: codes::lex::UNTERMINATED_INTERPOLATION,
         text: "A string interpolation was opened but the interpolated string did not reach its closing quote. Close the interpolation with } and close the surrounding string with a quote.",
     },

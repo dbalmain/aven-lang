@@ -3885,6 +3885,30 @@ fn computed_value_index_with_literal_key_infers_concrete_record_field_type() {
 }
 
 #[test]
+fn quoted_computed_record_labels_decode_string_escapes() {
+    let output = parse_module("record = { [\"a\\\"b\"]: 1 }\nvalue = record[\"a\\\"b\"]\n");
+    assert!(output.diagnostics.is_empty());
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    let record = checker
+        .infer_top_level_scheme("record")
+        .expect("record scheme")
+        .ty;
+    let Type::Record(row) = record else {
+        panic!("record should infer a record type");
+    };
+    assert_eq!(row.entries.len(), 1);
+    assert_eq!(row_label(&row.entries[0]), "a\"b");
+    assert_eq!(
+        render_top_level_value(&mut checker, "value"),
+        Some("1".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
 fn computed_value_index_with_runtime_key_defers_without_diagnostic() {
     let output = parse_module("user = { name: \"Ada\" }\nkey = \"name\"\nvalue = user[key]\n");
     let known_types = known_type_names(&output.module);

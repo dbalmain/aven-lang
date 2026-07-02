@@ -362,24 +362,14 @@ impl Lexer<'_> {
     fn scan_string(&mut self) {
         let start = self.offset;
         self.offset += 1;
-        let mut escaped = false;
 
         while self.offset < self.source.len() {
             let Some(ch) = self.current_char() else {
                 break;
             };
 
-            if escaped {
-                escaped = false;
-                self.offset += ch.len_utf8();
-                continue;
-            }
-
             match ch {
-                '\\' => {
-                    escaped = true;
-                    self.offset += 1;
-                }
+                '\\' => self.scan_string_escape(),
                 '$' if self.peek_byte(1) == Some(b'{') => {
                     let interpolation_start = self.offset;
                     self.push(
@@ -411,24 +401,14 @@ impl Lexer<'_> {
 
     fn scan_string_continuation(&mut self) {
         let start = self.offset;
-        let mut escaped = false;
 
         while self.offset < self.source.len() {
             let Some(ch) = self.current_char() else {
                 break;
             };
 
-            if escaped {
-                escaped = false;
-                self.offset += ch.len_utf8();
-                continue;
-            }
-
             match ch {
-                '\\' => {
-                    escaped = true;
-                    self.offset += 1;
-                }
+                '\\' => self.scan_string_escape(),
                 '$' if self.peek_byte(1) == Some(b'{') => {
                     let interpolation_start = self.offset;
                     self.push(
@@ -456,6 +436,96 @@ impl Lexer<'_> {
         }
 
         self.push_unterminated_interpolation_fragment(start);
+    }
+
+    fn scan_string_escape(&mut self) {
+        let escape_start = self.offset;
+        self.offset += 1;
+
+        let Some(ch) = self.current_char() else {
+            return;
+        };
+
+        match ch {
+            'n' | 'r' | 't' | '"' | '\\' => {
+                self.offset += ch.len_utf8();
+            }
+            'u' => self.scan_unicode_escape(escape_start),
+            _ => {
+                self.offset += ch.len_utf8();
+                self.push_unknown_escape_diagnostic(
+                    Span::new(escape_start, self.offset),
+                    "this escape is not supported",
+                );
+            }
+        }
+    }
+
+    fn scan_unicode_escape(&mut self, escape_start: usize) {
+        self.offset += 1;
+
+        if self.current_byte() != Some(b'{') {
+            self.push_unknown_escape_diagnostic(
+                Span::new(escape_start, self.offset),
+                "unicode escapes must use `\\u{H}`",
+            );
+            return;
+        }
+
+        self.offset += 1;
+        let hex_start = self.offset;
+        let mut hex = String::new();
+        let mut valid_hex = true;
+
+        while let Some(ch) = self.current_char() {
+            if matches!(ch, '"' | '\n' | '\r') || (ch == '$' && self.peek_byte(1) == Some(b'{')) {
+                self.push_unknown_escape_diagnostic(
+                    Span::new(escape_start, self.offset),
+                    "unterminated unicode escape",
+                );
+                return;
+            }
+
+            if ch == '}' {
+                self.offset += 1;
+                if hex_start == self.offset.saturating_sub(1)
+                    || !valid_hex
+                    || u32::from_str_radix(&hex, 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .is_none()
+                {
+                    self.push_unknown_escape_diagnostic(
+                        Span::new(escape_start, self.offset),
+                        "malformed unicode escape",
+                    );
+                }
+                return;
+            }
+
+            if ch.is_ascii_hexdigit() {
+                hex.push(ch);
+            } else {
+                valid_hex = false;
+            }
+            self.offset += ch.len_utf8();
+        }
+
+        self.push_unknown_escape_diagnostic(
+            Span::new(escape_start, self.offset),
+            "unterminated unicode escape",
+        );
+    }
+
+    fn push_unknown_escape_diagnostic(&mut self, span: Span, label: &'static str) {
+        self.diagnostics.push(
+            Diagnostic::error("unknown string escape")
+                .with_code(codes::lex::UNKNOWN_ESCAPE)
+                .with_label(Label::primary(span, label))
+                .with_note(
+                    "supported escapes are `\\\\`, `\\\"`, `\\n`, `\\r`, `\\t`, and `\\u{H}`",
+                ),
+        );
     }
 
     fn push_unterminated_string(&mut self, start: usize) {
@@ -960,6 +1030,8 @@ fn is_path_end_byte(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use aven_core::Span;
+
     use super::{Keyword, TokenKind, is_identifier, lex_source};
 
     #[test]
@@ -1063,11 +1135,15 @@ mod tests {
     }
 
     #[test]
-    fn escaped_interpolation_marker_stays_a_plain_string() {
+    fn escaped_interpolation_marker_recovers_as_a_plain_string() {
         let output = lex_source(r#""\${x}""#);
         let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
 
-        assert!(output.diagnostics.is_empty());
+        assert_eq!(output.diagnostics.len(), 1);
+        assert_eq!(
+            output.diagnostics[0].code.as_deref(),
+            Some("lex.unknown-escape")
+        );
         assert_eq!(
             tokens,
             vec![TokenKind::StringLiteral(r#""\${x}""#.to_owned())]
@@ -1103,6 +1179,25 @@ mod tests {
                 .collect();
 
             assert_eq!(codes, vec!["lex.unterminated-interpolation"]);
+        }
+    }
+
+    #[test]
+    fn reports_unknown_and_malformed_string_escapes() {
+        for (source, span) in [
+            (r#""\q""#, Span::new(1, 3)),
+            (r#""\u""#, Span::new(1, 3)),
+            (r#""\u{zz}""#, Span::new(1, 7)),
+            (r#""\u{41""#, Span::new(1, 6)),
+        ] {
+            let output = lex_source(source);
+
+            assert_eq!(output.diagnostics.len(), 1);
+            assert_eq!(
+                output.diagnostics[0].code.as_deref(),
+                Some("lex.unknown-escape")
+            );
+            assert_eq!(output.diagnostics[0].labels[0].span, span);
         }
     }
 }

@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{Expr, ExprKind, Literal, Param};
 
+use crate::checker::string_literal_label;
 use crate::ty::{Row, RowEntry, RowTail, Type, is_concrete_type};
 
 const DEFAULT_EVALUATION_FUEL: usize = 128;
@@ -692,12 +693,6 @@ fn label_set_type(labels: Vec<String>) -> Type {
             .collect(),
         tail: RowTail::Closed,
     })
-}
-
-fn string_literal_label(text: &str) -> Option<String> {
-    text.strip_prefix('"')
-        .and_then(|text| text.strip_suffix('"'))
-        .map(str::to_owned)
 }
 
 fn literal_type(literal: Literal) -> Type {

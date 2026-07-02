@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use aven_parser::Literal;
+use aven_parser::{Literal, decode_string_literal};
 
 use crate::comptime;
 use crate::ty::Type;
@@ -144,42 +144,4 @@ impl HostGlobals {
             comptime_fns: Vec::new(),
         }
     }
-}
-
-fn decode_string_literal(text: &str) -> String {
-    let inner = text
-        .strip_prefix('"')
-        .and_then(|stripped| stripped.strip_suffix('"'))
-        .unwrap_or(text);
-
-    decode_string_body(inner)
-}
-
-fn decode_string_body(text: &str) -> String {
-    let mut decoded = String::new();
-    let mut escaped = false;
-
-    for ch in text.chars() {
-        if escaped {
-            decoded.push(match ch {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '"' => '"',
-                '\\' => '\\',
-                other => other,
-            });
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else {
-            decoded.push(ch);
-        }
-    }
-
-    if escaped {
-        decoded.push('\\');
-    }
-
-    decoded
 }
