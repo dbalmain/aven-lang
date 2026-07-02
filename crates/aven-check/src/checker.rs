@@ -3,8 +3,8 @@ use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
-    MatchArm, MergedItem, Module, Param, RecordEntry, Signature, collect_declarations,
-    merged_items, pattern_bindings, walk_expr_children,
+    MatchArm, MergedItem, Module, Param, PropagationMode, RecordEntry, Signature,
+    collect_declarations, merged_items, pattern_bindings, walk_expr_children,
 };
 
 use crate::BUILTIN_TYPES;
@@ -51,6 +51,7 @@ pub(crate) struct Checker<'a> {
     report_unbound_names: bool,
     report_unresolved_bindings: bool,
     reported_unbound_name_spans: HashSet<Span>,
+    propagation_contexts: Vec<PropagationContext>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
 }
@@ -59,6 +60,18 @@ pub(crate) struct Checker<'a> {
 struct DiagnosticSnapshot {
     diagnostics_len: usize,
     reported_unbound_name_spans: HashSet<Span>,
+    propagation_context_site_counts: Vec<usize>,
+}
+
+#[derive(Debug, Default)]
+struct PropagationContext {
+    sites: Vec<PropagationSite>,
+}
+
+#[derive(Debug, Clone)]
+struct PropagationSite {
+    span: Span,
+    error_ty: Type,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +136,7 @@ impl<'a> Checker<'a> {
             report_unbound_names: true,
             report_unresolved_bindings: true,
             reported_unbound_name_spans: HashSet::new(),
+            propagation_contexts: Vec::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
         }
@@ -883,12 +897,26 @@ impl<'a> Checker<'a> {
         DiagnosticSnapshot {
             diagnostics_len: self.diagnostics.len(),
             reported_unbound_name_spans: self.reported_unbound_name_spans.clone(),
+            propagation_context_site_counts: self
+                .propagation_contexts
+                .iter()
+                .map(|context| context.sites.len())
+                .collect(),
         }
     }
 
     fn restore_diagnostic_snapshot(&mut self, snapshot: DiagnosticSnapshot) {
         self.diagnostics.truncate(snapshot.diagnostics_len);
         self.reported_unbound_name_spans = snapshot.reported_unbound_name_spans;
+        for (context, site_count) in self
+            .propagation_contexts
+            .iter_mut()
+            .zip(&snapshot.propagation_context_site_counts)
+        {
+            context.sites.truncate(*site_count);
+        }
+        self.propagation_contexts
+            .truncate(snapshot.propagation_context_site_counts.len());
     }
 
     fn push_type_mismatch_diagnostic(&mut self, diagnostic: Diagnostic) {
@@ -899,6 +927,22 @@ impl<'a> Checker<'a> {
                     && existing.labels.first().map(|label| label.span) == Some(span)
             })
         }) {
+            return;
+        }
+
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn push_unique_diagnostic(&mut self, diagnostic: Diagnostic) {
+        let code = diagnostic.code.as_deref();
+        let primary_span = diagnostic.labels.first().map(|label| label.span);
+        if code.is_some()
+            && primary_span.is_some()
+            && self.diagnostics.iter().any(|existing| {
+                existing.code.as_deref() == code
+                    && existing.labels.first().map(|label| label.span) == primary_span
+            })
+        {
             return;
         }
 
@@ -944,6 +988,9 @@ impl<'a> Checker<'a> {
             ExprKind::Block(items) => self.check_items(items),
             ExprKind::Match { subject, arms, .. } => {
                 self.check_match_arms(subject, arms, None);
+            }
+            ExprKind::Propagate { value, .. } => {
+                self.check_propagate_value_expr(value);
             }
             ExprKind::Call { callee, args } => self.check_value_call(callee, args),
             ExprKind::FieldAccess {
@@ -1037,6 +1084,17 @@ impl<'a> Checker<'a> {
             .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == field));
         if !has_field {
             self.report_missing_field(field, span);
+        }
+    }
+
+    fn check_propagate_value_expr(&mut self, value: &Expr) {
+        self.check_value_expr(value);
+
+        let env = self.local_types.inference_env();
+        let inferred = self.infer(&env, value);
+        let resolved = self.normalize(&self.resolve_and_default(&inferred));
+        if result_type_args(&resolved).is_none() {
+            self.report_propagate_not_result_if_concrete(&resolved, value.span);
         }
     }
 
@@ -1505,6 +1563,20 @@ impl<'a> Checker<'a> {
             (ExprKind::Tag(tag), Type::Variant(type_entries)) => {
                 self.check_variant_value_against(type_entries, tag, &[], value.span);
             }
+            (ExprKind::Call { callee, args }, expected) if is_result_type(expected) => {
+                if let Some(tag) = result_constructor_tag(callee) {
+                    self.check_result_constructor_value_against(expected, tag, args, value.span);
+                } else {
+                    self.check_value_expr(value);
+                    let env = self.local_types.inference_env();
+                    let diagnostics_start = self.diagnostics.len();
+                    let actual = self.infer_local_value(&env, value);
+                    self.deduplicate_diagnostics_since(diagnostics_start);
+                    if let Some(actual) = actual {
+                        self.check_type_against_type(expected, &actual, value.span);
+                    }
+                }
+            }
             (ExprKind::Call { callee, args }, Type::Variant(type_entries))
                 if matches!(&callee.kind, ExprKind::Tag(_)) =>
             {
@@ -1667,7 +1739,13 @@ impl<'a> Checker<'a> {
             self.local_types
                 .define(&param.name, LocalValueType::Known(ty));
         }
+        self.propagation_contexts
+            .push(PropagationContext::default());
         self.check_value_against(&body_expected, body);
+        let body_type = self.infer_body_type_for_propagation_check(body);
+        let propagation = self.pop_propagation_context();
+        let _ = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
+        self.report_propagated_errors_against_annotation(&body_expected, &propagation);
         self.local_comptime_params.pop();
         self.local_types.pop();
     }
@@ -1789,6 +1867,9 @@ impl<'a> Checker<'a> {
                 for (expected, actual) in expected_args.iter().zip(actual_args) {
                     self.check_type_against_type(expected, actual, span);
                 }
+            }
+            (expected, Type::Variant(actual)) if is_result_type(expected) => {
+                self.check_result_variant_type_against_result(expected, actual, span);
             }
             (Type::Apply { .. }, actual) if reportable_type_shape(actual) => {
                 self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
@@ -2020,6 +2101,88 @@ impl<'a> Checker<'a> {
             if field.value.is_none() {
                 self.check_name_reference(field.name, field.name_span);
             }
+        }
+    }
+
+    fn check_result_constructor_value_against(
+        &mut self,
+        expected: &Type,
+        tag: &str,
+        args: &[Expr],
+        value_span: Span,
+    ) {
+        let Some((ok_ty, error_ty)) = result_type_args(expected) else {
+            return;
+        };
+        let payload_ty = match tag {
+            "Ok" => ok_ty.clone(),
+            "Err" => error_ty.clone(),
+            _ => {
+                self.report_type_mismatch_between_types(
+                    &expected.render(),
+                    &result_constructor_type(tag, args).render(),
+                    value_span,
+                );
+                self.check_value_exprs(args);
+                return;
+            }
+        };
+
+        if args.len() != 1 {
+            self.report_type_mismatch_between_types(
+                &expected.render(),
+                &result_constructor_type(tag, args).render(),
+                value_span,
+            );
+            self.check_value_exprs(args);
+            return;
+        }
+
+        self.check_value_against(&payload_ty, &args[0]);
+    }
+
+    fn check_result_variant_type_against_result(
+        &mut self,
+        expected: &Type,
+        actual: &Row,
+        span: Span,
+    ) {
+        let Some((ok_ty, error_ty)) = result_type_args(expected) else {
+            return;
+        };
+        let ok_ty = ok_ty.clone();
+        let error_ty = error_ty.clone();
+
+        for entry in &actual.entries {
+            let RowEntry::Tag { name, payload } = entry else {
+                self.report_type_mismatch_between_types(
+                    &expected.render(),
+                    &Type::Variant(actual.clone()).render(),
+                    span,
+                );
+                return;
+            };
+            let expected_payload_ty = match name.as_str() {
+                "Ok" => &ok_ty,
+                "Err" => &error_ty,
+                _ => {
+                    self.report_type_mismatch_between_types(
+                        &expected.render(),
+                        &Type::Variant(actual.clone()).render(),
+                        span,
+                    );
+                    return;
+                }
+            };
+            if payload.len() != 1 {
+                self.report_type_mismatch_between_types(
+                    &expected.render(),
+                    &Type::Variant(actual.clone()).render(),
+                    span,
+                );
+                continue;
+            }
+            self.check_type_against_type(expected_payload_ty, &payload[0], span);
         }
     }
 
@@ -3230,6 +3393,33 @@ impl<'a> Checker<'a> {
                     "this binding's type could not be inferred",
                 ))
                 .with_note("add a type annotation, or change the value so its type resolves"),
+        );
+    }
+
+    fn report_propagate_needs_result(&mut self, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error("function body uses `?^` but does not return a `Result`")
+                .with_code(codes::ty::PROPAGATE_NEEDS_RESULT)
+                .with_label(Label::primary(
+                    span,
+                    "this is the function's result, but `?^` requires it to be a Result",
+                ))
+                .with_note(
+                    "wrap the final expression in `@Ok(...)`, or handle the errors instead of propagating them",
+                ),
+        );
+    }
+
+    fn report_propagate_not_result_if_concrete(&mut self, ty: &Type, span: Span) {
+        if result_type_args(ty).is_some() || !is_resolved_value_type(ty) {
+            return;
+        }
+
+        self.push_unique_diagnostic(
+            Diagnostic::error("propagation operator requires a `Result` value")
+                .with_code(codes::ty::PROPAGATE_NOT_RESULT)
+                .with_label(Label::primary(span, "this value is not a `Result`"))
+                .with_note("`?^`/`?!` operate on `Result[ok, err]` values"),
         );
     }
 
@@ -5009,7 +5199,11 @@ impl<'a> Checker<'a> {
             ExprKind::Block(items) => self.infer_block(env, items),
             ExprKind::Match { subject, arms, .. } => self.infer_match(env, subject, arms),
             ExprKind::Interpolation(segments) => self.infer_interpolation(env, segments),
-            ExprKind::Propagate { value, .. } => self.infer_propagate(env, value),
+            ExprKind::Propagate {
+                value,
+                operator_span,
+                mode,
+            } => self.infer_propagate(env, value, *operator_span, *mode),
             ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Optional(_)
@@ -5031,22 +5225,26 @@ impl<'a> Checker<'a> {
     }
 
     /// Infer `value?!` / `value?^`. Both unwrap a `Result[ok, err]` to its `ok`
-    /// branch, so when the operand resolves to a concrete `Result` the result is
-    /// its ok type — this is what lets a phantom-typed `File.open(path, mode)?!`
-    /// carry the resolved handle record forward, so misusing it (a missing
-    /// method) is a real field error. A non-`Result` operand (still unknown)
-    /// stays deferred.
-    fn infer_propagate(&mut self, env: &TypeEnv, value: &Expr) -> Type {
+    /// branch. `?^` additionally contributes the error type to the current
+    /// lambda-body propagation context; top-level `?^` has no active context and
+    /// keeps the old "unwrap to ok" typing behavior.
+    fn infer_propagate(
+        &mut self,
+        env: &TypeEnv,
+        value: &Expr,
+        operator_span: Span,
+        mode: PropagationMode,
+    ) -> Type {
         let inferred = self.infer(env, value);
-        let resolved = self.resolve_and_default(&inferred);
-        match &resolved {
-            Type::Apply { callee, args }
-                if args.len() == 2
-                    && matches!(callee.as_ref(), Type::Named(name) if name == "Result") =>
-            {
-                args[0].clone()
+        let resolved = self.normalize(&self.resolve_and_default(&inferred));
+        if let Some((ok_ty, err_ty)) = result_type_args(&resolved) {
+            if mode == PropagationMode::ReturnError {
+                self.record_propagation_site(operator_span, err_ty.clone());
             }
-            _ => Type::Deferred,
+            ok_ty.clone()
+        } else {
+            self.report_propagate_not_result_if_concrete(&resolved, value.span);
+            Type::Deferred
         }
     }
 
@@ -5284,13 +5482,18 @@ impl<'a> Checker<'a> {
             param_types.push(ty);
         }
 
+        self.propagation_contexts
+            .push(PropagationContext::default());
         let body_type = self.infer(&next_env, body);
+        let propagation = self.pop_propagation_context();
+        let body_type = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
         let result_type = if let Some(annotation) = return_annotation {
             // A body that contradicts its return annotation defers rather than
             // reporting here: inference only synthesizes types, and diagnosing
             // the mismatch is a later return-annotation-checking slice.
             let expected = self.lower_annotation_for_inference(annotation);
-            if self.unifier.unify(&body_type, &expected).is_err() {
+            self.report_propagated_errors_against_annotation(&expected, &propagation);
+            if !self.inferred_return_type_fits_annotation(&expected, &body_type) {
                 Type::Deferred
             } else {
                 expected
@@ -5304,6 +5507,170 @@ impl<'a> Checker<'a> {
             result: Box::new(result_type),
             required,
         }
+    }
+
+    fn pop_propagation_context(&mut self) -> PropagationContext {
+        self.propagation_contexts.pop().unwrap_or_default()
+    }
+
+    fn record_propagation_site(&mut self, span: Span, error_ty: Type) {
+        let Some(context) = self.propagation_contexts.last_mut() else {
+            return;
+        };
+        if context.sites.iter().any(|site| site.span == span) {
+            return;
+        }
+
+        context.sites.push(PropagationSite { span, error_ty });
+    }
+
+    fn infer_body_type_for_propagation_check(&mut self, body: &Expr) -> Type {
+        let diagnostics_len = self.diagnostics.len();
+        let reported_unbound_name_spans = self.reported_unbound_name_spans.clone();
+        let inferred_types_len = self.inferred_types.len();
+        let env = self.local_types.inference_env();
+        let inferred = self.infer(&env, body);
+        let body_type = self.resolve_and_default(&inferred);
+        self.diagnostics.truncate(diagnostics_len);
+        self.reported_unbound_name_spans = reported_unbound_name_spans;
+        self.inferred_types.truncate(inferred_types_len);
+        body_type
+    }
+
+    fn apply_propagation_context_to_body_type(
+        &mut self,
+        body: &Expr,
+        body_type: Type,
+        propagation: &PropagationContext,
+    ) -> Type {
+        if propagation.sites.is_empty() {
+            return body_type;
+        }
+
+        let Some(body_result) = self.propagation_body_result_type(body, &body_type) else {
+            let resolved = self.normalize(&self.resolve_and_default(&body_type));
+            if is_resolved_value_type(&resolved) {
+                self.report_propagate_needs_result(final_result_span(body));
+            }
+            return body_type;
+        };
+
+        let Some((ok_ty, body_error_ty)) = result_type_args(&body_result) else {
+            return body_result;
+        };
+        let ok_ty = ok_ty.clone();
+        let body_error_ty = body_error_ty.clone();
+        let error_ty = self.union_propagated_error_types(
+            std::iter::once(body_error_ty)
+                .chain(propagation.sites.iter().map(|site| site.error_ty.clone())),
+        );
+        result_type(ok_ty, error_ty)
+    }
+
+    fn propagation_body_result_type(&self, body: &Expr, body_type: &Type) -> Option<Type> {
+        let resolved = self.normalize(&self.resolve_and_default(body_type));
+        if result_type_args(&resolved).is_some() {
+            return Some(resolved);
+        }
+
+        self.final_result_constructor_type(body, &resolved)
+    }
+
+    fn final_result_constructor_type(&self, body: &Expr, body_type: &Type) -> Option<Type> {
+        let final_expr = final_value_expr(body)?;
+        let ExprKind::Call { callee, args } = &ungroup_expr(final_expr).kind else {
+            return None;
+        };
+        if args.len() != 1 {
+            return None;
+        }
+        let ExprKind::Tag(tag) = &ungroup_expr(callee).kind else {
+            return None;
+        };
+        let payload_ty = single_tag_payload_type(body_type, tag)?;
+
+        match tag.as_str() {
+            "Ok" => Some(result_type(payload_ty, empty_variant_type())),
+            "Err" => Some(result_type(Type::Deferred, payload_ty)),
+            _ => None,
+        }
+    }
+
+    fn union_propagated_error_types(&mut self, types: impl IntoIterator<Item = Type>) -> Type {
+        let types: Vec<_> = types
+            .into_iter()
+            .map(|ty| self.normalize(&self.resolve_and_default(&ty)))
+            .collect();
+        let Some(first) = types.first() else {
+            return Type::Deferred;
+        };
+        if types.iter().all(|ty| ty == first) {
+            return first.clone();
+        }
+        if types.iter().any(|ty| !matches!(ty, Type::Variant(_))) {
+            return Type::Deferred;
+        }
+
+        let body_types: Vec<_> = types
+            .into_iter()
+            .map(|ty| MatchArmBodyType {
+                span: Span::new(0, 0),
+                ty,
+            })
+            .collect();
+        match self.union_match_variant_arm_body_types(&body_types) {
+            Some(MatchArmCombination::Joined(ty)) => self.normalize(&self.resolve_and_default(&ty)),
+            Some(MatchArmCombination::Conflict(_)) | None => Type::Deferred,
+        }
+    }
+
+    fn report_propagated_errors_against_annotation(
+        &mut self,
+        expected: &Type,
+        propagation: &PropagationContext,
+    ) {
+        if propagation.sites.is_empty() {
+            return;
+        }
+
+        let expected = self.normalize(&self.resolve_and_default(expected));
+        let Some((_, expected_error_ty)) = result_type_args(&expected) else {
+            return;
+        };
+        let expected_error_ty = expected_error_ty.clone();
+        for site in &propagation.sites {
+            let actual = self.normalize(&self.resolve_and_default(&site.error_ty));
+            self.check_type_against_type(&expected_error_ty, &actual, site.span);
+        }
+    }
+
+    fn inferred_return_type_fits_annotation(&mut self, expected: &Type, actual: &Type) -> bool {
+        let expected = self.normalize(&self.resolve_and_default(expected));
+        let actual = self.normalize(&self.resolve_and_default(actual));
+        let (Some((expected_ok, expected_error)), Some((actual_ok, actual_error))) =
+            (result_type_args(&expected), result_type_args(&actual))
+        else {
+            return self.unifier.unify(&actual, &expected).is_ok();
+        };
+        let expected_ok = expected_ok.clone();
+        let expected_error = expected_error.clone();
+        let actual_ok = actual_ok.clone();
+        let actual_error = actual_error.clone();
+
+        self.unifier.unify(&actual_ok, &expected_ok).is_ok()
+            && self.type_fits_boundary_without_reporting(&expected_error, &actual_error)
+    }
+
+    fn type_fits_boundary_without_reporting(&mut self, expected: &Type, actual: &Type) -> bool {
+        let unifier_snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        self.check_type_against_type(expected, actual, Span::new(0, 0));
+        let accepted = self.diagnostics.len() == diagnostic_snapshot.diagnostics_len;
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
+        if !accepted {
+            self.unifier.restore(unifier_snapshot);
+        }
+        accepted
     }
 
     fn infer_field_access(
@@ -6619,10 +6986,75 @@ fn is_final_expr_item(items: &[Item], expr: &Expr) -> bool {
 }
 
 fn is_result_type(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Apply { callee, args }
-            if args.len() == 2
-                && matches!(callee.as_ref(), Type::Named(name) if name == "Result")
-    )
+    result_type_args(ty).is_some()
+}
+
+fn result_type_args(ty: &Type) -> Option<(&Type, &Type)> {
+    let Type::Apply { callee, args } = ty else {
+        return None;
+    };
+    if args.len() == 2 && matches!(callee.as_ref(), Type::Named(name) if name == "Result") {
+        Some((&args[0], &args[1]))
+    } else {
+        None
+    }
+}
+
+fn result_type(ok_ty: Type, error_ty: Type) -> Type {
+    Type::Apply {
+        callee: Box::new(Type::Named("Result".to_owned())),
+        args: vec![ok_ty, error_ty],
+    }
+}
+
+fn empty_variant_type() -> Type {
+    Type::Variant(Row {
+        entries: Vec::new(),
+        tail: RowTail::Closed,
+    })
+}
+
+fn final_value_expr(expr: &Expr) -> Option<&Expr> {
+    let expr = ungroup_expr(expr);
+    match &expr.kind {
+        ExprKind::Block(items) => match items.last() {
+            Some(Item::Expr(final_expr)) => final_value_expr(final_expr),
+            _ => None,
+        },
+        _ => Some(expr),
+    }
+}
+
+fn final_result_span(expr: &Expr) -> Span {
+    final_value_expr(expr).map_or(expr.span, |final_expr| final_expr.span)
+}
+
+fn result_constructor_tag(callee: &Expr) -> Option<&str> {
+    let ExprKind::Tag(tag) = &ungroup_expr(callee).kind else {
+        return None;
+    };
+    matches!(tag.as_str(), "Ok" | "Err").then_some(tag)
+}
+
+fn result_constructor_type(tag: &str, args: &[Expr]) -> Type {
+    Type::Variant(Row {
+        entries: vec![RowEntry::Tag {
+            name: tag.to_owned(),
+            payload: vec![Type::Deferred; args.len()],
+        }],
+        tail: RowTail::Closed,
+    })
+}
+
+fn single_tag_payload_type(ty: &Type, tag: &str) -> Option<Type> {
+    let Type::Variant(row) = ty else {
+        return None;
+    };
+
+    row.entries.iter().find_map(|entry| {
+        let RowEntry::Tag { name, payload } = entry else {
+            return None;
+        };
+        (name == tag && payload.len() == 1).then(|| payload[0].clone())
+    })
 }

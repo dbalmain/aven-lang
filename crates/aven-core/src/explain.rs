@@ -295,6 +295,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Every alternative in an or-pattern must bind the same names. Rename, add, or remove binders so the match arm body sees one consistent local environment.",
     },
     DiagnosticExplanation {
+        code: codes::ty::PROPAGATE_NEEDS_RESULT,
+        text: "A function body used ?^ to propagate errors, but its final expression is not a Result. Wrap the successful final value in @Ok(...), or handle the error instead of propagating it.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::PROPAGATE_NOT_RESULT,
+        text: "The ?^ and ?! operators unwrap Result[ok, err] values. Apply them only to expressions with Result type, or handle the value without a propagation operator.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::RENAME_ABSENT_FIELD,
         text: "A row transform tried to rename a missing label, or rename onto a label that already exists in the closed row accumulated so far. Make the source label present and the target label absent before the rename.",
     },

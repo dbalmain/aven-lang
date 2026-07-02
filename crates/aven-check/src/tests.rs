@@ -3482,6 +3482,140 @@ fn unused_result_warns_for_non_final_block_bare_expression() {
 }
 
 #[test]
+fn propagate_requires_result_final_expression_with_repair_note() {
+    let source = "ReadError = @{@Read(Text)}\nf = (path: Text) =>\n  text = read(path)?^\n  text\n";
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &fallible_read_globals());
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::PROPAGATE_NEEDS_RESULT),
+        1
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::PROPAGATE_NEEDS_RESULT))
+        .expect("expected propagate-needs-result diagnostic");
+    assert_eq!(
+        diagnostic.labels[0].message,
+        "this is the function's result, but `?^` requires it to be a Result"
+    );
+    assert_eq!(
+        diagnostic.notes,
+        vec![
+            "wrap the final expression in `@Ok(...)`, or handle the errors instead of propagating them"
+        ]
+    );
+}
+
+#[test]
+fn propagate_with_explicit_ok_infers_result_error_union() {
+    let source =
+        "ReadError = @{@Read(Text)}\nf = (path: Text) =>\n  text = read(path)?^\n  @Ok(text)\n";
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &fallible_read_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "f", 0)).map(Type::render),
+        Some("Text -> Result[Text, @Read(Text)]".to_owned())
+    );
+}
+
+#[test]
+fn propagate_unions_different_named_error_variant_rows() {
+    let source = concat!(
+        "ReadError = @{@Read(Text)}\n",
+        "ParseError = @{@Parse(Text)}\n",
+        "load = (path: Text) =>\n",
+        "  text = read(path)?^\n",
+        "  value = parse(text)?^\n",
+        "  @Ok(value)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &read_and_parse_globals());
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "load", 0)).map(Type::render),
+        Some("Text -> Result[Int, @Read(Text) | @Parse(Text)]".to_owned())
+    );
+}
+
+#[test]
+fn propagate_on_concrete_non_result_diagnoses_subject() {
+    let source = "value = 5?^\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::PROPAGATE_NOT_RESULT),
+        1
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::PROPAGATE_NOT_RESULT))
+        .expect("expected propagate-not-result diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "5", 0));
+    assert_eq!(
+        diagnostic.notes,
+        vec!["`?^`/`?!` operate on `Result[ok, err]` values"]
+    );
+}
+
+#[test]
+fn annotated_result_rejects_non_fitting_propagated_error_at_site() {
+    let source = concat!(
+        "ReadError = @{@Read}\n",
+        "ParseError = @{@Parse}\n",
+        "load : Text -> Result[Int, ReadError]\n",
+        "load = (path) =>\n",
+        "  text = read(path)?^\n",
+        "  value = parse(text)?^\n",
+        "  @Ok(value)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &read_and_parse_unit_error_globals());
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+        .expect("expected type mismatch diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "?^", 1));
+}
+
+#[test]
+fn file_open_style_propagation_requires_result_final_expression() {
+    let source = concat!(
+        "IoError = @{@Io(Text)}\n",
+        "ReadError = @{@Read(Text)}\n",
+        "f = (path: Text) =>\n",
+        "  h = File.open(path, \"r\")?^\n",
+        "  h.readAll()?^\n",
+        "x = f(\"/nonexistent\")\n",
+        "y = x + \"!\"\n",
+    );
+    let output = parse_module(source);
+    let check = check_module_with_globals(&output.module, &file_style_globals());
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::PROPAGATE_NEEDS_RESULT),
+        1
+    );
+}
+
+#[test]
 fn unused_result_allows_explicit_discard_binding() {
     let check = check_with_must_use_global("_ = mustUse()\n1\n");
 
@@ -4819,6 +4953,58 @@ fn must_use_globals() -> Vec<(String, Type)> {
         "mustUse".to_owned(),
         build::function(vec![], build::result(build::int(), build::text())),
     )]
+}
+
+fn fallible_read_globals() -> Vec<(String, Type)> {
+    vec![(
+        "read".to_owned(),
+        build::function(
+            vec![build::text()],
+            build::result(build::text(), build::named("ReadError")),
+        ),
+    )]
+}
+
+fn read_and_parse_globals() -> Vec<(String, Type)> {
+    vec![
+        (
+            "read".to_owned(),
+            build::function(
+                vec![build::text()],
+                build::result(build::text(), build::named("ReadError")),
+            ),
+        ),
+        (
+            "parse".to_owned(),
+            build::function(
+                vec![build::text()],
+                build::result(build::int(), build::named("ParseError")),
+            ),
+        ),
+    ]
+}
+
+fn read_and_parse_unit_error_globals() -> Vec<(String, Type)> {
+    read_and_parse_globals()
+}
+
+fn file_style_globals() -> Vec<(String, Type)> {
+    let read_handle = build::record(vec![(
+        "readAll",
+        build::function(
+            vec![],
+            build::result(build::text(), build::named("ReadError")),
+        ),
+    )]);
+    let file = build::record(vec![(
+        "open",
+        build::function(
+            vec![build::text(), build::text_literals(&["r"])],
+            build::result(read_handle, build::named("IoError")),
+        ),
+    )]);
+
+    vec![("File".to_owned(), file)]
 }
 
 /// A small host-style logger global: `logger : { info: (Text) -> Unit }`.
