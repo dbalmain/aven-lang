@@ -343,8 +343,9 @@ pub fn http_header_type() -> Type {
     build::record(vec![("name", build::text()), ("value", build::text())])
 }
 
-/// The closed `HttpError` variant: transport failures from `Http.get`, each tag
-/// carrying a `Text` message. HTTP status codes are response data, not errors.
+/// The closed `HttpError` variant: transport failures from `Http` calls, each
+/// tag carrying a `Text` message. HTTP status codes are response data, not
+/// errors.
 pub fn http_error_type() -> Type {
     build::variant(vec![
         ("Timeout", vec![build::text()]),
@@ -354,7 +355,7 @@ pub fn http_error_type() -> Type {
     ])
 }
 
-/// The `Http.get` response record.
+/// The `Http` response record.
 pub fn http_response_type() -> Type {
     build::record(vec![
         ("status", build::int()),
@@ -371,7 +372,7 @@ pub fn http_response_type() -> Type {
 }
 
 /// `(Text, ?{..}) -> Result[Response, HttpError]`.
-pub fn http_get_type() -> Type {
+pub fn http_method_type() -> Type {
     build::function_opt(
         vec![build::text()],
         vec![build::open_record(vec![])],
@@ -381,7 +382,13 @@ pub fn http_get_type() -> Type {
 
 /// The `Http` platform namespace record.
 pub fn http_type() -> Type {
-    build::record(vec![("get", http_get_type())])
+    build::record(vec![
+        ("get", http_method_type()),
+        ("post", http_method_type()),
+        ("put", http_method_type()),
+        ("delete", http_method_type()),
+        ("patch", http_method_type()),
+    ])
 }
 
 /// The closed `JsonError` variant returned by `Json.decode`.
@@ -540,7 +547,38 @@ pub fn standard_check_host_globals() -> HostGlobals {
             ),
             (
                 "Http.get".to_owned(),
-                HostComptimeFnSpec::new_type_of(http::get_comptime_resolver(), vec![1]),
+                HostComptimeFnSpec::new_type_of(
+                    http::comptime_resolver(http::HttpMethod::Get),
+                    vec![1],
+                ),
+            ),
+            (
+                "Http.post".to_owned(),
+                HostComptimeFnSpec::new_type_of(
+                    http::comptime_resolver(http::HttpMethod::Post),
+                    vec![1],
+                ),
+            ),
+            (
+                "Http.put".to_owned(),
+                HostComptimeFnSpec::new_type_of(
+                    http::comptime_resolver(http::HttpMethod::Put),
+                    vec![1],
+                ),
+            ),
+            (
+                "Http.delete".to_owned(),
+                HostComptimeFnSpec::new_type_of(
+                    http::comptime_resolver(http::HttpMethod::Delete),
+                    vec![1],
+                ),
+            ),
+            (
+                "Http.patch".to_owned(),
+                HostComptimeFnSpec::new_type_of(
+                    http::comptime_resolver(http::HttpMethod::Patch),
+                    vec![1],
+                ),
             ),
         ],
     )
@@ -794,6 +832,28 @@ mod tests {
             vec![build::text(), build::text_literals(&["r", "w", "a", "rw"])]
         );
         assert_eq!(open_result, Type::Deferred);
+
+        let http = global_type(&globals, "Http");
+        let http_fields = record_fields(http).expect("Http is a record");
+        let http_field_names = http_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            http_field_names,
+            vec!["get", "post", "put", "delete", "patch"]
+        );
+        for method in http_field_names {
+            let method_type = record_field_type(http, method);
+            let (params, result) =
+                function_signature(&method_type).expect("Http method is a function");
+            assert_eq!(function_required_arity(&method_type), Some(1));
+            assert_eq!(params, vec![build::text(), build::open_record(vec![])]);
+            assert_eq!(
+                result,
+                build::result(http_response_type(), http_error_type())
+            );
+        }
 
         let json = global_type(&globals, "Json");
         let json_fields = record_fields(json).expect("Json is a record");

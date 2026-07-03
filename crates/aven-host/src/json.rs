@@ -64,10 +64,14 @@ fn encode_native() -> Value {
             ));
         };
 
-        let mut output = String::new();
-        encode_value(value, EncodePosition::TopLevel, &mut output)?;
-        Ok(Value::Text(output))
+        encode_to_text(value).map(Value::Text)
     })
+}
+
+pub(crate) fn encode_to_text(value: &Value) -> Result<String, String> {
+    let mut output = String::new();
+    encode_value(value, EncodePosition::TopLevel, &mut output)?;
+    Ok(output)
 }
 
 fn decode_native() -> Value {

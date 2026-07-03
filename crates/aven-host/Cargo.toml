@@ -13,7 +13,7 @@ workspace = true
 aven-check.workspace = true
 aven-eval.workspace = true
 serde_json.workspace = true
-ureq = "2.12"
+ureq = "3"
 
 [dev-dependencies]
 aven-core.workspace = true

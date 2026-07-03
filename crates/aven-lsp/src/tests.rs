@@ -981,7 +981,7 @@ fn completion_at_host_record_field_access_returns_member_fields() {
         .iter()
         .map(|item| item.label.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(labels, vec!["get"]);
+    assert_eq!(labels, vec!["get", "post", "put", "delete", "patch"]);
 }
 
 #[test]
@@ -1086,7 +1086,9 @@ fn hover_at_host_record_global_shows_record_type() {
         panic!("expected markup hover");
     };
     assert!(
-        markup.value.contains("Http : { get:"),
+        markup.value.contains("Http : { get:")
+            && markup.value.contains("post:")
+            && markup.value.contains("patch:"),
         "unexpected global hover: {}",
         markup.value
     );

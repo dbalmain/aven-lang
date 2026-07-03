@@ -1,0 +1,17 @@
+# HTTP POST with a JSON request body.
+# NETWORK: this example checks cleanly but is NOT run in tests.
+createUser = (url: Text, id: Text) =>
+  result = Http.post(url, {
+    headers: {
+      "x-request-id": id
+    }
+    json: {
+      name: "Ada"
+      tags: ["admin"]
+    }
+    timeout: 5000
+  })
+
+  result ?>
+    @Ok(resp) => @Ok(resp.first("location"))
+    @Err(err) => @Err(err)

@@ -4,9 +4,10 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CHECK_ONLY: &[&str] = &[
-    // http-fetch.av requires network access to run; it is verified by
+    // HTTP examples require network access to run; they are verified by
     // `aven check` only so the test suite stays hermetic.
     "http-fetch.av",
+    "http-post.av",
 ];
 
 #[test]
