@@ -2401,12 +2401,60 @@ Done when:
 
 ## Milestone H — HTTP methods
 
-Status: after K
+Status: designed 2026-07-03; ready to slice
 
-Goal: round out `Http` beyond `get`: `post`/`put`/`delete`, request bodies
-(`Text` or Json-encodable via Milestone J), response status/headers (headers as
-`Map[Text, Text]` once K lands), and timeout options. Design the options record
-once across methods; keep the HTTP client behind `aven-host`.
+Goal: round out `Http` beyond `get`. The API is a flagship surface for the
+language, so the design was settled first (user decisions 2026-07-03):
+
+**Request headers/params — field-type domains at the comptime boundary.**
+Headers and query params are multimaps (repeated names are legal), but Aven
+deliberately has no untagged unions (R5; tagged sums only), and a general
+`T → Array[T]` boundary coercion was rejected (it needs a runtime coercion,
+breaking check/run independence, and `xs : Array[Int] = 5` masking bugs).
+Instead: headers/params are plain record literals, and the `Http.*` host
+comptime resolver checks **each field's type** against the domain `Text` or
+`Array[Text]` — the same seam and check species as `File.open`'s literal-union
+mode, lifted from literals to types. No new syntax, no new `Type` variant; the
+runtime already accepts and normalizes both shapes. Diagnostics name the field:
+"header `accept` must be `Text` or `Array[Text]`, found `Int`". This is not
+platform-only special casing: it is the first user of the row-wide value
+requirement the spec already sketches for open-row comprehensions, which should
+later become a user-facing comptime feature.
+
+**Response headers — `Map[Text, Array[Text]]`** (runtime keys, multi-valued;
+`Set-Cookie` cannot be safely joined), keys normalized to lowercase. The
+response record carries a native `first(name) : ?Text` convenience field
+(record-of-natives, like file handles) for the common single-value read.
+
+Slices:
+
+- H1 — rework `Http.get` onto the designed surface: options
+  `?{ headers: <field-domain record>, params: <same>, timeout: Int (ms) }`,
+  per-field domain checking through the host comptime resolver (reading the
+  reified options record type; non-concrete option types defer), response
+  `{ status: Int, headers: Map[Text, Array[Text]], first(name), body }` (body
+  stays the streaming handle). Update `examples/http-fetch.av`.
+- H2 — `post`/`put`/`delete` (+ `patch` if free): one shared options record
+  across methods, plus body options — `body: Text` (sent as-is) or
+  `json: <encodable>` (Milestone J's `Json.encode`, sets
+  `content-type: application/json`); `body` and `json` together is a
+  resolver-checked error.
+- H3 — open questions, recorded not solved: an order-preserving
+  `params: [(k, v), ...]` alternate shape for the rare order-sensitive query
+  string; `Int` header values (currently rejected — interpolate instead);
+  redirect/TLS knobs (host defaults for now).
+
+Done when:
+
+- a bad header/param field type reports the field-naming domain diagnostic;
+  `Text` and `Array[Text]` fields both check and both reach the wire (repeated
+  names sent repeatedly)
+- `post` with `json:` round-trips against a local test server (or a hand-rolled
+  listener in the test) including repeated headers
+- response `headers.get("set-cookie")` types `?Array[Text]`;
+  `first("content-type")` types `?Text`; fixtures lock the response shape
+- the options record is one definition shared by all methods; `ureq` stays
+  behind `aven-host`
 
 ## Milestone Z — modules and imports (sketch)
 
