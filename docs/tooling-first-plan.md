@@ -1227,7 +1227,8 @@ Done when:
 
 ## Milestone 15: Literal Types
 
-Status: in progress
+Status: complete (15.1–15.5; the value-position flip is recorded in
+`../../docs/literal-types.md`)
 
 Goal: string and number literal types (`@{'waiting', 'running'}`, `@{0, 1, 2}`)
 reusing the **variant-row machinery** — closed singleton rows that widen by the
@@ -1734,20 +1735,20 @@ Completed parser groundwork:
   require a default arm, and out-of-union literal arms report
   `type.unreachable-match-arm`.
 
-### Current queue (2026-07-02)
+### Current queue (updated 2026-07-03)
 
-The authoritative order for what comes next:
+The 2026-07-02 queue is done through HTTP: Q, S, J, X (examples half), K,
+15.3–15.5, and H1+H2 all landed 07-02/07-03. Quoted record field names also
+landed (an X-discovered gap). What remains, in no committed order:
 
-1. Milestone Q — typed `?^` error propagation (soundness; see below)
-2. Milestone S — structural consolidation (checker split, one string decoder,
-   escape diagnostics)
-3. Milestone J — JSON codec (IO Phase 3)
-4. Milestone X — example suite and live verification
-5. Milestone K — Map type
-6. Milestone 15.3–15.5 — literal-types completion (bool singletons,
-   const-folding, literal-argument gaps)
-7. Milestone H — HTTP methods
-8. Milestone Z — modules and imports (design pass first)
+- the live nvim sweep (Milestone X's other half — user-driven)
+- X-discovered gaps: runtime variant/set spread in value position;
+  `partial(User)`/`required(...)` as standalone comptime bindings; match-arm
+  layout ergonomics inside lambda bodies
+- H3 open questions (recorded under Milestone H, not scheduled)
+- the Milestone IO watch item: define the bare write tier in terms of the Result
+  handles so the two tiers cannot drift
+- Milestone Z — modules and imports: **on hold** (user, 2026-07-03)
 
 ## Milestone N — null/undefined model
 
@@ -2173,7 +2174,7 @@ from the lambda, not from type-annotation syntax.
 
 ## Milestone IO — platform IO
 
-Status: phases 1–2 done; phase 3 is Milestone J
+Status: phases 1–3 done (phase 3 = Milestone J, landed 2026-07-02)
 
 Goal: real input/output through the typed platform boundary, layered in tiers: a
 bare panic-on-error convenience tier for scripts, `Result`-returning stream
@@ -2200,7 +2201,9 @@ settles, define the bare tier in terms of the handles
 
 ## Milestone Q — typed `?^` error propagation
 
-Status: next
+Status: done 2026-07-02 (plus a follow-up: matching on a `Result`-typed subject
+works via a row view — `subject_variant_row` — and a variant-row body fits an
+inline `Result` return annotation through the boundary rule)
 
 Goal: close the check/run soundness gap around `?^`. Today `infer_propagate`
 unwraps `Result[a, e]` to `a` and discards `e`; nothing requires the containing
@@ -2251,7 +2254,7 @@ Done when:
 
 ## Milestone S — structural consolidation
 
-Status: after Q
+Status: done 2026-07-02
 
 Goal: pay down the structural debt of the 06-18→07-01 sprint before it
 compounds. No behavior change except where noted (escape diagnostics).
@@ -2284,7 +2287,7 @@ Done when:
 
 ## Milestone J — JSON codec (IO Phase 3)
 
-Status: after S
+Status: done 2026-07-02
 
 Goal: the spec's headline glue workflow — typed JSON decode/encode.
 
@@ -2329,7 +2332,7 @@ Done when:
 
 ## Milestone X — example suite and live verification
 
-Status: after J
+Status: examples half done 2026-07-03; the live nvim sweep is still open
 
 Goal: lock the sprint surface into committed, executable examples — "prefer
 committed tests over ad-hoc checks" applied to the whole platform surface — and
@@ -2375,7 +2378,7 @@ open. Gaps found while writing the examples (follow-ups):
 
 ## Milestone K — Map type
 
-Status: after X
+Status: done 2026-07-03
 
 Goal: `Map[Key, Value]` — the runtime-key counterpart to records (spec → Maps).
 Needed for headers, query params, grouping, and dynamic JSON.
@@ -2401,7 +2404,7 @@ Done when:
 
 ## Milestone H — HTTP methods
 
-Status: designed 2026-07-03; ready to slice
+Status: H1 + H2 done 2026-07-03; H3 open questions recorded below
 
 Goal: round out `Http` beyond `get`. The API is a flagship surface for the
 language, so the design was settled first (user decisions 2026-07-03):
@@ -2444,6 +2447,16 @@ Slices:
   string; `Int` header values (currently rejected — interpolate instead);
   redirect/TLS knobs (host defaults for now).
 
+Progress: H1 landed 2026-07-03 — `Http.get` on the designed surface (per-field
+`Text`/`Array[Text]` domains via `TypeOf` comptime args + the boundary-probe
+check, unknown-option and optional-field rejection, `timeout`, response
+`{ status, headers: Map[Text, Array[Text]], first, body }`, a TcpListener
+wire-assertion harness). H2 landed 2026-07-03 — `post`/`put`/ `delete`/`patch`
+sharing one validator and response builder; `body: Text` / `json: <value>` (J's
+encoder; sets `content-type` only when absent; both together is a check-time and
+runtime error); ureq upgraded 2.12 → 3.3 within `aven-host`, retiring H1's
+case-varied repeated-header workaround.
+
 Done when:
 
 - a bad header/param field type reports the field-naming domain diagnostic;
@@ -2458,7 +2471,7 @@ Done when:
 
 ## Milestone Z — modules and imports (sketch)
 
-Status: later; needs a design pass first
+Status: on hold (user, 2026-07-03); needs a design pass before any slicing
 
 Goal: host-controlled module resolution per the spec (`import(./lib/Text)`,
 `Std = import("std")`). Before slicing, design: module identity and caching in
