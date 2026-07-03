@@ -15,7 +15,7 @@ mod marshal;
 
 use std::rc::Rc;
 
-use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostGlobals, Type};
+use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals, Type};
 
 pub use marshal::{AvenMarshal, IntoHostFn};
 
@@ -52,7 +52,7 @@ struct ComptimeEntry {
     value: Value,
     ty: Type,
     resolver: Rc<dyn HostComptimeFn>,
-    comptime_params: Vec<usize>,
+    comptime_params: Vec<HostComptimeParam>,
 }
 
 /// A host-side comptime resolver keyed independently from runtime value/type
@@ -60,7 +60,7 @@ struct ComptimeEntry {
 struct ComptimeResolverEntry {
     key: String,
     resolver: Rc<dyn HostComptimeFn>,
-    comptime_params: Vec<usize>,
+    comptime_params: Vec<HostComptimeParam>,
 }
 
 /// Registry of host/library globals seeded into the evaluator and the checker.
@@ -123,7 +123,10 @@ impl Host {
             value,
             ty,
             resolver,
-            comptime_params,
+            comptime_params: comptime_params
+                .into_iter()
+                .map(HostComptimeParam::Value)
+                .collect(),
         });
     }
 
@@ -138,7 +141,28 @@ impl Host {
         self.comptime_resolvers.push(ComptimeResolverEntry {
             key: key.into(),
             resolver,
-            comptime_params,
+            comptime_params: comptime_params
+                .into_iter()
+                .map(HostComptimeParam::Value)
+                .collect(),
+        });
+    }
+
+    /// Register a comptime resolver whose arguments are the inferred static
+    /// types of runtime call arguments.
+    pub fn register_comptime_type_resolver(
+        &mut self,
+        key: impl Into<String>,
+        comptime_params: Vec<usize>,
+        resolver: Rc<dyn HostComptimeFn>,
+    ) {
+        self.comptime_resolvers.push(ComptimeResolverEntry {
+            key: key.into(),
+            resolver,
+            comptime_params: comptime_params
+                .into_iter()
+                .map(HostComptimeParam::TypeOf)
+                .collect(),
         });
     }
 
@@ -201,7 +225,7 @@ impl Host {
                 .map(|entry| {
                     (
                         entry.name.clone(),
-                        HostComptimeFnSpec::new(
+                        HostComptimeFnSpec::with_params(
                             Rc::clone(&entry.resolver),
                             entry.comptime_params.clone(),
                         ),
@@ -210,7 +234,7 @@ impl Host {
                 .chain(self.comptime_resolvers.iter().map(|entry| {
                     (
                         entry.key.clone(),
-                        HostComptimeFnSpec::new(
+                        HostComptimeFnSpec::with_params(
                             Rc::clone(&entry.resolver),
                             entry.comptime_params.clone(),
                         ),
@@ -334,21 +358,23 @@ pub fn http_error_type() -> Type {
 pub fn http_response_type() -> Type {
     build::record(vec![
         ("status", build::int()),
-        ("headers", build::array(http_header_type())),
+        (
+            "headers",
+            build::map(build::text(), build::array(build::text())),
+        ),
+        (
+            "first",
+            build::function(vec![build::text()], build::optional(build::text())),
+        ),
         ("body", stdin_handle_type()),
     ])
 }
 
-/// `(Text, ?{ headers: ?{..}, params: ?{..} }) -> Result[Response, HttpError]`.
+/// `(Text, ?{..}) -> Result[Response, HttpError]`.
 pub fn http_get_type() -> Type {
-    let text_value_record = || build::optional(build::open_record(vec![]));
-    let options = build::record(vec![
-        ("headers", text_value_record()),
-        ("params", text_value_record()),
-    ]);
     build::function_opt(
         vec![build::text()],
-        vec![options],
+        vec![build::open_record(vec![])],
         build::result(http_response_type(), http_error_type()),
     )
 }
@@ -511,6 +537,10 @@ pub fn standard_check_host_globals() -> HostGlobals {
             (
                 "Json.decode".to_owned(),
                 HostComptimeFnSpec::new(json::decode_comptime_resolver(), vec![1]),
+            ),
+            (
+                "Http.get".to_owned(),
+                HostComptimeFnSpec::new_type_of(http::get_comptime_resolver(), vec![1]),
             ),
         ],
     )

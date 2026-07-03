@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use std::error::Error as StdError;
 use std::io::{self, BufRead, BufReader, Read};
 use std::rc::Rc;
+use std::time::Duration;
 
+use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, RowEntry, Type, type_fits_boundary};
 use aven_eval::Value;
 
 use crate::Host;
@@ -19,10 +21,12 @@ impl Host {
     /// Register the `Http` platform namespace (currently just `Http.get`).
     pub fn register_http(&mut self) {
         self.register("Http", http_value(), crate::http_type());
+        self.register_comptime_type_resolver("Http.get", vec![1], get_comptime_resolver());
     }
 }
 
 type BodyReader = Rc<RefCell<BufReader<Box<dyn Read>>>>;
+type ParsedOptions<'a> = (Vec<HeaderArg<'a>>, Vec<QueryArg<'a>>, Option<Duration>);
 
 #[derive(Debug, Clone, Copy)]
 struct QueryArg<'a> {
@@ -32,8 +36,8 @@ struct QueryArg<'a> {
 
 #[derive(Debug, Clone)]
 struct HeaderArg<'a> {
-    name: &'a str,
-    value: Cow<'a, str>,
+    name: Cow<'a, str>,
+    value: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +51,105 @@ struct HttpGetArgs<'a> {
     url: &'a str,
     headers: Vec<HeaderArg<'a>>,
     params: Vec<QueryArg<'a>>,
+    timeout: Option<Duration>,
+}
+
+struct HttpGetTypeResolver;
+
+impl HostComptimeFn for HttpGetTypeResolver {
+    fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
+        match args {
+            [] => Ok(http_get_result_type()),
+            [ComptimeArg::Type(options)] => {
+                validate_options_type(options)?;
+                Ok(http_get_result_type())
+            }
+            [_] => Err(ComptimeError::new("Http.get options must be a record type")),
+            _ => Err(ComptimeError::new(format!(
+                "Http.get expects at most one compile-time options type, got {}",
+                args.len()
+            ))),
+        }
+    }
+}
+
+pub(crate) fn get_comptime_resolver() -> Rc<dyn HostComptimeFn> {
+    Rc::new(HttpGetTypeResolver)
+}
+
+fn http_get_result_type() -> Type {
+    crate::build::result(crate::http_response_type(), crate::http_error_type())
+}
+
+fn validate_options_type(options: &Type) -> Result<(), ComptimeError> {
+    let Type::Record(row) = options else {
+        return Err(ComptimeError::new(format!(
+            "Http.get options must be a record type, found `{}`",
+            options.render()
+        )));
+    };
+    for entry in &row.entries {
+        let RowEntry::Field { name, ty } = entry else {
+            return Ok(());
+        };
+        match name.as_str() {
+            "headers" => validate_text_values_record_type("header", ty)?,
+            "params" => validate_text_values_record_type("param", ty)?,
+            "timeout" => validate_timeout_type(ty)?,
+            other => {
+                return Err(ComptimeError::new(format!("unknown Http option `{other}`")));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_text_values_record_type(kind: &str, ty: &Type) -> Result<(), ComptimeError> {
+    let Type::Record(row) = ty else {
+        return Err(ComptimeError::new(format!(
+            "Http.get `{kind}s` option must be a record type, found `{}`",
+            ty.render()
+        )));
+    };
+    for entry in &row.entries {
+        let RowEntry::Field { name, ty } = entry else {
+            return Ok(());
+        };
+        validate_text_value_field_type(kind, name, ty)?;
+    }
+
+    Ok(())
+}
+
+fn validate_text_value_field_type(kind: &str, name: &str, ty: &Type) -> Result<(), ComptimeError> {
+    if type_fits_boundary(&crate::build::text(), ty)
+        || type_fits_boundary(&crate::build::array(crate::build::text()), ty)
+    {
+        return Ok(());
+    }
+
+    let optional = matches!(ty, Type::Optional(_) | Type::Nullable(_));
+    let guard_note = if optional {
+        "; optional header/param fields are not accepted yet, guard or default the value before passing it"
+    } else {
+        ""
+    };
+    Err(ComptimeError::new(format!(
+        "{kind} `{name}` must be `Text` or `Array[Text]`, found `{}`{guard_note}",
+        ty.render()
+    )))
+}
+
+fn validate_timeout_type(ty: &Type) -> Result<(), ComptimeError> {
+    if type_fits_boundary(&crate::build::int(), ty) {
+        Ok(())
+    } else {
+        Err(ComptimeError::new(format!(
+            "Http option `timeout` must be `Int`, found `{}`",
+            ty.render()
+        )))
+    }
 }
 
 fn http_value() -> Value {
@@ -58,10 +161,13 @@ fn http_get_native() -> Value {
         let args = http_get_args(args)?;
         let mut request = ureq::get(args.url);
         for header in args.headers {
-            request = request.set(header.name, header.value.as_ref());
+            request = request.set(header.name.as_ref(), header.value);
         }
         for param in args.params {
             request = request.query(param.name, param.value);
+        }
+        if let Some(timeout) = args.timeout {
+            request = request.timeout(timeout);
         }
 
         Ok(match request.call() {
@@ -88,8 +194,8 @@ fn http_get_args(args: &[Value]) -> Result<HttpGetArgs<'_>, String> {
         ));
     };
 
-    let (headers, params) = match args.get(1) {
-        None => (Vec::new(), Vec::new()),
+    let (headers, params, timeout) = match args.get(1) {
+        None => (Vec::new(), Vec::new(), None),
         Some(Value::Record(fields)) => parse_options(fields.as_ref())?,
         Some(other) => {
             return Err(format!(
@@ -103,26 +209,47 @@ fn http_get_args(args: &[Value]) -> Result<HttpGetArgs<'_>, String> {
         url,
         headers,
         params,
+        timeout,
     })
 }
 
-fn parse_options(
-    fields: &[(String, Value)],
-) -> Result<(Vec<HeaderArg<'_>>, Vec<QueryArg<'_>>), String> {
-    Ok((parse_header_options(fields)?, parse_param_options(fields)?))
+fn parse_options(fields: &[(String, Value)]) -> Result<ParsedOptions<'_>, String> {
+    validate_option_keys(fields)?;
+    Ok((
+        parse_header_options(fields)?,
+        parse_param_options(fields)?,
+        parse_timeout_option(fields)?,
+    ))
+}
+
+fn validate_option_keys(fields: &[(String, Value)]) -> Result<(), String> {
+    for (name, _) in fields {
+        if !matches!(name.as_str(), "headers" | "params" | "timeout") {
+            return Err(format!("unknown Http option `{name}`"));
+        }
+    }
+    Ok(())
 }
 
 fn parse_header_options(fields: &[(String, Value)]) -> Result<Vec<HeaderArg<'_>>, String> {
     let values = option_text_values(fields, "headers")?;
     let mut headers = Vec::with_capacity(values.len());
     for (name, value) in values {
-        let value = match value {
-            OptionTextValue::Single(value) => Cow::Borrowed(value),
-            // RFC 7230 treats repeated header fields as comma-equivalent for most
-            // headers. Cookie uses "; "; callers needing that pass a pre-joined string.
-            OptionTextValue::Multiple(values) => Cow::Owned(values.join(", ")),
-        };
-        headers.push(HeaderArg { name, value });
+        match value {
+            OptionTextValue::Single(value) => headers.push(HeaderArg {
+                name: Cow::Borrowed(name),
+                value,
+            }),
+            OptionTextValue::Multiple(values) => {
+                let total = values.len();
+                for (index, value) in values.into_iter().enumerate() {
+                    headers.push(HeaderArg {
+                        name: repeated_header_name(name, index, total)?,
+                        value,
+                    });
+                }
+            }
+        }
     }
     Ok(headers)
 }
@@ -139,6 +266,78 @@ fn parse_param_options(fields: &[(String, Value)]) -> Result<Vec<QueryArg<'_>>, 
         }
     }
     Ok(params)
+}
+
+fn repeated_header_name(name: &str, index: usize, total: usize) -> Result<Cow<'_, str>, String> {
+    if index == 0 || name.starts_with("x-") || name.starts_with("X-") {
+        return Ok(Cow::Borrowed(name));
+    }
+
+    header_name_case_variant(name, index).map(Cow::Owned).ok_or_else(|| {
+        format!(
+            "Http.get options.headers.{name} has {total} values, but this header name cannot be emitted repeatedly"
+        )
+    })
+}
+
+fn header_name_case_variant(name: &str, ordinal: usize) -> Option<String> {
+    let alpha_count = name
+        .bytes()
+        .filter(|byte| byte.is_ascii_alphabetic())
+        .count();
+    if alpha_count == 0 {
+        return None;
+    }
+    let variant_count = 1usize.checked_shl(alpha_count as u32)?;
+    if ordinal >= variant_count {
+        return None;
+    }
+
+    let mut remaining = ordinal;
+    for mask in 0..variant_count {
+        let mut alpha_index = 0;
+        let variant = name
+            .bytes()
+            .map(|byte| {
+                if byte.is_ascii_alphabetic() {
+                    let upper = (mask & (1 << alpha_index)) != 0;
+                    alpha_index += 1;
+                    if upper {
+                        byte.to_ascii_uppercase()
+                    } else {
+                        byte.to_ascii_lowercase()
+                    }
+                } else {
+                    byte
+                }
+            })
+            .map(char::from)
+            .collect::<String>();
+
+        if variant == name {
+            continue;
+        }
+        if remaining == 1 {
+            return Some(variant);
+        }
+        remaining -= 1;
+    }
+
+    None
+}
+
+fn parse_timeout_option(fields: &[(String, Value)]) -> Result<Option<Duration>, String> {
+    match record_field(fields, "timeout") {
+        None | Some(Value::Undefined) => Ok(None),
+        Some(Value::Int(ms)) if *ms >= 0 => Ok(Some(Duration::from_millis(*ms as u64))),
+        Some(Value::Int(ms)) => Err(format!(
+            "Http.get options.timeout expects non-negative Int milliseconds, got {ms}"
+        )),
+        Some(other) => Err(format!(
+            "Http.get options.timeout expects Int milliseconds, got {}",
+            aven_value_type_name(other)
+        )),
+    }
 }
 
 fn option_text_values<'a>(
@@ -202,40 +401,62 @@ fn record_field<'a>(fields: &'a [(String, Value)], name: &str) -> Option<&'a Val
 
 fn http_response_value(response: ureq::Response) -> Value {
     let status = response.status();
-    let headers = response_headers_value(&response);
+    let headers = response_headers(&response);
     let reader: Box<dyn Read> = response.into_reader();
     Value::record(vec![
         ("status".to_owned(), Value::Int(i64::from(status))),
-        ("headers".to_owned(), headers),
+        ("headers".to_owned(), Value::Map(Rc::clone(&headers))),
+        ("first".to_owned(), first_header_native(Rc::clone(&headers))),
         ("body".to_owned(), body_handle_value(reader)),
     ])
 }
 
-fn response_headers_value(response: &ureq::Response) -> Value {
+fn response_headers(response: &ureq::Response) -> Rc<Vec<(Value, Value)>> {
     let mut seen = Vec::new();
     let mut headers = Vec::new();
 
     for name in response.headers_names() {
-        if seen.contains(&name) {
+        let lower = name.to_ascii_lowercase();
+        if seen.contains(&lower) {
             continue;
         }
-        seen.push(name.clone());
-        headers.extend(
-            response
-                .all(&name)
-                .into_iter()
-                .map(|value| http_header_value(&name, value)),
-        );
+        seen.push(lower.clone());
+        let values = response
+            .all(&name)
+            .into_iter()
+            .map(|value| Value::Text(value.to_owned()))
+            .collect::<Vec<_>>();
+        headers.push((Value::Text(lower), Value::Array(Rc::new(values))));
     }
 
-    Value::Array(Rc::new(headers))
+    Rc::new(headers)
 }
 
-fn http_header_value(name: &str, value: &str) -> Value {
-    Value::record(vec![
-        ("name".to_owned(), Value::Text(name.to_owned())),
-        ("value".to_owned(), Value::Text(value.to_owned())),
-    ])
+fn first_header_native(headers: Rc<Vec<(Value, Value)>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("first expects 1 argument, got {}", args.len()));
+        }
+        let Value::Text(name) = &args[0] else {
+            return Err(format!(
+                "first expects a Text header name, got {}",
+                aven_value_type_name(&args[0])
+            ));
+        };
+        let lower = name.to_ascii_lowercase();
+
+        for (key, values) in headers.iter() {
+            if !matches!(key, Value::Text(candidate) if candidate == &lower) {
+                continue;
+            }
+            let Value::Array(values) = values else {
+                return Ok(Value::Undefined);
+            };
+            return Ok(values.first().cloned().unwrap_or(Value::Undefined));
+        }
+
+        Ok(Value::Undefined)
+    })
 }
 
 fn body_handle_value(reader: Box<dyn Read>) -> Value {
@@ -304,6 +525,10 @@ fn transport_timed_out(error: &ureq::Transport) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::thread;
 
     use aven_check::{RowEntry, RowTail, Type, record_fields, variant_tags};
     use aven_core::{Span, codes};
@@ -384,7 +609,17 @@ mod tests {
         );
         assert_eq!(
             record_field_type(&crate::http_response_type(), "headers"),
-            crate::build::array(crate::http_header_type())
+            crate::build::map(
+                crate::build::text(),
+                crate::build::array(crate::build::text())
+            )
+        );
+        assert_eq!(
+            record_field_type(&crate::http_response_type(), "first"),
+            crate::build::function(
+                vec![crate::build::text()],
+                crate::build::optional(crate::build::text())
+            )
         );
         assert_eq!(
             record_field_type(&crate::http_response_type(), "body"),
@@ -447,13 +682,26 @@ mod tests {
     #[test]
     fn http_get_checks_with_headers_and_params_options() {
         assert_checks(
-            "res = Http.get(\"u\", { headers: { [\"Content-Type\"]: \"x\" }, params: { page: \"2\" } })\n",
+            "id = \"req-1\"\nres = Http.get(\"u\", { headers: { accept: [\"application/json\", \"text/html\"], \"x-request-id\": id }, params: { tag: [\"a\", \"b\"], page: \"2\" }, timeout: 5000 })\n",
         );
     }
 
     #[test]
     fn http_get_checks_with_empty_options() {
         assert_checks("res = Http.get(\"u\", {})\n");
+    }
+
+    #[test]
+    fn http_get_response_headers_and_first_check() {
+        let source = "res = Http.get(\"u\")?^\ncookies = res.headers.get(\"set-cookie\")\ncontentType = res.first(\"content-type\")\n";
+        assert_eq!(
+            binding_type(source, "cookies"),
+            crate::build::optional(crate::build::array(crate::build::text()))
+        );
+        assert_eq!(
+            binding_type(source, "contentType"),
+            crate::build::optional(crate::build::text())
+        );
     }
 
     #[test]
@@ -464,6 +712,44 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH)),
             "non-Text URL is rejected: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn http_get_rejects_bad_header_field_type() {
+        let diagnostics = check_diagnostics("res = Http.get(\"u\", { headers: { accept: 1 } })\n");
+        assert_host_error_contains(
+            &diagnostics,
+            "header `accept` must be `Text` or `Array[Text]`",
+        );
+    }
+
+    #[test]
+    fn http_get_rejects_bad_timeout_type() {
+        let diagnostics = check_diagnostics("res = Http.get(\"u\", { timeout: \"5\" })\n");
+        assert_host_error_contains(&diagnostics, "Http option `timeout` must be `Int`");
+    }
+
+    #[test]
+    fn http_get_rejects_unknown_option_key() {
+        let diagnostics = check_diagnostics("res = Http.get(\"u\", { hedaers: {} })\n");
+        assert_host_error_contains(&diagnostics, "unknown Http option `hedaers`");
+    }
+
+    #[test]
+    fn http_get_rejects_optional_header_field_type() {
+        let diagnostics = check_diagnostics(
+            "maybe : ?Text = undefined\nres = Http.get(\"u\", { headers: { accept: maybe } })\n",
+        );
+        assert_host_error_contains(&diagnostics, "guard or default the value before passing it");
+    }
+
+    #[test]
+    fn http_get_non_concrete_options_type_defers_without_diagnostic() {
+        let diagnostics = check_diagnostics("fetch = (options) => Http.get(\"u\", options)\n");
+        assert!(
+            diagnostics.is_empty(),
+            "non-concrete options type defers quietly: {diagnostics:?}"
         );
     }
 
@@ -539,11 +825,192 @@ mod tests {
         );
     }
 
+    #[test]
+    fn http_get_native_rejects_unknown_option_key() {
+        let Value::Native(get) = http_get_native() else {
+            panic!("Http.get is native");
+        };
+        let options = Value::record(vec![("hedaers".to_owned(), Value::record(vec![]))]);
+        let error = match get(&[Value::Text("https://example.com".to_owned()), options]) {
+            Ok(value) => panic!("expected native arg error, got {value:?}"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "unknown Http option `hedaers`");
+    }
+
+    #[test]
+    fn http_get_args_parse_timeout_milliseconds() {
+        let options = Value::record(vec![("timeout".to_owned(), Value::Int(25))]);
+        let values = [Value::Text("https://example.com".to_owned()), options];
+        let args = http_get_args(&values).expect("valid args");
+        assert_eq!(args.timeout, Some(Duration::from_millis(25)));
+    }
+
+    #[test]
+    fn http_get_timeout_plumbs_to_ureq() {
+        let (url, handle) = spawn_one_request_server_with_delay(
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+            Duration::from_millis(100),
+        );
+        let value = run(&format!("Http.get(\"{url}/slow\", {{ timeout: 1 }})\n"));
+        let _request = handle.join().expect("server thread completes");
+
+        let Value::Tag { name, payload } = value else {
+            panic!("expected a Result tag");
+        };
+        assert_eq!(name, "Err");
+        let Some(Value::Tag {
+            name: error_name, ..
+        }) = payload.first()
+        else {
+            panic!("expected an HttpError payload");
+        };
+        assert_eq!(error_name, "Timeout");
+    }
+
+    #[test]
+    fn response_headers_collect_repeated_values_lowercased() {
+        let response = response_with_headers();
+        let headers = response_headers(&response);
+
+        assert!(headers.iter().any(|(key, value)| {
+            matches!(
+                (key, value),
+                (Value::Text(name), Value::Array(values))
+                    if name == "set-cookie"
+                        && values.as_slice()
+                            == [Value::Text("a=1".to_owned()), Value::Text("b=2".to_owned())]
+            )
+        }));
+    }
+
+    #[test]
+    fn response_first_returns_first_value_or_undefined() {
+        let response = response_with_headers();
+        let headers = response_headers(&response);
+        let Value::Native(first) = first_header_native(headers) else {
+            panic!("first is native");
+        };
+
+        assert_eq!(
+            first(&[Value::Text("SET-COOKIE".to_owned())]),
+            Ok(Value::Text("a=1".to_owned()))
+        );
+        assert_eq!(
+            first(&[Value::Text("missing".to_owned())]),
+            Ok(Value::Undefined)
+        );
+    }
+
+    #[test]
+    fn http_get_end_to_end_repeats_request_and_response_headers() {
+        let (url, handle) = spawn_one_request_server(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: a=1\r\nset-cookie: b=2\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        );
+        let source = format!(
+            "resp = Http.get(\"{url}/demo\", {{ headers: {{ accept: [\"application/json\", \"text/html\"] }}, params: {{ tag: [\"a\", \"b\"], page: \"2\" }} }})?^\n\
+             {{ status: resp.status, cookies: resp.headers.get(\"set-cookie\"), contentType: resp.first(\"content-type\"), body: resp.body.readAll()?^ }}\n"
+        );
+        let value = run(&source);
+        let request = handle.join().expect("server thread completes");
+
+        assert!(
+            request.starts_with("GET /demo?tag=a&tag=b&page=2 HTTP/1.1\r\n"),
+            "request line includes repeated query params: {request:?}"
+        );
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("accept: application/json")),
+            "first repeated Accept header reaches the wire: {request:?}"
+        );
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("accept: text/html")),
+            "second repeated Accept header reaches the wire: {request:?}"
+        );
+
+        let Value::Record(fields) = value else {
+            panic!("program returns a record");
+        };
+        assert_eq!(value_record_field(&fields, "status"), &Value::Int(200));
+        assert_eq!(
+            value_record_field(&fields, "contentType"),
+            &Value::Text("text/plain".to_owned())
+        );
+        assert_eq!(
+            value_record_field(&fields, "body"),
+            &Value::Text("ok".to_owned())
+        );
+        assert_eq!(
+            value_record_field(&fields, "cookies"),
+            &Value::Array(Rc::new(vec![
+                Value::Text("a=1".to_owned()),
+                Value::Text("b=2".to_owned())
+            ]))
+        );
+    }
+
     fn record_field_type(ty: &Type, name: &str) -> Type {
         record_fields(ty)
             .unwrap_or_else(|| panic!("expected a record type"))
             .into_iter()
             .find_map(|field| (field.name == name).then_some(field.ty))
             .unwrap_or_else(|| panic!("expected record field `{name}`"))
+    }
+
+    fn assert_host_error_contains(diagnostics: &[aven_core::Diagnostic], message: &str) {
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::comptime::HOST_FUNCTION)
+                    && diagnostic.message.contains(message)
+            }),
+            "expected host-comptime diagnostic containing {message:?}: {diagnostics:?}"
+        );
+    }
+
+    fn response_with_headers() -> ureq::Response {
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: a=1\r\nset-cookie: b=2\r\nContent-Length: 0\r\n\r\n"
+            .parse()
+            .expect("response parses")
+    }
+
+    fn spawn_one_request_server(response: &'static str) -> (String, thread::JoinHandle<String>) {
+        spawn_one_request_server_with_delay(response, Duration::ZERO)
+    }
+
+    fn spawn_one_request_server_with_delay(
+        response: &'static str,
+        delay: Duration,
+    ) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let addr = listener.local_addr().expect("read local address");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept one request");
+            let mut request = Vec::new();
+            let mut buffer = [0; 512];
+            loop {
+                let read = stream.read(&mut buffer).expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            thread::sleep(delay);
+            let _ = stream.write_all(response.as_bytes());
+            String::from_utf8_lossy(&request).to_string()
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn value_record_field<'a>(fields: &'a [(String, Value)], name: &str) -> &'a Value {
+        fields
+            .iter()
+            .find_map(|(field_name, value)| (field_name == name).then_some(value))
+            .unwrap_or_else(|| panic!("expected value field `{name}`"))
     }
 }

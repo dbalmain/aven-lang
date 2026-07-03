@@ -760,13 +760,17 @@ impl<'a> Checker<'a> {
         };
 
         let bindings = self.current_comptime_value_bindings();
-        spec.comptime_params.iter().any(|index| {
-            let Some(arg) = args.get(*index) else {
+        spec.comptime_params.iter().any(|param| {
+            let Some(arg) = args.get(param.index()) else {
                 return false;
             };
 
-            self.evaluate_comptime_runtime_argument(arg, &bindings)
-                .is_none()
+            match param {
+                HostComptimeParam::Value(_) => self
+                    .evaluate_comptime_runtime_argument(arg, &bindings)
+                    .is_none(),
+                HostComptimeParam::TypeOf(_) => true,
+            }
         })
     }
 

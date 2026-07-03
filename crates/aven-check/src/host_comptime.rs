@@ -107,13 +107,50 @@ pub trait HostComptimeFn {
 }
 
 #[derive(Clone)]
+pub enum HostComptimeParam {
+    Value(usize),
+    TypeOf(usize),
+}
+
+impl HostComptimeParam {
+    pub fn index(&self) -> usize {
+        match self {
+            Self::Value(index) | Self::TypeOf(index) => *index,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct HostComptimeFnSpec {
     pub resolver: Rc<dyn HostComptimeFn>,
-    pub comptime_params: Vec<usize>,
+    pub comptime_params: Vec<HostComptimeParam>,
 }
 
 impl HostComptimeFnSpec {
     pub fn new(resolver: Rc<dyn HostComptimeFn>, comptime_params: Vec<usize>) -> Self {
+        Self {
+            resolver,
+            comptime_params: comptime_params
+                .into_iter()
+                .map(HostComptimeParam::Value)
+                .collect(),
+        }
+    }
+
+    pub fn new_type_of(resolver: Rc<dyn HostComptimeFn>, comptime_params: Vec<usize>) -> Self {
+        Self {
+            resolver,
+            comptime_params: comptime_params
+                .into_iter()
+                .map(HostComptimeParam::TypeOf)
+                .collect(),
+        }
+    }
+
+    pub fn with_params(
+        resolver: Rc<dyn HostComptimeFn>,
+        comptime_params: Vec<HostComptimeParam>,
+    ) -> Self {
         Self {
             resolver,
             comptime_params,

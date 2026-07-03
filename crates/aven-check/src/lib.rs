@@ -10,7 +10,7 @@ use aven_core::{Diagnostic, Span};
 use aven_parser::{Expr, Module};
 
 pub use host_comptime::{
-    ComptimeArg, ComptimeError, HostComptimeFn, HostComptimeFnSpec, HostGlobals,
+    ComptimeArg, ComptimeError, HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals,
 };
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
@@ -117,6 +117,20 @@ pub fn check_module_with_host_globals(module: &Module, globals: &HostGlobals) ->
         diagnostics: checker.diagnostics,
         inferred_types: checker.inferred_types,
     }
+}
+
+/// Return whether `actual` fits `expected` at a normal checking boundary.
+///
+/// Host comptime resolvers use this when they need to validate reified types
+/// with the same literal-row widening and subsumption rules as annotations and
+/// call arguments.
+pub fn type_fits_boundary(expected: &Type, actual: &Type) -> bool {
+    let known_types = BUILTIN_TYPES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let mut checker = Checker::with_type_definitions(known_types, Default::default());
+    checker.type_fits_boundary_without_reporting(expected, actual)
 }
 
 pub fn lower_annotation(module: &Module, annotation: &Expr) -> TypeLowering {

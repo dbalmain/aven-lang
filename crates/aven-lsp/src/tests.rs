@@ -1001,11 +1001,11 @@ fn completion_at_comptime_field_host_record_returns_member_fields() {
 
 #[test]
 fn completion_through_optional_receiver_inserts_null_safe_operator() {
-    // `p.headers[0]` is `?{ name, value }` (an array element), so completing
+    // `users[0]` is `?{ name }` (an array element), so completing
     // a field through a plain `.` offers an edit inserting `?` before the
-    // operator — accepting `name` yields `p.headers[0]?.name`.
-    let document = parsed_document_with_semantics("p = Http.get(\"u\")?^\nx = p.headers[0].\n");
-    let completions = completion_at_position(&document, position(1, 17));
+    // operator — accepting `name` yields `users[0]?.name`.
+    let document = parsed_document_with_semantics("users = [{ name: \"Ada\" }]\nx = users[0].\n");
+    let completions = completion_at_position(&document, position(1, 13));
     let item = completions
         .iter()
         .find(|item| item.label == "name")
@@ -1016,15 +1016,15 @@ fn completion_through_optional_receiver_inserts_null_safe_operator() {
         .expect("expected a `?` insertion edit");
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].new_text, "?");
-    assert_eq!(edits[0].range.start, position(1, 16));
-    assert_eq!(edits[0].range.end, position(1, 16));
+    assert_eq!(edits[0].range.start, position(1, 12));
+    assert_eq!(edits[0].range.end, position(1, 12));
 }
 
 #[test]
 fn completion_through_already_null_safe_receiver_adds_no_edit() {
     // The user already typed `?.`, so no extra `?` should be inserted.
-    let document = parsed_document_with_semantics("p = Http.get(\"u\")?^\nx = p.headers[0]?.\n");
-    let completions = completion_at_position(&document, position(1, 18));
+    let document = parsed_document_with_semantics("users = [{ name: \"Ada\" }]\nx = users[0]?.\n");
+    let completions = completion_at_position(&document, position(1, 14));
     let item = completions
         .iter()
         .find(|item| item.label == "name")
@@ -1053,7 +1053,7 @@ fn signature_help_at_host_record_field_call_returns_member_signature() {
     assert!(
         help.signatures[0]
             .label
-            .starts_with("Http.get(Text, { headers:"),
+            .starts_with("Http.get(Text, { .. })"),
         "unexpected signature label: {}",
         help.signatures[0].label
     );
@@ -1070,7 +1070,7 @@ fn hover_at_host_record_field_shows_member_signature() {
         panic!("expected markup hover");
     };
     assert!(
-        markup.value.contains("(Text, { headers:") && markup.value.contains("-> Result["),
+        markup.value.contains("(Text, { .. } = _)") && markup.value.contains("-> Result["),
         "unexpected member hover: {}",
         markup.value
     );

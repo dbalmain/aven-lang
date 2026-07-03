@@ -733,7 +733,7 @@ impl<'a> Checker<'a> {
             && self.type_fits_boundary_without_reporting(&expected_error, &actual_error)
     }
 
-    pub(super) fn type_fits_boundary_without_reporting(
+    pub(crate) fn type_fits_boundary_without_reporting(
         &mut self,
         expected: &Type,
         actual: &Type,
@@ -959,15 +959,28 @@ impl<'a> Checker<'a> {
         let bindings = self.current_comptime_value_bindings();
         let mut comptime_args = Vec::new();
         let mut error_span = callee.span;
-        for index in &spec.comptime_params {
-            let Some(arg) = args.get(*index) else {
+        for param in &spec.comptime_params {
+            let index = param.index();
+            let Some(arg) = args.get(index) else {
+                if index >= required {
+                    continue;
+                }
                 return Some(Type::Deferred);
             };
-            let Some(argument) = self.evaluate_comptime_param_argument(arg, &bindings) else {
+            let Some(argument) = (match param {
+                HostComptimeParam::Value(_) => self
+                    .evaluate_comptime_param_argument(arg, &bindings)
+                    .map(|argument| argument.value),
+                HostComptimeParam::TypeOf(_) => arg_types.get(index).and_then(|actual| {
+                    let actual = self.normalize(&self.resolve_and_default(actual));
+                    host_comptime_reifiable_type(&actual)
+                        .then_some(comptime::ComptimeValue::ReifiedType(actual))
+                }),
+            }) else {
                 return Some(Type::Deferred);
             };
             error_span = arg.span;
-            comptime_args.push(ComptimeArg::from_comptime_value(argument.value));
+            comptime_args.push(ComptimeArg::from_comptime_value(argument));
         }
 
         if !args_match {
@@ -1026,14 +1039,15 @@ impl<'a> Checker<'a> {
         arg_types: &[Type],
         params: &[Type],
     ) -> bool {
-        spec.comptime_params.iter().all(|index| {
-            if args.get(*index).is_none() {
-                return false;
+        spec.comptime_params.iter().all(|param| {
+            let index = param.index();
+            if args.get(index).is_none() {
+                return params.get(index).is_some_and(|_| index >= args.len());
             }
-            let Some(actual) = arg_types.get(*index) else {
+            let Some(actual) = arg_types.get(index) else {
                 return false;
             };
-            let Some(expected) = params.get(*index) else {
+            let Some(expected) = params.get(index) else {
                 return false;
             };
 
@@ -1837,6 +1851,26 @@ impl<'a> Checker<'a> {
             ),
             _ => None,
         })
+    }
+}
+
+fn host_comptime_reifiable_type(ty: &Type) -> bool {
+    match ty {
+        Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
+        Type::Named(_) => true,
+        Type::Apply { callee, args } => {
+            host_comptime_reifiable_type(callee) && args.iter().all(host_comptime_reifiable_type)
+        }
+        Type::Function { params, result, .. } => {
+            params.iter().all(host_comptime_reifiable_type) && host_comptime_reifiable_type(result)
+        }
+        Type::Optional(inner) | Type::Nullable(inner) => host_comptime_reifiable_type(inner),
+        Type::Tuple(items) => items.iter().all(host_comptime_reifiable_type),
+        Type::Record(row) | Type::Variant(row) => row.entries.iter().all(|entry| match entry {
+            RowEntry::Field { ty, .. } => host_comptime_reifiable_type(ty),
+            RowEntry::Tag { payload, .. } => payload.iter().all(host_comptime_reifiable_type),
+            RowEntry::Literal { .. } => true,
+        }),
     }
 }
 

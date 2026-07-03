@@ -962,6 +962,14 @@ pub mod build {
         }
     }
 
+    /// The applied `Map[key, value]` type.
+    pub fn map(key: Type, value: Type) -> Type {
+        Type::Apply {
+            callee: Box::new(named("Map")),
+            args: vec![key, value],
+        }
+    }
+
     /// The collection type `Array elem` (`Apply Named("Array") [elem]`).
     pub fn array(element: Type) -> Type {
         Type::Apply {

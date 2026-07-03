@@ -16,7 +16,9 @@ use crate::env::{
     LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values,
     free_row_vars_in_local_values,
 };
-use crate::host_comptime::{ComptimeArg, ComptimeError, HostComptimeFnSpec, HostGlobals};
+use crate::host_comptime::{
+    ComptimeArg, ComptimeError, HostComptimeFnSpec, HostComptimeParam, HostGlobals,
+};
 use crate::lower::{
     DeclaredAnnotation, DeclaredAnnotationSource, TypeLowering, binding_for_declaration,
     declared_annotation_for_declaration,
