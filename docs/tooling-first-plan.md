@@ -1735,11 +1735,12 @@ Completed parser groundwork:
   require a default arm, and out-of-union literal arms report
   `type.unreachable-match-arm`.
 
-### Current queue (updated 2026-07-03)
+### Current queue (updated 2026-07-04)
 
 The 2026-07-02 queue is done through HTTP: Q, S, J, X (examples half), K,
 15.3–15.5, and H1+H2 all landed 07-02/07-03. Quoted record field names also
-landed (an X-discovered gap). What remains, in no committed order:
+landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
+07-04. What remains:
 
 - the live nvim sweep (Milestone X's other half — user-driven)
 - X-discovered gaps: runtime variant/set spread in value position;
@@ -2468,6 +2469,76 @@ Done when:
   `first("content-type")` types `?Text`; fixtures lock the response shape
 - the options record is one definition shared by all methods; `ureq` stays
   behind `aven-host`
+
+## Milestone J2 — dynamic JSON (one-arg decode)
+
+Status: done 2026-07-04
+
+Progress: landed 2026-07-04. Recursive named variant definitions are accepted
+(the lowering fixpoint is round-bounded; pure alias cycles still diagnose);
+`subject_variant_row` unfolds named variant definitions one level, so `match`
+over `Json` gets typed arms and exhaustiveness; hand-built constructor tags fit
+`Json` boundaries; hover folds recursive expansions back to the name
+(`display_named_definitions`). Decode's target argument became optional (one-arg
+≡ `Json.decode(text, Json)`); parsing uses a custom serde visitor (direct
+`serde` dep) so object key order is preserved and the `@Int`/`@Float` split
+follows the number lexeme (i64 overflow → `@Float`); encode gains a structural
+carve-out for the seven constructor tags (wrong payload shape stays an error).
+`examples/dynamic-json.av` locks decode → match → re-encode. Note: in
+checker-free runs the explicit `Json` target arrives as the namespace record;
+`json_namespace_target` shape-sniffs it and must track `json_value`'s field
+list.
+
+Goal: `Json.decode(text)` for JSON whose shape is unknown at compile time — the
+form the spec's layout example already uses. J deferred it until a dynamic value
+shape existed; Map (K) closed that gap.
+
+Design (user decisions, 2026-07-04): the dynamic value is a **recursive nominal
+variant**, registered by `aven-host` exactly like `JsonError`:
+
+```
+Json = @{ @Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text),
+          @Array(Array[Json]), @Object(Map[Text, Json]) }
+```
+
+Arm names reuse the language's own type names. Numbers split `@Int`/`@Float`
+(i64-fitting, fraction/exponent-free → `@Int`; else `@Float`) so IDs stay exact.
+The one-arg form is sugar: `Json.decode(text)` ≡ `Json.decode(text, Json)`,
+result `Result[Json, JsonError]` — no new API shape, just a named type the
+existing target-type machinery understands.
+
+Tasks:
+
+- checker: allow a **self-referential named variant definition** — the
+  definition-substitution fixpoint must leave self-references nominal instead of
+  expanding forever, and the alias-cycle detector must only flag pure alias
+  cycles (`A = B = A`), not recursion through a variant body
+- checker: `subject_variant_row` unfolds `Type::Named` one level through the
+  definitions table (the same row-view trick Bool and Result already use), so
+  `match` over a `Json` subject gets arms, payload types, and exhaustiveness
+- boundary: a hand-built tag (`@Int(5)`, `@Object(m)`) fits where `Json` is
+  expected via the existing variant-fits-boundary rule routed through the
+  definition's row
+- host: the decode resolver accepts the one-arg form (types it as
+  `Result[Json, JsonError]`) and `Json` as an explicit second argument; the
+  runtime shape-decoder gains a `Json` target that builds the tag tree from
+  parsed JSON
+- host: `Json.encode` serializes Json-constructor tags back to JSON (structural
+  carve-out from the reject-all-tags rule; applies recursively, so a record
+  containing a `Json` subtree encodes) — decode → encode round-trips
+- example: extend `examples/json.av` (or a new `dynamic-json.av`) with a decode
+  of unknown-shape input, a `match` over the arms, and `@Object`/`Map.get`
+  drilling; locked by the examples test
+
+Done when:
+
+- `parsed = Json.decode(text)?^` checks with `parsed : Json`; `match parsed`
+  over the seven arms is exhaustive with typed payloads
+- `Json.encode(parsed)` round-trips (modulo whitespace/key order)
+- numbers land in the right arm (`1` → `@Int`, `1.5`/`1e10` → `@Float`, i64
+  overflow → `@Float`)
+- the recursive definition produces no cyclic-alias diagnostic, and hover/LSP
+  render `Json` by name rather than an infinite expansion
 
 ## Milestone Z — modules and imports (sketch)
 

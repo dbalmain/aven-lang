@@ -88,14 +88,15 @@ pub enum Value {
     Null,
 }
 
-/// Type names bound as `Value::Type` intrinsics. `Array` is included so
-/// `Array[T]` can evaluate to the minimal composite type value JSON decode
-/// needs at runtime.
-const TYPE_VALUE_NAMES: [&str; 8] = [
+/// Type names bound as `Value::Type` intrinsics. `Array`/`Json` are included so
+/// `Array[T]` and dynamic JSON decode targets can evaluate to the minimal
+/// composite type values JSON decode needs at runtime.
+const TYPE_VALUE_NAMES: [&str; 9] = [
     "Array",
     "Bool",
     "Float",
     "Int",
+    "Json",
     "Null",
     "Text",
     "Undefined",

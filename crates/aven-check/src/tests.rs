@@ -3213,6 +3213,47 @@ fn variant_match_exhaustiveness_uses_subject_rows() {
 }
 
 #[test]
+fn recursive_named_variant_matches_and_accepts_inline_constructors() {
+    let source = concat!(
+        "Json = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
+        "@Array(Array[Json]), @Object(Map[Text, Json])}\n",
+        "arrayValue : Json = @Array([@Null, @Int(5)])\n",
+        "objectValue : Json = @Object(Map.from([(\"a\", @Int(1))]))\n",
+        "matched = arrayValue ?>\n",
+        "  @Null => \"null\"\n",
+        "  @Bool(_) => \"bool\"\n",
+        "  @Int(_) => \"int\"\n",
+        "  @Float(_) => \"float\"\n",
+        "  @Text(_) => \"text\"\n",
+        "  @Array(_) => \"array\"\n",
+        "  @Object(_) => \"object\"\n",
+        "local = () =>\n",
+        "  localValue : Json = @Null\n",
+        "  localValue\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "arrayValue", 0))
+            .map(Type::render),
+        Some("Json".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "localValue", 0))
+            .map(Type::render),
+        Some("Json".to_owned())
+    );
+}
+
+#[test]
 fn literal_union_match_exhaustiveness_uses_subject_members() {
     let closed_complete = parse_module(concat!(
         "Status = @{\"waiting\", \"running\", \"done\"}\n",
@@ -5461,6 +5502,10 @@ fn cyclic_alias_normalization_terminates() {
     let output = parse_module("A = B\nB = A\nvalue : A = 42\n");
     let check = check_module(&output.module);
 
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::CYCLIC_ALIAS),
+        2
+    );
     assert!(!has_diagnostic_code(
         &check.diagnostics,
         codes::ty::MISMATCH

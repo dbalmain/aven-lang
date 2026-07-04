@@ -17,7 +17,11 @@ impl<'a> Checker<'a> {
         let mut body_types = Vec::new();
         for arm in arms {
             self.local_types.push();
-            let local_types = checked_pattern_local_types(&arm.pattern, subject_type.as_ref());
+            let local_types = checked_pattern_local_types(
+                &self.type_definitions,
+                &arm.pattern,
+                subject_type.as_ref(),
+            );
             for mismatch in &local_types.mismatches {
                 self.report_or_pattern_binding_mismatch(mismatch);
             }
@@ -170,10 +174,11 @@ impl<'a> Checker<'a> {
             }
         }
 
-        let Some(row) = subject_variant_row(payload_type) else {
+        let Some(row) = subject_variant_row(payload_type, &self.type_definitions) else {
             return;
         };
-        let row = row.as_ref();
+        let row = row.into_owned();
+        let row = &row;
 
         let entry_kind = if row
             .entries
@@ -287,7 +292,9 @@ impl<'a> Checker<'a> {
             let inferred_subject = self.infer(env, subject);
             let subject_type = self.resolve_if_concrete(&inferred_subject);
             let mut arm_env = env.clone();
-            for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
+            for (name, ty) in
+                pattern_local_types(&self.type_definitions, &arm.pattern, subject_type.as_ref())
+            {
                 arm_env.insert(name, ty);
             }
 
@@ -302,7 +309,9 @@ impl<'a> Checker<'a> {
 
         for arm in arms {
             let mut arm_env = env.clone();
-            for (name, ty) in pattern_local_types(&arm.pattern, subject_type.as_ref()) {
+            for (name, ty) in
+                pattern_local_types(&self.type_definitions, &arm.pattern, subject_type.as_ref())
+            {
                 arm_env.insert(name, ty);
             }
 

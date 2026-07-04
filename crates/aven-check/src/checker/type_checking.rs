@@ -546,6 +546,11 @@ impl<'a> Checker<'a> {
         actual: &Row,
         span: Span,
     ) {
+        if let Some(Type::Variant(expected_row)) = self.type_definitions.get(expected).cloned() {
+            self.check_variant_type_against_type(&expected_row, actual, span);
+            return;
+        }
+
         let actual = self.resolve_variant_row(actual);
         let Some(base) = literal_variant_base(&actual) else {
             return;

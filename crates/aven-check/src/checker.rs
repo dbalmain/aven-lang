@@ -460,32 +460,41 @@ fn collect_value_set_union_parts<'a>(
     }
 }
 
-fn pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> Vec<(String, LocalValueType)> {
-    checked_pattern_local_types(pattern, expected).bindings
+fn pattern_local_types(
+    type_definitions: &HashMap<String, Type>,
+    pattern: &Expr,
+    expected: Option<&Type>,
+) -> Vec<(String, LocalValueType)> {
+    checked_pattern_local_types(type_definitions, pattern, expected).bindings
 }
 
-fn checked_pattern_local_types(pattern: &Expr, expected: Option<&Type>) -> PatternLocalTypes {
+fn checked_pattern_local_types(
+    type_definitions: &HashMap<String, Type>,
+    pattern: &Expr,
+    expected: Option<&Type>,
+) -> PatternLocalTypes {
     let mut mismatches = Vec::new();
     collect_or_pattern_binding_mismatches(pattern, &mut mismatches);
 
     PatternLocalTypes {
-        bindings: merged_pattern_local_types(pattern, expected),
+        bindings: merged_pattern_local_types(type_definitions, pattern, expected),
         mismatches,
     }
 }
 
 fn merged_pattern_local_types(
+    type_definitions: &HashMap<String, Type>,
     pattern: &Expr,
     expected: Option<&Type>,
 ) -> Vec<(String, LocalValueType)> {
     let alternatives = flatten_or_alternatives(pattern);
     if alternatives.len() == 1 {
-        return single_pattern_local_types(pattern, expected);
+        return single_pattern_local_types(type_definitions, pattern, expected);
     }
 
     let alternative_types = alternatives
         .iter()
-        .map(|alternative| single_pattern_local_type_map(alternative, expected))
+        .map(|alternative| single_pattern_local_type_map(type_definitions, alternative, expected))
         .collect::<Vec<_>>();
     let names = alternative_types
         .iter()
@@ -502,10 +511,11 @@ fn merged_pattern_local_types(
 }
 
 fn single_pattern_local_type_map(
+    type_definitions: &HashMap<String, Type>,
     pattern: &Expr,
     expected: Option<&Type>,
 ) -> HashMap<String, LocalValueType> {
-    single_pattern_local_types(pattern, expected)
+    single_pattern_local_types(type_definitions, pattern, expected)
         .into_iter()
         .collect()
 }
@@ -530,12 +540,13 @@ fn merged_or_pattern_local_type(
 }
 
 fn single_pattern_local_types(
+    type_definitions: &HashMap<String, Type>,
     pattern: &Expr,
     expected: Option<&Type>,
 ) -> Vec<(String, LocalValueType)> {
     let mut known = HashMap::new();
     if let Some(expected) = expected {
-        collect_known_pattern_types(pattern, expected, &mut known);
+        collect_known_pattern_types(type_definitions, pattern, expected, &mut known);
     }
 
     pattern_bindings(pattern)
@@ -631,16 +642,23 @@ fn expr_references_name(expr: &Expr, name: &str) -> bool {
     found
 }
 
-fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut HashMap<String, Type>) {
+fn collect_known_pattern_types(
+    type_definitions: &HashMap<String, Type>,
+    pattern: &Expr,
+    expected: &Type,
+    known: &mut HashMap<String, Type>,
+) {
     match (&pattern.kind, expected) {
-        (ExprKind::Group(inner), _) => collect_known_pattern_types(inner, expected, known),
+        (ExprKind::Group(inner), _) => {
+            collect_known_pattern_types(type_definitions, inner, expected, known);
+        }
         (_, Type::Optional(inner))
             if empty_value_pattern(pattern) != Some(EmptyValue::Undefined) =>
         {
-            collect_known_pattern_types(pattern, inner, known);
+            collect_known_pattern_types(type_definitions, pattern, inner, known);
         }
         (_, Type::Nullable(inner)) if empty_value_pattern(pattern) != Some(EmptyValue::Null) => {
-            collect_known_pattern_types(pattern, inner, known);
+            collect_known_pattern_types(type_definitions, pattern, inner, known);
         }
         (ExprKind::Name(name), _) if name != "_" && is_resolved_value_type(expected) => {
             known.insert(name.clone(), expected.clone());
@@ -654,14 +672,14 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
             },
             _,
         ) if operator == "|" => {
-            collect_known_pattern_types(left, expected, known);
-            collect_known_pattern_types(right, expected, known);
+            collect_known_pattern_types(type_definitions, left, expected, known);
+            collect_known_pattern_types(type_definitions, right, expected, known);
         }
         (ExprKind::Call { callee, args }, _) => {
             let ExprKind::Tag(tag) = &callee.kind else {
                 return;
             };
-            let Some(row) = subject_variant_row(expected) else {
+            let Some(row) = subject_variant_row(expected, type_definitions) else {
                 return;
             };
             let Some(payload) = literal_variant_payload(&row, tag) else {
@@ -671,18 +689,19 @@ fn collect_known_pattern_types(pattern: &Expr, expected: &Type, known: &mut Hash
                 return;
             }
             for (arg, ty) in args.iter().zip(payload) {
-                collect_known_pattern_types(arg, ty, known);
+                collect_known_pattern_types(type_definitions, arg, ty, known);
             }
         }
         (ExprKind::Record(entries), Type::Record(row)) => {
-            collect_known_record_pattern_types(entries, row, known);
+            collect_known_record_pattern_types(type_definitions, entries, row, known);
         }
-        (ExprKind::Tag(_), _) if subject_variant_row(expected).is_some() => {}
+        (ExprKind::Tag(_), _) if subject_variant_row(expected, type_definitions).is_some() => {}
         _ => {}
     }
 }
 
 fn collect_known_record_pattern_types(
+    type_definitions: &HashMap<String, Type>,
     entries: &[RecordEntry],
     row: &Row,
     known: &mut HashMap<String, Type>,
@@ -693,7 +712,7 @@ fn collect_known_record_pattern_types(
         match entry {
             RecordEntry::Field { name, value, .. } => {
                 if let Some(field_ty) = row_field_type(row, name) {
-                    collect_known_pattern_types(value, field_ty, known);
+                    collect_known_pattern_types(type_definitions, value, field_ty, known);
                 }
             }
             RecordEntry::Shorthand { name, .. } => {
@@ -904,8 +923,17 @@ fn literal_union_domain_row(domain: &Type) -> Option<&Row> {
     }
 }
 
-fn subject_variant_row(ty: &Type) -> Option<Cow<'_, Row>> {
+fn subject_variant_row<'a>(
+    ty: &'a Type,
+    type_definitions: &'a HashMap<String, Type>,
+) -> Option<Cow<'a, Row>> {
     if let Type::Variant(row) = ty {
+        return Some(Cow::Borrowed(row));
+    }
+
+    if let Type::Named(name) = ty
+        && let Some(Type::Variant(row)) = type_definitions.get(name)
+    {
         return Some(Cow::Borrowed(row));
     }
 

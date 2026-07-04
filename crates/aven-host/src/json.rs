@@ -2,23 +2,142 @@
 //!
 //! `Json.encode` is an ordinary native returning `Text`. `Json.decode` returns
 //! an Aven `Result`, using the checker's host-comptime resolver to refine the
-//! result type from the trailing target type argument.
+//! result type from the optional trailing target type argument.
 
+use std::fmt;
 use std::rc::Rc;
 
 use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, Type};
 use aven_eval::{RuntimeType, Value};
-use serde_json::Value as JsonValue;
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 
 use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
 
 impl Host {
-    /// Register the `Json` namespace and the named `JsonError` type.
+    /// Register the `Json` namespace and the named `Json`/`JsonError` types.
     pub fn register_json(&mut self) {
         self.register("Json", json_value(), crate::json_type());
+        self.register_type_definition("Json", crate::json_dynamic_type());
         self.register_type_definition("JsonError", crate::json_error_type());
         self.register_comptime_resolver("Json.decode", vec![1], decode_comptime_resolver());
+    }
+}
+
+#[derive(Debug, Clone)]
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(JsonNumber),
+    String(String),
+    Array(Vec<JsonValue>),
+    Object(Vec<(String, JsonValue)>),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum JsonNumber {
+    Int(i64),
+    Float(f64),
+}
+
+impl<'de> Deserialize<'de> for JsonValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(JsonValueVisitor)
+    }
+}
+
+struct JsonValueVisitor;
+
+impl<'de> Visitor<'de> for JsonValueVisitor {
+    type Value = JsonValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(JsonValue::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(JsonValue::Null)
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(JsonValue::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(JsonValue::Number(JsonNumber::Int(value)))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        let number = i64::try_from(value)
+            .map(JsonNumber::Int)
+            .unwrap_or_else(|_| JsonNumber::Float(value as f64));
+        Ok(JsonValue::Number(number))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(JsonValue::Number(JsonNumber::Float(value)))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(JsonValue::String(value.to_owned()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(JsonValue::String(value))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = seq.next_element()? {
+            values.push(value);
+        }
+        Ok(JsonValue::Array(values))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries = Vec::new();
+        while let Some(key) = map.next_key()? {
+            entries.push((key, map.next_value()?));
+        }
+        Ok(JsonValue::Object(entries))
     }
 }
 
@@ -26,19 +145,22 @@ struct DecodeComptimeResolver;
 
 impl HostComptimeFn for DecodeComptimeResolver {
     fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
-        let [target] = args else {
-            return Err(ComptimeError::new(
-                "decode resolver expects one compile-time target type argument",
-            ));
-        };
-        let Some(target) = target.as_type() else {
-            return Err(ComptimeError::new(
-                "decode target must be a compile-time type",
-            ));
+        let target = match args {
+            [] => crate::build::named("Json"),
+            [target] => target
+                .as_type()
+                .cloned()
+                .ok_or_else(|| ComptimeError::new("decode target must be a compile-time type"))?,
+            _ => {
+                return Err(ComptimeError::new(format!(
+                    "decode resolver expects at most one compile-time target type argument, got {}",
+                    args.len()
+                )));
+            }
         };
 
         Ok(crate::build::result(
-            target.clone(),
+            target,
             crate::build::named("JsonError"),
         ))
     }
@@ -76,17 +198,24 @@ pub(crate) fn encode_to_text(value: &Value) -> Result<String, String> {
 
 fn decode_native() -> Value {
     Value::native(|args| {
-        let [text, target] = args else {
+        if args.len() > 2 {
             return Err(format!(
-                "Json.decode expects 2 arguments, got {}",
+                "Json.decode expects 1 or 2 arguments, got {}",
                 args.len()
             ));
-        };
-        let Value::Text(text) = text else {
-            return Err(format!(
-                "Json.decode expects Text input, got {}",
-                aven_value_type_name(text)
-            ));
+        }
+        let (text, target) = match args {
+            [Value::Text(text)] => (text, None),
+            [Value::Text(text), target] => (text, Some(target)),
+            [other] | [other, ..] => {
+                return Err(format!(
+                    "Json.decode expects Text input, got {}",
+                    aven_value_type_name(other)
+                ));
+            }
+            [] => {
+                return Err("Json.decode expects at least 1 argument, got 0".to_owned());
+            }
         };
 
         let parsed = match serde_json::from_str::<JsonValue>(text) {
@@ -94,6 +223,8 @@ fn decode_native() -> Value {
             Err(error) => return Ok(err_value(parse_error_value(error.to_string()))),
         };
 
+        let default_target = Value::named_type("Json");
+        let target = target.unwrap_or(&default_target);
         match decode_value(&parsed, target, &JsonPath::root()) {
             Ok(value) => Ok(ok_value(value)),
             Err(DecodeError::Shape(error)) => Ok(err_value(shape_error_value(error))),
@@ -136,12 +267,15 @@ fn encode_value(
                 return Err("Json.encode cannot encode undefined array elements".to_owned());
             }
         },
-        Value::Tag { name, payload } if payload.is_empty() => {
-            return Err(format!(
-                "Json.encode cannot encode nullary tag @{name}; JSON tag wire form is not decided"
-            ));
-        }
-        Value::Tag { name, .. } => {
+        Value::Tag { name, payload } => {
+            if encode_json_constructor(name, payload, output)? {
+                return Ok(());
+            }
+            if payload.is_empty() {
+                return Err(format!(
+                    "Json.encode cannot encode nullary tag @{name}; JSON tag wire form is not decided"
+                ));
+            }
             return Err(format!(
                 "Json.encode cannot encode tag @{name} with payload"
             ));
@@ -152,6 +286,112 @@ fn encode_value(
     }
 
     Ok(())
+}
+
+fn encode_json_constructor(
+    name: &str,
+    payload: &[Value],
+    output: &mut String,
+) -> Result<bool, String> {
+    match name {
+        "Null" => {
+            let [] = payload else {
+                return Err(json_constructor_shape_error(name, "no payload"));
+            };
+            output.push_str("null");
+        }
+        "Bool" => {
+            let [Value::Bool(value)] = payload else {
+                return Err(json_constructor_shape_error(name, "Bool"));
+            };
+            output.push_str(if *value { "true" } else { "false" });
+        }
+        "Int" => {
+            let [Value::Int(value)] = payload else {
+                return Err(json_constructor_shape_error(name, "Int"));
+            };
+            output.push_str(&value.to_string());
+        }
+        "Float" => {
+            let [Value::Float(value)] = payload else {
+                return Err(json_constructor_shape_error(name, "Float"));
+            };
+            if !value.is_finite() {
+                return Err("Json.encode cannot encode NaN or infinite Float".to_owned());
+            }
+            output.push_str(&value.to_string());
+        }
+        "Text" => {
+            let [Value::Text(value)] = payload else {
+                return Err(json_constructor_shape_error(name, "Text"));
+            };
+            encode_string(value, output);
+        }
+        "Array" => {
+            let [Value::Array(values)] = payload else {
+                return Err(json_constructor_shape_error(name, "Array[Json]"));
+            };
+            encode_json_array(values, output)?;
+        }
+        "Object" => {
+            let [Value::Map(entries)] = payload else {
+                return Err(json_constructor_shape_error(name, "Map[Text, Json]"));
+            };
+            encode_json_object(entries, output)?;
+        }
+        _ => return Ok(false),
+    }
+
+    Ok(true)
+}
+
+fn encode_json_array(values: &[Value], output: &mut String) -> Result<(), String> {
+    output.push('[');
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        encode_json_value(value, output)?;
+    }
+    output.push(']');
+    Ok(())
+}
+
+fn encode_json_object(entries: &[(Value, Value)], output: &mut String) -> Result<(), String> {
+    output.push('{');
+    for (index, (key, value)) in entries.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        let Value::Text(key) = key else {
+            return Err(json_constructor_shape_error("Object", "Map[Text, Json]"));
+        };
+        encode_string(key, output);
+        output.push(':');
+        encode_json_value(value, output)?;
+    }
+    output.push('}');
+    Ok(())
+}
+
+fn encode_json_value(value: &Value, output: &mut String) -> Result<(), String> {
+    let Value::Tag { name, payload } = value else {
+        return Err(format!(
+            "Json.encode expected Json constructor tag, got {}",
+            aven_value_type_name(value)
+        ));
+    };
+    if encode_json_constructor(name, payload, output)? {
+        Ok(())
+    } else {
+        Err(format!(
+            "Json.encode expected Json constructor tag, got @{name}"
+        ))
+    }
+}
+
+fn json_constructor_shape_error(name: &str, expected: &str) -> String {
+    format!("Json.encode expected @{name} payload shape {expected}")
 }
 
 fn encode_record(fields: &[(String, Value)], output: &mut String) -> Result<(), String> {
@@ -247,11 +487,15 @@ impl JsonPath {
 }
 
 fn decode_value(value: &JsonValue, target: &Value, path: &JsonPath) -> Result<Value, DecodeError> {
+    if json_namespace_target(target) {
+        return decode_named(value, "Json", path);
+    }
+
     match target {
         Value::Type(RuntimeType::Named(name)) => decode_named(value, name, path),
         Value::Type(RuntimeType::Optional(inner)) => decode_value(value, inner, path),
         Value::Type(RuntimeType::Nullable(inner)) => {
-            if value.is_null() {
+            if matches!(value, JsonValue::Null) {
                 Ok(Value::Null)
             } else {
                 decode_value(value, inner, path)
@@ -268,11 +512,25 @@ fn decode_value(value: &JsonValue, target: &Value, path: &JsonPath) -> Result<Va
 
 fn decode_named(value: &JsonValue, name: &str, path: &JsonPath) -> Result<Value, DecodeError> {
     match name {
-        "Text" => value.as_str().map(|text| Value::Text(text.to_owned())),
-        "Int" => value.as_i64().map(Value::Int),
-        "Float" => value.as_f64().map(Value::Float),
-        "Bool" => value.as_bool().map(Value::Bool),
-        "Null" if value.is_null() => Some(Value::Null),
+        "Json" => return Ok(decode_dynamic_json(value)),
+        "Text" => match value {
+            JsonValue::String(text) => Some(Value::Text(text.clone())),
+            _ => None,
+        },
+        "Int" => match value {
+            JsonValue::Number(JsonNumber::Int(value)) => Some(Value::Int(*value)),
+            _ => None,
+        },
+        "Float" => match value {
+            JsonValue::Number(JsonNumber::Int(value)) => Some(Value::Float(*value as f64)),
+            JsonValue::Number(JsonNumber::Float(value)) => Some(Value::Float(*value)),
+            _ => None,
+        },
+        "Bool" => match value {
+            JsonValue::Bool(value) => Some(Value::Bool(*value)),
+            _ => None,
+        },
+        "Null" if matches!(value, JsonValue::Null) => Some(Value::Null),
         "Null" => None,
         "Undefined" => None,
         "Array" => {
@@ -289,12 +547,42 @@ fn decode_named(value: &JsonValue, name: &str, path: &JsonPath) -> Result<Value,
     .ok_or_else(|| shape_error(path, name, value))
 }
 
+fn decode_dynamic_json(value: &JsonValue) -> Value {
+    match value {
+        JsonValue::Null => json_tag("Null", Vec::new()),
+        JsonValue::Bool(value) => json_tag("Bool", vec![Value::Bool(*value)]),
+        JsonValue::Number(JsonNumber::Int(value)) => json_tag("Int", vec![Value::Int(*value)]),
+        JsonValue::Number(JsonNumber::Float(value)) => {
+            json_tag("Float", vec![Value::Float(*value)])
+        }
+        JsonValue::String(value) => json_tag("Text", vec![Value::Text(value.clone())]),
+        JsonValue::Array(values) => {
+            let values = values.iter().map(decode_dynamic_json).collect();
+            json_tag("Array", vec![Value::Array(Rc::new(values))])
+        }
+        JsonValue::Object(entries) => {
+            let entries = entries
+                .iter()
+                .map(|(key, value)| (Value::Text(key.clone()), decode_dynamic_json(value)))
+                .collect();
+            json_tag("Object", vec![Value::Map(Rc::new(entries))])
+        }
+    }
+}
+
+fn json_tag(name: &str, payload: Vec<Value>) -> Value {
+    Value::Tag {
+        name: name.to_owned(),
+        payload,
+    }
+}
+
 fn decode_record(
     value: &JsonValue,
     fields: &[(String, Value)],
     path: &JsonPath,
 ) -> Result<Value, DecodeError> {
-    let Some(object) = value.as_object() else {
+    let JsonValue::Object(object) = value else {
         return Err(shape_error(path, "Record", value));
     };
 
@@ -308,7 +596,10 @@ fn decode_record(
         }
 
         let field_path = path.field(name);
-        let field = match object.get(name) {
+        let field = match object
+            .iter()
+            .find_map(|(field_name, field_value)| (field_name == name).then_some(field_value))
+        {
             Some(field_value) => decode_value(field_value, target, &field_path)?,
             None if target_is_optional(target) => Value::Undefined,
             None => {
@@ -326,7 +617,7 @@ fn decode_record(
 }
 
 fn decode_array(value: &JsonValue, target: &Value, path: &JsonPath) -> Result<Value, DecodeError> {
-    let Some(items) = value.as_array() else {
+    let JsonValue::Array(items) = value else {
         return Err(shape_error(path, &target_display_array(target), value));
     };
     if !runtime_type_target(target) {
@@ -358,6 +649,23 @@ fn runtime_type_target(value: &Value) -> bool {
     }
 }
 
+/// In checker-free runs, `Json.decode(text, Json)` passes the `Json`
+/// namespace record itself as the target (the global name is the namespace,
+/// not a type value). This shape test must track `json_value`'s field list.
+fn json_namespace_target(value: &Value) -> bool {
+    let Value::Record(fields) = value else {
+        return false;
+    };
+    let [encode, decode] = fields.as_slice() else {
+        return false;
+    };
+    matches!(
+        (encode, decode),
+        ((encode_name, Value::Native(_)), (decode_name, Value::Native(_)))
+            if encode_name == "encode" && decode_name == "decode"
+    )
+}
+
 fn target_display(target: &Value) -> String {
     target.to_string()
 }
@@ -378,8 +686,8 @@ fn found_kind(value: &JsonValue) -> String {
     match value {
         JsonValue::Null => "Null",
         JsonValue::Bool(_) => "Bool",
-        JsonValue::Number(number) if number.is_i64() || number.is_u64() => "Int",
-        JsonValue::Number(_) => "Float",
+        JsonValue::Number(JsonNumber::Int(_)) => "Int",
+        JsonValue::Number(JsonNumber::Float(_)) => "Float",
         JsonValue::String(_) => "Text",
         JsonValue::Array(_) => "Array",
         JsonValue::Object(_) => "Record",
@@ -438,6 +746,16 @@ mod tests {
         outcome.value.expect("program yields a value")
     }
 
+    fn run_diagnostics(source: &str) -> Vec<aven_core::Diagnostic> {
+        let parsed = parse_module(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "program parses: {:?}",
+            parsed.diagnostics
+        );
+        aven_eval::eval_module_with_globals(&parsed.module, json_host().eval_globals()).diagnostics
+    }
+
     fn check(source: &str) -> aven_check::CheckOutput {
         let parsed = parse_module(source);
         assert!(
@@ -485,6 +803,41 @@ mod tests {
         (name.as_str(), payload)
     }
 
+    fn tag_payload<'a>(value: &'a Value, expected: &str) -> &'a [Value] {
+        let Value::Tag { name, payload } = value else {
+            panic!("expected @{expected}, got {value:?}");
+        };
+        assert_eq!(name, expected);
+        payload
+    }
+
+    fn tag_name(value: &Value) -> &str {
+        let Value::Tag { name, .. } = value else {
+            panic!("expected tag, got {value:?}");
+        };
+        name
+    }
+
+    fn tag_array_payload<'a>(value: &'a Value, expected: &str) -> &'a [Value] {
+        let [Value::Array(values)] = tag_payload(value, expected) else {
+            panic!("expected @{expected}(Array), got {value:?}");
+        };
+        values.as_ref()
+    }
+
+    fn assert_platform_error_contains(diagnostics: &[aven_core::Diagnostic], message: &str) {
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::runtime::PLATFORM_ERROR)
+                    && diagnostic
+                        .labels
+                        .iter()
+                        .any(|label| label.message.contains(message))
+            }),
+            "expected runtime platform diagnostic containing {message:?}: {diagnostics:?}"
+        );
+    }
+
     #[test]
     fn encode_decode_round_trip_preserves_omitted_and_null_fields() {
         let value = run("User = { name: Text, phone: ?Text, nick: Text? }\n\
@@ -497,6 +850,44 @@ mod tests {
         assert_eq!(text(field(decoded, "name")), "Ada");
         assert_eq!(field(decoded, "phone"), &Value::Undefined);
         assert_eq!(field(decoded, "nick"), &Value::Null);
+    }
+
+    #[test]
+    fn dynamic_decode_one_arg_builds_json_constructor_tree() {
+        let value = run("Json.decode(\"[1,1.5,1e10,9223372036854775808,true,null]\")?!\n");
+        let items = tag_array_payload(&value, "Array");
+        let names = items.iter().map(tag_name).collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec!["Int", "Float", "Float", "Float", "Bool", "Null"]
+        );
+    }
+
+    #[test]
+    fn dynamic_decode_explicit_json_target_uses_namespace_and_preserves_order() {
+        let value = run(
+            "parsed = Json.decode(\"{\\\"b\\\":1,\\\"a\\\":2}\", Json)?!\n\
+             Json.encode(parsed)\n",
+        );
+
+        assert_eq!(text(&value), r#"{"b":1,"a":2}"#);
+    }
+
+    #[test]
+    fn encode_accepts_structural_json_constructor_tags() {
+        let value = run(
+            "Json.encode(@Object(Map.from([(\"b\", @Int(1)), (\"a\", @Array([@Bool(true), @Null]))])))\n",
+        );
+
+        assert_eq!(text(&value), r#"{"b":1,"a":[true,null]}"#);
+    }
+
+    #[test]
+    fn encode_rejects_json_constructor_with_wrong_payload_shape() {
+        let diagnostics = run_diagnostics("Json.encode(@Int(\"no\"))\n");
+
+        assert_platform_error_contains(&diagnostics, "Json.encode expected @Int payload shape Int");
     }
 
     #[test]
@@ -617,16 +1008,38 @@ mod tests {
     }
 
     #[test]
-    fn checker_rejects_decode_wrong_arity() {
+    fn checker_resolves_one_arg_decode_to_dynamic_json_result() {
         let checked = check("text = \"{}\"\ndecoded = Json.decode(text)\n");
 
         assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH)),
-            "wrong arity is an ordinary type mismatch: {:?}",
+            checked.diagnostics.is_empty(),
+            "one-arg dynamic decode checks: {:?}",
             checked.diagnostics
         );
+        let source = "text = \"{}\"\ndecoded = Json.decode(text)\n";
+        let offset = source.find("decoded").expect("source mentions decoded");
+        let ty = checked
+            .type_at(Span::new(offset, offset + "decoded".len()))
+            .expect("decoded has an inferred type");
+
+        assert_eq!(ty.render(), "Result[Json, JsonError]");
+    }
+
+    #[test]
+    fn checker_resolves_explicit_json_decode_to_dynamic_json_result() {
+        let source = "text = \"{}\"\ndecoded = Json.decode(text, Json)\n";
+        let checked = check(source);
+
+        assert!(
+            checked.diagnostics.is_empty(),
+            "explicit Json target checks: {:?}",
+            checked.diagnostics
+        );
+        let offset = source.find("decoded").expect("source mentions decoded");
+        let ty = checked
+            .type_at(Span::new(offset, offset + "decoded".len()))
+            .expect("decoded has an inferred type");
+
+        assert_eq!(ty.render(), "Result[Json, JsonError]");
     }
 }

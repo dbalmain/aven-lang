@@ -200,7 +200,7 @@ impl<'a> Checker<'a> {
         if let Some(source) = declared_annotation {
             let declared_type = self.lower_annotation(source.annotation);
             let expected_type = self.normalize(&declared_type);
-            self.record_inferred_type(declaration.name_span, expected_type.clone());
+            self.record_inferred_type(declaration.name_span, declared_type);
 
             if let Some(binding) = binding {
                 self.check_value_against(&expected_type, &binding.value);
@@ -278,15 +278,19 @@ impl<'a> Checker<'a> {
     pub(super) fn check_local_binding(&mut self, binding: &Binding, signature: Option<&Signature>) {
         self.check_runtime_binding_liftability(&binding.value);
 
-        let signature_type =
-            signature.map(|signature| self.lower_normalized_annotation(&signature.annotation));
-        let binding_type = binding
-            .annotation
-            .as_ref()
-            .map(|annotation| self.lower_normalized_annotation(annotation));
+        let signature_type = signature.map(|signature| {
+            let declared = self.lower_annotation(&signature.annotation);
+            let normalized = self.normalize(&declared);
+            (declared, normalized)
+        });
+        let binding_type = binding.annotation.as_ref().map(|annotation| {
+            let declared = self.lower_annotation(annotation);
+            let normalized = self.normalize(&declared);
+            (declared, normalized)
+        });
         let declared_type = signature_type.as_ref().or(binding_type.as_ref());
 
-        if let Some(expected) = declared_type {
+        if let Some((_, expected)) = declared_type {
             self.check_value_against(expected, &binding.value);
         }
 
@@ -309,12 +313,16 @@ impl<'a> Checker<'a> {
             }
         } else {
             declared_type
-                .cloned()
+                .map(|(_, normalized)| normalized.clone())
                 .map(LocalValueType::Known)
                 .unwrap_or(LocalValueType::Unknown)
         };
 
-        self.record_local_value_type(binding.name_span, &inferred_type);
+        if let Some((declared, _)) = declared_type {
+            self.record_inferred_type(binding.name_span, declared.clone());
+        } else {
+            self.record_local_value_type(binding.name_span, &inferred_type);
+        }
         self.local_types.define(&binding.name, inferred_type);
     }
 
@@ -602,11 +610,79 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        let ty = self.display_named_definitions(ty);
         self.inferred_types.push(InferredType { name_span, ty });
     }
 
     pub(super) fn record_synthesized_type(&mut self, name_span: Span, ty: &Type) {
         self.record_inferred_type(name_span, display_inferred_type(ty));
+    }
+
+    pub(super) fn display_named_definitions(&self, ty: Type) -> Type {
+        let mut names = self.type_definitions.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        if names.is_empty() {
+            return ty;
+        }
+
+        map_type(&ty, &mut |node| {
+            names.iter().find_map(|name| {
+                let definition = self.type_definitions.get(name)?;
+                if matches!(definition, Type::Named(_))
+                    || !self.type_references_name(node, name, &mut HashSet::new())
+                {
+                    return None;
+                }
+                (self.normalize(definition).render() == node.render())
+                    .then(|| Type::Named(name.clone()))
+            })
+        })
+    }
+
+    pub(super) fn type_references_name(
+        &self,
+        ty: &Type,
+        name: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        match ty {
+            Type::Named(candidate) if candidate == name => true,
+            Type::Named(candidate) => {
+                visiting.insert(candidate.clone())
+                    && self
+                        .type_definitions
+                        .get(candidate)
+                        .is_some_and(|definition| {
+                            self.type_references_name(definition, name, visiting)
+                        })
+            }
+            Type::Apply { callee, args } => {
+                self.type_references_name(callee, name, visiting)
+                    || args
+                        .iter()
+                        .any(|arg| self.type_references_name(arg, name, visiting))
+            }
+            Type::Function { params, result, .. } => {
+                params
+                    .iter()
+                    .any(|param| self.type_references_name(param, name, visiting))
+                    || self.type_references_name(result, name, visiting)
+            }
+            Type::Optional(inner) | Type::Nullable(inner) => {
+                self.type_references_name(inner, name, visiting)
+            }
+            Type::Tuple(items) => items
+                .iter()
+                .any(|item| self.type_references_name(item, name, visiting)),
+            Type::Record(row) | Type::Variant(row) => row.entries.iter().any(|entry| match entry {
+                RowEntry::Field { ty, .. } => self.type_references_name(ty, name, visiting),
+                RowEntry::Tag { payload, .. } => payload
+                    .iter()
+                    .any(|ty| self.type_references_name(ty, name, visiting)),
+                RowEntry::Literal { .. } => false,
+            }),
+            Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
+        }
     }
 
     pub(super) fn top_level_binding_final_type(&mut self, name: &str) -> Option<Type> {

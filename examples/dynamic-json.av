@@ -1,0 +1,23 @@
+# Dynamic Json.decode for unknown-shape input, followed by a structural match and re-encode.
+input = "{\"name\":\"Ada\",\"count\":3,\"nested\":{\"ok\":true},\"scores\":[1,2.5]}"
+
+parsed = Json.decode(input)?!
+
+summary = parsed ?>
+  @Null => "null"
+  @Bool(value) => "bool:${value}"
+  @Int(value) => "int:${value}"
+  @Float(value) => "float:${value}"
+  @Text(value) => "text:${value}"
+  @Array(_) => "array"
+  @Object(fields) =>
+    name = fields.get("name")
+    name ?>
+      undefined => "object"
+      @Text(value) => "object:${value}"
+      _ => "object"
+
+encoded = Json.encode(parsed)
+
+writeLine("summary: ${summary}")
+writeLine("encoded: ${encoded}")

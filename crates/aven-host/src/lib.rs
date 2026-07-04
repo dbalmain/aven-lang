@@ -409,17 +409,34 @@ pub fn json_error_type() -> Type {
     ])
 }
 
+/// The recursive dynamic JSON value shape returned by one-argument
+/// `Json.decode`.
+pub fn json_dynamic_type() -> Type {
+    build::variant(vec![
+        ("Null", vec![]),
+        ("Bool", vec![build::bool()]),
+        ("Int", vec![build::int()]),
+        ("Float", vec![build::float()]),
+        ("Text", vec![build::text()]),
+        ("Array", vec![build::array(build::named("Json"))]),
+        (
+            "Object",
+            vec![build::map(build::text(), build::named("Json"))],
+        ),
+    ])
+}
+
 /// `(a) -> Text` — `Json.encode` accepts any checked value and validates JSON
 /// encodability at runtime.
 pub fn json_encode_type() -> Type {
     build::function(vec![build::var("a")], build::text())
 }
 
-/// The base `Json.decode` type: `(Text, ?) -> ?`. The checker uses it for
+/// The base `Json.decode` type: `(Text, ? = _) -> ?`. The checker uses it for
 /// arity and the input text argument; the host comptime resolver refines the
-/// result from the trailing type argument.
+/// result from the optional trailing type argument, defaulting to `Json`.
 pub fn json_decode_base_type() -> Type {
-    build::function(vec![build::text(), Type::Deferred], Type::Deferred)
+    build::function_opt(vec![build::text()], vec![Type::Deferred], Type::Deferred)
 }
 
 /// The `Json` platform namespace record.
@@ -582,7 +599,10 @@ pub fn standard_check_host_globals() -> HostGlobals {
             ),
         ],
     )
-    .with_type_definitions(vec![("JsonError".to_owned(), json_error_type())])
+    .with_type_definitions(vec![
+        ("Json".to_owned(), json_dynamic_type()),
+        ("JsonError".to_owned(), json_error_type()),
+    ])
 }
 
 #[cfg(test)]
@@ -873,7 +893,7 @@ mod tests {
         let decode = record_field_type(json, "decode");
         let (decode_params, decode_result) =
             function_signature(&decode).expect("Json.decode is a function");
-        assert_eq!(function_required_arity(&decode), Some(2));
+        assert_eq!(function_required_arity(&decode), Some(1));
         assert_eq!(decode_params, vec![build::text(), Type::Deferred]);
         assert_eq!(decode_result, Type::Deferred);
     }
@@ -954,6 +974,18 @@ mod tests {
         assert_eq!(
             variant_tags(&json_error_type()),
             Some(vec!["Parse".to_owned(), "Shape".to_owned()])
+        );
+        assert_eq!(
+            variant_tags(&json_dynamic_type()),
+            Some(vec![
+                "Null".to_owned(),
+                "Bool".to_owned(),
+                "Int".to_owned(),
+                "Float".to_owned(),
+                "Text".to_owned(),
+                "Array".to_owned(),
+                "Object".to_owned()
+            ])
         );
 
         for ty in [write_error_type(), read_error_type(), io_error_type()] {
