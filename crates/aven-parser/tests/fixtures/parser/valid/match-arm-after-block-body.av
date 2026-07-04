@@ -1,0 +1,16 @@
+# Arms may follow a block-bodied arm: the block's Dedent precedes the next
+# pattern, which must still parse (nested matches and plain blocks alike).
+outer = value ?>
+  @Object(m) =>
+    m.get("x") ?>
+      @Int(n) => n
+      _ => 0
+  @Array(items) =>
+    1
+  _ => 0
+
+classify = (r) =>
+  r ?>
+    @Ok(v) =>
+      v + 1
+    @Err(_) => 0

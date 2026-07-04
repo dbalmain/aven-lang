@@ -1749,8 +1749,10 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
   (see below) — `Json`/`Map` are genuine type values carrying statics; the
   `json_namespace_target` shape-sniff is deleted
 - X-discovered gaps: runtime variant/set spread in value position;
-  `partial(User)`/`required(...)` as standalone comptime bindings; match-arm
-  layout ergonomics inside lambda bodies
+  `partial(User)`/`required(...)` as standalone comptime bindings. (The
+  "match-arm layout ergonomics" gap is fixed 2026-07-05: it was never layout —
+  `parse_match_pattern_term` used `at_item_boundary`, whose previous-is-Dedent
+  clause rejected any arm following a block-bodied arm.)
 - H3 open questions (recorded under Milestone H, not scheduled)
 - the Milestone IO watch item: define the bare write tier in terms of the Result
   handles so the two tiers cannot drift

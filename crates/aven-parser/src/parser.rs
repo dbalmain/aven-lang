@@ -1105,9 +1105,15 @@ impl Parser<'_> {
     }
 
     fn parse_match_pattern_term(&mut self) -> Expr {
+        // Only the *current* token decides whether a pattern can start here:
+        // an arm that follows a block-bodied arm sits right after that block's
+        // `Dedent`, so `at_item_boundary`'s previous-token clause would reject
+        // a valid pattern.
         if self.current_is_operator("=>")
             || self.current_is(TokenKind::Comma)
-            || self.at_item_boundary()
+            || self.at_end()
+            || self.current_is(TokenKind::Newline)
+            || self.current_is(TokenKind::Dedent)
         {
             return self.report_expected_pattern(self.current_span());
         }
