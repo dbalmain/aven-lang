@@ -101,7 +101,12 @@ impl<'a> Checker<'a> {
                     return Type::Named(name.clone());
                 };
 
-                if visited.contains(name) {
+                // Recursive definitions stay nominal: expanding them is never
+                // idempotent (each pass unfolds one more level), so match and
+                // boundary machinery unfold them lazily instead.
+                if visited.contains(name)
+                    || self.type_references_name(definition, name, &mut HashSet::new())
+                {
                     return Type::Named(name.clone());
                 }
 

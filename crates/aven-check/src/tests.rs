@@ -3254,6 +3254,49 @@ fn recursive_named_variant_matches_and_accepts_inline_constructors() {
 }
 
 #[test]
+fn match_arm_pattern_bindings_record_inferred_types() {
+    let source = concat!(
+        "Json = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
+        "@Array(Array[Json]), @Object(Map[Text, Json])}\n",
+        "subject : Json = @Null\n",
+        "described = subject ?>\n",
+        "  @Object(objectFields) => 1\n",
+        "  @Array(elements) => 2\n",
+        "  _ => 0\n",
+        "outcome : Result[Int, @{@Nope}] = @Ok(1)\n",
+        "unwrapped = outcome ?>\n",
+        "  @Ok(okValue) => okValue\n",
+        "  @Err(_) => 0\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "objectFields", 0))
+            .map(Type::render),
+        Some("Map[Text, Json]".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "elements", 0))
+            .map(Type::render),
+        Some("Array[Json]".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "okValue", 0))
+            .map(Type::render),
+        Some("Int".to_owned())
+    );
+}
+
+#[test]
 fn literal_union_match_exhaustiveness_uses_subject_members() {
     let closed_complete = parse_module(concat!(
         "Status = @{\"waiting\", \"running\", \"done\"}\n",

@@ -81,14 +81,21 @@ pub(crate) fn type_definitions(
         .collect();
 
     for _ in 0..=declarations.len() {
-        let mut checker =
-            Checker::with_module_environment(known_types.clone(), definitions.clone(), module);
         let mut next = HashMap::new();
 
         for declaration in &declarations {
             let Some(binding) = binding_for_declaration(module, declaration) else {
                 continue;
             };
+
+            // Lower each definition without its own entry so self-references
+            // stay nominal (`Json` keeps `Named("Json")` payload leaves) —
+            // recursive definitions unfold lazily at use sites instead of
+            // expanding here.
+            let mut visible = definitions.clone();
+            visible.remove(&declaration.name);
+            let mut checker =
+                Checker::with_module_environment(known_types.clone(), visible, module);
 
             next.insert(
                 declaration.name.clone(),

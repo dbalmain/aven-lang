@@ -1042,4 +1042,28 @@ mod tests {
 
         assert_eq!(ty.render(), "Result[Json, JsonError]");
     }
+
+    #[test]
+    fn match_binder_over_decoded_json_records_hover_type() {
+        let source = "parsed = Json.decode(\"{\\\"x\\\": 2}\")?^\n\
+                      parsed ?>\n  @Object(fields) => 1\n  _ => 3\n";
+        let checked = check(source);
+
+        assert!(
+            checked.diagnostics.is_empty(),
+            "decoded match checks: {:?}",
+            checked.diagnostics
+        );
+        let parsed_offset = source.find("parsed").expect("source mentions parsed");
+        let parsed_ty = checked
+            .type_at(Span::new(parsed_offset, parsed_offset + "parsed".len()))
+            .expect("parsed has an inferred type");
+        assert_eq!(parsed_ty.render(), "Json");
+
+        let fields_offset = source.find("fields").expect("source mentions fields");
+        let fields_ty = checked
+            .type_at(Span::new(fields_offset, fields_offset + "fields".len()))
+            .expect("the match binder has an inferred type");
+        assert_eq!(fields_ty.render(), "Map[Text, Json]");
+    }
 }

@@ -25,7 +25,11 @@ impl<'a> Checker<'a> {
             for mismatch in &local_types.mismatches {
                 self.report_or_pattern_binding_mismatch(mismatch);
             }
+            let binding_sites = pattern_bindings(&arm.pattern);
             for (name, ty) in local_types.bindings {
+                for site in binding_sites.iter().filter(|site| site.name == name) {
+                    self.record_local_value_type(site.span, &ty);
+                }
                 self.local_types.define(&name, ty);
             }
             let bool_type = named_builtin("Bool");

@@ -1743,6 +1743,13 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 07-04. What remains:
 
 - the live nvim sweep (Milestone X's other half — user-driven)
+- map indexing: `m[key]` should sugar to `.get` and type `?v`, matching the
+  array-indexing rule (found live 2026-07-04; currently a runtime error)
+- platform type namespaces should be type values: `Json` and `Map` are namespace
+  _records_ at runtime while `Array`/`Int`/… are `Value::Type` intrinsics — the
+  spec calls `Json` a type artifact with static functions. Making registered
+  types carry statics would retire the `json_namespace_target` shape-sniff and
+  give `Map` a usable runtime type value (proposed 2026-07-04, pending user go)
 - X-discovered gaps: runtime variant/set spread in value position;
   `partial(User)`/`required(...)` as standalone comptime bindings; match-arm
   layout ergonomics inside lambda bodies
