@@ -158,10 +158,16 @@ impl HostComptimeFnSpec {
     }
 }
 
+/// The statics a named type carries: `(type name, [(static name, type)])`. Field
+/// access on the type value (`Json.decode`, `Map.from`) resolves through this
+/// table instead of a namespace record.
+pub type HostStatics = Vec<(String, Vec<(String, Type)>)>;
+
 #[derive(Clone, Default)]
 pub struct HostGlobals {
     pub types: Vec<(String, Type)>,
     pub type_definitions: Vec<(String, Type)>,
+    pub statics: HostStatics,
     pub comptime_fns: Vec<(String, HostComptimeFnSpec)>,
 }
 
@@ -173,6 +179,7 @@ impl HostGlobals {
         Self {
             types,
             type_definitions: Vec::new(),
+            statics: Vec::new(),
             comptime_fns,
         }
     }
@@ -182,10 +189,16 @@ impl HostGlobals {
         self
     }
 
+    pub fn with_statics(mut self, statics: HostStatics) -> Self {
+        self.statics = statics;
+        self
+    }
+
     pub fn types_only(types: &[(String, Type)]) -> Self {
         Self {
             types: types.to_vec(),
             type_definitions: Vec::new(),
+            statics: Vec::new(),
             comptime_fns: Vec::new(),
         }
     }

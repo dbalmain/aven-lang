@@ -45,6 +45,21 @@ struct TypeDefinitionEntry {
     ty: Type,
 }
 
+/// A static carried by a named type: bound both as a runtime native (under the
+/// `"Type.name"` eval key the evaluator resolves on `Value::Type` field access)
+/// and as a checker type (looked up through [`HostGlobals::statics`]).
+struct StaticMember {
+    name: String,
+    value: Value,
+    ty: Type,
+}
+
+/// A named type together with the statics it carries.
+struct StaticsEntry {
+    type_name: String,
+    members: Vec<StaticMember>,
+}
+
 /// A name registered with a runtime value, a base checker type, and a
 /// host-side comptime resolver that can refine call result types.
 struct ComptimeEntry {
@@ -69,6 +84,7 @@ pub struct Host {
     typed: Vec<TypedEntry>,
     runtime_only: Vec<RuntimeOnlyEntry>,
     type_definitions: Vec<TypeDefinitionEntry>,
+    statics: Vec<StaticsEntry>,
     comptime: Vec<ComptimeEntry>,
     comptime_resolvers: Vec<ComptimeResolverEntry>,
 }
@@ -104,6 +120,27 @@ impl Host {
         self.type_definitions.push(TypeDefinitionEntry {
             name: name.into(),
             ty,
+        });
+    }
+
+    /// Register a named type together with the statics it carries. The type is a
+    /// checker-visible definition (like [`Host::register_type_definition`]); each
+    /// static binds a runtime native the evaluator resolves on `Type.name` field
+    /// access and a checker type the inference path resolves the same way.
+    pub fn register_type_with_statics(
+        &mut self,
+        name: impl Into<String>,
+        ty: Type,
+        statics: Vec<(String, Type, Value)>,
+    ) {
+        let type_name = name.into();
+        self.register_type_definition(type_name.clone(), ty);
+        self.statics.push(StaticsEntry {
+            type_name,
+            members: statics
+                .into_iter()
+                .map(|(name, ty, value)| StaticMember { name, value, ty })
+                .collect(),
         });
     }
 
@@ -200,6 +237,17 @@ impl Host {
                     .iter()
                     .map(|entry| (entry.name.clone(), entry.value.clone())),
             )
+            .chain(self.statics.iter().flat_map(|entry| {
+                // The type name binds a type value; each static binds under the
+                // `"Type.name"` key the evaluator resolves on field access.
+                std::iter::once((entry.type_name.clone(), Value::named_type(&entry.type_name)))
+                    .chain(entry.members.iter().map(|member| {
+                        (
+                            format!("{}.{}", entry.type_name, member.name),
+                            member.value.clone(),
+                        )
+                    }))
+            }))
             .collect()
     }
 
@@ -246,6 +294,21 @@ impl Host {
             self.type_definitions
                 .iter()
                 .map(|entry| (entry.name.clone(), entry.ty.clone()))
+                .collect(),
+        )
+        .with_statics(
+            self.statics
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.type_name.clone(),
+                        entry
+                            .members
+                            .iter()
+                            .map(|member| (member.name.clone(), member.ty.clone()))
+                            .collect(),
+                    )
+                })
                 .collect(),
         )
     }
@@ -439,14 +502,6 @@ pub fn json_decode_base_type() -> Type {
     build::function_opt(vec![build::text()], vec![Type::Deferred], Type::Deferred)
 }
 
-/// The `Json` platform namespace record.
-pub fn json_type() -> Type {
-    build::record(vec![
-        ("encode", json_encode_type()),
-        ("decode", json_decode_base_type()),
-    ])
-}
-
 /// The base `open` type: `(Text, "r" | "w" | "a" | "rw") -> ?`. The checker
 /// uses it for name binding, arity, and argument validation; the host comptime
 /// resolver refines the result from the second argument's mode string.
@@ -548,7 +603,6 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ("stdio".to_owned(), stdio_handle_type()),
         ("File".to_owned(), file_type()),
         ("Http".to_owned(), http_type()),
-        ("Json".to_owned(), json_type()),
     ];
 
     HostGlobals::new(
@@ -603,6 +657,17 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ("Json".to_owned(), json_dynamic_type()),
         ("JsonError".to_owned(), json_error_type()),
     ])
+    .with_statics(vec![("Json".to_owned(), json_statics())])
+}
+
+/// The statics the `Json` type carries: `encode`/`decode`. Shared by the
+/// hand-built [`standard_check_host_globals`] and [`Host::register_json`] so the
+/// two registration paths can't drift.
+pub(crate) fn json_statics() -> Vec<(String, Type)> {
+    vec![
+        ("encode".to_owned(), json_encode_type()),
+        ("decode".to_owned(), json_decode_base_type()),
+    ]
 }
 
 #[cfg(test)]
@@ -778,7 +843,6 @@ mod tests {
                 "stdio",
                 "File",
                 "Http",
-                "Json"
             ]
         );
 
@@ -875,22 +939,27 @@ mod tests {
             );
         }
 
-        let json = global_type(&globals, "Json");
-        let json_fields = record_fields(json).expect("Json is a record");
-        let json_field_names = json_fields
+        // `Json` is a type artifact carrying statics, not a namespace record: it
+        // is absent from `types` and its `encode`/`decode` live in the statics
+        // table.
+        assert!(global_type_opt(&globals, "Json").is_none());
+
+        let json_statics = aven_check::type_statics(&standard_check_host_globals(), "Json")
+            .expect("Json carries statics");
+        let json_static_names = json_statics
             .iter()
             .map(|field| field.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(json_field_names, vec!["encode", "decode"]);
+        assert_eq!(json_static_names, vec!["encode", "decode"]);
 
-        let encode = record_field_type(json, "encode");
+        let encode = static_type(&json_statics, "encode");
         let (encode_params, encode_result) =
             function_signature(&encode).expect("Json.encode is a function");
         assert_eq!(function_required_arity(&encode), Some(1));
         assert_eq!(encode_params, vec![build::var("a")]);
         assert_eq!(encode_result, build::text());
 
-        let decode = record_field_type(json, "decode");
+        let decode = static_type(&json_statics, "decode");
         let (decode_params, decode_result) =
             function_signature(&decode).expect("Json.decode is a function");
         assert_eq!(function_required_arity(&decode), Some(1));
@@ -1071,10 +1140,20 @@ mod tests {
     }
 
     fn global_type<'a>(globals: &'a [(String, Type)], name: &str) -> &'a Type {
+        global_type_opt(globals, name).unwrap_or_else(|| panic!("expected global `{name}`"))
+    }
+
+    fn global_type_opt<'a>(globals: &'a [(String, Type)], name: &str) -> Option<&'a Type> {
         globals
             .iter()
             .find_map(|(global_name, ty)| (global_name == name).then_some(ty))
-            .unwrap_or_else(|| panic!("expected global `{name}`"))
+    }
+
+    fn static_type(statics: &[aven_check::RecordField], name: &str) -> Type {
+        statics
+            .iter()
+            .find_map(|field| (field.name == name).then_some(field.ty.clone()))
+            .unwrap_or_else(|| panic!("expected static `{name}`"))
     }
 
     fn record_field_type(ty: &Type, name: &str) -> Type {

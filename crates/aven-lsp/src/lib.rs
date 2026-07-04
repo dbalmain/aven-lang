@@ -690,8 +690,20 @@ fn field_completion_at_position(
             definition_span_for_identifier(document, receiver)
                 .and_then(|span| document.type_at(span).cloned())
                 .or_else(|| host_global_type(&receiver.name))
+        });
+
+    // Fall back to type statics (`Json.`/`Map.`) when the receiver resolves to a
+    // static-carrying type value rather than a record.
+    let fields = receiver_type
+        .as_ref()
+        .and_then(aven_compiler::record_fields)
+        .or_else(|| {
+            access
+                .receiver
+                .as_ref()
+                .and_then(|receiver| type_statics_fields(&receiver.name))
         })?;
-    let fields = aven_compiler::record_fields(&receiver_type)?;
+    let receiver_type = receiver_type.unwrap_or(aven_compiler::Type::Deferred);
 
     // When the receiver is itself optional/nullable, accessing a field needs
     // `?.`. If the user typed a plain `.`, offer an edit that inserts the `?`
@@ -893,6 +905,12 @@ fn host_global_type(name: &str) -> Option<aven_compiler::Type> {
         .types
         .into_iter()
         .find_map(|(global, ty)| (global == name).then_some(ty))
+}
+
+/// The statics carried by a type name (`Json`, `Map`), as record-like fields, so
+/// completion and hover present them the same way as record fields.
+fn type_statics_fields(name: &str) -> Option<Vec<aven_compiler::RecordField>> {
+    aven_compiler::type_statics(&aven_host::standard_check_host_globals(), name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1911,11 +1929,14 @@ fn field_type_for_access(
     document: &ParsedDocument,
     access: &FieldAccessIdentifiers,
 ) -> Option<aven_compiler::Type> {
-    let receiver_type = definition_span_for_identifier(document, &access.receiver)
+    let fields = definition_span_for_identifier(document, &access.receiver)
         .and_then(|span| document.type_at(span).cloned())
-        .or_else(|| host_global_type(&access.receiver.name))?;
+        .or_else(|| host_global_type(&access.receiver.name))
+        .as_ref()
+        .and_then(aven_compiler::record_fields)
+        .or_else(|| type_statics_fields(&access.receiver.name))?;
 
-    aven_compiler::record_fields(&receiver_type)?
+    fields
         .into_iter()
         .find_map(|field| (field.name == access.field.name).then_some(field.ty))
 }

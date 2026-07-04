@@ -21,6 +21,7 @@ impl<'a> Checker<'a> {
             in_progress: HashSet::new(),
             unifier: Unifier::default(),
             globals: Vec::new(),
+            statics: HashMap::new(),
             host_comptime_fns: HashMap::new(),
             report_unbound_names: true,
             report_unresolved_bindings: true,
@@ -68,9 +69,25 @@ impl<'a> Checker<'a> {
             .iter()
             .map(|(name, spec)| (name.clone(), spec.clone()))
             .collect();
+        checker.build_statics(globals);
         checker.build_value_types(module);
         checker.build_comptime_artifacts(module);
         checker
+    }
+
+    /// Assemble the statics table (compiler builtins + host-registered) into
+    /// generalized schemes so each `Type.static` use instantiates fresh.
+    fn build_statics(&mut self, globals: &HostGlobals) {
+        for (type_name, members) in builtin_type_statics()
+            .into_iter()
+            .chain(globals.statics.iter().cloned())
+        {
+            let entry = self.statics.entry(type_name).or_default();
+            for (member, ty) in members {
+                let scheme = scheme_from_global(&ty, &mut self.unifier);
+                entry.insert(member, scheme);
+            }
+        }
     }
 
     pub(super) fn collect_top_level_environment(&mut self, module: &'a Module) {
@@ -106,14 +123,14 @@ impl<'a> Checker<'a> {
             .into_iter()
             .map(|declaration| declaration.name)
             .collect();
-        let mut types: HashMap<String, Option<TypeScheme>> = builtin_value_types()
-            .into_iter()
-            .chain(self.globals.iter().cloned())
+        let mut types: HashMap<String, Option<TypeScheme>> = self
+            .globals
+            .iter()
             .filter(|(name, _)| !declared.contains(name))
             .map(|(name, ty)| {
                 (
                     name.clone(),
-                    Some(scheme_from_global(&ty, &mut self.unifier)),
+                    Some(scheme_from_global(ty, &mut self.unifier)),
                 )
             })
             .collect();

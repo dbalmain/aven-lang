@@ -52,6 +52,7 @@ pub enum RuntimeType {
     Optional(Box<Value>),
     Nullable(Box<Value>),
     Array(Box<Value>),
+    Map(Box<Value>, Box<Value>),
 }
 
 impl fmt::Debug for Closure {
@@ -88,15 +89,18 @@ pub enum Value {
     Null,
 }
 
-/// Type names bound as `Value::Type` intrinsics. `Array`/`Json` are included so
-/// `Array[T]` and dynamic JSON decode targets can evaluate to the minimal
-/// composite type values JSON decode needs at runtime.
-const TYPE_VALUE_NAMES: [&str; 9] = [
+/// Type names bound as `Value::Type` intrinsics. `Array`/`Json`/`Map` are
+/// included so `Array[T]`/`Map[K, V]` type application and dynamic JSON decode
+/// targets can evaluate to the minimal composite type values these need at
+/// runtime. Each type carrying statics (`Map.from`, `Json.decode`) resolves the
+/// static through a `"Type.static"`-keyed global (see [`eval_field_access`]).
+const TYPE_VALUE_NAMES: [&str; 10] = [
     "Array",
     "Bool",
     "Float",
     "Int",
     "Json",
+    "Map",
     "Null",
     "Text",
     "Undefined",
@@ -235,6 +239,7 @@ impl fmt::Display for RuntimeType {
             Self::Optional(inner) => write!(f, "?{inner}"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
             Self::Array(inner) => write!(f, "Array[{inner}]"),
+            Self::Map(key, value) => write!(f, "Map[{key}, {value}]"),
         }
     }
 }
@@ -521,7 +526,11 @@ fn intrinsics() -> Vec<(String, Value)> {
         }),
     ));
 
-    intrinsics.push(("Map".to_owned(), map_namespace()));
+    // `Map` binds to a type value (see `TYPE_VALUE_NAMES`); its statics resolve
+    // through `"Map.static"`-keyed globals consulted on `Value::Type` field
+    // access.
+    intrinsics.push(("Map.empty".to_owned(), Value::native(map_empty_intrinsic)));
+    intrinsics.push(("Map.from".to_owned(), Value::native(map_from_intrinsic)));
 
     intrinsics.push((
         "pick".to_owned(),
@@ -534,13 +543,6 @@ fn intrinsics() -> Vec<(String, Value)> {
     ));
 
     intrinsics
-}
-
-fn map_namespace() -> Value {
-    Value::record(vec![
-        ("empty".to_owned(), Value::native(map_empty_intrinsic)),
-        ("from".to_owned(), Value::native(map_from_intrinsic)),
-    ])
 }
 
 fn map_empty_intrinsic(args: &[Value]) -> Result<Value, String> {
@@ -1276,11 +1278,16 @@ fn eval_field_access(
         return Ok(receiver_value);
     }
 
-    match receiver_value {
-        Value::Record(fields) => record_field_value(&fields, field)
+    match &receiver_value {
+        Value::Record(fields) => record_field_value(fields, field)
             .cloned()
             .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
-        value => builtin_method(&value, field).ok_or_else(|| {
+        // A type value (`Map`, `Json`, ...) carries statics: field access
+        // resolves the `"Type.static"`-keyed global bound alongside the type.
+        Value::Type(RuntimeType::Named(name)) => env
+            .lookup(&format!("{name}.{field}"))
+            .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
+        value => builtin_method(value, field).ok_or_else(|| {
             one_diagnostic(record_type_error(
                 receiver.span,
                 "field access",
@@ -1447,6 +1454,37 @@ fn map_merge_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
 }
 
 fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eval {
+    let callee_value = eval_expr_many(callee, env)?;
+
+    // `Map[K, V]` type application in value position: build a composite type
+    // value rather than record-index the (now type-valued) `Map`.
+    if let Value::Type(RuntimeType::Named(name)) = &callee_value
+        && name == "Map"
+    {
+        let [key_expr, value_expr] = args else {
+            return Err(one_diagnostic(unsupported_expr(
+                span,
+                "Map type application takes two type arguments (Map[key, value])",
+            )));
+        };
+        let key = eval_expr_many(key_expr, env)?;
+        let value = eval_expr_many(value_expr, env)?;
+        for (arg_value, arg) in [(&key, key_expr), (&value, value_expr)] {
+            if !runtime_type_target(arg_value) {
+                return Err(one_diagnostic(record_type_error(
+                    arg.span,
+                    "map type construction",
+                    arg_value.type_name(),
+                    "Type",
+                )));
+            }
+        }
+        return Ok(Value::Type(RuntimeType::Map(
+            Box::new(key),
+            Box::new(value),
+        )));
+    }
+
     if args.len() != 1 {
         return Err(one_diagnostic(unsupported_expr(
             span,
@@ -1454,7 +1492,6 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
         )));
     }
 
-    let callee_value = eval_expr_many(callee, env)?;
     let arg_value = eval_expr_many(&args[0], env)?;
     if let (Value::Type(RuntimeType::Named(name)), arg_value) = (&callee_value, &arg_value)
         && name == "Array"

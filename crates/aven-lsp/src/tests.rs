@@ -645,6 +645,28 @@ fn completion_at_field_access_returns_record_fields() {
 }
 
 #[test]
+fn completion_at_json_static_access_lists_statics() {
+    let completions = completions_at_marker("text = Json.|");
+    let labels = completions
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(labels, vec!["encode", "decode"]);
+}
+
+#[test]
+fn completion_at_map_static_access_lists_statics() {
+    let completions = completions_at_marker("m = Map.|");
+    let labels = completions
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(labels, vec!["empty", "from"]);
+}
+
+#[test]
 fn completion_at_map_field_access_returns_builtin_methods() {
     let completions = completions_at_marker("m : Map[Text, Int] = Map.empty()\nm.|");
     let labels = completions

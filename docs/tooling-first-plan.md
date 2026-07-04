@@ -1745,11 +1745,9 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 - the live nvim sweep (Milestone X's other half — user-driven)
 - map indexing: `m[key]` should sugar to `.get` and type `?v`, matching the
   array-indexing rule (found live 2026-07-04; currently a runtime error)
-- platform type namespaces should be type values: `Json` and `Map` are namespace
-  _records_ at runtime while `Array`/`Int`/… are `Value::Type` intrinsics — the
-  spec calls `Json` a type artifact with static functions. Making registered
-  types carry statics would retire the `json_namespace_target` shape-sniff and
-  give `Map` a usable runtime type value (proposed 2026-07-04, pending user go)
+- **Milestone V — type-artifact statics (platform subset): done 2026-07-05**
+  (see below) — `Json`/`Map` are genuine type values carrying statics; the
+  `json_namespace_target` shape-sniff is deleted
 - X-discovered gaps: runtime variant/set spread in value position;
   `partial(User)`/`required(...)` as standalone comptime bindings; match-arm
   layout ergonomics inside lambda bodies
@@ -2546,6 +2544,55 @@ Done when:
   overflow → `@Float`)
 - the recursive definition produces no cyclic-alias diagnostic, and hover/LSP
   render `Json` by name rather than an infinite expansion
+
+## Milestone V — type-artifact statics (platform subset)
+
+Status: done 2026-07-05
+
+Progress: landed 2026-07-05 (claude-rust/opus slice). `HostGlobals` gained a
+statics table (`register_type_with_statics` binds type definition + statics in
+one host call); the checker resolves `Type.static` field access through
+generalized schemes with the same shadowing rule as host-comptime fns; the
+evaluator binds statics as `"Type.static"`-keyed globals consulted on
+`Value::Type` field access, and `Map[k, v]` value-position application builds
+`RuntimeType::Map`. `Json`/`Map` namespace records and the
+`json_namespace_target` sniff are deleted; LSP completion/hover read statics via
+`type_statics` as record-like fields.
+
+Goal: implement the spec's statics model (Members and Methods: "`=` defines what
+the type carries") for host-registered platform types. `Json` and `Map` are
+currently namespace _records_ on both sides (checker `map_global_type()`, eval
+`map_namespace()`/`json_value()`) — an implementation shortcut that diverges
+from the spec ("`Json` is a type artifact, not a marker value") and becomes
+observable when a type is passed as a value: `Json.decode(text, Json)` in
+checker-free runs passes the namespace record, forcing the
+`json_namespace_target` shape-sniff.
+
+Tasks:
+
+- named types can carry **statics**: registration binds the type definition and
+  its statics (names + checker types + runtime natives) in one call; `Json` and
+  `Map` globals become genuine type values whose field access resolves statics
+  on both the checker and eval paths
+- checker: `Json.decode` / `Map.from` type through the statics table instead of
+  a record global; `Json.`/`Map.` completion lists statics; annotation position
+  (`Map[Text, Int]`, `Json`) is unchanged
+- eval: field access on `Value::Type(Named)` consults a statics registry;
+  `Map[k, v]` type application in value position builds a composite runtime type
+  value (decode support for Map targets may stay deferred)
+- retire the `json_namespace_target` sniff — the decode target arrives as a type
+  value in every mode
+- out of scope: user-defined statics, instance-route statics (`myTask.zero`),
+  field defaults, method slots/focus — those wait for type-artifact declarations
+  in the language
+
+Done when:
+
+- `Map.from`/`Map.empty`/`Json.encode`/`Json.decode` check, complete, and run
+  exactly as before; all examples pass untouched
+- `Json.decode(text, Json)` runs without the namespace sniff (the sniff is
+  deleted)
+- `x = Json` / passing `Map` as a value yields a type value, not a record
 
 ## Milestone Z — modules and imports (sketch)
 

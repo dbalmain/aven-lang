@@ -17,7 +17,7 @@ use crate::env::{
     free_row_vars_in_local_values,
 };
 use crate::host_comptime::{
-    ComptimeArg, ComptimeError, HostComptimeFnSpec, HostComptimeParam, HostGlobals,
+    ComptimeArg, ComptimeError, HostComptimeFnSpec, HostComptimeParam, HostGlobals, HostStatics,
 };
 use crate::lower::{
     DeclaredAnnotation, DeclaredAnnotationSource, TypeLowering, binding_for_declaration,
@@ -62,6 +62,10 @@ pub(crate) struct Checker<'a> {
     /// are checked through the same `value_types` paths as user declarations,
     /// which shadow them.
     globals: Vec<(String, Type)>,
+    /// Statics carried by named types, keyed `type name -> static name ->
+    /// scheme`. Field access on an unshadowed static-carrying type name resolves
+    /// through this table (`Map.from`, `Json.encode`).
+    statics: HashMap<String, HashMap<String, TypeScheme>>,
     host_comptime_fns: HashMap<String, HostComptimeFnSpec>,
     report_unbound_names: bool,
     report_unresolved_bindings: bool,
@@ -1275,11 +1279,14 @@ fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
     }
 }
 
-fn builtin_value_types() -> Vec<(String, Type)> {
-    vec![("Map".to_owned(), map_global_type())]
+/// Statics carried by compiler-builtin types. `Map`'s `empty`/`from` are the
+/// only ones today; host-registered types (e.g. `Json`) supply theirs through
+/// [`HostGlobals::statics`].
+pub(crate) fn builtin_type_statics() -> HostStatics {
+    vec![("Map".to_owned(), map_statics())]
 }
 
-fn map_global_type() -> Type {
+fn map_statics() -> Vec<(String, Type)> {
     let key = Type::Variable("k".to_owned());
     let value = Type::Variable("v".to_owned());
     let map_type = Type::Apply {
@@ -1292,19 +1299,16 @@ fn map_global_type() -> Type {
         args: vec![entry_type],
     };
 
-    Type::Record(Row {
-        entries: vec![
-            RowEntry::Field {
-                name: "empty".to_owned(),
-                ty: function_type(Vec::new(), map_type.clone()),
-            },
-            RowEntry::Field {
-                name: "from".to_owned(),
-                ty: function_type(vec![entries_type], map_type),
-            },
-        ],
-        tail: RowTail::Closed,
-    })
+    vec![
+        (
+            "empty".to_owned(),
+            function_type(Vec::new(), map_type.clone()),
+        ),
+        (
+            "from".to_owned(),
+            function_type(vec![entries_type], map_type),
+        ),
+    ]
 }
 
 fn function_type(params: Vec<Type>, result: Type) -> Type {

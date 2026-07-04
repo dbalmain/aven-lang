@@ -757,6 +757,14 @@ impl<'a> Checker<'a> {
         null_safe: bool,
         field_span: Span,
     ) -> Type {
+        // A static-carrying type name (`Map`, `Json`, ...) resolves the field
+        // through the statics table rather than a namespace record.
+        if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
+            && let Some(scheme) = self.static_member_scheme(env, name, field)
+        {
+            return self.unifier.instantiate_scheme(&scheme);
+        }
+
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let receiver_type = self.infer(env, receiver);
@@ -1022,6 +1030,22 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         }
+    }
+
+    /// The generalized scheme for `Type.field` when `Type` is an unshadowed
+    /// static-carrying type name. Mirrors the host-comptime shadowing rule: a
+    /// user binding of the receiver name takes precedence over the type.
+    pub(super) fn static_member_scheme(
+        &self,
+        env: &TypeEnv,
+        receiver_name: &str,
+        field: &str,
+    ) -> Option<TypeScheme> {
+        if env.get(receiver_name).is_some() || self.bindings.contains_key(receiver_name) {
+            return None;
+        }
+
+        self.statics.get(receiver_name)?.get(field).cloned()
     }
 
     pub(super) fn host_comptime_fn(&self, env: &TypeEnv, name: &str) -> Option<HostComptimeFnSpec> {

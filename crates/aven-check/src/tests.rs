@@ -3669,6 +3669,61 @@ fn map_from_infers_map_key_and_value_types() {
 }
 
 #[test]
+fn map_name_in_value_position_is_a_type_value() {
+    // `Map` is a type artifact: used as a bare value it is a type value
+    // (`Deferred`), exactly like `Array`, not a `{ empty, from }` record.
+    let output = parse_module("m = Map\na = Array\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    // A type value is `Deferred`, so no published value type (`None`) — exactly
+    // like `Array`. A namespace record would publish a `{ empty, from }` type.
+    assert_eq!(render_top_level_value(&mut checker, "m"), None);
+    assert_eq!(render_top_level_value(&mut checker, "a"), None);
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn json_name_in_value_position_is_a_type_value() {
+    let output = parse_module("x = Json\n");
+    let mut host = crate::HostGlobals::default();
+    host.type_definitions
+        .push(("Json".to_owned(), variant_type(vec![], RowTail::Closed)));
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker =
+        Checker::with_module_and_host_globals(known_types, type_definitions, &output.module, &host);
+
+    assert_eq!(render_top_level_value(&mut checker, "x"), None);
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn json_encode_types_through_statics() {
+    // `Json.encode` resolves through the statics table (not a namespace record):
+    // `(a) -> Text`.
+    let output = parse_module("t = Json.encode(1)\n");
+    let host = crate::HostGlobals::default().with_statics(vec![(
+        "Json".to_owned(),
+        vec![(
+            "encode".to_owned(),
+            function(vec![variable("a")], named("Text")),
+        )],
+    )]);
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker =
+        Checker::with_module_and_host_globals(known_types, type_definitions, &output.module, &host);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "t"),
+        Some("Text".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
 fn map_get_infers_optional_value_type() {
     let output = parse_module("m = Map.from([(\"a\", 1)])\nvalue = m.get(\"a\")\n");
     let known_types = known_type_names(&output.module);

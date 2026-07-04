@@ -11,6 +11,7 @@ use aven_parser::{Expr, Module};
 
 pub use host_comptime::{
     ComptimeArg, ComptimeError, HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals,
+    HostStatics,
 };
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
@@ -86,6 +87,24 @@ pub fn check_module(module: &Module) -> CheckOutput {
 /// seeded name are checked by the existing call/field/arity machinery.
 pub fn check_module_with_globals(module: &Module, globals: &[(String, Type)]) -> CheckOutput {
     check_module_with_host_globals(module, &HostGlobals::types_only(globals))
+}
+
+/// The statics a named type carries, as record-like `(name, type)` fields:
+/// compiler builtins (`Map.empty`/`Map.from`) merged with the host-registered
+/// statics in `globals`. Tooling (completion, hover) reads these to present a
+/// type's statics the same way it presents record fields. `None` when `name`
+/// carries no statics.
+pub fn type_statics(globals: &HostGlobals, name: &str) -> Option<Vec<RecordField>> {
+    checker::builtin_type_statics()
+        .into_iter()
+        .chain(globals.statics.iter().cloned())
+        .find(|(type_name, _)| type_name == name)
+        .map(|(_, members)| {
+            members
+                .into_iter()
+                .map(|(name, ty)| RecordField { name, ty })
+                .collect()
+        })
 }
 
 /// Check `module` with host/library globals and host comptime resolvers. The

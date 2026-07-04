@@ -896,6 +896,10 @@ mod tests {
             host.check_host_globals().type_definitions,
             aven_host::standard_check_host_globals().type_definitions
         );
+        assert_eq!(
+            host.check_host_globals().statics,
+            aven_host::standard_check_host_globals().statics
+        );
         Ok(())
     }
 }

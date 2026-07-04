@@ -16,10 +16,25 @@ use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
 
 impl Host {
-    /// Register the `Json` namespace and the named `Json`/`JsonError` types.
+    /// Register the `Json` type artifact (carrying `encode`/`decode` statics) and
+    /// the named `Json`/`JsonError` types.
     pub fn register_json(&mut self) {
-        self.register("Json", json_value(), crate::json_type());
-        self.register_type_definition("Json", crate::json_dynamic_type());
+        self.register_type_with_statics(
+            "Json",
+            crate::json_dynamic_type(),
+            vec![
+                (
+                    "encode".to_owned(),
+                    crate::json_encode_type(),
+                    encode_native(),
+                ),
+                (
+                    "decode".to_owned(),
+                    crate::json_decode_base_type(),
+                    decode_native(),
+                ),
+            ],
+        );
         self.register_type_definition("JsonError", crate::json_error_type());
         self.register_comptime_resolver("Json.decode", vec![1], decode_comptime_resolver());
     }
@@ -168,13 +183,6 @@ impl HostComptimeFn for DecodeComptimeResolver {
 
 pub(crate) fn decode_comptime_resolver() -> Rc<dyn HostComptimeFn> {
     Rc::new(DecodeComptimeResolver)
-}
-
-fn json_value() -> Value {
-    Value::record(vec![
-        ("encode".to_owned(), encode_native()),
-        ("decode".to_owned(), decode_native()),
-    ])
 }
 
 fn encode_native() -> Value {
@@ -487,10 +495,6 @@ impl JsonPath {
 }
 
 fn decode_value(value: &JsonValue, target: &Value, path: &JsonPath) -> Result<Value, DecodeError> {
-    if json_namespace_target(target) {
-        return decode_named(value, "Json", path);
-    }
-
     match target {
         Value::Type(RuntimeType::Named(name)) => decode_named(value, name, path),
         Value::Type(RuntimeType::Optional(inner)) => decode_value(value, inner, path),
@@ -647,23 +651,6 @@ fn runtime_type_target(value: &Value) -> bool {
             .all(|(_, field_value)| runtime_type_target(field_value)),
         _ => false,
     }
-}
-
-/// In checker-free runs, `Json.decode(text, Json)` passes the `Json`
-/// namespace record itself as the target (the global name is the namespace,
-/// not a type value). This shape test must track `json_value`'s field list.
-fn json_namespace_target(value: &Value) -> bool {
-    let Value::Record(fields) = value else {
-        return false;
-    };
-    let [encode, decode] = fields.as_slice() else {
-        return false;
-    };
-    matches!(
-        (encode, decode),
-        ((encode_name, Value::Native(_)), (decode_name, Value::Native(_)))
-            if encode_name == "encode" && decode_name == "decode"
-    )
 }
 
 fn target_display(target: &Value) -> String {

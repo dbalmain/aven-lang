@@ -1,6 +1,6 @@
 use super::{
-    Environment, EvalOutcome, Value, eval_expr, eval_module, eval_module_with_globals, logging,
-    record_field_value,
+    Environment, EvalOutcome, RuntimeType, Value, eval_expr, eval_module, eval_module_with_globals,
+    logging, record_field_value,
 };
 use aven_core::codes;
 use aven_parser::{Item, Module, parse_module};
@@ -723,6 +723,24 @@ fn map_constructs_empty_and_from_entries() {
             (Value::Text("b".to_owned()), Value::Int(2)),
         ]),
     );
+}
+
+#[test]
+fn map_type_application_yields_composite_type_value() {
+    // `Map[K, V]` in value position builds a composite type value, not a
+    // record index of the (type-valued) `Map`.
+    assert_module_value(
+        "Map[Text, Int]\n",
+        Value::Type(RuntimeType::Map(
+            Box::new(Value::named_type("Text")),
+            Box::new(Value::named_type("Int")),
+        )),
+    );
+}
+
+#[test]
+fn map_name_is_a_type_value() {
+    assert_module_value("Map\n", Value::named_type("Map"));
 }
 
 #[test]
