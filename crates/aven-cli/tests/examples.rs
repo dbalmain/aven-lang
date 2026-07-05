@@ -163,9 +163,9 @@ fn run_with_expected_output(example: &Path, extra_args: &[&str]) {
             "name: Ada\n\
             summary: object:Ada\n\
             encoded:\n\
-            name: \"Ada\"\n\
+            name: Ada\n\
             count: 3\n\
-            tags:\n  - \"core\"\n  - \"formats\"\n"
+            tags:\n- core\n- formats\n"
         }
         "dynamic-json.av" => {
             "summary: object:Ada\n\

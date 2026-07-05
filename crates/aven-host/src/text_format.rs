@@ -123,7 +123,7 @@ fn decode_named(
     format_name: &str,
 ) -> Result<Value, DecodeError> {
     match name {
-        "Json" => return Ok(decode_dynamic_json(value)),
+        "Json" | "Yaml" | "Toml" => return Ok(decode_dynamic_json(value)),
         "Text" => match value {
             FormatValue::Text(text) => Some(Value::Text(text.clone())),
             _ => None,
@@ -313,5 +313,33 @@ pub(crate) fn shape_error_value(error: ShapeError) -> Value {
             ("expected".to_owned(), Value::Text(error.expected)),
             ("found".to_owned(), Value::Text(error.found)),
         ])],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_decode_accepts_registered_format_names() {
+        let value = FormatValue::Object(vec![(
+            "name".to_owned(),
+            FormatValue::Text("Ada".to_owned()),
+        )]);
+
+        for target_name in ["Json", "Yaml", "Toml"] {
+            let target = Value::named_type(target_name);
+            let decoded = match decode_value(&value, &target, target_name) {
+                Ok(decoded) => decoded,
+                Err(DecodeError::Shape(_)) => panic!("{target_name} dynamic decode shaped"),
+                Err(DecodeError::InvalidTarget(message)) => panic!("{message}"),
+            };
+
+            let Value::Tag { name, payload } = decoded else {
+                panic!("expected dynamic object tag, got {decoded:?}");
+            };
+            assert_eq!(name, "Object");
+            assert_eq!(payload.len(), 1);
+        }
     }
 }
