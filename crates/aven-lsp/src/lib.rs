@@ -692,13 +692,13 @@ fn field_completion_at_position(
                 .or_else(|| host_global_type(&receiver.name))
         });
 
-    // Fall back to the Text `decode` member, then to type statics
+    // Fall back to the Text format-method members, then to type statics
     // (`Json.`/`Map.`) when the receiver resolves to a static-carrying type
     // value rather than a record.
     let fields = receiver_type
         .as_ref()
         .and_then(aven_compiler::record_fields)
-        .or_else(|| receiver_type.as_ref().and_then(text_decode_fields))
+        .or_else(|| receiver_type.as_ref().and_then(text_format_method_fields))
         .or_else(|| {
             access
                 .receiver
@@ -915,39 +915,45 @@ fn type_statics_fields(name: &str) -> Option<Vec<aven_compiler::RecordField>> {
     aven_compiler::type_statics(&aven_host::standard_check_host_globals(), name)
 }
 
-/// The `decode` member offered on a `Text`-typed receiver. `text.decode(Fmt, T)`
-/// dispatches to the format's decoder; presenting it like a record field lets
-/// completion and hover surface it the same way as record fields.
-fn text_decode_fields(
+/// The format-method members offered on a `Text`-typed receiver. `decode`
+/// dispatches to the format's decoder; `encode` is universal sugar, and Text
+/// completion gets it here alongside decode for parity.
+fn text_format_method_fields(
     receiver_type: &aven_compiler::Type,
 ) -> Option<Vec<aven_compiler::RecordField>> {
     if !aven_compiler::is_text_type(receiver_type) {
         return None;
     }
-    Some(vec![aven_compiler::RecordField {
-        name: "decode".to_owned(),
-        ty: text_decode_method_type().unwrap_or(aven_compiler::Type::Deferred),
-    }])
+    Some(vec![
+        aven_compiler::RecordField {
+            name: "decode".to_owned(),
+            ty: format_method_type("decode").unwrap_or(aven_compiler::Type::Deferred),
+        },
+        aven_compiler::RecordField {
+            name: "encode".to_owned(),
+            ty: format_method_type("encode").unwrap_or(aven_compiler::Type::Deferred),
+        },
+    ])
 }
 
-/// The method-form signature, derived from a registered format's `decode`
-/// static by swapping its leading `Text` parameter for the format argument —
-/// so the surfaced type stays in sync with whatever formats the host registers.
-fn text_decode_method_type() -> Option<aven_compiler::Type> {
-    let decode = aven_host::standard_check_host_globals()
+/// The method-form signature, derived from a registered format static by
+/// swapping its leading value parameter for the format argument — so the
+/// surfaced type stays in sync with whatever formats the host registers.
+fn format_method_type(member: &str) -> Option<aven_compiler::Type> {
+    let method = aven_host::standard_check_host_globals()
         .statics
         .iter()
         .find_map(|(_, members)| {
             members
                 .iter()
-                .find(|(name, _)| name == "decode")
+                .find(|(name, _)| name == member)
                 .map(|(_, ty)| ty.clone())
         })?;
     let aven_compiler::Type::Function {
         mut params,
         result,
         required,
-    } = decode
+    } = method
     else {
         return None;
     };

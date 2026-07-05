@@ -689,10 +689,13 @@ fn completion_at_map_field_access_returns_builtin_methods() {
 }
 
 #[test]
-fn completion_at_text_field_access_offers_decode() {
+fn completion_at_text_field_access_offers_format_methods() {
     let completions = completions_at_marker("text : Text = \"{}\"\nresult = text.|");
     let Some(decode) = completion_item(&completions, "decode") else {
         panic!("expected decode completion on a Text receiver, got {completions:?}");
+    };
+    let Some(encode) = completion_item(&completions, "encode") else {
+        panic!("expected encode completion on a Text receiver, got {completions:?}");
     };
 
     assert_eq!(decode.kind, Some(CompletionItemKind::FIELD));
@@ -703,6 +706,15 @@ fn completion_at_text_field_access_offers_decode() {
     assert!(
         detail.contains("->"),
         "decode signature is a function type, got {detail}"
+    );
+    assert_eq!(encode.kind, Some(CompletionItemKind::FIELD));
+    let detail = encode
+        .detail
+        .as_deref()
+        .expect("encode carries a signature");
+    assert!(
+        detail.contains("->"),
+        "encode signature is a function type, got {detail}"
     );
 }
 

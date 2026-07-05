@@ -596,6 +596,38 @@ mod tests {
     }
 
     #[test]
+    fn eval_encode_method_matches_static_form_for_record() {
+        let value = run("user = { name: \"Ada\", count: 3 }\n\
+             method = user.encode(Json)\n\
+             direct = Json.encode(user)\n\
+             { method: method, direct: direct }\n");
+
+        assert_eq!(text(field(&value, "method")), r#"{"name":"Ada","count":3}"#);
+        assert_eq!(field(&value, "method"), field(&value, "direct"));
+    }
+
+    #[test]
+    fn eval_encode_method_matches_static_form_for_dynamic_json() {
+        let value = run(
+            "parsed = Json.decode(\"{\\\"name\\\":\\\"Ada\\\",\\\"ok\\\":true}\")?!\n\
+             method = parsed.encode(Json)\n\
+             direct = Json.encode(parsed)\n\
+             { method: method, direct: direct }\n",
+        );
+
+        assert_eq!(text(field(&value, "method")), r#"{"name":"Ada","ok":true}"#);
+        assert_eq!(field(&value, "method"), field(&value, "direct"));
+    }
+
+    #[test]
+    fn eval_encode_method_keeps_receiver_encode_field() {
+        let value = run("user = { name: \"Ada\", encode: (format) => \"own\" }\n\
+             user.encode(Json)\n");
+
+        assert_eq!(text(&value), "own");
+    }
+
+    #[test]
     fn encode_rejects_json_constructor_with_wrong_payload_shape() {
         let diagnostics = run_diagnostics("Json.encode(@Int(\"no\"))\n");
 

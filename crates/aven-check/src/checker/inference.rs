@@ -857,6 +857,10 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        if let Some(result) = self.infer_value_encode_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_record_selection_builtin_call(env, callee, args) {
             return result;
         }
@@ -929,14 +933,7 @@ impl<'a> Checker<'a> {
 
         // Only the method form dispatches: probe the receiver without leaking its
         // inference (unifier, diagnostics, and recorded types all restored).
-        let unifier_snapshot = self.unifier.snapshot();
-        let diagnostic_snapshot = self.diagnostic_snapshot();
-        let inferred_types_len = self.inferred_types.len();
-        let receiver_type = self.infer(env, receiver);
-        let resolved = self.normalize(&self.resolve_and_default(&receiver_type));
-        self.unifier.restore(unifier_snapshot);
-        self.restore_diagnostic_snapshot(diagnostic_snapshot);
-        self.inferred_types.truncate(inferred_types_len);
+        let resolved = self.probe_receiver_type(env, receiver);
         if !is_text_type(&resolved) {
             return None;
         }
@@ -945,7 +942,7 @@ impl<'a> Checker<'a> {
             self.report_decode_missing_format(*field_span);
             return Some(Type::Deferred);
         };
-        let Some(format_name) = self.decode_format_name(env, format) else {
+        let Some(format_name) = self.format_member_name(env, format, "decode") else {
             self.report_decode_invalid_format(format);
             return Some(Type::Deferred);
         };
@@ -977,38 +974,128 @@ impl<'a> Checker<'a> {
         Some(result)
     }
 
-    /// The name of an unshadowed format type carrying a `decode` static
+    /// `value.encode(Fmt, ...)` desugars to `Fmt.encode(value, ...)`: the format
+    /// arrives as the first argument and supplies the encoder. Unlike decode,
+    /// every receiver admits the sugar unless the receiver's own type already
+    /// carries an `encode` member, in which case ordinary field-call semantics
+    /// win.
+    pub(super) fn infer_value_encode_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let ExprKind::FieldAccess {
+            receiver,
+            field,
+            field_span,
+            null_safe: false,
+        } = &ungroup_expr(callee).kind
+        else {
+            return None;
+        };
+        if field != "encode" {
+            return None;
+        }
+
+        if self.static_member_wins(env, receiver, field) {
+            return None;
+        }
+
+        // Probe without leaking the field-sugar decision into the actual
+        // inference pass. A record with an `encode` field keeps ordinary lookup;
+        // an unconstrained or non-record receiver still gets the universal sugar.
+        let resolved = self.probe_receiver_type(env, receiver);
+        if receiver_type_carries_member(&resolved, field) {
+            return None;
+        }
+
+        let Some(format) = args.first() else {
+            self.report_encode_missing_format(*field_span);
+            return Some(Type::Deferred);
+        };
+        let Some(format_name) = self.format_member_name(env, format, "encode") else {
+            self.report_encode_invalid_format(format);
+            return Some(Type::Deferred);
+        };
+
+        let mut synth_args = Vec::with_capacity(args.len());
+        synth_args.push((**receiver).clone());
+        synth_args.extend(args[1..].iter().cloned());
+
+        if self.report_static_member_arity_mismatch(
+            env,
+            &format_name,
+            "encode",
+            synth_args.len(),
+            callee.span,
+        ) {
+            return Some(Type::Deferred);
+        }
+
+        let synth_callee = Expr {
+            kind: ExprKind::FieldAccess {
+                receiver: Box::new(Expr {
+                    kind: ExprKind::Name(format_name),
+                    span: format.span,
+                }),
+                field: "encode".to_owned(),
+                field_span: *field_span,
+                null_safe: false,
+            },
+            span: callee.span,
+        };
+
+        let result = self.infer_call(env, &synth_callee, &synth_args);
+        self.record_expr_type(callee.span, &result);
+        Some(result)
+    }
+
+    fn probe_receiver_type(&mut self, env: &TypeEnv, receiver: &Expr) -> Type {
+        let unifier_snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let inferred_types_len = self.inferred_types.len();
+        let receiver_type = self.infer(env, receiver);
+        let resolved = self.normalize(&self.resolve_and_default(&receiver_type));
+        self.unifier.restore(unifier_snapshot);
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
+        self.inferred_types.truncate(inferred_types_len);
+        resolved
+    }
+
+    /// The name of an unshadowed format type carrying `member` as a static
     /// (`Json`, `Yaml`, `Toml`, ...), when `format` names one. Resolution and
-    /// dispatch go through the same statics table / `"Fmt.decode"` resolver key
+    /// dispatch go through the same statics table / `"Fmt.member"` resolver key
     /// the direct call uses, so any registered format works with no per-format
     /// cases.
-    fn decode_format_name(&self, env: &TypeEnv, format: &Expr) -> Option<String> {
+    fn format_member_name(&self, env: &TypeEnv, format: &Expr, member: &str) -> Option<String> {
         let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &ungroup_expr(format).kind
         else {
             return None;
         };
-        let has_decode = self.static_member_scheme(env, name, "decode").is_some()
+        let has_member = self.static_member_scheme(env, name, member).is_some()
             || (env.get(name).is_none()
                 && !self.bindings.contains_key(name)
                 && self
                     .host_comptime_fns
-                    .contains_key(&format!("{name}.decode")));
-        has_decode.then(|| name.clone())
+                    .contains_key(&format!("{name}.{member}")));
+        has_member.then(|| name.clone())
     }
 
-    /// Registered format types carrying a `decode` static or resolver,
+    /// Registered format types carrying a static or resolver named `member`,
     /// alphabetised, for the diagnostic hint — so it stays correct as formats
     /// are added.
-    fn decode_format_hint(&self) -> String {
+    fn format_member_hint(&self, member: &str) -> String {
+        let suffix = format!(".{member}");
         let mut formats: Vec<&str> = self
             .statics
             .iter()
-            .filter(|(_, members)| members.contains_key("decode"))
+            .filter(|(_, members)| members.contains_key(member))
             .map(|(name, _)| name.as_str())
             .chain(
                 self.host_comptime_fns
                     .keys()
-                    .filter_map(|key| key.strip_suffix(".decode")),
+                    .filter_map(|key| key.strip_suffix(&suffix)),
             )
             .collect();
         formats.sort_unstable();
@@ -1023,8 +1110,58 @@ impl<'a> Checker<'a> {
             .join(", ")
     }
 
+    fn static_member_wins(&self, env: &TypeEnv, receiver: &Expr, field: &str) -> bool {
+        let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &ungroup_expr(receiver).kind
+        else {
+            return false;
+        };
+        self.static_member_scheme(env, name, field).is_some()
+            || (env.get(name).is_none()
+                && !self.bindings.contains_key(name)
+                && self
+                    .host_comptime_fns
+                    .contains_key(&format!("{name}.{field}")))
+    }
+
+    fn report_static_member_arity_mismatch(
+        &mut self,
+        env: &TypeEnv,
+        receiver_name: &str,
+        field: &str,
+        arg_count: usize,
+        span: Span,
+    ) -> bool {
+        if self
+            .host_comptime_fns
+            .contains_key(&format!("{receiver_name}.{field}"))
+        {
+            return false;
+        }
+
+        let Some(scheme) = self.static_member_scheme(env, receiver_name, field) else {
+            return false;
+        };
+        let snapshot = self.unifier.snapshot();
+        let ty = self.unifier.instantiate_scheme(&scheme);
+        let resolved = self.unifier.resolve(&ty);
+        self.unifier.restore(snapshot);
+
+        let Type::Function {
+            params, required, ..
+        } = resolved
+        else {
+            return false;
+        };
+        if required <= arg_count && arg_count <= params.len() {
+            return false;
+        }
+
+        self.report_function_arity_mismatch(required, params.len(), arg_count, span);
+        true
+    }
+
     pub(super) fn report_decode_missing_format(&mut self, field_span: Span) {
-        let hint = self.decode_format_hint();
+        let hint = self.format_member_hint("decode");
         self.diagnostics.push(
             Diagnostic::error("`text.decode` needs a format as its first argument")
                 .with_code(codes::ty::DECODE_FORMAT)
@@ -1039,13 +1176,41 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn report_decode_invalid_format(&mut self, format: &Expr) {
-        let hint = self.decode_format_hint();
+        let hint = self.format_member_hint("decode");
         self.diagnostics.push(
             Diagnostic::error("the first argument to `text.decode` must be a format type")
                 .with_code(codes::ty::DECODE_FORMAT)
                 .with_label(Label::primary(
                     format.span,
                     "not a format type carrying a `decode` implementation",
+                ))
+                .with_note(format!("use a format type such as {hint}")),
+        );
+    }
+
+    pub(super) fn report_encode_missing_format(&mut self, field_span: Span) {
+        let hint = self.format_member_hint("encode");
+        self.diagnostics.push(
+            Diagnostic::error("`value.encode` needs a format as its first argument")
+                .with_code(codes::ty::ENCODE_FORMAT)
+                .with_label(Label::primary(
+                    field_span,
+                    "missing the format to encode with",
+                ))
+                .with_note(format!(
+                    "pass a format type as the first argument, such as {hint}"
+                )),
+        );
+    }
+
+    pub(super) fn report_encode_invalid_format(&mut self, format: &Expr) {
+        let hint = self.format_member_hint("encode");
+        self.diagnostics.push(
+            Diagnostic::error("the first argument to `value.encode` must be a format type")
+                .with_code(codes::ty::ENCODE_FORMAT)
+                .with_label(Label::primary(
+                    format.span,
+                    "not a format type carrying an `encode` implementation",
                 ))
                 .with_note(format!("use a format type such as {hint}")),
         );
@@ -2064,6 +2229,20 @@ fn host_comptime_reifiable_type(ty: &Type) -> bool {
             RowEntry::Literal { .. } => true,
         }),
     }
+}
+
+fn receiver_type_carries_member(ty: &Type, member: &str) -> bool {
+    let (_, core) = peel_empty_values(ty);
+    if builtin_collection_method_type(core, member).is_some() {
+        return true;
+    }
+
+    let Type::Record(row) = core else {
+        return false;
+    };
+    row.entries
+        .iter()
+        .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == member))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

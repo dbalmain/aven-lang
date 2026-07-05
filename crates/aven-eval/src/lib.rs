@@ -984,17 +984,33 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
         if matches!(receiver_value, Value::Text(_))
             && let Some(format) = args.first()
         {
-            let decode_fn = eval_field_access(format, "decode", format.span, false, env)?;
-            let mut arg_values = Vec::with_capacity(args.len());
-            arg_values.push(receiver_value);
-            for arg in &args[1..] {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            return match decode_fn {
-                Value::Native(function) => function(&arg_values)
-                    .map_err(|message| one_diagnostic(platform_error(span, message))),
-                value => Err(one_diagnostic(not_callable(format.span, value.type_name()))),
-            };
+            let decode_fn = format_static_value(format, "decode", env)?;
+            let arg_values = receiver_prefixed_arg_values(receiver_value, &args[1..], env)?;
+            return apply_callee_values(decode_fn, format.span, arg_values, span);
+        }
+        let callee_value =
+            field_access_value(receiver_value, receiver.span, field, *field_span, env)?;
+        return apply_callee(callee_value, callee.span, args, span, env);
+    }
+
+    // `value.encode(Fmt, ...)` desugars to `Fmt.encode(value, ...)` when the
+    // receiver does not itself carry `encode`. A real receiver member keeps
+    // ordinary field-call semantics, matching the checker's closed lookup rule.
+    if let ExprKind::FieldAccess {
+        receiver,
+        field,
+        field_span,
+        null_safe: false,
+    } = &callee.kind
+        && field == "encode"
+    {
+        let receiver_value = eval_expr_many(receiver, env)?;
+        if !value_carries_member(&receiver_value, field, env)
+            && let Some(format) = args.first()
+        {
+            let encode_fn = format_static_value(format, "encode", env)?;
+            let arg_values = receiver_prefixed_arg_values(receiver_value, &args[1..], env)?;
+            return apply_callee_values(encode_fn, format.span, arg_values, span);
         }
         let callee_value =
             field_access_value(receiver_value, receiver.span, field, *field_span, env)?;
@@ -1005,6 +1021,24 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
     apply_callee(callee_value, callee.span, args, span, env)
 }
 
+fn format_static_value(format: &Expr, member: &str, env: &Environment) -> Eval {
+    let format_value = eval_expr_many(format, env)?;
+    field_access_value(format_value, format.span, member, format.span, env)
+}
+
+fn receiver_prefixed_arg_values(
+    receiver_value: Value,
+    args: &[Expr],
+    env: &Environment,
+) -> Result<Vec<Value>, Flow> {
+    let mut arg_values = Vec::with_capacity(args.len() + 1);
+    arg_values.push(receiver_value);
+    for arg in args {
+        arg_values.push(eval_expr_many(arg, env)?);
+    }
+    Ok(arg_values)
+}
+
 /// Apply an already-evaluated callee value to the argument expressions.
 fn apply_callee(
     callee_value: Value,
@@ -1013,29 +1047,38 @@ fn apply_callee(
     span: Span,
     env: &Environment,
 ) -> Eval {
-    let closure = match callee_value {
+    match callee_value {
         Value::Native(function) => {
             let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
                 arg_values.push(eval_expr_many(arg, env)?);
             }
-
-            return function(&arg_values)
-                .map_err(|message| one_diagnostic(platform_error(span, message)));
+            apply_native(function, arg_values, span)
         }
-        Value::Closure(closure) => closure,
-        value => return Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
-    };
+        Value::Closure(closure) => apply_closure(closure, args, span, env),
+        value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
+    }
+}
 
-    let total = closure.params.len();
-    // Defaults are trailing, so the required count is the run of leading params
-    // that have no default.
-    let required = closure
-        .params
-        .iter()
-        .take_while(|param| param.default.is_none())
-        .count();
+fn apply_callee_values(
+    callee_value: Value,
+    callee_span: Span,
+    arg_values: Vec<Value>,
+    span: Span,
+) -> Eval {
+    match callee_value {
+        Value::Native(function) => apply_native(function, arg_values, span),
+        Value::Closure(closure) => apply_closure_values(closure, arg_values, span),
+        value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
+    }
+}
 
+fn apply_native(function: NativeFn, arg_values: Vec<Value>, span: Span) -> Eval {
+    function(&arg_values).map_err(|message| one_diagnostic(platform_error(span, message)))
+}
+
+fn apply_closure(closure: Closure, args: &[Expr], span: Span, env: &Environment) -> Eval {
+    let (required, total) = closure_arity(&closure);
     if args.len() < required || args.len() > total {
         return Err(one_diagnostic(arity_mismatch(
             span,
@@ -1049,7 +1092,34 @@ fn apply_callee(
     for arg in args {
         arg_values.push(eval_expr_many(arg, env)?);
     }
+    apply_closure_values(closure, arg_values, span)
+}
 
+fn apply_closure_values(closure: Closure, arg_values: Vec<Value>, span: Span) -> Eval {
+    let (required, total) = closure_arity(&closure);
+    let provided = arg_values.len();
+    if provided < required || provided > total {
+        return Err(one_diagnostic(arity_mismatch(
+            span, required, total, provided,
+        )));
+    }
+
+    bind_and_eval_closure(closure, arg_values, provided)
+}
+
+fn closure_arity(closure: &Closure) -> (usize, usize) {
+    let total = closure.params.len();
+    // Defaults are trailing, so the required count is the run of leading params
+    // that have no default.
+    let required = closure
+        .params
+        .iter()
+        .take_while(|param| param.default.is_none())
+        .count();
+    (required, total)
+}
+
+fn bind_and_eval_closure(closure: Closure, arg_values: Vec<Value>, provided: usize) -> Eval {
     let call_env = closure.env.child();
     for (param, value) in closure.params.iter().zip(arg_values) {
         call_env.bind(param.name.clone(), value);
@@ -1057,7 +1127,7 @@ fn apply_callee(
     // Bind each omitted trailing param by evaluating its default in `call_env`,
     // in order, so a later default may reference an earlier parameter. A default
     // runs only when its argument is omitted; failures propagate via `?`.
-    for param in &closure.params[args.len()..] {
+    for param in &closure.params[provided..] {
         let default = param
             .default
             .as_ref()
@@ -1352,6 +1422,14 @@ fn field_access_value(
                 "Record",
             ))
         }),
+    }
+}
+
+fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
+    match value {
+        Value::Record(fields) => record_field_value(fields, field).is_some(),
+        Value::Type(RuntimeType::Named(name)) => env.lookup(&format!("{name}.{field}")).is_some(),
+        value => builtin_method(value, field).is_some(),
     }
 }
 

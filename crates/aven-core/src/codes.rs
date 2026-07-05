@@ -92,6 +92,7 @@ pub mod ty {
     pub const DECODE_FORMAT: &str = "type.decode-format";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
     pub const DUPLICATE_SPREAD_LABEL: &str = "type.duplicate-spread-label";
+    pub const ENCODE_FORMAT: &str = "type.encode-format";
     pub const INCOMPATIBLE_MATCH_ARMS: &str = "type.incompatible-match-arms";
     pub const LITERAL_NOT_IN_UNION: &str = "type.literal-not-in-union";
     pub const LOWERCASE_VARIANT_TAG: &str = "type.lowercase-variant-tag";
@@ -181,6 +182,7 @@ pub const ALL: &[&str] = &[
     ty::DECODE_FORMAT,
     ty::DELETE_ABSENT_FIELD,
     ty::DUPLICATE_SPREAD_LABEL,
+    ty::ENCODE_FORMAT,
     ty::INCOMPATIBLE_MATCH_ARMS,
     ty::LITERAL_NOT_IN_UNION,
     ty::LOWERCASE_VARIANT_TAG,

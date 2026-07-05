@@ -267,6 +267,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A disjoint row spread or add introduced a label that is already present. Use an overwrite form such as `:..source` or `field :: Type` when replacement is intended.",
     },
     DiagnosticExplanation {
+        code: codes::ty::ENCODE_FORMAT,
+        text: "A `value.encode(...)` call is missing its format argument or was given a first argument that is not a format type. Pass a format type such as `Json`, `Yaml`, or `Toml` as the first argument so it can supply the encoder.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::INCOMPATIBLE_MATCH_ARMS,
         text: "An unannotated runtime match has arms whose result types cannot be combined into one type. Make every arm return the same kind of value, or add a result annotation so each arm is checked against it.",
     },

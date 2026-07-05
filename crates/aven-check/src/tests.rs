@@ -145,6 +145,45 @@ fn render_top_level_value(checker: &mut Checker<'_>, name: &str) -> Option<Strin
         .map(|ty| crate::ty::display_inferred_type(&ty).render())
 }
 
+fn checked_binding_type(source: &str, name: &str, host: &HostGlobals) -> Type {
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let checked = check_module_with_host_globals(&output.module, host);
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected check diagnostics: {:?}",
+        checked.diagnostics
+    );
+    let span = nth_span(source, name, 0);
+    checked
+        .type_at(span)
+        .unwrap_or_else(|| panic!("{name} has an inferred type"))
+        .clone()
+}
+
+fn format_encode_host_globals() -> HostGlobals {
+    HostGlobals::default().with_statics(vec![
+        (
+            "Json".to_owned(),
+            vec![(
+                "encode".to_owned(),
+                function(vec![variable("a")], named("Text")),
+            )],
+        ),
+        (
+            "Yaml".to_owned(),
+            vec![(
+                "encode".to_owned(),
+                function(vec![variable("a")], named("Text")),
+            )],
+        ),
+    ])
+}
+
 #[test]
 fn renders_types_as_surface_syntax() {
     assert_eq!(
@@ -3721,6 +3760,70 @@ fn json_encode_types_through_statics() {
         Some("Text".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn encode_method_types_like_format_static_form() {
+    let method = "user = { name: \"Ada\" }\nencoded = user.encode(Json)\n";
+    let static_form = "user = { name: \"Ada\" }\nencoded = Json.encode(user)\n";
+    let host = format_encode_host_globals();
+
+    let method_ty = checked_binding_type(method, "encoded", &host);
+    let static_ty = checked_binding_type(static_form, "encoded", &host);
+
+    assert_eq!(method_ty.render(), "Text");
+    assert_eq!(method_ty, static_ty);
+}
+
+#[test]
+fn encode_method_keeps_receiver_encode_field_semantics() {
+    let source = "user = { name: \"Ada\", encode: (format) => 1 }\n\
+                  encoded = user.encode(Json)\n";
+    let ty = checked_binding_type(source, "encoded", &format_encode_host_globals());
+
+    assert_eq!(ty.render(), "1");
+}
+
+#[test]
+fn encode_method_requires_format_argument() {
+    let output = parse_module("value = 1\nencoded = value.encode()\n");
+    let checked = check_module_with_host_globals(&output.module, &format_encode_host_globals());
+
+    assert_eq!(
+        matching_codes(&checked.diagnostics, codes::ty::ENCODE_FORMAT),
+        1
+    );
+}
+
+#[test]
+fn encode_method_rejects_non_format_first_argument() {
+    let output = parse_module("value = 1\nencoded = value.encode(value)\n");
+    let checked = check_module_with_host_globals(&output.module, &format_encode_host_globals());
+
+    assert_eq!(
+        matching_codes(&checked.diagnostics, codes::ty::ENCODE_FORMAT),
+        1
+    );
+}
+
+#[test]
+fn encode_method_extra_arguments_use_static_arity_diagnostic() {
+    let output = parse_module("value = 1\nencoded = value.encode(Json, 2)\n");
+    let checked = check_module_with_host_globals(&output.module, &format_encode_host_globals());
+
+    assert_eq!(
+        matching_codes(&checked.diagnostics, codes::ty::ENCODE_FORMAT),
+        0
+    );
+    assert_eq!(matching_codes(&checked.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn encode_method_accepts_non_json_format() {
+    let source = "value = { name: \"Ada\" }\nencoded = value.encode(Yaml)\n";
+    let ty = checked_binding_type(source, "encoded", &format_encode_host_globals());
+
+    assert_eq!(ty.render(), "Text");
 }
 
 #[test]

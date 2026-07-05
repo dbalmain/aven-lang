@@ -1,4 +1,4 @@
-# Json.decode with optional/nullable fields, ?> error handling, Json.encode round-trip.
+# Json.decode with optional/nullable fields, ?> error handling, value.encode(Json) round-trip.
 # text.decode(Json, User) is the dataflow-order spelling of Json.decode(text, User).
 User = { name: Text, email: ?Text, nick: Text? }
 
@@ -8,7 +8,7 @@ parseUser = (text: Text) =>
 
 onParsed = (user) =>
   writeLine("parsed: ${user}")
-  encoded = Json.encode(user)
+  encoded = user.encode(Json)
   writeLine("encoded: ${encoded}")
 
 onError = (err) => writeLine("error: ${err}")

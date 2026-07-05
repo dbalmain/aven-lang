@@ -2601,7 +2601,35 @@ Done when:
 
 ## Milestone F — formats and decode ergonomics
 
-Status: done 2026-07-05
+Status: F1–F4 done 2026-07-05; F5 in progress (user decision 2026-07-05: the
+shared dynamic variant renames `Json` → `Data`)
+
+F4 progress: landed 2026-07-05 (codex; user decision 2026-07-05:
+`value.encode(Json)` is the encode spelling). Decode's helpers generalized
+(`format_member_name`/`format_member_hint`/`probe_receiver_type`) instead of a
+parallel copy; `static_member_wins` keeps the direct `Fmt.encode(value)`
+spelling on its ordinary path; a receiver whose own type carries `encode` keeps
+field semantics; `type.encode-format` diagnostics; early arity check (encode has
+no host-comptime resolver to catch it). LSP offers `encode` alongside `decode`
+on Text receivers only for now — universal-receiver completion parity is
+deferred as a polish item.
+
+- **F5 — rename the dynamic variant to `Data`**: the formats stay `Json`/
+  `Yaml`/`Toml` (artifacts carrying `decode`/`encode` statics); the recursive
+  tree they decode into is the named variant `Data`. One-arg decode defaults to
+  `Data`; `Data` joins the builtin type-name lists; user-visible types, hovers,
+  diagnostics, tests, and examples say `Data`. Spec updated (conversions now
+  exemplify `value.to(Data)`/`Data.from`; the `toJson()` hook order belongs to
+  `Json.encode`). Open refinement: whether the format names keep row definitions
+  at all once registration can carry statics without a data definition.
+
+- **F4 — `value.encode(Fmt)` method form**: mirrors F3 with the receiver on the
+  value side — `value.encode(Json)` ≡ `Json.encode(value)`, universal sugar (any
+  receiver), with an `encode` member actually carried by the receiver's type
+  winning under closed-lookup precedence. Spec updated ("Decoding and encoding
+  text"). Noted divergence to close later: spec says the default encoder is
+  fallible (`Result[Text, JsonEncodeError]`); the implemented `Fmt.encode` is
+  `(a) -> Text` with runtime errors.
 
 Progress: all three slices landed 2026-07-05. F1 (claude-rust/sonnet): map
 indexing mirrors the array rule in `infer_value_index` and reuses
