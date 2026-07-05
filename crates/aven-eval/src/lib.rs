@@ -1550,11 +1550,19 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
                 .cloned()
                 .ok_or_else(|| one_diagnostic(missing_field(&key, args[0].span)))
         }
+        Value::Map(entries) => {
+            // `m[key]` sugars to `m.get(key)`: reuse the method's native
+            // closure rather than duplicating the lookup.
+            let Value::Native(get) = map_get_method(entries) else {
+                unreachable!("map_get_method always returns Value::Native")
+            };
+            get(&[arg_value]).map_err(|message| one_diagnostic(platform_error(span, message)))
+        }
         value => Err(one_diagnostic(record_type_error(
             callee.span,
             "indexing",
             value.type_name(),
-            "Array, Tuple, or Record",
+            "Array, Tuple, Record, or Map",
         ))),
     }
 }

@@ -1433,6 +1433,23 @@ impl<'a> Checker<'a> {
                 // yields `undefined`.
                 Type::Optional(Box::new(args[0].clone()))
             }
+            Type::Apply { callee, args }
+                if args.len() == 2
+                    && matches!(callee.as_ref(), Type::Named(name) if name == "Map") =>
+            {
+                // `m[key]` sugars to `m.get(key)`: the index unifies with the
+                // key type, and the result is optional (`?v`) since a missing
+                // key yields `undefined` at runtime.
+                let key_type = args[0].clone();
+                let value_type = args[1].clone();
+                let arg_type = self.infer(env, arg);
+                self.check_call_arg_types_against_params(
+                    std::slice::from_ref(arg),
+                    &[arg_type],
+                    &[key_type],
+                );
+                Type::Optional(Box::new(value_type))
+            }
             _ => Type::Deferred,
         }
     }

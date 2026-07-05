@@ -771,6 +771,14 @@ fn map_get_hit_and_miss() {
 }
 
 #[test]
+fn map_index_hit_and_miss() {
+    assert_module_value(
+        "m = Map.from([(\"a\", 1)])\n[m[\"a\"], m[\"z\"]]\n",
+        array_value(vec![Value::Int(1), Value::Undefined]),
+    );
+}
+
+#[test]
 fn map_set_and_delete_return_new_maps() {
     assert_module_value(
         "m = Map.from([(\"a\", 1)])\n\

@@ -3746,6 +3746,28 @@ fn map_get_rejects_wrong_key_type() {
 }
 
 #[test]
+fn map_index_infers_optional_value_type() {
+    let output = parse_module("m = Map.from([(\"a\", 1)])\nvalue = m[\"a\"]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "value"),
+        Some("?1".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn map_index_rejects_wrong_key_type() {
+    let output = parse_module("m : Map[Text, Int] = Map.empty()\nvalue = m[1]\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
 fn map_unknown_method_reports_missing_field() {
     let output = parse_module("m : Map[Text, Int] = Map.empty()\nvalue = m.nope()\n");
     let check = check_module(&output.module);
