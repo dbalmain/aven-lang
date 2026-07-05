@@ -2601,17 +2601,19 @@ Done when:
 
 ## Milestone F — formats and decode ergonomics
 
-Status: F1–F5 done 2026-07-05 (user decision 2026-07-05: the shared dynamic
-variant renames `Json` → `Data`); F6 in progress 2026-07-05
+Status: F1–F6 done 2026-07-05 (user decision 2026-07-05: the shared dynamic
+variant renames `Json` → `Data`)
 
-- **F6 — encode sugar on all checked receivers**: found live 2026-07-05 —
-  `y: Y = { y: 2 }` then `y.encode(Yaml)` runs but `aven check` reports
-  `type.missing-field` for `encode`: the F4 receiver probe mishandles a _named_
-  record annotation (structural records were tested and pass), so the sugar
-  bails to ordinary field lookup. Fix the probe for `Named`/normalized
-  receivers, and give LSP field completion `encode` on all completable receivers
-  (the "Text receivers only" F4 deferral), sourced from the same format statics
-  as `decode`.
+- **F6 — encode sugar on all checked receivers: done 2026-07-05** (codex). Root
+  cause was not the probe: the statement checker (`check_value_call`) ran an
+  ordinary field-access check on the `.encode` callee before call inference
+  reached the desugar, and a _named_ annotation made the receiver a concrete
+  closed record, so that pre-check reported `missing-field`. `check_value_call`
+  now routes an applicable `.encode(Fmt)` through desugared inference first
+  (guard `value_encode_sugar_receiver` shared with `infer_value_encode_call`),
+  and the per-item pass dedupes exact code+span diagnostic collisions from the
+  check-then-infer seam. LSP field completion offers `encode` on any value
+  receiver without its own `encode` member; `decode` stays Text-only.
 
 F4 progress: landed 2026-07-05 (codex; user decision 2026-07-05:
 `value.encode(Json)` is the encode spelling). Decode's helpers generalized
