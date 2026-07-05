@@ -1,8 +1,9 @@
 # Json.decode with optional/nullable fields, ?> error handling, Json.encode round-trip.
+# text.decode(Json, User) is the dataflow-order spelling of Json.decode(text, User).
 User = { name: Text, email: ?Text, nick: Text? }
 
 parseUser = (text: Text) =>
-  user = Json.decode(text, User)?^
+  user = text.decode(Json, User)?^
   @Ok(user)
 
 onParsed = (user) =>

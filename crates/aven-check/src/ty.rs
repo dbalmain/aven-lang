@@ -185,6 +185,16 @@ pub fn variant_tags(ty: &Type) -> Option<Vec<String>> {
     )
 }
 
+/// Whether `ty` types as `Text`: the base named type or a string-literal
+/// variant row (its base kind is `Text`).
+pub fn is_text_type(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name) => name == "Text",
+        Type::Variant(row) => literal_variant_base(row) == Some(LiteralBase::Text),
+        _ => false,
+    }
+}
+
 /// The literal members of a closed literal-union type, in order.
 /// `None` for any type that is not a closed all-`Literal` variant row.
 pub fn literal_union_members(ty: &Type) -> Option<Vec<String>> {

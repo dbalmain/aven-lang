@@ -608,4 +608,37 @@ mod tests {
 
         assert_eq!(ty.render(), "Result[Json, YamlError]");
     }
+
+    #[test]
+    fn checker_text_decode_method_matches_static_form() {
+        let source =
+            "Config = { name: Text }\ntext = \"name: Ada\"\ndecoded = text.decode(Yaml, Config)\n";
+        let checked = check(source);
+
+        assert!(
+            checked.diagnostics.is_empty(),
+            "method form checks: {:?}",
+            checked.diagnostics
+        );
+        let offset = source
+            .find("decoded")
+            .unwrap_or_else(|| panic!("source mentions decoded"));
+        let ty = checked
+            .type_at(Span::new(offset, offset + "decoded".len()))
+            .unwrap_or_else(|| panic!("decoded has an inferred type"));
+
+        assert_eq!(ty.render(), "Result[Config, YamlError]");
+    }
+
+    #[test]
+    fn eval_text_decode_method_matches_static_form() {
+        let value = run("Config = { name: Text, count: Int }\n\
+             text = \"name: Ada\\ncount: 3\\n\"\n\
+             method = text.decode(Yaml, Config)?!\n\
+             direct = Yaml.decode(text, Config)?!\n\
+             { method: method, direct: direct }\n");
+
+        assert_eq!(text(field(field(&value, "method"), "name")), "Ada");
+        assert_eq!(field(&value, "method"), field(&value, "direct"));
+    }
 }

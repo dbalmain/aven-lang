@@ -968,7 +968,51 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
         });
     }
 
+    // `text.decode(Fmt, ...)` desugars to `Fmt.decode(text, ...)`: the format
+    // arrives first and supplies the decoder. Mirror the checker's call-site
+    // treatment — only a `Text` receiver takes the method form; any other
+    // receiver keeps ordinary field-access-call behavior (single receiver eval).
+    if let ExprKind::FieldAccess {
+        receiver,
+        field,
+        field_span,
+        null_safe: false,
+    } = &callee.kind
+        && field == "decode"
+    {
+        let receiver_value = eval_expr_many(receiver, env)?;
+        if matches!(receiver_value, Value::Text(_))
+            && let Some(format) = args.first()
+        {
+            let decode_fn = eval_field_access(format, "decode", format.span, false, env)?;
+            let mut arg_values = Vec::with_capacity(args.len());
+            arg_values.push(receiver_value);
+            for arg in &args[1..] {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            return match decode_fn {
+                Value::Native(function) => function(&arg_values)
+                    .map_err(|message| one_diagnostic(platform_error(span, message))),
+                value => Err(one_diagnostic(not_callable(format.span, value.type_name()))),
+            };
+        }
+        let callee_value =
+            field_access_value(receiver_value, receiver.span, field, *field_span, env)?;
+        return apply_callee(callee_value, callee.span, args, span, env);
+    }
+
     let callee_value = eval_expr_many(callee, env)?;
+    apply_callee(callee_value, callee.span, args, span, env)
+}
+
+/// Apply an already-evaluated callee value to the argument expressions.
+fn apply_callee(
+    callee_value: Value,
+    callee_span: Span,
+    args: &[Expr],
+    span: Span,
+    env: &Environment,
+) -> Eval {
     let closure = match callee_value {
         Value::Native(function) => {
             let mut arg_values = Vec::with_capacity(args.len());
@@ -980,7 +1024,7 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
                 .map_err(|message| one_diagnostic(platform_error(span, message)));
         }
         Value::Closure(closure) => closure,
-        value => return Err(one_diagnostic(not_callable(callee.span, value.type_name()))),
+        value => return Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
     };
 
     let total = closure.params.len();
@@ -1280,6 +1324,17 @@ fn eval_field_access(
         return Ok(receiver_value);
     }
 
+    field_access_value(receiver_value, receiver.span, field, field_span, env)
+}
+
+/// Read `field` off an already-evaluated receiver value.
+fn field_access_value(
+    receiver_value: Value,
+    receiver_span: Span,
+    field: &str,
+    field_span: Span,
+    env: &Environment,
+) -> Eval {
     match &receiver_value {
         Value::Record(fields) => record_field_value(fields, field)
             .cloned()
@@ -1291,7 +1346,7 @@ fn eval_field_access(
             .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
         value => builtin_method(value, field).ok_or_else(|| {
             one_diagnostic(record_type_error(
-                receiver.span,
+                receiver_span,
                 "field access",
                 value.type_name(),
                 "Record",

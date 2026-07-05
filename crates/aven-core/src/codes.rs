@@ -89,6 +89,7 @@ pub mod runtime {
 
 pub mod ty {
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
+    pub const DECODE_FORMAT: &str = "type.decode-format";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
     pub const DUPLICATE_SPREAD_LABEL: &str = "type.duplicate-spread-label";
     pub const INCOMPATIBLE_MATCH_ARMS: &str = "type.incompatible-match-arms";
@@ -177,6 +178,7 @@ pub const ALL: &[&str] = &[
     runtime::UNBOUND_NAME,
     runtime::UNSUPPORTED,
     ty::CYCLIC_ALIAS,
+    ty::DECODE_FORMAT,
     ty::DELETE_ABSENT_FIELD,
     ty::DUPLICATE_SPREAD_LABEL,
     ty::INCOMPATIBLE_MATCH_ARMS,

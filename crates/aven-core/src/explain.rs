@@ -255,6 +255,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A transparent type alias eventually refers back to itself without passing through a type constructor. Wrap one member in a record or variant to make the recursion well-founded, or remove the alias.",
     },
     DiagnosticExplanation {
+        code: codes::ty::DECODE_FORMAT,
+        text: "A `text.decode(...)` call is missing its format argument or was given a first argument that is not a format type. Pass a format type such as `Json`, `Yaml`, or `Toml` as the first argument so it can supply the decoder.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::DELETE_ABSENT_FIELD,
         text: "A row transform tried to delete a record field or variant tag that is not present in the closed row accumulated so far. Spread or add that label first, or remove the delete.",
     },

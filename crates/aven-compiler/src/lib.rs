@@ -13,8 +13,8 @@ use aven_parser::{
 };
 
 pub use aven_check::{
-    HostGlobals, InferredType, RecordField, Type, function_signature, literal_union_members,
-    record_fields, type_statics, variant_tags,
+    HostGlobals, InferredType, RecordField, Type, function_signature, is_text_type,
+    literal_union_members, record_fields, type_statics, variant_tags,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

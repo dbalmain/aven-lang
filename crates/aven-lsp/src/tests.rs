@@ -689,6 +689,24 @@ fn completion_at_map_field_access_returns_builtin_methods() {
 }
 
 #[test]
+fn completion_at_text_field_access_offers_decode() {
+    let completions = completions_at_marker("text : Text = \"{}\"\nresult = text.|");
+    let Some(decode) = completion_item(&completions, "decode") else {
+        panic!("expected decode completion on a Text receiver, got {completions:?}");
+    };
+
+    assert_eq!(decode.kind, Some(CompletionItemKind::FIELD));
+    let detail = decode
+        .detail
+        .as_deref()
+        .expect("decode carries a signature");
+    assert!(
+        detail.contains("->"),
+        "decode signature is a function type, got {detail}"
+    );
+}
+
+#[test]
 fn completion_at_local_record_field_access_with_parse_error_returns_record_fields() {
     let document = parsed_document_with_semantics(
         "user = { name: \"Ada\", email: \"ada@example.com\" }\nresult = user.name\nbroken = \n",

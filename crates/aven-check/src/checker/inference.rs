@@ -853,6 +853,10 @@ impl<'a> Checker<'a> {
             return self.infer_variant_constructor(env, tag, args);
         }
 
+        if let Some(result) = self.infer_text_decode_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_record_selection_builtin_call(env, callee, args) {
             return result;
         }
@@ -898,6 +902,153 @@ impl<'a> Checker<'a> {
         } else {
             self.resolve_row_merge_call_result(&result_type)
         }
+    }
+
+    /// `text.decode(Fmt, ...)` desugars to `Fmt.decode(text, ...)`: the format
+    /// arrives as the first argument and supplies the decoder. Returns `None`
+    /// when the callee is not `.decode` on a `Text`-typed receiver, so a
+    /// non-`Text` receiver keeps today's unknown-field behavior.
+    pub(super) fn infer_text_decode_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let ExprKind::FieldAccess {
+            receiver,
+            field,
+            field_span,
+            null_safe: false,
+        } = &ungroup_expr(callee).kind
+        else {
+            return None;
+        };
+        if field != "decode" {
+            return None;
+        }
+
+        // Only the method form dispatches: probe the receiver without leaking its
+        // inference (unifier, diagnostics, and recorded types all restored).
+        let unifier_snapshot = self.unifier.snapshot();
+        let diagnostic_snapshot = self.diagnostic_snapshot();
+        let inferred_types_len = self.inferred_types.len();
+        let receiver_type = self.infer(env, receiver);
+        let resolved = self.normalize(&self.resolve_and_default(&receiver_type));
+        self.unifier.restore(unifier_snapshot);
+        self.restore_diagnostic_snapshot(diagnostic_snapshot);
+        self.inferred_types.truncate(inferred_types_len);
+        if !is_text_type(&resolved) {
+            return None;
+        }
+
+        let Some(format) = args.first() else {
+            self.report_decode_missing_format(*field_span);
+            return Some(Type::Deferred);
+        };
+        let Some(format_name) = self.decode_format_name(env, format) else {
+            self.report_decode_invalid_format(format);
+            return Some(Type::Deferred);
+        };
+
+        // Build the equivalent `Fmt.decode(receiver, ...rest)` and reuse the
+        // existing static / host-comptime resolution unchanged. The synthetic
+        // callee keeps the real `text.decode` and format spans so diagnostics
+        // land on the written code, and the receiver and remaining arguments
+        // keep their own spans for hover.
+        let synth_callee = Expr {
+            kind: ExprKind::FieldAccess {
+                receiver: Box::new(Expr {
+                    kind: ExprKind::Name(format_name),
+                    span: format.span,
+                }),
+                field: "decode".to_owned(),
+                field_span: *field_span,
+                null_safe: false,
+            },
+            span: callee.span,
+        };
+        let mut synth_args = Vec::with_capacity(args.len());
+        synth_args.push((**receiver).clone());
+        synth_args.extend(args[1..].iter().cloned());
+
+        let result = self.infer_call(env, &synth_callee, &synth_args);
+        // Record on the `.decode` access so hover shows the resolved call type.
+        self.record_expr_type(callee.span, &result);
+        Some(result)
+    }
+
+    /// The name of an unshadowed format type carrying a `decode` static
+    /// (`Json`, `Yaml`, `Toml`, ...), when `format` names one. Resolution and
+    /// dispatch go through the same statics table / `"Fmt.decode"` resolver key
+    /// the direct call uses, so any registered format works with no per-format
+    /// cases.
+    fn decode_format_name(&self, env: &TypeEnv, format: &Expr) -> Option<String> {
+        let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &ungroup_expr(format).kind
+        else {
+            return None;
+        };
+        let has_decode = self.static_member_scheme(env, name, "decode").is_some()
+            || (env.get(name).is_none()
+                && !self.bindings.contains_key(name)
+                && self
+                    .host_comptime_fns
+                    .contains_key(&format!("{name}.decode")));
+        has_decode.then(|| name.clone())
+    }
+
+    /// Registered format types carrying a `decode` static or resolver,
+    /// alphabetised, for the diagnostic hint — so it stays correct as formats
+    /// are added.
+    fn decode_format_hint(&self) -> String {
+        let mut formats: Vec<&str> = self
+            .statics
+            .iter()
+            .filter(|(_, members)| members.contains_key("decode"))
+            .map(|(name, _)| name.as_str())
+            .chain(
+                self.host_comptime_fns
+                    .keys()
+                    .filter_map(|key| key.strip_suffix(".decode")),
+            )
+            .collect();
+        formats.sort_unstable();
+        formats.dedup();
+        if formats.is_empty() {
+            return "`Json`".to_owned();
+        }
+        formats
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    pub(super) fn report_decode_missing_format(&mut self, field_span: Span) {
+        let hint = self.decode_format_hint();
+        self.diagnostics.push(
+            Diagnostic::error("`text.decode` needs a format as its first argument")
+                .with_code(codes::ty::DECODE_FORMAT)
+                .with_label(Label::primary(
+                    field_span,
+                    "missing the format to decode with",
+                ))
+                .with_note(format!(
+                    "pass a format type as the first argument, such as {hint}"
+                )),
+        );
+    }
+
+    pub(super) fn report_decode_invalid_format(&mut self, format: &Expr) {
+        let hint = self.decode_format_hint();
+        self.diagnostics.push(
+            Diagnostic::error("the first argument to `text.decode` must be a format type")
+                .with_code(codes::ty::DECODE_FORMAT)
+                .with_label(Label::primary(
+                    format.span,
+                    "not a format type carrying a `decode` implementation",
+                ))
+                .with_note(format!("use a format type such as {hint}")),
+        );
     }
 
     pub(super) fn resolve_row_merge_call_result(&mut self, result: &Type) -> Type {

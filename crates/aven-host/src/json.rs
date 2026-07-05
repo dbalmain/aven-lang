@@ -778,4 +778,124 @@ mod tests {
             .expect("the match binder has an inferred type");
         assert_eq!(fields_ty.render(), "Map[Text, Json]");
     }
+
+    #[test]
+    fn checker_text_decode_method_matches_static_form() {
+        let method = "User = { name: Text }\ntext = \"{}\"\ndecoded = text.decode(Json, User)\n";
+        let static_form =
+            "User = { name: Text }\ntext = \"{}\"\ndecoded = Json.decode(text, User)\n";
+
+        let method_checked = check(method);
+        assert!(
+            method_checked.diagnostics.is_empty(),
+            "method form checks: {:?}",
+            method_checked.diagnostics
+        );
+
+        let offset = method.find("decoded").expect("source mentions decoded");
+        let span = Span::new(offset, offset + "decoded".len());
+        let method_ty = method_checked
+            .type_at(span)
+            .expect("method decode has an inferred type");
+        assert_eq!(method_ty.render(), "Result[User, JsonError]");
+
+        // The method spelling infers exactly as the format-owned static call.
+        let static_checked = check(static_form);
+        let static_ty = static_checked
+            .type_at(span)
+            .expect("static decode has an inferred type");
+        assert_eq!(method_ty, static_ty);
+
+        // Hover on the `.decode` access itself shows the resolved call type
+        // (structurally expanded, as expression hovers are).
+        let offset = method
+            .find("text.decode")
+            .expect("source mentions text.decode");
+        let access_ty = method_checked
+            .type_at(Span::new(offset, offset + "text.decode".len()))
+            .expect(".decode access has an inferred type");
+        assert!(
+            access_ty.render().starts_with("Result["),
+            "hover on .decode shows the Result type, got {}",
+            access_ty.render()
+        );
+    }
+
+    #[test]
+    fn checker_resolves_one_arg_text_decode_to_dynamic_json_result() {
+        let source = "text = \"{}\"\ndecoded = text.decode(Json)\n";
+        let checked = check(source);
+
+        assert!(
+            checked.diagnostics.is_empty(),
+            "one-arg method decode checks: {:?}",
+            checked.diagnostics
+        );
+        let offset = source.find("decoded").expect("source mentions decoded");
+        let ty = checked
+            .type_at(Span::new(offset, offset + "decoded".len()))
+            .expect("decoded has an inferred type");
+
+        assert_eq!(ty.render(), "Result[Json, JsonError]");
+    }
+
+    #[test]
+    fn checker_rejects_text_decode_without_format() {
+        let checked = check("text = \"{}\"\ndecoded = text.decode()\n");
+
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::DECODE_FORMAT)),
+            "missing format is a decode-format diagnostic: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn checker_rejects_text_decode_non_format_first_arg() {
+        let checked = check("text = \"{}\"\ndecoded = text.decode(text)\n");
+
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::DECODE_FORMAT)),
+            "a non-format first argument is a decode-format diagnostic: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn eval_text_decode_method_matches_static_form() {
+        let value = run("User = { name: Text }\n\
+             text = \"{\\\"name\\\":\\\"Ada\\\"}\"\n\
+             method = text.decode(Json, User)?!\n\
+             direct = Json.decode(text, User)?!\n\
+             { method: method, direct: direct }\n");
+
+        assert_eq!(text(field(field(&value, "method"), "name")), "Ada");
+        assert_eq!(field(&value, "method"), field(&value, "direct"));
+    }
+
+    #[test]
+    fn eval_one_arg_text_decode_matches_dynamic_static_form() {
+        let value = run("text = \"{\\\"name\\\":\\\"Ada\\\"}\"\n\
+             method = text.decode(Json)?!\n\
+             direct = Json.decode(text)?!\n\
+             { method: method, direct: direct }\n");
+
+        assert_eq!(field(&value, "method"), field(&value, "direct"));
+    }
+
+    #[test]
+    fn eval_text_decode_method_with_inline_record_target() {
+        let value = run("text = \"{\\\"name\\\":\\\"Ada\\\"}\"\n\
+             method = text.decode(Json, { name: Text })?!\n\
+             direct = Json.decode(text, { name: Text })?!\n\
+             { method: method, direct: direct }\n");
+
+        assert_eq!(field(&value, "method"), field(&value, "direct"));
+    }
 }
