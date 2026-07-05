@@ -151,6 +151,22 @@ fn run_with_expected_output(example: &Path, extra_args: &[&str]) {
             "parsed: { name: \"Ada\", email: undefined, nick: null }\n\
             encoded: {\"name\":\"Ada\",\"nick\":null}\n"
         }
+        "toml.av" => {
+            "name: Ada\n\
+            summary: enabled:true\n\
+            encoded:\n\
+            count = 3\n\
+            enabled = true\n\
+            name = \"Ada\"\n"
+        }
+        "yaml.av" => {
+            "name: Ada\n\
+            summary: object:Ada\n\
+            encoded:\n\
+            name: \"Ada\"\n\
+            count: 3\n\
+            tags:\n  - \"core\"\n  - \"formats\"\n"
+        }
         "dynamic-json.av" => {
             "summary: object:Ada\n\
             encoded: {\"name\":\"Ada\",\"count\":3,\"nested\":{\"ok\":true},\"scores\":[1,2.5]}\n"

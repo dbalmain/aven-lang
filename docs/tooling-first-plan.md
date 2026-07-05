@@ -1743,8 +1743,10 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 07-04. What remains:
 
 - the live nvim sweep (Milestone X's other half — user-driven)
-- map indexing: `m[key]` should sugar to `.get` and type `?v`, matching the
-  array-indexing rule (found live 2026-07-04; currently a runtime error)
+- **Milestone F — formats and decode ergonomics (below): in progress
+  2026-07-05** — map indexing, Yaml/Toml formats, `text.decode(Fmt, T)` method
+  form; spec consolidated on `decode` (bracket type application and `.parse`
+  removed)
 - **Milestone V — type-artifact statics (platform subset): done 2026-07-05**
   (see below) — `Json`/`Map` are genuine type values carrying statics; the
   `json_namespace_target` shape-sniff is deleted
@@ -2595,6 +2597,49 @@ Done when:
 - `Json.decode(text, Json)` runs without the namespace sniff (the sniff is
   deleted)
 - `x = Json` / passing `Map` as a value yields a type value, not a record
+
+## Milestone F — formats and decode ergonomics
+
+Status: in progress (started 2026-07-05)
+
+Spec decision (user, 2026-07-05): decoding text is spelled `decode` and owned by
+the format type artifact — `Fmt.decode(text, T)` with the one-arg form
+defaulting `T` to the format's dynamic type. The target type is an ordinary
+comptime argument; the spec's `Json.decode[User](text)` bracket form is removed
+(no bracket type application on functions — expression brackets mean indexing),
+as is the format-implicit `text.parse(Config)`. `Text` carries one generic
+`decode` method that flips into dataflow order (`text.decode(Json, Config)` ≡
+`Json.decode(text, Config)`), mirroring `.to(Target)` ⇄ `Target.from(value)`;
+formats plug in as the first argument because method lookup is closed. `.to`
+keeps "convert this value"; `decode` keeps "interpret this text via a format"
+(resolves the `"5".to(Json)` parse-vs-encode ambiguity). Spec: "Decoding text"
+under Conversions.
+
+Slices:
+
+- **F1 — map indexing**: `m[key]` sugars to `.get(key)` and types as `?v`,
+  matching the array-indexing rule (queue item found live 2026-07-04; currently
+  a runtime error). Checker `infer` for index-on-Map, eval reuses the `.get`
+  path, fixture + example coverage.
+- **F2 — Yaml and Toml formats**: `Yaml`/`Toml` registered via
+  `register_type_with_statics` exactly like `Json`; `decode(text, T)`,
+  `decode(text)` (dynamic target reuses the `Json` variant as the shared dynamic
+  data model — open question: rename that variant to something format-neutral
+  later), `encode(value)`; `YamlError`/`TomlError` mirror `JsonError`. Typed
+  construction machinery is shared with JSON, not triplicated. TOML has no null
+  and its datetimes map to `@Text` for now.
+- **F3 — `text.decode(Fmt, T)` method form**: `Text`-carried generic method
+  dispatching to the format's `decode` static via the host-comptime registry
+  (any registered format works, no per-format cases). Checker inference on
+  Text-receiver field access, eval, LSP completion/hover on `"...".`.
+
+Done when:
+
+- `m["name"]` checks as `?v` and runs as `.get`
+- `Yaml.decode(text, Config)` / `Toml.decode(text)` / round-trip encodes work
+  and are locked by examples
+- `text.decode(Json, Config)?^` checks, runs, and completes in the LSP
+  identically to `Json.decode(text, Config)?^`
 
 ## Milestone Z — modules and imports (sketch)
 

@@ -38,7 +38,10 @@ const BUILTIN_TYPES: &[&str] = &[
     "Map",
     "Result",
     "Set",
+    "Toml",
+    "TomlError",
     "Yaml",
+    "YamlError",
 ];
 
 const CHECKED_NAMED_TYPES: &[&str] = &["Bool", "Float", "Int", "Null", "Text", "Undefined", "Unit"];

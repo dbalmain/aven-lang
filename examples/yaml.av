@@ -1,0 +1,21 @@
+# Yaml.decode shares the dynamic Json model for unknown-shape YAML.
+Config = { name: Text, count: Int, tags: Array[Text] }
+
+input = "name: Ada\ncount: 3\ntags: [core, formats]\n"
+
+config = Yaml.decode(input, Config)?!
+dynamic = Yaml.decode(input)?!
+
+summary = dynamic ?>
+  @Object(fields) =>
+    fields.get("name") ?>
+      @Text(name) => "object:${name}"
+      _ => "object"
+  _ => "other"
+
+encoded = Yaml.encode(config)
+
+writeLine("name: ${config.name}")
+writeLine("summary: ${summary}")
+writeLine("encoded:")
+write(encoded)

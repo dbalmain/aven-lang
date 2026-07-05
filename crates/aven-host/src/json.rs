@@ -5,15 +5,19 @@
 //! result type from the optional trailing target type argument.
 
 use std::fmt;
-use std::rc::Rc;
 
-use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, Type};
-use aven_eval::{RuntimeType, Value};
+use aven_eval::Value;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
+use crate::text_format::{
+    DecodeError, FormatNumber, FormatValue, decode_value, parse_error_value, shape_error_value,
+};
+
+type JsonValue = FormatValue;
+type JsonNumber = FormatNumber;
 
 impl Host {
     /// Register the `Json` type artifact (carrying `encode`/`decode` statics) and
@@ -38,22 +42,6 @@ impl Host {
         self.register_type_definition("JsonError", crate::json_error_type());
         self.register_comptime_resolver("Json.decode", vec![1], decode_comptime_resolver());
     }
-}
-
-#[derive(Debug, Clone)]
-enum JsonValue {
-    Null,
-    Bool(bool),
-    Number(JsonNumber),
-    String(String),
-    Array(Vec<JsonValue>),
-    Object(Vec<(String, JsonValue)>),
-}
-
-#[derive(Debug, Clone, Copy)]
-enum JsonNumber {
-    Int(i64),
-    Float(f64),
 }
 
 impl<'de> Deserialize<'de> for JsonValue {
@@ -123,14 +111,14 @@ impl<'de> Visitor<'de> for JsonValueVisitor {
     where
         E: de::Error,
     {
-        Ok(JsonValue::String(value.to_owned()))
+        Ok(JsonValue::Text(value.to_owned()))
     }
 
     fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(JsonValue::String(value))
+        Ok(JsonValue::Text(value))
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
@@ -156,33 +144,8 @@ impl<'de> Visitor<'de> for JsonValueVisitor {
     }
 }
 
-struct DecodeComptimeResolver;
-
-impl HostComptimeFn for DecodeComptimeResolver {
-    fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
-        let target = match args {
-            [] => crate::build::named("Json"),
-            [target] => target
-                .as_type()
-                .cloned()
-                .ok_or_else(|| ComptimeError::new("decode target must be a compile-time type"))?,
-            _ => {
-                return Err(ComptimeError::new(format!(
-                    "decode resolver expects at most one compile-time target type argument, got {}",
-                    args.len()
-                )));
-            }
-        };
-
-        Ok(crate::build::result(
-            target,
-            crate::build::named("JsonError"),
-        ))
-    }
-}
-
-pub(crate) fn decode_comptime_resolver() -> Rc<dyn HostComptimeFn> {
-    Rc::new(DecodeComptimeResolver)
+pub(crate) fn decode_comptime_resolver() -> std::rc::Rc<dyn aven_check::HostComptimeFn> {
+    crate::text_format::decode_comptime_resolver("JsonError")
 }
 
 fn encode_native() -> Value {
@@ -233,7 +196,7 @@ fn decode_native() -> Value {
 
         let default_target = Value::named_type("Json");
         let target = target.unwrap_or(&default_target);
-        match decode_value(&parsed, target, &JsonPath::root()) {
+        match decode_value(&parsed, target, "Json") {
             Ok(value) => Ok(ok_value(value)),
             Err(DecodeError::Shape(error)) => Ok(err_value(shape_error_value(error))),
             Err(DecodeError::InvalidTarget(message)) => Err(message),
@@ -462,244 +425,6 @@ fn push_hex4(value: u32, output: &mut String) {
     for shift in [12, 8, 4, 0] {
         let digit = ((value >> shift) & 0xF) as usize;
         output.push(char::from(HEX[digit]));
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ShapeError {
-    path: String,
-    expected: String,
-    found: String,
-}
-
-enum DecodeError {
-    Shape(ShapeError),
-    InvalidTarget(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct JsonPath(String);
-
-impl JsonPath {
-    fn root() -> Self {
-        Self("$".to_owned())
-    }
-
-    fn field(&self, name: &str) -> Self {
-        Self(format!("{}.{name}", self.0))
-    }
-
-    fn index(&self, index: usize) -> Self {
-        Self(format!("{}[{index}]", self.0))
-    }
-}
-
-fn decode_value(value: &JsonValue, target: &Value, path: &JsonPath) -> Result<Value, DecodeError> {
-    match target {
-        Value::Type(RuntimeType::Named(name)) => decode_named(value, name, path),
-        Value::Type(RuntimeType::Optional(inner)) => decode_value(value, inner, path),
-        Value::Type(RuntimeType::Nullable(inner)) => {
-            if matches!(value, JsonValue::Null) {
-                Ok(Value::Null)
-            } else {
-                decode_value(value, inner, path)
-            }
-        }
-        Value::Type(RuntimeType::Array(inner)) => decode_array(value, inner, path),
-        Value::Record(fields) if runtime_type_target(target) => decode_record(value, fields, path),
-        other => Err(DecodeError::InvalidTarget(format!(
-            "Json.decode target must be a type value or record of type values, got {}",
-            aven_value_type_name(other)
-        ))),
-    }
-}
-
-fn decode_named(value: &JsonValue, name: &str, path: &JsonPath) -> Result<Value, DecodeError> {
-    match name {
-        "Json" => return Ok(decode_dynamic_json(value)),
-        "Text" => match value {
-            JsonValue::String(text) => Some(Value::Text(text.clone())),
-            _ => None,
-        },
-        "Int" => match value {
-            JsonValue::Number(JsonNumber::Int(value)) => Some(Value::Int(*value)),
-            _ => None,
-        },
-        "Float" => match value {
-            JsonValue::Number(JsonNumber::Int(value)) => Some(Value::Float(*value as f64)),
-            JsonValue::Number(JsonNumber::Float(value)) => Some(Value::Float(*value)),
-            _ => None,
-        },
-        "Bool" => match value {
-            JsonValue::Bool(value) => Some(Value::Bool(*value)),
-            _ => None,
-        },
-        "Null" if matches!(value, JsonValue::Null) => Some(Value::Null),
-        "Null" => None,
-        "Undefined" => None,
-        "Array" => {
-            return Err(DecodeError::InvalidTarget(
-                "Json.decode target Array must be written as Array[T]".to_owned(),
-            ));
-        }
-        unsupported => {
-            return Err(DecodeError::InvalidTarget(format!(
-                "Json.decode cannot decode target type {unsupported}"
-            )));
-        }
-    }
-    .ok_or_else(|| shape_error(path, name, value))
-}
-
-fn decode_dynamic_json(value: &JsonValue) -> Value {
-    match value {
-        JsonValue::Null => json_tag("Null", Vec::new()),
-        JsonValue::Bool(value) => json_tag("Bool", vec![Value::Bool(*value)]),
-        JsonValue::Number(JsonNumber::Int(value)) => json_tag("Int", vec![Value::Int(*value)]),
-        JsonValue::Number(JsonNumber::Float(value)) => {
-            json_tag("Float", vec![Value::Float(*value)])
-        }
-        JsonValue::String(value) => json_tag("Text", vec![Value::Text(value.clone())]),
-        JsonValue::Array(values) => {
-            let values = values.iter().map(decode_dynamic_json).collect();
-            json_tag("Array", vec![Value::Array(Rc::new(values))])
-        }
-        JsonValue::Object(entries) => {
-            let entries = entries
-                .iter()
-                .map(|(key, value)| (Value::Text(key.clone()), decode_dynamic_json(value)))
-                .collect();
-            json_tag("Object", vec![Value::Map(Rc::new(entries))])
-        }
-    }
-}
-
-fn json_tag(name: &str, payload: Vec<Value>) -> Value {
-    Value::Tag {
-        name: name.to_owned(),
-        payload,
-    }
-}
-
-fn decode_record(
-    value: &JsonValue,
-    fields: &[(String, Value)],
-    path: &JsonPath,
-) -> Result<Value, DecodeError> {
-    let JsonValue::Object(object) = value else {
-        return Err(shape_error(path, "Record", value));
-    };
-
-    let mut output = Vec::with_capacity(fields.len());
-    for (name, target) in fields {
-        if !runtime_type_target(target) {
-            return Err(DecodeError::InvalidTarget(format!(
-                "Json.decode target field `{name}` must be a type value, got {}",
-                aven_value_type_name(target)
-            )));
-        }
-
-        let field_path = path.field(name);
-        let field = match object
-            .iter()
-            .find_map(|(field_name, field_value)| (field_name == name).then_some(field_value))
-        {
-            Some(field_value) => decode_value(field_value, target, &field_path)?,
-            None if target_is_optional(target) => Value::Undefined,
-            None => {
-                return Err(DecodeError::Shape(ShapeError {
-                    path: field_path.0,
-                    expected: target_display(target),
-                    found: "Undefined".to_owned(),
-                }));
-            }
-        };
-        output.push((name.clone(), field));
-    }
-
-    Ok(Value::record(output))
-}
-
-fn decode_array(value: &JsonValue, target: &Value, path: &JsonPath) -> Result<Value, DecodeError> {
-    let JsonValue::Array(items) = value else {
-        return Err(shape_error(path, &target_display_array(target), value));
-    };
-    if !runtime_type_target(target) {
-        return Err(DecodeError::InvalidTarget(format!(
-            "Json.decode Array target must be a type value, got {}",
-            aven_value_type_name(target)
-        )));
-    }
-
-    let mut output = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
-        output.push(decode_value(item, target, &path.index(index))?);
-    }
-
-    Ok(Value::Array(Rc::new(output)))
-}
-
-fn target_is_optional(target: &Value) -> bool {
-    matches!(target, Value::Type(RuntimeType::Optional(_)))
-}
-
-fn runtime_type_target(value: &Value) -> bool {
-    match value {
-        Value::Type(_) => true,
-        Value::Record(fields) => fields
-            .iter()
-            .all(|(_, field_value)| runtime_type_target(field_value)),
-        _ => false,
-    }
-}
-
-fn target_display(target: &Value) -> String {
-    target.to_string()
-}
-
-fn target_display_array(target: &Value) -> String {
-    format!("Array[{}]", target_display(target))
-}
-
-fn shape_error(path: &JsonPath, expected: &str, found: &JsonValue) -> DecodeError {
-    DecodeError::Shape(ShapeError {
-        path: path.0.clone(),
-        expected: expected.to_owned(),
-        found: found_kind(found),
-    })
-}
-
-fn found_kind(value: &JsonValue) -> String {
-    match value {
-        JsonValue::Null => "Null",
-        JsonValue::Bool(_) => "Bool",
-        JsonValue::Number(JsonNumber::Int(_)) => "Int",
-        JsonValue::Number(JsonNumber::Float(_)) => "Float",
-        JsonValue::String(_) => "Text",
-        JsonValue::Array(_) => "Array",
-        JsonValue::Object(_) => "Record",
-    }
-    .to_owned()
-}
-
-fn parse_error_value(message: String) -> Value {
-    Value::Tag {
-        name: "Parse".to_owned(),
-        payload: vec![Value::record(vec![(
-            "message".to_owned(),
-            Value::Text(message),
-        )])],
-    }
-}
-
-fn shape_error_value(error: ShapeError) -> Value {
-    Value::Tag {
-        name: "Shape".to_owned(),
-        payload: vec![Value::record(vec![
-            ("path".to_owned(), Value::Text(error.path)),
-            ("expected".to_owned(), Value::Text(error.expected)),
-            ("found".to_owned(), Value::Text(error.found)),
-        ])],
     }
 }
 

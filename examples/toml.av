@@ -1,0 +1,21 @@
+# Toml.decode shares the dynamic Json model for unknown-shape TOML.
+Config = { name: Text, count: Int, enabled: Bool }
+
+input = "name = 'Ada'\ncount = 3\nenabled = true\n"
+
+config = Toml.decode(input, Config)?!
+dynamic = Toml.decode(input)?!
+
+summary = dynamic ?>
+  @Object(fields) =>
+    fields.get("enabled") ?>
+      @Bool(flag) => "enabled:${flag}"
+      _ => "object"
+  _ => "other"
+
+encoded = Toml.encode(config)
+
+writeLine("name: ${config.name}")
+writeLine("summary: ${summary}")
+writeLine("encoded:")
+write(encoded)

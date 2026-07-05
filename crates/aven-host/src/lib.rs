@@ -12,6 +12,9 @@ mod http;
 mod io;
 mod json;
 mod marshal;
+mod text_format;
+mod toml_format;
+mod yaml;
 
 use std::rc::Rc;
 
@@ -454,8 +457,7 @@ pub fn http_type() -> Type {
     ])
 }
 
-/// The closed `JsonError` variant returned by `Json.decode`.
-pub fn json_error_type() -> Type {
+fn format_error_type() -> Type {
     build::variant(vec![
         (
             "Parse",
@@ -470,6 +472,21 @@ pub fn json_error_type() -> Type {
             ])],
         ),
     ])
+}
+
+/// The closed `JsonError` variant returned by `Json.decode`.
+pub fn json_error_type() -> Type {
+    format_error_type()
+}
+
+/// The closed `YamlError` variant returned by `Yaml.decode`.
+pub fn yaml_error_type() -> Type {
+    format_error_type()
+}
+
+/// The closed `TomlError` variant returned by `Toml.decode`.
+pub fn toml_error_type() -> Type {
+    format_error_type()
 }
 
 /// The recursive dynamic JSON value shape returned by one-argument
@@ -489,17 +506,45 @@ pub fn json_dynamic_type() -> Type {
     ])
 }
 
+fn format_encode_type() -> Type {
+    build::function(vec![build::var("a")], build::text())
+}
+
+fn format_decode_base_type() -> Type {
+    build::function_opt(vec![build::text()], vec![Type::Deferred], Type::Deferred)
+}
+
 /// `(a) -> Text` — `Json.encode` accepts any checked value and validates JSON
 /// encodability at runtime.
 pub fn json_encode_type() -> Type {
-    build::function(vec![build::var("a")], build::text())
+    format_encode_type()
 }
 
 /// The base `Json.decode` type: `(Text, ? = _) -> ?`. The checker uses it for
 /// arity and the input text argument; the host comptime resolver refines the
 /// result from the optional trailing type argument, defaulting to `Json`.
 pub fn json_decode_base_type() -> Type {
-    build::function_opt(vec![build::text()], vec![Type::Deferred], Type::Deferred)
+    format_decode_base_type()
+}
+
+/// `(a) -> Text` — `Yaml.encode` mirrors `Json.encode`'s type shape.
+pub fn yaml_encode_type() -> Type {
+    format_encode_type()
+}
+
+/// The base `Yaml.decode` type: `(Text, ? = _) -> ?`.
+pub fn yaml_decode_base_type() -> Type {
+    format_decode_base_type()
+}
+
+/// `(a) -> Text` — `Toml.encode` mirrors `Json.encode`'s type shape.
+pub fn toml_encode_type() -> Type {
+    format_encode_type()
+}
+
+/// The base `Toml.decode` type: `(Text, ? = _) -> ?`.
+pub fn toml_decode_base_type() -> Type {
+    format_decode_base_type()
 }
 
 /// The base `open` type: `(Text, "r" | "w" | "a" | "rw") -> ?`. The checker
@@ -617,6 +662,14 @@ pub fn standard_check_host_globals() -> HostGlobals {
                 HostComptimeFnSpec::new(json::decode_comptime_resolver(), vec![1]),
             ),
             (
+                "Yaml.decode".to_owned(),
+                HostComptimeFnSpec::new(yaml::decode_comptime_resolver(), vec![1]),
+            ),
+            (
+                "Toml.decode".to_owned(),
+                HostComptimeFnSpec::new(toml_format::decode_comptime_resolver(), vec![1]),
+            ),
+            (
                 "Http.get".to_owned(),
                 HostComptimeFnSpec::new_type_of(
                     http::comptime_resolver(http::HttpMethod::Get),
@@ -656,8 +709,16 @@ pub fn standard_check_host_globals() -> HostGlobals {
     .with_type_definitions(vec![
         ("Json".to_owned(), json_dynamic_type()),
         ("JsonError".to_owned(), json_error_type()),
+        ("Yaml".to_owned(), json_dynamic_type()),
+        ("YamlError".to_owned(), yaml_error_type()),
+        ("Toml".to_owned(), json_dynamic_type()),
+        ("TomlError".to_owned(), toml_error_type()),
     ])
-    .with_statics(vec![("Json".to_owned(), json_statics())])
+    .with_statics(vec![
+        ("Json".to_owned(), json_statics()),
+        ("Yaml".to_owned(), yaml_statics()),
+        ("Toml".to_owned(), toml_statics()),
+    ])
 }
 
 /// The statics the `Json` type carries: `encode`/`decode`. Shared by the
@@ -667,6 +728,20 @@ pub(crate) fn json_statics() -> Vec<(String, Type)> {
     vec![
         ("encode".to_owned(), json_encode_type()),
         ("decode".to_owned(), json_decode_base_type()),
+    ]
+}
+
+pub(crate) fn yaml_statics() -> Vec<(String, Type)> {
+    vec![
+        ("encode".to_owned(), yaml_encode_type()),
+        ("decode".to_owned(), yaml_decode_base_type()),
+    ]
+}
+
+pub(crate) fn toml_statics() -> Vec<(String, Type)> {
+    vec![
+        ("encode".to_owned(), toml_encode_type()),
+        ("decode".to_owned(), toml_decode_base_type()),
     ]
 }
 
@@ -939,32 +1014,34 @@ mod tests {
             );
         }
 
-        // `Json` is a type artifact carrying statics, not a namespace record: it
-        // is absent from `types` and its `encode`/`decode` live in the statics
-        // table.
-        assert!(global_type_opt(&globals, "Json").is_none());
+        // Format names are type artifacts carrying statics, not namespace
+        // records: they are absent from `types` and their `encode`/`decode`
+        // members live in the statics table.
+        for format in ["Json", "Yaml", "Toml"] {
+            assert!(global_type_opt(&globals, format).is_none());
 
-        let json_statics = aven_check::type_statics(&standard_check_host_globals(), "Json")
-            .expect("Json carries statics");
-        let json_static_names = json_statics
-            .iter()
-            .map(|field| field.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(json_static_names, vec!["encode", "decode"]);
+            let statics = aven_check::type_statics(&standard_check_host_globals(), format)
+                .unwrap_or_else(|| panic!("{format} carries statics"));
+            let static_names = statics
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(static_names, vec!["encode", "decode"]);
 
-        let encode = static_type(&json_statics, "encode");
-        let (encode_params, encode_result) =
-            function_signature(&encode).expect("Json.encode is a function");
-        assert_eq!(function_required_arity(&encode), Some(1));
-        assert_eq!(encode_params, vec![build::var("a")]);
-        assert_eq!(encode_result, build::text());
+            let encode = static_type(&statics, "encode");
+            let (encode_params, encode_result) = function_signature(&encode)
+                .unwrap_or_else(|| panic!("{format}.encode is a function"));
+            assert_eq!(function_required_arity(&encode), Some(1));
+            assert_eq!(encode_params, vec![build::var("a")]);
+            assert_eq!(encode_result, build::text());
 
-        let decode = static_type(&json_statics, "decode");
-        let (decode_params, decode_result) =
-            function_signature(&decode).expect("Json.decode is a function");
-        assert_eq!(function_required_arity(&decode), Some(1));
-        assert_eq!(decode_params, vec![build::text(), Type::Deferred]);
-        assert_eq!(decode_result, Type::Deferred);
+            let decode = static_type(&statics, "decode");
+            let (decode_params, decode_result) = function_signature(&decode)
+                .unwrap_or_else(|| panic!("{format}.decode is a function"));
+            assert_eq!(function_required_arity(&decode), Some(1));
+            assert_eq!(decode_params, vec![build::text(), Type::Deferred]);
+            assert_eq!(decode_result, Type::Deferred);
+        }
     }
 
     #[test]
@@ -1040,10 +1117,12 @@ mod tests {
                 "Other".to_owned()
             ])
         );
-        assert_eq!(
-            variant_tags(&json_error_type()),
-            Some(vec!["Parse".to_owned(), "Shape".to_owned()])
-        );
+        for error_type in [json_error_type(), yaml_error_type(), toml_error_type()] {
+            assert_eq!(
+                variant_tags(&error_type),
+                Some(vec!["Parse".to_owned(), "Shape".to_owned()])
+            );
+        }
         assert_eq!(
             variant_tags(&json_dynamic_type()),
             Some(vec![

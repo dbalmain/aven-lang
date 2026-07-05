@@ -1572,10 +1572,13 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
     "Result",
     "Set",
     "Text",
+    "Toml",
+    "TomlError",
     "U8",
     "Undefined",
     "Unit",
     "Yaml",
+    "YamlError",
 ];
 
 fn definition_location(

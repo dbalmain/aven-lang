@@ -646,13 +646,15 @@ fn completion_at_field_access_returns_record_fields() {
 
 #[test]
 fn completion_at_json_static_access_lists_statics() {
-    let completions = completions_at_marker("text = Json.|");
-    let labels = completions
-        .iter()
-        .map(|item| item.label.as_str())
-        .collect::<Vec<_>>();
+    for format in ["Json", "Yaml", "Toml"] {
+        let completions = completions_at_marker(&format!("text = {format}.|"));
+        let labels = completions
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
 
-    assert_eq!(labels, vec!["encode", "decode"]);
+        assert_eq!(labels, vec!["encode", "decode"], "{format} statics");
+    }
 }
 
 #[test]

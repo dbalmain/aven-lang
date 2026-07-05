@@ -94,7 +94,7 @@ pub enum Value {
 /// targets can evaluate to the minimal composite type values these need at
 /// runtime. Each type carrying statics (`Map.from`, `Json.decode`) resolves the
 /// static through a `"Type.static"`-keyed global (see [`eval_field_access`]).
-const TYPE_VALUE_NAMES: [&str; 10] = [
+const TYPE_VALUE_NAMES: [&str; 12] = [
     "Array",
     "Bool",
     "Float",
@@ -103,8 +103,10 @@ const TYPE_VALUE_NAMES: [&str; 10] = [
     "Map",
     "Null",
     "Text",
+    "Toml",
     "Undefined",
     "Unit",
+    "Yaml",
 ];
 
 pub const MAP_METHOD_NAMES: &[&str] = &[

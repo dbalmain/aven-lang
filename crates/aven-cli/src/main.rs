@@ -272,6 +272,8 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     host.register_files();
     host.register_http();
     host.register_json();
+    host.register_yaml();
+    host.register_toml();
 
     Ok(host)
 }
