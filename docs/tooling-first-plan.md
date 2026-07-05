@@ -1743,10 +1743,11 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 07-04. What remains:
 
 - the live nvim sweep (Milestone X's other half — user-driven)
-- **Milestone F — formats and decode ergonomics (below): in progress
-  2026-07-05** — map indexing, Yaml/Toml formats, `text.decode(Fmt, T)` method
-  form; spec consolidated on `decode` (bracket type application and `.parse`
-  removed)
+- **Milestone F — formats and decode ergonomics: done 2026-07-05** (see below) —
+  map indexing (`?v`), Yaml/Toml formats on shared `text_format` machinery,
+  `text.decode(Fmt, T)` method form; spec consolidated on `decode` (bracket type
+  application and `.parse` removed). Open question parked there: a
+  format-neutral rename for the dynamic `Json` variant
 - **Milestone V — type-artifact statics (platform subset): done 2026-07-05**
   (see below) — `Json`/`Map` are genuine type values carrying statics; the
   `json_namespace_target` shape-sniff is deleted
@@ -2600,7 +2601,23 @@ Done when:
 
 ## Milestone F — formats and decode ergonomics
 
-Status: in progress (started 2026-07-05)
+Status: done 2026-07-05
+
+Progress: all three slices landed 2026-07-05. F1 (claude-rust/sonnet): map
+indexing mirrors the array rule in `infer_value_index` and reuses
+`map_get_method`'s closure in `eval_index`. F2 (codex) + F2b (codex): Yaml/Toml
+register like Json; the guided dynamic→typed construction moved to a shared
+`text_format` module (`FormatValue` tree + `decode_value`); the YAML engine is
+`serde_norway` (an internal parser written during a registry outage was
+replaced, −405 lines); `Json | Yaml | Toml` all work as dynamic decode targets.
+F3 (claude-rust/opus): `text.decode(Fmt, T)` — the checker probes the receiver
+(snapshot-restored), builds the equivalent `Fmt.decode(receiver, ...)` call, and
+rides the existing statics/host-comptime resolution; eval resolves the format's
+decode through the `"Type.static"` dotted-key global and prepends the receiver;
+`type.decode-format` diagnostics list registered formats; LSP completion offers
+`decode` on Text receivers. Note: worktree offload agents branch from
+origin/main — F3 was built on a 5-commit-stale base and rebased/ ported by the
+agent before landing.
 
 Spec decision (user, 2026-07-05): decoding text is spelled `decode` and owned by
 the format type artifact — `Fmt.decode(text, T)` with the one-arg form
