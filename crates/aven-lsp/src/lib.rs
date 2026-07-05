@@ -692,13 +692,11 @@ fn field_completion_at_position(
                 .or_else(|| host_global_type(&receiver.name))
         });
 
-    // Fall back to the Text format-method members, then to type statics
-    // (`Json.`/`Map.`) when the receiver resolves to a static-carrying type
-    // value rather than a record.
+    // Fall back to type statics (`Json.`/`Map.`) when the receiver resolves to a
+    // static-carrying type value rather than a value receiver.
     let fields = receiver_type
         .as_ref()
-        .and_then(aven_compiler::record_fields)
-        .or_else(|| receiver_type.as_ref().and_then(text_format_method_fields))
+        .and_then(receiver_field_completion_fields)
         .or_else(|| {
             access
                 .receiver
@@ -718,10 +716,14 @@ fn field_completion_at_position(
 
     let mut items = Vec::new();
     let mut seen = HashSet::new();
+    let receiver_carries_encode = receiver_type_carries_member(&receiver_type, "encode");
 
     for field in fields {
+        let is_synthetic_encode = field.name == "encode" && !receiver_carries_encode;
         let mut item = completion_item_for_record_field(field);
-        if let Some(edit) = &null_safe_edit {
+        if let Some(edit) = &null_safe_edit
+            && !is_synthetic_encode
+        {
             item.additional_text_edits = Some(vec![edit.clone()]);
         }
         push_completion_item(&mut items, &mut seen, item);
@@ -915,25 +917,44 @@ fn type_statics_fields(name: &str) -> Option<Vec<aven_compiler::RecordField>> {
     aven_compiler::type_statics(&aven_host::standard_check_host_globals(), name)
 }
 
-/// The format-method members offered on a `Text`-typed receiver. `decode`
-/// dispatches to the format's decoder; `encode` is universal sugar, and Text
-/// completion gets it here alongside decode for parity.
-fn text_format_method_fields(
+/// Fields and format-method sugar offered on a value receiver. `decode` stays
+/// Text-only; `encode` is universal sugar unless the receiver type already has
+/// an `encode` member.
+fn receiver_field_completion_fields(
     receiver_type: &aven_compiler::Type,
 ) -> Option<Vec<aven_compiler::RecordField>> {
-    if !aven_compiler::is_text_type(receiver_type) {
+    if matches!(
+        receiver_type,
+        aven_compiler::Type::Deferred
+            | aven_compiler::Type::Variable(_)
+            | aven_compiler::Type::Meta(_)
+    ) {
         return None;
     }
-    Some(vec![
-        aven_compiler::RecordField {
-            name: "decode".to_owned(),
-            ty: format_method_type("decode").unwrap_or(aven_compiler::Type::Deferred),
-        },
-        aven_compiler::RecordField {
-            name: "encode".to_owned(),
-            ty: format_method_type("encode").unwrap_or(aven_compiler::Type::Deferred),
-        },
-    ])
+
+    let mut fields = aven_compiler::record_fields(receiver_type).unwrap_or_default();
+    if aven_compiler::is_text_type(receiver_type)
+        && !fields.iter().any(|field| field.name == "decode")
+    {
+        fields.push(format_method_field("decode"));
+    }
+    if !fields.iter().any(|field| field.name == "encode") {
+        fields.push(format_method_field("encode"));
+    }
+
+    (!fields.is_empty()).then_some(fields)
+}
+
+fn receiver_type_carries_member(receiver_type: &aven_compiler::Type, member: &str) -> bool {
+    aven_compiler::record_fields(receiver_type)
+        .is_some_and(|fields| fields.iter().any(|field| field.name == member))
+}
+
+fn format_method_field(name: &str) -> aven_compiler::RecordField {
+    aven_compiler::RecordField {
+        name: name.to_owned(),
+        ty: format_method_type(name).unwrap_or(aven_compiler::Type::Deferred),
+    }
 }
 
 /// The method-form signature, derived from a registered format static by

@@ -53,6 +53,13 @@ impl<'a> Checker<'a> {
     /// rather than letting inference silently defer them. A non-concrete callee
     /// (unknown/free name) keeps today's permissive behaviour.
     pub(super) fn check_value_call(&mut self, callee: &Expr, args: &[Expr]) {
+        let env = self.local_types.inference_env();
+        if let Some((receiver, _)) = self.value_encode_sugar_receiver(&env, callee) {
+            self.check_value_expr(receiver);
+            let _ = self.infer_value_encode_call(&env, callee, args);
+            return;
+        }
+
         self.check_value_expr(callee);
 
         let env = self.local_types.inference_env();

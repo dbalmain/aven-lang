@@ -1,0 +1,6 @@
+# value.encode(Fmt) works through named record annotations.
+Y = { y: Int }
+
+y: Y = { y: 2 }
+
+y.encode(Yaml)

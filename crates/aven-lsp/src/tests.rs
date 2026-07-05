@@ -539,7 +539,9 @@ fn completion_at_seeded_logger_field_access_returns_logger_methods() {
 
     assert_eq!(
         labels,
-        vec!["trace", "debug", "info", "warn", "error", "fatal", "child"]
+        vec![
+            "trace", "debug", "info", "warn", "error", "fatal", "child", "encode"
+        ]
     );
     assert_eq!(info.kind, Some(CompletionItemKind::FIELD));
     assert_eq!(info.detail.as_deref(), Some("(Text, { .. } = _) -> Unit"));
@@ -558,7 +560,9 @@ fn completion_at_incomplete_seeded_logger_field_access_returns_logger_methods() 
     assert!(document.semantic_diagnostics().is_empty());
     assert_eq!(
         labels,
-        vec!["trace", "debug", "info", "warn", "error", "fatal", "child"]
+        vec![
+            "trace", "debug", "info", "warn", "error", "fatal", "child", "encode"
+        ]
     );
     assert!(completion_item(&completions, "Text").is_none());
     assert!(completion_item(&completions, "logger").is_none());
@@ -577,7 +581,9 @@ fn completion_at_seeded_logger_field_access_with_parse_error_returns_logger_meth
     assert!(document.semantic_diagnostics().is_empty());
     assert_eq!(
         labels,
-        vec!["trace", "debug", "info", "warn", "error", "fatal", "child"]
+        vec![
+            "trace", "debug", "info", "warn", "error", "fatal", "child", "encode"
+        ]
     );
     assert!(completion_item(&completions, "Text").is_none());
     assert!(completion_item(&completions, "logger").is_none());
@@ -635,12 +641,17 @@ fn completion_at_field_access_returns_record_fields() {
     let Some(email) = completion_item(&completions, "email") else {
         panic!("expected email field completion");
     };
+    let Some(encode) = completion_item(&completions, "encode") else {
+        panic!("expected encode field completion");
+    };
 
-    assert_eq!(labels, vec!["name", "email"]);
+    assert_eq!(labels, vec!["name", "email", "encode"]);
     assert_eq!(name.kind, Some(CompletionItemKind::FIELD));
     assert_eq!(name.detail.as_deref(), Some("Text"));
     assert_eq!(email.kind, Some(CompletionItemKind::FIELD));
     assert_eq!(email.detail.as_deref(), Some("Text"));
+    assert_eq!(encode.kind, Some(CompletionItemKind::FIELD));
+    assert!(completion_item(&completions, "decode").is_none());
     assert!(completion_item(&completions, "user").is_none());
     assert!(completion_item(&completions, "Text").is_none());
 }
@@ -680,7 +691,7 @@ fn completion_at_map_field_access_returns_builtin_methods() {
     assert_eq!(
         labels,
         vec![
-            "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge"
+            "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge", "encode"
         ]
     );
     let Some(get) = completion_item(&completions, "get") else {
@@ -732,7 +743,8 @@ fn completion_at_local_record_field_access_with_parse_error_returns_record_field
 
     assert!(!document.parse_diagnostics().is_empty());
     assert!(document.semantic_diagnostics().is_empty());
-    assert_eq!(labels, vec!["name", "email"]);
+    assert_eq!(labels, vec!["name", "email", "encode"]);
+    assert!(completion_item(&completions, "decode").is_none());
     assert!(completion_item(&completions, "user").is_none());
     assert!(completion_item(&completions, "Text").is_none());
 }
@@ -1036,7 +1048,10 @@ fn completion_at_host_record_field_access_returns_member_fields() {
         .iter()
         .map(|item| item.label.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(labels, vec!["get", "post", "put", "delete", "patch"]);
+    assert_eq!(
+        labels,
+        vec!["get", "post", "put", "delete", "patch", "encode"]
+    );
 }
 
 #[test]
@@ -1051,7 +1066,7 @@ fn completion_at_comptime_field_host_record_returns_member_fields() {
         .iter()
         .map(|item| item.label.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(labels, vec!["open"]);
+    assert_eq!(labels, vec!["open", "encode"]);
 }
 
 #[test]

@@ -985,6 +985,54 @@ impl<'a> Checker<'a> {
         callee: &Expr,
         args: &[Expr],
     ) -> Option<Type> {
+        let (receiver, field_span) = self.value_encode_sugar_receiver(env, callee)?;
+
+        let Some(format) = args.first() else {
+            self.report_encode_missing_format(field_span);
+            return Some(Type::Deferred);
+        };
+        let Some(format_name) = self.format_member_name(env, format, "encode") else {
+            self.report_encode_invalid_format(format);
+            return Some(Type::Deferred);
+        };
+
+        let mut synth_args = Vec::with_capacity(args.len());
+        synth_args.push(receiver.clone());
+        synth_args.extend(args[1..].iter().cloned());
+
+        if self.report_static_member_arity_mismatch(
+            env,
+            &format_name,
+            "encode",
+            synth_args.len(),
+            callee.span,
+        ) {
+            return Some(Type::Deferred);
+        }
+
+        let synth_callee = Expr {
+            kind: ExprKind::FieldAccess {
+                receiver: Box::new(Expr {
+                    kind: ExprKind::Name(format_name),
+                    span: format.span,
+                }),
+                field: "encode".to_owned(),
+                field_span,
+                null_safe: false,
+            },
+            span: callee.span,
+        };
+
+        let result = self.infer_call(env, &synth_callee, &synth_args);
+        self.record_expr_type(callee.span, &result);
+        Some(result)
+    }
+
+    pub(super) fn value_encode_sugar_receiver<'b>(
+        &mut self,
+        env: &TypeEnv,
+        callee: &'b Expr,
+    ) -> Option<(&'b Expr, Span)> {
         let ExprKind::FieldAccess {
             receiver,
             field,
@@ -1010,45 +1058,7 @@ impl<'a> Checker<'a> {
             return None;
         }
 
-        let Some(format) = args.first() else {
-            self.report_encode_missing_format(*field_span);
-            return Some(Type::Deferred);
-        };
-        let Some(format_name) = self.format_member_name(env, format, "encode") else {
-            self.report_encode_invalid_format(format);
-            return Some(Type::Deferred);
-        };
-
-        let mut synth_args = Vec::with_capacity(args.len());
-        synth_args.push((**receiver).clone());
-        synth_args.extend(args[1..].iter().cloned());
-
-        if self.report_static_member_arity_mismatch(
-            env,
-            &format_name,
-            "encode",
-            synth_args.len(),
-            callee.span,
-        ) {
-            return Some(Type::Deferred);
-        }
-
-        let synth_callee = Expr {
-            kind: ExprKind::FieldAccess {
-                receiver: Box::new(Expr {
-                    kind: ExprKind::Name(format_name),
-                    span: format.span,
-                }),
-                field: "encode".to_owned(),
-                field_span: *field_span,
-                null_safe: false,
-            },
-            span: callee.span,
-        };
-
-        let result = self.infer_call(env, &synth_callee, &synth_args);
-        self.record_expr_type(callee.span, &result);
-        Some(result)
+        Some((receiver.as_ref(), *field_span))
     }
 
     fn probe_receiver_type(&mut self, env: &TypeEnv, receiver: &Expr) -> Type {

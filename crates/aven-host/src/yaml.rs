@@ -641,4 +641,16 @@ mod tests {
         assert_eq!(text(field(field(&value, "method"), "name")), "Ada");
         assert_eq!(field(&value, "method"), field(&value, "direct"));
     }
+
+    #[test]
+    fn eval_encode_method_accepts_named_annotation_receiver() {
+        let value = run("Y = { y: Int }\n\
+             y: Y = { y: 2 }\n\
+             method = y.encode(Yaml)\n\
+             direct = Yaml.encode(y)\n\
+             { method: method, direct: direct }\n");
+
+        assert_eq!(text(field(&value, "method")), "y: 2\n");
+        assert_eq!(field(&value, "method"), field(&value, "direct"));
+    }
 }

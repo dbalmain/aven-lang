@@ -166,20 +166,52 @@ fn checked_binding_type(source: &str, name: &str, host: &HostGlobals) -> Type {
 }
 
 fn format_encode_host_globals() -> HostGlobals {
-    HostGlobals::default().with_statics(vec![
+    HostGlobals::default()
+        .with_type_definitions(vec![
+            ("Data".to_owned(), dynamic_data_type()),
+            (
+                "YamlError".to_owned(),
+                build::variant(vec![("Decode", vec![build::text()])]),
+            ),
+        ])
+        .with_statics(vec![
+            (
+                "Json".to_owned(),
+                vec![(
+                    "encode".to_owned(),
+                    function(vec![variable("a")], named("Text")),
+                )],
+            ),
+            (
+                "Yaml".to_owned(),
+                vec![
+                    (
+                        "decode".to_owned(),
+                        function(
+                            vec![named("Text")],
+                            build::result(named("Data"), named("YamlError")),
+                        ),
+                    ),
+                    (
+                        "encode".to_owned(),
+                        function(vec![variable("a")], named("Text")),
+                    ),
+                ],
+            ),
+        ])
+}
+
+fn dynamic_data_type() -> Type {
+    build::variant(vec![
+        ("Null", vec![]),
+        ("Bool", vec![build::bool()]),
+        ("Int", vec![build::int()]),
+        ("Float", vec![build::float()]),
+        ("Text", vec![build::text()]),
+        ("Array", vec![build::array(build::named("Data"))]),
         (
-            "Json".to_owned(),
-            vec![(
-                "encode".to_owned(),
-                function(vec![variable("a")], named("Text")),
-            )],
-        ),
-        (
-            "Yaml".to_owned(),
-            vec![(
-                "encode".to_owned(),
-                function(vec![variable("a")], named("Text")),
-            )],
+            "Object",
+            vec![build::map(build::text(), build::named("Data"))],
         ),
     ])
 }
@@ -3772,12 +3804,60 @@ fn encode_method_types_like_format_static_form() {
 }
 
 #[test]
+fn encode_method_accepts_named_annotation_receiver() {
+    let repro = "Y = { y: Int }\n\
+                 y: Y = { y: 2 }\n\
+                 y.encode(Yaml)\n";
+    let output = parse_module(repro);
+    let checked = check_module_with_host_globals(&output.module, &format_encode_host_globals());
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        checked.diagnostics
+    );
+
+    let method = "Y = { y: Int }\n\
+                  y: Y = { y: 2 }\n\
+                  encoded = y.encode(Yaml)\n";
+    let static_form = "Y = { y: Int }\n\
+                       y: Y = { y: 2 }\n\
+                       encoded = Yaml.encode(y)\n";
+    let host = format_encode_host_globals();
+
+    let method_ty = checked_binding_type(method, "encoded", &host);
+    let static_ty = checked_binding_type(static_form, "encoded", &host);
+
+    assert_eq!(method_ty.render(), "Text");
+    assert_eq!(method_ty, static_ty);
+}
+
+#[test]
 fn encode_method_keeps_receiver_encode_field_semantics() {
     let source = "user = { name: \"Ada\", encode: (format) => 1 }\n\
                   encoded = user.encode(Json)\n";
     let ty = checked_binding_type(source, "encoded", &format_encode_host_globals());
 
     assert_eq!(ty.render(), "1");
+}
+
+#[test]
+fn encode_method_keeps_named_receiver_encode_field_semantics() {
+    let source = "Y = { y: Int, encode: (a) -> Int }\n\
+                  y: Y = { y: 2, encode: (format) => 1 }\n\
+                  encoded = y.encode(Yaml)\n";
+    let ty = checked_binding_type(source, "encoded", &format_encode_host_globals());
+
+    assert_eq!(ty.render(), "Int");
+}
+
+#[test]
+fn encode_method_accepts_data_receiver_from_decode_propagation() {
+    let source = "text = \"name: Ada\"\n\
+                  data = Yaml.decode(text)?^\n\
+                  encoded = data.encode(Yaml)\n";
+    let ty = checked_binding_type(source, "encoded", &format_encode_host_globals());
+
+    assert_eq!(ty.render(), "Text");
 }
 
 #[test]

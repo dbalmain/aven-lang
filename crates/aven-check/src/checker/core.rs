@@ -242,6 +242,7 @@ impl<'a> Checker<'a> {
                         diagnostics_start,
                     );
                 }
+                self.deduplicate_diagnostics_since(diagnostics_start);
             }
         }
     }

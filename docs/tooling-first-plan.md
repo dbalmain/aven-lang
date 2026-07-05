@@ -2602,7 +2602,16 @@ Done when:
 ## Milestone F — formats and decode ergonomics
 
 Status: F1–F5 done 2026-07-05 (user decision 2026-07-05: the shared dynamic
-variant renames `Json` → `Data`)
+variant renames `Json` → `Data`); F6 in progress 2026-07-05
+
+- **F6 — encode sugar on all checked receivers**: found live 2026-07-05 —
+  `y: Y = { y: 2 }` then `y.encode(Yaml)` runs but `aven check` reports
+  `type.missing-field` for `encode`: the F4 receiver probe mishandles a _named_
+  record annotation (structural records were tested and pass), so the sugar
+  bails to ordinary field lookup. Fix the probe for `Named`/normalized
+  receivers, and give LSP field completion `encode` on all completable receivers
+  (the "Text receivers only" F4 deferral), sourced from the same format statics
+  as `decode`.
 
 F4 progress: landed 2026-07-05 (codex; user decision 2026-07-05:
 `value.encode(Json)` is the encode spelling). Decode's helpers generalized
@@ -2686,6 +2695,32 @@ Done when:
   and are locked by examples
 - `text.decode(Json, Config)?^` checks, runs, and completes in the LSP
   identically to `Json.decode(text, Config)?^`
+
+## Milestone DT — date and time types (sketch)
+
+Status: queued 2026-07-05; needs a design pass before slicing (user owns the
+fork)
+
+Goal: a real answer for temporal values, motivated concretely by TOML datetimes
+currently degrading to `@Text` in decode. Design questions to settle first:
+
+- **Vocabulary**: one `Time` instant, or a family (date, time-of-day, datetime,
+  offset datetime, duration)? TOML natively distinguishes four; YAML has
+  timestamps; JSON has none (convention: ISO-8601 text).
+- **Representation and core**: nominal host-registered type(s) vs records;
+  epoch-based instant vs calendar fields; what arithmetic/comparison ships
+  (operators are type-carried methods).
+- **Codec integration**: typed decode targets (`Toml.decode(text, Config)` with
+  a temporal field decodes natively; what do Json/Yaml do — ISO-8601 text
+  convention?); does `Data` grow a temporal arm or stay as-is with temporal
+  values living only in typed decode (leaning: stay as-is — the shared tree is
+  for the parts of the models that coincide)?
+- **Platform boundary**: relationship to `Clock.now()` in the spec's examples;
+  timezone/offset scope for v0 (leaning: UTC instants + fixed offsets only, no
+  tz database).
+
+Do not slice until the vocabulary and codec-integration questions are decided
+with the user.
 
 ## Milestone Z — modules and imports (sketch)
 
