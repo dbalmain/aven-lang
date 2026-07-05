@@ -89,7 +89,7 @@ pub(crate) fn type_definitions(
             };
 
             // Lower each definition without its own entry so self-references
-            // stay nominal (`Json` keeps `Named("Json")` payload leaves) —
+            // stay nominal (`Data` keeps `Named("Data")` payload leaves) —
             // recursive definitions unfold lazily at use sites instead of
             // expanding here.
             let mut visible = definitions.clone();

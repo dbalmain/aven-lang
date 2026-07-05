@@ -13,9 +13,9 @@ use crate::text_format::{
 impl Host {
     /// Register the `Yaml` type artifact carrying `encode`/`decode` statics.
     pub fn register_yaml(&mut self) {
-        self.register_type_with_statics(
+        self.register_data_type();
+        self.register_type_statics(
             "Yaml",
-            crate::json_dynamic_type(),
             vec![
                 (
                     "encode".to_owned(),
@@ -65,7 +65,7 @@ fn decode_native() -> Value {
             Err(error) => return Ok(err_value(parse_error_value(error))),
         };
 
-        let default_target = Value::named_type("Json");
+        let default_target = Value::named_type("Data");
         let target = target.unwrap_or(&default_target);
         match decode_value(&parsed, target, "Yaml") {
             Ok(value) => Ok(ok_value(value)),
@@ -332,7 +332,7 @@ fn yaml_value_from_json_constructor(
         }
         "Array" => {
             let [Value::Array(values)] = payload else {
-                return Err(json_constructor_shape_error(name, "Array[Json]"));
+                return Err(json_constructor_shape_error(name, "Array[Data]"));
             };
             values
                 .iter()
@@ -342,7 +342,7 @@ fn yaml_value_from_json_constructor(
         }
         "Object" => {
             let [Value::Map(entries)] = payload else {
-                return Err(json_constructor_shape_error("Object", "Map[Text, Json]"));
+                return Err(json_constructor_shape_error("Object", "Map[Text, Data]"));
             };
             yaml_mapping_from_map(entries).map(serde_norway::Value::Mapping)
         }
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_decode_uses_json_constructor_tree() {
+    fn dynamic_decode_uses_data_constructor_tree() {
         let value = run("Yaml.decode(\"[1, 1.5, true, null, Ada]\")?!\n");
         let items = tag_array_payload(&value, "Array");
         let names = items
@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn checker_resolves_one_arg_decode_to_dynamic_json_result() {
+    fn checker_resolves_one_arg_decode_to_dynamic_data_result() {
         let source = "text = \"name: Ada\"\ndecoded = Yaml.decode(text)\n";
         let checked = check(source);
 
@@ -606,7 +606,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .unwrap_or_else(|| panic!("decoded has an inferred type"));
 
-        assert_eq!(ty.render(), "Result[Json, YamlError]");
+        assert_eq!(ty.render(), "Result[Data, YamlError]");
     }
 
     #[test]

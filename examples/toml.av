@@ -1,4 +1,4 @@
-# Toml.decode shares the dynamic Json model for unknown-shape TOML.
+# Toml.decode shares the dynamic Data model for unknown-shape TOML.
 Config = { name: Text, count: Int, enabled: Bool }
 
 input = "name = 'Ada'\ncount = 3\nenabled = true\n"

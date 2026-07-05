@@ -147,6 +147,33 @@ impl Host {
         });
     }
 
+    fn register_type_statics(
+        &mut self,
+        name: impl Into<String>,
+        statics: Vec<(String, Type, Value)>,
+    ) {
+        let type_name = name.into();
+        self.statics.push(StaticsEntry {
+            type_name,
+            members: statics
+                .into_iter()
+                .map(|(name, ty, value)| StaticMember { name, value, ty })
+                .collect(),
+        });
+    }
+
+    fn register_data_type(&mut self) {
+        if self
+            .type_definitions
+            .iter()
+            .any(|entry| entry.name == "Data")
+        {
+            return;
+        }
+
+        self.register_type_definition("Data", data_type());
+    }
+
     /// Register a host function whose ordinary base type binds the name and
     /// checks arguments, while a Rust resolver computes the call result type
     /// from the listed compile-time argument indexes.
@@ -489,19 +516,19 @@ pub fn toml_error_type() -> Type {
     format_error_type()
 }
 
-/// The recursive dynamic JSON value shape returned by one-argument
-/// `Json.decode`.
-pub fn json_dynamic_type() -> Type {
+/// The recursive dynamic data value shape returned by one-argument format
+/// decodes.
+pub fn data_type() -> Type {
     build::variant(vec![
         ("Null", vec![]),
         ("Bool", vec![build::bool()]),
         ("Int", vec![build::int()]),
         ("Float", vec![build::float()]),
         ("Text", vec![build::text()]),
-        ("Array", vec![build::array(build::named("Json"))]),
+        ("Array", vec![build::array(build::named("Data"))]),
         (
             "Object",
-            vec![build::map(build::text(), build::named("Json"))],
+            vec![build::map(build::text(), build::named("Data"))],
         ),
     ])
 }
@@ -522,7 +549,7 @@ pub fn json_encode_type() -> Type {
 
 /// The base `Json.decode` type: `(Text, ? = _) -> ?`. The checker uses it for
 /// arity and the input text argument; the host comptime resolver refines the
-/// result from the optional trailing type argument, defaulting to `Json`.
+/// result from the optional trailing type argument, defaulting to `Data`.
 pub fn json_decode_base_type() -> Type {
     format_decode_base_type()
 }
@@ -707,11 +734,9 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ],
     )
     .with_type_definitions(vec![
-        ("Json".to_owned(), json_dynamic_type()),
+        ("Data".to_owned(), data_type()),
         ("JsonError".to_owned(), json_error_type()),
-        ("Yaml".to_owned(), json_dynamic_type()),
         ("YamlError".to_owned(), yaml_error_type()),
-        ("Toml".to_owned(), json_dynamic_type()),
         ("TomlError".to_owned(), toml_error_type()),
     ])
     .with_statics(vec![
@@ -1017,10 +1042,29 @@ mod tests {
         // Format names are type artifacts carrying statics, not namespace
         // records: they are absent from `types` and their `encode`/`decode`
         // members live in the statics table.
+        let host_globals = standard_check_host_globals();
+        let data = host_globals
+            .type_definitions
+            .iter()
+            .find_map(|(name, ty)| (name == "Data").then_some(ty))
+            .expect("Data type definition is registered");
+        assert_eq!(
+            variant_tags(data),
+            Some(vec![
+                "Null".to_owned(),
+                "Bool".to_owned(),
+                "Int".to_owned(),
+                "Float".to_owned(),
+                "Text".to_owned(),
+                "Array".to_owned(),
+                "Object".to_owned(),
+            ])
+        );
+
         for format in ["Json", "Yaml", "Toml"] {
             assert!(global_type_opt(&globals, format).is_none());
 
-            let statics = aven_check::type_statics(&standard_check_host_globals(), format)
+            let statics = aven_check::type_statics(&host_globals, format)
                 .unwrap_or_else(|| panic!("{format} carries statics"));
             let static_names = statics
                 .iter()
@@ -1124,7 +1168,7 @@ mod tests {
             );
         }
         assert_eq!(
-            variant_tags(&json_dynamic_type()),
+            variant_tags(&data_type()),
             Some(vec![
                 "Null".to_owned(),
                 "Bool".to_owned(),

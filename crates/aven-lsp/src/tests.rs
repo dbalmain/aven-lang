@@ -495,6 +495,7 @@ fn completion_at_position_includes_builtin_type_names() {
 
     for name in [
         "Bool",
+        "Data",
         "Float",
         "Int",
         "Map",

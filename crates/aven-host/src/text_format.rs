@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, Type};
+use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, RowEntry, Type};
 use aven_eval::{RuntimeType, Value};
 
 use crate::io::aven_value_type_name;
@@ -40,7 +40,7 @@ struct DecodeComptimeResolver {
 impl HostComptimeFn for DecodeComptimeResolver {
     fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
         let target = match args {
-            [] => crate::build::named("Json"),
+            [] => crate::build::named("Data"),
             [target] => target
                 .as_type()
                 .cloned()
@@ -52,6 +52,11 @@ impl HostComptimeFn for DecodeComptimeResolver {
                 )));
             }
         };
+        if let Some(name) = deprecated_dynamic_target_name(&target) {
+            return Err(ComptimeError::new(format!(
+                "`{name}` is a format type, not the dynamic decode target; use `Data`"
+            )));
+        }
 
         Ok(crate::build::result(
             target,
@@ -123,7 +128,12 @@ fn decode_named(
     format_name: &str,
 ) -> Result<Value, DecodeError> {
     match name {
-        "Json" | "Yaml" | "Toml" => return Ok(decode_dynamic_json(value)),
+        "Data" => return Ok(decode_dynamic_data(value)),
+        "Json" | "Yaml" | "Toml" => {
+            return Err(DecodeError::InvalidTarget(format!(
+                "{format_name}.decode target {name} is a format type; use Data for dynamic values"
+            )));
+        }
         "Text" => match value {
             FormatValue::Text(text) => Some(Value::Text(text.clone())),
             _ => None,
@@ -158,33 +168,59 @@ fn decode_named(
     .ok_or_else(|| shape_error(path, name, value))
 }
 
-fn decode_dynamic_json(value: &FormatValue) -> Value {
+fn decode_dynamic_data(value: &FormatValue) -> Value {
     match value {
-        FormatValue::Null => json_tag("Null", Vec::new()),
-        FormatValue::Bool(value) => json_tag("Bool", vec![Value::Bool(*value)]),
-        FormatValue::Number(FormatNumber::Int(value)) => json_tag("Int", vec![Value::Int(*value)]),
+        FormatValue::Null => data_tag("Null", Vec::new()),
+        FormatValue::Bool(value) => data_tag("Bool", vec![Value::Bool(*value)]),
+        FormatValue::Number(FormatNumber::Int(value)) => data_tag("Int", vec![Value::Int(*value)]),
         FormatValue::Number(FormatNumber::Float(value)) => {
-            json_tag("Float", vec![Value::Float(*value)])
+            data_tag("Float", vec![Value::Float(*value)])
         }
-        FormatValue::Text(value) => json_tag("Text", vec![Value::Text(value.clone())]),
+        FormatValue::Text(value) => data_tag("Text", vec![Value::Text(value.clone())]),
         FormatValue::Array(values) => {
-            let values = values.iter().map(decode_dynamic_json).collect();
-            json_tag("Array", vec![Value::Array(Rc::new(values))])
+            let values = values.iter().map(decode_dynamic_data).collect();
+            data_tag("Array", vec![Value::Array(Rc::new(values))])
         }
         FormatValue::Object(entries) => {
             let entries = entries
                 .iter()
-                .map(|(key, value)| (Value::Text(key.clone()), decode_dynamic_json(value)))
+                .map(|(key, value)| (Value::Text(key.clone()), decode_dynamic_data(value)))
                 .collect();
-            json_tag("Object", vec![Value::Map(Rc::new(entries))])
+            data_tag("Object", vec![Value::Map(Rc::new(entries))])
         }
     }
 }
 
-fn json_tag(name: &str, payload: Vec<Value>) -> Value {
+fn data_tag(name: &str, payload: Vec<Value>) -> Value {
     Value::Tag {
         name: name.to_owned(),
         payload,
+    }
+}
+
+fn deprecated_dynamic_target_name(ty: &Type) -> Option<&str> {
+    match ty {
+        Type::Named(name) if matches!(name.as_str(), "Json" | "Yaml" | "Toml") => {
+            Some(name.as_str())
+        }
+        Type::Apply { callee, args } => deprecated_dynamic_target_name(callee)
+            .or_else(|| args.iter().find_map(deprecated_dynamic_target_name)),
+        Type::Function { params, result, .. } => params
+            .iter()
+            .find_map(deprecated_dynamic_target_name)
+            .or_else(|| deprecated_dynamic_target_name(result)),
+        Type::Optional(inner) | Type::Nullable(inner) => deprecated_dynamic_target_name(inner),
+        Type::Tuple(items) => items.iter().find_map(deprecated_dynamic_target_name),
+        Type::Record(row) | Type::Variant(row) => {
+            row.entries.iter().find_map(|entry| match entry {
+                RowEntry::Field { ty, .. } => deprecated_dynamic_target_name(ty),
+                RowEntry::Tag { payload, .. } => {
+                    payload.iter().find_map(deprecated_dynamic_target_name)
+                }
+                RowEntry::Literal { .. } => None,
+            })
+        }
+        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => None,
     }
 }
 
@@ -321,25 +357,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dynamic_decode_accepts_registered_format_names() {
+    fn dynamic_decode_accepts_data_target() {
         let value = FormatValue::Object(vec![(
             "name".to_owned(),
             FormatValue::Text("Ada".to_owned()),
         )]);
 
+        let decoded = match decode_value(&value, &Value::named_type("Data"), "Json") {
+            Ok(decoded) => decoded,
+            Err(DecodeError::Shape(_)) => panic!("Data dynamic decode shaped"),
+            Err(DecodeError::InvalidTarget(message)) => panic!("{message}"),
+        };
+
+        let Value::Tag { name, payload } = decoded else {
+            panic!("expected dynamic object tag, got {decoded:?}");
+        };
+        assert_eq!(name, "Object");
+        assert_eq!(payload.len(), 1);
+    }
+
+    #[test]
+    fn dynamic_decode_rejects_format_targets() {
+        let value = FormatValue::Null;
+
         for target_name in ["Json", "Yaml", "Toml"] {
             let target = Value::named_type(target_name);
-            let decoded = match decode_value(&value, &target, target_name) {
-                Ok(decoded) => decoded,
-                Err(DecodeError::Shape(_)) => panic!("{target_name} dynamic decode shaped"),
-                Err(DecodeError::InvalidTarget(message)) => panic!("{message}"),
+            let error = match decode_value(&value, &target, "Json") {
+                Ok(decoded) => panic!("{target_name} target decoded as {decoded:?}"),
+                Err(DecodeError::Shape(_)) => panic!("{target_name} target shaped"),
+                Err(DecodeError::InvalidTarget(message)) => message,
             };
 
-            let Value::Tag { name, payload } = decoded else {
-                panic!("expected dynamic object tag, got {decoded:?}");
-            };
-            assert_eq!(name, "Object");
-            assert_eq!(payload.len(), 1);
+            assert!(error.contains("use Data"));
         }
     }
 }

@@ -82,21 +82,22 @@ pub enum Value {
     Closure(Closure),
     Native(NativeFn),
     /// A runtime type descriptor. The evaluator keeps this intentionally small:
-    /// named types plus the composite shapes JSON decode needs. Record types
+    /// named types plus the composite shapes format decode needs. Record types
     /// remain ordinary `Value::Record` values whose fields are type values.
     Type(RuntimeType),
     Undefined,
     Null,
 }
 
-/// Type names bound as `Value::Type` intrinsics. `Array`/`Json`/`Map` are
-/// included so `Array[T]`/`Map[K, V]` type application and dynamic JSON decode
+/// Type names bound as `Value::Type` intrinsics. `Array`/`Data`/`Map` are
+/// included so `Array[T]`/`Map[K, V]` type application and dynamic format decode
 /// targets can evaluate to the minimal composite type values these need at
 /// runtime. Each type carrying statics (`Map.from`, `Json.decode`) resolves the
 /// static through a `"Type.static"`-keyed global (see [`eval_field_access`]).
-const TYPE_VALUE_NAMES: [&str; 12] = [
+const TYPE_VALUE_NAMES: [&str; 13] = [
     "Array",
     "Bool",
+    "Data",
     "Float",
     "Int",
     "Json",

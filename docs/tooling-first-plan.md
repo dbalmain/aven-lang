@@ -2601,8 +2601,8 @@ Done when:
 
 ## Milestone F — formats and decode ergonomics
 
-Status: F1–F4 done 2026-07-05; F5 in progress (user decision 2026-07-05: the
-shared dynamic variant renames `Json` → `Data`)
+Status: F1–F5 done 2026-07-05 (user decision 2026-07-05: the shared dynamic
+variant renames `Json` → `Data`)
 
 F4 progress: landed 2026-07-05 (codex; user decision 2026-07-05:
 `value.encode(Json)` is the encode spelling). Decode's helpers generalized
@@ -2620,8 +2620,9 @@ deferred as a polish item.
   `Data`; `Data` joins the builtin type-name lists; user-visible types, hovers,
   diagnostics, tests, and examples say `Data`. Spec updated (conversions now
   exemplify `value.to(Data)`/`Data.from`; the `toJson()` hook order belongs to
-  `Json.encode`). Open refinement: whether the format names keep row definitions
-  at all once registration can carry statics without a data definition.
+  `Json.encode`). Clean break: `Json`/`Yaml`/`Toml` are rejected as explicit
+  dynamic decode targets with a "use `Data`" diagnostic; the format names no
+  longer keep row definitions just to carry statics.
 
 - **F4 — `value.encode(Fmt)` method form**: mirrors F3 with the receiver on the
   value side — `value.encode(Json)` ≡ `Json.encode(value)`, universal sugar (any

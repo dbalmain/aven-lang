@@ -9,9 +9,9 @@ use crate::text_format::{
 impl Host {
     /// Register the `Toml` type artifact carrying `encode`/`decode` statics.
     pub fn register_toml(&mut self) {
-        self.register_type_with_statics(
+        self.register_data_type();
+        self.register_type_statics(
             "Toml",
-            crate::json_dynamic_type(),
             vec![
                 (
                     "encode".to_owned(),
@@ -66,7 +66,7 @@ fn decode_native() -> Value {
             Err(error) => return Ok(err_value(parse_error_value(error.to_string()))),
         };
 
-        let default_target = Value::named_type("Json");
+        let default_target = Value::named_type("Data");
         let target = target.unwrap_or(&default_target);
         match decode_value(&parsed, target, "Toml") {
             Ok(value) => Ok(ok_value(value)),
@@ -201,7 +201,7 @@ fn toml_value_from_json_constructor(
         }
         "Array" => {
             let [Value::Array(values)] = payload else {
-                return Err(json_constructor_shape_error(name, "Array[Json]"));
+                return Err(json_constructor_shape_error(name, "Array[Data]"));
             };
             values
                 .iter()
@@ -211,7 +211,7 @@ fn toml_value_from_json_constructor(
         }
         "Object" => {
             let [Value::Map(entries)] = payload else {
-                return Err(json_constructor_shape_error("Object", "Map[Text, Json]"));
+                return Err(json_constructor_shape_error("Object", "Map[Text, Data]"));
             };
             toml_table_from_map(entries).map(::toml::Value::Table)
         }
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_decode_uses_json_constructor_tree() {
+    fn dynamic_decode_uses_data_constructor_tree() {
         let value =
             run("Toml.decode(\"name = 'Ada'\\ncount = 3\\nwhen = 1979-05-27T07:32:00Z\\n\")?!\n");
         let entries = map_entries(&value);
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn checker_resolves_one_arg_decode_to_dynamic_json_result() {
+    fn checker_resolves_one_arg_decode_to_dynamic_data_result() {
         let source = "text = \"name = 'Ada'\"\ndecoded = Toml.decode(text)\n";
         let checked = check(source);
 
@@ -465,6 +465,6 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .unwrap_or_else(|| panic!("decoded has an inferred type"));
 
-        assert_eq!(ty.render(), "Result[Json, TomlError]");
+        assert_eq!(ty.render(), "Result[Data, TomlError]");
     }
 }

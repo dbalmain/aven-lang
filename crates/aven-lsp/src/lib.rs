@@ -1615,6 +1615,7 @@ fn range_contains_range(outer: Range, inner: Range) -> bool {
 const BUILTIN_TYPE_NAMES: &[&str] = &[
     "Array",
     "Bool",
+    "Data",
     "Float",
     "Int",
     "Json",

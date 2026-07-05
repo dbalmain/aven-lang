@@ -33,6 +33,7 @@ const BUILTIN_TYPES: &[&str] = &[
     "Unit",
     // Seeded std names until import resolution provides them.
     "Array",
+    "Data",
     "Json",
     "JsonError",
     "Map",

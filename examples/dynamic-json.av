@@ -1,4 +1,4 @@
-# Dynamic Json.decode for unknown-shape input, followed by a structural match and re-encode.
+# Json.decode to dynamic Data for unknown-shape input, followed by a structural match and re-encode.
 input = "{\"name\":\"Ada\",\"count\":3,\"nested\":{\"ok\":true},\"scores\":[1,2.5]}"
 
 parsed = Json.decode(input)?!

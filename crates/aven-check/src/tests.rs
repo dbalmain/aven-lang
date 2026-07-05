@@ -3254,10 +3254,10 @@ fn variant_match_exhaustiveness_uses_subject_rows() {
 #[test]
 fn recursive_named_variant_matches_and_accepts_inline_constructors() {
     let source = concat!(
-        "Json = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
-        "@Array(Array[Json]), @Object(Map[Text, Json])}\n",
-        "arrayValue : Json = @Array([@Null, @Int(5)])\n",
-        "objectValue : Json = @Object(Map.from([(\"a\", @Int(1))]))\n",
+        "Data = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
+        "@Array(Array[Data]), @Object(Map[Text, Data])}\n",
+        "arrayValue : Data = @Array([@Null, @Int(5)])\n",
+        "objectValue : Data = @Object(Map.from([(\"a\", @Int(1))]))\n",
         "matched = arrayValue ?>\n",
         "  @Null => \"null\"\n",
         "  @Bool(_) => \"bool\"\n",
@@ -3267,7 +3267,7 @@ fn recursive_named_variant_matches_and_accepts_inline_constructors() {
         "  @Array(_) => \"array\"\n",
         "  @Object(_) => \"object\"\n",
         "local = () =>\n",
-        "  localValue : Json = @Null\n",
+        "  localValue : Data = @Null\n",
         "  localValue\n",
     );
     let output = parse_module(source);
@@ -3282,22 +3282,22 @@ fn recursive_named_variant_matches_and_accepts_inline_constructors() {
         check
             .type_at(nth_span(source, "arrayValue", 0))
             .map(Type::render),
-        Some("Json".to_owned())
+        Some("Data".to_owned())
     );
     assert_eq!(
         check
             .type_at(nth_span(source, "localValue", 0))
             .map(Type::render),
-        Some("Json".to_owned())
+        Some("Data".to_owned())
     );
 }
 
 #[test]
 fn match_arm_pattern_bindings_record_inferred_types() {
     let source = concat!(
-        "Json = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
-        "@Array(Array[Json]), @Object(Map[Text, Json])}\n",
-        "subject : Json = @Null\n",
+        "Data = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
+        "@Array(Array[Data]), @Object(Map[Text, Data])}\n",
+        "subject : Data = @Null\n",
         "described = subject ?>\n",
         "  @Object(objectFields) => 1\n",
         "  @Array(elements) => 2\n",
@@ -3319,13 +3319,13 @@ fn match_arm_pattern_bindings_record_inferred_types() {
         check
             .type_at(nth_span(source, "objectFields", 0))
             .map(Type::render),
-        Some("Map[Text, Json]".to_owned())
+        Some("Map[Text, Data]".to_owned())
     );
     assert_eq!(
         check
             .type_at(nth_span(source, "elements", 0))
             .map(Type::render),
-        Some("Array[Json]".to_owned())
+        Some("Array[Data]".to_owned())
     );
     assert_eq!(
         check
@@ -3726,13 +3726,9 @@ fn map_name_in_value_position_is_a_type_value() {
 #[test]
 fn json_name_in_value_position_is_a_type_value() {
     let output = parse_module("x = Json\n");
-    let mut host = crate::HostGlobals::default();
-    host.type_definitions
-        .push(("Json".to_owned(), variant_type(vec![], RowTail::Closed)));
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
-    let mut checker =
-        Checker::with_module_and_host_globals(known_types, type_definitions, &output.module, &host);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
     assert_eq!(render_top_level_value(&mut checker, "x"), None);
     assert!(checker.diagnostics.is_empty());

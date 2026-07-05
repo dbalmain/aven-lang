@@ -20,12 +20,12 @@ type JsonValue = FormatValue;
 type JsonNumber = FormatNumber;
 
 impl Host {
-    /// Register the `Json` type artifact (carrying `encode`/`decode` statics) and
-    /// the named `Json`/`JsonError` types.
+    /// Register the `Json` type artifact (carrying `encode`/`decode` statics),
+    /// the shared `Data` dynamic type, and the named `JsonError` type.
     pub fn register_json(&mut self) {
-        self.register_type_with_statics(
+        self.register_data_type();
+        self.register_type_statics(
             "Json",
-            crate::json_dynamic_type(),
             vec![
                 (
                     "encode".to_owned(),
@@ -194,7 +194,7 @@ fn decode_native() -> Value {
             Err(error) => return Ok(err_value(parse_error_value(error.to_string()))),
         };
 
-        let default_target = Value::named_type("Json");
+        let default_target = Value::named_type("Data");
         let target = target.unwrap_or(&default_target);
         match decode_value(&parsed, target, "Json") {
             Ok(value) => Ok(ok_value(value)),
@@ -300,13 +300,13 @@ fn encode_json_constructor(
         }
         "Array" => {
             let [Value::Array(values)] = payload else {
-                return Err(json_constructor_shape_error(name, "Array[Json]"));
+                return Err(json_constructor_shape_error(name, "Array[Data]"));
             };
             encode_json_array(values, output)?;
         }
         "Object" => {
             let [Value::Map(entries)] = payload else {
-                return Err(json_constructor_shape_error(name, "Map[Text, Json]"));
+                return Err(json_constructor_shape_error(name, "Map[Text, Data]"));
             };
             encode_json_object(entries, output)?;
         }
@@ -335,7 +335,7 @@ fn encode_json_object(entries: &[(Value, Value)], output: &mut String) -> Result
             output.push(',');
         }
         let Value::Text(key) = key else {
-            return Err(json_constructor_shape_error("Object", "Map[Text, Json]"));
+            return Err(json_constructor_shape_error("Object", "Map[Text, Data]"));
         };
         encode_string(key, output);
         output.push(':');
@@ -348,7 +348,7 @@ fn encode_json_object(entries: &[(Value, Value)], output: &mut String) -> Result
 fn encode_json_value(value: &Value, output: &mut String) -> Result<(), String> {
     let Value::Tag { name, payload } = value else {
         return Err(format!(
-            "Json.encode expected Json constructor tag, got {}",
+            "Json.encode expected Data constructor tag, got {}",
             aven_value_type_name(value)
         ));
     };
@@ -356,7 +356,7 @@ fn encode_json_value(value: &Value, output: &mut String) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "Json.encode expected Json constructor tag, got @{name}"
+            "Json.encode expected Data constructor tag, got @{name}"
         ))
     }
 }
@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_decode_one_arg_builds_json_constructor_tree() {
+    fn dynamic_decode_one_arg_builds_data_constructor_tree() {
         let value = run("Json.decode(\"[1,1.5,1e10,9223372036854775808,true,null]\")?!\n");
         let items = tag_array_payload(&value, "Array");
         let names = items.iter().map(tag_name).collect::<Vec<_>>();
@@ -577,13 +577,32 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_decode_explicit_json_target_uses_namespace_and_preserves_order() {
+    fn dynamic_decode_explicit_data_target_preserves_order() {
         let value = run(
-            "parsed = Json.decode(\"{\\\"b\\\":1,\\\"a\\\":2}\", Json)?!\n\
+            "parsed = Json.decode(\"{\\\"b\\\":1,\\\"a\\\":2}\", Data)?!\n\
              Json.encode(parsed)\n",
         );
 
         assert_eq!(text(&value), r#"{"b":1,"a":2}"#);
+    }
+
+    #[test]
+    fn dynamic_decode_rejects_old_json_target_name() {
+        let checked = check("text = \"{}\"\ndecoded = Json.decode(text, Json)\n");
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("use `Data`")),
+            "old Json target is a check-time error: {:?}",
+            checked.diagnostics
+        );
+
+        let diagnostics = run_diagnostics("Json.decode(\"{}\", Json)\n");
+        assert_platform_error_contains(
+            &diagnostics,
+            "Json.decode target Json is a format type; use Data",
+        );
     }
 
     #[test]
@@ -607,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_encode_method_matches_static_form_for_dynamic_json() {
+    fn eval_encode_method_matches_static_form_for_dynamic_data() {
         let value = run(
             "parsed = Json.decode(\"{\\\"name\\\":\\\"Ada\\\",\\\"ok\\\":true}\")?!\n\
              method = parsed.encode(Json)\n\
@@ -752,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn checker_resolves_one_arg_decode_to_dynamic_json_result() {
+    fn checker_resolves_one_arg_decode_to_dynamic_data_result() {
         let checked = check("text = \"{}\"\ndecoded = Json.decode(text)\n");
 
         assert!(
@@ -766,17 +785,17 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .expect("decoded has an inferred type");
 
-        assert_eq!(ty.render(), "Result[Json, JsonError]");
+        assert_eq!(ty.render(), "Result[Data, JsonError]");
     }
 
     #[test]
-    fn checker_resolves_explicit_json_decode_to_dynamic_json_result() {
-        let source = "text = \"{}\"\ndecoded = Json.decode(text, Json)\n";
+    fn checker_resolves_explicit_data_decode_to_dynamic_data_result() {
+        let source = "text = \"{}\"\ndecoded = Json.decode(text, Data)\n";
         let checked = check(source);
 
         assert!(
             checked.diagnostics.is_empty(),
-            "explicit Json target checks: {:?}",
+            "explicit Data target checks: {:?}",
             checked.diagnostics
         );
         let offset = source.find("decoded").expect("source mentions decoded");
@@ -784,11 +803,11 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .expect("decoded has an inferred type");
 
-        assert_eq!(ty.render(), "Result[Json, JsonError]");
+        assert_eq!(ty.render(), "Result[Data, JsonError]");
     }
 
     #[test]
-    fn match_binder_over_decoded_json_records_hover_type() {
+    fn match_binder_over_decoded_data_records_hover_type() {
         let source = "parsed = Json.decode(\"{\\\"x\\\": 2}\")?^\n\
                       parsed ?>\n  @Object(fields) => 1\n  _ => 3\n";
         let checked = check(source);
@@ -802,13 +821,13 @@ mod tests {
         let parsed_ty = checked
             .type_at(Span::new(parsed_offset, parsed_offset + "parsed".len()))
             .expect("parsed has an inferred type");
-        assert_eq!(parsed_ty.render(), "Json");
+        assert_eq!(parsed_ty.render(), "Data");
 
         let fields_offset = source.find("fields").expect("source mentions fields");
         let fields_ty = checked
             .type_at(Span::new(fields_offset, fields_offset + "fields".len()))
             .expect("the match binder has an inferred type");
-        assert_eq!(fields_ty.render(), "Map[Text, Json]");
+        assert_eq!(fields_ty.render(), "Map[Text, Data]");
     }
 
     #[test]
@@ -854,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn checker_resolves_one_arg_text_decode_to_dynamic_json_result() {
+    fn checker_resolves_one_arg_text_decode_to_dynamic_data_result() {
         let source = "text = \"{}\"\ndecoded = text.decode(Json)\n";
         let checked = check(source);
 
@@ -868,7 +887,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .expect("decoded has an inferred type");
 
-        assert_eq!(ty.render(), "Result[Json, JsonError]");
+        assert_eq!(ty.render(), "Result[Data, JsonError]");
     }
 
     #[test]
