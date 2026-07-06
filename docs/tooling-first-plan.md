@@ -2724,15 +2724,33 @@ currently degrading to `@Text` in decode. Design questions to settle first:
 Do not slice until the vocabulary and codec-integration questions are decided
 with the user.
 
+## Milestone P-rm — remove native path literals: done 2026-07-06
+
+User decision 2026-07-06: drop the first-class `Path` type and bare path-literal
+syntax; file/module locations are ordinary `Text` and the host resolver reads
+the leading root prefix (`./ ../ $/ ~/ //`) out of the string. The `Path` type
+was never implemented (path literals already typed as Text), so the slice
+(claude-rust/sonnet) removed only the literal layer: `PathLiteral` token,
+`scan_path`/`is_path_end_byte`, the four prefix dispatch cases, and the
+`Literal::Path` AST variant with all its match arms (parser/check/eval/lsp); net
+−24 LOC. A bare leading `.` now surfaces the pre-existing
+`lex.reserved-operator` diagnostic. Spec updated in clex (§"File and Module
+Specifiers"). Note: the worktree was built on a 13-commit-stale base
+(origin/local submodule pointer lag) but the patch applied clean and the full
+gate suite passed on current main.
+
 ## Milestone Z — modules and imports (sketch)
 
 Status: on hold (user, 2026-07-03); needs a design pass before any slicing
 
-Goal: host-controlled module resolution per the spec (`import(./lib/Text)`,
-`Std = import("std")`). Before slicing, design: module identity and caching in
-the compiler database, the host resolver API in `aven-host`, cross-file
-diagnostics/goto in the LSP, and the export model. Do not start until the stdlib
-shape (J/K/H) has settled enough to know what modules must express.
+Goal: host-controlled module resolution per the spec (`import("./lib/Text")`,
+`Std = import("std")`). Import specifiers are now static `Text` (P-rm), so
+`import` reads a string-literal argument and hands it to the host resolver — no
+path-node handling. Before slicing, design: module identity and caching in the
+compiler database, the host resolver API in `aven-host` (including which roots
+`./ ../ $/ ~/ //` it must support and how `$/` project-root is discovered),
+cross-file diagnostics/goto in the LSP, and the export model. Do not start until
+the stdlib shape (J/K/H) has settled enough to know what modules must express.
 
 ## To investigate later
 
