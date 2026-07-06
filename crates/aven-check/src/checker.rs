@@ -1070,7 +1070,6 @@ fn literal_kind_name(literal: &Literal) -> &'static str {
         Literal::String(_) => "text literal",
         Literal::Number(_) => "number literal",
         Literal::Regex(_) => "regex literal",
-        Literal::Path(_) => "path literal",
     }
 }
 

@@ -278,8 +278,7 @@ fn semantic_style_for_token(kind: &aven_parser::TokenKind) -> Option<SemanticSty
         aven_parser::TokenKind::StringLiteral(_)
         | aven_parser::TokenKind::InterpolationStart(_)
         | aven_parser::TokenKind::InterpolationMiddle(_)
-        | aven_parser::TokenKind::InterpolationEnd(_)
-        | aven_parser::TokenKind::PathLiteral(_) => TOKEN_STRING,
+        | aven_parser::TokenKind::InterpolationEnd(_) => TOKEN_STRING,
         aven_parser::TokenKind::RegexLiteral(_) => TOKEN_REGEXP,
         aven_parser::TokenKind::Tag(_) => TOKEN_PROPERTY,
         aven_parser::TokenKind::Operator(_) => TOKEN_OPERATOR,
@@ -367,7 +366,7 @@ mod tests {
             "## Doc\n\
              User = { name: Text }\n\
              value = (item) => item + 1\n\
-             path = ./data.json\n\
+             path = \"./data.json\"\n\
              regex = /a+/\n\
              tag = @Ok\n"
                 .to_owned(),
@@ -459,7 +458,7 @@ mod tests {
             DecodedSemanticToken {
                 line: 3,
                 start: 7,
-                length: 11,
+                length: 13,
                 token_type: "string",
                 modifiers: 0,
             },

@@ -732,9 +732,6 @@ fn render_literal_ast(output: &mut String, literal: &Literal, indent: usize) {
         Literal::Regex(regex) => {
             let _ = writeln!(output, "regex {regex}");
         }
-        Literal::Path(path) => {
-            let _ = writeln!(output, "path {path}");
-        }
     }
 }
 

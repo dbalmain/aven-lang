@@ -802,7 +802,7 @@ pub(crate) fn literal_base(literal: &Literal) -> Option<LiteralBase> {
         Literal::Bool(_) => Some(LiteralBase::Bool),
         Literal::String(_) => Some(LiteralBase::Text),
         Literal::Number(_) => Some(LiteralBase::Number),
-        Literal::Regex(_) | Literal::Path(_) => None,
+        Literal::Regex(_) => None,
     }
 }
 
@@ -1026,10 +1026,7 @@ pub(crate) fn render_literal_value(literal: &Literal) -> &str {
     match literal {
         Literal::Bool(true) => "true",
         Literal::Bool(false) => "false",
-        Literal::Number(value)
-        | Literal::String(value)
-        | Literal::Regex(value)
-        | Literal::Path(value) => value,
+        Literal::Number(value) | Literal::String(value) | Literal::Regex(value) => value,
     }
 }
 

@@ -122,10 +122,7 @@ fn row_label(entry: &RowEntry) -> &str {
         RowEntry::Literal { value } => match value {
             Literal::Bool(true) => "true",
             Literal::Bool(false) => "false",
-            Literal::Number(value)
-            | Literal::String(value)
-            | Literal::Regex(value)
-            | Literal::Path(value) => value,
+            Literal::Number(value) | Literal::String(value) | Literal::Regex(value) => value,
         },
     }
 }

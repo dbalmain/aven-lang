@@ -1404,7 +1404,6 @@ fn token_can_end_callee_expression(token: &aven_parser::Token) -> bool {
             | aven_parser::TokenKind::StringLiteral(_)
             | aven_parser::TokenKind::InterpolationEnd(_)
             | aven_parser::TokenKind::RegexLiteral(_)
-            | aven_parser::TokenKind::PathLiteral(_)
             | aven_parser::TokenKind::Tag(_)
             | aven_parser::TokenKind::Keyword(_)
             | aven_parser::TokenKind::CloseParen

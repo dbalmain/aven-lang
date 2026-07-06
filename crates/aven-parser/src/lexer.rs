@@ -37,7 +37,6 @@ pub enum TokenKind {
     InterpolationMiddle(String),
     InterpolationEnd(String),
     RegexLiteral(String),
-    PathLiteral(String),
     Tag(String),
     Operator(String),
     OpenParen,
@@ -89,7 +88,6 @@ impl TokenKind {
             Self::InterpolationMiddle(text) => format!("interpolation_middle `{text}`"),
             Self::InterpolationEnd(text) => format!("interpolation_end `{text}`"),
             Self::RegexLiteral(regex) => format!("regex `{regex}`"),
-            Self::PathLiteral(path) => format!("path `{path}`"),
             Self::Tag(name) => format!("tag `@{name}`"),
             Self::Operator(operator) => format!("operator `{operator}`"),
             Self::OpenParen => "delimiter `(`".to_owned(),
@@ -184,10 +182,6 @@ impl Lexer<'_> {
                 Some(b'0'..=b'9') => self.scan_number(),
                 Some(b'"') => self.scan_string(),
                 Some(b'@') => self.scan_label_or_operator(),
-                Some(b'.') if self.starts_with("./") || self.starts_with("../") => self.scan_path(),
-                Some(b'~') if self.starts_with("~/") => self.scan_path(),
-                Some(b'$') if self.starts_with("$/") => self.scan_path(),
-                Some(b'/') if self.starts_with("//") => self.scan_path(),
                 Some(b'/') if self.regex_allowed_here() => self.scan_regex_or_operator(),
                 Some(b'(') => self.push_single(TokenKind::OpenParen),
                 Some(b')') => self.push_single(TokenKind::CloseParen),
@@ -664,22 +658,6 @@ impl Lexer<'_> {
         }
     }
 
-    fn scan_path(&mut self) {
-        let start = self.offset;
-
-        while let Some(byte) = self.current_byte() {
-            if is_path_end_byte(byte) {
-                break;
-            }
-            self.offset += self.current_char_len();
-        }
-
-        self.push(
-            TokenKind::PathLiteral(self.source[start..self.offset].to_owned()),
-            Span::new(start, self.offset),
-        );
-    }
-
     fn scan_regex_or_operator(&mut self) {
         let Some(end) = self.find_regex_end() else {
             self.scan_unterminated_regex_or_operator();
@@ -1020,14 +998,6 @@ fn reserved_operator_continues(prefix: &str, byte: u8) -> bool {
     }
 }
 
-fn is_path_end_byte(byte: u8) -> bool {
-    byte.is_ascii_whitespace()
-        || matches!(
-            byte,
-            b'(' | b')' | b'{' | b'}' | b'[' | b']' | b'#' | b',' | b';'
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use aven_core::Span;
@@ -1131,6 +1101,44 @@ mod tests {
                 TokenKind::CloseBrace,
                 TokenKind::InterpolationEnd("\"".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn former_path_literal_now_lexes_as_constituent_tokens() {
+        let output = lex_source("./lib/Text");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        // `PathLiteral` is gone: a bare `./lib/Text` is no longer a single
+        // token. The leading `.` is a reserved operator (field access), so
+        // this now reports `lex.reserved-operator` rather than lexing as a
+        // path.
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::Operator(".".to_owned()),
+                TokenKind::Identifier("lib".to_owned()),
+                TokenKind::Operator("/".to_owned()),
+                TokenKind::ComptimeIdentifier("Text".to_owned()),
+            ]
+        );
+        let codes: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .collect();
+        assert_eq!(codes, vec!["lex.reserved-operator"]);
+    }
+
+    #[test]
+    fn quoted_former_path_literal_still_lexes_as_a_string() {
+        let output = lex_source("\"./lib/Text\"");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            tokens,
+            vec![TokenKind::StringLiteral("\"./lib/Text\"".to_owned())]
         );
     }
 

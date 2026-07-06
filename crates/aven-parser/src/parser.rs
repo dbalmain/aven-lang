@@ -221,7 +221,6 @@ pub enum Literal {
     Number(String),
     String(String),
     Regex(String),
-    Path(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1223,10 +1222,6 @@ impl Parser<'_> {
             TokenKind::RegexLiteral(regex) => {
                 self.advance();
                 literal_expr(Literal::Regex(regex), token.span)
-            }
-            TokenKind::PathLiteral(path) => {
-                self.advance();
-                literal_expr(Literal::Path(path), token.span)
             }
             TokenKind::Operator(operator)
                 if operator == "@" && self.next_is(TokenKind::OpenBrace) =>

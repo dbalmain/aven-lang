@@ -74,8 +74,8 @@ impl ComptimeArg {
                 Self::Text(decode_string_literal(&text))
             }
             comptime::ComptimeValue::Literal(Literal::Number(value)) => Self::Number(value),
-            comptime::ComptimeValue::Literal(Literal::Regex(_) | Literal::Path(_)) => {
-                unreachable!("runtime comptime evaluation does not produce regex/path literals")
+            comptime::ComptimeValue::Literal(Literal::Regex(_)) => {
+                unreachable!("runtime comptime evaluation does not produce regex literals")
             }
             comptime::ComptimeValue::Literal(Literal::Bool(value)) => Self::Bool(value),
         }
