@@ -2777,14 +2777,23 @@ checker re-entrancy to keep the semantic crates small.
   error.
 - Z-open: `$/` (Aven.toml project root), `~/`, `//`, bare library names (`std`,
   packages) — the host resolver API in `aven-host` decides these roots.
-- Z-open: LSP cross-file support — resolve imports from the editor (buffer as
-  entry module, dependencies from disk), import-specifier and module-member
-  completion, cross-file goto. Until then imports in the editor carry the
+- Z-LSP diagnostics done 2026-07-09: file-backed documents run the module-graph
+  driver with open-buffer overlays (`SourceOverlay`; buffer beats disk, cached
+  entry parse reused), publishing the same `module.*` diagnostics as
+  `aven check`. Pathless/untitled buffers keep the single-file
   `module.unresolved-import` warning.
+- Z-open: LSP cross-file intelligence — import-specifier and module-member
+  completion, cross-file goto, import-aware hover. When picked up, have the
+  driver return per-node inferred types so the LSP stops running the entry's
+  semantic analysis twice (once single-file for hover, once in-graph for
+  diagnostics).
 - Z-open: dynamic (runtime-string) import fallback.
 - Parser gap discovered: top-level record-pattern bindings
-  (`{ join } = import("./lib/text")`) do not parse; the spec's selective-import
-  form needs it. Works today via match patterns.
+  (`{ join } = import("./lib/text")`) do not parse, and block spread bindings
+  (`..expr` opening a record into scope, spec §Block Spread Bindings) are
+  unimplemented everywhere — both fail for plain local records too, so this is a
+  general binding-forms slice, not an import gap. The spec's selective-import
+  forms need both. Works today via match patterns.
 - Checker bug discovered (2026-07-09): a binding that shadows a builtin type
   name (`Text = import("./text")`) breaks record spread of that binding when the
   imported signatures mention the shadowed type — `{ ..Text, ... }` infers
