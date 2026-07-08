@@ -1759,7 +1759,9 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 - H3 open questions (recorded under Milestone H, not scheduled)
 - the Milestone IO watch item: define the bare write tier in terms of the Result
   handles so the two tiers cannot drift
-- Milestone Z — modules and imports: **on hold** (user, 2026-07-03)
+- Milestone Z — modules and imports: **Z1+Z2 local relative imports done
+  2026-07-09** (see below); `$/`/`~/`/`//`/library roots, LSP cross-file
+  support, and dynamic import remain open
 
 ## Milestone N — null/undefined model
 
@@ -2739,18 +2741,50 @@ Specifiers"). Note: the worktree was built on a 13-commit-stale base
 (origin/local submodule pointer lag) but the patch applied clean and the full
 gate suite passed on current main.
 
-## Milestone Z — modules and imports (sketch)
+## Milestone Z — modules and imports
 
-Status: on hold (user, 2026-07-03); needs a design pass before any slicing
+Status: Z1+Z2 (local relative imports) done 2026-07-09; later roots and LSP
+cross-file support open
 
 Goal: host-controlled module resolution per the spec (`import("./lib/Text")`,
-`Std = import("std")`). Import specifiers are now static `Text` (P-rm), so
-`import` reads a string-literal argument and hands it to the host resolver — no
-path-node handling. Before slicing, design: module identity and caching in the
-compiler database, the host resolver API in `aven-host` (including which roots
-`./ ../ $/ ~/ //` it must support and how `$/` project-root is discovered),
-cross-file diagnostics/goto in the LSP, and the export model. Do not start until
-the stdlib shape (J/K/H) has settled enough to know what modules must express.
+`Std = import("std")`). Import specifiers are static `Text` (P-rm), so `import`
+reads a string-literal argument — no path-node handling.
+
+Settled architecture (2026-07-09): a **module-graph driver in `aven-compiler`**
+(`modules.rs`), not a re-entrant checker. The driver scans static
+`import("...")` calls, resolves specifiers, builds the file graph, topo-sorts
+(cycles are `module.import-cycle` with the full path), and checks/evaluates
+leaves-first, threading each module's export-record type/value into dependents
+via an injected `ModuleImports` map. `aven-check`/`aven-eval` stay
+single-module: `import` there is a map lookup, and a failed import inserts as
+`Deferred` so downstream checking recovers. This per-module boundary is the
+future memoization seam for incremental compilation (Milestone 9), chosen over
+checker re-entrancy to keep the semantic crates small.
+
+- Z1+Z2 done 2026-07-09: `./`/`../` imports in `aven check` and `aven run`.
+  Export = final expression, must be a statically known closed record; modules
+  evaluate once (import-time effects run once, diamond-safe); `.av` extension
+  inferred. Diagnostics: `module.not-found`, `module.not-importable`,
+  `module.import-cycle`, `module.import-has-errors`, `module.dynamic-import`,
+  `module.unsupported-root`, `module.unresolved-import` (warning — a relative
+  import checked in a single-file context such as the LSP). CLI renders
+  multi-file reports (dependency errors against the dependency's source); JSON
+  output keeps the single-file schema when only one file is involved. Review
+  fixes: dropped the driver's skip-semantic-on-module-errors gate so an
+  importer's own type errors surface alongside a broken dependency (recovery
+  over early abort), and the single-file relative-import diagnostic is an honest
+  `module.unresolved-import` warning instead of a false `module.dynamic-import`
+  error.
+- Z-open: `$/` (Aven.toml project root), `~/`, `//`, bare library names (`std`,
+  packages) — the host resolver API in `aven-host` decides these roots.
+- Z-open: LSP cross-file support — resolve imports from the editor (buffer as
+  entry module, dependencies from disk), import-specifier and module-member
+  completion, cross-file goto. Until then imports in the editor carry the
+  `module.unresolved-import` warning.
+- Z-open: dynamic (runtime-string) import fallback.
+- Parser gap discovered: top-level record-pattern bindings
+  (`{ join } = import("./lib/text")`) do not parse; the spec's selective-import
+  form needs it. Works today via match patterns.
 
 ## To investigate later
 

@@ -1,0 +1,4 @@
+join = (left: Text, right: Text, sep: Text): Text => left + sep + right
+_helper = (value: Text): Text => value
+
+{ join }

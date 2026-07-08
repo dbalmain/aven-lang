@@ -152,32 +152,31 @@ fn explain(code: &str) -> Result<()> {
 }
 
 fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
-    let file = load_source_file(path)?;
-    let checked = aven_compiler::check_source_file_with_host_globals(
-        file,
+    let checked = aven_compiler::check_path_with_host_globals(
+        path,
         &aven_host::standard_check_host_globals(),
-    );
+    )
+    .with_context(|| format!("failed to load {}", path.display()))?;
     let timings = checked.timings;
-    let file = checked.document.file();
-
-    let mut report = checked.document.diagnostic_report();
-    report.sort_by_primary_span();
+    let has_errors = reports_have_errors(&checked.reports);
 
     match format {
         OutputFormat::Text => {
-            if !report.is_empty() {
-                print_diagnostics(file, &report)?;
+            if !checked.reports.is_empty() {
+                print_diagnostic_reports(&checked.source_map, &checked.reports)?;
             }
             if show_timings {
                 print_timings(timings);
             }
         }
-        OutputFormat::Json => {
-            print_json_diagnostics(file, &report, show_timings.then_some(timings))?
-        }
+        OutputFormat::Json => print_json_diagnostic_reports(
+            &checked.source_map,
+            &checked.reports,
+            show_timings.then_some(timings),
+        )?,
     }
 
-    if report.has_errors() {
+    if has_errors {
         bail!("check failed");
     }
 
@@ -192,35 +191,26 @@ fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
 }
 
 fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
-    let file = load_source_file(path)?;
-    let parse = aven_parser::parse_source(&file);
-    let mut diagnostics = parse.diagnostics.clone();
-    let mut value = None;
-
-    if !diagnostics.iter().any(AvenDiagnostic::is_error) {
-        let outcome =
-            aven_eval::eval_module_with_globals(&parse.module, build_host(config)?.eval_globals());
-        value = outcome.value;
-        diagnostics.extend(outcome.diagnostics);
-    }
-
-    let mut report = DiagnosticReport::new(file.id, diagnostics);
-    report.sort_by_primary_span();
+    let output = aven_compiler::eval_path_with_globals(path, build_host(config)?.eval_globals())
+        .with_context(|| format!("failed to load {}", path.display()))?;
+    let has_errors = reports_have_errors(&output.reports);
 
     match format {
         OutputFormat::Text => {
-            if !report.is_empty() {
-                print_diagnostics(&file, &report)?;
+            if !output.reports.is_empty() {
+                print_diagnostic_reports(&output.source_map, &output.reports)?;
             }
         }
-        OutputFormat::Json => print_json_diagnostics(&file, &report, None)?,
+        OutputFormat::Json => {
+            print_json_diagnostic_reports(&output.source_map, &output.reports, None)?
+        }
     }
 
-    if report.has_errors() {
+    if has_errors {
         bail!("run failed");
     }
 
-    if let Some(value) = value.filter(|value| !is_trivial_value(value)) {
+    if let Some(value) = output.value.filter(|value| !is_trivial_value(value)) {
         if is_err_value(&value) {
             eprintln!("{value}");
             std::process::exit(1);
@@ -648,19 +638,33 @@ fn print_timing_line(name: &str, duration: Option<Duration>) {
     }
 }
 
-fn print_json_diagnostics(
-    file: &SourceFile,
-    report: &DiagnosticReport,
+fn print_json_diagnostic_reports(
+    source_map: &aven_core::SourceMap,
+    reports: &[DiagnosticReport],
     timings: Option<aven_compiler::PhaseTimings>,
 ) -> Result<()> {
-    debug_assert_eq!(file.id, report.file_id);
+    if let [file] = source_map.files() {
+        let report = reports
+            .iter()
+            .find(|report| report.file_id == file.id)
+            .cloned()
+            .unwrap_or_else(|| DiagnosticReport::new(file.id, Vec::new()));
+        let mut output = json_report(file, &report);
+        output["ok"] = json!(!report.has_errors());
+        if let Some(timings) = timings {
+            output["timingsMs"] = timings_json(timings);
+        }
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
 
     let mut output = json!({
-        "fileId": report.file_id.0,
-        "path": file.path.as_ref().map(|path| path.display().to_string()),
-        "name": file.name.as_str(),
-        "ok": !report.has_errors(),
-        "diagnostics": report.diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
+        "ok": !reports_have_errors(reports),
+        "files": reports.iter().filter_map(|report| {
+            let file = source_map.get(report.file_id)?;
+            Some(json_report(file, report))
+        }).collect::<Vec<_>>(),
     });
 
     if let Some(timings) = timings {
@@ -669,6 +673,21 @@ fn print_json_diagnostics(
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+fn json_report(file: &SourceFile, report: &DiagnosticReport) -> serde_json::Value {
+    debug_assert_eq!(file.id, report.file_id);
+
+    json!({
+        "fileId": report.file_id.0,
+        "path": file.path.as_ref().map(|path| path.display().to_string()),
+        "name": file.name.as_str(),
+        "diagnostics": report.diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
+    })
+}
+
+fn reports_have_errors(reports: &[DiagnosticReport]) -> bool {
+    reports.iter().any(DiagnosticReport::has_errors)
 }
 
 fn timings_json(timings: aven_compiler::PhaseTimings) -> serde_json::Value {
@@ -804,6 +823,20 @@ fn print_diagnostics(file: &SourceFile, report: &DiagnosticReport) -> Result<()>
     for diagnostic in &report.diagnostics {
         print_diagnostic(&source_id, file.source(), diagnostic, use_color)
             .context("failed to print diagnostic")?;
+    }
+
+    Ok(())
+}
+
+fn print_diagnostic_reports(
+    source_map: &aven_core::SourceMap,
+    reports: &[DiagnosticReport],
+) -> Result<()> {
+    for report in reports {
+        let Some(file) = source_map.get(report.file_id) else {
+            continue;
+        };
+        print_diagnostics(file, report)?;
     }
 
     Ok(())

@@ -10,7 +10,6 @@ use aven_parser::{
 };
 
 use crate::BUILTIN_TYPES;
-use crate::InferredType;
 use crate::comptime::{self, Evaluation};
 use crate::env::{
     LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values,
@@ -32,6 +31,7 @@ use crate::ty::{
     numeric_type_name, render_literal_value, type_contains_deferred,
 };
 use crate::unify::Unifier;
+use crate::{InferredType, ModuleImports};
 
 mod annotations;
 mod comptime_context;
@@ -67,9 +67,11 @@ pub(crate) struct Checker<'a> {
     /// through this table (`Map.from`, `Json.encode`).
     statics: HashMap<String, HashMap<String, TypeScheme>>,
     host_comptime_fns: HashMap<String, HostComptimeFnSpec>,
+    pub(crate) imports: ModuleImports,
     report_unbound_names: bool,
     report_unresolved_bindings: bool,
     reported_unbound_name_spans: HashSet<Span>,
+    reported_import_spans: HashSet<Span>,
     propagation_contexts: Vec<PropagationContext>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
@@ -79,6 +81,7 @@ pub(crate) struct Checker<'a> {
 struct DiagnosticSnapshot {
     diagnostics_len: usize,
     reported_unbound_name_spans: HashSet<Span>,
+    reported_import_spans: HashSet<Span>,
     propagation_context_site_counts: Vec<usize>,
 }
 
@@ -152,6 +155,10 @@ impl RowSource {
             Self::Open(row)
         }
     }
+}
+
+fn is_relative_import_specifier(specifier: &str) -> bool {
+    specifier.starts_with("./") || specifier.starts_with("../")
 }
 
 #[derive(Clone, Copy)]

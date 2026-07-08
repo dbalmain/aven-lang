@@ -390,6 +390,7 @@ fn escape_string(text: &str) -> String {
 #[derive(Clone)]
 pub struct Environment {
     scope: Rc<Scope>,
+    imports: Rc<ModuleImports>,
 }
 
 struct Scope {
@@ -422,14 +423,20 @@ impl PartialEq for Environment {
 
 impl Environment {
     pub fn new() -> Self {
+        Self::with_imports(ModuleImports::default())
+    }
+
+    pub fn with_imports(imports: ModuleImports) -> Self {
         Self {
             scope: Rc::new(Scope::new(None)),
+            imports: Rc::new(imports),
         }
     }
 
     fn child(&self) -> Self {
         Self {
             scope: Rc::new(Scope::new(Some(Rc::clone(&self.scope)))),
+            imports: Rc::clone(&self.imports),
         }
     }
 
@@ -464,6 +471,43 @@ pub struct EvalOutcome {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModuleImports {
+    values: HashMap<String, Option<Value>>,
+}
+
+impl ModuleImports {
+    pub fn new(values: impl IntoIterator<Item = (String, Value)>) -> Self {
+        Self {
+            values: values
+                .into_iter()
+                .map(|(specifier, value)| (specifier, Some(value)))
+                .collect(),
+        }
+    }
+
+    pub fn with_failed(specifiers: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            values: specifiers
+                .into_iter()
+                .map(|specifier| (specifier, None))
+                .collect(),
+        }
+    }
+
+    pub fn insert(&mut self, specifier: impl Into<String>, value: Value) {
+        self.values.insert(specifier.into(), Some(value));
+    }
+
+    pub fn insert_failed(&mut self, specifier: impl Into<String>) {
+        self.values.insert(specifier.into(), None);
+    }
+
+    fn get(&self, specifier: &str) -> Option<Option<Value>> {
+        self.values.get(specifier).cloned()
+    }
+}
+
 /// Evaluate module items sequentially. Bindings update the environment for
 /// later items, and the outcome value is produced only by a trailing expression.
 pub fn eval_module(module: &Module) -> EvalOutcome {
@@ -474,7 +518,15 @@ pub fn eval_module(module: &Module) -> EvalOutcome {
 /// environment. Module bindings use normal top-level scope rules and may shadow
 /// an injected global by rebinding the same name.
 pub fn eval_module_with_globals(module: &Module, globals: Vec<(String, Value)>) -> EvalOutcome {
-    let env = Environment::new();
+    eval_module_with_globals_and_imports(module, globals, &ModuleImports::default())
+}
+
+pub fn eval_module_with_globals_and_imports(
+    module: &Module,
+    globals: Vec<(String, Value)>,
+    imports: &ModuleImports,
+) -> EvalOutcome {
+    let env = Environment::with_imports(imports.clone());
     bind_intrinsics(&env);
     for (name, value) in globals {
         env.bind(name, value);
@@ -957,6 +1009,10 @@ fn eval_block(items: &[Item], env: &Environment) -> Eval {
 }
 
 fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eval {
+    if let Some(value) = eval_import_call(callee, args, env) {
+        return value;
+    }
+
     if let ExprKind::Tag(name) = &callee.kind {
         let mut payload = Vec::with_capacity(args.len());
         for arg in args {
@@ -1020,6 +1076,37 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
 
     let callee_value = eval_expr_many(callee, env)?;
     apply_callee(callee_value, callee.span, args, span, env)
+}
+
+fn eval_import_call(callee: &Expr, args: &[Expr], env: &Environment) -> Option<Eval> {
+    let ExprKind::Name(name) = &callee.kind else {
+        return None;
+    };
+    if name != "import" {
+        return None;
+    }
+
+    let Some(arg) = args.first() else {
+        return Some(Err(one_diagnostic(dynamic_import(callee.span))));
+    };
+    if args.len() != 1 {
+        return Some(Err(one_diagnostic(dynamic_import(callee.span))));
+    }
+
+    let ExprKind::Literal(Literal::String(raw)) = &arg.kind else {
+        return Some(Err(one_diagnostic(dynamic_import(arg.span))));
+    };
+    let specifier = decode_string_literal(raw);
+    match env.imports.get(&specifier) {
+        Some(Some(value)) => Some(Ok(value)),
+        Some(None) => Some(Err(one_diagnostic(import_failed(&specifier, arg.span)))),
+        None if is_relative_import_specifier(&specifier) => {
+            Some(Err(one_diagnostic(unresolved_import(&specifier, arg.span))))
+        }
+        None => Some(Err(one_diagnostic(unsupported_import_root(
+            &specifier, arg.span,
+        )))),
+    }
 }
 
 fn format_static_value(format: &Expr, member: &str, env: &Environment) -> Eval {
@@ -2273,6 +2360,50 @@ fn missing_field(field: &str, span: Span) -> Diagnostic {
         .with_note("record field lookup only succeeds for fields present on the record value")
 }
 
+fn dynamic_import(span: Span) -> Diagnostic {
+    Diagnostic::error("dynamic import is not supported yet")
+        .with_code(codes::module::DYNAMIC_IMPORT)
+        .with_label(Label::primary(
+            span,
+            "import specifier must be a static string literal",
+        ))
+        .with_note("Milestone Z1+Z2 only supports local relative imports with string literals")
+        .with_note("dynamic import is deferred to Milestone Z")
+}
+
+fn unsupported_import_root(specifier: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(format!("unsupported import specifier `{specifier}`"))
+        .with_code(codes::module::UNSUPPORTED_ROOT)
+        .with_label(Label::primary(
+            span,
+            "this import root is not supported in this milestone",
+        ))
+        .with_note("use a local relative specifier beginning with `./` or `../`")
+        .with_note("`$/`, `~/`, `//`, standard libraries, and packages are deferred to Milestone Z")
+}
+
+/// A static relative import evaluated without an injected imports map: this
+/// evaluation entered through bare `eval_module_with_globals` (an embedding)
+/// instead of the module-graph driver, so no module was loaded. Unlike the
+/// checker's warning, evaluation cannot produce a value here, so this is an
+/// error.
+fn unresolved_import(specifier: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(format!("import `{specifier}` is not resolved here"))
+        .with_code(codes::module::UNRESOLVED_IMPORT)
+        .with_label(Label::primary(
+            span,
+            "this evaluation context loads one file, so the module is not available",
+        ))
+        .with_note("`aven run` resolves local relative imports")
+}
+
+fn import_failed(specifier: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(format!("import `{specifier}` failed"))
+        .with_code(codes::module::IMPORT_HAS_ERRORS)
+        .with_label(Label::primary(span, "this imported module has errors"))
+        .with_note("fix the imported module before running this file")
+}
+
 fn no_match(span: Span) -> Diagnostic {
     Diagnostic::error("no match arm matched")
         .with_code(codes::runtime::NO_MATCH)
@@ -2431,6 +2562,10 @@ fn first_diagnostic(flow: Flow) -> Diagnostic {
         .into_iter()
         .next()
         .expect("expression errors include at least one diagnostic")
+}
+
+fn is_relative_import_specifier(specifier: &str) -> bool {
+    specifier.starts_with("./") || specifier.starts_with("../")
 }
 
 /// Collapse a [`Flow`] into the diagnostics it reports. A [`Flow::Propagate`]

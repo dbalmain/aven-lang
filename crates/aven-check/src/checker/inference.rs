@@ -113,12 +113,13 @@ impl<'a> Checker<'a> {
                 if let Some(shape) = literal_record_value(entries, expr.span) {
                     let mut fields = Vec::new();
                     for field in &shape.fields {
-                        let Some(value) = field.value else {
-                            return Type::Deferred;
+                        let ty = match field.value {
+                            Some(value) => self.infer(env, value),
+                            None => self.infer_name_reference(env, field.name, field.name_span),
                         };
                         fields.push(RowEntry::Field {
                             name: field.name.to_owned(),
-                            ty: self.infer(env, value),
+                            ty,
                         });
                     }
                     Type::Record(Row {
@@ -853,6 +854,10 @@ impl<'a> Checker<'a> {
             return self.infer_variant_constructor(env, tag, args);
         }
 
+        if let Some(result) = self.infer_import_call(callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_text_decode_call(env, callee, args) {
             return result;
         }
@@ -905,6 +910,42 @@ impl<'a> Checker<'a> {
             Type::Deferred
         } else {
             self.resolve_row_merge_call_result(&result_type)
+        }
+    }
+
+    pub(super) fn infer_import_call(&mut self, callee: &Expr, args: &[Expr]) -> Option<Type> {
+        let ExprKind::Name(name) = &ungroup_expr(callee).kind else {
+            return None;
+        };
+        if name != "import" {
+            return None;
+        }
+
+        let Some(arg) = args.first() else {
+            self.report_dynamic_import(callee.span);
+            return Some(Type::Deferred);
+        };
+        if args.len() != 1 {
+            self.report_dynamic_import(callee.span);
+            return Some(Type::Deferred);
+        }
+
+        let ExprKind::Literal(Literal::String(raw)) = &ungroup_expr(arg).kind else {
+            self.report_dynamic_import(arg.span);
+            return Some(Type::Deferred);
+        };
+        let specifier = decode_string_literal(raw);
+        match self.imports.get(&specifier) {
+            Some(Some(ty)) => Some(ty.clone()),
+            Some(None) => Some(Type::Deferred),
+            None if is_relative_import_specifier(&specifier) => {
+                self.report_unresolved_import(&specifier, arg.span);
+                Some(Type::Deferred)
+            }
+            None => {
+                self.report_unsupported_import_root(&specifier, arg.span);
+                Some(Type::Deferred)
+            }
         }
     }
 

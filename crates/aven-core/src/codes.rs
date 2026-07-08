@@ -20,6 +20,16 @@ pub mod layout {
     pub const INCONSISTENT_INDENTATION: &str = "layout.inconsistent-indentation";
 }
 
+pub mod module {
+    pub const DYNAMIC_IMPORT: &str = "module.dynamic-import";
+    pub const IMPORT_CYCLE: &str = "module.import-cycle";
+    pub const IMPORT_HAS_ERRORS: &str = "module.import-has-errors";
+    pub const NOT_FOUND: &str = "module.not-found";
+    pub const NOT_IMPORTABLE: &str = "module.not-importable";
+    pub const UNRESOLVED_IMPORT: &str = "module.unresolved-import";
+    pub const UNSUPPORTED_ROOT: &str = "module.unsupported-root";
+}
+
 pub mod lex {
     pub const LEADING_BOM: &str = "lex.leading-bom";
     pub const RESERVED_OPERATOR: &str = "lex.reserved-operator";
@@ -134,6 +144,13 @@ pub const ALL: &[&str] = &[
     lex::UNTERMINATED_INTERPOLATION,
     lex::UNTERMINATED_REGEX,
     lex::UNTERMINATED_STRING,
+    module::DYNAMIC_IMPORT,
+    module::IMPORT_CYCLE,
+    module::IMPORT_HAS_ERRORS,
+    module::NOT_FOUND,
+    module::NOT_IMPORTABLE,
+    module::UNRESOLVED_IMPORT,
+    module::UNSUPPORTED_ROOT,
     name::ACCIDENTAL_SHADOWING,
     name::DUPLICATE_DECLARATION,
     name::DUPLICATE_LOCAL,

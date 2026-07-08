@@ -6,6 +6,8 @@ mod lower;
 mod ty;
 mod unify;
 
+use std::collections::HashMap;
+
 use aven_core::{Diagnostic, Span};
 use aven_parser::{Expr, Module};
 
@@ -81,6 +83,43 @@ impl InferredType {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModuleImports {
+    types: HashMap<String, Option<Type>>,
+}
+
+impl ModuleImports {
+    pub fn new(types: impl IntoIterator<Item = (String, Type)>) -> Self {
+        Self {
+            types: types
+                .into_iter()
+                .map(|(specifier, ty)| (specifier, Some(ty)))
+                .collect(),
+        }
+    }
+
+    pub fn with_failed(specifiers: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            types: specifiers
+                .into_iter()
+                .map(|specifier| (specifier, None))
+                .collect(),
+        }
+    }
+
+    pub fn insert(&mut self, specifier: impl Into<String>, ty: Type) {
+        self.types.insert(specifier.into(), Some(ty));
+    }
+
+    pub fn insert_failed(&mut self, specifier: impl Into<String>) {
+        self.types.insert(specifier.into(), None);
+    }
+
+    pub fn get(&self, specifier: &str) -> Option<Option<&Type>> {
+        self.types.get(specifier).map(Option::as_ref)
+    }
+}
+
 pub fn check_module(module: &Module) -> CheckOutput {
     check_module_with_globals(module, &[])
 }
@@ -116,6 +155,14 @@ pub fn type_statics(globals: &HostGlobals, name: &str) -> Option<Vec<RecordField
 /// override a registered call's result type when the listed arguments are known
 /// at compile time.
 pub fn check_module_with_host_globals(module: &Module, globals: &HostGlobals) -> CheckOutput {
+    check_module_with_host_globals_and_imports(module, globals, &ModuleImports::default())
+}
+
+pub fn check_module_with_host_globals_and_imports(
+    module: &Module,
+    globals: &HostGlobals,
+    imports: &ModuleImports,
+) -> CheckOutput {
     let mut known_types = known_type_names(module);
     known_types.extend(
         globals
@@ -130,8 +177,13 @@ pub fn check_module_with_host_globals(module: &Module, globals: &HostGlobals) ->
             .entry(name.clone())
             .or_insert_with(|| ty.clone());
     }
-    let mut checker =
-        Checker::with_module_and_host_globals(known_types, type_definitions, module, globals);
+    let mut checker = Checker::with_module_and_host_globals_and_imports(
+        known_types,
+        type_definitions,
+        module,
+        globals,
+        imports,
+    );
 
     checker.diagnostics.extend(alias_diagnostics);
     checker.check_module(module);

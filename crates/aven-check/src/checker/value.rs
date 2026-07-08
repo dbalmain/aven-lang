@@ -54,6 +54,10 @@ impl<'a> Checker<'a> {
     /// (unknown/free name) keeps today's permissive behaviour.
     pub(super) fn check_value_call(&mut self, callee: &Expr, args: &[Expr]) {
         let env = self.local_types.inference_env();
+        if self.infer_import_call(callee, args).is_some() {
+            return;
+        }
+
         if let Some((receiver, _)) = self.value_encode_sugar_receiver(&env, callee) {
             self.check_value_expr(receiver);
             let _ = self.infer_value_encode_call(&env, callee, args);

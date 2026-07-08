@@ -1,0 +1,3 @@
+Text = import("./modules/text")
+
+writeLine(Text.join("a", "b", ", "))

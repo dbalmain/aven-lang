@@ -13,8 +13,14 @@ use aven_parser::{
 };
 
 pub use aven_check::{
-    HostGlobals, InferredType, RecordField, Type, function_signature, is_text_type,
-    literal_union_members, record_fields, type_statics, variant_tags,
+    HostGlobals, InferredType, ModuleImports as CheckModuleImports, RecordField, Type,
+    function_signature, is_text_type, literal_union_members, record_fields, type_statics,
+    variant_tags,
+};
+
+mod modules;
+pub use modules::{
+    ModuleCheckOutput, ModuleEvalOutput, check_path_with_host_globals, eval_path_with_globals,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -628,10 +634,19 @@ pub fn analyze_semantics_with_host_globals(
     parse: &ParseOutput,
     globals: &HostGlobals,
 ) -> SemanticOutput {
+    analyze_semantics_with_host_globals_and_imports(parse, globals, &CheckModuleImports::default())
+}
+
+pub fn analyze_semantics_with_host_globals_and_imports(
+    parse: &ParseOutput,
+    globals: &HostGlobals,
+    imports: &CheckModuleImports,
+) -> SemanticOutput {
     let parse_has_errors = parse.diagnostics.iter().any(Diagnostic::is_error);
     let (name_analysis, name_duration) = timed(|| aven_parser::analyze_names(&parse.module));
-    let (check_output, check_duration) =
-        timed(|| aven_check::check_module_with_host_globals(&parse.module, globals));
+    let (check_output, check_duration) = timed(|| {
+        aven_check::check_module_with_host_globals_and_imports(&parse.module, globals, imports)
+    });
     let aven_check::CheckOutput {
         diagnostics: check_diagnostics,
         inferred_types,

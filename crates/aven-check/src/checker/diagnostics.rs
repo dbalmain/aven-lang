@@ -5,6 +5,7 @@ impl<'a> Checker<'a> {
         DiagnosticSnapshot {
             diagnostics_len: self.diagnostics.len(),
             reported_unbound_name_spans: self.reported_unbound_name_spans.clone(),
+            reported_import_spans: self.reported_import_spans.clone(),
             propagation_context_site_counts: self
                 .propagation_contexts
                 .iter()
@@ -16,6 +17,7 @@ impl<'a> Checker<'a> {
     pub(super) fn restore_diagnostic_snapshot(&mut self, snapshot: DiagnosticSnapshot) {
         self.diagnostics.truncate(snapshot.diagnostics_len);
         self.reported_unbound_name_spans = snapshot.reported_unbound_name_spans;
+        self.reported_import_spans = snapshot.reported_import_spans;
         for (context, site_count) in self
             .propagation_contexts
             .iter_mut()
@@ -77,6 +79,67 @@ impl<'a> Checker<'a> {
                 index += 1;
             }
         }
+    }
+
+    pub(super) fn report_dynamic_import(&mut self, span: Span) {
+        if !self.report_import_once(span) {
+            return;
+        }
+
+        self.diagnostics.push(
+            Diagnostic::error("dynamic import is not supported yet")
+                .with_code(codes::module::DYNAMIC_IMPORT)
+                .with_label(Label::primary(
+                    span,
+                    "import specifier must be a static string literal",
+                ))
+                .with_note(
+                    "Milestone Z1+Z2 only supports local relative imports with string literals",
+                )
+                .with_note("dynamic import is deferred to Milestone Z"),
+        );
+    }
+
+    pub(super) fn report_unsupported_import_root(&mut self, specifier: &str, span: Span) {
+        if !self.report_import_once(span) {
+            return;
+        }
+
+        self.diagnostics.push(
+            Diagnostic::error(format!("unsupported import specifier `{specifier}`"))
+                .with_code(codes::module::UNSUPPORTED_ROOT)
+                .with_label(Label::primary(
+                    span,
+                    "this import root is not supported in this milestone",
+                ))
+                .with_note("use a local relative specifier beginning with `./` or `../`")
+                .with_note("`$/`, `~/`, `//`, standard libraries, and packages are deferred to Milestone Z"),
+        );
+    }
+
+    /// A static relative import checked without an injected imports map (the
+    /// LSP's single-file context, or a bare `check_module` embedding). The
+    /// specifier itself is fine, so this is a warning, not an error — the same
+    /// file passes `aven check`, which loads the module graph.
+    pub(super) fn report_unresolved_import(&mut self, specifier: &str, span: Span) {
+        if !self.report_import_once(span) {
+            return;
+        }
+
+        self.diagnostics.push(
+            Diagnostic::warning(format!("import `{specifier}` is not resolved here"))
+                .with_code(codes::module::UNRESOLVED_IMPORT)
+                .with_label(Label::primary(
+                    span,
+                    "this context checks one file at a time, so the module's contents are unknown",
+                ))
+                .with_note("`aven check` and `aven run` resolve local relative imports")
+                .with_note("editor cross-file import support arrives later in Milestone Z"),
+        );
+    }
+
+    fn report_import_once(&mut self, span: Span) -> bool {
+        self.reported_import_spans.insert(span)
     }
 
     pub(super) fn check_type_name(&mut self, name: &str, span: Span) {

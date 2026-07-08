@@ -135,6 +135,7 @@ fn run_with_expected_output(example: &Path, extra_args: &[&str]) {
     let expected: &str = match name.as_str() {
         "hello.av" => "hello, Aven\n",
         "literal-modes.av" => "1\n",
+        "modules.av" => "a, b\n",
         "records.av" => {
             "picked:\n\
             { name: \"Ada\", email: \"ada@x.dev\" }\n\

@@ -23,9 +23,11 @@ impl<'a> Checker<'a> {
             globals: Vec::new(),
             statics: HashMap::new(),
             host_comptime_fns: HashMap::new(),
+            imports: ModuleImports::default(),
             report_unbound_names: true,
             report_unresolved_bindings: true,
             reported_unbound_name_spans: HashSet::new(),
+            reported_import_spans: HashSet::new(),
             propagation_contexts: Vec::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
@@ -56,14 +58,32 @@ impl<'a> Checker<'a> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn with_module_and_host_globals(
         known_types: HashSet<String>,
         type_definitions: HashMap<String, Type>,
         module: &'a Module,
         globals: &HostGlobals,
     ) -> Self {
+        Self::with_module_and_host_globals_and_imports(
+            known_types,
+            type_definitions,
+            module,
+            globals,
+            &ModuleImports::default(),
+        )
+    }
+
+    pub(crate) fn with_module_and_host_globals_and_imports(
+        known_types: HashSet<String>,
+        type_definitions: HashMap<String, Type>,
+        module: &'a Module,
+        globals: &HostGlobals,
+        imports: &ModuleImports,
+    ) -> Self {
         let mut checker = Self::with_module_environment(known_types, type_definitions, module);
         checker.globals = globals.types.clone();
+        checker.imports = imports.clone();
         checker.host_comptime_fns = globals
             .comptime_fns
             .iter()
@@ -192,6 +212,11 @@ impl<'a> Checker<'a> {
                     self.report_unused_result_if_dropped(&TypeEnv::new(), expr);
                 }
                 self.check_value_expr(expr);
+                if index + 1 == module.items.len() {
+                    let diagnostics_start = self.diagnostics.len();
+                    let _ = self.infer(&TypeEnv::new(), expr);
+                    self.deduplicate_diagnostics_since(diagnostics_start);
+                }
             }
         }
     }
@@ -210,6 +235,7 @@ impl<'a> Checker<'a> {
 
         if declaration.phase == DeclarationPhase::Comptime
             && let Some(binding) = binding
+            && !self.binding_value_is_import(&binding.value)
         {
             self.check_comptime_binding_evaluation_support(&binding.value);
         }
@@ -245,6 +271,14 @@ impl<'a> Checker<'a> {
                 self.deduplicate_diagnostics_since(diagnostics_start);
             }
         }
+    }
+
+    fn binding_value_is_import(&self, value: &Expr) -> bool {
+        matches!(
+            &ungroup_expr(value).kind,
+            ExprKind::Call { callee, .. }
+                if matches!(&ungroup_expr(callee).kind, ExprKind::Name(name) if name == "import")
+        )
     }
 
     pub(super) fn check_value_expr_without_unbound_names(&mut self, expr: &Expr) {

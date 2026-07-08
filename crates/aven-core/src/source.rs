@@ -152,6 +152,10 @@ impl SourceMap {
     pub fn get(&self, id: FileId) -> Option<&SourceFile> {
         self.files.get(id.0)
     }
+
+    pub fn files(&self) -> &[SourceFile] {
+        &self.files
+    }
 }
 
 fn utf16_width_until(source: &str, start: usize, end: usize) -> u32 {

@@ -75,6 +75,34 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A string literal was opened but not closed. Add the closing quote, or use a raw string form once multi-line string support exists.",
     },
     DiagnosticExplanation {
+        code: codes::module::DYNAMIC_IMPORT,
+        text: "The import specifier is not a static string literal. This milestone only supports statically-resolved relative imports; dynamic import is deferred to Milestone Z.",
+    },
+    DiagnosticExplanation {
+        code: codes::module::IMPORT_CYCLE,
+        text: "A group of modules import each other in a cycle. Break the cycle by moving shared declarations to a lower-level module or inlining one dependency.",
+    },
+    DiagnosticExplanation {
+        code: codes::module::IMPORT_HAS_ERRORS,
+        text: "An imported module produced errors while being loaded, checked, or evaluated. Fix the dependency first, then check or run the importer again.",
+    },
+    DiagnosticExplanation {
+        code: codes::module::NOT_FOUND,
+        text: "A relative module import resolved to a path that does not exist. Check the specifier spelling, directory, and optional .av extension.",
+    },
+    DiagnosticExplanation {
+        code: codes::module::NOT_IMPORTABLE,
+        text: "A module's final expression is not a statically-known record, so it cannot be imported as a namespace. End the file with a literal record of exported bindings.",
+    },
+    DiagnosticExplanation {
+        code: codes::module::UNRESOLVED_IMPORT,
+        text: "This context checks one file at a time, so the imported module is not loaded and its contents are unknown here. `aven check` and `aven run` resolve local relative imports; editor cross-file support arrives later in Milestone Z.",
+    },
+    DiagnosticExplanation {
+        code: codes::module::UNSUPPORTED_ROOT,
+        text: "This import uses a module root that is reserved for a later module milestone. This slice only supports local relative specifiers beginning with ./ or ../.",
+    },
+    DiagnosticExplanation {
         code: codes::name::ACCIDENTAL_SHADOWING,
         text: "A local binding introduced with = reuses a name that is already visible. Rename it, or use := to shadow the existing binding intentionally.",
     },
