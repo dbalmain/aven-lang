@@ -2785,6 +2785,13 @@ checker re-entrancy to keep the semantic crates small.
 - Parser gap discovered: top-level record-pattern bindings
   (`{ join } = import("./lib/text")`) do not parse; the spec's selective-import
   form needs it. Works today via match patterns.
+- Checker bug discovered (2026-07-09): a binding that shadows a builtin type
+  name (`Text = import("./text")`) breaks record spread of that binding when the
+  imported signatures mention the shadowed type — `{ ..Text, ... }` infers
+  Deferred, so the module becomes `module.not-importable`. Any other binding
+  name works, and shadowing alone is fine when signatures don't mention the
+  type. High priority for Z: the spec's own examples recommend exactly this
+  binding style (`Text = import("std/Text")`).
 
 ## To investigate later
 
