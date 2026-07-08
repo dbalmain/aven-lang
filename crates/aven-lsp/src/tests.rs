@@ -1,4 +1,7 @@
+use std::fs;
 use std::future;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use serde_json::json;
@@ -1370,6 +1373,88 @@ fn parsed_document_diagnostic_report_uses_file_id() {
 }
 
 #[test]
+fn file_backed_semantic_diagnostics_use_entry_buffer_overlay() {
+    let dir = TempDir::new("lsp-entry-overlay");
+    write(dir.path(), "dep.av", "value = 1\n{ value }\n");
+    write(dir.path(), "main.av", "value : Int = \"disk\"\n{ value }\n");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let mut store = DocumentStore::default();
+    store.set_document(
+        main_uri.clone(),
+        1,
+        "D = import(\"./dep\")\nvalue : Int = D.value\n{ value }\n".to_owned(),
+    );
+    let (document, overlay) = store
+        .semantic_input(&main_uri)
+        .expect("expected semantic input");
+
+    let semantic = analyze_document_semantics_for_uri(&main_uri, &document, &overlay);
+
+    assert_no_aven_diagnostics(&semantic.diagnostics);
+}
+
+#[test]
+fn file_backed_semantic_diagnostics_use_dependency_buffer_overlay() {
+    let dir = TempDir::new("lsp-dependency-overlay");
+    write(dir.path(), "dep.av", "value = \"disk\"\n{ value }\n");
+    write(
+        dir.path(),
+        "main.av",
+        "D = import(\"./dep\")\nvalue : Int = D.value\n{ value }\n",
+    );
+    let dep_uri = file_uri(&dir.path().join("dep.av"));
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let mut store = DocumentStore::default();
+    store.set_document(dep_uri, 1, "value = 1\n{ value }\n".to_owned());
+    store.set_document(
+        main_uri.clone(),
+        1,
+        "D = import(\"./dep\")\nvalue : Int = D.value\n{ value }\n".to_owned(),
+    );
+    let (document, overlay) = store
+        .semantic_input(&main_uri)
+        .expect("expected semantic input");
+
+    let semantic = analyze_document_semantics_for_uri(&main_uri, &document, &overlay);
+
+    assert_no_aven_diagnostics(&semantic.diagnostics);
+}
+
+#[test]
+fn file_backed_semantic_diagnostics_report_missing_dependency() {
+    let dir = TempDir::new("lsp-missing-dependency");
+    write(
+        dir.path(),
+        "main.av",
+        "Missing = import(\"./missing\")\n{ Missing }\n",
+    );
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let mut store = DocumentStore::default();
+    store.set_document(
+        main_uri.clone(),
+        1,
+        "Missing = import(\"./missing\")\n{ Missing }\n".to_owned(),
+    );
+    let (document, overlay) = store
+        .semantic_input(&main_uri)
+        .expect("expected semantic input");
+
+    let semantic = analyze_document_semantics_for_uri(&main_uri, &document, &overlay);
+
+    assert_has_aven_code(&semantic.diagnostics, codes::module::NOT_FOUND);
+    assert_lacks_aven_code(&semantic.diagnostics, codes::module::UNRESOLVED_IMPORT);
+}
+
+#[test]
+fn pathless_semantic_diagnostics_keep_single_file_import_warning() {
+    let document = parsed_document("Dep = import(\"./dep\")\n{ Dep }\n");
+
+    let semantic = analyze_document_semantics(&document);
+
+    assert_has_aven_code(&semantic.diagnostics, codes::module::UNRESOLVED_IMPORT);
+}
+
+#[test]
 fn document_store_reuses_ids_for_the_same_uri() {
     let mut store = DocumentStore::default();
     let uri = test_uri();
@@ -1776,6 +1861,31 @@ fn assert_action_carries_diagnostic(action: &CodeAction, diagnostic: &Diagnostic
     assert_eq!(&action_diagnostics[0], diagnostic);
 }
 
+fn assert_no_aven_diagnostics(diagnostics: &[AvenDiagnostic]) {
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics, got {diagnostics:#?}"
+    );
+}
+
+fn assert_has_aven_code(diagnostics: &[AvenDiagnostic], code: &str) {
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some(code)),
+        "expected diagnostic code {code}, got {diagnostics:#?}"
+    );
+}
+
+fn assert_lacks_aven_code(diagnostics: &[AvenDiagnostic], code: &str) {
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some(code)),
+        "expected no diagnostic code {code}, got {diagnostics:#?}"
+    );
+}
+
 fn assert_edit_inserts_text(document: &ParsedDocument, edit: &TextEdit, expected: &str) {
     assert_eq!(edit.range.start, edit.range.end);
     let offset = position_to_offset(document, edit.range.start)
@@ -1797,5 +1907,44 @@ fn test_uri() -> Url {
     match Url::parse("file:///test.av") {
         Ok(uri) => uri,
         Err(error) => panic!("failed to parse test URI: {error}"),
+    }
+}
+
+fn file_uri(path: &Path) -> Url {
+    Url::from_file_path(path).unwrap_or_else(|()| panic!("failed to convert path to URI: {path:?}"))
+}
+
+fn write(root: &Path, relative: &str, source: &str) {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("failed to create parent directory");
+    }
+    fs::write(path, source).expect("failed to write source file");
+}
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(label: &str) -> Self {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is before the Unix epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("aven-lsp-{label}-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&path).expect("failed to create temp directory");
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
     }
 }

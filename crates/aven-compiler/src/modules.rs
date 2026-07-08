@@ -27,6 +27,25 @@ pub struct ModuleEvalOutput {
     pub value: Option<Value>,
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct SourceOverlay {
+    sources: HashMap<PathBuf, String>,
+}
+
+impl SourceOverlay {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, path: PathBuf, source: String) -> Option<String> {
+        self.sources.insert(path, source)
+    }
+
+    fn source(&self, path: &Path) -> Option<&str> {
+        self.sources.get(path).map(String::as_str)
+    }
+}
+
 #[derive(Debug)]
 struct ModuleGraph {
     source_map: SourceMap,
@@ -75,8 +94,25 @@ pub fn check_path_with_host_globals(
     path: &Path,
     globals: &HostGlobals,
 ) -> io::Result<ModuleCheckOutput> {
+    check_path_with_host_globals_and_overlay(path, globals, &SourceOverlay::default())
+}
+
+pub fn check_path_with_host_globals_and_overlay(
+    path: &Path,
+    globals: &HostGlobals,
+    overlay: &SourceOverlay,
+) -> io::Result<ModuleCheckOutput> {
+    check_path_with_host_globals_and_overlay_and_entry_parse(path, globals, overlay, None)
+}
+
+pub fn check_path_with_host_globals_and_overlay_and_entry_parse(
+    path: &Path,
+    globals: &HostGlobals,
+    overlay: &SourceOverlay,
+    entry_parse: Option<&ParseOutput>,
+) -> io::Result<ModuleCheckOutput> {
     let total_start = Instant::now();
-    let graph = ModuleGraph::load(path)?;
+    let graph = ModuleGraph::load(path, overlay, entry_parse)?;
     let mut diagnostics = parse_diagnostics(&graph);
     let mut exports = vec![CheckExport::HasErrors; graph.nodes.len()];
     let mut name_duration = None;
@@ -128,7 +164,7 @@ pub fn eval_path_with_globals(
     path: &Path,
     globals: Vec<(String, Value)>,
 ) -> io::Result<ModuleEvalOutput> {
-    let graph = ModuleGraph::load(path)?;
+    let graph = ModuleGraph::load(path, &SourceOverlay::default(), None)?;
     let mut diagnostics = parse_diagnostics(&graph);
     let mut exports = vec![EvalExport::HasErrors; graph.nodes.len()];
     let mut entry_value = None;
@@ -170,7 +206,11 @@ pub fn eval_path_with_globals(
 }
 
 impl ModuleGraph {
-    fn load(entry_path: &Path) -> io::Result<Self> {
+    fn load(
+        entry_path: &Path,
+        overlay: &SourceOverlay,
+        entry_parse: Option<&ParseOutput>,
+    ) -> io::Result<Self> {
         let entry_path = fs::canonicalize(entry_path)?;
         let mut graph = Self {
             source_map: SourceMap::new(),
@@ -180,13 +220,15 @@ impl ModuleGraph {
         };
         let mut states = HashMap::new();
         let mut stack = Vec::new();
-        graph.load_module(&entry_path, &mut states, &mut stack)?;
+        graph.load_module(&entry_path, overlay, entry_parse, &mut states, &mut stack)?;
         Ok(graph)
     }
 
     fn load_module(
         &mut self,
         path: &Path,
+        overlay: &SourceOverlay,
+        entry_parse: Option<&ParseOutput>,
         states: &mut HashMap<PathBuf, VisitState>,
         stack: &mut Vec<PathBuf>,
     ) -> io::Result<usize> {
@@ -194,8 +236,14 @@ impl ModuleGraph {
             return Ok(node_id);
         }
 
-        let file = self.load_source(path)?;
-        let parse = aven_parser::parse_source(&file);
+        let file = self.load_source(path, overlay)?;
+        let parse = if self.nodes.is_empty() {
+            entry_parse
+                .cloned()
+                .unwrap_or_else(|| aven_parser::parse_source(&file))
+        } else {
+            aven_parser::parse_source(&file)
+        };
         let node_id = self.nodes.len();
         self.by_path.insert(path.to_path_buf(), node_id);
         self.nodes.push(ModuleNode {
@@ -211,7 +259,7 @@ impl ModuleGraph {
         let import_calls = collect_import_calls(&self.nodes[node_id].parse.module);
         let imports = import_calls
             .into_iter()
-            .map(|call| self.resolve_import(node_id, call, states, stack))
+            .map(|call| self.resolve_import(node_id, call, overlay, states, stack))
             .collect::<io::Result<Vec<_>>>()?;
         self.nodes[node_id].imports = imports;
 
@@ -221,8 +269,10 @@ impl ModuleGraph {
         Ok(node_id)
     }
 
-    fn load_source(&mut self, path: &Path) -> io::Result<SourceFile> {
-        let source = fs::read_to_string(path)?;
+    fn load_source(&mut self, path: &Path, overlay: &SourceOverlay) -> io::Result<SourceFile> {
+        let source = overlay
+            .source(path)
+            .map_or_else(|| fs::read_to_string(path), |source| Ok(source.to_owned()))?;
         let name = path.display().to_string();
         let id = self
             .source_map
@@ -238,6 +288,7 @@ impl ModuleGraph {
         &mut self,
         importer: usize,
         call: ImportCall,
+        overlay: &SourceOverlay,
         states: &mut HashMap<PathBuf, VisitState>,
         stack: &mut Vec<PathBuf>,
     ) -> io::Result<ImportRef> {
@@ -291,7 +342,7 @@ impl ModuleGraph {
             });
         }
 
-        let target = self.load_module(&canonical, states, stack)?;
+        let target = self.load_module(&canonical, overlay, None, states, stack)?;
         Ok(ImportRef {
             specifier,
             call_span: call.call_span,

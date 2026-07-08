@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -72,6 +73,33 @@ impl DocumentStore {
 
     fn document(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
         self.database.document(uri)
+    }
+
+    fn semantic_input(
+        &self,
+        uri: &Url,
+    ) -> Option<(Arc<ParsedDocument>, aven_compiler::SourceOverlay)> {
+        Some((self.document(uri)?, self.source_overlay()))
+    }
+
+    fn source_overlay(&self) -> aven_compiler::SourceOverlay {
+        let mut overlay = aven_compiler::SourceOverlay::new();
+
+        for uri in self.file_ids.keys() {
+            let Ok(path) = uri.to_file_path() else {
+                continue;
+            };
+            let Ok(path) = fs::canonicalize(path) else {
+                continue;
+            };
+            let Some(document) = self.database.document(uri) else {
+                continue;
+            };
+
+            overlay.insert(path, document.source().to_owned());
+        }
+
+        overlay
     }
 
     fn set_semantic(
@@ -388,7 +416,11 @@ async fn publish_semantic_diagnostics(
     uri: Url,
     version: i32,
 ) {
-    let Some(document) = store.lock().ok().and_then(|store| store.document(&uri)) else {
+    let Some((document, overlay)) = store
+        .lock()
+        .ok()
+        .and_then(|store| store.semantic_input(&uri))
+    else {
         return;
     };
 
@@ -396,7 +428,7 @@ async fn publish_semantic_diagnostics(
         return;
     }
 
-    let semantic = analyze_document_semantics(&document);
+    let semantic = analyze_document_semantics_for_uri(&uri, &document, &overlay);
     let Some(document) = store.lock().ok().and_then(|mut store| {
         if !store.set_semantic(&uri, version, semantic.diagnostics, semantic.inferred_types) {
             return None;
@@ -415,6 +447,56 @@ async fn publish_semantic_diagnostics(
 fn analyze_document_semantics(document: &ParsedDocument) -> aven_compiler::SemanticOutput {
     let globals = aven_host::standard_check_host_globals();
     aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals)
+}
+
+fn analyze_document_semantics_for_uri(
+    uri: &Url,
+    document: &ParsedDocument,
+    overlay: &aven_compiler::SourceOverlay,
+) -> aven_compiler::SemanticOutput {
+    let globals = aven_host::standard_check_host_globals();
+    let mut semantic =
+        aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals);
+
+    if let Some(diagnostics) = module_diagnostics_for_document(uri, document, &globals, overlay) {
+        semantic.diagnostics = diagnostics;
+    }
+
+    semantic
+}
+
+fn module_diagnostics_for_document(
+    uri: &Url,
+    document: &ParsedDocument,
+    globals: &aven_compiler::HostGlobals,
+    overlay: &aven_compiler::SourceOverlay,
+) -> Option<Vec<AvenDiagnostic>> {
+    let entry_path = fs::canonicalize(uri.to_file_path().ok()?).ok()?;
+    let output = aven_compiler::check_path_with_host_globals_and_overlay_and_entry_parse(
+        &entry_path,
+        globals,
+        overlay,
+        Some(document.parse_output()),
+    )
+    .ok()?;
+    let entry_file = output
+        .source_map
+        .files()
+        .iter()
+        .find(|file| file.path.as_deref() == Some(entry_path.as_path()))?;
+    let diagnostics = output
+        .reports
+        .iter()
+        .find(|report| report.file_id == entry_file.id)
+        .map_or_else(Vec::new, |report| report.diagnostics.clone());
+    let parse_diagnostics = document.parse_diagnostics();
+
+    Some(
+        diagnostics
+            .into_iter()
+            .filter(|diagnostic| !parse_diagnostics.contains(diagnostic))
+            .collect(),
+    )
 }
 
 fn document_diagnostics(document: &ParsedDocument) -> Vec<Diagnostic> {

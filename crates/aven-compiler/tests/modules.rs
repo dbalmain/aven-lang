@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aven_compiler::{HostGlobals, check_path_with_host_globals, eval_path_with_globals};
+use aven_compiler::{
+    HostGlobals, SourceOverlay, check_path_with_host_globals,
+    check_path_with_host_globals_and_overlay, eval_path_with_globals,
+};
 use aven_core::codes;
 
 #[test]
@@ -70,6 +73,31 @@ fn record_pattern_can_select_from_import_record() {
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
         .expect("check should load graph");
+
+    assert_no_errors(&output.reports);
+}
+
+#[test]
+fn source_overlay_beats_disk_content() {
+    let dir = TempDir::new("overlay-check");
+    write(dir.path(), "dep.av", "value = \"disk\"\n{ value }\n");
+    write(
+        dir.path(),
+        "main.av",
+        "D = import(\"./dep\")\nvalue : Int = D.value\n{ value }\n",
+    );
+    let mut overlay = SourceOverlay::new();
+    overlay.insert(
+        fs::canonicalize(dir.path().join("dep.av")).expect("dep path should canonicalize"),
+        "value = 1\n{ value }\n".to_owned(),
+    );
+
+    let output = check_path_with_host_globals_and_overlay(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &overlay,
+    )
+    .expect("check should load graph");
 
     assert_no_errors(&output.reports);
 }
