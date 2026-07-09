@@ -2782,11 +2782,16 @@ checker re-entrancy to keep the semantic crates small.
   entry parse reused), publishing the same `module.*` diagnostics as
   `aven check`. Pathless/untitled buffers keep the single-file
   `module.unresolved-import` warning.
-- Z-open: LSP cross-file intelligence — import-specifier and module-member
-  completion, cross-file goto, import-aware hover. When picked up, have the
-  driver return per-node inferred types so the LSP stops running the entry's
-  semantic analysis twice (once single-file for hover, once in-graph for
-  diagnostics).
+- Z-LSP2 done 2026-07-10: cross-file intelligence. The driver returns per-node
+  semantics plus an export-provenance map (export field → defining file+span;
+  punned/renamed/explicit/spread entries chased transitively). File-backed
+  documents store the entry node's import-aware semantics per revision (single
+  analysis path — the double entry analysis is gone), so member completion and
+  hover through import bindings ride the existing type machinery. Goto resolves
+  specifier strings, pattern-bound import names, and imported member access to
+  the dependency file; import-specifier completion lists sibling dirs/`.av`
+  files (extension omitted) for `./`/`../` and offers nothing for unsupported
+  roots.
 - Z-open: dynamic (runtime-string) import fallback.
 - Design decision (user, 2026-07-09): **modules bind lowercase** — a module is
   an ordinary record value; uppercase is reserved for types alone (no
