@@ -2798,19 +2798,24 @@ checker re-entrancy to keep the semantic crates small.
   still cannot bind lowercase (`config = User` stays an error). Zig/TS
   precedent. Spec updated in clex (naming rules, Type and Comptime Bindings,
   Modules/Imports examples). Supersedes "imported namespaces are capitalized".
-- Parser gap discovered: top-level record-pattern bindings
-  (`{ join } = import("./lib/text")`) do not parse, and block spread bindings
-  (`..expr` opening a record into scope, spec §Block Spread Bindings) are
-  unimplemented everywhere — both fail for plain local records too, so this is a
-  general binding-forms slice, not an import gap. The spec's selective-import
-  forms need both. Works today via match patterns.
-- Checker bug discovered (2026-07-09): a binding that shadows a builtin type
-  name (`Text = import("./text")`) breaks record spread of that binding when the
-  imported signatures mention the shadowed type — `{ ..Text, ... }` infers
-  Deferred, so the module becomes `module.not-importable`. Any other binding
-  name works, and shadowing alone is fine when signatures don't mention the
-  type. High priority for Z: the spec's own examples recommend exactly this
-  binding style (`Text = import("std/Text")`).
+- Binding forms done 2026-07-09: record-pattern bindings
+  (`{ a, b -> c } = expr`) and block spread bindings (`..expr` / `:..expr`) land
+  at the top level and in blocks, for all records — the spec's selective-import
+  forms (`{ join } = import("./x")`, `..import("./x")`) fall out. The pattern
+  LHS parses as an ordinary `Expr` (no parallel pattern AST); eval reuses
+  match-pattern destructuring; spreads require a statically-known closed record
+  (`type.spread-shape-unknown` otherwise); `:..` is block-only
+  (`name.no-toplevel-spread-shadow` at top level); uppercase pattern binders
+  parse but diagnose `type.uppercase-pattern-binder-unsupported` until modules
+  can export types.
+- Checker bug discovered (2026-07-09), still open: a binding that shadows a
+  builtin type name (`Text = import("./text")`) breaks record spread of that
+  binding when the imported signatures mention the shadowed type —
+  `{ ..Text, ... }` infers Deferred, so the module becomes
+  `module.not-importable`. Any other binding name works, and shadowing alone is
+  fine when signatures don't mention the type. The lowercase-modules convention
+  makes the trigger rare (module bindings no longer collide with type names),
+  but the bug is still latent for any value binding named like a type.
 
 ## To investigate later
 
