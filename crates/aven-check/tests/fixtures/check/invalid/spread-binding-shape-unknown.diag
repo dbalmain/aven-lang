@@ -1,0 +1,3 @@
+error type.spread-shape-unknown: record fields must be statically known for a block spread
+  label 18..26: the record's fields must be statically known to open it into scope
+  note: use a static import, a closed record literal or transform, or bind a closed record type before spreading it

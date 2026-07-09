@@ -175,6 +175,12 @@ impl<'a> Checker<'a> {
                 MergedItem::Binding { signature, binding } => {
                     self.check_local_binding(binding, signature);
                 }
+                MergedItem::PatternBinding(binding) => {
+                    self.check_local_pattern_binding(binding);
+                }
+                MergedItem::SpreadBinding(binding) => {
+                    self.check_local_spread_binding(binding);
+                }
                 MergedItem::Signature(signature) => {
                     let ty = self.lower_normalized_annotation(&signature.annotation);
                     self.local_types

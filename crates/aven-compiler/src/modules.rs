@@ -364,6 +364,12 @@ fn collect_import_calls(module: &Module) -> Vec<ImportCall> {
     for item in &module.items {
         match item {
             Item::Binding(binding) => collect_import_calls_from_expr(&binding.value, &mut calls),
+            Item::PatternBinding(binding) => {
+                collect_import_calls_from_expr(&binding.value, &mut calls);
+            }
+            Item::SpreadBinding(binding) => {
+                collect_import_calls_from_expr(&binding.value, &mut calls);
+            }
             Item::Signature(signature) => {
                 collect_import_calls_from_expr(&signature.annotation, &mut calls);
             }
@@ -524,7 +530,10 @@ fn eval_export_for_node(node: &ModuleNode, value: Option<Value>) -> EvalExport {
 fn final_expr(module: &Module) -> Option<&Expr> {
     match module.items.last()? {
         Item::Expr(expr) => Some(expr),
-        Item::Binding(_) | Item::Signature(_) => None,
+        Item::Binding(_)
+        | Item::PatternBinding(_)
+        | Item::SpreadBinding(_)
+        | Item::Signature(_) => None,
     }
 }
 

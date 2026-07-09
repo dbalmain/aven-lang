@@ -78,6 +78,49 @@ fn record_pattern_can_select_from_import_record() {
 }
 
 #[test]
+fn record_pattern_binding_selects_from_import_record() {
+    let dir = TempDir::new("pattern-binding-import");
+    write(
+        dir.path(),
+        "text.av",
+        "join = (x: Text): Text => x\n{ join }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "{ join } = import(\"./text\")\nvalue: Text = join(\"a\")\n{ value }\n",
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+
+    assert_no_errors(&output.reports);
+}
+
+#[test]
+fn spread_binding_opens_import_record() {
+    let dir = TempDir::new("spread-binding-import");
+    write(
+        dir.path(),
+        "text.av",
+        "join = (x: Text): Text => x\n{ join }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "..import(\"./text\")\nvalue: Text = join(\"a\")\n{ value }\n",
+    );
+
+    let check = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+    assert_no_errors(&check.reports);
+
+    let eval = eval_path_with_globals(&dir.path().join("main.av"), Vec::new())
+        .expect("eval should load graph");
+    assert_no_errors(&eval.reports);
+}
+
+#[test]
 fn source_overlay_beats_disk_content() {
     let dir = TempDir::new("overlay-check");
     write(dir.path(), "dep.av", "value = \"disk\"\n{ value }\n");

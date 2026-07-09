@@ -2,7 +2,8 @@ use aven_core::Span;
 
 use crate::items::{MergedItem, merged_items};
 use crate::lexer::is_comptime_identifier_name;
-use crate::parser::{Binding, Expr, ExprKind, Module, Param, Signature};
+use crate::parser::{Binding, Expr, ExprKind, Module, Param, PatternBinding, Signature};
+use crate::resolve::pattern_bindings;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declaration {
@@ -58,6 +59,10 @@ pub fn collect_declarations(module: &Module) -> Vec<Declaration> {
             MergedItem::Binding { signature, binding } => {
                 declarations.push(binding_declaration(binding, signature));
             }
+            MergedItem::PatternBinding(binding) => {
+                declarations.extend(pattern_binding_declarations(binding));
+            }
+            MergedItem::SpreadBinding(_) => {}
             MergedItem::Signature(signature) => declarations.push(signature_declaration(signature)),
             MergedItem::Expr(_) => {}
         }
@@ -92,6 +97,22 @@ fn signature_declaration(signature: &Signature) -> Declaration {
         is_annotated: false,
         shadow_span: None,
     }
+}
+
+fn pattern_binding_declarations(binding: &PatternBinding) -> Vec<Declaration> {
+    pattern_bindings(&binding.pattern)
+        .into_iter()
+        .map(|site| Declaration {
+            name: site.name.to_owned(),
+            name_span: site.span,
+            span: binding.span,
+            kind: DeclarationKind::Binding,
+            phase: declaration_phase(site.name),
+            shape: DeclarationShape::Value,
+            is_annotated: false,
+            shadow_span: None,
+        })
+        .collect()
 }
 
 fn binding_kind(binding: &Binding) -> DeclarationKind {

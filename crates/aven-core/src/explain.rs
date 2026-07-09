@@ -119,6 +119,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "`:=` shadows a binding inside a block, but top-level declarations are one mutually-recursive group with unique names, so there is nothing to sequentially shadow. Use a distinct name, or move the shadow into a block.",
     },
     DiagnosticExplanation {
+        code: codes::name::NO_TOPLEVEL_SPREAD_SHADOW,
+        text: "The :.. block-spread replacement form is sequential rebinding, but top-level declarations are mutually recursive and cannot be replaced in order. Use .. at top level, or move :.. into a block.",
+    },
+    DiagnosticExplanation {
         code: codes::name::SHADOW_UNBOUND,
         text: "An explicit shadow binding introduced with := has no visible binding to shadow. Use = to introduce a fresh binding, or move the shadow after the binding it replaces.",
     },
@@ -351,6 +355,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A row transform used replacement syntax for a label that is not present in the closed row accumulated so far. Use an add form or spread a closed row containing that label first.",
     },
     DiagnosticExplanation {
+        code: codes::ty::SPREAD_SHAPE_UNKNOWN,
+        text: "A block spread binding can only open a record whose field names are statically known. Use a static import, a closed record literal or transform, or a binding whose closed record type is already known.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::TUPLE_INDEX_NOT_COMPTIME,
         text: "A tuple was indexed with a value that is not a compile-time integer. Tuple projection needs a literal index; convert the tuple to an array for runtime indexing, or supply a comptime index.",
     },
@@ -385,6 +393,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::UNUSED_RESULT,
         text: "A Result value was produced in statement position and then dropped. Unwrap it with `?!` when an `@Err` should panic, propagate it with `?^`, handle it explicitly, or assign it to `_` to document an intentional discard.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::UPPERCASE_PATTERN_BINDER_UNSUPPORTED,
+        text: "Uppercase record-pattern binders are reserved for extracting types from module records, but module type exports are deferred to Milestone Z. Import values with lowercase binders for now.",
     },
     DiagnosticExplanation {
         code: codes::ty::WIDE_VALUE_INTO_LITERAL_UNION,

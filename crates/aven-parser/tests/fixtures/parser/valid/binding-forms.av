@@ -1,0 +1,11 @@
+source = { join: (x: Text): Text => x, concat: (x: Text): Text => x }
+{ join, concat -> concatText } = source
+..{ shout: (x: Text): Text => x, suffix: "!" }
+
+run = () =>
+  defaults = { host: "localhost", port: 80, debug: true, log: (x: Text): Text => x }
+  { host, port } = defaults
+  ..{ ..defaults, -debug, -host, -port, log -> logLine }
+  :..{ port: 443 }
+  { Text } = { Text: 1 }
+  logLine(host)

@@ -46,6 +46,7 @@ pub mod name {
     pub const DUPLICATE_DECLARATION: &str = "name.duplicate-declaration";
     pub const DUPLICATE_LOCAL: &str = "name.duplicate-local";
     pub const NO_TOPLEVEL_SHADOW: &str = "name.no-toplevel-shadow";
+    pub const NO_TOPLEVEL_SPREAD_SHADOW: &str = "name.no-toplevel-spread-shadow";
     pub const SHADOW_UNBOUND: &str = "name.shadow-unbound";
     pub const UNBOUND: &str = "name.unbound";
     pub const UNUSED_BINDING: &str = "name.unused-binding";
@@ -116,11 +117,14 @@ pub mod ty {
     pub const PROPAGATE_NOT_RESULT: &str = "type.propagate-not-result";
     pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
     pub const REPLACE_ABSENT_FIELD: &str = "type.replace-absent-field";
+    pub const SPREAD_SHAPE_UNKNOWN: &str = "type.spread-shape-unknown";
     pub const TUPLE_INDEX_NOT_COMPTIME: &str = "type.tuple-index-not-comptime";
-    pub const UNGUARDED_EMPTY_ACCESS: &str = "type.unguarded-empty-access";
     pub const TUPLE_INDEX_OUT_OF_RANGE: &str = "type.tuple-index-out-of-range";
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
+    pub const UNGUARDED_EMPTY_ACCESS: &str = "type.unguarded-empty-access";
+    pub const UPPERCASE_PATTERN_BINDER_UNSUPPORTED: &str =
+        "type.uppercase-pattern-binder-unsupported";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
     pub const UNREACHABLE_MATCH_ARM: &str = "type.unreachable-match-arm";
     pub const UNRESOLVED_BINDING: &str = "type.unresolved-binding";
@@ -155,6 +159,7 @@ pub const ALL: &[&str] = &[
     name::DUPLICATE_DECLARATION,
     name::DUPLICATE_LOCAL,
     name::NO_TOPLEVEL_SHADOW,
+    name::NO_TOPLEVEL_SPREAD_SHADOW,
     name::SHADOW_UNBOUND,
     name::UNBOUND,
     name::UNUSED_BINDING,
@@ -213,6 +218,7 @@ pub const ALL: &[&str] = &[
     ty::PROPAGATE_NOT_RESULT,
     ty::RENAME_ABSENT_FIELD,
     ty::REPLACE_ABSENT_FIELD,
+    ty::SPREAD_SHAPE_UNKNOWN,
     ty::TUPLE_INDEX_NOT_COMPTIME,
     ty::TUPLE_INDEX_OUT_OF_RANGE,
     ty::TYPE_ONLY_RECORD_ENTRY,
@@ -222,5 +228,6 @@ pub const ALL: &[&str] = &[
     ty::UNREACHABLE_MATCH_ARM,
     ty::UNRESOLVED_BINDING,
     ty::UNUSED_RESULT,
+    ty::UPPERCASE_PATTERN_BINDER_UNSUPPORTED,
     ty::WIDE_VALUE_INTO_LITERAL_UNION,
 ];

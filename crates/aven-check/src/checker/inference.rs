@@ -48,14 +48,31 @@ impl<'a> Checker<'a> {
             return Some(TypeScheme::mono(Type::Deferred));
         }
 
-        let binding = (*self.bindings.get(name)?)?;
+        let binding = self.bindings.get(name).and_then(|binding| *binding);
+        let pattern_binding = self.pattern_bindings.get(name).copied();
+        if binding.is_none() && pattern_binding.is_none() {
+            return None;
+        }
         self.in_progress.insert(name.to_owned());
 
         let scheme = if let Some(annotation) = self.clean_declared_annotation(name) {
             TypeScheme::mono(annotation)
-        } else {
+        } else if let Some(binding) = binding {
             let ty = self.infer(&TypeEnv::new(), &binding.value);
             self.generalize_with_row_merges(self.resolve_and_default(&ty), &[], &[])
+        } else if let Some(binding) = pattern_binding {
+            let ty = self.infer(&TypeEnv::new(), &binding.value);
+            let resolved = self.normalize(&self.resolve_and_default(&ty));
+            let local_types =
+                pattern_local_types(&self.type_definitions, &binding.pattern, Some(&resolved));
+            let ty = local_types
+                .into_iter()
+                .find_map(|(binding_name, ty)| (binding_name == name).then_some(ty))
+                .and_then(local_value_type_as_type)
+                .unwrap_or(Type::Deferred);
+            self.generalize_with_row_merges(ty, &[], &[])
+        } else {
+            TypeScheme::mono(Type::Deferred)
         };
 
         self.in_progress.remove(name);
@@ -2222,6 +2239,27 @@ impl<'a> Checker<'a> {
                             }
                         });
                     next_env.insert(binding.name.clone(), local_type);
+                }
+                MergedItem::PatternBinding(binding) => {
+                    let inferred = self.infer(&next_env, &binding.value);
+                    let resolved = self.normalize(&self.resolve_and_default(&inferred));
+                    for (name, ty) in pattern_local_types(
+                        &self.type_definitions,
+                        &binding.pattern,
+                        Some(&resolved),
+                    ) {
+                        next_env.insert(name, ty);
+                    }
+                }
+                MergedItem::SpreadBinding(binding) => {
+                    if let Some(row) = self.closed_spread_row(binding, &next_env, false) {
+                        for entry in row.entries {
+                            let RowEntry::Field { name, ty } = entry else {
+                                continue;
+                            };
+                            next_env.insert(name, LocalValueType::Known(ty));
+                        }
+                    }
                 }
                 MergedItem::Signature(signature) => {
                     let ty = self.lower_annotation_for_inference(&signature.annotation);

@@ -141,6 +141,15 @@ fn analyze_item(item: &Item, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
                 scopes.diagnose_shadow_target(&binding.name, binding.name_span, diagnostics);
             }
         }
+        Item::PatternBinding(binding) => {
+            analyze_expr(&binding.value, scopes, diagnostics);
+        }
+        Item::SpreadBinding(binding) => {
+            if binding.overwrite {
+                diagnostics.push(top_level_spread_shadow_diagnostic(binding.operator_span));
+            }
+            analyze_expr(&binding.value, scopes, diagnostics);
+        }
         Item::Signature(signature) => analyze_expr(&signature.annotation, scopes, diagnostics),
         Item::Expr(expr) => analyze_expr(expr, scopes, diagnostics),
     }
@@ -213,6 +222,13 @@ fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<
                     binding.shadow_span.is_some(),
                     diagnostics,
                 );
+            }
+            MergedItem::PatternBinding(binding) => {
+                analyze_expr(&binding.value, scopes, diagnostics);
+                define_pattern_bindings(pattern_bindings(&binding.pattern), scopes, diagnostics);
+            }
+            MergedItem::SpreadBinding(binding) => {
+                analyze_expr(&binding.value, scopes, diagnostics);
             }
             MergedItem::Signature(signature) => {
                 analyze_expr(&signature.annotation, scopes, diagnostics);
@@ -531,6 +547,18 @@ fn shadow_unbound_diagnostic(name: &str, span: Span) -> Diagnostic {
             "explicit shadowing needs an existing binding",
         ))
         .with_note("use `=` to introduce a new binding")
+}
+
+fn top_level_spread_shadow_diagnostic(span: Span) -> Diagnostic {
+    Diagnostic::error("cannot use `:..` at the top level")
+        .with_code(codes::name::NO_TOPLEVEL_SPREAD_SHADOW)
+        .with_label(Label::primary(
+            span,
+            "`:..` replacement is only available inside blocks",
+        ))
+        .with_note(
+            "top-level names are mutually recursive and cannot be sequentially replaced; use `..` or move the spread into a block",
+        )
 }
 
 #[cfg(test)]

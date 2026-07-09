@@ -390,6 +390,8 @@ fn is_declaration_item(item: &Item, declaration: &Declaration) -> bool {
         Item::Signature(signature) => {
             signature.name == declaration.name && declaration.span.contains(signature.span)
         }
+        Item::PatternBinding(binding) => declaration.span.contains(binding.span),
+        Item::SpreadBinding(_) => false,
         Item::Expr(_) => false,
     }
 }
@@ -419,6 +421,12 @@ fn collect_item_references(item: &Item, references: &mut Vec<Reference>) {
             if let Some(annotation) = &binding.annotation {
                 collect_expr_references(annotation, references);
             }
+            collect_expr_references(&binding.value, references);
+        }
+        Item::PatternBinding(binding) => {
+            collect_expr_references(&binding.value, references);
+        }
+        Item::SpreadBinding(binding) => {
             collect_expr_references(&binding.value, references);
         }
         Item::Signature(signature) => collect_expr_references(&signature.annotation, references),

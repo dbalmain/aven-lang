@@ -68,6 +68,10 @@ pub fn render_annotation(source: &str, annotation: &Expr) -> String {
 fn is_top_level_definition(module: &Module, name: &str, definition: Span) -> bool {
     module.items.iter().any(|item| match item {
         Item::Binding(binding) => binding.name == name && binding.name_span == definition,
+        Item::PatternBinding(binding) => pattern_bindings(&binding.pattern)
+            .into_iter()
+            .any(|site| site.name == name && site.span == definition),
+        Item::SpreadBinding(_) => false,
         Item::Signature(signature) => signature.name == name && signature.name_span == definition,
         Item::Expr(_) => false,
     })
@@ -91,6 +95,16 @@ fn annotation_for_definition_in_items(items: &[Item], definition: Span) -> Optio
                 }
 
                 if let Some(found) = annotation_for_definition_in_binding(binding, definition) {
+                    return Some(found);
+                }
+            }
+            MergedItem::PatternBinding(binding) => {
+                if let Some(found) = annotation_for_definition_in_expr(&binding.value, definition) {
+                    return Some(found);
+                }
+            }
+            MergedItem::SpreadBinding(binding) => {
+                if let Some(found) = annotation_for_definition_in_expr(&binding.value, definition) {
                     return Some(found);
                 }
             }
@@ -185,6 +199,27 @@ fn scope_at_item<'a>(item: &'a Item, at: Span, outer: &[BindingSite<'a>]) -> Opt
                 })
             })
         }
+        Item::PatternBinding(binding) => {
+            if !binding.span.contains(at) {
+                return None;
+            }
+
+            scope_at_expr(&binding.value, at, outer).or_else(|| {
+                let binders = pattern_bindings(&binding.pattern);
+                Some(ScopeAt {
+                    visible: outer.to_vec(),
+                    binder_at: binding_at_reference(&binders, at),
+                })
+            })
+        }
+        Item::SpreadBinding(binding) => {
+            if !binding.span.contains(at) {
+                return None;
+            }
+
+            scope_at_expr(&binding.value, at, outer)
+                .or_else(|| Some(ScopeAt::from_visible(outer.to_vec())))
+        }
         Item::Signature(signature) => {
             if !signature.span.contains(at) {
                 return None;
@@ -276,13 +311,17 @@ fn scope_at_block<'a>(items: &'a [Item], at: Span, outer: &[BindingSite<'a>]) ->
                 .unwrap_or_else(|| ScopeAt::from_visible(visible));
         }
 
-        if span.end <= at.start
-            && let Item::Binding(binding) = item
-        {
-            visible.push(BindingSite {
-                name: binding.name.as_str(),
-                span: binding.name_span,
-            });
+        if span.end <= at.start {
+            match item {
+                Item::Binding(binding) => visible.push(BindingSite {
+                    name: binding.name.as_str(),
+                    span: binding.name_span,
+                }),
+                Item::PatternBinding(binding) => {
+                    visible.extend(pattern_bindings(&binding.pattern));
+                }
+                Item::SpreadBinding(_) | Item::Signature(_) | Item::Expr(_) => {}
+            }
         }
     }
 
@@ -422,6 +461,8 @@ fn scope_at_record_entries<'a>(
 fn item_span(item: &Item) -> Span {
     match item {
         Item::Binding(binding) => binding.span,
+        Item::PatternBinding(binding) => binding.span,
+        Item::SpreadBinding(binding) => binding.span,
         Item::Signature(signature) => signature.span,
         Item::Expr(expr) => expr.span,
     }

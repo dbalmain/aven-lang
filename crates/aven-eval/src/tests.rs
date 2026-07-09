@@ -121,6 +121,70 @@ fn evaluates_sequential_bindings() {
 }
 
 #[test]
+fn evaluates_record_pattern_binding() {
+    assert_module_value(
+        "source = { left: 2, right: 3 }\n{ left, right } = source\nleft + right\n",
+        Value::Int(5),
+    );
+}
+
+#[test]
+fn evaluates_record_pattern_binding_rename() {
+    assert_module_value(
+        "source = { value: 7 }\n{ value -> renamed } = source\nrenamed\n",
+        Value::Int(7),
+    );
+}
+
+#[test]
+fn evaluates_block_spread_binding() {
+    assert_module_value(
+        "result =\n  ..{ left: 2, right: 3 }\n  left + right\nresult\n",
+        Value::Int(5),
+    );
+}
+
+#[test]
+fn evaluates_block_spread_replacement() {
+    assert_module_value(
+        "result =\n  value = 1\n  :..{ value: 4, extra: 2 }\n  value + extra\nresult\n",
+        Value::Int(6),
+    );
+}
+
+#[test]
+fn evaluates_pattern_binding_rhs_once() {
+    let calls = Rc::new(RefCell::new(0));
+    let make_calls = Rc::clone(&calls);
+    let make = Value::native(move |_| {
+        *make_calls.borrow_mut() += 1;
+        Ok(record_value(vec![("value", Value::Int(9))]))
+    });
+    let module = parse_ok("{ value } = make()\nvalue\n");
+    let outcome = eval_module_with_globals(&module, vec![("make".to_owned(), make)]);
+
+    assert_eq!(outcome.value, Some(Value::Int(9)));
+    assert_eq!(outcome.diagnostics, Vec::new());
+    assert_eq!(*calls.borrow(), 1);
+}
+
+#[test]
+fn evaluates_spread_binding_operand_once() {
+    let calls = Rc::new(RefCell::new(0));
+    let make_calls = Rc::clone(&calls);
+    let make = Value::native(move |_| {
+        *make_calls.borrow_mut() += 1;
+        Ok(record_value(vec![("value", Value::Int(9))]))
+    });
+    let module = parse_ok("..make()\nvalue\n");
+    let outcome = eval_module_with_globals(&module, vec![("make".to_owned(), make)]);
+
+    assert_eq!(outcome.value, Some(Value::Int(9)));
+    assert_eq!(outcome.diagnostics, Vec::new());
+    assert_eq!(*calls.borrow(), 1);
+}
+
+#[test]
 fn evaluates_simple_function_call() {
     assert_module_value("double = (x) => x * 2\ndouble(5)\n", Value::Int(10));
 }

@@ -4,9 +4,9 @@ use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
-    MatchArm, MergedItem, Module, Param, PropagationMode, RecordEntry, Signature,
-    collect_declarations, decode_string_literal, merged_items, pattern_bindings,
-    walk_expr_children,
+    MatchArm, MergedItem, Module, Param, PatternBinding, PropagationMode, RecordEntry, Signature,
+    SpreadBinding, collect_declarations, decode_string_literal, is_comptime_identifier_name,
+    merged_items, pattern_bindings, walk_expr_children,
 };
 
 use crate::BUILTIN_TYPES;
@@ -73,6 +73,7 @@ pub(crate) struct Checker<'a> {
     reported_unbound_name_spans: HashSet<Span>,
     reported_import_spans: HashSet<Span>,
     propagation_contexts: Vec<PropagationContext>,
+    pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
 }
@@ -733,6 +734,13 @@ fn collect_known_record_pattern_types(
                     known.insert(name.clone(), field_ty.clone());
                 }
             }
+            RecordEntry::Rename { from, to, .. } => {
+                if let Some(field_ty) = row_field_type(row, from)
+                    && is_concrete_type(field_ty)
+                {
+                    known.insert(to.clone(), field_ty.clone());
+                }
+            }
             RecordEntry::Spread { value, .. } => {
                 let ExprKind::Name(name) = &value.kind else {
                     continue;
@@ -755,7 +763,6 @@ fn collect_known_record_pattern_types(
             RecordEntry::Delete { .. }
             | RecordEntry::FieldComputed { .. }
             | RecordEntry::DeleteComputed { .. }
-            | RecordEntry::Rename { .. }
             | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. }
             | RecordEntry::Element(_) => {}
@@ -766,11 +773,11 @@ fn collect_known_record_pattern_types(
 fn record_pattern_label(entry: &RecordEntry) -> Option<&str> {
     match entry {
         RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => Some(name),
+        RecordEntry::Rename { from, .. } => Some(from),
         RecordEntry::Spread { .. }
         | RecordEntry::Delete { .. }
         | RecordEntry::FieldComputed { .. }
         | RecordEntry::DeleteComputed { .. }
-        | RecordEntry::Rename { .. }
         | RecordEntry::Iteration { .. }
         | RecordEntry::Open { .. }
         | RecordEntry::Element(_) => None,
@@ -782,6 +789,14 @@ fn row_field_type<'a>(row: &'a Row, label: &str) -> Option<&'a Type> {
     match &row.entries[index] {
         RowEntry::Field { ty, .. } => Some(ty),
         RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+    }
+}
+
+fn local_value_type_as_type(value: LocalValueType) -> Option<Type> {
+    match value {
+        LocalValueType::Known(ty) => Some(ty),
+        LocalValueType::Scheme(scheme) => Some(scheme.ty),
+        LocalValueType::Unknown => None,
     }
 }
 

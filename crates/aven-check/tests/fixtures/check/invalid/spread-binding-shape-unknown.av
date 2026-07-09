@@ -1,0 +1,3 @@
+f = (record) =>
+  ..record
+  1

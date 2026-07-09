@@ -226,7 +226,11 @@ pub(crate) fn declared_annotation_for_declaration<'a>(
                     annotation: binding.annotation.as_ref()?,
                 });
             }
-            Item::Binding(_) | Item::Signature(_) | Item::Expr(_) => {}
+            Item::Binding(_)
+            | Item::PatternBinding(_)
+            | Item::SpreadBinding(_)
+            | Item::Signature(_)
+            | Item::Expr(_) => {}
         }
     }
 
@@ -243,6 +247,10 @@ pub(crate) fn binding_for_declaration<'a>(
         {
             Some(binding)
         }
-        Item::Binding(_) | Item::Signature(_) | Item::Expr(_) => None,
+        Item::Binding(_)
+        | Item::PatternBinding(_)
+        | Item::SpreadBinding(_)
+        | Item::Signature(_)
+        | Item::Expr(_) => None,
     })
 }

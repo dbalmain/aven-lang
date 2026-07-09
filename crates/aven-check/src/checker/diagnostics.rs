@@ -220,6 +220,60 @@ impl<'a> Checker<'a> {
         );
     }
 
+    pub(super) fn report_spread_shape_unknown(&mut self, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error("record fields must be statically known for a block spread")
+                .with_code(codes::ty::SPREAD_SHAPE_UNKNOWN)
+                .with_label(Label::primary(
+                    span,
+                    "the record's fields must be statically known to open it into scope",
+                ))
+                .with_note(
+                    "use a static import, a closed record literal or transform, or bind a closed record type before spreading it",
+                ),
+        );
+    }
+
+    pub(super) fn report_unsupported_uppercase_pattern_binder(&mut self, name: &str, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!(
+                "extracting type `{name}` from a module is not supported yet"
+            ))
+            .with_code(codes::ty::UPPERCASE_PATTERN_BINDER_UNSUPPORTED)
+            .with_label(Label::primary(
+                span,
+                "uppercase pattern binder would extract a type",
+            ))
+            .with_note("extracting types from modules is not supported yet; this is deferred to Milestone Z"),
+        );
+    }
+
+    pub(super) fn report_duplicate_local_from_spread(&mut self, name: &str, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!("duplicate local binding `{name}`"))
+                .with_code(codes::name::DUPLICATE_LOCAL)
+                .with_label(Label::primary(
+                    span,
+                    format!("spread would introduce `{name}` here"),
+                ))
+                .with_note("remove or rename the field before spreading, or use `:..` inside a block to replace intentionally"),
+        );
+    }
+
+    pub(super) fn report_duplicate_declaration_from_spread(&mut self, name: &str, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!("duplicate declaration `{name}`"))
+                .with_code(codes::name::DUPLICATE_DECLARATION)
+                .with_label(Label::primary(
+                    span,
+                    format!("spread would declare `{name}` here"),
+                ))
+                .with_note(
+                    "remove or rename the field before spreading so top-level declarations stay unique",
+                ),
+        );
+    }
+
     pub(super) fn report_propagate_needs_result(&mut self, span: Span) {
         self.push_unique_diagnostic(
             Diagnostic::error("function body uses `?^` but does not return a `Result`")

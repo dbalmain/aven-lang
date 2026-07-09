@@ -715,6 +715,26 @@ fn eval_items(items: &[Item], env: &Environment) -> Eval<EvalOutcome> {
                     diagnostics.append(&mut next_diagnostics);
                 }
             },
+            Item::PatternBinding(binding) => match eval_expr_many(&binding.value, env)
+                .and_then(|next_value| bind_pattern_item(&binding.pattern, &next_value, env))
+            {
+                Ok(()) => value = None,
+                Err(flow @ Flow::Propagate(_)) => return Err(flow),
+                Err(Flow::Fail(mut next_diagnostics)) => {
+                    value = None;
+                    diagnostics.append(&mut next_diagnostics);
+                }
+            },
+            Item::SpreadBinding(binding) => match eval_expr_many(&binding.value, env)
+                .and_then(|next_value| bind_spread_item(&next_value, binding.value.span, env))
+            {
+                Ok(()) => value = None,
+                Err(flow @ Flow::Propagate(_)) => return Err(flow),
+                Err(Flow::Fail(mut next_diagnostics)) => {
+                    value = None;
+                    diagnostics.append(&mut next_diagnostics);
+                }
+            },
             Item::Signature(_) => value = None,
         }
     }
@@ -883,6 +903,125 @@ fn bind_pattern_name(name: &str, value: &Value) -> Option<Vec<(String, Value)>> 
     } else {
         Some(vec![(name.to_owned(), value.clone())])
     }
+}
+
+fn bind_pattern_item(pattern: &Expr, value: &Value, env: &Environment) -> Eval<()> {
+    let bindings = destructure_pattern_binding(pattern, value)?;
+    for (name, value) in bindings {
+        env.bind(name, value);
+    }
+    Ok(())
+}
+
+fn bind_spread_item(value: &Value, span: Span, env: &Environment) -> Eval<()> {
+    let Value::Record(fields) = value else {
+        return Err(one_diagnostic(record_type_error(
+            span,
+            "block spread",
+            value.type_name(),
+            "Record",
+        )));
+    };
+
+    for (name, value) in fields.iter() {
+        env.bind(name.clone(), value.clone());
+    }
+    Ok(())
+}
+
+fn destructure_pattern_binding(pattern: &Expr, value: &Value) -> Eval<Vec<(String, Value)>> {
+    match &pattern.kind {
+        ExprKind::Group(inner) => destructure_pattern_binding(inner, value),
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) if name != "_" => {
+            Ok(vec![(name.clone(), value.clone())])
+        }
+        ExprKind::Record(entries) => destructure_record_binding(entries, value),
+        ExprKind::Tuple(items) => destructure_tuple_binding(items, value),
+        _ => match match_pattern(pattern, value, &Environment::new()) {
+            Ok(Some(bindings)) => Ok(bindings),
+            Ok(None) => Err(one_diagnostic(record_type_error(
+                pattern.span,
+                "pattern binding",
+                value.type_name(),
+                "matching value",
+            ))),
+            Err(diagnostic) => Err(one_diagnostic(diagnostic)),
+        },
+    }
+}
+
+fn destructure_tuple_binding(items: &[Expr], value: &Value) -> Eval<Vec<(String, Value)>> {
+    let Value::Tuple(values) = value else {
+        return Err(one_diagnostic(record_type_error(
+            items.first().map_or(Span::point(0), |item| item.span),
+            "tuple pattern binding",
+            value.type_name(),
+            "Tuple",
+        )));
+    };
+
+    let mut bindings = Vec::new();
+    for (pattern, value) in items.iter().zip(values.iter()) {
+        bindings.extend(destructure_pattern_binding(pattern, value)?);
+    }
+    Ok(bindings)
+}
+
+fn destructure_record_binding(
+    entries: &[RecordEntry],
+    value: &Value,
+) -> Eval<Vec<(String, Value)>> {
+    let Value::Record(fields) = value else {
+        return Err(one_diagnostic(record_type_error(
+            entries.first().map_or(Span::point(0), record_entry_span),
+            "record pattern binding",
+            value.type_name(),
+            "Record",
+        )));
+    };
+
+    let mut bindings = Vec::new();
+    for entry in entries {
+        match entry {
+            RecordEntry::Field {
+                name,
+                value: pattern,
+                name_span,
+                ..
+            } => {
+                let field_value = record_field_value(fields, name)
+                    .ok_or_else(|| one_diagnostic(missing_field(name, *name_span)))?;
+                bindings.extend(destructure_pattern_binding(pattern, field_value)?);
+            }
+            RecordEntry::Shorthand {
+                name, name_span, ..
+            } => {
+                let field_value = record_field_value(fields, name)
+                    .ok_or_else(|| one_diagnostic(missing_field(name, *name_span)))?;
+                bindings.push((name.clone(), field_value.clone()));
+            }
+            RecordEntry::Rename {
+                from,
+                from_span,
+                to,
+                ..
+            } => {
+                let field_value = record_field_value(fields, from)
+                    .ok_or_else(|| one_diagnostic(missing_field(from, *from_span)))?;
+                bindings.push((to.clone(), field_value.clone()));
+            }
+            RecordEntry::Spread { .. } | RecordEntry::Open { .. } => {}
+            _ => {
+                return Err(one_diagnostic(record_type_error(
+                    record_entry_span(entry),
+                    "record pattern binding",
+                    "record transform entry",
+                    "record pattern entry",
+                )));
+            }
+        }
+    }
+    Ok(bindings)
 }
 
 fn match_literal_pattern(

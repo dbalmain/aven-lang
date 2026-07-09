@@ -239,6 +239,9 @@ fn needs_space_before_open_delimiter(previous: &Token, current: &Token) -> bool 
     }
 
     if is_open_brace(current) {
+        if is_spread_operator(previous) {
+            return false;
+        }
         return !is_at_set_marker(previous, Some(current));
     }
 
@@ -296,6 +299,10 @@ fn is_binary_operator(token: &Token) -> bool {
 
 fn is_tight_access_operator(token: &Token) -> bool {
     matches!(&token.kind, TokenKind::Operator(operator) if operator == "." || operator == "?.")
+}
+
+fn is_spread_operator(token: &Token) -> bool {
+    matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), ".." | ":.."))
 }
 
 /// The annotation/field colon binds tight to the label on its left (`name: T`,
@@ -380,6 +387,11 @@ fn collect_item_field_names<'a>(item: &'a Item, spans: &mut HashMap<Span, &'a st
             }
             collect_expr_field_names(&binding.value, spans);
         }
+        Item::PatternBinding(binding) => {
+            collect_expr_field_names(&binding.pattern, spans);
+            collect_expr_field_names(&binding.value, spans);
+        }
+        Item::SpreadBinding(binding) => collect_expr_field_names(&binding.value, spans),
         Item::Signature(signature) => collect_expr_field_names(&signature.annotation, spans),
         Item::Expr(expr) => collect_expr_field_names(expr, spans),
     }

@@ -10,6 +10,8 @@ pub struct Module {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Binding(Binding),
+    PatternBinding(PatternBinding),
+    SpreadBinding(SpreadBinding),
     Signature(Signature),
     Expr(Expr),
 }
@@ -24,6 +26,22 @@ pub struct Binding {
     /// Optional `: type` ascription, parsed as an ordinary expression.
     pub annotation: Option<Expr>,
     pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternBinding {
+    /// Parsed as an ordinary expression; pattern meaning is assigned later.
+    pub pattern: Expr,
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpreadBinding {
+    pub value: Expr,
+    pub overwrite: bool,
+    pub operator_span: Span,
     pub span: Span,
 }
 
@@ -367,9 +385,19 @@ impl Parser<'_> {
     }
 
     fn parse_item(&mut self) -> Option<Item> {
+        if self.current_is_operator("..") || self.current_is_operator(":..") {
+            return Some(Item::SpreadBinding(self.parse_spread_binding()));
+        }
+
         let binding_operator = self.find_binding_operator();
 
         if let Some((operator_index, operator)) = binding_operator {
+            if self.current_is(TokenKind::OpenBrace) && operator == BindingOperator::Assign {
+                return Some(Item::PatternBinding(
+                    self.parse_pattern_binding(operator_index),
+                ));
+            }
+
             return self
                 .parse_binding(operator_index, operator)
                 .map(Item::Binding);
@@ -384,6 +412,46 @@ impl Parser<'_> {
         self.consume_newline();
 
         Some(Item::Expr(expr))
+    }
+
+    fn parse_pattern_binding(&mut self, operator_index: usize) -> PatternBinding {
+        let pattern = self.parse_expression();
+
+        if self.cursor != operator_index {
+            self.report_unsupported_remainder();
+        }
+
+        self.cursor = operator_index + 1;
+        let value = self.parse_binding_value(self.tokens[operator_index].span.end);
+        let span = pattern.span.merge(value.span);
+        self.consume_newline();
+
+        PatternBinding {
+            pattern,
+            value,
+            span,
+        }
+    }
+
+    fn parse_spread_binding(&mut self) -> SpreadBinding {
+        let operator_span = self.current_span();
+        let overwrite = self.current_is_operator(":..");
+        self.advance();
+        let value = if self.at_item_boundary() {
+            self.report_expected_expression(operator_span.end)
+        } else {
+            self.parse_expression()
+        };
+        let span = operator_span.merge(value.span);
+        self.report_unsupported_remainder();
+        self.consume_newline();
+
+        SpreadBinding {
+            value,
+            overwrite,
+            operator_span,
+            span,
+        }
     }
 
     fn parse_binding(
@@ -2169,6 +2237,19 @@ impl Parser<'_> {
                 .with_label(Label::primary(span, "`@` marker used outside a parameter declaration"))
                 .with_note("comptime markers belong on lambda parameter declarations, for example `(@key: Keys) => key`"),
         );
+    }
+
+    fn report_expected_expression(&mut self, offset: usize) -> Expr {
+        let span = Span::point(offset);
+        self.diagnostics.push(
+            Diagnostic::error("expected expression")
+                .with_code(codes::parse::EXPECTED_EXPRESSION)
+                .with_label(Label::primary(span, "expected an expression here"))
+                .with_note(
+                    "expressions are literals, identifiers, function calls, lambdas, or collection literals",
+                ),
+        );
+        missing_expr(span)
     }
 
     fn report_unexpected_indentation(&mut self) {

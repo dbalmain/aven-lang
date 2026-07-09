@@ -1,0 +1,3 @@
+error name.no-toplevel-spread-shadow: cannot use `:..` at the top level
+  label 0..3: `:..` replacement is only available inside blocks
+  note: top-level names are mutually recursive and cannot be sequentially replaced; use `..` or move the spread into a block

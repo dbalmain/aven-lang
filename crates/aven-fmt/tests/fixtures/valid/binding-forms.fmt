@@ -1,0 +1,9 @@
+source = { join: (x: Text): Text => x, concat: (x: Text): Text => x }
+{ join, concat -> concatText } = source
+..{ ..source, concat -> concatAgain }
+run = () =>
+  defaults = { host: "localhost", port: 80, debug: true, log: (x: Text): Text => x }
+  { host, port } = defaults
+  ..{ ..defaults, -debug, -host, -port, log -> logLine }
+  :..{ port: 443 }
+  logLine(host)

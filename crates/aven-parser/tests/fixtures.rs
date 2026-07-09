@@ -381,6 +381,27 @@ fn render_item_ast(output: &mut String, item: &Item, indent: usize) {
             let _ = writeln!(output, "value");
             render_expr_ast(output, &binding.value, indent + 2);
         }
+        Item::PatternBinding(binding) => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "pattern-binding");
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "pattern");
+            render_expr_ast(output, &binding.pattern, indent + 2);
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "value");
+            render_expr_ast(output, &binding.value, indent + 2);
+        }
+        Item::SpreadBinding(binding) => {
+            write_indent(output, indent);
+            if binding.overwrite {
+                let _ = writeln!(output, "spread-binding overwrite=true");
+            } else {
+                let _ = writeln!(output, "spread-binding");
+            }
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "value");
+            render_expr_ast(output, &binding.value, indent + 2);
+        }
         Item::Signature(signature) => {
             write_indent(output, indent);
             let _ = writeln!(output, "signature {}", signature.name);

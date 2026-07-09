@@ -1,0 +1,3 @@
+error name.duplicate-local: duplicate local binding `value`
+  label 24..38: spread would introduce `value` here
+  note: remove or rename the field before spreading, or use `:..` inside a block to replace intentionally

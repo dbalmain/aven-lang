@@ -29,6 +29,7 @@ impl<'a> Checker<'a> {
             reported_unbound_name_spans: HashSet::new(),
             reported_import_spans: HashSet::new(),
             propagation_contexts: Vec::new(),
+            pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
         }
@@ -90,6 +91,7 @@ impl<'a> Checker<'a> {
             .map(|(name, spec)| (name.clone(), spec.clone()))
             .collect();
         checker.build_statics(globals);
+        checker.collect_top_level_pattern_bindings(module);
         checker.build_value_types(module);
         checker.build_comptime_artifacts(module);
         checker
@@ -130,6 +132,18 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+
+        self.collect_top_level_pattern_bindings(module);
+    }
+
+    fn collect_top_level_pattern_bindings(&mut self, module: &'a Module) {
+        for item in &module.items {
+            if let Item::PatternBinding(binding) = item {
+                for site in pattern_bindings(&binding.pattern) {
+                    self.pattern_bindings.insert(site.name.to_owned(), binding);
+                }
+            }
+        }
     }
 
     pub(super) fn build_value_types(&mut self, module: &Module) {
@@ -139,9 +153,10 @@ impl<'a> Checker<'a> {
         // up front lets a user binding that references a global (e.g.
         // `x = logger.info`) resolve it through the existing read paths during
         // inference.
-        let declared: HashSet<_> = collect_declarations(module)
-            .into_iter()
-            .map(|declaration| declaration.name)
+        let declarations = collect_declarations(module);
+        let declared: HashSet<_> = declarations
+            .iter()
+            .map(|declaration| declaration.name.clone())
             .collect();
         let mut types: HashMap<String, Option<TypeScheme>> = self
             .globals
@@ -154,9 +169,8 @@ impl<'a> Checker<'a> {
                 )
             })
             .collect();
-        self.value_types = types.clone();
 
-        for declaration in collect_declarations(module) {
+        for declaration in &declarations {
             let name = declaration.name.clone();
             match types.entry(name.clone()) {
                 Entry::Occupied(mut entry) => {
@@ -169,8 +183,18 @@ impl<'a> Checker<'a> {
                     entry.insert(None);
                 }
             }
+        }
 
-            if binding_for_declaration(module, &declaration).is_none() {
+        self.value_types = types.clone();
+        self.insert_top_level_spread_types(module, &mut types);
+        self.value_types = types.clone();
+
+        for declaration in declarations {
+            let name = declaration.name.clone();
+
+            if binding_for_declaration(module, &declaration).is_none()
+                && !self.pattern_bindings.contains_key(&name)
+            {
                 continue;
             }
 
@@ -184,6 +208,36 @@ impl<'a> Checker<'a> {
         }
 
         self.value_types = types;
+    }
+
+    fn insert_top_level_spread_types(
+        &mut self,
+        module: &Module,
+        types: &mut HashMap<String, Option<TypeScheme>>,
+    ) {
+        for item in &module.items {
+            let Item::SpreadBinding(binding) = item else {
+                continue;
+            };
+
+            if binding.overwrite {
+                continue;
+            }
+
+            let Some(row) = self.closed_spread_row(binding, &TypeEnv::new(), false) else {
+                continue;
+            };
+
+            for entry in row.entries {
+                let RowEntry::Field { name, ty } = entry else {
+                    continue;
+                };
+
+                if let Entry::Vacant(entry) = types.entry(name) {
+                    entry.insert(Some(scheme_from_global(&ty, &mut self.unifier)));
+                }
+            }
+        }
     }
 
     pub(super) fn build_comptime_artifacts(&mut self, module: &Module) {
@@ -206,17 +260,27 @@ impl<'a> Checker<'a> {
             self.check_declaration(module, &declaration);
         }
 
+        let mut top_level_spread_names = HashSet::new();
         for (index, item) in module.items.iter().enumerate() {
-            if let Item::Expr(expr) = item {
-                if index + 1 != module.items.len() {
-                    self.report_unused_result_if_dropped(&TypeEnv::new(), expr);
+            match item {
+                Item::PatternBinding(binding) => {
+                    self.check_top_level_pattern_binding(binding);
                 }
-                self.check_value_expr(expr);
-                if index + 1 == module.items.len() {
-                    let diagnostics_start = self.diagnostics.len();
-                    let _ = self.infer(&TypeEnv::new(), expr);
-                    self.deduplicate_diagnostics_since(diagnostics_start);
+                Item::SpreadBinding(binding) => {
+                    self.check_top_level_spread_binding(binding, &mut top_level_spread_names);
                 }
+                Item::Expr(expr) => {
+                    if index + 1 != module.items.len() {
+                        self.report_unused_result_if_dropped(&TypeEnv::new(), expr);
+                    }
+                    self.check_value_expr(expr);
+                    if index + 1 == module.items.len() {
+                        let diagnostics_start = self.diagnostics.len();
+                        let _ = self.infer(&TypeEnv::new(), expr);
+                        self.deduplicate_diagnostics_since(diagnostics_start);
+                    }
+                }
+                Item::Binding(_) | Item::Signature(_) => {}
             }
         }
     }
@@ -309,6 +373,12 @@ impl<'a> Checker<'a> {
                 MergedItem::Binding { signature, binding } => {
                     self.check_local_binding(binding, signature);
                 }
+                MergedItem::PatternBinding(binding) => {
+                    self.check_local_pattern_binding(binding);
+                }
+                MergedItem::SpreadBinding(binding) => {
+                    self.check_local_spread_binding(binding);
+                }
                 MergedItem::Signature(signature) => {
                     let ty = self.lower_normalized_annotation(&signature.annotation);
                     self.local_types
@@ -376,6 +446,180 @@ impl<'a> Checker<'a> {
             self.record_local_value_type(binding.name_span, &inferred_type);
         }
         self.local_types.define(&binding.name, inferred_type);
+    }
+
+    pub(super) fn check_local_pattern_binding(&mut self, binding: &PatternBinding) {
+        self.check_runtime_binding_liftability(&binding.value);
+        self.define_pattern_binding(&binding.pattern, &binding.value, false);
+    }
+
+    pub(super) fn check_top_level_pattern_binding(&mut self, binding: &PatternBinding) {
+        self.check_runtime_binding_liftability(&binding.value);
+        self.check_pattern_binding(&binding.pattern, &binding.value, &TypeEnv::new());
+    }
+
+    pub(super) fn check_local_spread_binding(&mut self, binding: &SpreadBinding) {
+        self.check_runtime_binding_liftability(&binding.value);
+        self.check_value_expr(&binding.value);
+        let env = self.local_types.inference_env();
+        let Some(row) = self.closed_spread_row(binding, &env, true) else {
+            return;
+        };
+
+        for entry in row.entries {
+            let RowEntry::Field { name, ty } = entry else {
+                continue;
+            };
+            if !binding.overwrite && self.local_binding_name_is_visible(&name) {
+                self.report_duplicate_local_from_spread(&name, binding.span);
+                continue;
+            }
+            self.local_types.define(&name, LocalValueType::Known(ty));
+        }
+    }
+
+    pub(super) fn check_top_level_spread_binding(
+        &mut self,
+        binding: &SpreadBinding,
+        top_level_spread_names: &mut HashSet<String>,
+    ) {
+        if binding.overwrite {
+            return;
+        }
+        self.check_runtime_binding_liftability(&binding.value);
+        self.check_value_expr(&binding.value);
+        let Some(row) = self.closed_spread_row(binding, &TypeEnv::new(), true) else {
+            return;
+        };
+
+        for entry in row.entries {
+            let RowEntry::Field { name, .. } = entry else {
+                continue;
+            };
+            if self.bindings.contains_key(&name)
+                || self.pattern_bindings.contains_key(&name)
+                || top_level_spread_names.contains(&name)
+            {
+                self.report_duplicate_declaration_from_spread(&name, binding.span);
+            }
+            top_level_spread_names.insert(name);
+        }
+    }
+
+    fn define_pattern_binding(&mut self, pattern: &Expr, value: &Expr, top_level: bool) {
+        let env = self.local_types.inference_env();
+        let local_types = self.check_pattern_binding(pattern, value, &env);
+        let binding_sites = pattern_bindings(pattern);
+        for (name, ty) in local_types {
+            for site in binding_sites.iter().filter(|site| site.name == name) {
+                self.record_local_value_type(site.span, &ty);
+            }
+            if !top_level {
+                self.local_types.define(&name, ty);
+            }
+        }
+    }
+
+    fn check_pattern_binding(
+        &mut self,
+        pattern: &Expr,
+        value: &Expr,
+        env: &TypeEnv,
+    ) -> Vec<(String, LocalValueType)> {
+        self.check_value_expr(value);
+        let inferred = self.infer(env, value);
+        let resolved = self.normalize(&self.resolve_and_default(&inferred));
+        self.report_unsupported_uppercase_pattern_binders(pattern);
+        self.report_missing_record_pattern_fields(pattern, &resolved);
+        pattern_local_types(&self.type_definitions, pattern, Some(&resolved))
+    }
+
+    pub(super) fn closed_spread_row(
+        &mut self,
+        binding: &SpreadBinding,
+        env: &TypeEnv,
+        report: bool,
+    ) -> Option<Row> {
+        let inferred = self.infer(env, &binding.value);
+        let resolved = self.normalize(&self.resolve_and_default(&inferred));
+        let Type::Record(row) = resolved else {
+            if report {
+                self.report_spread_shape_unknown(binding.span);
+            }
+            return None;
+        };
+        if row.tail != RowTail::Closed {
+            if report {
+                self.report_spread_shape_unknown(binding.span);
+            }
+            return None;
+        }
+        Some(row)
+    }
+
+    fn local_binding_name_is_visible(&self, name: &str) -> bool {
+        self.local_types.get(name).is_some() || self.value_types.contains_key(name)
+    }
+
+    fn report_unsupported_uppercase_pattern_binders(&mut self, pattern: &Expr) {
+        for site in pattern_bindings(pattern) {
+            if is_comptime_identifier_name(site.name) {
+                self.report_unsupported_uppercase_pattern_binder(site.name, site.span);
+            }
+        }
+    }
+
+    fn report_missing_record_pattern_fields(&mut self, pattern: &Expr, subject: &Type) {
+        let Type::Record(row) = subject else {
+            return;
+        };
+        self.report_missing_record_pattern_fields_in_expr(pattern, row);
+    }
+
+    fn report_missing_record_pattern_fields_in_expr(&mut self, pattern: &Expr, row: &Row) {
+        let ExprKind::Record(entries) = &ungroup_expr(pattern).kind else {
+            return;
+        };
+
+        for entry in entries {
+            match entry {
+                RecordEntry::Field {
+                    name,
+                    name_span,
+                    value,
+                    ..
+                } => {
+                    if let Some(field_ty) = row_field_type(row, name) {
+                        if let Type::Record(nested) = self.normalize(field_ty) {
+                            self.report_missing_record_pattern_fields_in_expr(value, &nested);
+                        }
+                    } else {
+                        self.report_missing_field(name, *name_span);
+                    }
+                }
+                RecordEntry::Shorthand {
+                    name, name_span, ..
+                } => {
+                    if row_field_type(row, name).is_none() {
+                        self.report_missing_field(name, *name_span);
+                    }
+                }
+                RecordEntry::Rename {
+                    from, from_span, ..
+                } => {
+                    if row_field_type(row, from).is_none() {
+                        self.report_missing_field(from, *from_span);
+                    }
+                }
+                RecordEntry::Spread { .. }
+                | RecordEntry::Delete { .. }
+                | RecordEntry::FieldComputed { .. }
+                | RecordEntry::DeleteComputed { .. }
+                | RecordEntry::Iteration { .. }
+                | RecordEntry::Open { .. }
+                | RecordEntry::Element(_) => {}
+            }
+        }
     }
 
     pub(super) fn check_runtime_binding_liftability(&mut self, value: &Expr) {

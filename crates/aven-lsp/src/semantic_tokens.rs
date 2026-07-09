@@ -98,7 +98,9 @@ impl StyleCollector {
             let name_span = match item {
                 aven_parser::Item::Binding(binding) => binding.name_span,
                 aven_parser::Item::Signature(signature) => signature.name_span,
-                aven_parser::Item::Expr(_) => continue,
+                aven_parser::Item::PatternBinding(_)
+                | aven_parser::Item::SpreadBinding(_)
+                | aven_parser::Item::Expr(_) => continue,
             };
 
             if let Some(declaration) = declarations
@@ -128,6 +130,21 @@ impl StyleCollector {
                     if let Some(annotation) = &binding.annotation {
                         self.collect_expr(annotation);
                     }
+                    self.collect_expr(&binding.value);
+                }
+                aven_parser::Item::PatternBinding(binding) => {
+                    for site in aven_parser::pattern_bindings(&binding.pattern) {
+                        self.styles.insert(
+                            site.span,
+                            SemanticStyle {
+                                token_type: TOKEN_VARIABLE,
+                                modifiers: MODIFIER_DEFINITION,
+                            },
+                        );
+                    }
+                    self.collect_expr(&binding.value);
+                }
+                aven_parser::Item::SpreadBinding(binding) => {
                     self.collect_expr(&binding.value);
                 }
                 aven_parser::Item::Signature(signature) => {

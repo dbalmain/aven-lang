@@ -1097,6 +1097,12 @@ fn construction_binding_in_item_at_position(
                 .then_some(binding)
             })
         }
+        aven_parser::Item::PatternBinding(binding) => {
+            construction_binding_in_expr_at_position(&binding.value, target)
+        }
+        aven_parser::Item::SpreadBinding(binding) => {
+            construction_binding_in_expr_at_position(&binding.value, target)
+        }
         aven_parser::Item::Binding(_) | aven_parser::Item::Signature(_) => None,
         aven_parser::Item::Expr(expr) => construction_binding_in_expr_at_position(expr, target),
     }
@@ -1537,6 +1543,12 @@ fn collect_item_call_callee_label_span(
             }
             collect_expr_call_callee_label_span(&binding.value, open_start, found);
         }
+        aven_parser::Item::PatternBinding(binding) => {
+            collect_expr_call_callee_label_span(&binding.value, open_start, found);
+        }
+        aven_parser::Item::SpreadBinding(binding) => {
+            collect_expr_call_callee_label_span(&binding.value, open_start, found);
+        }
         aven_parser::Item::Signature(signature) => {
             collect_expr_call_callee_label_span(&signature.annotation, open_start, found);
         }
@@ -1634,6 +1646,15 @@ fn collect_inlay_hints_in_items(
         match item {
             aven_parser::Item::Binding(binding) => {
                 push_inlay_hint_for_name_span(document, binding.name_span, range, hints);
+                collect_inlay_hints_in_expr(document, &binding.value, range, hints);
+            }
+            aven_parser::Item::PatternBinding(binding) => {
+                for site in aven_parser::pattern_bindings(&binding.pattern) {
+                    push_inlay_hint_for_name_span(document, site.span, range, hints);
+                }
+                collect_inlay_hints_in_expr(document, &binding.value, range, hints);
+            }
+            aven_parser::Item::SpreadBinding(binding) => {
                 collect_inlay_hints_in_expr(document, &binding.value, range, hints);
             }
             aven_parser::Item::Signature(_) => {}
@@ -1953,6 +1974,13 @@ fn collect_item_expr_span_at(item: &aven_parser::Item, target: Span, found: &mut
             if let Some(annotation) = &binding.annotation {
                 collect_expr_span_at(annotation, target, found);
             }
+            collect_expr_span_at(&binding.value, target, found);
+        }
+        aven_parser::Item::PatternBinding(binding) => {
+            collect_expr_span_at(&binding.pattern, target, found);
+            collect_expr_span_at(&binding.value, target, found);
+        }
+        aven_parser::Item::SpreadBinding(binding) => {
             collect_expr_span_at(&binding.value, target, found);
         }
         aven_parser::Item::Signature(signature) => {
