@@ -213,6 +213,71 @@ fn dynamic_data_type() -> Type {
     ])
 }
 
+struct DecodeResultResolver;
+
+impl HostComptimeFn for DecodeResultResolver {
+    fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
+        let target = args
+            .first()
+            .and_then(ComptimeArg::as_type)
+            .cloned()
+            .unwrap_or_else(|| named("Data"));
+        Ok(build::result(target, named("JsonError")))
+    }
+}
+
+fn format_method_host_globals() -> HostGlobals {
+    HostGlobals::new(
+        Vec::new(),
+        vec![(
+            "Json.decode".to_owned(),
+            HostComptimeFnSpec::new(Rc::new(DecodeResultResolver), vec![1]),
+        )],
+    )
+    .with_type_definitions(vec![
+        ("Data".to_owned(), dynamic_data_type()),
+        (
+            "JsonError".to_owned(),
+            build::variant(vec![("Decode", vec![build::text()])]),
+        ),
+        (
+            "YamlError".to_owned(),
+            build::variant(vec![("Decode", vec![build::text()])]),
+        ),
+    ])
+    .with_statics(vec![
+        (
+            "Json".to_owned(),
+            vec![
+                (
+                    "decode".to_owned(),
+                    build::function_opt(vec![named("Text")], vec![Type::Deferred], Type::Deferred),
+                ),
+                (
+                    "encode".to_owned(),
+                    function(vec![variable("a")], named("Text")),
+                ),
+            ],
+        ),
+        (
+            "Yaml".to_owned(),
+            vec![
+                (
+                    "decode".to_owned(),
+                    function(
+                        vec![named("Text")],
+                        build::result(named("Data"), named("YamlError")),
+                    ),
+                ),
+                (
+                    "encode".to_owned(),
+                    function(vec![variable("a")], named("Text")),
+                ),
+            ],
+        ),
+    ])
+}
+
 #[test]
 fn renders_types_as_surface_syntax() {
     assert_eq!(
@@ -3798,6 +3863,49 @@ fn encode_method_types_like_format_static_form() {
 
     assert_eq!(method_ty.render(), "Text");
     assert_eq!(method_ty, static_ty);
+}
+
+#[test]
+fn encode_method_records_member_span_type() {
+    let source = "Y = { y: Int }\n\
+                  y: Y = { y: 2 }\n\
+                  encoded = y.encode(Yaml)\n";
+    let output = parse_module(source);
+    let checked = check_module_with_host_globals(&output.module, &format_encode_host_globals());
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        checked.diagnostics
+    );
+
+    let ty = checked
+        .type_at(nth_span(source, "encode", 1))
+        .expect("encode member has an inferred type");
+
+    assert_eq!(ty.render(), "Yaml -> Text");
+}
+
+#[test]
+fn decode_method_records_member_span_type() {
+    let source = "User = { name: Text }\n\
+                  text = \"{}\"\n\
+                  decoded = text.decode(Json, User)\n";
+    let output = parse_module(source);
+    let checked = check_module_with_host_globals(&output.module, &format_method_host_globals());
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        checked.diagnostics
+    );
+
+    let ty = checked
+        .type_at(nth_span(source, "decode", 1))
+        .expect("decode member has an inferred type");
+
+    assert_eq!(
+        ty.render(),
+        "(Json, User) -> Result[{ name: Text }, @Decode(Text)]"
+    );
 }
 
 #[test]

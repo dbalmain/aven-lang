@@ -1013,7 +1013,7 @@ impl<'a> Checker<'a> {
         let synth_callee = Expr {
             kind: ExprKind::FieldAccess {
                 receiver: Box::new(Expr {
-                    kind: ExprKind::Name(format_name),
+                    kind: ExprKind::Name(format_name.clone()),
                     span: format.span,
                 }),
                 field: "decode".to_owned(),
@@ -1027,6 +1027,7 @@ impl<'a> Checker<'a> {
         synth_args.extend(args[1..].iter().cloned());
 
         let result = self.infer_call(env, &synth_callee, &synth_args);
+        self.record_format_method_member_type(*field_span, &format_name, &args[1..], &result);
         // Record on the `.decode` access so hover shows the resolved call type.
         self.record_expr_type(callee.span, &result);
         Some(result)
@@ -1071,7 +1072,7 @@ impl<'a> Checker<'a> {
         let synth_callee = Expr {
             kind: ExprKind::FieldAccess {
                 receiver: Box::new(Expr {
-                    kind: ExprKind::Name(format_name),
+                    kind: ExprKind::Name(format_name.clone()),
                     span: format.span,
                 }),
                 field: "encode".to_owned(),
@@ -1082,8 +1083,33 @@ impl<'a> Checker<'a> {
         };
 
         let result = self.infer_call(env, &synth_callee, &synth_args);
+        self.record_format_method_member_type(field_span, &format_name, &args[1..], &result);
         self.record_expr_type(callee.span, &result);
         Some(result)
+    }
+
+    fn record_format_method_member_type(
+        &mut self,
+        field_span: Span,
+        format_name: &str,
+        extra_args: &[Expr],
+        result: &Type,
+    ) {
+        let mut params = Vec::with_capacity(extra_args.len() + 1);
+        params.push(Type::Named(format_name.to_owned()));
+        params.extend(
+            extra_args
+                .iter()
+                .enumerate()
+                .map(|(index, arg)| Self::method_view_arg_type(arg, index)),
+        );
+        let result = self.normalize(&self.resolve_and_default(result));
+        let ty = Type::Function {
+            required: params.len(),
+            params,
+            result: Box::new(result),
+        };
+        self.record_local_value_type(field_span, &LocalValueType::Known(ty));
     }
 
     pub(super) fn value_encode_sugar_receiver<'b>(
@@ -1129,6 +1155,13 @@ impl<'a> Checker<'a> {
         self.restore_diagnostic_snapshot(diagnostic_snapshot);
         self.inferred_types.truncate(inferred_types_len);
         resolved
+    }
+
+    fn method_view_arg_type(arg: &Expr, index: usize) -> Type {
+        match &ungroup_expr(arg).kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => Type::Named(name.clone()),
+            _ => Type::Variable(format!("arg{}", index + 1)),
+        }
     }
 
     /// The name of an unshadowed format type carrying `member` as a static

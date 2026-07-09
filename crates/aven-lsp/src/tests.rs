@@ -740,19 +740,26 @@ fn completion_at_text_field_access_offers_format_methods() {
         .detail
         .as_deref()
         .expect("decode carries a signature");
-    assert!(
-        detail.contains("->"),
-        "decode signature is a function type, got {detail}"
-    );
+    assert_eq!(detail, "(fmt, target = _) -> decoded");
+    assert!(!detail.contains('?'));
     assert_eq!(encode.kind, Some(CompletionItemKind::FIELD));
     let detail = encode
         .detail
         .as_deref()
         .expect("encode carries a signature");
-    assert!(
-        detail.contains("->"),
-        "encode signature is a function type, got {detail}"
-    );
+    assert_eq!(detail, "fmt -> Text");
+    assert!(!detail.contains('?'));
+}
+
+#[test]
+fn completion_at_record_field_access_keeps_real_encode_member_detail() {
+    let completions =
+        completions_at_marker("user : { encode: (Int) -> Text } = current\nresult = user.|\n");
+    let Some(encode) = completion_item(&completions, "encode") else {
+        panic!("expected real encode completion, got {completions:?}");
+    };
+
+    assert_eq!(encode.detail.as_deref(), Some("Int -> Text"));
 }
 
 #[test]
@@ -1520,6 +1527,30 @@ fn file_backed_hover_on_import_binding_shows_record_type() {
 }
 
 #[test]
+fn file_backed_hover_on_import_member_encode_shows_method_signature() {
+    let dir = TempDir::new("lsp-import-encode-hover");
+    write(
+        dir.path(),
+        "lib/data.av",
+        "someRecord = { name: \"Ada\" }\n{ someRecord }\n",
+    );
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "m = import(\"./lib/data\")\nvalue = m.someRecord.encode(Json)\n{ value }\n",
+    );
+
+    let Some(hover) = hover_at_position(&document, position(1, 23)) else {
+        panic!("expected hover on encode");
+    };
+
+    assert_hover_value(hover, "```aven\nsomeRecord.encode : Json -> Text\n```");
+}
+
+#[test]
 fn file_backed_goto_on_import_member_jumps_to_export_definition() {
     let dir = TempDir::new("lsp-import-member-goto");
     write(
@@ -1964,6 +1995,18 @@ fn hover_at_position_shows_call_result_expression_type() {
 }
 
 #[test]
+fn hover_at_encode_method_member_shows_method_signature() {
+    let hover = hover_at_marker(
+        "Y = { y: Int }\n\
+         y: Y = { y: 2 }\n\
+         encoded = y.en|code(Yaml)\n",
+    )
+    .expect("expected hover on encode member");
+
+    assert_hover_value(hover, "```aven\ny.encode : Yaml -> Text\n```");
+}
+
+#[test]
 fn hover_at_position_shows_literal_expression_type() {
     let document = parsed_document_with_semantics("value = \"hi\"\n".to_owned());
     let Some(hover) = hover_at_position(&document, position(0, 8)) else {
@@ -2011,6 +2054,23 @@ fn completions_at_marker(source: &str) -> Vec<CompletionItem> {
     );
 
     completion_at_position(&document, position)
+}
+
+fn hover_at_marker(source: &str) -> Option<Hover> {
+    let marker = source
+        .find('|')
+        .unwrap_or_else(|| panic!("expected cursor marker in {source:?}"));
+    let mut source = source.to_owned();
+    source.remove(marker);
+    let document = parsed_document_with_semantics(source);
+    let position = to_lsp_position(
+        document
+            .file()
+            .line_index()
+            .offset_to_position(document.source(), marker),
+    );
+
+    hover_at_position(&document, position)
 }
 
 fn assert_hover_value(hover: Hover, expected: &str) {

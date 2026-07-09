@@ -1262,33 +1262,34 @@ fn format_method_field(name: &str) -> aven_compiler::RecordField {
     }
 }
 
-/// The method-form signature, derived from a registered format static by
-/// swapping its leading value parameter for the format argument — so the
-/// surfaced type stays in sync with whatever formats the host registers.
+/// The method-form signature for the synthetic format sugar. The checker has no
+/// first-class "format type" value, so named display variables keep completion
+/// details honest instead of rendering deferred parameters as `?`.
 fn format_method_type(member: &str) -> Option<aven_compiler::Type> {
-    let method = aven_host::standard_check_host_globals()
+    let has_registered_static = aven_host::standard_check_host_globals()
         .statics
         .iter()
-        .find_map(|(_, members)| {
-            members
-                .iter()
-                .find(|(name, _)| name == member)
-                .map(|(_, ty)| ty.clone())
-        })?;
-    let aven_compiler::Type::Function {
-        mut params,
-        result,
-        required,
-    } = method
-    else {
+        .any(|(_, members)| members.iter().any(|(name, _)| name == member));
+    if !has_registered_static {
         return None;
-    };
-    *params.first_mut()? = aven_compiler::Type::Deferred;
-    Some(aven_compiler::Type::Function {
-        params,
-        result,
-        required,
-    })
+    }
+
+    match member {
+        "encode" => Some(aven_compiler::Type::Function {
+            params: vec![aven_compiler::Type::Variable("fmt".to_owned())],
+            result: Box::new(aven_compiler::Type::Named("Text".to_owned())),
+            required: 1,
+        }),
+        "decode" => Some(aven_compiler::Type::Function {
+            params: vec![
+                aven_compiler::Type::Variable("fmt".to_owned()),
+                aven_compiler::Type::Variable("target".to_owned()),
+            ],
+            result: Box::new(aven_compiler::Type::Variable("decoded".to_owned())),
+            required: 1,
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2554,6 +2555,12 @@ fn field_type_for_access(
     document: &ParsedDocument,
     access: &FieldAccessIdentifiers,
 ) -> Option<aven_compiler::Type> {
+    if let Some(ty) = document.type_at(access.field.span)
+        && matches!(ty, aven_compiler::Type::Function { .. })
+    {
+        return Some(ty.clone());
+    }
+
     let fields = definition_span_for_identifier(document, &access.receiver)
         .and_then(|span| document.type_at(span).cloned())
         .or_else(|| host_global_type(&access.receiver.name))
