@@ -2603,8 +2603,16 @@ Done when:
 
 ## Milestone F — formats and decode ergonomics
 
-Status: F1–F6 done 2026-07-05 (user decision 2026-07-05: the shared dynamic
-variant renames `Json` → `Data`)
+Status: F1–F7 done (F1–F6 2026-07-05; F7 2026-07-10; user decision 2026-07-05:
+the shared dynamic variant renames `Json` → `Data`)
+
+- **F7 — honest hover/completion types for encode/decode sugar: done
+  2026-07-10** (codex). The sugar records an applied method-view signature at
+  the member-name span (`encode`: `Yaml -> Text`; `decode`:
+  `(Json, User) -> ...`), so hover works, and the LSP's synthetic completion
+  entries reuse the same shape — the `? -> Text` detail is gone. Receivers whose
+  own type carries `encode` keep their real member type. The encode-fallibility
+  spec divergence stays parked for the DT/codec revisit.
 
 - **F6 — encode sugar on all checked receivers: done 2026-07-05** (codex). Root
   cause was not the probe: the statement checker (`check_value_call`) ran an
