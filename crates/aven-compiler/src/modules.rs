@@ -7,7 +7,9 @@ use std::time::Instant;
 use aven_check::{ModuleImports as CheckModuleImports, RowTail, Type};
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
-use aven_parser::{Expr, ExprKind, Item, Literal, Module, ParseOutput, decode_string_literal};
+use aven_parser::{
+    Expr, ExprKind, Item, Literal, Module, ParseOutput, RecordEntry, decode_string_literal,
+};
 
 use crate::{
     HostGlobals, PhaseTimings, SemanticOutput, analyze_semantics_with_host_globals_and_imports,
@@ -17,7 +19,34 @@ use crate::{
 pub struct ModuleCheckOutput {
     pub source_map: SourceMap,
     pub reports: Vec<DiagnosticReport>,
+    pub nodes: Vec<ModuleNodeCheckOutput>,
     pub timings: PhaseTimings,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleNodeCheckOutput {
+    pub canonical_path: PathBuf,
+    pub file: SourceFile,
+    pub semantic: SemanticOutput,
+    pub imports: Vec<ModuleImportResolution>,
+    pub export_provenance: ExportProvenanceMap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleImportResolution {
+    pub specifier: String,
+    pub specifier_span: Span,
+    pub call_span: Span,
+    pub target_path: Option<PathBuf>,
+    pub failed: bool,
+}
+
+pub type ExportProvenanceMap = HashMap<String, ExportProvenance>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportProvenance {
+    pub canonical_path: PathBuf,
+    pub definition_span: Span,
 }
 
 #[derive(Debug)]
@@ -65,6 +94,7 @@ struct ModuleNode {
 #[derive(Debug, Clone)]
 struct ImportRef {
     specifier: String,
+    specifier_span: Span,
     call_span: Span,
     target: Option<usize>,
     failed: bool,
@@ -115,6 +145,8 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse(
     let graph = ModuleGraph::load(path, overlay, entry_parse)?;
     let mut diagnostics = parse_diagnostics(&graph);
     let mut exports = vec![CheckExport::HasErrors; graph.nodes.len()];
+    let mut export_provenance = vec![ExportProvenanceMap::new(); graph.nodes.len()];
+    let mut semantics = vec![None; graph.nodes.len()];
     let mut name_duration = None;
     let mut check_duration = None;
 
@@ -133,24 +165,47 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse(
         } else {
             check_export_for_node(&graph.nodes[node_id], &semantic)
         };
+        let provenance = if semantic_has_errors {
+            ExportProvenanceMap::new()
+        } else {
+            export_provenance_for_node(&graph, node_id, &export_provenance)
+        };
         diagnostics
             .entry(file_id)
             .or_default()
-            .extend(semantic.diagnostics);
+            .extend(semantic.diagnostics.clone());
+        semantics[node_id] = Some(semantic);
 
         if semantic_has_errors || file_has_errors(&diagnostics, file_id) {
             exports[node_id] = CheckExport::HasErrors;
             continue;
         }
 
+        export_provenance[node_id] = provenance;
         exports[node_id] = export;
     }
 
     let mut reports = reports_from_diagnostics(&graph.source_map, diagnostics);
     sort_reports(&mut reports);
+    let nodes = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_id, node)| {
+            let semantic = semantics[node_id].clone()?;
+            Some(ModuleNodeCheckOutput {
+                canonical_path: node.path.clone(),
+                file: node.file.clone(),
+                semantic,
+                imports: module_import_resolutions(&graph, node),
+                export_provenance: export_provenance[node_id].clone(),
+            })
+        })
+        .collect();
     Ok(ModuleCheckOutput {
         source_map: graph.source_map,
         reports,
+        nodes,
         timings: PhaseTimings {
             parse: total_start.elapsed(),
             name: name_duration,
@@ -295,6 +350,7 @@ impl ModuleGraph {
         let Some(specifier) = call.specifier else {
             return Ok(ImportRef {
                 specifier: String::new(),
+                specifier_span: call.specifier_span,
                 call_span: call.call_span,
                 target: None,
                 failed: false,
@@ -308,6 +364,7 @@ impl ModuleGraph {
                 .push(unsupported_root(call.specifier_span, &specifier));
             return Ok(ImportRef {
                 specifier,
+                specifier_span: call.specifier_span,
                 call_span: call.call_span,
                 target: None,
                 failed: false,
@@ -323,6 +380,7 @@ impl ModuleGraph {
             ));
             return Ok(ImportRef {
                 specifier,
+                specifier_span: call.specifier_span,
                 call_span: call.call_span,
                 target: None,
                 failed: true,
@@ -336,6 +394,7 @@ impl ModuleGraph {
             ));
             return Ok(ImportRef {
                 specifier,
+                specifier_span: call.specifier_span,
                 call_span: call.call_span,
                 target: self.by_path.get(&canonical).copied(),
                 failed: true,
@@ -345,6 +404,7 @@ impl ModuleGraph {
         let target = self.load_module(&canonical, overlay, None, states, stack)?;
         Ok(ImportRef {
             specifier,
+            specifier_span: call.specifier_span,
             call_span: call.call_span,
             target: Some(target),
             failed: false,
@@ -509,6 +569,188 @@ fn check_export_for_node(node: &ModuleNode, semantic: &SemanticOutput) -> CheckE
             ),
         }
     }
+}
+
+fn export_provenance_for_node(
+    graph: &ModuleGraph,
+    node_id: usize,
+    provenance_by_node: &[ExportProvenanceMap],
+) -> ExportProvenanceMap {
+    let node = &graph.nodes[node_id];
+    let Some(ExprKind::Record(entries)) = final_expr(&node.parse.module).map(|expr| &expr.kind)
+    else {
+        return ExportProvenanceMap::new();
+    };
+
+    let declarations = aven_parser::collect_declarations(&node.parse.module)
+        .into_iter()
+        .map(|declaration| (declaration.name, declaration.name_span))
+        .collect::<HashMap<_, _>>();
+    let import_bindings = top_level_import_bindings(&node.parse.module);
+    let imports_by_specifier = imports_by_specifier(node);
+    let mut provenance = ExportProvenanceMap::new();
+
+    collect_export_provenance_from_entries(
+        entries,
+        node,
+        provenance_by_node,
+        &declarations,
+        &import_bindings,
+        &imports_by_specifier,
+        &mut provenance,
+    );
+
+    provenance
+}
+
+fn collect_export_provenance_from_entries(
+    entries: &[RecordEntry],
+    node: &ModuleNode,
+    provenance_by_node: &[ExportProvenanceMap],
+    declarations: &HashMap<String, Span>,
+    import_bindings: &HashMap<String, String>,
+    imports_by_specifier: &HashMap<String, usize>,
+    provenance: &mut ExportProvenanceMap,
+) {
+    for entry in entries {
+        match entry {
+            RecordEntry::Shorthand {
+                name, name_span, ..
+            } => {
+                provenance.insert(
+                    name.clone(),
+                    ExportProvenance {
+                        canonical_path: node.path.clone(),
+                        definition_span: declarations.get(name).copied().unwrap_or(*name_span),
+                    },
+                );
+            }
+            RecordEntry::Rename {
+                from,
+                from_span,
+                to,
+                ..
+            } => {
+                provenance.insert(
+                    to.clone(),
+                    ExportProvenance {
+                        canonical_path: node.path.clone(),
+                        definition_span: declarations.get(from).copied().unwrap_or(*from_span),
+                    },
+                );
+            }
+            RecordEntry::Field {
+                name, name_span, ..
+            } => {
+                provenance.insert(
+                    name.clone(),
+                    ExportProvenance {
+                        canonical_path: node.path.clone(),
+                        definition_span: *name_span,
+                    },
+                );
+            }
+            RecordEntry::Spread { value, .. } => {
+                if let Some(target) =
+                    static_import_target(value, import_bindings, imports_by_specifier)
+                {
+                    provenance.extend(provenance_by_node[target].clone());
+                } else if let Some(entries) = expr_record_kind(value) {
+                    collect_export_provenance_from_entries(
+                        entries,
+                        node,
+                        provenance_by_node,
+                        declarations,
+                        import_bindings,
+                        imports_by_specifier,
+                        provenance,
+                    );
+                }
+            }
+            RecordEntry::Delete { name, .. } => {
+                provenance.remove(name);
+            }
+            RecordEntry::FieldComputed { .. }
+            | RecordEntry::DeleteComputed { .. }
+            | RecordEntry::Iteration { .. }
+            | RecordEntry::Open { .. }
+            | RecordEntry::Element(_) => {}
+        }
+    }
+}
+
+fn top_level_import_bindings(module: &Module) -> HashMap<String, String> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Binding(binding) => import_specifier_from_expr(&binding.value)
+                .map(|specifier| (binding.name.clone(), specifier)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn imports_by_specifier(node: &ModuleNode) -> HashMap<String, usize> {
+    node.imports
+        .iter()
+        .filter_map(|import| {
+            let target = import.target?;
+            Some((import.specifier.clone(), target))
+        })
+        .collect()
+}
+
+fn static_import_target(
+    expr: &Expr,
+    import_bindings: &HashMap<String, String>,
+    imports_by_specifier: &HashMap<String, usize>,
+) -> Option<usize> {
+    import_specifier_from_expr(expr)
+        .or_else(|| match &expr.kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
+                import_bindings.get(name).cloned()
+            }
+            _ => None,
+        })
+        .and_then(|specifier| imports_by_specifier.get(&specifier).copied())
+}
+
+fn import_specifier_from_expr(expr: &Expr) -> Option<String> {
+    if let ExprKind::Call { callee, args } = &expr.kind
+        && matches!(&callee.kind, ExprKind::Name(name) if name == "import")
+        && let Some(ExprKind::Literal(Literal::String(raw))) = args.first().map(|arg| &arg.kind)
+    {
+        return Some(decode_string_literal(raw));
+    }
+
+    None
+}
+
+fn expr_record_kind(expr: &Expr) -> Option<&[RecordEntry]> {
+    match &expr.kind {
+        ExprKind::Record(entries) => Some(entries.as_slice()),
+        _ => None,
+    }
+}
+
+fn module_import_resolutions(
+    graph: &ModuleGraph,
+    node: &ModuleNode,
+) -> Vec<ModuleImportResolution> {
+    node.imports
+        .iter()
+        .map(|import| ModuleImportResolution {
+            specifier: import.specifier.clone(),
+            specifier_span: import.specifier_span,
+            call_span: import.call_span,
+            target_path: import
+                .target
+                .and_then(|target| graph.nodes.get(target))
+                .map(|target| target.path.clone()),
+            failed: import.failed,
+        })
+        .collect()
 }
 
 fn eval_export_for_node(node: &ModuleNode, value: Option<Value>) -> EvalExport {

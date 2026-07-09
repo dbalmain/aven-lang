@@ -270,6 +270,61 @@ fn reports_unsupported_root() {
     assert_has_code(&output.reports, codes::module::UNSUPPORTED_ROOT);
 }
 
+#[test]
+fn export_provenance_records_punned_renamed_and_explicit_fields() {
+    let dir = TempDir::new("export-provenance");
+    let source = "join = (x: Text): Text => x\nBase = { join }\n{ join, ..Base, join -> renamed, explicit: join }\n";
+    write(dir.path(), "main.av", source);
+    let path = fs::canonicalize(dir.path().join("main.av")).expect("main path should canonicalize");
+
+    let output = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("check should load graph");
+
+    assert_no_errors(&output.reports);
+    let node = output
+        .nodes
+        .iter()
+        .find(|node| node.canonical_path == path)
+        .expect("expected main node");
+    assert_eq!(
+        node.export_provenance["join"].definition_span,
+        nth_span(source, "join", 0)
+    );
+    assert_eq!(
+        node.export_provenance["renamed"].definition_span,
+        nth_span(source, "join", 0)
+    );
+    assert_eq!(
+        node.export_provenance["explicit"].definition_span,
+        nth_span(source, "explicit", 0)
+    );
+}
+
+#[test]
+fn export_provenance_chases_static_import_spreads_transitively() {
+    let dir = TempDir::new("export-spread-provenance");
+    let dep_source = "value = 1\n{ value }\n";
+    write(dir.path(), "dep.av", dep_source);
+    write(dir.path(), "mid.av", "Dep = import(\"./dep\")\n{ ..Dep }\n");
+    let mid_path =
+        fs::canonicalize(dir.path().join("mid.av")).expect("mid path should canonicalize");
+    let dep_path =
+        fs::canonicalize(dir.path().join("dep.av")).expect("dep path should canonicalize");
+
+    let output = check_path_with_host_globals(&mid_path, &HostGlobals::default())
+        .expect("check should load graph");
+
+    assert_no_errors(&output.reports);
+    let node = output
+        .nodes
+        .iter()
+        .find(|node| node.canonical_path == mid_path)
+        .expect("expected mid node");
+    let provenance = &node.export_provenance["value"];
+    assert_eq!(provenance.canonical_path, dep_path);
+    assert_eq!(provenance.definition_span, nth_span(dep_source, "value", 0));
+}
+
 fn assert_no_errors(reports: &[aven_core::DiagnosticReport]) {
     assert!(
         !reports.iter().any(aven_core::DiagnosticReport::has_errors),
@@ -285,6 +340,15 @@ fn assert_has_code(reports: &[aven_core::DiagnosticReport], code: &str) {
             .any(|diagnostic| diagnostic.code.as_deref() == Some(code)),
         "expected diagnostic code {code}, got {reports:#?}"
     );
+}
+
+fn nth_span(source: &str, needle: &str, index: usize) -> aven_core::Span {
+    let start = source
+        .match_indices(needle)
+        .nth(index)
+        .map(|(start, _)| start)
+        .expect("expected source to contain needle");
+    aven_core::Span::new(start, start + needle.len())
 }
 
 fn write(root: &Path, relative: &str, source: &str) {

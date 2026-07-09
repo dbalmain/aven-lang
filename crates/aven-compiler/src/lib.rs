@@ -20,7 +20,8 @@ pub use aven_check::{
 
 mod modules;
 pub use modules::{
-    ModuleCheckOutput, ModuleEvalOutput, SourceOverlay, check_path_with_host_globals,
+    ExportProvenance, ExportProvenanceMap, ModuleCheckOutput, ModuleEvalOutput,
+    ModuleImportResolution, ModuleNodeCheckOutput, SourceOverlay, check_path_with_host_globals,
     check_path_with_host_globals_and_overlay,
     check_path_with_host_globals_and_overlay_and_entry_parse, eval_path_with_globals,
 };
@@ -95,6 +96,7 @@ pub struct DocumentSnapshot {
     invalidated_declarations: Vec<DeclarationKey>,
     semantic_diagnostics: Vec<Diagnostic>,
     inferred_types: Vec<InferredType>,
+    has_semantic: bool,
 }
 
 impl DocumentSnapshot {
@@ -126,6 +128,7 @@ impl DocumentSnapshot {
             invalidated_declarations: declaration_artifacts.invalidated,
             semantic_diagnostics: Vec::new(),
             inferred_types: Vec::new(),
+            has_semantic: false,
         }
     }
 
@@ -143,6 +146,7 @@ impl DocumentSnapshot {
             invalidated_declarations: self.invalidated_declarations.clone(),
             semantic_diagnostics,
             inferred_types,
+            has_semantic: true,
         }
     }
 
@@ -193,6 +197,10 @@ impl DocumentSnapshot {
             .filter(|inferred| type_span_contains(inferred.name_span, span))
             .min_by_key(|inferred| inferred.name_span.len())
             .map(|inferred| &inferred.ty)
+    }
+
+    pub fn has_semantic(&self) -> bool {
+        self.has_semantic
     }
 
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {

@@ -62,6 +62,28 @@ fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
     document.with_semantic(semantic.diagnostics, semantic.inferred_types)
 }
 
+fn parsed_file_document(uri: &Url, source: impl Into<String>) -> ParsedDocument {
+    let file = SourceFile::new(
+        FileId(0),
+        source_name(uri),
+        uri.to_file_path().ok(),
+        source.into(),
+    );
+    aven_compiler::DocumentSnapshot::parse(aven_compiler::Revision::default(), file)
+}
+
+fn analyze_file_document(
+    store: &mut DocumentStore,
+    uri: &Url,
+    source: impl Into<String>,
+) -> Arc<ParsedDocument> {
+    store.set_document(uri.clone(), 1, source.into());
+    let (document, overlay) = store.semantic_input(uri).expect("expected semantic input");
+    let analysis = analyze_document_semantics_for_uri(uri, &document, &overlay);
+    assert!(store.set_semantic(uri, 1, analysis));
+    store.document(uri).expect("expected stored document")
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn protocol_smoke_opens_document_and_returns_symbols() {
     let (mut service, _) = LspService::new(test_backend);
@@ -1446,6 +1468,183 @@ fn file_backed_semantic_diagnostics_report_missing_dependency() {
 }
 
 #[test]
+fn file_backed_member_completion_uses_import_aware_entry_semantics() {
+    let dir = TempDir::new("lsp-import-completion");
+    write(
+        dir.path(),
+        "lib/text.av",
+        "join = (x: Text): Text => x\n{ join }\n",
+    );
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "text = import(\"./lib/text\")\nvalue = text.\n{ value }\n",
+    );
+
+    let completions = completion_at_position_for_uri(&document, &main_uri, position(1, 13));
+    let Some(join) = completion_item(&completions, "join") else {
+        panic!("expected join completion");
+    };
+
+    assert_eq!(join.detail.as_deref(), Some("Text -> Text"));
+}
+
+#[test]
+fn file_backed_hover_on_import_binding_shows_record_type() {
+    let dir = TempDir::new("lsp-import-hover");
+    write(
+        dir.path(),
+        "lib/text.av",
+        "join = (x: Text): Text => x\n{ join }\n",
+    );
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "text = import(\"./lib/text\")\nvalue = text\n{ value }\n",
+    );
+
+    let Some(hover) = hover_at_position(&document, position(1, 9)) else {
+        panic!("expected hover");
+    };
+    let HoverContents::Markup(markup) = hover.contents else {
+        panic!("expected markup hover");
+    };
+
+    assert!(markup.value.contains("join: Text -> Text"));
+}
+
+#[test]
+fn file_backed_goto_on_import_member_jumps_to_export_definition() {
+    let dir = TempDir::new("lsp-import-member-goto");
+    write(
+        dir.path(),
+        "lib/text.av",
+        "join = (x: Text): Text => x\n{ join }\n",
+    );
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let dep_uri = file_uri(&dir.path().join("lib/text.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "text = import(\"./lib/text\")\nvalue = text.join\n{ value }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    let Some(location) = definition_location(&document, main_uri, position(1, 14), Some(&graph))
+    else {
+        panic!("expected definition location");
+    };
+
+    assert_eq!(location.uri, dep_uri);
+    assert_eq!(location.range.start, position(0, 0));
+    assert_eq!(location.range.end, position(0, 4));
+}
+
+#[test]
+fn file_backed_goto_on_import_pattern_site_jumps_to_export_definition() {
+    let dir = TempDir::new("lsp-import-pattern-goto");
+    write(
+        dir.path(),
+        "lib/text.av",
+        "join = (x: Text): Text => x\n{ join }\n",
+    );
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let dep_uri = file_uri(&dir.path().join("lib/text.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "{ join } = import(\"./lib/text\")\nvalue = join\n{ value }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    let Some(location) =
+        definition_location(&document, main_uri.clone(), position(0, 3), Some(&graph))
+    else {
+        panic!("expected definition location");
+    };
+    assert_eq!(location.uri, dep_uri);
+    assert_eq!(location.range.start, position(0, 0));
+    assert_eq!(location.range.end, position(0, 4));
+
+    let Some(local_location) =
+        definition_location(&document, main_uri.clone(), position(1, 9), Some(&graph))
+    else {
+        panic!("expected local definition location");
+    };
+    assert_eq!(local_location.uri, main_uri);
+    assert_eq!(local_location.range.start, position(0, 2));
+    assert_eq!(local_location.range.end, position(0, 6));
+}
+
+#[test]
+fn file_backed_goto_on_import_specifier_jumps_to_file_start() {
+    let dir = TempDir::new("lsp-import-specifier-goto");
+    write(dir.path(), "lib/text.av", "join = 1\n{ join }\n");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let dep_uri = file_uri(&dir.path().join("lib/text.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "text = import(\"./lib/text\")\n{ text }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    let Some(location) = definition_location(&document, main_uri, position(0, 17), Some(&graph))
+    else {
+        panic!("expected definition location");
+    };
+
+    assert_eq!(location.uri, dep_uri);
+    assert_eq!(location.range.start, position(0, 0));
+}
+
+#[test]
+fn file_backed_import_specifier_completion_lists_siblings() {
+    let dir = TempDir::new("lsp-import-specifier-completion");
+    write(dir.path(), "text.av", "value = 1\n{ value }\n");
+    write(dir.path(), "lib/mod.av", "value = 1\n{ value }\n");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let document = parsed_file_document(&main_uri, "Dep = import(\"./\")\n");
+
+    let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 16));
+
+    assert!(completion_item(&completions, "text").is_some());
+    assert!(completion_item(&completions, "lib/").is_some());
+}
+
+#[test]
+fn import_specifier_completion_ignores_unsupported_roots() {
+    let dir = TempDir::new("lsp-import-specifier-unsupported");
+    write(dir.path(), "text.av", "value = 1\n{ value }\n");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let document = parsed_file_document(&main_uri, "Dep = import(\"$/\")\n");
+
+    let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 16));
+
+    assert!(completions.is_empty());
+}
+
+#[test]
 fn pathless_semantic_diagnostics_keep_single_file_import_warning() {
     let document = parsed_document("Dep = import(\"./dep\")\n{ Dep }\n");
 
@@ -1542,8 +1741,11 @@ fn document_store_accepts_current_semantic_diagnostics() {
     assert!(store.set_semantic(
         &uri,
         1,
-        vec![AvenDiagnostic::error("semantic diagnostic")],
-        Vec::new(),
+        DocumentSemanticAnalysis {
+            diagnostics: vec![AvenDiagnostic::error("semantic diagnostic")],
+            inferred_types: Vec::new(),
+            module_graph: None,
+        },
     ));
 
     let Some(document) = store.document(&uri) else {
@@ -1566,8 +1768,11 @@ fn document_store_rejects_stale_semantic_diagnostics() {
     assert!(!store.set_semantic(
         &uri,
         1,
-        vec![AvenDiagnostic::error("stale diagnostic")],
-        Vec::new(),
+        DocumentSemanticAnalysis {
+            diagnostics: vec![AvenDiagnostic::error("stale diagnostic")],
+            inferred_types: Vec::new(),
+            module_graph: None,
+        },
     ));
 
     let Some(document) = store.document(&uri) else {
@@ -1580,7 +1785,7 @@ fn document_store_rejects_stale_semantic_diagnostics() {
 #[test]
 fn definition_location_finds_top_level_runtime_bindings() {
     let document = parsed_document("value = 1\nother = value\n".to_owned());
-    let Some(location) = definition_location(&document, test_uri(), position(1, 9)) else {
+    let Some(location) = definition_location(&document, test_uri(), position(1, 9), None) else {
         panic!("expected definition location");
     };
 
@@ -1591,7 +1796,7 @@ fn definition_location_finds_top_level_runtime_bindings() {
 #[test]
 fn definition_location_finds_top_level_comptime_bindings() {
     let document = parsed_document("User = { name: Text }\nvalue = User\n".to_owned());
-    let Some(location) = definition_location(&document, test_uri(), position(1, 9)) else {
+    let Some(location) = definition_location(&document, test_uri(), position(1, 9), None) else {
         panic!("expected definition location");
     };
 
@@ -1602,7 +1807,7 @@ fn definition_location_finds_top_level_comptime_bindings() {
 #[test]
 fn definition_location_prefers_lambda_parameters_over_top_level_bindings() {
     let document = parsed_document("x = 1\nf = (x) => x\n".to_owned());
-    let Some(location) = definition_location(&document, test_uri(), position(1, 11)) else {
+    let Some(location) = definition_location(&document, test_uri(), position(1, 11), None) else {
         panic!("expected definition location");
     };
 
@@ -1613,7 +1818,7 @@ fn definition_location_prefers_lambda_parameters_over_top_level_bindings() {
 #[test]
 fn definition_location_uses_nearest_lambda_parameter() {
     let document = parsed_document("x = 1\nf = (x) => (x) => x\n".to_owned());
-    let Some(location) = definition_location(&document, test_uri(), position(1, 18)) else {
+    let Some(location) = definition_location(&document, test_uri(), position(1, 18), None) else {
         panic!("expected definition location");
     };
 
@@ -1624,7 +1829,7 @@ fn definition_location_uses_nearest_lambda_parameter() {
 #[test]
 fn definition_location_finds_block_bindings() {
     let document = parsed_document("f = () =>\n  x = 1\n  y = x\n".to_owned());
-    let Some(location) = definition_location(&document, test_uri(), position(2, 6)) else {
+    let Some(location) = definition_location(&document, test_uri(), position(2, 6), None) else {
         panic!("expected definition location");
     };
 
@@ -1636,7 +1841,7 @@ fn definition_location_finds_block_bindings() {
 fn definition_location_finds_match_pattern_binders() {
     let document =
         parsed_document("f = (result) =>\n  result ?>\n    @Ok(value) => value\n".to_owned());
-    let Some(location) = definition_location(&document, test_uri(), position(2, 18)) else {
+    let Some(location) = definition_location(&document, test_uri(), position(2, 18), None) else {
         panic!("expected definition location");
     };
 

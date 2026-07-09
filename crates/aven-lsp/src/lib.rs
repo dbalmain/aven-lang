@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -56,6 +57,28 @@ const SEMANTIC_DEBOUNCE: Duration = Duration::from_millis(150);
 struct DocumentStore {
     file_ids: HashMap<Url, FileId>,
     database: aven_compiler::CompilerDatabase<Url>,
+    module_graphs: HashMap<Url, Arc<DocumentModuleGraph>>,
+}
+
+#[derive(Debug, Clone)]
+struct DocumentModuleGraph {
+    revision: aven_compiler::Revision,
+    entry_path: PathBuf,
+    nodes: HashMap<PathBuf, ModuleNodeCache>,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleNodeCache {
+    file: SourceFile,
+    imports: Vec<aven_compiler::ModuleImportResolution>,
+    export_provenance: aven_compiler::ExportProvenanceMap,
+}
+
+#[derive(Debug)]
+struct DocumentSemanticAnalysis {
+    diagnostics: Vec<AvenDiagnostic>,
+    inferred_types: Vec<aven_compiler::InferredType>,
+    module_graph: Option<DocumentModuleGraph>,
 }
 
 impl DocumentStore {
@@ -65,6 +88,7 @@ impl DocumentStore {
 
         if self.database.needs_update(&uri, revision, &text) {
             let file = SourceFile::new(file_id, source_name(&uri), uri.to_file_path().ok(), text);
+            self.module_graphs.remove(&uri);
             self.database.set_document(uri, revision, file);
         }
 
@@ -106,17 +130,32 @@ impl DocumentStore {
         &mut self,
         uri: &Url,
         version: i32,
-        diagnostics: Vec<AvenDiagnostic>,
-        inferred_types: Vec<aven_compiler::InferredType>,
+        analysis: DocumentSemanticAnalysis,
     ) -> bool {
-        self.database
-            .set_semantic(
-                uri,
-                aven_compiler::Revision::from(version),
-                diagnostics,
-                inferred_types,
-            )
-            .is_some()
+        let revision = aven_compiler::Revision::from(version);
+        let Some(document) = self.database.set_semantic(
+            uri,
+            revision,
+            analysis.diagnostics,
+            analysis.inferred_types,
+        ) else {
+            return false;
+        };
+
+        if let Some(module_graph) = analysis.module_graph
+            && module_graph.revision == document.revision()
+        {
+            self.module_graphs
+                .insert(uri.clone(), Arc::new(module_graph));
+        }
+
+        true
+    }
+
+    fn module_graph(&self, uri: &Url) -> Option<Arc<DocumentModuleGraph>> {
+        let document = self.document(uri)?;
+        let graph = self.module_graphs.get(uri)?;
+        (graph.revision == document.revision()).then(|| Arc::clone(graph))
     }
 
     fn file_id_for(&mut self, uri: &Url) -> FileId {
@@ -249,11 +288,15 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(document) = self.document(&uri) else {
+        let Some(document) = self.document_with_semantics(&uri) else {
             return Ok(None);
         };
+        let module_graph = self.module_graph(&uri);
 
-        Ok(definition_location(&document, uri, position).map(GotoDefinitionResponse::Scalar))
+        Ok(
+            definition_location(&document, uri, position, module_graph.as_deref())
+                .map(GotoDefinitionResponse::Scalar),
+        )
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -273,9 +316,9 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        Ok(Some(CompletionResponse::Array(completion_at_position(
-            &document, position,
-        ))))
+        Ok(Some(CompletionResponse::Array(
+            completion_at_position_for_uri(&document, &uri, position),
+        )))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
@@ -352,21 +395,37 @@ impl Backend {
         self.store.lock().ok().and_then(|store| store.document(uri))
     }
 
-    /// Fetch the document with semantics for its *current* revision, computing
-    /// them synchronously. Semantic analysis is otherwise produced by a
-    /// debounced background task (`SEMANTIC_DEBOUNCE`), so a freshly edited
-    /// document has no inferred types until that fires. Type-directed features
-    /// (completion, hover, signature help, inlay hints) must not depend on that
-    /// timing — completing right after typing `.` would otherwise see no type
-    /// and fall back to the bare identifier list. At embedded-script sizes a
-    /// re-check per request is cheap.
+    fn module_graph(&self, uri: &Url) -> Option<Arc<DocumentModuleGraph>> {
+        self.store
+            .lock()
+            .ok()
+            .and_then(|store| store.module_graph(uri))
+    }
+
+    /// Fetch the document with semantics for its *current* revision. The
+    /// debounced task normally fills this, but type-directed requests can arrive
+    /// first; compute once for the revision and store the result for later
+    /// requests.
     fn document_with_semantics(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
-        let document = self.document(uri)?;
-        let semantic = analyze_document_semantics(&document);
-        Some(Arc::new(document.with_semantic(
-            semantic.diagnostics,
-            semantic.inferred_types,
-        )))
+        let (document, overlay) = {
+            let store = self.store.lock().ok()?;
+            let document = store.document(uri)?;
+            let needs_graph = uri.to_file_path().is_ok();
+            if document.has_semantic() && (!needs_graph || store.module_graph(uri).is_some()) {
+                return Some(document);
+            }
+            (document, store.source_overlay())
+        };
+
+        let version = document.revision().as_i32();
+        let analysis = analyze_document_semantics_for_uri(uri, &document, &overlay);
+        self.store.lock().ok().and_then(|mut store| {
+            if !store.set_semantic(uri, version, analysis) {
+                return None;
+            }
+
+            store.document(uri)
+        })
     }
 
     fn schedule_semantic_diagnostics(&self, uri: Url, version: i32) {
@@ -428,9 +487,9 @@ async fn publish_semantic_diagnostics(
         return;
     }
 
-    let semantic = analyze_document_semantics_for_uri(&uri, &document, &overlay);
+    let analysis = analyze_document_semantics_for_uri(&uri, &document, &overlay);
     let Some(document) = store.lock().ok().and_then(|mut store| {
-        if !store.set_semantic(&uri, version, semantic.diagnostics, semantic.inferred_types) {
+        if !store.set_semantic(&uri, version, analysis) {
             return None;
         }
 
@@ -444,6 +503,7 @@ async fn publish_semantic_diagnostics(
         .await;
 }
 
+#[cfg(test)]
 fn analyze_document_semantics(document: &ParsedDocument) -> aven_compiler::SemanticOutput {
     let globals = aven_host::standard_check_host_globals();
     aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals)
@@ -453,24 +513,27 @@ fn analyze_document_semantics_for_uri(
     uri: &Url,
     document: &ParsedDocument,
     overlay: &aven_compiler::SourceOverlay,
-) -> aven_compiler::SemanticOutput {
+) -> DocumentSemanticAnalysis {
     let globals = aven_host::standard_check_host_globals();
-    let mut semantic =
-        aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals);
-
-    if let Some(diagnostics) = module_diagnostics_for_document(uri, document, &globals, overlay) {
-        semantic.diagnostics = diagnostics;
+    if let Some(analysis) = module_semantics_for_document(uri, document, &globals, overlay) {
+        return analysis;
     }
 
-    semantic
+    let semantic =
+        aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals);
+    DocumentSemanticAnalysis {
+        diagnostics: semantic.diagnostics,
+        inferred_types: semantic.inferred_types,
+        module_graph: None,
+    }
 }
 
-fn module_diagnostics_for_document(
+fn module_semantics_for_document(
     uri: &Url,
     document: &ParsedDocument,
     globals: &aven_compiler::HostGlobals,
     overlay: &aven_compiler::SourceOverlay,
-) -> Option<Vec<AvenDiagnostic>> {
+) -> Option<DocumentSemanticAnalysis> {
     let entry_path = fs::canonicalize(uri.to_file_path().ok()?).ok()?;
     let output = aven_compiler::check_path_with_host_globals_and_overlay_and_entry_parse(
         &entry_path,
@@ -479,24 +542,54 @@ fn module_diagnostics_for_document(
         Some(document.parse_output()),
     )
     .ok()?;
-    let entry_file = output
-        .source_map
-        .files()
+    let entry_node = output
+        .nodes
         .iter()
-        .find(|file| file.path.as_deref() == Some(entry_path.as_path()))?;
+        .find(|node| node.canonical_path == entry_path)?;
     let diagnostics = output
         .reports
         .iter()
-        .find(|report| report.file_id == entry_file.id)
+        .find(|report| report.file_id == entry_node.file.id)
         .map_or_else(Vec::new, |report| report.diagnostics.clone());
     let parse_diagnostics = document.parse_diagnostics();
+    let diagnostics = diagnostics
+        .into_iter()
+        .filter(|diagnostic| !parse_diagnostics.contains(diagnostic))
+        .collect();
+    let inferred_types = entry_node.semantic.inferred_types.clone();
+    let module_graph = module_graph_cache(document.revision(), entry_path, output.nodes);
 
-    Some(
-        diagnostics
-            .into_iter()
-            .filter(|diagnostic| !parse_diagnostics.contains(diagnostic))
-            .collect(),
-    )
+    Some(DocumentSemanticAnalysis {
+        diagnostics,
+        inferred_types,
+        module_graph: Some(module_graph),
+    })
+}
+
+fn module_graph_cache(
+    revision: aven_compiler::Revision,
+    entry_path: PathBuf,
+    nodes: Vec<aven_compiler::ModuleNodeCheckOutput>,
+) -> DocumentModuleGraph {
+    let nodes = nodes
+        .into_iter()
+        .map(|node| {
+            (
+                node.canonical_path,
+                ModuleNodeCache {
+                    file: node.file,
+                    imports: node.imports,
+                    export_provenance: node.export_provenance,
+                },
+            )
+        })
+        .collect();
+
+    DocumentModuleGraph {
+        revision,
+        entry_path,
+        nodes,
+    }
 }
 
 fn document_diagnostics(document: &ParsedDocument) -> Vec<Diagnostic> {
@@ -673,7 +766,36 @@ fn symbol_kind(declaration: &aven_parser::Declaration) -> SymbolKind {
     }
 }
 
+#[cfg(test)]
 fn completion_at_position(document: &ParsedDocument, position: Position) -> Vec<CompletionItem> {
+    if let Some(uri) = document
+        .file()
+        .path
+        .as_ref()
+        .and_then(|path| Url::from_file_path(path).ok())
+    {
+        return completion_at_position_for_uri(document, &uri, position);
+    }
+
+    completion_at_position_without_import_paths(document, position)
+}
+
+fn completion_at_position_for_uri(
+    document: &ParsedDocument,
+    uri: &Url,
+    position: Position,
+) -> Vec<CompletionItem> {
+    if let Some(items) = import_specifier_completion_at_position(document, uri, position) {
+        return items;
+    }
+
+    completion_at_position_without_import_paths(document, position)
+}
+
+fn completion_at_position_without_import_paths(
+    document: &ParsedDocument,
+    position: Position,
+) -> Vec<CompletionItem> {
     if let Some(items) = field_completion_at_position(document, position) {
         return items;
     }
@@ -687,6 +809,107 @@ fn completion_at_position(document: &ParsedDocument, position: Position) -> Vec<
     }
 
     identifier_completion_at_position(document, position)
+}
+
+fn import_specifier_completion_at_position(
+    document: &ParsedDocument,
+    uri: &Url,
+    position: Position,
+) -> Option<Vec<CompletionItem>> {
+    let offset = position_to_offset(document, position)?;
+    let token_index = significant_tokens(document).iter().position(|token| {
+        matches!(token.kind, aven_parser::TokenKind::StringLiteral(_))
+            && offset > token.span.start
+            && offset <= token.span.end
+    })?;
+    let significant = significant_tokens(document);
+    let token = significant[token_index];
+
+    if !is_import_string_argument(&significant, token_index) {
+        return None;
+    }
+
+    let content_start = token.span.start.saturating_add(1);
+    let content_end = token.span.end.saturating_sub(1);
+    let cursor = offset.clamp(content_start, content_end);
+    let typed = document.source().get(content_start..cursor)?;
+
+    if !typed.starts_with("./") && !typed.starts_with("../") {
+        return Some(Vec::new());
+    }
+
+    let (directory_specifier, prefix) = typed
+        .rsplit_once('/')
+        .map_or(("", typed), |(directory, prefix)| (directory, prefix));
+    let base_dir = uri.to_file_path().ok()?.parent()?.to_path_buf();
+    let search_dir = base_dir.join(directory_specifier);
+    let replace_start = cursor.saturating_sub(prefix.len());
+    let range = exact_offset_range(document, Span::new(replace_start, cursor));
+
+    let mut items = Vec::new();
+    for entry in fs::read_dir(search_dir).ok()? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with(prefix) {
+            continue;
+        }
+
+        if file_type.is_dir() {
+            items.push(import_path_completion_item(
+                format!("{name}/"),
+                CompletionItemKind::FOLDER,
+                range,
+            ));
+        } else if file_type.is_file()
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "av")
+            && let Some(stem) = entry.path().file_stem().and_then(|stem| stem.to_str())
+        {
+            items.push(import_path_completion_item(
+                stem.to_owned(),
+                CompletionItemKind::FILE,
+                range,
+            ));
+        }
+    }
+
+    items.sort_by(|left, right| left.label.cmp(&right.label));
+    Some(items)
+}
+
+fn is_import_string_argument(tokens: &[&aven_parser::Token], string_index: usize) -> bool {
+    let Some(open_index) = string_index.checked_sub(1) else {
+        return false;
+    };
+    let Some(callee_index) = string_index.checked_sub(2) else {
+        return false;
+    };
+
+    matches!(tokens[open_index].kind, aven_parser::TokenKind::OpenParen)
+        && matches!(&tokens[callee_index].kind, aven_parser::TokenKind::Identifier(name) if name == "import")
+}
+
+fn import_path_completion_item(
+    label: String,
+    kind: CompletionItemKind,
+    range: Range,
+) -> CompletionItem {
+    CompletionItem {
+        label: label.clone(),
+        kind: Some(kind),
+        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+            range,
+            new_text: label,
+        })),
+        ..CompletionItem::default()
+    }
 }
 
 fn identifier_completion_at_position(
@@ -1761,7 +1984,26 @@ fn definition_location(
     document: &ParsedDocument,
     uri: Url,
     position: Position,
+    module_graph: Option<&DocumentModuleGraph>,
 ) -> Option<Location> {
+    if let Some(graph) = module_graph {
+        if let Some(location) = import_specifier_definition_location(document, graph, position) {
+            return Some(location);
+        }
+
+        if let Some(location) = import_pattern_definition_location(document, graph, position) {
+            return Some(location);
+        }
+
+        if let Some(location) = import_member_definition_location(document, graph, position) {
+            return Some(location);
+        }
+
+        if let Some(location) = spread_import_definition_location(document, graph, position) {
+            return Some(location);
+        }
+    }
+
     let identifier = identifier_at_position(document, position)?;
 
     if let Some(span) = local_definition_span(document, &identifier) {
@@ -1777,6 +2019,203 @@ fn definition_location(
         uri,
         span_to_range(document, declaration.name_span),
     ))
+}
+
+fn import_specifier_definition_location(
+    document: &ParsedDocument,
+    graph: &DocumentModuleGraph,
+    position: Position,
+) -> Option<Location> {
+    let offset = position_to_offset(document, position)?;
+    let import = entry_node(graph)?.imports.iter().find(|import| {
+        !import.failed
+            && offset >= import.specifier_span.start
+            && offset <= import.specifier_span.end
+    })?;
+    let target_path = import.target_path.as_ref()?;
+
+    location_for_path_span(graph, target_path, Span::point(0))
+}
+
+fn import_pattern_definition_location(
+    document: &ParsedDocument,
+    graph: &DocumentModuleGraph,
+    position: Position,
+) -> Option<Location> {
+    let identifier = identifier_at_position(document, position)?;
+
+    for item in &document.parse_output().module.items {
+        let aven_parser::Item::PatternBinding(binding) = item else {
+            continue;
+        };
+        let Some(specifier) = import_specifier_from_expr(&binding.value) else {
+            continue;
+        };
+        let Some(target_path) = target_path_for_specifier(graph, &specifier) else {
+            continue;
+        };
+        let Some(export_name) = export_name_for_pattern_identifier(&binding.pattern, &identifier)
+        else {
+            continue;
+        };
+        let Some(provenance) = graph
+            .nodes
+            .get(target_path)
+            .and_then(|node| node.export_provenance.get(export_name))
+        else {
+            continue;
+        };
+
+        return location_for_provenance(graph, provenance);
+    }
+
+    None
+}
+
+fn import_member_definition_location(
+    document: &ParsedDocument,
+    graph: &DocumentModuleGraph,
+    position: Position,
+) -> Option<Location> {
+    let access = field_access_identifier_at_position(document, position)?;
+    let definition_span = definition_span_for_identifier(document, &access.receiver)?;
+    let specifier = top_level_import_binding_specifier(document, definition_span)?;
+    let target_path = target_path_for_specifier(graph, &specifier)?;
+    let provenance = graph
+        .nodes
+        .get(target_path)?
+        .export_provenance
+        .get(&access.field.name)?;
+
+    location_for_provenance(graph, provenance)
+}
+
+fn spread_import_definition_location(
+    document: &ParsedDocument,
+    graph: &DocumentModuleGraph,
+    position: Position,
+) -> Option<Location> {
+    let identifier = identifier_at_position(document, position)?;
+
+    if definition_span_for_identifier(document, &identifier).is_some() {
+        return None;
+    }
+
+    for item in &document.parse_output().module.items {
+        let aven_parser::Item::SpreadBinding(binding) = item else {
+            continue;
+        };
+        let Some(specifier) = import_specifier_from_expr(&binding.value) else {
+            continue;
+        };
+        let Some(target_path) = target_path_for_specifier(graph, &specifier) else {
+            continue;
+        };
+        let Some(provenance) = graph
+            .nodes
+            .get(target_path)
+            .and_then(|node| node.export_provenance.get(&identifier.name))
+        else {
+            continue;
+        };
+
+        return location_for_provenance(graph, provenance);
+    }
+
+    None
+}
+
+fn entry_node(graph: &DocumentModuleGraph) -> Option<&ModuleNodeCache> {
+    graph.nodes.get(&graph.entry_path)
+}
+
+fn target_path_for_specifier<'a>(
+    graph: &'a DocumentModuleGraph,
+    specifier: &str,
+) -> Option<&'a PathBuf> {
+    entry_node(graph)?
+        .imports
+        .iter()
+        .find(|import| !import.failed && import.specifier == specifier)?
+        .target_path
+        .as_ref()
+}
+
+fn location_for_provenance(
+    graph: &DocumentModuleGraph,
+    provenance: &aven_compiler::ExportProvenance,
+) -> Option<Location> {
+    location_for_path_span(
+        graph,
+        &provenance.canonical_path,
+        provenance.definition_span,
+    )
+}
+
+fn location_for_path_span(
+    graph: &DocumentModuleGraph,
+    path: &Path,
+    span: Span,
+) -> Option<Location> {
+    let file = &graph.nodes.get(path)?.file;
+    let uri = Url::from_file_path(path).ok()?;
+    Some(Location::new(uri, source_file_span_to_range(file, span)))
+}
+
+fn source_file_span_to_range(file: &SourceFile, span: Span) -> Range {
+    let (start, end) = file.line_index().span_to_range(file.source(), span);
+    Range {
+        start: to_lsp_position(start),
+        end: to_lsp_position(end),
+    }
+}
+
+fn top_level_import_binding_specifier(
+    document: &ParsedDocument,
+    definition_span: Span,
+) -> Option<String> {
+    document
+        .parse_output()
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            aven_parser::Item::Binding(binding) if binding.name_span == definition_span => {
+                import_specifier_from_expr(&binding.value)
+            }
+            _ => None,
+        })
+}
+
+fn import_specifier_from_expr(expr: &aven_parser::Expr) -> Option<String> {
+    if let aven_parser::ExprKind::Call { callee, args } = &expr.kind
+        && matches!(&callee.kind, aven_parser::ExprKind::Name(name) if name == "import")
+        && let Some(aven_parser::ExprKind::Literal(aven_parser::Literal::String(raw))) =
+            args.first().map(|arg| &arg.kind)
+    {
+        return Some(aven_parser::decode_string_literal(raw));
+    }
+
+    None
+}
+
+fn export_name_for_pattern_identifier<'a>(
+    pattern: &'a aven_parser::Expr,
+    identifier: &IdentifierAtPosition,
+) -> Option<&'a str> {
+    let aven_parser::ExprKind::Record(entries) = &pattern.kind else {
+        return None;
+    };
+
+    entries.iter().find_map(|entry| match entry {
+        aven_parser::RecordEntry::Shorthand {
+            name, name_span, ..
+        } if *name_span == identifier.span => Some(name.as_str()),
+        aven_parser::RecordEntry::Rename { from, to_span, .. } if *to_span == identifier.span => {
+            Some(from.as_str())
+        }
+        _ => None,
+    })
 }
 
 fn rename_workspace_edit(
