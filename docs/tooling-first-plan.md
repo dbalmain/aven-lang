@@ -2788,6 +2788,16 @@ checker re-entrancy to keep the semantic crates small.
   semantic analysis twice (once single-file for hover, once in-graph for
   diagnostics).
 - Z-open: dynamic (runtime-string) import fallback.
+- Design decision (user, 2026-07-09): **modules bind lowercase** — a module is
+  an ordinary record value; uppercase is reserved for types alone (no
+  module/namespace category). `text = import("std/Text")`; types travel inside
+  the record (`x: text.Text`) or are extracted by record-pattern bindings
+  (`{ Text } = import("std/Text")`, an ordinary type binding). A lowercase `=`
+  binding whose RHS is comptime-evaluable (static import) is comptime-known and
+  traversable in type position; `:=`-rebound bindings never are; a _bare_ type
+  still cannot bind lowercase (`config = User` stays an error). Zig/TS
+  precedent. Spec updated in clex (naming rules, Type and Comptime Bindings,
+  Modules/Imports examples). Supersedes "imported namespaces are capitalized".
 - Parser gap discovered: top-level record-pattern bindings
   (`{ join } = import("./lib/text")`) do not parse, and block spread bindings
   (`..expr` opening a record into scope, spec §Block Spread Bindings) are
