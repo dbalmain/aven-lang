@@ -12,6 +12,7 @@ mod http;
 mod io;
 mod json;
 mod marshal;
+mod temporal;
 mod text_format;
 mod toml_format;
 mod yaml;
@@ -733,17 +734,25 @@ pub fn standard_check_host_globals() -> HostGlobals {
             ),
         ],
     )
-    .with_type_definitions(vec![
-        ("Data".to_owned(), data_type()),
-        ("JsonError".to_owned(), json_error_type()),
-        ("YamlError".to_owned(), yaml_error_type()),
-        ("TomlError".to_owned(), toml_error_type()),
-    ])
-    .with_statics(vec![
-        ("Json".to_owned(), json_statics()),
-        ("Yaml".to_owned(), yaml_statics()),
-        ("Toml".to_owned(), toml_statics()),
-    ])
+    .with_type_definitions(
+        std::iter::once(("Data".to_owned(), data_type()))
+            .chain([
+                ("JsonError".to_owned(), json_error_type()),
+                ("YamlError".to_owned(), yaml_error_type()),
+                ("TomlError".to_owned(), toml_error_type()),
+            ])
+            .chain(temporal::temporal_type_definitions())
+            .collect(),
+    )
+    .with_statics(
+        std::iter::once(("Json".to_owned(), json_statics()))
+            .chain([
+                ("Yaml".to_owned(), yaml_statics()),
+                ("Toml".to_owned(), toml_statics()),
+            ])
+            .chain(temporal::temporal_statics_table())
+            .collect(),
+    )
 }
 
 /// The statics the `Json` type carries: `encode`/`decode`. Shared by the

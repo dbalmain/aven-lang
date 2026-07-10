@@ -2,6 +2,10 @@ use aven_eval::Value;
 
 use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
+use crate::temporal::{
+    format_temporal_from_toml, format_temporal_from_value, temporal_iso_text,
+    toml_datetime_from_format_temporal,
+};
 use crate::text_format::{
     DecodeError, FormatNumber, FormatValue, decode_value, parse_error_value, shape_error_value,
 };
@@ -82,10 +86,12 @@ fn toml_to_format_value(value: ::toml::Value) -> FormatValue {
         ::toml::Value::Integer(value) => FormatValue::Number(FormatNumber::Int(value)),
         ::toml::Value::Float(value) => FormatValue::Number(FormatNumber::Float(value)),
         ::toml::Value::Boolean(value) => FormatValue::Bool(value),
-        ::toml::Value::Datetime(value) => {
-            // The shared dynamic model has no datetime constructor yet.
-            FormatValue::Text(value.to_string())
-        }
+        ::toml::Value::Datetime(value) => match format_temporal_from_toml(&value) {
+            Ok(temporal) => FormatValue::Temporal(temporal),
+            // Malformed TOML datetimes should not appear after a successful
+            // parse; fall back to the textual form so decode still sees a value.
+            Err(_) => FormatValue::Text(value.to_string()),
+        },
         ::toml::Value::Array(values) => {
             FormatValue::Array(values.into_iter().map(toml_to_format_value).collect())
         }
@@ -131,6 +137,14 @@ enum EncodePosition {
 }
 
 fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, String> {
+    if let Some(temporal) = format_temporal_from_value(value) {
+        return toml_datetime_from_format_temporal(temporal).map(::toml::Value::Datetime);
+    }
+    // Duration (and any other temporal without a TOML native kind) as ISO text.
+    if let Some(text) = temporal_iso_text(value) {
+        return Ok(::toml::Value::String(text));
+    }
+
     match value {
         Value::Int(value) => Ok(::toml::Value::Integer(*value)),
         Value::Float(value) if value.is_finite() => Ok(::toml::Value::Float(*value)),
@@ -265,6 +279,8 @@ mod tests {
         let mut host = Host::new();
         host.register_toml();
         host.register_json();
+        host.register_yaml();
+        host.register_temporals();
         host
     }
 
@@ -466,5 +482,148 @@ mod tests {
             .unwrap_or_else(|| panic!("decoded has an inferred type"));
 
         assert_eq!(ty.render(), "Result[Data, TomlError]");
+    }
+
+    #[test]
+    fn typed_decode_maps_four_toml_datetime_kinds() {
+        let value = run("Cfg = {\n\
+               when: Instant,\n\
+               local: DateTime,\n\
+               day: Date,\n\
+               clock: Time\n\
+             }\n\
+             Toml.decode(\"when = 1979-05-27T07:32:00-08:00\\n\
+local = 1979-05-27T07:32:00\\n\
+day = 1979-05-27\\n\
+clock = 07:32:00\\n\", Cfg)?!\n");
+
+        assert_eq!(
+            text(&run_field_call(&value, "when", "format")),
+            "1979-05-27T15:32:00Z"
+        );
+        assert_eq!(
+            text(&run_field_call(&value, "local", "format")),
+            "1979-05-27T07:32:00"
+        );
+        assert_eq!(field(field(&value, "day"), "year"), &Value::Int(1979));
+        assert_eq!(field(field(&value, "day"), "month"), &Value::Int(5));
+        assert_eq!(field(field(&value, "day"), "day"), &Value::Int(27));
+        assert_eq!(field(field(&value, "clock"), "hour"), &Value::Int(7));
+        assert_eq!(field(field(&value, "clock"), "minute"), &Value::Int(32));
+    }
+
+    #[test]
+    fn typed_decode_local_datetime_into_instant_is_shape_error() {
+        let value = run("Toml.decode(\"when = 1979-05-27T07:32:00\\n\", { when: Instant })\n");
+        let (kind, payload) = err_payload(&value);
+
+        assert_eq!(kind, "Shape");
+        assert_eq!(text(field(payload, "path")), "$.when");
+        assert_eq!(text(field(payload, "expected")), "Instant");
+        assert_eq!(text(field(payload, "found")), "DateTime");
+    }
+
+    #[test]
+    fn typed_decode_accepts_string_field_as_temporal() {
+        let value = run("Toml.decode(\"day = \\\"1979-05-27\\\"\\n\", { day: Date })?!\n");
+        assert_eq!(
+            crate::temporal::temporal_kind(field(&value, "day")),
+            Some("Date")
+        );
+        assert_eq!(text(&run_field_call(&value, "day", "format")), "1979-05-27");
+    }
+
+    #[test]
+    fn untyped_decode_still_yields_iso_text() {
+        let value = run("Toml.decode(\"when = 1979-05-27T07:32:00Z\\n\")?!\n");
+        let entries = map_entries(&value);
+        assert_eq!(
+            tag_payload(map_value(entries, "when"), "Text"),
+            &[Value::Text("1979-05-27T07:32:00Z".to_owned())]
+        );
+    }
+
+    #[test]
+    fn toml_encode_emits_native_unquoted_datetimes() {
+        let value = run("d = Date.parse(\"1979-05-27\")?!\n\
+             t = Time.parse(\"07:32:00\")?!\n\
+             dt = DateTime.of(d, t)\n\
+             i = Instant.parse(\"1979-05-27T07:32:00Z\")?!\n\
+             Toml.encode({ day: d, clock: t, local: dt, when: i })\n");
+        let encoded = text(&value);
+        assert!(
+            encoded.contains("day = 1979-05-27"),
+            "expected native date, got {encoded}"
+        );
+        assert!(
+            encoded.contains("clock = 07:32:00"),
+            "expected native time, got {encoded}"
+        );
+        assert!(
+            encoded.contains("local = 1979-05-27T07:32:00"),
+            "expected native local date-time, got {encoded}"
+        );
+        assert!(
+            encoded.contains("when = 1979-05-27T07:32:00Z")
+                || encoded.contains("when = 1979-05-27T07:32:00+00:00"),
+            "expected native offset date-time, got {encoded}"
+        );
+        // Must not quote the native forms.
+        assert!(
+            !encoded.contains("day = \"1979-05-27\""),
+            "date should be unquoted: {encoded}"
+        );
+    }
+
+    #[test]
+    fn json_and_yaml_encode_emit_iso_scalars() {
+        let value = run("d = Date.parse(\"1979-05-27\")?!\n\
+             {\n\
+               json: Json.encode({ day: d }),\n\
+               yaml: Yaml.encode({ day: d })\n\
+             }\n");
+        let json = text(field(&value, "json"));
+        let yaml = text(field(&value, "yaml"));
+        assert!(
+            json.contains("\"1979-05-27\""),
+            "JSON should quote ISO text: {json}"
+        );
+        assert!(
+            yaml.contains("1979-05-27"),
+            "YAML should contain ISO text: {yaml}"
+        );
+    }
+
+    #[test]
+    fn typed_toml_round_trip_preserves_temporal_kinds() {
+        let value = run("Cfg = { day: Date, when: Instant }\n\
+             original = {\n\
+               day: Date.parse(\"1979-05-27\")?!,\n\
+               when: Instant.parse(\"1979-05-27T07:32:00Z\")?!\n\
+             }\n\
+             encoded = Toml.encode(original)\n\
+             decoded = Toml.decode(encoded, Cfg)?!\n\
+             {\n\
+               day: decoded.day.format(),\n\
+               when: decoded.when.format()\n\
+             }\n");
+        assert_eq!(text(field(&value, "day")), "1979-05-27");
+        assert_eq!(text(field(&value, "when")), "1979-05-27T07:32:00Z");
+    }
+
+    /// Invoke a nullary method field on a nested record field of `value`.
+    fn run_field_call(value: &Value, field_name: &str, method: &str) -> Value {
+        let receiver = field(value, field_name);
+        let Value::Record(fields) = receiver else {
+            panic!("expected record field `{field_name}`");
+        };
+        let Value::Native(native) = fields
+            .iter()
+            .find_map(|(name, value)| (name == method).then_some(value))
+            .unwrap_or_else(|| panic!("record has method `{method}`"))
+        else {
+            panic!("method `{method}` is native");
+        };
+        native(&[]).unwrap_or_else(|error| panic!("method failed: {error}"))
     }
 }

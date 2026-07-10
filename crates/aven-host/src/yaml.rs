@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
+use crate::temporal::temporal_iso_text;
 use crate::text_format::{
     DecodeError, FormatNumber, FormatValue, decode_value, parse_error_value, shape_error_value,
 };
@@ -260,6 +261,11 @@ enum EncodePosition {
 }
 
 fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::Value, String> {
+    // Temporal values encode as plain ISO scalars (YAML 1.2 core has no timestamp).
+    if let Some(text) = temporal_iso_text(value) {
+        return Ok(serde_norway::Value::String(text));
+    }
+
     match value {
         Value::Int(value) => Ok(serde_norway::Value::Number((*value).into())),
         Value::Float(value) if value.is_finite() => {

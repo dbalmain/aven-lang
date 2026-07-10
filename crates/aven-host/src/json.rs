@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
+use crate::temporal::temporal_iso_text;
 use crate::text_format::{
     DecodeError, FormatNumber, FormatValue, decode_value, parse_error_value, shape_error_value,
 };
@@ -216,6 +217,11 @@ fn encode_value(
     position: EncodePosition,
     output: &mut String,
 ) -> Result<(), String> {
+    if let Some(text) = temporal_iso_text(value) {
+        encode_string(&text, output);
+        return Ok(());
+    }
+
     match value {
         Value::Int(value) => output.push_str(&value.to_string()),
         Value::Float(value) if value.is_finite() => output.push_str(&value.to_string()),

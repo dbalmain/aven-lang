@@ -4,6 +4,10 @@ use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, RowEntry, Type};
 use aven_eval::{RuntimeType, Value};
 
 use crate::io::aven_value_type_name;
+use crate::temporal::{
+    Date, DateTime, Duration, Instant, Time, date_value, datetime_value, duration_value,
+    instant_value, time_value,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) enum FormatValue {
@@ -13,6 +17,40 @@ pub(crate) enum FormatValue {
     Text(String),
     Array(Vec<FormatValue>),
     Object(Vec<(String, FormatValue)>),
+    /// Host-internal datetime arm. Untyped decode renders ISO `Text`; typed
+    /// decode maps each kind to the matching temporal type.
+    Temporal(FormatTemporal),
+}
+
+/// The four calendar kinds TOML can express natively (and that codecs carry
+/// without pre-stringifying). `Duration` is not a native TOML kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FormatTemporal {
+    /// Offset date-time, already normalized to UTC epoch nanos.
+    Instant(Instant),
+    DateTime(DateTime),
+    Date(Date),
+    Time(Time),
+}
+
+impl FormatTemporal {
+    pub(crate) fn iso_text(self) -> String {
+        match self {
+            Self::Instant(value) => value.format(),
+            Self::DateTime(value) => value.format(),
+            Self::Date(value) => value.format(),
+            Self::Time(value) => value.format(),
+        }
+    }
+
+    pub(crate) fn kind_name(self) -> &'static str {
+        match self {
+            Self::Instant(_) => "Instant",
+            Self::DateTime(_) => "DateTime",
+            Self::Date(_) => "Date",
+            Self::Time(_) => "Time",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -136,6 +174,7 @@ fn decode_named(
         }
         "Text" => match value {
             FormatValue::Text(text) => Some(Value::Text(text.clone())),
+            FormatValue::Temporal(temporal) => Some(Value::Text(temporal.iso_text())),
             _ => None,
         },
         "Int" => match value {
@@ -154,6 +193,11 @@ fn decode_named(
         "Null" if matches!(value, FormatValue::Null) => Some(Value::Null),
         "Null" => None,
         "Undefined" => None,
+        "Instant" => return decode_temporal_target(value, TemporalTarget::Instant, path),
+        "DateTime" => return decode_temporal_target(value, TemporalTarget::DateTime, path),
+        "Date" => return decode_temporal_target(value, TemporalTarget::Date, path),
+        "Time" => return decode_temporal_target(value, TemporalTarget::Time, path),
+        "Duration" => return decode_duration_target(value, path),
         "Array" => {
             return Err(DecodeError::InvalidTarget(format!(
                 "{format_name}.decode target Array must be written as Array[T]"
@@ -168,6 +212,70 @@ fn decode_named(
     .ok_or_else(|| shape_error(path, name, value))
 }
 
+#[derive(Clone, Copy)]
+enum TemporalTarget {
+    Instant,
+    DateTime,
+    Date,
+    Time,
+}
+
+impl TemporalTarget {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Instant => "Instant",
+            Self::DateTime => "DateTime",
+            Self::Date => "Date",
+            Self::Time => "Time",
+        }
+    }
+}
+
+fn decode_temporal_target(
+    value: &FormatValue,
+    target: TemporalTarget,
+    path: &FormatPath,
+) -> Result<Value, DecodeError> {
+    match value {
+        FormatValue::Temporal(temporal) => match (target, *temporal) {
+            (TemporalTarget::Instant, FormatTemporal::Instant(instant)) => {
+                Ok(instant_value(instant))
+            }
+            (TemporalTarget::DateTime, FormatTemporal::DateTime(datetime)) => {
+                Ok(datetime_value(datetime))
+            }
+            (TemporalTarget::Date, FormatTemporal::Date(date)) => Ok(date_value(date)),
+            (TemporalTarget::Time, FormatTemporal::Time(time)) => Ok(time_value(time)),
+            // Local date-time into Instant is a shape error: no offset to anchor.
+            _ => Err(shape_error(path, target.name(), value)),
+        },
+        FormatValue::Text(text) => match target {
+            TemporalTarget::Instant => Instant::parse(text)
+                .map(instant_value)
+                .map_err(|_| shape_error(path, target.name(), value)),
+            TemporalTarget::DateTime => DateTime::parse(text)
+                .map(datetime_value)
+                .map_err(|_| shape_error(path, target.name(), value)),
+            TemporalTarget::Date => Date::parse(text)
+                .map(date_value)
+                .map_err(|_| shape_error(path, target.name(), value)),
+            TemporalTarget::Time => Time::parse(text)
+                .map(time_value)
+                .map_err(|_| shape_error(path, target.name(), value)),
+        },
+        _ => Err(shape_error(path, target.name(), value)),
+    }
+}
+
+fn decode_duration_target(value: &FormatValue, path: &FormatPath) -> Result<Value, DecodeError> {
+    match value {
+        FormatValue::Text(text) => Duration::parse(text)
+            .map(duration_value)
+            .map_err(|_| shape_error(path, "Duration", value)),
+        _ => Err(shape_error(path, "Duration", value)),
+    }
+}
+
 fn decode_dynamic_data(value: &FormatValue) -> Value {
     match value {
         FormatValue::Null => data_tag("Null", Vec::new()),
@@ -177,6 +285,8 @@ fn decode_dynamic_data(value: &FormatValue) -> Value {
             data_tag("Float", vec![Value::Float(*value)])
         }
         FormatValue::Text(value) => data_tag("Text", vec![Value::Text(value.clone())]),
+        // Data stays temporal-free: untyped decode yields ISO Text.
+        FormatValue::Temporal(temporal) => data_tag("Text", vec![Value::Text(temporal.iso_text())]),
         FormatValue::Array(values) => {
             let values = values.iter().map(decode_dynamic_data).collect();
             data_tag("Array", vec![Value::Array(Rc::new(values))])
@@ -320,15 +430,15 @@ fn shape_error(path: &FormatPath, expected: &str, found: &FormatValue) -> Decode
 
 fn found_kind(value: &FormatValue) -> String {
     match value {
-        FormatValue::Null => "Null",
-        FormatValue::Bool(_) => "Bool",
-        FormatValue::Number(FormatNumber::Int(_)) => "Int",
-        FormatValue::Number(FormatNumber::Float(_)) => "Float",
-        FormatValue::Text(_) => "Text",
-        FormatValue::Array(_) => "Array",
-        FormatValue::Object(_) => "Record",
+        FormatValue::Null => "Null".to_owned(),
+        FormatValue::Bool(_) => "Bool".to_owned(),
+        FormatValue::Number(FormatNumber::Int(_)) => "Int".to_owned(),
+        FormatValue::Number(FormatNumber::Float(_)) => "Float".to_owned(),
+        FormatValue::Text(_) => "Text".to_owned(),
+        FormatValue::Array(_) => "Array".to_owned(),
+        FormatValue::Object(_) => "Record".to_owned(),
+        FormatValue::Temporal(temporal) => temporal.kind_name().to_owned(),
     }
-    .to_owned()
 }
 
 pub(crate) fn parse_error_value(message: impl Into<String>) -> Value {
