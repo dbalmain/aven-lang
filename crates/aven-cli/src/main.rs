@@ -266,6 +266,7 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     host.register_toml();
     host.register_temporals();
     host.register_clock();
+    host.register_zones();
 
     Ok(host)
 }

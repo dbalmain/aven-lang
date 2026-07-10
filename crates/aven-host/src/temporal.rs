@@ -1,4 +1,6 @@
-//! Nominal temporal types: `Instant`, `Date`, `Time`, `DateTime`, `Duration`.
+//! Nominal temporal types: `Instant`, `Date`, `Time`, `DateTime`, `Duration`,
+//! plus the droppable `Zone` platform capability (named timezones via host
+//! zoneinfo / TZif).
 //!
 //! Values are host-built records carrying a private `__temporal` kind marker so
 //! codecs can recognize them without leaking third-party datetime types into
@@ -6,6 +8,10 @@
 //! plain `Int` fields; methods (`format`, `dateTime`, `instant`) are natives
 //! closed over the same data. Companion statics (`Date.new`, `Instant.parse`,
 //! `Date.compare`, …) live on the type name via the host statics table.
+//!
+//! Named zones (`zone(name)`) read OS TZif bytes from a search chain
+//! (`$TZDIR`, `/etc/zoneinfo`, `/usr/share/zoneinfo`); the `tz` crate parses
+//! those bytes but never appears in public signatures.
 //!
 //! ## Epoch representation
 //!
@@ -17,6 +23,8 @@
 //! round-trip through that width.
 
 use std::cmp::Ordering;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 use aven_check::Type;
 use aven_eval::Value;
@@ -1214,6 +1222,43 @@ fn duration_value_type() -> Type {
     ])
 }
 
+fn zone_value_type() -> Type {
+    crate::build::record(vec![
+        ("name", crate::build::text()),
+        (
+            "wallTime",
+            crate::build::function(
+                vec![crate::build::named("Instant")],
+                crate::build::record(vec![
+                    ("dateTime", crate::build::named("DateTime")),
+                    ("offsetMinutes", crate::build::int()),
+                ]),
+            ),
+        ),
+        (
+            "instant",
+            crate::build::function(
+                vec![crate::build::named("DateTime")],
+                crate::build::named("ZoneResolution"),
+            ),
+        ),
+    ])
+}
+
+fn zone_resolution_type() -> Type {
+    crate::build::variant(vec![
+        ("Unique", vec![crate::build::named("Instant")]),
+        (
+            "Ambiguous",
+            vec![
+                crate::build::named("Instant"),
+                crate::build::named("Instant"),
+            ],
+        ),
+        ("Skipped", vec![crate::build::named("Instant")]),
+    ])
+}
+
 fn parse_fn_type(ok: Type) -> Type {
     crate::build::function(
         vec![crate::build::text()],
@@ -1727,11 +1772,41 @@ impl Host {
     pub fn register_clock(&mut self) {
         self.register("now", now_native(), now_type());
     }
+
+    /// Register named-zone lookup: bare global `zone(name) -> Result[Zone, Text]`.
+    ///
+    /// Separate from [`Host::register_temporals`] / [`Host::register_clock`] so a
+    /// minimal platform can omit OS zoneinfo. Search chain is
+    /// `$TZDIR` (read at each lookup), `/etc/zoneinfo`, `/usr/share/zoneinfo`.
+    pub fn register_zones(&mut self) {
+        self.register_zone_types();
+        self.register("zone", zone_native_default_chain(), zone_type());
+    }
+
+    /// Like [`Host::register_zones`], but close over an explicit search-dir list
+    /// (tests inject a fixture tree without process-global env mutation).
+    pub fn register_zones_with_dirs(&mut self, search_dirs: Vec<PathBuf>) {
+        self.register_zone_types();
+        self.register("zone", zone_native(search_dirs), zone_type());
+    }
+
+    fn register_zone_types(&mut self) {
+        self.register_type_with_statics("Zone", zone_value_type(), vec![]);
+        self.register_type_definition("ZoneResolution", zone_resolution_type());
+    }
 }
 
 /// Aven type of the platform `now` value: `() -> Instant`.
 pub fn now_type() -> Type {
     crate::build::function(vec![], crate::build::named("Instant"))
+}
+
+/// Aven type of the platform `zone` value: `(Text) -> Result[Zone, Text]`.
+pub fn zone_type() -> Type {
+    crate::build::function(
+        vec![crate::build::text()],
+        crate::build::result(crate::build::named("Zone"), crate::build::text()),
+    )
 }
 
 fn now_native() -> Value {
@@ -1770,6 +1845,247 @@ fn system_time_to_epoch_nanos(time: std::time::SystemTime) -> Result<i64, String
     }
 }
 
+// --- Zone platform capability ---------------------------------------------
+
+/// Default zoneinfo search chain. `$TZDIR` is read each call (lookup time).
+fn default_zone_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::with_capacity(3);
+    if let Ok(tzdir) = std::env::var("TZDIR")
+        && !tzdir.is_empty()
+    {
+        dirs.push(PathBuf::from(tzdir));
+    }
+    dirs.push(PathBuf::from("/etc/zoneinfo"));
+    dirs.push(PathBuf::from("/usr/share/zoneinfo"));
+    dirs
+}
+
+fn zone_native_default_chain() -> Value {
+    Value::native(|args| {
+        let [Value::Text(name)] = args else {
+            return Err(format!("zone expects 1 Text argument, got {}", args.len()));
+        };
+        match zone_value(name, &default_zone_search_dirs()) {
+            Ok(value) => Ok(ok_value(value)),
+            Err(message) => Ok(err_value(text_error(message))),
+        }
+    })
+}
+
+fn zone_native(search_dirs: Vec<PathBuf>) -> Value {
+    Value::native(move |args| {
+        let [Value::Text(name)] = args else {
+            return Err(format!("zone expects 1 Text argument, got {}", args.len()));
+        };
+        match zone_value(name, &search_dirs) {
+            Ok(value) => Ok(ok_value(value)),
+            Err(message) => Ok(err_value(text_error(message))),
+        }
+    })
+}
+
+/// Load a named zone from `search_dirs` and build the host `Zone` record.
+///
+/// Search dirs are injected so tests can point at committed fixtures without
+/// mutating process environment. Rejects path-traversal names before any
+/// filesystem access.
+fn zone_value(name: &str, search_dirs: &[PathBuf]) -> Result<Value, String> {
+    let tz = load_zone(name, search_dirs)?;
+    Ok(zone_record(name.to_owned(), tz))
+}
+
+fn load_zone(name: &str, search_dirs: &[PathBuf]) -> Result<Rc<tz::TimeZone>, String> {
+    if name.contains("..") || name.starts_with('/') {
+        return Err(format!("invalid zone name `{name}`"));
+    }
+    for dir in search_dirs {
+        let path = dir.join(name);
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let tz = tz::TimeZone::from_tz_data(&bytes).map_err(|error| {
+                    format!(
+                        "failed to parse zone `{name}` at {}: {error}",
+                        path.display()
+                    )
+                })?;
+                return Ok(Rc::new(tz));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to read zone `{name}` at {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    let dirs_desc = if search_dirs.is_empty() {
+        "(no search directories)".to_owned()
+    } else {
+        search_dirs
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Err(format!("unknown zone `{name}` (searched: {dirs_desc})"))
+}
+
+fn zone_record(name: String, tz: Rc<tz::TimeZone>) -> Value {
+    let name_for_wall = name.clone();
+    let name_for_instant = name.clone();
+    let tz_wall = Rc::clone(&tz);
+    let tz_instant = Rc::clone(&tz);
+    Value::record(vec![
+        kind_field("Zone"),
+        ("name".to_owned(), Value::Text(name)),
+        (
+            "wallTime".to_owned(),
+            Value::native(move |args| {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "Zone.wallTime expects 1 Instant argument, got {}",
+                        args.len()
+                    ));
+                }
+                let instant = instant_from_value(&args[0]).ok_or_else(|| {
+                    format!("Zone.wallTime expected Instant (zone `{name_for_wall}`)")
+                })?;
+                zone_wall_time(&tz_wall, instant).map_err(|error| {
+                    format!("Zone.wallTime ({name_for_wall}): {}", error.message())
+                })
+            }),
+        ),
+        (
+            "instant".to_owned(),
+            Value::native(move |args| {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "Zone.instant expects 1 DateTime argument, got {}",
+                        args.len()
+                    ));
+                }
+                let datetime = datetime_from_value(&args[0]).ok_or_else(|| {
+                    format!("Zone.instant expected DateTime (zone `{name_for_instant}`)")
+                })?;
+                zone_instant_resolve(&tz_instant, datetime).map_err(|error| {
+                    format!("Zone.instant ({name_for_instant}): {}", error.message())
+                })
+            }),
+        ),
+    ])
+}
+
+fn zone_wall_time(tz: &tz::TimeZone, instant: Instant) -> Result<Value, TemporalError> {
+    let unix_secs = instant_unix_secs(instant);
+    let local = tz
+        .find_local_time_type(unix_secs)
+        .map_err(|error| TemporalError::new(format!("timezone lookup failed: {error}")))?;
+    let offset_minutes = offset_secs_to_minutes(local.ut_offset());
+    let date_time = instant.date_time(offset_minutes)?;
+    Ok(Value::record(vec![
+        ("dateTime".to_owned(), datetime_value(date_time)),
+        ("offsetMinutes".to_owned(), Value::Int(offset_minutes)),
+    ]))
+}
+
+/// Resolve unanchored wall time against a zone → `ZoneResolution`.
+///
+/// 1. Probe TZif for distinct UTC offsets near the civil time (±1 day).
+/// 2. Interpret the wall `DateTime` under each offset (minutes east of UTC).
+/// 3. Keep interpretations whose map-back offset matches the probe.
+/// 4. 0 / 1 / 2+ → Skipped / Unique / Ambiguous.
+///
+/// **Skipped payload (provisional):** the later of the candidate instants
+/// produced under probed offsets (even when map-back failed) — the wall time
+/// under the post-gap offset.
+fn zone_instant_resolve(tz: &tz::TimeZone, datetime: DateTime) -> Result<Value, TemporalError> {
+    let rough_unix = Instant::from_datetime(datetime, 0)
+        .map(instant_unix_secs)
+        .unwrap_or(0);
+    let offsets_secs = probe_nearby_offsets(tz, rough_unix);
+
+    let mut candidates: Vec<(Instant, i32)> = Vec::new();
+    for offset_secs in offsets_secs {
+        let offset_minutes = offset_secs_to_minutes(offset_secs);
+        if let Ok(instant) = Instant::from_datetime(datetime, offset_minutes) {
+            candidates.push((instant, offset_secs));
+        }
+    }
+
+    let mut valid: Vec<Instant> = Vec::new();
+    for (instant, expected_secs) in &candidates {
+        if let Ok(local) = tz.find_local_time_type(instant_unix_secs(*instant))
+            && local.ut_offset() == *expected_secs
+            && !valid.iter().any(|v| v.nanos == instant.nanos)
+        {
+            valid.push(*instant);
+        }
+    }
+
+    valid.sort_by_key(|i| i.nanos);
+
+    match valid.as_slice() {
+        [] => {
+            let later = candidates
+                .iter()
+                .map(|(instant, _)| *instant)
+                .max_by_key(|i| i.nanos)
+                .ok_or_else(|| TemporalError::new("no candidate instants for wall time in zone"))?;
+            Ok(zone_resolution_tag("Skipped", vec![instant_value(later)]))
+        }
+        [one] => Ok(zone_resolution_tag("Unique", vec![instant_value(*one)])),
+        [earlier, later, ..] => Ok(zone_resolution_tag(
+            "Ambiguous",
+            vec![instant_value(*earlier), instant_value(*later)],
+        )),
+    }
+}
+
+/// Collect distinct UTC offsets (seconds) in effect around `rough_unix` ± 1 day.
+fn probe_nearby_offsets(tz: &tz::TimeZone, rough_unix: i64) -> Vec<i32> {
+    const DAY: i64 = 24 * 60 * 60;
+    let probes = [
+        rough_unix.saturating_sub(DAY),
+        rough_unix.saturating_sub(DAY / 2),
+        rough_unix.saturating_sub(3600),
+        rough_unix,
+        rough_unix.saturating_add(3600),
+        rough_unix.saturating_add(DAY / 2),
+        rough_unix.saturating_add(DAY),
+    ];
+    let mut offsets = Vec::new();
+    for t in probes {
+        if let Ok(local) = tz.find_local_time_type(t) {
+            let offset = local.ut_offset();
+            if !offsets.contains(&offset) {
+                offsets.push(offset);
+            }
+        }
+    }
+    offsets
+}
+
+fn instant_unix_secs(instant: Instant) -> i64 {
+    instant.nanos.div_euclid(NANOS_PER_SECOND)
+}
+
+fn offset_secs_to_minutes(ut_offset_secs: i32) -> i64 {
+    i64::from(ut_offset_secs) / 60
+}
+
+fn zone_resolution_tag(name: &str, payload: Vec<Value>) -> Value {
+    Value::Tag {
+        name: name.to_owned(),
+        payload,
+    }
+}
+
+#[cfg(test)]
+fn fixture_zoneinfo_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/zoneinfo")
+}
+
 pub(crate) fn temporal_type_definitions() -> Vec<(String, Type)> {
     vec![
         ("Date".to_owned(), date_value_type()),
@@ -1777,6 +2093,8 @@ pub(crate) fn temporal_type_definitions() -> Vec<(String, Type)> {
         ("DateTime".to_owned(), datetime_value_type()),
         ("Instant".to_owned(), instant_value_type()),
         ("Duration".to_owned(), duration_value_type()),
+        ("Zone".to_owned(), zone_value_type()),
+        ("ZoneResolution".to_owned(), zone_resolution_type()),
     ]
 }
 
@@ -1787,6 +2105,7 @@ pub(crate) fn temporal_statics_table() -> Vec<(String, Vec<(String, Type)>)> {
         ("DateTime".to_owned(), datetime_statics()),
         ("Instant".to_owned(), instant_statics()),
         ("Duration".to_owned(), duration_statics()),
+        ("Zone".to_owned(), vec![]),
     ]
 }
 
@@ -2300,6 +2619,241 @@ mod tests {
             Instant::parse(formatted).is_ok(),
             "now().format() should re-parse as Instant: {formatted}"
         );
+    }
+
+    // --- Zone (fixture zoneinfo only; no live host tzdb) --------------------
+
+    fn fixture_dirs() -> Vec<PathBuf> {
+        vec![fixture_zoneinfo_dir()]
+    }
+
+    fn zone_host() -> Host {
+        let mut host = Host::new();
+        host.register_temporals();
+        host.register_zones_with_dirs(fixture_dirs());
+        host
+    }
+
+    fn run_on(host: Host, source: &str) -> Value {
+        let parsed = parse_module(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "program parses: {:?}",
+            parsed.diagnostics
+        );
+        let outcome = aven_eval::eval_module_with_globals(&parsed.module, host.eval_globals());
+        assert!(
+            outcome.diagnostics.is_empty(),
+            "program runs: {:?}",
+            outcome.diagnostics
+        );
+        outcome
+            .value
+            .unwrap_or_else(|| panic!("program yields a value"))
+    }
+
+    fn sydney_zone() -> Value {
+        zone_value("Australia/Sydney", &fixture_dirs()).expect("fixture Sydney loads")
+    }
+
+    fn utc_zone() -> Value {
+        zone_value("UTC", &fixture_dirs()).expect("fixture UTC loads")
+    }
+
+    fn call_wall_time(zone: &Value, instant: Instant) -> (DateTime, i64) {
+        let Value::Record(fields) = zone else {
+            panic!("zone is a record");
+        };
+        let wall = record_field(fields, "wallTime").expect("wallTime");
+        let Value::Native(native) = wall else {
+            panic!("wallTime is native");
+        };
+        let result = native(&[instant_value(instant)]).expect("wallTime ok");
+        let Value::Record(wall_fields) = result else {
+            panic!("wallTime returns record, got {result:?}");
+        };
+        let date_time =
+            datetime_from_value(record_field(&wall_fields, "dateTime").expect("dateTime"))
+                .expect("DateTime");
+        let offset = match record_field(&wall_fields, "offsetMinutes").expect("offset") {
+            Value::Int(v) => *v,
+            other => panic!("offsetMinutes Int, got {other:?}"),
+        };
+        (date_time, offset)
+    }
+
+    fn call_instant(zone: &Value, datetime: DateTime) -> Value {
+        let Value::Record(fields) = zone else {
+            panic!("zone is a record");
+        };
+        let instant_fn = record_field(fields, "instant").expect("instant");
+        let Value::Native(native) = instant_fn else {
+            panic!("instant is native");
+        };
+        native(&[datetime_value(datetime)]).expect("instant ok")
+    }
+
+    fn tag_name(value: &Value) -> &str {
+        let Value::Tag { name, .. } = value else {
+            panic!("expected tag, got {value:?}");
+        };
+        name
+    }
+
+    fn tag_payload(value: &Value) -> &[Value] {
+        let Value::Tag { payload, .. } = value else {
+            panic!("expected tag, got {value:?}");
+        };
+        payload
+    }
+
+    #[test]
+    fn zone_wall_time_sydney_aedt_and_aest() {
+        // Sat Apr 5 15:59:59 2025 UT = Sun Apr 6 02:59:59 2025 AEDT (+11)
+        let aedt_side = Instant::parse("2025-04-05T15:59:59Z").expect("aedt instant");
+        let zone = sydney_zone();
+        let (dt, offset) = call_wall_time(&zone, aedt_side);
+        assert_eq!(offset, 660);
+        assert_eq!(dt.format(), "2025-04-06T02:59:59");
+
+        // Sat Apr 5 16:00:00 2025 UT = Sun Apr 6 02:00:00 2025 AEST (+10)
+        let aest_side = Instant::parse("2025-04-05T16:00:00Z").expect("aest instant");
+        let (dt, offset) = call_wall_time(&zone, aest_side);
+        assert_eq!(offset, 600);
+        assert_eq!(dt.format(), "2025-04-06T02:00:00");
+    }
+
+    #[test]
+    fn zone_wall_time_utc_offset_zero() {
+        let instant = Instant::parse("2025-06-15T12:34:56Z").expect("instant");
+        let (dt, offset) = call_wall_time(&utc_zone(), instant);
+        assert_eq!(offset, 0);
+        assert_eq!(dt.format(), "2025-06-15T12:34:56");
+    }
+
+    #[test]
+    fn zone_instant_unique_normal_sydney() {
+        let zone = sydney_zone();
+        let datetime = DateTime::parse("2025-06-15T12:00:00").expect("dt");
+        let resolution = call_instant(&zone, datetime);
+        assert_eq!(tag_name(&resolution), "Unique");
+        let instant = instant_from_value(&tag_payload(&resolution)[0]).expect("Instant");
+        // June is AEDT? No — southern hemisphere: June is AEST (+10).
+        // 12:00 +10 → 02:00Z
+        assert_eq!(instant.format(), "2025-06-15T02:00:00Z");
+    }
+
+    #[test]
+    fn zone_instant_ambiguous_sydney_fallback() {
+        // Fall-back 2025: 02:30 local is repeated (AEDT then AEST).
+        let zone = sydney_zone();
+        let datetime = DateTime::parse("2025-04-06T02:30:00").expect("dt");
+        let resolution = call_instant(&zone, datetime);
+        assert_eq!(tag_name(&resolution), "Ambiguous");
+        let payload = tag_payload(&resolution);
+        assert_eq!(payload.len(), 2);
+        let earlier = instant_from_value(&payload[0]).expect("earlier");
+        let later = instant_from_value(&payload[1]).expect("later");
+        assert!(earlier.nanos < later.nanos);
+        assert_eq!(later.nanos - earlier.nanos, NANOS_PER_HOUR);
+        // Earlier: 02:30 AEDT = 15:30Z previous day; later: 02:30 AEST = 16:30Z.
+        assert_eq!(earlier.format(), "2025-04-05T15:30:00Z");
+        assert_eq!(later.format(), "2025-04-05T16:30:00Z");
+    }
+
+    #[test]
+    fn zone_instant_skipped_sydney_spring_forward() {
+        // Spring-forward 2025: 02:30 local does not exist.
+        let zone = sydney_zone();
+        let datetime = DateTime::parse("2025-10-05T02:30:00").expect("dt");
+        let resolution = call_instant(&zone, datetime);
+        assert_eq!(tag_name(&resolution), "Skipped");
+        let post_gap = instant_from_value(&tag_payload(&resolution)[0]).expect("Instant");
+        // Later candidate under +10 lands at 16:30Z → wall 03:30 AEDT (+11).
+        assert_eq!(post_gap.format(), "2025-10-04T16:30:00Z");
+        let (wall, offset) = call_wall_time(&zone, post_gap);
+        assert_eq!(offset, 660);
+        assert_eq!(wall.format(), "2025-10-05T03:30:00");
+    }
+
+    #[test]
+    fn zone_round_trip_non_transition() {
+        let zone = sydney_zone();
+        let i = Instant::parse("2025-06-15T02:00:00Z").expect("i");
+        let (wall, _offset) = call_wall_time(&zone, i);
+        let resolution = call_instant(&zone, wall);
+        assert_eq!(tag_name(&resolution), "Unique");
+        let back = instant_from_value(&tag_payload(&resolution)[0]).expect("Instant");
+        assert_eq!(back.nanos, i.nanos);
+        assert_eq!(back.format(), i.format());
+    }
+
+    #[test]
+    fn zone_errors_unknown_traversal_and_missing_dir() {
+        let unknown = zone_value("No/Such/Zone", &fixture_dirs());
+        assert!(
+            unknown
+                .as_ref()
+                .err()
+                .is_some_and(|m| m.contains("No/Such/Zone")),
+            "{unknown:?}"
+        );
+
+        let traversal = zone_value("../evil", &fixture_dirs());
+        assert!(
+            traversal
+                .as_ref()
+                .err()
+                .is_some_and(|m| m.contains("invalid zone name")),
+            "{traversal:?}"
+        );
+
+        let missing_dir = PathBuf::from("/nonexistent/aven-zoneinfo-test");
+        let missing = zone_value("UTC", &[missing_dir]);
+        assert!(
+            missing
+                .as_ref()
+                .err()
+                .is_some_and(|m| m.contains("UTC") && m.contains("searched")),
+            "{missing:?}"
+        );
+    }
+
+    #[test]
+    fn zone_host_end_to_end_wall_time_and_instant() {
+        let value = run_on(
+            zone_host(),
+            r#"
+z = zone("Australia/Sydney")?!
+i = Instant.parse("2025-04-05T15:59:59Z")?!
+wall = z.wallTime(i)
+resolved = z.instant(DateTime.parse("2025-06-15T12:00:00")?!)
+{
+  name: z.name,
+  wall: wall.dateTime.format(),
+  offset: wall.offsetMinutes,
+  kind: resolved ?>
+    @Unique(_) => "Unique"
+    @Ambiguous(_, _) => "Ambiguous"
+    @Skipped(_) => "Skipped"
+}
+"#,
+        );
+        assert_eq!(text(field(&value, "name")), "Australia/Sydney");
+        assert_eq!(text(field(&value, "wall")), "2025-04-06T02:59:59");
+        assert_eq!(field(&value, "offset"), &Value::Int(660));
+        assert_eq!(text(field(&value, "kind")), "Unique");
+    }
+
+    #[test]
+    fn zone_host_errors_as_err_text() {
+        let host = zone_host();
+        let unknown = run_on(host, "zone(\"Not/A/Zone\")\n");
+        assert!(err_text(&unknown).contains("Not/A/Zone"));
+
+        let host = zone_host();
+        let traversal = run_on(host, "zone(\"../evil\")\n");
+        assert!(err_text(&traversal).contains("invalid zone name"));
     }
 
     fn run_diagnostics(source: &str) -> Vec<aven_core::Diagnostic> {
