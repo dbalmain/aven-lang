@@ -22,6 +22,8 @@ use std::rc::Rc;
 use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals, Type};
 
 pub use marshal::{AvenMarshal, IntoHostFn};
+/// The Aven type of the platform `now` value: `() -> Instant`.
+pub use temporal::now_type;
 
 /// Re-exported Aven type builders so hosts spell types without depending on
 /// `aven-check` directly (the registration/typing vocabulary lives here).
@@ -676,6 +678,7 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ("stdio".to_owned(), stdio_handle_type()),
         ("File".to_owned(), file_type()),
         ("Http".to_owned(), http_type()),
+        ("now".to_owned(), now_type()),
     ];
 
     HostGlobals::new(
@@ -952,6 +955,7 @@ mod tests {
                 "stdio",
                 "File",
                 "Http",
+                "now",
             ]
         );
 
@@ -1007,6 +1011,12 @@ mod tests {
         assert_eq!(function_required_arity(read_all), Some(0));
         assert!(read_all_params.is_empty());
         assert_eq!(read_all_result, build::text());
+
+        let now = global_type(&globals, "now");
+        let (now_params, now_result) = function_signature(now).expect("now is a function");
+        assert_eq!(function_required_arity(now), Some(0));
+        assert!(now_params.is_empty());
+        assert_eq!(now_result, build::named("Instant"));
 
         let file = global_type(&globals, "File");
         let file_fields = record_fields(file).expect("File is a record");

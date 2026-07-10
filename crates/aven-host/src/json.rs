@@ -444,6 +444,7 @@ mod tests {
     fn json_host() -> Host {
         let mut host = Host::new();
         host.register_json();
+        host.register_temporals();
         host
     }
 
@@ -954,5 +955,72 @@ mod tests {
              { method: method, direct: direct }\n");
 
         assert_eq!(field(&value, "method"), field(&value, "direct"));
+    }
+
+    #[test]
+    fn typed_decode_accepts_iso_string_fields_as_temporals() {
+        let value = run("Cfg = { day: Date, when: Instant }\n\
+             Json.decode(\
+               \"{\\\"day\\\":\\\"1979-05-27\\\",\\\"when\\\":\\\"1979-05-27T09:00:00+10:00\\\"}\",\
+               Cfg\
+             )?!\n");
+        assert_eq!(
+            crate::temporal::temporal_kind(field(&value, "day")),
+            Some("Date")
+        );
+        assert_eq!(
+            crate::temporal::temporal_kind(field(&value, "when")),
+            Some("Instant")
+        );
+        assert_eq!(text(&run_field_call(&value, "day", "format")), "1979-05-27");
+        // Offset form normalizes to UTC.
+        assert_eq!(
+            text(&run_field_call(&value, "when", "format")),
+            "1979-05-26T23:00:00Z"
+        );
+    }
+
+    #[test]
+    fn typed_decode_malformed_temporal_string_is_shape_error() {
+        let value = run("Json.decode(\"{\\\"when\\\":\\\"not-a-date\\\"}\", { when: Instant })\n");
+        let (kind, payload) = err_payload(&value);
+
+        assert_eq!(kind, "Shape");
+        assert_eq!(text(field(payload, "path")), "$.when");
+        assert_eq!(text(field(payload, "expected")), "Instant");
+        assert_eq!(text(field(payload, "found")), "Text");
+    }
+
+    #[test]
+    fn typed_json_round_trip_preserves_date_and_instant() {
+        let value = run("Cfg = { day: Date, when: Instant }\n\
+             original = {\n\
+               day: Date.parse(\"1979-05-27\")?!,\n\
+               when: Instant.parse(\"1979-05-27T07:32:00Z\")?!\n\
+             }\n\
+             encoded = Json.encode(original)\n\
+             decoded = Json.decode(encoded, Cfg)?!\n\
+             {\n\
+               day: decoded.day.format(),\n\
+               when: decoded.when.format()\n\
+             }\n");
+        assert_eq!(text(field(&value, "day")), "1979-05-27");
+        assert_eq!(text(field(&value, "when")), "1979-05-27T07:32:00Z");
+    }
+
+    /// Invoke a nullary method field on a nested record field of `value`.
+    fn run_field_call(value: &Value, field_name: &str, method: &str) -> Value {
+        let receiver = field(value, field_name);
+        let Value::Record(fields) = receiver else {
+            panic!("expected record field `{field_name}`");
+        };
+        let Value::Native(native) = fields
+            .iter()
+            .find_map(|(name, value)| (name == method).then_some(value))
+            .unwrap_or_else(|| panic!("record has method `{method}`"))
+        else {
+            panic!("method `{method}` is native");
+        };
+        native(&[]).unwrap_or_else(|error| panic!("method failed: {error}"))
     }
 }

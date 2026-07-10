@@ -118,6 +118,16 @@ impl Date {
             .ok_or_else(|| TemporalError::new(format!("invalid Date day in `{text}`")))?;
         Self::new(year, month, day)
     }
+
+    /// Add `n` calendar days. Month/year calendar arithmetic is out of scope;
+    /// this is pure day-count math via the civil-day helpers.
+    pub(crate) fn plus_days(self, n: i64) -> Result<Self, TemporalError> {
+        let day = days_from_civil(self.year, self.month, self.day);
+        let new_day = day
+            .checked_add(n)
+            .ok_or_else(|| TemporalError::new("Date.plusDays overflow"))?;
+        Ok(civil_from_days(new_day))
+    }
 }
 
 impl Time {
@@ -241,6 +251,30 @@ impl Instant {
             .ok_or_else(|| TemporalError::new("instant out of range"))?;
         Ok(Self { nanos })
     }
+
+    pub(crate) fn plus(self, duration: Duration) -> Result<Self, TemporalError> {
+        let nanos = self
+            .nanos
+            .checked_add(duration.nanos)
+            .ok_or_else(|| TemporalError::new("Instant.plus overflow"))?;
+        Ok(Self { nanos })
+    }
+
+    pub(crate) fn minus(self, duration: Duration) -> Result<Self, TemporalError> {
+        let nanos = self
+            .nanos
+            .checked_sub(duration.nanos)
+            .ok_or_else(|| TemporalError::new("Instant.minus overflow"))?;
+        Ok(Self { nanos })
+    }
+
+    pub(crate) fn since(self, other: Instant) -> Result<Duration, TemporalError> {
+        let nanos = self
+            .nanos
+            .checked_sub(other.nanos)
+            .ok_or_else(|| TemporalError::new("Instant.since overflow"))?;
+        Ok(Duration { nanos })
+    }
 }
 
 impl Duration {
@@ -251,8 +285,37 @@ impl Duration {
         Ok(Self { nanos })
     }
 
+    pub(crate) fn of_minutes(minutes: i64) -> Result<Self, TemporalError> {
+        let nanos = minutes
+            .checked_mul(NANOS_PER_MINUTE)
+            .ok_or_else(|| TemporalError::new("Duration.ofMinutes overflow"))?;
+        Ok(Self { nanos })
+    }
+
+    pub(crate) fn of_hours(hours: i64) -> Result<Self, TemporalError> {
+        let nanos = hours
+            .checked_mul(NANOS_PER_HOUR)
+            .ok_or_else(|| TemporalError::new("Duration.ofHours overflow"))?;
+        Ok(Self { nanos })
+    }
+
+    pub(crate) fn of_days(days: i64) -> Result<Self, TemporalError> {
+        let nanos = days
+            .checked_mul(NANOS_PER_DAY)
+            .ok_or_else(|| TemporalError::new("Duration.ofDays overflow"))?;
+        Ok(Self { nanos })
+    }
+
     pub(crate) fn of_nanos(nanos: i64) -> Self {
         Self { nanos }
+    }
+
+    pub(crate) fn plus(self, other: Duration) -> Result<Self, TemporalError> {
+        let nanos = self
+            .nanos
+            .checked_add(other.nanos)
+            .ok_or_else(|| TemporalError::new("Duration.plus overflow"))?;
+        Ok(Self { nanos })
     }
 
     pub(crate) fn format(self) -> String {
@@ -843,6 +906,21 @@ pub(crate) fn date_value(date: Date) -> Value {
                 Ok(Value::Text(Date { year, month, day }.format()))
             }),
         ),
+        (
+            "plusDays".to_owned(),
+            Value::native(move |args| {
+                let [Value::Int(n)] = args else {
+                    return Err(format!(
+                        "Date.plusDays expects 1 Int argument, got {}",
+                        args.len()
+                    ));
+                };
+                match (Date { year, month, day }).plus_days(*n) {
+                    Ok(date) => Ok(date_value(date)),
+                    Err(error) => Err(error.message().to_owned()),
+                }
+            }),
+        ),
     ])
 }
 
@@ -949,6 +1027,57 @@ pub(crate) fn instant_value(instant: Instant) -> Value {
                 }
             }),
         ),
+        (
+            "plus".to_owned(),
+            Value::native(move |args| {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "Instant.plus expects 1 Duration argument, got {}",
+                        args.len()
+                    ));
+                }
+                let duration = duration_from_value(&args[0])
+                    .ok_or_else(|| "Instant.plus expected Duration".to_owned())?;
+                match Instant::from_nanos(nanos).plus(duration) {
+                    Ok(instant) => Ok(instant_value(instant)),
+                    Err(error) => Err(error.message().to_owned()),
+                }
+            }),
+        ),
+        (
+            "minus".to_owned(),
+            Value::native(move |args| {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "Instant.minus expects 1 Duration argument, got {}",
+                        args.len()
+                    ));
+                }
+                let duration = duration_from_value(&args[0])
+                    .ok_or_else(|| "Instant.minus expected Duration".to_owned())?;
+                match Instant::from_nanos(nanos).minus(duration) {
+                    Ok(instant) => Ok(instant_value(instant)),
+                    Err(error) => Err(error.message().to_owned()),
+                }
+            }),
+        ),
+        (
+            "since".to_owned(),
+            Value::native(move |args| {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "Instant.since expects 1 Instant argument, got {}",
+                        args.len()
+                    ));
+                }
+                let other = instant_from_value(&args[0])
+                    .ok_or_else(|| "Instant.since expected Instant".to_owned())?;
+                match Instant::from_nanos(nanos).since(other) {
+                    Ok(duration) => Ok(duration_value(duration)),
+                    Err(error) => Err(error.message().to_owned()),
+                }
+            }),
+        ),
     ])
 }
 
@@ -969,6 +1098,23 @@ pub(crate) fn duration_value(duration: Duration) -> Value {
                 Ok(Value::Text(Duration { nanos }.format()))
             }),
         ),
+        (
+            "plus".to_owned(),
+            Value::native(move |args| {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "Duration.plus expects 1 Duration argument, got {}",
+                        args.len()
+                    ));
+                }
+                let other = duration_from_value(&args[0])
+                    .ok_or_else(|| "Duration.plus expected Duration".to_owned())?;
+                match (Duration { nanos }).plus(other) {
+                    Ok(duration) => Ok(duration_value(duration)),
+                    Err(error) => Err(error.message().to_owned()),
+                }
+            }),
+        ),
     ])
 }
 
@@ -982,6 +1128,10 @@ fn date_value_type() -> Type {
         (
             "format",
             crate::build::function(vec![], crate::build::text()),
+        ),
+        (
+            "plusDays",
+            crate::build::function(vec![crate::build::int()], crate::build::named("Date")),
         ),
     ])
 }
@@ -1024,14 +1174,44 @@ fn instant_value_type() -> Type {
             "dateTime",
             crate::build::function(vec![crate::build::int()], crate::build::named("DateTime")),
         ),
+        (
+            "plus",
+            crate::build::function(
+                vec![crate::build::named("Duration")],
+                crate::build::named("Instant"),
+            ),
+        ),
+        (
+            "minus",
+            crate::build::function(
+                vec![crate::build::named("Duration")],
+                crate::build::named("Instant"),
+            ),
+        ),
+        (
+            "since",
+            crate::build::function(
+                vec![crate::build::named("Instant")],
+                crate::build::named("Duration"),
+            ),
+        ),
     ])
 }
 
 fn duration_value_type() -> Type {
-    crate::build::record(vec![(
-        "format",
-        crate::build::function(vec![], crate::build::text()),
-    )])
+    crate::build::record(vec![
+        (
+            "format",
+            crate::build::function(vec![], crate::build::text()),
+        ),
+        (
+            "plus",
+            crate::build::function(
+                vec![crate::build::named("Duration")],
+                crate::build::named("Duration"),
+            ),
+        ),
+    ])
 }
 
 fn parse_fn_type(ok: Type) -> Type {
@@ -1126,15 +1306,19 @@ pub(crate) fn instant_statics() -> Vec<(String, Type)> {
     ]
 }
 
+fn duration_of_unit_type() -> Type {
+    crate::build::function(
+        vec![crate::build::int()],
+        crate::build::result(crate::build::named("Duration"), crate::build::text()),
+    )
+}
+
 pub(crate) fn duration_statics() -> Vec<(String, Type)> {
     vec![
-        (
-            "ofSeconds".to_owned(),
-            crate::build::function(
-                vec![crate::build::int()],
-                crate::build::result(crate::build::named("Duration"), crate::build::text()),
-            ),
-        ),
+        ("ofSeconds".to_owned(), duration_of_unit_type()),
+        ("ofMinutes".to_owned(), duration_of_unit_type()),
+        ("ofHours".to_owned(), duration_of_unit_type()),
+        ("ofDays".to_owned(), duration_of_unit_type()),
         (
             "parse".to_owned(),
             parse_fn_type(crate::build::named("Duration")),
@@ -1333,6 +1517,51 @@ fn duration_of_seconds_native() -> Value {
     })
 }
 
+fn duration_of_minutes_native() -> Value {
+    Value::native(|args| {
+        let [Value::Int(minutes)] = args else {
+            return Err(format!(
+                "Duration.ofMinutes expects 1 Int argument, got {}",
+                args.len()
+            ));
+        };
+        Ok(match Duration::of_minutes(*minutes) {
+            Ok(duration) => ok_value(duration_value(duration)),
+            Err(error) => err_value(text_error(error.message())),
+        })
+    })
+}
+
+fn duration_of_hours_native() -> Value {
+    Value::native(|args| {
+        let [Value::Int(hours)] = args else {
+            return Err(format!(
+                "Duration.ofHours expects 1 Int argument, got {}",
+                args.len()
+            ));
+        };
+        Ok(match Duration::of_hours(*hours) {
+            Ok(duration) => ok_value(duration_value(duration)),
+            Err(error) => err_value(text_error(error.message())),
+        })
+    })
+}
+
+fn duration_of_days_native() -> Value {
+    Value::native(|args| {
+        let [Value::Int(days)] = args else {
+            return Err(format!(
+                "Duration.ofDays expects 1 Int argument, got {}",
+                args.len()
+            ));
+        };
+        Ok(match Duration::of_days(*days) {
+            Ok(duration) => ok_value(duration_value(duration)),
+            Err(error) => err_value(text_error(error.message())),
+        })
+    })
+}
+
 fn duration_parse_native() -> Value {
     Value::native(|args| {
         let [Value::Text(text)] = args else {
@@ -1458,17 +1687,86 @@ impl Host {
                     duration_of_seconds_native(),
                 ),
                 (
-                    "parse".to_owned(),
+                    "ofMinutes".to_owned(),
                     duration_statics()[1].1.clone(),
+                    duration_of_minutes_native(),
+                ),
+                (
+                    "ofHours".to_owned(),
+                    duration_statics()[2].1.clone(),
+                    duration_of_hours_native(),
+                ),
+                (
+                    "ofDays".to_owned(),
+                    duration_statics()[3].1.clone(),
+                    duration_of_days_native(),
+                ),
+                (
+                    "parse".to_owned(),
+                    duration_statics()[4].1.clone(),
                     duration_parse_native(),
                 ),
                 (
                     "compare".to_owned(),
-                    duration_statics()[2].1.clone(),
+                    duration_statics()[5].1.clone(),
                     duration_compare_native(),
                 ),
             ],
         );
+    }
+
+    /// Register the effectful clock: bare global `now() -> Instant`.
+    ///
+    /// Deliberately separate from [`Host::register_temporals`] so a minimal
+    /// platform can keep the pure temporal vocabulary without a system clock.
+    ///
+    /// **Range-edge policy: error, do not saturate.** If `SystemTime` cannot be
+    /// expressed as i64 epoch nanoseconds (before/after Instant range, or
+    /// conversion overflow), the native fails — same policy as Instant/Duration
+    /// construction elsewhere in this module.
+    pub fn register_clock(&mut self) {
+        self.register("now", now_native(), now_type());
+    }
+}
+
+/// Aven type of the platform `now` value: `() -> Instant`.
+pub fn now_type() -> Type {
+    crate::build::function(vec![], crate::build::named("Instant"))
+}
+
+fn now_native() -> Value {
+    Value::native(|args| {
+        if !args.is_empty() {
+            return Err(format!("now expects 0 arguments, got {}", args.len()));
+        }
+        // Error (do not saturate) when the host clock is outside Instant's
+        // i64-nanos range — see register_clock docs.
+        let nanos = system_time_to_epoch_nanos(std::time::SystemTime::now())?;
+        Ok(instant_value(Instant::from_nanos(nanos)))
+    })
+}
+
+fn system_time_to_epoch_nanos(time: std::time::SystemTime) -> Result<i64, String> {
+    const OUT_OF_RANGE: &str = "now: system time out of Instant range";
+    match time.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+        Ok(duration) => {
+            let secs = i64::try_from(duration.as_secs()).map_err(|_| OUT_OF_RANGE.to_owned())?;
+            secs.checked_mul(NANOS_PER_SECOND)
+                .and_then(|n| n.checked_add(i64::from(duration.subsec_nanos())))
+                .ok_or_else(|| OUT_OF_RANGE.to_owned())
+        }
+        Err(earlier) => {
+            // Before the epoch: negative nanos when representable as i64.
+            let duration = earlier.duration();
+            let secs = i64::try_from(duration.as_secs()).map_err(|_| OUT_OF_RANGE.to_owned())?;
+            let positive = secs
+                .checked_mul(NANOS_PER_SECOND)
+                .and_then(|n| n.checked_add(i64::from(duration.subsec_nanos())))
+                .ok_or_else(|| OUT_OF_RANGE.to_owned())?;
+            0_i64
+                .checked_sub(positive)
+                .ok_or_else(|| OUT_OF_RANGE.to_owned())
+        }
     }
 }
 
@@ -1844,5 +2142,174 @@ mod tests {
         assert_eq!(text(field(&value, "a")), "PT1H30M");
         assert_eq!(text(field(&value, "b")), "PT1H30M");
         assert_eq!(field(&value, "cmp"), &Value::Int(0));
+    }
+
+    #[test]
+    fn plus_minus_since_round_trip() {
+        let instant = Instant::parse("2026-07-11T09:30:00Z").expect("instant");
+        let duration = Duration::of_hours(2).expect("2h");
+        let later = instant.plus(duration).expect("plus");
+        assert_eq!(later.since(instant).expect("since"), duration);
+        assert_eq!(later.minus(duration).expect("minus").nanos, instant.nanos);
+    }
+
+    #[test]
+    fn host_plus_minus_since_round_trip() {
+        let value = run("i = Instant.parse(\"2026-07-11T09:30:00Z\")?!\n\
+             d = Duration.ofHours(2)?!\n\
+             later = i.plus(d)\n\
+             {\n\
+               since: later.since(i).format(),\n\
+               back: later.minus(d).format()\n\
+             }\n");
+        assert_eq!(text(field(&value, "since")), "PT2H");
+        assert_eq!(text(field(&value, "back")), "2026-07-11T09:30:00Z");
+    }
+
+    #[test]
+    fn arithmetic_overflows() {
+        let max = Instant::from_nanos(i64::MAX);
+        let one = Duration::of_nanos(1);
+        assert!(max.plus(one).is_err());
+        assert!(Instant::from_nanos(i64::MIN).minus(one).is_err());
+        assert!(
+            Instant::from_nanos(i64::MAX)
+                .since(Instant::from_nanos(i64::MIN))
+                .is_err()
+        );
+        assert!(
+            Duration::of_nanos(i64::MAX)
+                .plus(Duration::of_nanos(1))
+                .is_err()
+        );
+        assert!(
+            Date::new(2026, 1, 1)
+                .expect("date")
+                .plus_days(i64::MAX)
+                .is_err()
+        );
+        assert!(Duration::of_hours(i64::MAX).is_err());
+        assert!(Duration::of_days(i64::MAX).is_err());
+        assert!(Duration::of_minutes(i64::MAX).is_err());
+    }
+
+    #[test]
+    fn host_duration_constructor_overflow() {
+        let value = run("Duration.ofDays(9223372036854775807)\n");
+        assert!(err_text(&value).contains("overflow"));
+        let value = run("Duration.ofHours(9223372036854775807)\n");
+        assert!(err_text(&value).contains("overflow"));
+        let value = run("Duration.ofMinutes(9223372036854775807)\n");
+        assert!(err_text(&value).contains("overflow"));
+    }
+
+    #[test]
+    fn host_arithmetic_overflow_is_runtime_error() {
+        let diagnostics = run_diagnostics(
+            "i = Instant.parse(\"2262-04-11T23:47:16.854775807Z\")?!\n\
+             d = Duration.ofSeconds(1)?!\n\
+             i.plus(d)\n",
+        );
+        assert!(
+            diagnostics.iter().any(|d| d
+                .labels
+                .iter()
+                .any(|label| label.message.contains("overflow"))),
+            "expected Instant.plus overflow: {diagnostics:?}"
+        );
+
+        let diagnostics = run_diagnostics(
+            "d = Date.parse(\"2026-01-01\")?!\n\
+             d.plusDays(9223372036854775807)\n",
+        );
+        assert!(
+            diagnostics.iter().any(|d| d
+                .labels
+                .iter()
+                .any(|label| label.message.contains("overflow"))),
+            "expected Date.plusDays overflow: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn plus_days_month_year_and_leap_boundaries() {
+        let d = Date::new(2024, 1, 31).expect("jan 31");
+        assert_eq!(d.plus_days(1).expect("+1").format(), "2024-02-01");
+
+        let d = Date::new(2023, 12, 31).expect("dec 31");
+        assert_eq!(d.plus_days(1).expect("+1").format(), "2024-01-01");
+
+        let d = Date::new(2024, 2, 28).expect("feb 28 leap");
+        assert_eq!(d.plus_days(1).expect("+1").format(), "2024-02-29");
+        assert_eq!(
+            d.plus_days(1)
+                .expect("+1")
+                .plus_days(1)
+                .expect("+1")
+                .format(),
+            "2024-03-01"
+        );
+
+        let leap = Date::new(2024, 2, 29).expect("leap day");
+        assert_eq!(leap.plus_days(1).expect("+1").format(), "2024-03-01");
+
+        let non_leap = Date::new(2025, 2, 28).expect("feb 28 non-leap");
+        assert_eq!(non_leap.plus_days(1).expect("+1").format(), "2025-03-01");
+    }
+
+    #[test]
+    fn host_plus_days_and_duration_units() {
+        let value = run("d = Date.parse(\"2024-02-28\")?!\n\
+             minutes = Duration.ofMinutes(90)?!\n\
+             hours = Duration.ofHours(2)?!\n\
+             days = Duration.ofDays(1)?!\n\
+             oneHour = Duration.ofHours(1)?!\n\
+             thirtyMin = Duration.ofMinutes(30)?!\n\
+             {\n\
+               leap: d.plusDays(1).format(),\n\
+               march: d.plusDays(1).plusDays(1).format(),\n\
+               minutes: minutes.format(),\n\
+               hours: hours.format(),\n\
+               days: days.format(),\n\
+               sum: oneHour.plus(thirtyMin).format()\n\
+             }\n");
+        assert_eq!(text(field(&value, "leap")), "2024-02-29");
+        assert_eq!(text(field(&value, "march")), "2024-03-01");
+        assert_eq!(text(field(&value, "minutes")), "PT1H30M");
+        assert_eq!(text(field(&value, "hours")), "PT2H");
+        assert_eq!(text(field(&value, "days")), "P1D");
+        assert_eq!(text(field(&value, "sum")), "PT1H30M");
+    }
+
+    #[test]
+    fn now_returns_instant_formatted_with_z() {
+        let mut host = Host::new();
+        host.register_temporals();
+        host.register_clock();
+        let parsed = parse_module("now().format()\n");
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let outcome = aven_eval::eval_module_with_globals(&parsed.module, host.eval_globals());
+        assert!(outcome.diagnostics.is_empty(), "{:?}", outcome.diagnostics);
+        let value = outcome.value.expect("yields a value");
+        let formatted = text(&value);
+        assert!(
+            formatted.ends_with('Z'),
+            "now().format() should be UTC Instant text, got {formatted}"
+        );
+        assert!(
+            Instant::parse(formatted).is_ok(),
+            "now().format() should re-parse as Instant: {formatted}"
+        );
+    }
+
+    fn run_diagnostics(source: &str) -> Vec<aven_core::Diagnostic> {
+        let parsed = parse_module(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "program parses: {:?}",
+            parsed.diagnostics
+        );
+        aven_eval::eval_module_with_globals(&parsed.module, temporal_host().eval_globals())
+            .diagnostics
     }
 }
