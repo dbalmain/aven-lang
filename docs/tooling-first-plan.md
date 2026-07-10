@@ -2758,8 +2758,25 @@ bundled; `now()`/named zones are platform capabilities (DT4).
   than saturate, pre-epoch times give negative nanos. `now_type()` exported for
   hosts. Placement note: bare global follows the `writeLine` precedent; migrates
   into `std/time` when std imports land (Z-open).
-- **DT4** — `Zone` platform capability (named-zone lookup backed by the host's
-  tzdb; `ZoneResolution` variant for DST gaps/ambiguity).
+- **DT4 — `Zone` platform capability: done 2026-07-11** (grok-4.5 slice;
+  milestone complete). `zone(name: Text) -> Result[Zone, Text]` bare global via
+  separate `Host::register_zones()` (droppable, like `register_clock`). Reads OS
+  TZif bytes itself — search chain `$TZDIR` → `/etc/zoneinfo` →
+  `/usr/share/zoneinfo` (NixOS has no /usr/share) — parsed by the `tz-rs` 0.7.3
+  crate (first new dep since HTTP; pure parser, NO bundled tzdb, per the
+  never-bundle principle; its types stay private). Path-traversal names rejected
+  before FS access. `Zone`: `name`,
+  `wallTime(Instant) -> { dateTime, offsetMinutes }`,
+  `instant(DateTime) -> ZoneResolution` where `ZoneResolution` =
+  `@Unique(Instant) | @Ambiguous(Instant, Instant) | @Skipped(Instant)`
+  (ambiguous = fall-back, earlier first; skipped = spring-forward gap, payload
+  is the post-gap interpretation — provisional). Resolution probes offsets ±1
+  day around the wall time and keeps interpretations that map back to the probed
+  offset. Tests run only against committed TZif fixtures
+  (`crates/aven-host/fixtures/zoneinfo/`: Australia/Sydney + UTC), search dirs
+  injected via `register_zones_with_dirs` — no machine-tzdb or env dependence.
+  Known truncation: historical odd-second offsets round toward zero to whole
+  minutes (fine for modern IANA data).
 
 ## Milestone P-rm — remove native path literals: done 2026-07-06
 
