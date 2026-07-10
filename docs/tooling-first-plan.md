@@ -2708,31 +2708,44 @@ Done when:
 - `text.decode(Json, Config)?^` checks, runs, and completes in the LSP
   identically to `Json.decode(text, Config)?^`
 
-## Milestone DT — date and time types (sketch)
+## Milestone DT — date and time types
 
-Status: queued 2026-07-05; needs a design pass before slicing (user owns the
-fork)
+Status: design settled 2026-07-11 (user decisions; full note in clex
+`docs/temporal-types.md`); DT1 done 2026-07-11.
 
-Goal: a real answer for temporal values, motivated concretely by TOML datetimes
-currently degrading to `@Text` in decode. Design questions to settle first:
+Settled design: five types — `Instant` (UTC timeline point, epoch nanos),
+`Date`, `Time`, `DateTime` (unanchored wall-clock; deliberately NOT
+zone-carrying), `Duration`. Offset date-times normalize to `Instant` (no
+presentation-offset type). Nominal host-registered representation (validated
+constructors), not transparent records. Wire format is ISO 8601/RFC 3339 text
+for JSON/YAML; TOML gets its four native datetime kinds both ways. The
+host-internal `FormatValue` grew a `Temporal` arm; the Aven-visible `Data` stays
+temporal-free (untyped decode yields ISO `Text`). tzdb is host data, never
+bundled; `now()`/named zones are platform capabilities (DT4).
 
-- **Vocabulary**: one `Time` instant, or a family (date, time-of-day, datetime,
-  offset datetime, duration)? TOML natively distinguishes four; YAML has
-  timestamps; JSON has none (convention: ISO-8601 text).
-- **Representation and core**: nominal host-registered type(s) vs records;
-  epoch-based instant vs calendar fields; what arithmetic/comparison ships
-  (operators are type-carried methods).
-- **Codec integration**: typed decode targets (`Toml.decode(text, Config)` with
-  a temporal field decodes natively; what do Json/Yaml do — ISO-8601 text
-  convention?); does `Data` grow a temporal arm or stay as-is with temporal
-  values living only in typed decode (leaning: stay as-is — the shared tree is
-  for the parts of the models that coincide)?
-- **Platform boundary**: relationship to `Clock.now()` in the spec's examples;
-  timezone/offset scope for v0 (leaning: UTC instants + fixed offsets only, no
-  tz database).
-
-Do not slice until the vocabulary and codec-integration questions are decided
-with the user.
+- **DT1 — vocabulary + TOML native mapping: done 2026-07-11** (grok-4.5 slice;
+  first grok offload — evaluated well). New `aven-host/src/temporal.rs`:
+  hand-rolled RFC 3339/ISO 8601 parse/format (Hinnant civil-day math, no new
+  deps), i64 epoch nanos (~1678–2262 range; out-of-range errors rather than
+  wraps), `Date.new`/`Time.new`/`DateTime.of`/`Duration.ofSeconds` +
+  `parse`/`compare` per type via the existing `register_type_with_statics` path,
+  fixed-offset conversion both ways. Runtime values are records with a private
+  `__temporal` kind marker for codec recognition (a true opaque host value
+  variant in aven-eval would be the nominal-er alternative; deferred). Typed
+  TOML decode maps all four kinds (local date-time into `Instant` is a shape
+  error, no silent UTC; string fields accepted into temporal targets if they
+  parse; temporals accepted into `Text` targets as ISO text); untyped decode
+  unchanged (ISO `Text`); TOML encode emits native unquoted datetimes; JSON/YAML
+  emitters are total over the arm (ISO string/plain scalar). Known latent gap:
+  type definitions are structural aliases, so a hand-built record can pose as a
+  temporal statically — runtime marker checks + toml-crate validation catch
+  abuse with errors, not garbage.
+- **DT2** — JSON/YAML ISO-string decode into typed temporal targets.
+- **DT3** — arithmetic (`plus`/`since`; days/hours only — month arithmetic and
+  end-of-month clamping deferred per user decision) + `now()` platform
+  capability.
+- **DT4** — `Zone` platform capability (named-zone lookup backed by the host's
+  tzdb; `ZoneResolution` variant for DST gaps/ambiguity).
 
 ## Milestone P-rm — remove native path literals: done 2026-07-06
 
