@@ -2740,10 +2740,24 @@ bundled; `now()`/named zones are platform capabilities (DT4).
   type definitions are structural aliases, so a hand-built record can pose as a
   temporal statically — runtime marker checks + toml-crate validation catch
   abuse with errors, not garbage.
-- **DT2** — JSON/YAML ISO-string decode into typed temporal targets.
-- **DT3** — arithmetic (`plus`/`since`; days/hours only — month arithmetic and
-  end-of-month clamping deferred per user decision) + `now()` platform
-  capability.
+- **DT2 — JSON/YAML ISO-string decode: done 2026-07-11** (grok-4.5 slice, with
+  DT3). Turned out to already work — DT1's string acceptance lives in the shared
+  `decode_value` path JSON/YAML also use — so the slice locked it in with
+  committed tests only (ISO decode incl. offset normalization, shape errors on
+  malformed strings, typed round-trips; plain + quoted YAML scalars). No
+  behavior change.
+- **DT3 — arithmetic + `now()`: done 2026-07-11** (same grok slice).
+  `instant.plus/minus(Duration)`, `instant.since(Instant) -> Duration`,
+  `date.plusDays(Int)` (pure civil-day math), `duration.plus`,
+  `Duration.ofMinutes/ofHours/ofDays` — all checked; overflow is a runtime
+  native error for methods, an `Err` value for constructors (same policy as DT1
+  conversions). `now() -> Instant` is a bare global via a NEW
+  `Host::register_clock()`, deliberately separate from `register_temporals()` so
+  a minimal platform keeps the pure vocabulary without a clock (the
+  droppable-capability split from the design note); range edges error rather
+  than saturate, pre-epoch times give negative nanos. `now_type()` exported for
+  hosts. Placement note: bare global follows the `writeLine` precedent; migrates
+  into `std/time` when std imports land (Z-open).
 - **DT4** — `Zone` platform capability (named-zone lookup backed by the host's
   tzdb; `ZoneResolution` variant for DST gaps/ambiguity).
 
