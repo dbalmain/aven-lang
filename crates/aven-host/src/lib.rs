@@ -96,6 +96,8 @@ pub struct Host {
     statics: Vec<StaticsEntry>,
     comptime: Vec<ComptimeEntry>,
     comptime_resolvers: Vec<ComptimeResolverEntry>,
+    clock_registered: bool,
+    zones_registered: bool,
 }
 
 impl Host {
@@ -347,6 +349,45 @@ impl Host {
                 })
                 .collect(),
         )
+    }
+
+    /// Embedded standard-library modules available from this host's registered
+    /// capabilities. The pure modules are always present.
+    pub fn std_library(&self) -> HashMap<String, &'static str> {
+        let mut library = std_library();
+        if self.clock_registered {
+            library.insert("std/clock".to_owned(), include_str!("../std/clock.av"));
+        }
+        if self.zones_registered {
+            library.insert("std/zones".to_owned(), include_str!("../std/zones.av"));
+        }
+        library
+    }
+
+    /// Names embedded capability modules may pun but user modules receive only
+    /// through their public module import.
+    pub fn library_only_global_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if self.clock_registered {
+            names.push("now".to_owned());
+        }
+        if self.zones_registered {
+            names.push("zone".to_owned());
+        }
+        names
+    }
+
+    /// Capability modules known to the standard library but unavailable from
+    /// this host, for actionable import diagnostics.
+    pub fn disabled_capability_modules(&self) -> Vec<(&'static str, &'static str, &'static str)> {
+        let mut modules = Vec::new();
+        if !self.clock_registered {
+            modules.push(("std/clock", "clock", "register_clock"));
+        }
+        if !self.zones_registered {
+            modules.push(("std/zones", "zones", "register_zones"));
+        }
+        modules
     }
 }
 
@@ -675,12 +716,45 @@ pub fn std_library() -> HashMap<String, &'static str> {
     ])
 }
 
-/// Type globals for the standard host prelude used by `aven check` and the LSP.
+/// Embedded standard-library modules for the standard CLI and LSP host
+/// surface, including the clock and named-zone capabilities they provide.
+pub fn standard_std_library() -> HashMap<String, &'static str> {
+    let mut library = std_library();
+    library.insert("std/clock".to_owned(), include_str!("../std/clock.av"));
+    library.insert("std/zones".to_owned(), include_str!("../std/zones.av"));
+    library
+}
+
+/// Capability-internal globals for the standard CLI and LSP host surface.
+pub fn standard_library_only_global_names() -> Vec<String> {
+    vec!["now".to_owned(), "zone".to_owned()]
+}
+
+/// Public type globals for the standard host prelude. Capability internals are
+/// available only while checking their embedded re-export modules.
 pub fn standard_check_globals() -> Vec<(String, Type)> {
-    standard_check_host_globals().types
+    standard_public_check_host_globals().types
+}
+
+/// Full standard check host globals with capability-internal names (`now`,
+/// `zone`) stripped. Use for user-facing single-file check/LSP surfaces; the
+/// module graph keeps the full set and filters per-node via
+/// [`standard_library_only_global_names`].
+pub fn standard_public_check_host_globals() -> HostGlobals {
+    let mut globals = standard_check_host_globals();
+    let library_only = standard_library_only_global_names();
+    globals
+        .types
+        .retain(|(name, _)| !library_only.iter().any(|only| only == name));
+    globals
 }
 
 /// Type globals plus host comptime resolvers for the standard host prelude.
+///
+/// Includes capability-internal value types (`now`, `zone`) so embedded
+/// re-export modules can pun them. User modules must not see those names:
+/// strip via [`standard_public_check_host_globals`] or
+/// `ModuleRoots::library_only_global_names`.
 pub fn standard_check_host_globals() -> HostGlobals {
     let types = vec![
         ("logger".to_owned(), logger_type()),
@@ -847,6 +921,27 @@ mod tests {
     }
 
     #[test]
+    fn std_library_capability_modules_follow_host_registration() {
+        let pure = std_library();
+        assert!(!pure.contains_key("std/clock"));
+        assert!(!pure.contains_key("std/zones"));
+
+        let mut clock_host = Host::new();
+        clock_host.register_clock();
+        let clock = clock_host.std_library();
+        assert!(clock.contains_key("std/clock"));
+        assert!(!clock.contains_key("std/zones"));
+        assert_eq!(clock_host.library_only_global_names(), ["now"]);
+
+        let mut zones_host = Host::new();
+        zones_host.register_zones_with_dirs(vec![]);
+        let zones = zones_host.std_library();
+        assert!(!zones.contains_key("std/clock"));
+        assert!(zones.contains_key("std/zones"));
+        assert_eq!(zones_host.library_only_global_names(), ["zone"]);
+    }
+
+    #[test]
     fn register_round_trips_into_both_globals() {
         let mut host = Host::new();
         host.register("answer", Value::Int(42), build::int());
@@ -998,8 +1093,6 @@ mod tests {
                 "stdio",
                 "File",
                 "Http",
-                "now",
-                "zone",
             ]
         );
 
@@ -1055,21 +1148,6 @@ mod tests {
         assert_eq!(function_required_arity(read_all), Some(0));
         assert!(read_all_params.is_empty());
         assert_eq!(read_all_result, build::text());
-
-        let now = global_type(&globals, "now");
-        let (now_params, now_result) = function_signature(now).expect("now is a function");
-        assert_eq!(function_required_arity(now), Some(0));
-        assert!(now_params.is_empty());
-        assert_eq!(now_result, build::named("Instant"));
-
-        let zone = global_type(&globals, "zone");
-        let (zone_params, zone_result) = function_signature(zone).expect("zone is a function");
-        assert_eq!(function_required_arity(zone), Some(1));
-        assert_eq!(zone_params, vec![build::text()]);
-        assert_eq!(
-            zone_result,
-            build::result(build::named("Zone"), build::text())
-        );
 
         let file = global_type(&globals, "File");
         let file_fields = record_fields(file).expect("File is a record");

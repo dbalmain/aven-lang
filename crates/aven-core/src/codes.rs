@@ -21,6 +21,7 @@ pub mod layout {
 }
 
 pub mod module {
+    pub const CAPABILITY_UNAVAILABLE: &str = "module.capability-unavailable";
     pub const DYNAMIC_IMPORT: &str = "module.dynamic-import";
     pub const IMPORT_CYCLE: &str = "module.import-cycle";
     pub const IMPORT_HAS_ERRORS: &str = "module.import-has-errors";
@@ -154,6 +155,7 @@ pub const ALL: &[&str] = &[
     lex::UNTERMINATED_INTERPOLATION,
     lex::UNTERMINATED_REGEX,
     lex::UNTERMINATED_STRING,
+    module::CAPABILITY_UNAVAILABLE,
     module::DYNAMIC_IMPORT,
     module::IMPORT_CYCLE,
     module::IMPORT_HAS_ERRORS,

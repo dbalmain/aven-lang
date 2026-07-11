@@ -57,6 +57,42 @@ fn std_time_instant_parse_runs() {
 }
 
 #[test]
+fn clock_and_zones_capabilities_are_imported_as_modules() {
+    let dir = TempDir::new("std-capabilities");
+    let entry = dir.write(
+        "main.av",
+        "{ now } = import(\"std/clock\")\n\
+         { zone } = import(\"std/zones\")\n\
+         writeLine(now().format())\n\
+         zone\n",
+    );
+    let path = entry.to_str().expect("temp path is UTF-8");
+
+    let checked = aven(&["check", path]);
+    assert!(
+        checked.status.success(),
+        "aven check failed:\n{}\n{}",
+        stdout(&checked),
+        stderr(&checked)
+    );
+
+    let output = aven(&["run", path]);
+
+    assert!(
+        output.status.success(),
+        "aven run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output)
+            .lines()
+            .next()
+            .is_some_and(|line| line.ends_with('Z'))
+    );
+}
+
+#[test]
 fn unregistered_library_and_missing_std_module_diagnose() {
     let dir = TempDir::new("std-time-errors");
     let entry = dir.write(

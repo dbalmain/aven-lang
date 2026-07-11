@@ -505,7 +505,8 @@ async fn publish_semantic_diagnostics(
 
 #[cfg(test)]
 fn analyze_document_semantics(document: &ParsedDocument) -> aven_compiler::SemanticOutput {
-    let globals = aven_host::standard_check_host_globals();
+    // Single-file: public surface only (no bare capability globals).
+    let globals = aven_host::standard_public_check_host_globals();
     aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals)
 }
 
@@ -514,13 +515,19 @@ fn analyze_document_semantics_for_uri(
     document: &ParsedDocument,
     overlay: &aven_compiler::SourceOverlay,
 ) -> DocumentSemanticAnalysis {
-    let globals = aven_host::standard_check_host_globals();
-    if let Some(analysis) = module_semantics_for_document(uri, document, &globals, overlay) {
+    // Module graph needs the full set so `std/clock`/`std/zones` can pun
+    // library-only names; per-node filtering strips them from user modules.
+    let full_globals = aven_host::standard_check_host_globals();
+    if let Some(analysis) = module_semantics_for_document(uri, document, &full_globals, overlay) {
         return analysis;
     }
 
-    let semantic =
-        aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals);
+    // Pathless/untitled: public surface only — no bare `now`/`zone`.
+    let public_globals = aven_host::standard_public_check_host_globals();
+    let semantic = aven_compiler::analyze_semantics_with_host_globals(
+        document.parse_output(),
+        &public_globals,
+    );
     DocumentSemanticAnalysis {
         diagnostics: semantic.diagnostics,
         inferred_types: semantic.inferred_types,
@@ -532,7 +539,11 @@ fn analyze_document_semantics_for_uri(
 /// embedded standard library, matching the CLI's `check`/`run` wiring.
 fn discover_module_roots(entry: &Path) -> aven_compiler::ModuleRoots {
     aven_compiler::ModuleRoots::discover(entry)
-        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_library(
+            aven_host::STD_LIBRARY_NAME,
+            aven_host::standard_std_library(),
+        )
+        .with_library_only_global_names(aven_host::standard_library_only_global_names())
 }
 
 fn module_semantics_for_document(
@@ -919,7 +930,10 @@ fn library_import_completions(
     prefix: &str,
     range: Range,
 ) -> Vec<CompletionItem> {
-    let libraries = [(aven_host::STD_LIBRARY_NAME, aven_host::std_library())];
+    let libraries = [(
+        aven_host::STD_LIBRARY_NAME,
+        aven_host::standard_std_library(),
+    )];
     let mut items = Vec::new();
     let mut seen = HashSet::new();
 
@@ -1035,8 +1049,9 @@ fn identifier_completion_at_position(
     // Host/library globals (e.g. `logger`, `writeLine`) are bound in the value
     // environment but have no in-document declaration, so offer them too. Pushed
     // last, after locals and top-level declarations have claimed their names, so
-    // a user binding of the same name shadows the global.
-    for (name, ty) in aven_host::standard_check_host_globals().types {
+    // a user binding of the same name shadows the global. Capability internals
+    // (`now`, `zone`) are not offered bare — import `std/clock` / `std/zones`.
+    for (name, ty) in aven_host::standard_public_check_host_globals().types {
         push_completion_item(
             &mut items,
             &mut seen,
@@ -1287,7 +1302,7 @@ fn declared_type_for_definition(
 }
 
 fn host_global_type(name: &str) -> Option<aven_compiler::Type> {
-    aven_host::standard_check_host_globals()
+    aven_host::standard_public_check_host_globals()
         .types
         .into_iter()
         .find_map(|(global, ty)| (global == name).then_some(ty))

@@ -1,0 +1,2 @@
+# Clock capability module. Present only when the host registered the clock.
+{ now }

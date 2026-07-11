@@ -75,6 +75,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A string literal was opened but not closed. Add the closing quote, or use a raw string form once multi-line string support exists.",
     },
     DiagnosticExplanation {
+        code: codes::module::CAPABILITY_UNAVAILABLE,
+        text: "The imported module is a platform-capability module the embedding host did not enable. The host controls capabilities; register the named capability (e.g. Host::register_clock()) or drop the import.",
+    },
+    DiagnosticExplanation {
         code: codes::module::DYNAMIC_IMPORT,
         text: "The import specifier is not a static string literal. Import specifiers are comptime-only; dynamic imports never run at runtime.",
     },

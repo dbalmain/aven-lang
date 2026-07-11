@@ -1,0 +1,2 @@
+# Named-zone capability module. Present only when the host registered zones.
+{ zone }

@@ -941,6 +941,9 @@ fn completion_includes_host_globals() {
     assert!(completion_item(&completions, "readLine").is_some());
     assert!(completion_item(&completions, "readAll").is_some());
     assert!(completion_item(&completions, "Platform").is_none());
+    // Capability modules only — not bare host globals.
+    assert!(completion_item(&completions, "now").is_none());
+    assert!(completion_item(&completions, "zone").is_none());
 }
 
 #[test]
@@ -1831,6 +1834,8 @@ fn import_specifier_completion_lists_std_module_paths() {
             .map(|item| &item.label)
             .collect::<Vec<_>>()
     );
+    assert!(completion_item(&completions, "clock").is_some());
+    assert!(completion_item(&completions, "zones").is_some());
 }
 
 #[test]

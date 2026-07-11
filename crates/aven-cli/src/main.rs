@@ -193,13 +193,10 @@ fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
 }
 
 fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
-    let roots = discover_roots(path);
-    let output = aven_compiler::eval_path_with_globals_and_roots(
-        path,
-        build_host(config)?.eval_globals(),
-        &roots,
-    )
-    .with_context(|| format!("failed to load {}", path.display()))?;
+    let host = build_host(config)?;
+    let roots = discover_roots_for_host(path, &host);
+    let output = aven_compiler::eval_path_with_globals_and_roots(path, host.eval_globals(), &roots)
+        .with_context(|| format!("failed to load {}", path.display()))?;
     let has_errors = reports_have_errors(&output.reports);
 
     match format {
@@ -232,7 +229,22 @@ fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
 /// standard library, so bare `import("std")`/`import("std/time")` resolve.
 fn discover_roots(path: &Path) -> aven_compiler::ModuleRoots {
     aven_compiler::ModuleRoots::discover(path)
-        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_library(
+            aven_host::STD_LIBRARY_NAME,
+            aven_host::standard_std_library(),
+        )
+        .with_library_only_global_names(aven_host::standard_library_only_global_names())
+}
+
+fn discover_roots_for_host(path: &Path, host: &aven_host::Host) -> aven_compiler::ModuleRoots {
+    host.disabled_capability_modules().into_iter().fold(
+        aven_compiler::ModuleRoots::discover(path)
+            .with_library(aven_host::STD_LIBRARY_NAME, host.std_library())
+            .with_library_only_global_names(host.library_only_global_names()),
+        |roots, (specifier, capability, register_method)| {
+            roots.with_disabled_capability_module(specifier, capability, register_method)
+        },
+    )
 }
 
 fn is_err_value(value: &aven_eval::Value) -> bool {
@@ -939,7 +951,13 @@ mod tests {
     fn build_host_check_globals_match_standard_host_types() -> Result<()> {
         let host = build_host(&RunConfig::default())?;
 
-        assert_eq!(host.check_globals(), aven_host::standard_check_globals());
+        assert_eq!(
+            host.check_globals()
+                .into_iter()
+                .filter(|(name, _)| !matches!(name.as_str(), "now" | "zone"))
+                .collect::<Vec<_>>(),
+            aven_host::standard_check_globals()
+        );
         assert_eq!(
             host.check_host_globals().types,
             aven_host::standard_check_host_globals().types

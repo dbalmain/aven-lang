@@ -1760,7 +1760,7 @@ impl Host {
         );
     }
 
-    /// Register the effectful clock: bare global `now() -> Instant`.
+    /// Register the effectful clock for the internal `std/clock` re-export.
     ///
     /// Deliberately separate from [`Host::register_temporals`] so a minimal
     /// platform can keep the pure temporal vocabulary without a system clock.
@@ -1771,9 +1771,10 @@ impl Host {
     /// construction elsewhere in this module.
     pub fn register_clock(&mut self) {
         self.register("now", now_native(), now_type());
+        self.clock_registered = true;
     }
 
-    /// Register named-zone lookup: bare global `zone(name) -> Result[Zone, Text]`.
+    /// Register named-zone lookup for the internal `std/zones` re-export.
     ///
     /// Separate from [`Host::register_temporals`] / [`Host::register_clock`] so a
     /// minimal platform can omit OS zoneinfo. Search chain is
@@ -1781,6 +1782,7 @@ impl Host {
     pub fn register_zones(&mut self) {
         self.register_zone_types();
         self.register("zone", zone_native_default_chain(), zone_type());
+        self.zones_registered = true;
     }
 
     /// Like [`Host::register_zones`], but close over an explicit search-dir list
@@ -1788,6 +1790,7 @@ impl Host {
     pub fn register_zones_with_dirs(&mut self, search_dirs: Vec<PathBuf>) {
         self.register_zone_types();
         self.register("zone", zone_native(search_dirs), zone_type());
+        self.zones_registered = true;
     }
 
     fn register_zone_types(&mut self) {
@@ -2605,18 +2608,16 @@ mod tests {
         let mut host = Host::new();
         host.register_temporals();
         host.register_clock();
-        let parsed = parse_module("now().format()\n");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let outcome = aven_eval::eval_module_with_globals(&parsed.module, host.eval_globals());
-        assert!(outcome.diagnostics.is_empty(), "{:?}", outcome.diagnostics);
-        let value = outcome.value.expect("yields a value");
-        let formatted = text(&value);
+        let value = call_registered_native(&host, "now", &[]);
+        let formatted = instant_from_value(&value)
+            .unwrap_or_else(|| panic!("now should return Instant"))
+            .format();
         assert!(
             formatted.ends_with('Z'),
             "now().format() should be UTC Instant text, got {formatted}"
         );
         assert!(
-            Instant::parse(formatted).is_ok(),
+            Instant::parse(&formatted).is_ok(),
             "now().format() should re-parse as Instant: {formatted}"
         );
     }
@@ -2634,14 +2635,26 @@ mod tests {
         host
     }
 
-    fn run_on(host: Host, source: &str) -> Value {
+    fn call_registered_native(host: &Host, name: &str, args: &[Value]) -> Value {
+        let Some(Value::Native(function)) = host
+            .eval_globals()
+            .into_iter()
+            .find_map(|(registered, value)| (registered == name).then_some(value))
+        else {
+            panic!("expected native `{name}` to be registered");
+        };
+        function(args).unwrap_or_else(|error| panic!("native `{name}` failed: {error}"))
+    }
+
+    fn run_on_with_globals(host: Host, mut globals: Vec<(String, Value)>, source: &str) -> Value {
+        globals.extend(host.eval_globals());
         let parsed = parse_module(source);
         assert!(
             parsed.diagnostics.is_empty(),
             "program parses: {:?}",
             parsed.diagnostics
         );
-        let outcome = aven_eval::eval_module_with_globals(&parsed.module, host.eval_globals());
+        let outcome = aven_eval::eval_module_with_globals(&parsed.module, globals);
         assert!(
             outcome.diagnostics.is_empty(),
             "program runs: {:?}",
@@ -2821,10 +2834,13 @@ mod tests {
 
     #[test]
     fn zone_host_end_to_end_wall_time_and_instant() {
-        let value = run_on(
+        let value = run_on_with_globals(
             zone_host(),
+            vec![(
+                "z".to_owned(),
+                zone_value("Australia/Sydney", &fixture_dirs()).expect("fixture Sydney loads"),
+            )],
             r#"
-z = zone("Australia/Sydney")?!
 i = Instant.parse("2025-04-05T15:59:59Z")?!
 wall = z.wallTime(i)
 resolved = z.instant(DateTime.parse("2025-06-15T12:00:00")?!)
@@ -2848,11 +2864,12 @@ resolved = z.instant(DateTime.parse("2025-06-15T12:00:00")?!)
     #[test]
     fn zone_host_errors_as_err_text() {
         let host = zone_host();
-        let unknown = run_on(host, "zone(\"Not/A/Zone\")\n");
+        let unknown =
+            call_registered_native(&host, "zone", &[Value::Text("Not/A/Zone".to_owned())]);
         assert!(err_text(&unknown).contains("Not/A/Zone"));
 
         let host = zone_host();
-        let traversal = run_on(host, "zone(\"../evil\")\n");
+        let traversal = call_registered_native(&host, "zone", &[Value::Text("../evil".to_owned())]);
         assert!(err_text(&traversal).contains("invalid zone name"));
     }
 

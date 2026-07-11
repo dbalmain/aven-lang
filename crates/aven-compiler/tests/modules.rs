@@ -1,13 +1,15 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use aven_check::build;
 use aven_compiler::{
     HostGlobals, ModuleRoots, SourceOverlay, check_path_with_host_globals,
     check_path_with_host_globals_and_overlay, check_path_with_host_globals_and_roots,
-    eval_path_with_globals,
+    eval_path_with_globals, eval_path_with_globals_and_roots,
 };
 use aven_core::codes;
 
@@ -34,6 +36,88 @@ fn checks_diamond_graph_and_private_bindings() {
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
         .expect("check should load graph");
 
+    assert_no_errors(&output.reports);
+}
+
+#[test]
+fn disabled_capability_modules_explain_the_required_host_registration() {
+    let dir = TempDir::new("disabled-capability");
+    write(
+        dir.path(),
+        "main.av",
+        "clock = import(\"std/clock\")\n{ clock }\n",
+    );
+    let roots = ModuleRoots::discover(&dir.path().join("main.av"))
+        .with_library(
+            "std",
+            HashMap::from([("std".to_owned(), "{ version: \"test\" }")]),
+        )
+        .with_disabled_capability_module("std/clock", "clock", "register_clock");
+
+    let output = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &roots,
+    )
+    .expect("check should load graph");
+
+    let messages = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .map(|diagnostic| format!("{} {:?}", diagnostic.message, diagnostic.notes))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(messages.contains("clock capability"), "{messages}");
+    assert!(messages.contains("register_clock"), "{messages}");
+}
+
+#[test]
+fn library_only_globals_are_hidden_from_user_modules_but_visible_to_library_modules() {
+    let dir = TempDir::new("library-only-globals");
+    write(dir.path(), "main.av", "now()\n");
+    let roots = ModuleRoots::discover(&dir.path().join("main.av"))
+        .with_library("std", HashMap::from([("std/clock".to_owned(), "{ now }")]))
+        .with_library_only_global_names(["now"]);
+    let globals = HostGlobals::new(
+        vec![("now".to_owned(), build::function(vec![], build::int()))],
+        vec![],
+    );
+
+    let output =
+        check_path_with_host_globals_and_roots(&dir.path().join("main.av"), &globals, &roots)
+            .expect("check should load graph");
+    assert!(
+        output
+            .reports
+            .iter()
+            .any(aven_core::DiagnosticReport::has_errors)
+    );
+
+    let output = eval_path_with_globals_and_roots(
+        &dir.path().join("main.av"),
+        vec![(
+            "now".to_owned(),
+            aven_eval::Value::native(|_| Ok(aven_eval::Value::Int(1))),
+        )],
+        &roots,
+    )
+    .expect("evaluation should load graph");
+    assert!(
+        output
+            .reports
+            .iter()
+            .any(aven_core::DiagnosticReport::has_errors)
+    );
+
+    write(
+        dir.path(),
+        "main.av",
+        "{ now } = import(\"std/clock\")\nnow()\n",
+    );
+    let output =
+        check_path_with_host_globals_and_roots(&dir.path().join("main.av"), &globals, &roots)
+            .expect("check should load graph");
     assert_no_errors(&output.reports);
 }
 

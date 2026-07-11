@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -64,6 +64,13 @@ pub struct SourceOverlay {
 /// Embedded library modules, keyed by module specifier (`std`, `std/time`).
 pub type LibraryModules = HashMap<String, &'static str>;
 
+/// A known library module that a host deliberately did not enable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisabledCapabilityModule {
+    pub capability: String,
+    pub register_method: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModuleRoots {
     pub project: Option<PathBuf>,
@@ -72,6 +79,10 @@ pub struct ModuleRoots {
     /// Host-registered libraries resolving bare import specifiers: library
     /// name -> module specifier -> embedded source text. Empty by default.
     pub libraries: HashMap<String, LibraryModules>,
+    /// Host names available only while evaluating embedded library modules.
+    pub library_only_global_names: HashSet<String>,
+    /// Known capability modules omitted by this host, keyed by specifier.
+    pub disabled_capability_modules: HashMap<String, DisabledCapabilityModule>,
 }
 
 impl ModuleRoots {
@@ -91,11 +102,37 @@ impl ModuleRoots {
             home,
             filesystem: true,
             libraries: HashMap::new(),
+            library_only_global_names: HashSet::new(),
+            disabled_capability_modules: HashMap::new(),
         }
     }
 
     pub fn with_library(mut self, name: impl Into<String>, modules: LibraryModules) -> Self {
         self.libraries.insert(name.into(), modules);
+        self
+    }
+
+    pub fn with_library_only_global_names(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.library_only_global_names = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_disabled_capability_module(
+        mut self,
+        specifier: impl Into<String>,
+        capability: impl Into<String>,
+        register_method: impl Into<String>,
+    ) -> Self {
+        self.disabled_capability_modules.insert(
+            specifier.into(),
+            DisabledCapabilityModule {
+                capability: capability.into(),
+                register_method: register_method.into(),
+            },
+        );
         self
     }
 }
@@ -231,9 +268,10 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
     for node_id in graph.order.iter().copied() {
         let imports = check_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
         let file_id = graph.nodes[node_id].file.id;
+        let node_globals = globals_for_node(globals, roots, &graph.nodes[node_id].path);
         let semantic = analyze_semantics_with_host_globals_and_imports(
             &graph.nodes[node_id].parse,
-            globals,
+            &node_globals,
             &imports,
         );
         merge_semantic_timing(&mut name_duration, &mut check_duration, &semantic);
@@ -241,7 +279,7 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
         let export = if semantic_has_errors {
             CheckExport::HasErrors
         } else {
-            check_export_for_node(&graph.nodes[node_id], &semantic, globals)
+            check_export_for_node(&graph.nodes[node_id], &semantic, &node_globals)
         };
         let export = match export {
             CheckExport::UppercaseExportNotType { name, span } => {
@@ -330,9 +368,10 @@ pub fn eval_path_with_globals_and_roots(
             continue;
         }
 
+        let node_globals = eval_globals_for_node(&globals, roots, &graph.nodes[node_id].path);
         let outcome = aven_eval::eval_module_with_globals_and_imports(
             &graph.nodes[node_id].parse.module,
-            globals.clone(),
+            node_globals,
             &imports,
         );
         entry_value = (node_id == 0).then_some(outcome.value.clone()).flatten();
@@ -356,6 +395,32 @@ pub fn eval_path_with_globals_and_roots(
         reports,
         value: entry_value,
     })
+}
+
+fn globals_for_node(globals: &HostGlobals, roots: &ModuleRoots, path: &Path) -> HostGlobals {
+    if library_specifier(path).is_some() || roots.library_only_global_names.is_empty() {
+        return globals.clone();
+    }
+    let mut filtered = globals.clone();
+    filtered
+        .types
+        .retain(|(name, _)| !roots.library_only_global_names.contains(name));
+    filtered
+}
+
+fn eval_globals_for_node(
+    globals: &[(String, Value)],
+    roots: &ModuleRoots,
+    path: &Path,
+) -> Vec<(String, Value)> {
+    if library_specifier(path).is_some() || roots.library_only_global_names.is_empty() {
+        return globals.to_vec();
+    }
+    globals
+        .iter()
+        .filter(|(name, _)| !roots.library_only_global_names.contains(name))
+        .cloned()
+        .collect()
 }
 
 impl ModuleGraph {
@@ -532,6 +597,27 @@ impl ModuleGraph {
                     &specifier,
                     &format!("tried `{tried}` in library `{library}`"),
                 ));
+                return Ok(ImportRef {
+                    specifier,
+                    specifier_span: call.specifier_span,
+                    call_span: call.call_span,
+                    target: None,
+                    failed: true,
+                });
+            }
+            ResolvedImport::CapabilityUnavailable {
+                capability,
+                register_method,
+            } => {
+                self.nodes[importer]
+                    .parse
+                    .diagnostics
+                    .push(capability_unavailable(
+                        call.specifier_span,
+                        &specifier,
+                        &capability,
+                        &register_method,
+                    ));
                 return Ok(ImportRef {
                     specifier,
                     specifier_span: call.specifier_span,
@@ -1124,7 +1210,14 @@ enum ResolvedImport {
     Library(PathBuf),
     RootUnavailable,
     UnknownLibrary,
-    LibraryModuleMissing { library: String, tried: String },
+    LibraryModuleMissing {
+        library: String,
+        tried: String,
+    },
+    CapabilityUnavailable {
+        capability: String,
+        register_method: String,
+    },
 }
 
 fn resolve_import_target(importer: &Path, specifier: &str, roots: &ModuleRoots) -> ResolvedImport {
@@ -1203,6 +1296,11 @@ fn resolve_library_import(specifier: &str, roots: &ModuleRoots) -> ResolvedImpor
     };
     if modules.contains_key(module) {
         ResolvedImport::Library(library_virtual_path(module))
+    } else if let Some(capability) = roots.disabled_capability_modules.get(module) {
+        ResolvedImport::CapabilityUnavailable {
+            capability: capability.capability.clone(),
+            register_method: capability.register_method.clone(),
+        }
     } else {
         ResolvedImport::LibraryModuleMissing {
             library: library.to_owned(),
@@ -1329,6 +1427,23 @@ fn not_found(span: Span, specifier: &str, tried: &str) -> Diagnostic {
         .with_label(Label::primary(span, "this import could not be loaded"))
         .with_note(tried)
         .with_note("check the path, directory, and optional `.av` extension")
+}
+
+fn capability_unavailable(
+    span: Span,
+    specifier: &str,
+    capability: &str,
+    register_method: &str,
+) -> Diagnostic {
+    Diagnostic::error(format!(
+        "module `{specifier}` needs the {capability} capability"
+    ))
+    .with_code(codes::module::CAPABILITY_UNAVAILABLE)
+    .with_label(Label::primary(
+        span,
+        "this host does not provide that capability",
+    ))
+    .with_note(format!("register it with Host::{register_method}()"))
 }
 
 fn unsupported_root(span: Span, specifier: &str) -> Diagnostic {

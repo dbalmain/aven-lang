@@ -1,4 +1,3 @@
 # Temporal types: `import("std/time")` re-exports the five host-registered
-# nominal types. `now`/`zone` deliberately stay bare platform globals for now —
-# a host may drop the clock capability, and std must keep working without it.
+# nominal types. Effectful `now` and `zone` live in `std/clock` and `std/zones`.
 { Instant, Date, Time, DateTime, Duration }

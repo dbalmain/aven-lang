@@ -2749,20 +2749,21 @@ bundled; `now()`/named zones are platform capabilities (DT4).
   committed tests only (ISO decode incl. offset normalization, shape errors on
   malformed strings, typed round-trips; plain + quoted YAML scalars). No
   behavior change.
-- **DT3 — arithmetic + `now()`: done 2026-07-11** (same grok slice).
+- **DT3 — arithmetic + `now()`: done 2026-07-11** (same grok slice; capability
+  module migration recorded 2026-07-11).
   `instant.plus/minus(Duration)`, `instant.since(Instant) -> Duration`,
   `date.plusDays(Int)` (pure civil-day math), `duration.plus`,
   `Duration.ofMinutes/ofHours/ofDays` — all checked; overflow is a runtime
   native error for methods, an `Err` value for constructors (same policy as DT1
-  conversions). `now() -> Instant` is a bare global via a NEW
+  conversions). `now() -> Instant` is registered internally via a NEW
   `Host::register_clock()`, deliberately separate from `register_temporals()` so
   a minimal platform keeps the pure vocabulary without a clock (the
   droppable-capability split from the design note); range edges error rather
   than saturate, pre-epoch times give negative nanos. `now_type()` exported for
-  hosts. Placement note: bare global follows the `writeLine` precedent; migrates
-  into `std/time` when std imports land (Z-open).
+  hosts. Its public surface is now `{ now } = import("std/clock")`.
 - **DT4 — `Zone` platform capability: done 2026-07-11** (grok-4.5 slice;
-  milestone complete). `zone(name: Text) -> Result[Zone, Text]` bare global via
+  milestone complete). `zone(name: Text) -> Result[Zone, Text]` is registered
+  internally via
   separate `Host::register_zones()` (droppable, like `register_clock`). Reads OS
   TZif bytes itself — search chain `$TZDIR` → `/etc/zoneinfo` →
   `/usr/share/zoneinfo` (NixOS has no /usr/share) — parsed by the `tz-rs` 0.7.3
@@ -2779,7 +2780,8 @@ bundled; `now()`/named zones are platform capabilities (DT4).
   (`crates/aven-host/fixtures/zoneinfo/`: Australia/Sydney + UTC), search dirs
   injected via `register_zones_with_dirs` — no machine-tzdb or env dependence.
   Known truncation: historical odd-second offsets round toward zero to whole
-  minutes (fine for modern IANA data).
+  minutes (fine for modern IANA data). Its public surface is now
+  `{ zone } = import("std/zones")`.
 
 ## Milestone P-rm — remove native path literals: done 2026-07-06
 
@@ -2859,8 +2861,8 @@ checker re-entrancy to keep the semantic crates small.
   root), and offers nothing for bare library names.
 - Z5 done 2026-07-11: bare library names resolve through host-registered
   libraries on `ModuleRoots` (`libraries`: name → module specifier → embedded
-  source; empty by default). The CLI and file-backed LSP register `std` from
-  `aven_host::std_library()` — `.av` sources embedded via `include_str!` under
+  source; empty by default). The CLI and file-backed LSP register the standard
+  surface from `aven_host::standard_std_library()` — `.av` sources embedded via `include_str!` under
   `crates/aven-host/std/`, so the binary needs no filesystem for std. `std/time`
   re-exports the five temporal types by punning the host-registered names; `std`
   itself exports only `version`. Library modules key the graph by a virtual path
@@ -2869,16 +2871,23 @@ checker re-entrancy to keep the semantic crates small.
   a library resolve within the same library map; `$/`/`~/`/`//` from a library
   module diagnose `module.root-unavailable`. Unregistered library →
   `module.unsupported-root`; registered library with a missing module →
-  `module.not-found` (with a "tried … in library …" note). Export capture
+  `module.not-found` (with a "tried … in library …" note). **Capability =
+  module (2026-07-11):** pure `std`/`std/time` are always present, while a
+  host-assembled `Host::std_library()` adds `std/clock` and `std/zones` only
+  after `register_clock`/`register_zones`. Those small modules pun the internal
+  registrations, which `ModuleRoots` hides from non-library modules; users must
+  import `{ now }` / `{ zone }`. Missing known capability modules diagnose the
+  absent capability and the registering method, rather than pretending they are
+  ordinary missing std files. This presence/absence map plus library-only
+  globals is the template for future droppable platform capabilities. Export capture
   widening: an uppercase export whose source is a statics-carrying host type
   types its _value_ field as the statics record (mirroring `Value::Type` field
   access at eval), so `Instant.parse` checks through the import; the type-export
   channel still carries the definition for annotations. LSP import-specifier
   completion offers library names after `"` and a library's module paths after
   `std/`; goto into an embedded module is deliberately omitted (the virtual key
-  is not a file URI the editor could open). Deliberate deferrals: `now`/`zone`
-  migration into `std/time` (blocked on droppable-capability composition),
-  packages/versioned dependencies, and `Aven.toml` `[dependencies]`.
+  is not a file URI the editor could open). Deliberate deferrals: packages/versioned
+  dependencies and `Aven.toml` `[dependencies]`.
 - Z-open: versioned packages remain open as package resolution. Dynamic import
   is permanently comptime-only and reports `module.dynamic-import`; it is never
   a runtime fallback.
