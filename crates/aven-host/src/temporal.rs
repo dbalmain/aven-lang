@@ -1999,9 +1999,11 @@ fn zone_wall_time(tz: &tz::TimeZone, instant: Instant) -> Result<Value, Temporal
 /// 3. Keep interpretations whose map-back offset matches the probe.
 /// 4. 0 / 1 / 2+ → Skipped / Unique / Ambiguous.
 ///
-/// **Skipped payload (provisional):** the later of the candidate instants
-/// produced under probed offsets (even when map-back failed) — the wall time
-/// under the post-gap offset.
+/// **Skipped payload (settled):** the later of the candidate instants produced
+/// under probed offsets (even when map-back failed) — i.e. the requested wall
+/// time shifted forward by the gap (Java's `ZonedDateTime` repair; 02:30 in a
+/// 02:00→03:00 gap resolves to 03:30). The tag still marks the gap, so callers
+/// wanting a different policy can reject or re-prompt.
 fn zone_instant_resolve(tz: &tz::TimeZone, datetime: DateTime) -> Result<Value, TemporalError> {
     let rough_unix = Instant::from_datetime(datetime, 0)
         .map(instant_unix_secs)
