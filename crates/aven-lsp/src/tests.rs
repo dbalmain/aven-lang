@@ -1411,7 +1411,7 @@ fn file_backed_semantic_diagnostics_use_entry_buffer_overlay() {
     store.set_document(
         main_uri.clone(),
         1,
-        "D = import(\"./dep\")\nvalue : Int = D.value\n{ value }\n".to_owned(),
+        "dep = import(\"./dep\")\nvalue : Int = dep.value\n{ value }\n".to_owned(),
     );
     let (document, overlay) = store
         .semantic_input(&main_uri)
@@ -1429,7 +1429,7 @@ fn file_backed_semantic_diagnostics_use_dependency_buffer_overlay() {
     write(
         dir.path(),
         "main.av",
-        "D = import(\"./dep\")\nvalue : Int = D.value\n{ value }\n",
+        "dep = import(\"./dep\")\nvalue : Int = dep.value\n{ value }\n",
     );
     let dep_uri = file_uri(&dir.path().join("dep.av"));
     let main_uri = file_uri(&dir.path().join("main.av"));
@@ -1438,7 +1438,7 @@ fn file_backed_semantic_diagnostics_use_dependency_buffer_overlay() {
     store.set_document(
         main_uri.clone(),
         1,
-        "D = import(\"./dep\")\nvalue : Int = D.value\n{ value }\n".to_owned(),
+        "dep = import(\"./dep\")\nvalue : Int = dep.value\n{ value }\n".to_owned(),
     );
     let (document, overlay) = store
         .semantic_input(&main_uri)
@@ -1474,14 +1474,14 @@ fn file_backed_semantic_diagnostics_report_missing_dependency() {
     write(
         dir.path(),
         "main.av",
-        "Missing = import(\"./missing\")\n{ Missing }\n",
+        "missing = import(\"./missing\")\n{ missing }\n",
     );
     let main_uri = file_uri(&dir.path().join("main.av"));
     let mut store = DocumentStore::default();
     store.set_document(
         main_uri.clone(),
         1,
-        "Missing = import(\"./missing\")\n{ Missing }\n".to_owned(),
+        "missing = import(\"./missing\")\n{ missing }\n".to_owned(),
     );
     let (document, overlay) = store
         .semantic_input(&main_uri)
@@ -1755,7 +1755,7 @@ fn file_backed_import_specifier_completion_lists_siblings() {
     write(dir.path(), "lib/mod.av", "value = 1\n{ value }\n");
     let main_uri = file_uri(&dir.path().join("main.av"));
     write(dir.path(), "main.av", "");
-    let document = parsed_file_document(&main_uri, "Dep = import(\"./\")\n");
+    let document = parsed_file_document(&main_uri, "dep = import(\"./\")\n");
 
     let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 16));
 
@@ -1778,7 +1778,7 @@ fn import_specifier_completion_lists_project_root_children() {
     write(dir.path(), "lib/mod.av", "value = 1\n{ value }\n");
     let main_uri = file_uri(&dir.path().join("src/main.av"));
     write(dir.path(), "src/main.av", "");
-    let document = parsed_file_document(&main_uri, "Dep = import(\"$/\")\n");
+    let document = parsed_file_document(&main_uri, "dep = import(\"$/\")\n");
 
     let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 16));
 
@@ -1799,7 +1799,7 @@ fn import_specifier_completion_offers_registered_library_names() {
     write(dir.path(), "text.av", "value = 1\n{ value }\n");
     let main_uri = file_uri(&dir.path().join("main.av"));
     write(dir.path(), "main.av", "");
-    let document = parsed_file_document(&main_uri, "Dep = import(\"st\")\n");
+    let document = parsed_file_document(&main_uri, "dep = import(\"st\")\n");
 
     let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 16));
 
@@ -1819,7 +1819,7 @@ fn import_specifier_completion_lists_std_module_paths() {
     let dir = TempDir::new("lsp-import-specifier-std-modules");
     let main_uri = file_uri(&dir.path().join("main.av"));
     write(dir.path(), "main.av", "");
-    let document = parsed_file_document(&main_uri, "Dep = import(\"std/\")\n");
+    let document = parsed_file_document(&main_uri, "dep = import(\"std/\")\n");
 
     let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 18));
 
@@ -1838,7 +1838,7 @@ fn import_specifier_completion_offers_nothing_for_unknown_library() {
     let dir = TempDir::new("lsp-import-specifier-unknown-library");
     let main_uri = file_uri(&dir.path().join("main.av"));
     write(dir.path(), "main.av", "");
-    let document = parsed_file_document(&main_uri, "Dep = import(\"other/\")\n");
+    let document = parsed_file_document(&main_uri, "dep = import(\"other/\")\n");
 
     let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 20));
 
@@ -1847,7 +1847,7 @@ fn import_specifier_completion_offers_nothing_for_unknown_library() {
 
 #[test]
 fn pathless_semantic_diagnostics_keep_single_file_import_warning() {
-    let document = parsed_document("Dep = import(\"./dep\")\n{ Dep }\n");
+    let document = parsed_document("dep = import(\"./dep\")\n{ dep }\n");
 
     let semantic = analyze_document_semantics(&document);
 

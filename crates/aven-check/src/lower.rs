@@ -88,6 +88,15 @@ pub(crate) fn type_definitions(
                 continue;
             };
 
+            // An import binds a module *value*, never a type alias. Keep it
+            // out of the definitions map so a binding named like a builtin
+            // type (`Text = import(...)`) cannot shadow that type during
+            // normalization; the checker reports the binding itself as
+            // `name.uppercase-module-binding`.
+            if crate::checker::is_import_call(&binding.value) {
+                continue;
+            }
+
             // Lower each definition without its own entry so self-references
             // stay nominal (`Data` keeps `Named("Data")` payload leaves) —
             // recursive definitions unfold lazily at use sites instead of

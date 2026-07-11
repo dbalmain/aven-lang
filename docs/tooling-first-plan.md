@@ -2898,14 +2898,24 @@ checker re-entrancy to keep the semantic crates small.
   (`name.no-toplevel-spread-shadow` at top level); uppercase pattern binders on
   a static import with a matching type export bind ordinary type aliases (Z4);
   otherwise they still diagnose `type.uppercase-pattern-binder-unsupported`.
-- Checker bug discovered (2026-07-09), still open: a binding that shadows a
-  builtin type name (`Text = import("./text")`) breaks record spread of that
-  binding when the imported signatures mention the shadowed type —
-  `{ ..Text, ... }` infers Deferred, so the module becomes
-  `module.not-importable`. Any other binding name works, and shadowing alone is
-  fine when signatures don't mention the type. The lowercase-modules convention
-  makes the trigger rare (module bindings no longer collide with type names),
-  but the bug is still latent for any value binding named like a type.
+- Checker bug discovered (2026-07-09), resolved 2026-07-11: a binding that
+  shadowed a builtin type name (`Text = import("./text")`) broke record spread
+  of that binding when the imported signatures mentioned the shadowed type. Root
+  cause: `type_definitions` treated every uppercase binding as a type alias and
+  lowered its RHS as an annotation, so an import RHS lowered to Deferred and
+  clobbered the builtin's definition — `normalize` then turned every
+  `Named("Text")` in the spread source into Deferred, the record failed
+  `is_resolved_value_type`, and the export collapsed to `{}` (surfacing as
+  `type.missing-field` at the importer post-Z4). Fixed on both axes: uppercase
+  `= import(...)` bindings now report `name.uppercase-module-binding` (modules
+  bind lowercase; uppercase is reserved for types), and import bindings are kept
+  out of the type-definitions map so they can never shadow a type name during
+  normalization. Lowercase bindings cannot reach the old bug: only
+  comptime-phase (uppercase-named) declarations enter `type_definitions`, and
+  all builtin type names are uppercase. Remaining uppercase non-type RHS forms
+  (e.g. `Text = v + 1`) still insert a Deferred definition, but each already
+  carries its own error (`comptime.evaluation-unsupported`), so the module never
+  exports.
 
 ## To investigate later
 

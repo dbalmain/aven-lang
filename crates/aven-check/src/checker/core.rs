@@ -299,9 +299,14 @@ impl<'a> Checker<'a> {
 
         if declaration.phase == DeclarationPhase::Comptime
             && let Some(binding) = binding
-            && !self.binding_value_is_import(&binding.value)
         {
-            self.check_comptime_binding_evaluation_support(&binding.value);
+            if is_import_call(&binding.value) {
+                // Uppercase names are reserved for types; an import binds a
+                // module record, never a type.
+                self.report_uppercase_module_binding(&declaration.name, declaration.name_span);
+            } else {
+                self.check_comptime_binding_evaluation_support(&binding.value);
+            }
         }
 
         if let Some(source) = declared_annotation {
@@ -335,14 +340,6 @@ impl<'a> Checker<'a> {
                 self.deduplicate_diagnostics_since(diagnostics_start);
             }
         }
-    }
-
-    fn binding_value_is_import(&self, value: &Expr) -> bool {
-        matches!(
-            &ungroup_expr(value).kind,
-            ExprKind::Call { callee, .. }
-                if matches!(&ungroup_expr(callee).kind, ExprKind::Name(name) if name == "import")
-        )
     }
 
     pub(super) fn check_value_expr_without_unbound_names(&mut self, expr: &Expr) {

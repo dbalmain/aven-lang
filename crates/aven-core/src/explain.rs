@@ -143,6 +143,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A local binding, parameter, or pattern binder is never used. Remove it, use it, or prefix the name with _ to mark the unused binding as intentional.",
     },
     DiagnosticExplanation {
+        code: codes::name::UPPERCASE_MODULE_BINDING,
+        text: "Uppercase names are reserved for types, but this binding's value is a module record, not a type. Bind the module with a lowercase name, or extract an exported type with a record pattern such as { User } = import(...).",
+    },
+    DiagnosticExplanation {
         code: codes::name::UPPERCASE_RUNTIME_BINDING,
         text: "Uppercase names are reserved for compile-time identifiers. Runtime parameters must use lowercase names.",
     },

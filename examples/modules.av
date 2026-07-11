@@ -1,3 +1,3 @@
-Text = import("./modules/text")
+text = import("./modules/text")
 
-writeLine(Text.join("a", "b", ", "))
+writeLine(text.join("a", "b", ", "))

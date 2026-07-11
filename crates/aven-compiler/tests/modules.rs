@@ -19,16 +19,16 @@ fn checks_diamond_graph_and_private_bindings() {
         "d.av",
         "value = \"d\"\n_private = \"hidden\"\n{ value }\n",
     );
-    write(dir.path(), "b.av", "D = import(\"./d\")\n{ b: D.value }\n");
+    write(dir.path(), "b.av", "d = import(\"./d\")\n{ b: d.value }\n");
     write(
         dir.path(),
         "c.av",
-        "D = import(\"./d.av\")\n{ c: D.value }\n",
+        "d = import(\"./d.av\")\n{ c: d.value }\n",
     );
     write(
         dir.path(),
         "main.av",
-        "B = import(\"./b\")\nC = import(\"./c\")\n{ b: B.b, c: C.c }\n",
+        "b = import(\"./b\")\nc = import(\"./c\")\n{ b: b.b, c: c.c }\n",
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -49,7 +49,7 @@ fn unexported_binding_is_not_on_import_record_type() {
     write(
         dir.path(),
         "main.av",
-        "Lib = import(\"./lib/text\")\nvalue : Text = Lib._helper(\"x\")\n{ value }\n",
+        "lib = import(\"./lib/text\")\nvalue : Text = lib._helper(\"x\")\n{ value }\n",
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -69,7 +69,7 @@ fn record_pattern_can_select_from_import_record() {
     write(
         dir.path(),
         "main.av",
-        "Text = import(\"./text\")\nvalue : Text = Text ?>\n  { join } => join(\"a\")\n{ value }\n",
+        "text = import(\"./text\")\nvalue : Text = text ?>\n  { join } => join(\"a\")\n{ value }\n",
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -226,13 +226,65 @@ fn spread_binding_opens_import_record() {
 }
 
 #[test]
+fn uppercase_import_binding_reports_structured_diagnostic() {
+    // The recorded 2026-07-09 trigger: a binding shadowing a builtin type name
+    // (`Text = import(...)`) broke record spread when the imported signatures
+    // mentioned the shadowed type. Uppercase module bindings are now outlawed
+    // outright — uppercase is reserved for types.
+    let dir = TempDir::new("uppercase-module-binding");
+    write(
+        dir.path(),
+        "text.av",
+        "join = (x: Text): Text => x\n{ join }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "Text = import(\"./text\")\n{ ..Text, extra: 1 }\n",
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+
+    assert_has_code(&output.reports, codes::name::UPPERCASE_MODULE_BINDING);
+}
+
+#[test]
+fn lowercase_binding_spreads_through_type_mentioning_signatures() {
+    // The inference half of the same bug: a module-value binding must never
+    // enter the type-definitions map, so spreading it stays intact even when
+    // the imported signatures mention builtin type names.
+    let dir = TempDir::new("lowercase-binding-spread");
+    write(
+        dir.path(),
+        "text.av",
+        "join = (x: Text): Text => x\n{ join }\n",
+    );
+    write(
+        dir.path(),
+        "mid.av",
+        "text = import(\"./text\")\n{ ..text, extra: 1 }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "mid = import(\"./mid\")\nvalue : Text = mid.join(\"a\")\nextra : Int = mid.extra\n{ value, extra }\n",
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+
+    assert_no_errors(&output.reports);
+}
+
+#[test]
 fn source_overlay_beats_disk_content() {
     let dir = TempDir::new("overlay-check");
     write(dir.path(), "dep.av", "value = \"disk\"\n{ value }\n");
     write(
         dir.path(),
         "main.av",
-        "D = import(\"./dep\")\nvalue : Int = D.value\n{ value }\n",
+        "dep = import(\"./dep\")\nvalue : Int = dep.value\n{ value }\n",
     );
     let mut overlay = SourceOverlay::new();
     overlay.insert(
@@ -257,17 +309,17 @@ fn eval_caches_diamond_dependency_once() {
     write(
         dir.path(),
         "b.av",
-        "D = import(\"./d\")\n{ value: D.value }\n",
+        "d = import(\"./d\")\n{ value: d.value }\n",
     );
     write(
         dir.path(),
         "c.av",
-        "D = import(\"./d\")\n{ value: D.value }\n",
+        "d = import(\"./d\")\n{ value: d.value }\n",
     );
     write(
         dir.path(),
         "main.av",
-        "B = import(\"./b\")\nC = import(\"./c\")\n{ b: B.value, c: C.value }\n",
+        "b = import(\"./b\")\nc = import(\"./c\")\n{ b: b.value, c: c.value }\n",
     );
     let calls = Rc::new(RefCell::new(Vec::new()));
     let tick_calls = Rc::clone(&calls);
@@ -296,7 +348,7 @@ fn importer_own_errors_surface_alongside_dependency_errors() {
     write(
         dir.path(),
         "main.av",
-        "D = import(\"./dep\")\ny : Text = 5\n{ y }\n",
+        "dep = import(\"./dep\")\ny : Text = 5\n{ y }\n",
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -309,8 +361,8 @@ fn importer_own_errors_surface_alongside_dependency_errors() {
 #[test]
 fn reports_import_cycle() {
     let dir = TempDir::new("cycle");
-    write(dir.path(), "a.av", "B = import(\"./b\")\n{ B }\n");
-    write(dir.path(), "b.av", "A = import(\"./a\")\n{ A }\n");
+    write(dir.path(), "a.av", "b = import(\"./b\")\n{ b }\n");
+    write(dir.path(), "b.av", "a = import(\"./a\")\n{ a }\n");
 
     let output = check_path_with_host_globals(&dir.path().join("a.av"), &HostGlobals::default())
         .expect("check should load graph");
@@ -324,7 +376,7 @@ fn reports_missing_file() {
     write(
         dir.path(),
         "main.av",
-        "Missing = import(\"./missing\")\n{ Missing }\n",
+        "missing = import(\"./missing\")\n{ missing }\n",
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -340,7 +392,7 @@ fn reports_non_record_final_expression() {
     write(
         dir.path(),
         "main.av",
-        "Value = import(\"./value\")\n{ Value }\n",
+        "value = import(\"./value\")\n{ value }\n",
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -355,7 +407,7 @@ fn reports_non_static_specifier() {
     write(
         dir.path(),
         "main.av",
-        "name = \"./value\"\nValue = import(name)\n{ Value }\n",
+        "name = \"./value\"\nvalue = import(name)\n{ value }\n",
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -367,7 +419,7 @@ fn reports_non_static_specifier() {
 #[test]
 fn reports_unsupported_root() {
     let dir = TempDir::new("unsupported-root");
-    write(dir.path(), "main.av", "Std = import(\"std\")\n{ Std }\n");
+    write(dir.path(), "main.av", "std = import(\"std\")\n{ std }\n");
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
         .expect("check should load graph");
@@ -383,7 +435,7 @@ fn project_root_import_discovers_aven_toml_from_nested_entry() {
     write(
         dir.path(),
         "src/main.av",
-        "Util = import(\"$/lib/util\")\n{ value: Util.value }\n",
+        "util = import(\"$/lib/util\")\n{ value: util.value }\n",
     );
     let entry = dir.path().join("src/main.av");
 
@@ -403,7 +455,7 @@ fn project_root_falls_back_to_entry_directory_without_aven_toml() {
     write(
         dir.path(),
         "main.av",
-        "Util = import(\"$/util\")\n{ value: Util.value }\n",
+        "util = import(\"$/util\")\n{ value: util.value }\n",
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -421,7 +473,7 @@ fn home_and_filesystem_roots_use_their_explicit_host_paths() {
         dir.path(),
         "main.av",
         &format!(
-            "Home = import(\"~/util\")\nFs = import(\"//{}\")\n{{ home: Home.value, fs: Fs.value }}\n",
+            "home = import(\"~/util\")\nfs = import(\"//{}\")\n{{ home: home.value, fs: fs.value }}\n",
             filesystem_file
                 .to_str()
                 .expect("temporary paths are valid UTF-8")
@@ -450,7 +502,7 @@ fn unavailable_root_is_structured_and_bare_names_remain_unsupported() {
     write(
         dir.path(),
         "main.av",
-        "A = import(\"$/missing\")\nB = import(\"~/missing\")\nC = import(\"//missing\")\nD = import(\"std\")\n{ A, B, C, D }\n",
+        "a = import(\"$/missing\")\nb = import(\"~/missing\")\nc = import(\"//missing\")\nd = import(\"std\")\n{ a, b, c, d }\n",
     );
     let output = check_path_with_host_globals_and_roots(
         &dir.path().join("main.av"),
@@ -686,7 +738,7 @@ fn export_provenance_chases_static_import_spreads_transitively() {
     let dir = TempDir::new("export-spread-provenance");
     let dep_source = "value = 1\n{ value }\n";
     write(dir.path(), "dep.av", dep_source);
-    write(dir.path(), "mid.av", "Dep = import(\"./dep\")\n{ ..Dep }\n");
+    write(dir.path(), "mid.av", "dep = import(\"./dep\")\n{ ..dep }\n");
     let mid_path =
         fs::canonicalize(dir.path().join("mid.av")).expect("mid path should canonicalize");
     let dep_path =

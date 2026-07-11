@@ -1461,6 +1461,16 @@ fn ungroup_expr(mut expr: &Expr) -> &Expr {
     expr
 }
 
+/// An `import(...)` call with any specifier — the shape whose value is a
+/// module record, never a type.
+pub(crate) fn is_import_call(expr: &Expr) -> bool {
+    matches!(
+        &ungroup_expr(expr).kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&ungroup_expr(callee).kind, ExprKind::Name(name) if name == "import")
+    )
+}
+
 fn is_final_expr_item(items: &[Item], expr: &Expr) -> bool {
     matches!(items.last(), Some(Item::Expr(final_expr)) if std::ptr::eq(final_expr, expr))
 }

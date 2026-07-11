@@ -250,6 +250,19 @@ impl<'a> Checker<'a> {
         );
     }
 
+    pub(super) fn report_uppercase_module_binding(&mut self, name: &str, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!(
+                "uppercase binding `{name}` cannot bind a module value"
+            ))
+            .with_code(codes::name::UPPERCASE_MODULE_BINDING)
+            .with_label(Label::primary(span, "this binding's value is a module record"))
+            .with_note(
+                "modules bind lowercase names; rename the binding, or extract an exported type with `{ TypeName } = import(...)`",
+            ),
+        );
+    }
+
     pub(super) fn report_unknown_module_type(&mut self, name: &str, span: Span) {
         self.push_unique_diagnostic(
             Diagnostic::error(format!("module does not export type `{name}`"))

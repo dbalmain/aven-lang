@@ -52,6 +52,7 @@ pub mod name {
     pub const SHADOW_UNBOUND: &str = "name.shadow-unbound";
     pub const UNBOUND: &str = "name.unbound";
     pub const UNUSED_BINDING: &str = "name.unused-binding";
+    pub const UPPERCASE_MODULE_BINDING: &str = "name.uppercase-module-binding";
     pub const UPPERCASE_RUNTIME_BINDING: &str = "name.uppercase-runtime-binding";
 }
 
@@ -168,6 +169,7 @@ pub const ALL: &[&str] = &[
     name::SHADOW_UNBOUND,
     name::UNBOUND,
     name::UNUSED_BINDING,
+    name::UPPERCASE_MODULE_BINDING,
     name::UPPERCASE_RUNTIME_BINDING,
     parse::EXPECTED_EXPRESSION,
     parse::EXPECTED_FIELD_NAME,
