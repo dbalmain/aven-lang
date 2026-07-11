@@ -1,0 +1,4 @@
+User = { name: Text, email: Text }
+partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }
+Partial = partial(User)
+x : Partial = { name: "Ada" }

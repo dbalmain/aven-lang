@@ -1058,6 +1058,39 @@ fn evaluates_set_literals_with_deduplication() {
 }
 
 #[test]
+fn evaluates_set_spread_entries_with_deduplication() {
+    assert_module_value(
+        "a = @{ 1, 2 }\nb = @{ 2, 3 }\n@{ ..a, ..b, 4 }\n",
+        set_value(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    );
+}
+
+#[test]
+fn set_spread_of_non_set_reports_type_error() {
+    let diagnostic = module_error("@{ ..[1, 2] }\n");
+
+    assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    assert_eq!(diagnostic.labels[0].message, "expected Set");
+}
+
+#[test]
+fn required_type_map_strips_optional_at_runtime() {
+    // `!object[k]` on a type value strips the `Optional` wrapper, so
+    // `required(partial(T))` bindings evaluate under lenient `aven run`.
+    assert_module_value(
+        "partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+         required = (object) => { keysOf(object) -> k; [k]: !object[k] }\n\
+         required(partial({ name: Text }))\n",
+        record_value(vec![("name", Value::named_type("Text"))]),
+    );
+}
+
+#[test]
 fn evaluates_set_union_promotes_singletons() {
     assert_eval(
         "\"r\" | \"w\"",

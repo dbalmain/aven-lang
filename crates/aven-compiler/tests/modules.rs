@@ -138,6 +138,39 @@ fn module_type_exports_work_in_qualified_and_pattern_annotations() {
 }
 
 #[test]
+fn comptime_computed_type_alias_exports_through_modules() {
+    let dir = TempDir::new("comptime-alias-export");
+    write(
+        dir.path(),
+        "util.av",
+        "User = { name: Text, age: Int }\n\
+         partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+         Partial = partial(User)\n\
+         { User, Partial }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "util = import(\"./util\")\np: util.Partial = { name: \"Ada\" }\n{ p }\n",
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("comptime alias import should check");
+    assert_no_errors(&checked.reports);
+
+    // The exported alias is a real type, not a deferred placeholder: a
+    // mismatched field is caught through the import.
+    write(
+        dir.path(),
+        "bad.av",
+        "util = import(\"./util\")\np: util.Partial = { name: 5 }\n{ p }\n",
+    );
+    let bad = check_path_with_host_globals(&dir.path().join("bad.av"), &HostGlobals::default())
+        .expect("check should load graph");
+    assert_has_code(&bad.reports, codes::ty::MISMATCH);
+}
+
+#[test]
 fn module_type_export_diagnostics_are_structured() {
     let dir = TempDir::new("type-export-diagnostics");
     write(

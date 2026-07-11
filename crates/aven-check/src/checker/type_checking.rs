@@ -138,11 +138,7 @@ impl<'a> Checker<'a> {
                 && element_types.len() == 1 =>
             {
                 self.report_value_record_markers(entries);
-                if let Some(elements) = literal_set_elements(entries) {
-                    self.check_collection_elements(&element_types[0], elements);
-                } else {
-                    self.walk_value_record_values(entries);
-                }
+                self.check_set_entries_against(expected, &element_types[0], entries);
             }
             _ => {
                 self.check_value_expr(value);
@@ -265,6 +261,24 @@ impl<'a> Checker<'a> {
         self.report_propagated_errors_against_annotation(&body_expected, &propagation);
         self.local_comptime_params.pop();
         self.local_types.pop();
+    }
+
+    /// Check set-literal entries against an expected `Set[element]`: elements
+    /// against the element type, spread subjects against the whole set type.
+    /// Other entry kinds fall back to walking their value expressions.
+    fn check_set_entries_against(
+        &mut self,
+        expected: &Type,
+        element_type: &Type,
+        entries: &[RecordEntry],
+    ) {
+        for entry in entries {
+            match entry {
+                RecordEntry::Element(element) => self.check_value_against(element_type, element),
+                RecordEntry::Spread { value, .. } => self.check_value_against(expected, value),
+                entry => self.walk_value_record_values(std::slice::from_ref(entry)),
+            }
+        }
     }
 
     pub(super) fn check_collection_elements<'b>(

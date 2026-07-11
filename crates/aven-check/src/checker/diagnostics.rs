@@ -194,17 +194,15 @@ impl<'a> Checker<'a> {
 
     pub(super) fn report_comptime_evaluation_unsupported(&mut self, span: Span) {
         self.diagnostics.push(
-            Diagnostic::error(
-                "comptime evaluation is not supported yet, so this comptime binding's value cannot be computed",
-            )
-            .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
-            .with_label(Label::primary(
-                span,
-                "this comptime binding needs evaluation",
-            ))
-            .with_note(
-                "the comptime evaluator is planned for Milestone 14; write a literal type or value here, or move the computation to a lowercase runtime binding if the result is a runtime value",
-            ),
+            Diagnostic::error("this comptime binding's value cannot be evaluated at compile time")
+                .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
+                .with_label(Label::primary(
+                    span,
+                    "this comptime binding needs evaluation",
+                ))
+                .with_note(
+                    "comptime bindings support literal types and values, type expressions, and calls to comptime type functions (keysOf, pick, omit, typeOf, or user-defined mapped types such as partial); move other computation to a lowercase runtime binding",
+                ),
         );
     }
 

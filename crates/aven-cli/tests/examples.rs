@@ -146,7 +146,9 @@ fn run_with_expected_output(example: &Path, extra_args: &[&str]) {
             renamed:\n\
             { fullName: \"Ada\", email: \"ada@x.dev\", age: 36 }\n\
             replaced:\n\
-            { name: \"Ada\", email: \"ada@x.dev\", age: 38 }\n"
+            { name: \"Ada\", email: \"ada@x.dev\", age: 38 }\n\
+            members:\n\
+            @{ \"ada\", \"bea\", \"cai\" }\n"
         }
         "json.av" => {
             "parsed: { name: \"Ada\", email: undefined, nick: null }\n\

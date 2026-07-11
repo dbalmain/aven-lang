@@ -1,3 +1,3 @@
-error comptime.evaluation-unsupported: comptime evaluation is not supported yet, so this comptime binding's value cannot be computed
+error comptime.evaluation-unsupported: this comptime binding's value cannot be evaluated at compile time
   label 17..25: this comptime binding needs evaluation
-  note: the comptime evaluator is planned for Milestone 14; write a literal type or value here, or move the computation to a lowercase runtime binding if the result is a runtime value
+  note: comptime bindings support literal types and values, type expressions, and calls to comptime type functions (keysOf, pick, omit, typeOf, or user-defined mapped types such as partial); move other computation to a lowercase runtime binding

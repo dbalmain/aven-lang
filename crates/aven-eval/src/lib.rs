@@ -1428,10 +1428,29 @@ fn eval_set(entries: &[RecordEntry], env: &Environment) -> Eval {
                     values.push(value);
                 }
             }
+            RecordEntry::Spread {
+                value: source_expr, ..
+            } => {
+                let source = eval_expr_many(source_expr, env)?;
+                let Value::Set(members) = source else {
+                    return Err(one_diagnostic(record_type_error(
+                        source_expr.span,
+                        "spread",
+                        source.type_name(),
+                        "Set",
+                    )));
+                };
+
+                for member in members.iter() {
+                    if !contains_value(&values, member) {
+                        values.push(member.clone());
+                    }
+                }
+            }
             entry => {
                 return Err(one_diagnostic(unsupported_expr(
                     record_entry_span(entry),
-                    "only element entries are supported in set literals by the current evaluator",
+                    "only element and spread entries are supported in set literals by the current evaluator",
                 )));
             }
         }
@@ -2126,6 +2145,10 @@ fn eval_unary(operator: &str, value: &Expr, span: Span, env: &Environment) -> Ev
             "a numeric operand",
         ))),
         ("!", Value::Bool(value)) => Ok(Value::Bool(!value)),
+        // Type position: `!T` strips the outer `Optional` (the runtime mirror
+        // of the checker's N5 rule), so mapped types like `required` evaluate.
+        ("!", Value::Type(RuntimeType::Optional(inner))) => Ok(*inner),
+        ("!", value) if runtime_type_target(&value) => Ok(value),
         ("!", value) => Err(one_diagnostic(unary_type_error(
             span,
             "!",

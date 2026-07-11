@@ -2168,10 +2168,31 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn infer_set(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
-        let Some(elements) = literal_set_elements(entries) else {
-            return Type::Deferred;
+        let element_type = self.unifier.fresh();
+        let set_type = Type::Apply {
+            callee: Box::new(Type::Named("Set".to_owned())),
+            args: vec![element_type.clone()],
         };
-        self.infer_collection(env, elements, "Set")
+
+        for entry in entries {
+            match entry {
+                RecordEntry::Element(element) => {
+                    let item_type = self.infer(env, element);
+                    if self.unifier.unify(&element_type, &item_type).is_err() {
+                        return Type::Deferred;
+                    }
+                }
+                RecordEntry::Spread { value, .. } => {
+                    let source_type = self.infer(env, value);
+                    if self.unifier.unify(&set_type, &source_type).is_err() {
+                        return Type::Deferred;
+                    }
+                }
+                _ => return Type::Deferred,
+            }
+        }
+
+        set_type
     }
 
     pub(super) fn infer_set_union(&mut self, env: &TypeEnv, expr: &Expr) -> Type {

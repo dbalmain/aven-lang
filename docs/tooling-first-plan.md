@@ -1751,11 +1751,12 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 - **Milestone V — type-artifact statics (platform subset): done 2026-07-05**
   (see below) — `Json`/`Map` are genuine type values carrying statics; the
   `json_namespace_target` shape-sniff is deleted
-- X-discovered gaps: runtime variant/set spread in value position;
-  `partial(User)`/`required(...)` as standalone comptime bindings. (The
-  "match-arm layout ergonomics" gap is fixed 2026-07-05: it was never layout —
-  `parse_match_pattern_term` used `at_item_boundary`, whose previous-is-Dedent
-  clause rejected any arm following a block-bodied arm.)
+- X-discovered gaps: resolved 2026-07-11 — runtime variant/set spread in value
+  position and `partial(User)`/`required(...)` as standalone comptime bindings
+  both landed (see the Milestone X gap list). (The "match-arm layout ergonomics"
+  gap is fixed 2026-07-05: it was never layout — `parse_match_pattern_term` used
+  `at_item_boundary`, whose previous-is-Dedent clause rejected any arm following
+  a block-bodied arm.)
 - H3 open questions (recorded under Milestone H, not scheduled)
 - the Milestone IO watch item: define the bare write tier in terms of the Result
   handles so the two tiers cannot drift
@@ -2377,14 +2378,17 @@ assertions; `http-fetch` is check-only (network). `errors.av` demonstrates Q's
 inferred error unions with no return annotation. The live nvim sweep is still
 open. Gaps found while writing the examples (follow-ups):
 
-- variant/set spread in **runtime value position** is unsupported —
-  `colors = @{..a, ..b}` hits `runtime.unsupported` (the evaluator's set
-  literals only take element entries)
-- `partial(User)` / `required(partial(User))` as standalone comptime
-  **bindings** report `comptime.evaluation-unsupported`; the same calls work in
-  annotation position
-- quoted record field names (`{ "content-type": v }`) are a parse error — the
-  spec supports quoted non-identifier field keys; the parser does not yet
+- resolved 2026-07-11: variant/set spread in **runtime value position** — set
+  literals evaluate spread entries (Set subjects only, deduplicated) and
+  inference gives spread set literals a real `Set[a]` type
+- resolved 2026-07-11: `partial(User)` / `required(partial(User))` as standalone
+  comptime **bindings** — user-defined mapped types already evaluated through
+  the annotation path (locked with fixtures and a module-export test); runtime
+  `!` now strips `Optional` on type values so `required` maps run, and the stale
+  "Milestone 14" diagnostic note names what comptime bindings support
+- resolved 2026-07-11: quoted record field names (`{ "content-type": v }`) —
+  landed earlier on the quoted-field-keys branch (parser + fmt + checker, value
+  and type position, `r."content-type"` access), verified against the spec
 - multi-line match-arm bodies inside lambda bodies need fiddly indentation —
   layout ergonomics worth a look
 
