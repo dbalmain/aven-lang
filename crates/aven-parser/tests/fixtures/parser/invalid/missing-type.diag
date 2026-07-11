@@ -1,3 +1,3 @@
 error parse.expected-type: expected type
   label 7..7: expected a type here
-  note: types include names like `Text`, variables like `a`, functions like `a -> b`, records, variants, and applications like `Array[a]`
+  note: types include names like `Text`, variables like `a`, functions like `a -> b`, records, variants, and applications like `Array(a)`

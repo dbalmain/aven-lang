@@ -95,9 +95,9 @@ pub enum ExprKind {
     Array(Vec<Expr>),
     Record(Vec<RecordEntry>),
     Set(Vec<RecordEntry>),
-    /// `Array[a]` / `users[2]`: postfix square-bracket application or indexing.
-    /// Whether this is a type application or an element index is decided in a
-    /// later semantic phase.
+    /// Postfix square-bracket indexing (`users[2]`) and empty collection-type
+    /// sugar (`Text[]` / `Text@{}` desugar to `Array`/`Set` index forms). Type
+    /// application uses ordinary [`ExprKind::Call`] nodes such as `Array(a)`.
     Index {
         callee: Box<Expr>,
         args: Vec<Expr>,
@@ -2219,7 +2219,7 @@ impl Parser<'_> {
             Diagnostic::error("expected type")
                 .with_code(codes::parse::EXPECTED_TYPE)
                 .with_label(Label::primary(span, "expected a type here"))
-                .with_note("types include names like `Text`, variables like `a`, functions like `a -> b`, records, variants, and applications like `Array[a]`"),
+                .with_note("types include names like `Text`, variables like `a`, functions like `a -> b`, records, variants, and applications like `Array(a)`"),
         );
         missing_expr(span)
     }
@@ -3401,7 +3401,7 @@ mod tests {
 
     #[test]
     fn parses_function_type_into_arrow_with_flattened_params() {
-        let output = parse_module("mapper : (Array[a], a -> b) -> Array[b]\n");
+        let output = parse_module("mapper : (Array(a), a -> b) -> Array(b)\n");
 
         assert!(output.diagnostics.is_empty());
         let Some(Item::Signature(signature)) = output.module.items.first() else {
@@ -3411,11 +3411,11 @@ mod tests {
             panic!("expected arrow type");
         };
 
-        // `(Array[a], a -> b)` flattens to two params.
+        // `(Array(a), a -> b)` flattens to two params.
         assert_eq!(params.len(), 2);
-        assert!(matches!(&params[0].kind, ExprKind::Index { .. }));
+        assert!(matches!(&params[0].kind, ExprKind::Call { .. }));
         assert!(matches!(&params[1].kind, ExprKind::Arrow { .. }));
-        assert!(matches!(&result.kind, ExprKind::Index { .. }));
+        assert!(matches!(&result.kind, ExprKind::Call { .. }));
     }
 
     #[test]
@@ -3433,15 +3433,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_index_application_into_ast_nodes() {
-        let output = parse_module("xs : Array[a]\n");
+    fn parses_call_type_application_into_ast_nodes() {
+        let output = parse_module("xs : Array(a)\n");
 
         assert!(output.diagnostics.is_empty());
         let Some(Item::Signature(signature)) = output.module.items.first() else {
             panic!("expected signature item");
         };
-        let ExprKind::Index { callee, args } = &signature.annotation.kind else {
-            panic!("expected index expression");
+        let ExprKind::Call { callee, args } = &signature.annotation.kind else {
+            panic!("expected call expression");
         };
         assert!(matches!(&callee.kind, ExprKind::ComptimeName(name) if name == "Array"));
         assert_eq!(args.len(), 1);
@@ -3632,7 +3632,7 @@ mod tests {
     #[test]
     fn parses_lambda_param_and_return_annotations() {
         let output =
-            parse_module("load = (path : Path) : Result[Config, ConfigError] =>\n  read(path)?^\n");
+            parse_module("load = (path : Path) : Result(Config, ConfigError) =>\n  read(path)?^\n");
 
         assert!(output.diagnostics.is_empty());
         let ExprKind::Lambda {
@@ -3651,7 +3651,7 @@ mod tests {
         let return_annotation = return_annotation
             .as_ref()
             .expect("expected return annotation");
-        assert!(matches!(&return_annotation.kind, ExprKind::Index { .. }));
+        assert!(matches!(&return_annotation.kind, ExprKind::Call { .. }));
     }
 
     #[test]
@@ -3732,7 +3732,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_signature_item() {
-        let output = parse_module("load : (Path) -> Result[Config, ConfigError]\n");
+        let output = parse_module("load : (Path) -> Result(Config, ConfigError)\n");
 
         assert!(output.diagnostics.is_empty());
         let Some(Item::Signature(signature)) = output.module.items.first() else {

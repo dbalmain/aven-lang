@@ -2942,6 +2942,35 @@ checker re-entrancy to keep the semantic crates small.
   `name.reserved-type` rejects user aliases and imported type-pattern targets
   that collide, while retaining the builtin or host definition in the map.
 
+## Milestone PT — parameterized types are comptime functions
+
+Design settled 2026-07-12 (spec "Type Application" section in clex):
+parameterized types are uppercase comptime functions applied with call syntax
+(`Result(a, e)`, `Pair = (t: Type) => { first: t, second: t }`); bracket type
+application is deleted — postfix `[...]` means indexing only. All params of an
+uppercase function are implicitly comptime (`@` there diagnoses as redundant);
+value parameters are comptime-known; type equality stays structural on the
+expanded result; recursive uppercase functions diagnose for now.
+
+- PT0 done 2026-07-12: comptime type functions expand across the module boundary
+  (`ComptimeExport` == local `ComptimeFunction`; importer-side specialization in
+  annotation position and standalone type bindings; transitive re-exports;
+  `comptime.unexpandable-import` instead of silent Deferred). Known limit:
+  params+body only — free refs to other module locals diagnose rather than
+  evaluate; full closure capture is the follow-up if the stdlib hits it.
+- PT1 done 2026-07-12: type application flips to call syntax. Uppercase /
+  known-type callees in type position lower to `Type::Apply`; bracket
+  application diagnoses `type.bracket-type-application` and still lowers
+  (recovery); tuple-type indexing `T[0]` and the `a[]`/`a@{}` empty-postfix
+  sugar are untouched; `Type::render()` and eval's runtime type display print
+  parens; corpus (examples, fixtures, expectation strings) migrated.
+- PT2 open: uppercase comptime function definitions (`Pair = (t: Type) => ...`)
+  — lift the uppercase-RHS restriction, implicit comptime params + redundant-`@`
+  diagnostic, runtime-arg diagnostic, recursive-definition diagnostic.
+- PT-open: value parameters (`Vec = (t: Type, n: Int) => ...`) exercising
+  literal types; `Queue(t).empty()` statics (classes milestone); lazy / nominal
+  recursion story.
+
 ## To investigate later
 
 - **Braceless multiline set/record literals.** Allow dropping the braces on

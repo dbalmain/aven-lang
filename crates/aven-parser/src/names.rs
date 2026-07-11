@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn defers_fully_typed_overload_disjointness() {
         let output = parse_module(
-            "zero = (): NonEmptyText => \"-\"\nzero = (): NonEmptyArray[a] => [zero()]\n",
+            "zero = (): NonEmptyText => \"-\"\nzero = (): NonEmptyArray(a) => [zero()]\n",
         );
         let analysis = analyze_names(&output.module);
 

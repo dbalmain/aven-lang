@@ -3,7 +3,7 @@ module
     annotation
       arrow
         params
-          index
+          call
             callee
               comptime Array
             args
@@ -14,7 +14,7 @@ module
             result
               name b
         result
-          index
+          call
             callee
               comptime Array
             args
@@ -33,7 +33,7 @@ module
               comptime Set
             args
               comptime Text
-          index
+          call
             callee
               comptime Array
             args

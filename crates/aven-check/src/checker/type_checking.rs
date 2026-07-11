@@ -263,7 +263,7 @@ impl<'a> Checker<'a> {
         self.local_types.pop();
     }
 
-    /// Check set-literal entries against an expected `Set[element]`: elements
+    /// Check set-literal entries against an expected `Set(element)`: elements
     /// against the element type, spread subjects against the whole set type.
     /// Other entry kinds fall back to walking their value expressions.
     fn check_set_entries_against(

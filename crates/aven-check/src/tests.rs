@@ -358,7 +358,7 @@ fn renders_types_as_surface_syntax() {
     assert_eq!(optional(nullable(named("Text"))).render(), "?Text?");
     assert_eq!(
         apply(named("Result"), vec![named("Int"), variable("e")]).render(),
-        "Result[Int, e]"
+        "Result(Int, e)"
     );
     assert_eq!(
         Type::Tuple(vec![Type::Meta(10), Type::Meta(10), Type::Deferred]).render(),
@@ -692,7 +692,7 @@ fn comptime_rhs_evaluation_check_is_shallow_and_group_unwrapped() {
         "Value = (Int, Text)\n",
         "Value = Text -> Text\n",
         "Value = Text?\n",
-        "Value = Array[Int]\n",
+        "Value = Array(Int)\n",
         "Value = (User)\n",
     ] {
         let value = binding_value(source);
@@ -1122,7 +1122,7 @@ fn annotation_lowerer_lowers_declaration_annotations() {
 #[test]
 fn lowers_function_application_optional_and_nullable_annotations() {
     let output = parse_module(
-        "mapper : (Array[a], a -> b) -> Array[b]\noptional : ?Text = name\nnullable : Text? = name\nboth : ?Text? = name\n",
+        "mapper : (Array(a), a -> b) -> Array(b)\noptional : ?Text = name\nnullable : Text? = name\nboth : ?Text? = name\n",
     );
 
     let mapper = lower_annotation(&output.module, annotation(&output.module, "mapper"));
@@ -1147,6 +1147,39 @@ fn lowers_function_application_optional_and_nullable_annotations() {
     assert!(nullable_value.diagnostics.is_empty());
     assert_eq!(both.ty, optional(nullable(named("Text"))));
     assert!(both.diagnostics.is_empty());
+}
+
+#[test]
+fn call_type_applications_lower_and_bracket_form_recovers() {
+    let output = parse_module(
+        "MyRes = Result(Int, Text)\n\
+         nested : Result(Array(Int), Text) = @Ok([1])\n\
+         legacy : Result[Int, Text] = @Ok(\"wrong\")\n",
+    );
+    let check = check_module(&output.module);
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::UNKNOWN_NAME),
+        "standalone call-shaped type binding should resolve: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::BRACKET_TYPE_APPLICATION),
+        1
+    );
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
+fn tuple_type_indexing_remains_indexing() {
+    let output = parse_module("T = (Text, Int)\nvalue : T[0] = \"ok\"\n");
+    let check = check_module(&output.module);
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::BRACKET_TYPE_APPLICATION),
+        "tuple type indexing must not be diagnosed as application: {:?}",
+        check.diagnostics
+    );
 }
 
 #[test]
@@ -2439,7 +2472,7 @@ fn collections_join_literal_rows() {
     );
     assert_eq!(
         check.type_at(nth_span(source, "nums", 0)).map(Type::render),
-        Some("Array[1 | 2 | 3]".to_owned())
+        Some("Array(1 | 2 | 3)".to_owned())
     );
 }
 
@@ -2505,7 +2538,7 @@ fn contextual_blocks_check_final_expressions() {
     for source in [
         "value : (Int) -> Text =\n  (x) => x\n",
         "value : { name: Text } =\n  { name: 1 }\n",
-        "value : Array[Text] =\n  [1]\n",
+        "value : Array(Text) =\n  [1]\n",
         "identity = (x) => x\nvalue : Int =\n  identity(\"hi\")\n",
     ] {
         let output = parse_module(source);
@@ -2641,7 +2674,7 @@ fn variant_match_payload_types_feed_result_inference() {
 #[test]
 fn result_subject_match_reproduction_checks_clean() {
     let source = concat!(
-        "g : () -> Result[Int, @{@Nope}]\n",
+        "g : () -> Result(Int, @{@Nope})\n",
         "g = () => @Ok(1)\n",
         "r = g() ?>\n",
         "  @Ok(v) => v\n",
@@ -2669,12 +2702,12 @@ fn result_subject_match_reproduction_checks_clean() {
 #[test]
 fn result_subject_match_with_inline_return_annotation_checks_clean() {
     // Same reproduction as above, but the Result annotation is written inline
-    // on the lambda (`(): Result[...] =>`), which resolves through the
+    // on the lambda (`(): Result(...) =>`), which resolves through the
     // inference-direction fit check rather than the declared-signature path: a
     // variant-row body (`@Ok(1)`) must fit the Result annotation by the
     // boundary rule.
     let source = concat!(
-        "g = (): Result[Int, @{@Nope}] => @Ok(1)\n",
+        "g = (): Result(Int, @{@Nope}) => @Ok(1)\n",
         "r = g() ?>\n",
         "  @Ok(v) => v\n",
         "  @Err(_) => 0\n",
@@ -2696,7 +2729,7 @@ fn result_subject_match_with_inline_return_annotation_checks_clean() {
 #[test]
 fn result_match_payload_binders_use_result_type_arguments() {
     let source = concat!(
-        "source : Result[Text, @{@Nope}] = @Ok(\"ok\")\n",
+        "source : Result(Text, @{@Nope}) = @Ok(\"ok\")\n",
         "matched = source ?>\n",
         "  @Ok(v) => v\n",
         "  @Err(_) => \"fallback\"\n",
@@ -2720,7 +2753,7 @@ fn result_match_payload_binders_use_result_type_arguments() {
 #[test]
 fn result_match_exhaustiveness_uses_result_tags() {
     let missing = parse_module(concat!(
-        "source : Result[Int, @{@Nope}] = @Ok(1)\n",
+        "source : Result(Int, @{@Nope}) = @Ok(1)\n",
         "r = source ?>\n",
         "  @Ok(v) => v\n",
     ));
@@ -2734,13 +2767,13 @@ fn result_match_exhaustiveness_uses_result_tags() {
 
     for source in [
         concat!(
-            "source : Result[Int, @{@Nope}] = @Ok(1)\n",
+            "source : Result(Int, @{@Nope}) = @Ok(1)\n",
             "r = source ?>\n",
             "  @Ok(v) => v\n",
             "  @Err(_) => 0\n",
         ),
         concat!(
-            "source : Result[Int, @{@Nope}] = @Ok(1)\n",
+            "source : Result(Int, @{@Nope}) = @Ok(1)\n",
             "r = source ?>\n",
             "  @Ok(v) => v\n",
             "  _ => 0\n",
@@ -2759,7 +2792,7 @@ fn result_match_exhaustiveness_uses_result_tags() {
 #[test]
 fn result_match_reports_impossible_tag_arm() {
     let source = concat!(
-        "source : Result[Int, @{@Nope}] = @Ok(1)\n",
+        "source : Result(Int, @{@Nope}) = @Ok(1)\n",
         "r = source ?>\n",
         "  @Ok(v) => v\n",
         "  @Other(_) => 0\n",
@@ -2783,7 +2816,7 @@ fn result_match_reports_impossible_tag_arm() {
 #[test]
 fn result_match_supports_nested_error_payload_patterns() {
     let source = concat!(
-        "source : Result[Int, @{@Nope}] = @Err(@Nope)\n",
+        "source : Result(Int, @{@Nope}) = @Err(@Nope)\n",
         "r = source ?>\n",
         "  @Ok(v) => v\n",
         "  @Err(@Nope) => 0\n",
@@ -3221,8 +3254,8 @@ fn match_results_merge_closed_variant_rows() {
 fn unannotated_result_match_helpers_are_generic_and_join_result_arms() {
     let source = "mapErr = (r, f) => r ?> @Ok(v) => @Ok(v), @Err(e) => @Err(f(e))\n\
                   orElse = (r, f) => r ?> @Ok(v) => @Ok(v), @Err(e) => f(e)\n\
-                  ok : Result[Int, Text] = @Ok(1)\n\
-                  err : Result[Int, Text] = @Err(\"x\")\n\
+                  ok : Result(Int, Text) = @Ok(1)\n\
+                  err : Result(Int, Text) = @Err(\"x\")\n\
                   mapped = mapErr(err, (e) => \"wrap: ${e}\")\n\
                   recovered = orElse(err, (_) => @Ok(0))\n";
     let output = parse_module(source);
@@ -3406,7 +3439,7 @@ fn variant_match_exhaustiveness_uses_subject_rows() {
 fn recursive_named_variant_matches_and_accepts_inline_constructors() {
     let source = concat!(
         "Document = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
-        "@Array(Array[Document]), @Object(Map[Text, Document])}\n",
+        "@Array(Array(Document)), @Object(Map(Text, Document))}\n",
         "arrayValue : Document = @Array([@Null, @Int(5)])\n",
         "objectValue : Document = @Object(Map.from([(\"a\", @Int(1))]))\n",
         "matched = arrayValue ?>\n",
@@ -3447,13 +3480,13 @@ fn recursive_named_variant_matches_and_accepts_inline_constructors() {
 fn match_arm_pattern_bindings_record_inferred_types() {
     let source = concat!(
         "Document = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
-        "@Array(Array[Document]), @Object(Map[Text, Document])}\n",
+        "@Array(Array(Document)), @Object(Map(Text, Document))}\n",
         "subject : Document = @Null\n",
         "described = subject ?>\n",
         "  @Object(objectFields) => 1\n",
         "  @Array(elements) => 2\n",
         "  _ => 0\n",
-        "outcome : Result[Int, @{@Nope}] = @Ok(1)\n",
+        "outcome : Result(Int, @{@Nope}) = @Ok(1)\n",
         "unwrapped = outcome ?>\n",
         "  @Ok(okValue) => okValue\n",
         "  @Err(_) => 0\n",
@@ -3470,13 +3503,13 @@ fn match_arm_pattern_bindings_record_inferred_types() {
         check
             .type_at(nth_span(source, "objectFields", 0))
             .map(Type::render),
-        Some("Map[Text, Document]".to_owned())
+        Some("Map(Text, Document)".to_owned())
     );
     assert_eq!(
         check
             .type_at(nth_span(source, "elements", 0))
             .map(Type::render),
-        Some("Array[Document]".to_owned())
+        Some("Array(Document)".to_owned())
     );
     assert_eq!(
         check
@@ -3724,14 +3757,14 @@ fn local_generalization_preserves_enclosing_lambda_metas() {
 
 #[test]
 fn array_literals_are_checked_against_annotations() {
-    let accepted = parse_module("value : Array[Int] = [1, 2, 3]\n");
+    let accepted = parse_module("value : Array(Int) = [1, 2, 3]\n");
     let accepted_check = check_module(&accepted.module);
     assert!(
         !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
         "compatible array literal unexpectedly produced type.mismatch"
     );
 
-    let mismatch = parse_module("value : Array[Text] = [1, 2, 3]\n");
+    let mismatch = parse_module("value : Array(Text) = [1, 2, 3]\n");
     let mismatch_check = check_module(&mismatch.module);
     assert_eq!(
         matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
@@ -3741,7 +3774,7 @@ fn array_literals_are_checked_against_annotations() {
 
 #[test]
 fn inferred_array_identifier_values_are_checked_against_annotations() {
-    let output = parse_module("nums = [1, 2]\nvalue : Array[Text] = nums\n");
+    let output = parse_module("nums = [1, 2]\nvalue : Array(Text) = nums\n");
     let check = check_module(&output.module);
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -3749,14 +3782,14 @@ fn inferred_array_identifier_values_are_checked_against_annotations() {
 
 #[test]
 fn array_element_types_reuse_structural_type_comparison() {
-    let accepted = parse_module("value : Array[(Int, Text)] = [(1, \"a\")]\n");
+    let accepted = parse_module("value : Array((Int, Text)) = [(1, \"a\")]\n");
     let accepted_check = check_module(&accepted.module);
     assert!(
         !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
         "compatible nested array literal unexpectedly produced type.mismatch"
     );
 
-    let mismatch = parse_module("value : Array[(Int, Int)] = [(1, \"a\")]\n");
+    let mismatch = parse_module("value : Array((Int, Int)) = [(1, \"a\")]\n");
     let mismatch_check = check_module(&mismatch.module);
     assert_eq!(
         matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
@@ -3766,7 +3799,7 @@ fn array_element_types_reuse_structural_type_comparison() {
 
 #[test]
 fn array_literals_report_per_element_mismatches() {
-    let output = parse_module("value : Array[Text] = [\"a\", 2, \"b\"]\n");
+    let output = parse_module("value : Array(Text) = [\"a\", 2, \"b\"]\n");
     let check = check_module(&output.module);
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -3774,7 +3807,7 @@ fn array_literals_report_per_element_mismatches() {
 
 #[test]
 fn array_inference_defers_empty_literals() {
-    let output = parse_module("value : Array[Int] = []\n");
+    let output = parse_module("value : Array(Int) = []\n");
     let check = check_module(&output.module);
 
     assert!(
@@ -3785,14 +3818,14 @@ fn array_inference_defers_empty_literals() {
 
 #[test]
 fn set_literals_are_checked_against_annotations() {
-    let accepted = parse_module("value : Set[Int] = @{1, 2, 3}\n");
+    let accepted = parse_module("value : Set(Int) = @{1, 2, 3}\n");
     let accepted_check = check_module(&accepted.module);
     assert!(
         !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
         "compatible set literal unexpectedly produced type.mismatch"
     );
 
-    let mismatch = parse_module("value : Set[Text] = @{1, 2, 3}\n");
+    let mismatch = parse_module("value : Set(Text) = @{1, 2, 3}\n");
     let mismatch_check = check_module(&mismatch.module);
     assert_eq!(
         matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
@@ -3802,7 +3835,7 @@ fn set_literals_are_checked_against_annotations() {
 
 #[test]
 fn inferred_set_identifier_values_are_checked_against_annotations() {
-    let output = parse_module("nums = @{1, 2}\nvalue : Set[Text] = nums\n");
+    let output = parse_module("nums = @{1, 2}\nvalue : Set(Text) = nums\n");
     let check = check_module(&output.module);
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -3810,7 +3843,7 @@ fn inferred_set_identifier_values_are_checked_against_annotations() {
 
 #[test]
 fn set_literals_report_per_element_mismatches() {
-    let output = parse_module("value : Set[Text] = @{\"a\", 2, \"b\"}\n");
+    let output = parse_module("value : Set(Text) = @{\"a\", 2, \"b\"}\n");
     let check = check_module(&output.module);
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -3819,9 +3852,9 @@ fn set_literals_report_per_element_mismatches() {
 #[test]
 fn set_inference_defers_empty_tag_and_spread_literals() {
     for source in [
-        "value : Set[Int] = @{}\n",
-        "value : Set[Int] = @{@Red, @Green}\n",
-        "other = @{2}\nvalue : Set[Int] = @{..other, 1}\n",
+        "value : Set(Int) = @{}\n",
+        "value : Set(Int) = @{@Red, @Green}\n",
+        "other = @{2}\nvalue : Set(Int) = @{..other, 1}\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -3836,8 +3869,8 @@ fn set_inference_defers_empty_tag_and_spread_literals() {
 #[test]
 fn map_empty_global_is_generalized() {
     let output = parse_module(
-        "texts : Map[Text, Int] = Map.empty()\n\
-         ints : Map[Int, Text] = Map.empty()\n",
+        "texts : Map(Text, Int) = Map.empty()\n\
+         ints : Map(Int, Text) = Map.empty()\n",
     );
     let check = check_module(&output.module);
 
@@ -3853,7 +3886,7 @@ fn map_from_infers_map_key_and_value_types() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "m"),
-        Some("Map[\"a\", 1]".to_owned())
+        Some("Map(\"a\", 1)".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -3961,7 +3994,7 @@ fn decode_method_records_member_span_type() {
 
     assert_eq!(
         ty.render(),
-        "(Json, User) -> Result[{ name: Text }, @Decode(Text)]"
+        "(Json, User) -> Result({ name: Text }, @Decode(Text))"
     );
 }
 
@@ -4080,7 +4113,7 @@ fn map_get_infers_optional_value_type() {
 
 #[test]
 fn map_get_rejects_wrong_key_type() {
-    let output = parse_module("m : Map[Text, Int] = Map.empty()\nvalue = m.get(1)\n");
+    let output = parse_module("m : Map(Text, Int) = Map.empty()\nvalue = m.get(1)\n");
     let check = check_module(&output.module);
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -4102,7 +4135,7 @@ fn map_index_infers_optional_value_type() {
 
 #[test]
 fn map_index_rejects_wrong_key_type() {
-    let output = parse_module("m : Map[Text, Int] = Map.empty()\nvalue = m[1]\n");
+    let output = parse_module("m : Map(Text, Int) = Map.empty()\nvalue = m[1]\n");
     let check = check_module(&output.module);
 
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
@@ -4110,7 +4143,7 @@ fn map_index_rejects_wrong_key_type() {
 
 #[test]
 fn map_unknown_method_reports_missing_field() {
-    let output = parse_module("m : Map[Text, Int] = Map.empty()\nvalue = m.nope()\n");
+    let output = parse_module("m : Map(Text, Int) = Map.empty()\nvalue = m.nope()\n");
     let check = check_module(&output.module);
 
     assert_eq!(
@@ -4121,12 +4154,12 @@ fn map_unknown_method_reports_missing_field() {
 
 #[test]
 fn map_wrong_arity_application_lowers_like_ordinary_apply() {
-    let output = parse_module("value : Map[Text] = Map.empty()\n");
+    let output = parse_module("value : Map(Text) = Map.empty()\n");
     let check = check_module(&output.module);
     let lowering = lower_annotation(&output.module, annotation(&output.module, "value"));
 
     assert!(check.diagnostics.is_empty());
-    assert_eq!(lowering.ty.render(), "Map[Text]");
+    assert_eq!(lowering.ty.render(), "Map(Text)");
     assert!(lowering.diagnostics.is_empty());
 }
 
@@ -4148,7 +4181,7 @@ fn map_method_field_query_returns_typed_methods() {
         "Text -> ?Int",
         "get should preserve key/value type args"
     );
-    assert_eq!(entries.ty.render(), "() -> Array[(Text, Int)]");
+    assert_eq!(entries.ty.render(), "() -> Array((Text, Int))");
 }
 
 #[test]
@@ -4160,14 +4193,14 @@ fn map_method_names_match_evaluator_dispatch() {
 fn map_grouping_example_checks() {
     let output = parse_module(concat!(
         "words = [\"red\", \"blue\", \"red\"]\n",
-        "count = (items: Array[Text], index: Int, acc: Map[Text, Int]) =>\n",
+        "count = (items: Array(Text), index: Int, acc: Map(Text, Int)) =>\n",
         "  next = items[index]\n",
         "  next ?>\n",
         "    undefined => acc\n",
         "    _ =>\n",
         "      word : Text = next ?? \"\"\n",
         "      count(items, index + 1, acc.set(word, (acc.get(word) ?? 0) + 1))\n",
-        "counts : Map[Text, Int] = count(words, 0, Map.empty())\n",
+        "counts : Map(Text, Int) = count(words, 0, Map.empty())\n",
     ));
     let check = check_module(&output.module);
 
@@ -4563,7 +4596,7 @@ fn propagate_with_explicit_ok_infers_result_error_union() {
     );
     assert_eq!(
         check.type_at(nth_span(source, "f", 0)).map(Type::render),
-        Some("Text -> Result[Text, @Read(Text)]".to_owned())
+        Some("Text -> Result(Text, @Read(Text))".to_owned())
     );
 }
 
@@ -4587,7 +4620,7 @@ fn propagate_unions_different_named_error_variant_rows() {
     );
     assert_eq!(
         check.type_at(nth_span(source, "load", 0)).map(Type::render),
-        Some("Text -> Result[Int, @Read(Text) | @Parse(Text)]".to_owned())
+        Some("Text -> Result(Int, @Read(Text) | @Parse(Text))".to_owned())
     );
 }
 
@@ -4609,7 +4642,7 @@ fn propagate_on_concrete_non_result_diagnoses_subject() {
     assert_eq!(diagnostic.labels[0].span, nth_span(source, "5", 0));
     assert_eq!(
         diagnostic.notes,
-        vec!["`?^`/`?!` operate on `Result[ok, err]` values"]
+        vec!["`?^`/`?!` operate on `Result(ok, err)` values"]
     );
 }
 
@@ -4618,7 +4651,7 @@ fn annotated_result_rejects_non_fitting_propagated_error_at_site() {
     let source = concat!(
         "ReadError = @{@Read}\n",
         "ParseError = @{@Parse}\n",
-        "load : Text -> Result[Int, ReadError]\n",
+        "load : Text -> Result(Int, ReadError)\n",
         "load = (path) =>\n",
         "  text = read(path)?^\n",
         "  value = parse(text)?^\n",
@@ -5837,7 +5870,7 @@ fn nested_matched_record_markers_are_reported_once() {
 
 #[test]
 fn set_element_record_markers_are_reported_once() {
-    let output = parse_module("value : Set[{ name: Text }] = @{ { name: 1, .. } }\n");
+    let output = parse_module("value : Set({ name: Text }) = @{ { name: 1, .. } }\n");
     let check = check_module(&output.module);
 
     assert_eq!(

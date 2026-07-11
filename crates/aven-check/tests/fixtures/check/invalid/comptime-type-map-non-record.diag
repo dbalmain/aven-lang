@@ -1,3 +1,6 @@
 error comptime.reflection-type-mismatch: reflection function `keysOf` expected a record type
   label 29..35: this type is not a record
   note: `keysOf` needs a record type
+error type.bracket-type-application: bracket type application has been removed
+  label 47..56: these brackets are parsed as indexing
+  note: type application is call syntax — write `Result(a, e)`; postfix `[...]` is indexing

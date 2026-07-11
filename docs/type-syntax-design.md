@@ -2,7 +2,7 @@
 
 This worktree implements type syntax (Milestone 4d) by **folding types into the
 expression grammar**. There is no `TypeExpr`/`TypeKind` and no parallel
-`parse_type_*` family. Type-level forms (`a -> b`, `Array[a]`, `T?`, record
+`parse_type_*` family. Type-level forms (`a -> b`, `Array(a)`, `T?`, record
 shapes, variant shapes) are parsed as ordinary `Expr`/`ExprKind` nodes. The
 type-vs-value distinction is deferred entirely to later semantic phases (name
 resolution, type checking), which do not exist yet.
@@ -18,10 +18,8 @@ Existing value forms are unchanged except where noted; the additions/changes are
   flattens** into `params`, so `(A, B) -> C` has two params and `A -> C` has
   one. Parsed in a dedicated `parse_arrow` layer that wraps
   `parse_binary_expression` and right-recurses on `->`.
-- `Index { callee: Box<Expr>, args: Vec<Expr> }` — `Array[a]` and value
-  indexing `users[2]` share this neutral postfix node. Bound in `parse_postfix`
-  exactly like a call; whether it is type application or element access is a
-  semantic question deferred to later.
+- `Index { callee: Box<Expr>, args: Vec<Expr> }` — value indexing such as
+  `users[2]`. Type application uses ordinary `Call` nodes such as `Array(a)`.
 - `Nullable(Box<Expr>)` — postfix `T?`. See the seam below.
 - `Set(Vec<RecordEntry>)` — **changed** from `Vec<Expr>` so `@{...}` shares the
   record-entry machinery.

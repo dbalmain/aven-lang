@@ -1434,18 +1434,22 @@ pub(crate) fn comptime_rhs_needs_evaluation(value: &Expr) -> bool {
         value = inner;
     }
 
-    matches!(
-        &value.kind,
-        ExprKind::Call { .. }
-            | ExprKind::Binary { .. }
-            | ExprKind::Unary { .. }
-            | ExprKind::FieldAccess { .. }
-            | ExprKind::Propagate { .. }
-            | ExprKind::Match { .. }
-            | ExprKind::Block(_)
-            | ExprKind::Lambda { .. }
-            | ExprKind::Interpolation(_)
-    )
+    match &value.kind {
+        ExprKind::Call { callee, .. } => !matches!(
+            &ungroup_expr(callee).kind,
+            ExprKind::Name(name) | ExprKind::ComptimeName(name)
+                if name.chars().next().is_some_and(char::is_uppercase)
+        ),
+        ExprKind::Binary { .. }
+        | ExprKind::Unary { .. }
+        | ExprKind::FieldAccess { .. }
+        | ExprKind::Propagate { .. }
+        | ExprKind::Match { .. }
+        | ExprKind::Block(_)
+        | ExprKind::Lambda { .. }
+        | ExprKind::Interpolation(_) => true,
+        _ => false,
+    }
 }
 
 fn lambda_parts(expr: &Expr) -> Option<(&[Param], &Expr)> {

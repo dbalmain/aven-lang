@@ -215,7 +215,7 @@ fn toml_value_from_json_constructor(
         }
         "Array" => {
             let [Value::Array(values)] = payload else {
-                return Err(json_constructor_shape_error(name, "Array[Data]"));
+                return Err(json_constructor_shape_error(name, "Array(Data)"));
             };
             values
                 .iter()
@@ -225,7 +225,7 @@ fn toml_value_from_json_constructor(
         }
         "Object" => {
             let [Value::Map(entries)] = payload else {
-                return Err(json_constructor_shape_error("Object", "Map[Text, Data]"));
+                return Err(json_constructor_shape_error("Object", "Map(Text, Data)"));
             };
             toml_table_from_map(entries).map(::toml::Value::Table)
         }
@@ -257,7 +257,7 @@ fn toml_table_from_map(entries: &[(Value, Value)]) -> Result<::toml::Table, Stri
     let mut table = ::toml::Table::new();
     for (key, value) in entries {
         let Value::Text(key) = key else {
-            return Err("Toml.encode expected Map[Text, _] keys".to_owned());
+            return Err("Toml.encode expected Map(Text, _) keys".to_owned());
         };
         table.insert(key.clone(), toml_value(value, EncodePosition::RecordField)?);
     }
@@ -481,7 +481,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .unwrap_or_else(|| panic!("decoded has an inferred type"));
 
-        assert_eq!(ty.render(), "Result[Data, TomlError]");
+        assert_eq!(ty.render(), "Result(Data, TomlError)");
     }
 
     #[test]

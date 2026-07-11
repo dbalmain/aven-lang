@@ -106,6 +106,7 @@ pub mod runtime {
 }
 
 pub mod ty {
+    pub const BRACKET_TYPE_APPLICATION: &str = "type.bracket-type-application";
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const DECODE_FORMAT: &str = "type.decode-format";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
@@ -215,6 +216,7 @@ pub const ALL: &[&str] = &[
     runtime::TYPE_ERROR,
     runtime::UNBOUND_NAME,
     runtime::UNSUPPORTED,
+    ty::BRACKET_TYPE_APPLICATION,
     ty::CYCLIC_ALIAS,
     ty::DECODE_FORMAT,
     ty::DELETE_ABSENT_FIELD,

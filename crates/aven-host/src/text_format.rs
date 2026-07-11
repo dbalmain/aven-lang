@@ -200,7 +200,7 @@ fn decode_named(
         "Duration" => return decode_duration_target(value, path),
         "Array" => {
             return Err(DecodeError::InvalidTarget(format!(
-                "{format_name}.decode target Array must be written as Array[T]"
+                "{format_name}.decode target Array must be written as Array(T)"
             )));
         }
         unsupported => {
@@ -417,7 +417,7 @@ fn target_display(target: &Value) -> String {
 }
 
 fn target_display_array(target: &Value) -> String {
-    format!("Array[{}]", target_display(target))
+    format!("Array({})", target_display(target))
 }
 
 fn shape_error(path: &FormatPath, expected: &str, found: &FormatValue) -> DecodeError {

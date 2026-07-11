@@ -1,8 +1,8 @@
-load : (Path) -> Result[Config, ConfigError]
-load = (path : Path) : Result[Config, ConfigError] =>
+load : (Path) -> Result(Config, ConfigError)
+load = (path : Path) : Result(Config, ConfigError) =>
   read(path)?^
 
-mapper : (Array[a], a -> b) -> Array[b]
+mapper : (Array(a), a -> b) -> Array(b)
 value : Text? = name
 user : { name: Text, email: Text?, phone: ?Text, -password, .. } = current
 error : @{@ParseError(Text), @NotFound, -Internal, ..FileError} = @ParseError("bad")

@@ -25,7 +25,7 @@ use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlob
 pub use marshal::{AvenMarshal, IntoHostFn};
 /// The Aven type of the platform `now` value: `() -> Instant`.
 pub use temporal::now_type;
-/// The Aven type of the platform `zone` value: `(Text) -> Result[Zone, Text]`.
+/// The Aven type of the platform `zone` value: `(Text) -> Result(Zone, Text)`.
 pub use temporal::zone_type;
 
 /// Re-exported Aven type builders so hosts spell types without depending on
@@ -511,7 +511,7 @@ pub fn http_response_type() -> Type {
     ])
 }
 
-/// `(Text, ?{..}) -> Result[Response, HttpError]`.
+/// `(Text, ?{..}) -> Result(Response, HttpError)`.
 pub fn http_method_type() -> Type {
     build::function_opt(
         vec![build::text()],
@@ -636,7 +636,7 @@ pub fn file_type() -> Type {
     build::record(vec![("open", open_base_type())])
 }
 
-/// `(Text) -> Result[{}, WriteError]` — a handle `write`/`writeLine` method.
+/// `(Text) -> Result({}, WriteError)` — a handle `write`/`writeLine` method.
 fn handle_write_type() -> Type {
     build::function(
         vec![build::text()],
@@ -644,7 +644,7 @@ fn handle_write_type() -> Type {
     )
 }
 
-/// `() -> Result[?Text, ReadError]` — a handle `readLine` method (EOF is
+/// `() -> Result(?Text, ReadError)` — a handle `readLine` method (EOF is
 /// `@Ok(undefined)`).
 fn handle_read_line_type() -> Type {
     build::function(
@@ -653,12 +653,12 @@ fn handle_read_line_type() -> Type {
     )
 }
 
-/// `() -> Result[Text, ReadError]` — a handle `readAll` method.
+/// `() -> Result(Text, ReadError)` — a handle `readAll` method.
 fn handle_read_all_type() -> Type {
     build::function(vec![], build::result(build::text(), read_error_type()))
 }
 
-/// `() -> Result[{}, IoError]` — a handle `flush` method.
+/// `() -> Result({}, IoError)` — a handle `flush` method.
 fn handle_flush_type() -> Type {
     build::function(
         vec![],
@@ -668,7 +668,7 @@ fn handle_flush_type() -> Type {
 
 /// The `stdout` handle type: a closed record of write-side methods. `stderr`
 /// shares this shape. Callers annotate parameters as open records (e.g.
-/// `{ write : (Text) -> Result[{}, WriteError] | r }`), so width subtyping lets
+/// `{ write : (Text) -> Result({}, WriteError) | r }`), so width subtyping lets
 /// a function needing only `write` accept any of these handles.
 pub fn stdout_handle_type() -> Type {
     build::record(vec![

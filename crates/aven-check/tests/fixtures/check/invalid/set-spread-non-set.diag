@@ -1,3 +1,3 @@
-error type.mismatch: expected `Set[Int]`, found `Array[1 | 2 | ..]`
-  label 20..26: this value has type `Array[1 | 2 | ..]`
-  note: change the value to produce `Set[Int]`, or change the annotation to `Array[1 | 2 | ..]`
+error type.mismatch: expected `Set(Int)`, found `Array(1 | 2 | ..)`
+  label 20..26: this value has type `Array(1 | 2 | ..)`
+  note: change the value to produce `Set(Int)`, or change the annotation to `Array(1 | 2 | ..)`

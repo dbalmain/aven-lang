@@ -235,7 +235,7 @@ fn validate_text_value_field_type(kind: &str, name: &str, ty: &Type) -> Result<(
         ""
     };
     Err(ComptimeError::new(format!(
-        "{kind} `{name}` must be `Text` or `Array[Text]`, found `{}`{guard_note}",
+        "{kind} `{name}` must be `Text` or `Array(Text)`, found `{}`{guard_note}",
         ty.render()
     )))
 }
@@ -940,7 +940,7 @@ mod tests {
         let diagnostics = check_diagnostics("res = Http.get(\"u\", { headers: { accept: 1 } })\n");
         assert_host_error_contains(
             &diagnostics,
-            "header `accept` must be `Text` or `Array[Text]`",
+            "header `accept` must be `Text` or `Array(Text)`",
         );
     }
 

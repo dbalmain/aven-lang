@@ -221,9 +221,11 @@ impl<'a> Checker<'a> {
             ExprKind::Group(inner) => self.lower_annotation(inner),
             ExprKind::Index { callee, args } => self
                 .lower_comptime_type_index(callee, args)
-                .unwrap_or_else(|| Type::Apply {
-                    callee: Box::new(self.lower_annotation(callee)),
-                    args: self.lower_annotations(args),
+                .unwrap_or_else(|| {
+                    if !is_collection_type_sugar(callee, args) {
+                        self.report_bracket_type_application(annotation.span);
+                    }
+                    self.lower_type_application(callee, args)
                 }),
             ExprKind::Optional(inner) => Type::Optional(Box::new(self.lower_annotation(inner))),
             ExprKind::Nullable(inner) => Type::Nullable(Box::new(self.lower_annotation(inner))),
@@ -272,7 +274,11 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Literal(Literal::Bool(_) | Literal::Number(_) | Literal::String(_))
             | ExprKind::Tag(_) => self.lower_singleton_variant_annotation(annotation),
-            ExprKind::Call { callee, .. } => {
+            ExprKind::Call { callee, args } => {
+                if self.is_type_application_callee(callee) {
+                    return self.lower_type_application(callee, args);
+                }
+
                 match self.try_lower_comptime_annotation(annotation) {
                     Some(ty) => ty,
                     None => {
@@ -304,6 +310,23 @@ impl<'a> Checker<'a> {
                 Type::Deferred
             }
         }
+    }
+
+    fn lower_type_application(&mut self, callee: &Expr, args: &[Expr]) -> Type {
+        Type::Apply {
+            callee: Box::new(self.lower_annotation(callee)),
+            args: self.lower_annotations(args),
+        }
+    }
+
+    fn is_type_application_callee(&self, callee: &Expr) -> bool {
+        let Some(name) = call_callee_name(callee) else {
+            return false;
+        };
+
+        BUILTIN_TYPES.contains(&name)
+            || self.known_types.contains(name)
+            || name.chars().next().is_some_and(char::is_uppercase)
     }
 
     fn static_import_specifier_for_receiver(&self, receiver: &Expr) -> Option<String> {
@@ -341,30 +364,30 @@ impl<'a> Checker<'a> {
             return Some(Type::Deferred);
         };
 
-        let subject = self.normalize(&subject);
-        let Type::Record(row) = subject else {
-            return Some(Type::Deferred);
-        };
-        if row.tail != RowTail::Closed {
-            return Some(Type::Deferred);
+        match self.normalize(&subject) {
+            Type::Tuple(items) => Some(self.infer_tuple_index(&items, arg)),
+            Type::Record(row) if row.tail == RowTail::Closed => {
+                let Some(label) = self.comptime_known_label(arg) else {
+                    return Some(Type::Deferred);
+                };
+
+                Some(
+                    row_field_type(&row, &label)
+                        .cloned()
+                        .unwrap_or(Type::Deferred),
+                )
+            }
+            Type::Record(_) => Some(Type::Deferred),
+            _ => None,
         }
-
-        let Some(label) = self.comptime_known_label(arg) else {
-            return Some(Type::Deferred);
-        };
-
-        Some(
-            row_field_type(&row, &label)
-                .cloned()
-                .unwrap_or(Type::Deferred),
-        )
     }
 
     pub(super) fn lookup_comptime_reified_type_expr(&self, expr: &Expr) -> Option<Type> {
         match &ungroup_expr(expr).kind {
-            ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
-                self.lookup_comptime_reified_type(name).cloned()
-            }
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => self
+                .lookup_comptime_reified_type(name)
+                .cloned()
+                .or_else(|| self.type_definitions.get(name).cloned()),
             _ => None,
         }
     }
@@ -387,7 +410,15 @@ impl<'a> Checker<'a> {
 
 fn call_callee_name(callee: &Expr) -> Option<&str> {
     match &ungroup_expr(callee).kind {
-        ExprKind::Name(name) => Some(name.as_str()),
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name.as_str()),
         _ => None,
     }
+}
+
+fn is_collection_type_sugar(callee: &Expr, args: &[Expr]) -> bool {
+    matches!(
+        &ungroup_expr(callee).kind,
+        ExprKind::ComptimeName(name) if matches!(name.as_str(), "Array" | "Set")
+    ) && args.len() == 1
+        && callee.span.start >= args[0].span.end
 }

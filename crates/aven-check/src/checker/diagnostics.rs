@@ -1,6 +1,17 @@
 use super::*;
 
 impl<'a> Checker<'a> {
+    pub(super) fn report_bracket_type_application(&mut self, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error("bracket type application has been removed")
+                .with_code(codes::ty::BRACKET_TYPE_APPLICATION)
+                .with_label(Label::primary(span, "these brackets are parsed as indexing"))
+                .with_note(
+                    "type application is call syntax — write `Result(a, e)`; postfix `[...]` is indexing",
+                ),
+        );
+    }
+
     pub(super) fn diagnostic_snapshot(&self) -> DiagnosticSnapshot {
         DiagnosticSnapshot {
             diagnostics_len: self.diagnostics.len(),
@@ -351,7 +362,7 @@ impl<'a> Checker<'a> {
             Diagnostic::error("propagation operator requires a `Result` value")
                 .with_code(codes::ty::PROPAGATE_NOT_RESULT)
                 .with_label(Label::primary(span, "this value is not a `Result`"))
-                .with_note("`?^`/`?!` operate on `Result[ok, err]` values"),
+                .with_note("`?^`/`?!` operate on `Result(ok, err)` values"),
         );
     }
 

@@ -366,7 +366,7 @@ impl TypeRenderer {
                     .map(|arg| self.render_type(arg))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{rendered_callee}[{rendered_args}]")
+                format!("{rendered_callee}({rendered_args})")
             }
             Type::Function {
                 params,
@@ -943,8 +943,8 @@ pub mod build {
         })
     }
 
-    /// An applied type `Callee[args...]` where `callee` is a named type
-    /// constructor (e.g. `Boxed[value]`, `Result[ok, err]`). The constructor is
+    /// An applied type `Callee(args...)` where `callee` is a named type
+    /// constructor (e.g. `Boxed(value)`, `Result(ok, err)`). The constructor is
     /// opaque to unification: `Apply` unifies structurally by callee + args.
     pub fn apply(name: &str, args: Vec<Type>) -> Type {
         Type::Apply {
@@ -953,7 +953,7 @@ pub mod build {
         }
     }
 
-    /// The applied `Result[ok, err]` type. This is the surface representation of
+    /// The applied `Result(ok, err)` type. This is the surface representation of
     /// `Result` in this codebase (`Apply { Result, [ok, err] }`); the runtime
     /// inhabits it with `@Ok(ok)` / `@Err(err)` tag values.
     pub fn result(ok: Type, err: Type) -> Type {
@@ -963,7 +963,7 @@ pub mod build {
         }
     }
 
-    /// The applied `Map[key, value]` type.
+    /// The applied `Map(key, value)` type.
     pub fn map(key: Type, value: Type) -> Type {
         Type::Apply {
             callee: Box::new(named("Map")),

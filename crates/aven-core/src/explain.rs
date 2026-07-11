@@ -311,6 +311,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Runtime evaluation reached syntax that is parsed but not implemented by the current evaluator slice. Rewrite the program using supported expression forms or wait for the planned evaluator milestone.",
     },
     DiagnosticExplanation {
+        code: codes::ty::BRACKET_TYPE_APPLICATION,
+        text: "Bracket type application has been removed. Use ordinary call syntax such as Result(Int, Text); postfix square brackets are reserved for indexing.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::CYCLIC_ALIAS,
         text: "A transparent type alias eventually refers back to itself without passing through a type constructor. Wrap one member in a record or variant to make the recursion well-founded, or remove the alias.",
     },
@@ -372,7 +376,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::PROPAGATE_NOT_RESULT,
-        text: "The ?^ and ?! operators unwrap Result[ok, err] values. Apply them only to expressions with Result type, or handle the value without a propagation operator.",
+        text: "The ?^ and ?! operators unwrap Result(ok, err) values. Apply them only to expressions with Result type, or handle the value without a propagation operator.",
     },
     DiagnosticExplanation {
         code: codes::ty::RENAME_ABSENT_FIELD,

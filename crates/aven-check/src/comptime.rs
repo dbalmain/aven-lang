@@ -335,7 +335,7 @@ where
             ExprKind::Call { callee, args } => {
                 self.evaluate_application(expr.span, callee, args, env)
             }
-            ExprKind::Index { callee, args } => self.evaluate_index_type(callee, args, env),
+            ExprKind::Index { callee, args } => self.evaluate_type_application(callee, args, env),
             ExprKind::Optional(_)
             | ExprKind::Nullable(_)
             | ExprKind::NonNull(_)
@@ -361,7 +361,7 @@ where
         }
     }
 
-    fn evaluate_index_type(
+    fn evaluate_type_application(
         &mut self,
         callee: &Expr,
         args: &[Expr],
@@ -462,11 +462,15 @@ where
             return self.evaluate_type_of(args);
         }
 
-        let Some(function) = self.context.lookup_comptime_function(name) else {
-            return EvaluationResult::unsupported();
-        };
+        if let Some(function) = self.context.lookup_comptime_function(name) {
+            return self.evaluate_function_application(function, call_span, args, env);
+        }
 
-        self.evaluate_function_application(function, call_span, args, env)
+        if name.chars().next().is_some_and(char::is_uppercase) {
+            self.evaluate_type_application(callee, args, env)
+        } else {
+            EvaluationResult::unsupported()
+        }
     }
 
     fn evaluate_reflection_application(
@@ -841,7 +845,7 @@ impl Environment {
 
 fn callee_name(expr: &Expr) -> Option<&str> {
     match &ungroup(expr).kind {
-        ExprKind::Name(name) => Some(name),
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name),
         _ => None,
     }
 }

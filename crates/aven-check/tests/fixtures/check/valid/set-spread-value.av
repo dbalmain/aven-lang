@@ -1,4 +1,4 @@
 a = @{ 1, 2 }
 b = @{ 2, 3 }
 merged = @{ ..a, ..b }
-annotated : Set[Int] = @{ ..merged, 4 }
+annotated : Set(Int) = @{ ..merged, 4 }

@@ -306,13 +306,13 @@ fn encode_json_constructor(
         }
         "Array" => {
             let [Value::Array(values)] = payload else {
-                return Err(json_constructor_shape_error(name, "Array[Data]"));
+                return Err(json_constructor_shape_error(name, "Array(Data)"));
             };
             encode_json_array(values, output)?;
         }
         "Object" => {
             let [Value::Map(entries)] = payload else {
-                return Err(json_constructor_shape_error(name, "Map[Text, Data]"));
+                return Err(json_constructor_shape_error(name, "Map(Text, Data)"));
             };
             encode_json_object(entries, output)?;
         }
@@ -341,7 +341,7 @@ fn encode_json_object(entries: &[(Value, Value)], output: &mut String) -> Result
             output.push(',');
         }
         let Value::Text(key) = key else {
-            return Err(json_constructor_shape_error("Object", "Map[Text, Data]"));
+            return Err(json_constructor_shape_error("Object", "Map(Text, Data)"));
         };
         encode_string(key, output);
         output.push(':');
@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn decode_nested_shape_error_reports_precise_path() {
-        let value = run("Target = { a: Array[{ b: Text }] }\n\
+        let value = run("Target = { a: Array({ b: Text }) }\n\
              Json.decode(\"{\\\"a\\\":[{\\\"b\\\":\\\"ok\\\"},{\\\"b\\\":1}]}\", Target)\n");
         let (kind, payload) = err_payload(&value);
 
@@ -757,7 +757,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .expect("decoded has an inferred type");
 
-        assert_eq!(ty.render(), "Result[User, JsonError]");
+        assert_eq!(ty.render(), "Result(User, JsonError)");
     }
 
     #[test]
@@ -792,7 +792,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .expect("decoded has an inferred type");
 
-        assert_eq!(ty.render(), "Result[Data, JsonError]");
+        assert_eq!(ty.render(), "Result(Data, JsonError)");
     }
 
     #[test]
@@ -810,7 +810,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .expect("decoded has an inferred type");
 
-        assert_eq!(ty.render(), "Result[Data, JsonError]");
+        assert_eq!(ty.render(), "Result(Data, JsonError)");
     }
 
     #[test]
@@ -834,7 +834,7 @@ mod tests {
         let fields_ty = checked
             .type_at(Span::new(fields_offset, fields_offset + "fields".len()))
             .expect("the match binder has an inferred type");
-        assert_eq!(fields_ty.render(), "Map[Text, Data]");
+        assert_eq!(fields_ty.render(), "Map(Text, Data)");
     }
 
     #[test]
@@ -855,7 +855,7 @@ mod tests {
         let method_ty = method_checked
             .type_at(span)
             .expect("method decode has an inferred type");
-        assert_eq!(method_ty.render(), "Result[User, JsonError]");
+        assert_eq!(method_ty.render(), "Result(User, JsonError)");
 
         // The method spelling infers exactly as the format-owned static call.
         let static_checked = check(static_form);
@@ -873,7 +873,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "text.decode".len()))
             .expect(".decode access has an inferred type");
         assert!(
-            access_ty.render().starts_with("Result["),
+            access_ty.render().starts_with("Result("),
             "hover on .decode shows the Result type, got {}",
             access_ty.render()
         );
@@ -894,7 +894,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .expect("decoded has an inferred type");
 
-        assert_eq!(ty.render(), "Result[Data, JsonError]");
+        assert_eq!(ty.render(), "Result(Data, JsonError)");
     }
 
     #[test]

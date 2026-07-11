@@ -241,7 +241,7 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// Infer `value?!` / `value?^`. Both unwrap a `Result[ok, err]` to its `ok`
+    /// Infer `value?!` / `value?^`. Both unwrap a `Result(ok, err)` to its `ok`
     /// branch. `?^` additionally contributes the error type to the current
     /// lambda-body propagation context; top-level `?^` has no active context and
     /// keeps the old "unwrap to ok" typing behavior.

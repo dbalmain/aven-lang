@@ -98,13 +98,13 @@ fn std_result_type_exports_check() {
     let entry = dir.write(
         "main.av",
         r#"{ mapErr, orElse } = import("std/result")
-ok : Result[Int, Text] = @Ok(1)
-err : Result[Int, Text] = @Err("x")
+ok : Result(Int, Text) = @Ok(1)
+err : Result(Int, Text) = @Err("x")
 mappedOk = mapErr(ok, (e) => "wrap: ${e}")
 mappedErr = mapErr(err, (e) => "wrap: ${e}")
 recovered = orElse(err, (_) => @Ok(0))
 passed = orElse(ok, (_) => @Ok(0))
-chain = (r: Result[Int, Text]) =>
+chain = (r: Result(Int, Text)) =>
   value = mapErr(r, (e) => "step failed: ${e}")?^
   @Ok(value)
 { mapErr, orElse, mappedOk, mappedErr, recovered, passed, chain }

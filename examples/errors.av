@@ -4,7 +4,7 @@
 Config = { name: Text, version: Text }
 
 # No return annotation needed: `?^` propagation infers
-# Result[Config, <union of the open/read/decode error variants>].
+# Result(Config, <union of the open/read/decode error variants>).
 loadConfig = (path: Text) =>
   file = File.open(path, "r")?^
   text = file.readAll()?^
@@ -34,7 +34,7 @@ demo = () =>
     @Ok(v) => writeLine("recovered: ${v}")
     @Err(err) => onErr(err)
 
-  boom : Result[Unit, Text] = @Err("demo")
+  boom: Result(Unit, Text) = @Err("demo")
   boom?!
 
 demo()

@@ -1804,7 +1804,7 @@ pub fn now_type() -> Type {
     crate::build::function(vec![], crate::build::named("Instant"))
 }
 
-/// Aven type of the platform `zone` value: `(Text) -> Result[Zone, Text]`.
+/// Aven type of the platform `zone` value: `(Text) -> Result(Zone, Text)`.
 pub fn zone_type() -> Type {
     crate::build::function(
         vec![crate::build::text()],

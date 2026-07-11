@@ -1,5 +1,5 @@
-mapper : (Array[a], a -> b) -> Array[b]
-collections : (Text[], Text@{}, Array[a]) -> Unit
+mapper : (Array(a), a -> b) -> Array(b)
+collections : (Text[], Text@{}, Array(a)) -> Unit
 optional : ?Text = name
 nullable : Text? = name
 both : ?Text? = name

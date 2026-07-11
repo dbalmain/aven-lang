@@ -707,7 +707,7 @@ fn completion_at_map_static_access_lists_statics() {
 
 #[test]
 fn completion_at_map_field_access_returns_builtin_methods() {
-    let completions = completions_at_marker("m : Map[Text, Int] = Map.empty()\nm.|");
+    let completions = completions_at_marker("m : Map(Text, Int) = Map.empty()\nm.|");
     let labels = completions
         .iter()
         .map(|item| item.label.as_str())
@@ -1175,7 +1175,7 @@ fn hover_at_host_record_field_shows_member_signature() {
         panic!("expected markup hover");
     };
     assert!(
-        markup.value.contains("(Text, { .. } = _)") && markup.value.contains("-> Result["),
+        markup.value.contains("(Text, { .. } = _)") && markup.value.contains("-> Result("),
         "unexpected member hover: {}",
         markup.value
     );
@@ -1777,7 +1777,7 @@ fn library_interface_renders_std_result_signatures() {
         "# std/result — generated interface (shape view); not the implementation."
     );
     assert_eq!(lines[1], "");
-    assert_eq!(lines[2], "mapErr : (Result[a, b], b -> c) -> Result[a, c]");
+    assert_eq!(lines[2], "mapErr : (Result(a, b), b -> c) -> Result(a, c)");
     assert!(lines[3].starts_with("orElse : "), "line: {:?}", lines[3]);
     for (name, line) in [("mapErr", 2), ("orElse", 3)] {
         let span = interface.export_spans[name];

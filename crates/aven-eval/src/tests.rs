@@ -791,10 +791,10 @@ fn map_constructs_empty_and_from_entries() {
 
 #[test]
 fn map_type_application_yields_composite_type_value() {
-    // `Map[K, V]` in value position builds a composite type value, not a
+    // `Map(K, V)` in value position builds a composite type value, not a
     // record index of the (type-valued) `Map`.
     assert_module_value(
-        "Map[Text, Int]\n",
+        "Map(Text, Int)\n",
         Value::Type(RuntimeType::Map(
             Box::new(Value::named_type("Text")),
             Box::new(Value::named_type("Int")),
@@ -954,14 +954,14 @@ fn map_grouping_example_runs() {
     assert_module_value(
         concat!(
             "words = [\"red\", \"blue\", \"red\"]\n",
-            "count = (items: Array[Text], index: Int, acc: Map[Text, Int]) =>\n",
+            "count = (items: Array(Text), index: Int, acc: Map(Text, Int)) =>\n",
             "  next = items[index]\n",
             "  next ?>\n",
             "    undefined => acc\n",
             "    _ =>\n",
             "      word : Text = next ?? \"\"\n",
             "      count(items, index + 1, acc.set(word, (acc.get(word) ?? 0) + 1))\n",
-            "counts : Map[Text, Int] = count(words, 0, Map.empty())\n",
+            "counts : Map(Text, Int) = count(words, 0, Map.empty())\n",
             "counts.entries()\n",
         ),
         array_value(vec![
@@ -1367,7 +1367,7 @@ fn composite_type_expressions_evaluate_to_type_values() {
         )))),
     );
     assert_module_value(
-        "Array[{ name: Text }]\n",
+        "Array({ name: Text })\n",
         Value::Type(super::RuntimeType::Array(Box::new(record_value(vec![(
             "name",
             Value::named_type("Text"),

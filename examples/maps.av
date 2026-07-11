@@ -1,19 +1,19 @@
 # Map grouping with get-miss defaults.
 words = ["red", "blue", "red", "green", "blue", "red"]
 
-count = (items: Array[Text], index: Int, acc: Map[Text, Int]) =>
+count = (items: Array(Text), index: Int, acc: Map(Text, Int)) =>
   next = items[index]
   next ?>
     undefined => acc
     _ =>
-      word : Text = next ?? ""
-      current : Int = acc.get(word) ?? 0
+      word: Text = next ?? ""
+      current: Int = acc.get(word) ?? 0
       count(items, index + 1, acc.set(word, current + 1))
 
-counts : Map[Text, Int] = count(words, 0, Map.empty())
-red : Int = counts.get("red") ?? 0
-blue : Int = counts.get("blue") ?? 0
-missing : Int = counts.get("missing") ?? 0
+counts: Map(Text, Int) = count(words, 0, Map.empty())
+red: Int = counts.get("red") ?? 0
+blue: Int = counts.get("blue") ?? 0
+missing: Int = counts.get("missing") ?? 0
 
 writeLine("red: ${red}")
 writeLine("blue: ${blue}")

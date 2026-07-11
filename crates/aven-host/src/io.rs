@@ -700,7 +700,7 @@ mod tests {
         assert_eq!(
             ty,
             crate::build::result(crate::stdin_handle_type(), crate::io_error_type()),
-            "File.open(_, \"r\") returns Result[stdin handle, IoError]"
+            "File.open(_, \"r\") returns Result(stdin handle, IoError)"
         );
     }
 
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(
             ty,
             crate::build::result(crate::stdout_handle_type(), crate::io_error_type()),
-            "File.open(_, \"w\") returns Result[stdout handle, IoError]"
+            "File.open(_, \"w\") returns Result(stdout handle, IoError)"
         );
     }
 
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(
             ty,
             crate::build::result(crate::stdio_handle_type(), crate::io_error_type()),
-            "File.open(_, \"rw\") returns Result[stdio handle, IoError]"
+            "File.open(_, \"rw\") returns Result(stdio handle, IoError)"
         );
     }
 

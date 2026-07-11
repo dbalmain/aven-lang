@@ -338,7 +338,7 @@ fn yaml_value_from_json_constructor(
         }
         "Array" => {
             let [Value::Array(values)] = payload else {
-                return Err(json_constructor_shape_error(name, "Array[Data]"));
+                return Err(json_constructor_shape_error(name, "Array(Data)"));
             };
             values
                 .iter()
@@ -348,7 +348,7 @@ fn yaml_value_from_json_constructor(
         }
         "Object" => {
             let [Value::Map(entries)] = payload else {
-                return Err(json_constructor_shape_error("Object", "Map[Text, Data]"));
+                return Err(json_constructor_shape_error("Object", "Map(Text, Data)"));
             };
             yaml_mapping_from_map(entries).map(serde_norway::Value::Mapping)
         }
@@ -380,7 +380,7 @@ fn yaml_mapping_from_map(entries: &[(Value, Value)]) -> Result<serde_norway::Map
     let mut mapping = serde_norway::Mapping::new();
     for (key, value) in entries {
         let Value::Text(key) = key else {
-            return Err("Yaml.encode expected Map[Text, _] keys".to_owned());
+            return Err("Yaml.encode expected Map(Text, _) keys".to_owned());
         };
         if matches!(value, Value::Undefined) {
             continue;
@@ -613,7 +613,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .unwrap_or_else(|| panic!("decoded has an inferred type"));
 
-        assert_eq!(ty.render(), "Result[Data, YamlError]");
+        assert_eq!(ty.render(), "Result(Data, YamlError)");
     }
 
     #[test]
@@ -634,7 +634,7 @@ mod tests {
             .type_at(Span::new(offset, offset + "decoded".len()))
             .unwrap_or_else(|| panic!("decoded has an inferred type"));
 
-        assert_eq!(ty.render(), "Result[Config, YamlError]");
+        assert_eq!(ty.render(), "Result(Config, YamlError)");
     }
 
     #[test]

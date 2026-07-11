@@ -1,5 +1,5 @@
 # Yaml.decode shares the dynamic Data model for unknown-shape YAML.
-Config = { name: Text, count: Int, tags: Array[Text] }
+Config = { name: Text, count: Int, tags: Array(Text) }
 
 input = "name: Ada\ncount: 3\ntags: [core, formats]\n"
 

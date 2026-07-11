@@ -90,7 +90,7 @@ pub enum Value {
 }
 
 /// Type names bound as `Value::Type` intrinsics. `Array`/`Data`/`Map` are
-/// included so `Array[T]`/`Map[K, V]` type application and dynamic format decode
+/// included so `Array(T)`/`Map(K, V)` type application and dynamic format decode
 /// targets can evaluate to the minimal composite type values these need at
 /// runtime. Each type carrying statics (`Map.from`, `Json.decode`) resolves the
 /// static through a `"Type.static"`-keyed global (see [`eval_field_access`]).
@@ -241,8 +241,8 @@ impl fmt::Display for RuntimeType {
             Self::Named(name) => write!(f, "{name}"),
             Self::Optional(inner) => write!(f, "?{inner}"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
-            Self::Array(inner) => write!(f, "Array[{inner}]"),
-            Self::Map(key, value) => write!(f, "Map[{key}, {value}]"),
+            Self::Array(inner) => write!(f, "Array({inner})"),
+            Self::Map(key, value) => write!(f, "Map({key}, {value})"),
         }
     }
 }
@@ -799,7 +799,8 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
             null_safe,
         } => eval_field_access(receiver, field, *field_span, *null_safe, env),
         ExprKind::Index { callee, args } => eval_index(callee, args, expr.span, env),
-        ExprKind::Call { callee, args } => eval_call(callee, args, expr.span, env),
+        ExprKind::Call { callee, args } => eval_type_application(callee, args, expr.span, env)
+            .unwrap_or_else(|| eval_call(callee, args, expr.span, env)),
         ExprKind::Propagate {
             value,
             operator_span,
@@ -1844,37 +1845,91 @@ fn map_merge_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
     })
 }
 
-fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eval {
-    let callee_value = eval_expr_many(callee, env)?;
+fn eval_type_application(
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+    env: &Environment,
+) -> Option<Eval> {
+    let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &callee.kind else {
+        return None;
+    };
+    if !matches!(name.as_str(), "Array" | "Map") {
+        return None;
+    }
 
-    // `Map[K, V]` type application in value position: build a composite type
+    let callee_value = match eval_expr_many(callee, env) {
+        Ok(value) => value,
+        Err(diagnostics) => return Some(Err(diagnostics)),
+    };
+
+    // `Map(K, V)` type application in value position: build a composite type
     // value rather than record-index the (now type-valued) `Map`.
     if let Value::Type(RuntimeType::Named(name)) = &callee_value
         && name == "Map"
     {
         let [key_expr, value_expr] = args else {
-            return Err(one_diagnostic(unsupported_expr(
+            return Some(Err(one_diagnostic(unsupported_expr(
                 span,
-                "Map type application takes two type arguments (Map[key, value])",
-            )));
+                "Map type application takes two type arguments (Map(key, value))",
+            ))));
         };
-        let key = eval_expr_many(key_expr, env)?;
-        let value = eval_expr_many(value_expr, env)?;
+        let key = match eval_expr_many(key_expr, env) {
+            Ok(value) => value,
+            Err(diagnostics) => return Some(Err(diagnostics)),
+        };
+        let value = match eval_expr_many(value_expr, env) {
+            Ok(value) => value,
+            Err(diagnostics) => return Some(Err(diagnostics)),
+        };
         for (arg_value, arg) in [(&key, key_expr), (&value, value_expr)] {
             if !runtime_type_target(arg_value) {
-                return Err(one_diagnostic(record_type_error(
+                return Some(Err(one_diagnostic(record_type_error(
                     arg.span,
                     "map type construction",
                     arg_value.type_name(),
                     "Type",
-                )));
+                ))));
             }
         }
-        return Ok(Value::Type(RuntimeType::Map(
+        return Some(Ok(Value::Type(RuntimeType::Map(
             Box::new(key),
             Box::new(value),
-        )));
+        ))));
     }
+
+    if let Value::Type(RuntimeType::Named(name)) = &callee_value
+        && name == "Array"
+    {
+        let [arg] = args else {
+            return Some(Err(one_diagnostic(unsupported_expr(
+                span,
+                "Array type application takes one type argument (Array(element))",
+            ))));
+        };
+        let arg_value = match eval_expr_many(arg, env) {
+            Ok(value) => value,
+            Err(diagnostics) => return Some(Err(diagnostics)),
+        };
+        if runtime_type_target(&arg_value) {
+            return Some(Ok(Value::Type(RuntimeType::Array(Box::new(
+                arg_value.clone(),
+            )))));
+        }
+
+        return Some(Err(one_diagnostic(record_type_error(
+            arg.span,
+            "array type construction",
+            arg_value.type_name(),
+            "Type",
+        ))));
+    }
+
+    None
+}
+
+fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eval {
+    let callee_value = eval_expr_many(callee, env)?;
 
     if args.len() != 1 {
         return Err(one_diagnostic(unsupported_expr(
@@ -1884,20 +1939,6 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
     }
 
     let arg_value = eval_expr_many(&args[0], env)?;
-    if let (Value::Type(RuntimeType::Named(name)), arg_value) = (&callee_value, &arg_value)
-        && name == "Array"
-    {
-        if runtime_type_target(arg_value) {
-            return Ok(Value::Type(RuntimeType::Array(Box::new(arg_value.clone()))));
-        }
-
-        return Err(one_diagnostic(record_type_error(
-            args[0].span,
-            "array type construction",
-            arg_value.type_name(),
-            "Type",
-        )));
-    }
 
     match callee_value {
         Value::Array(values) => {
