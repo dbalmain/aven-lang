@@ -839,6 +839,22 @@ fn check_export_for_node(
         name.chars().next().is_some_and(char::is_uppercase)
     });
     if !has_type_shaped_field {
+        // Polymorphic function exports often leave the final-expression type as
+        // an empty closed record. Rebuild from top_level_types only in that
+        // case; otherwise keep the inferred type (which already closed literal
+        // rows correctly for monomorphic values like `{ value: 1 }`).
+        let inferred_empty = matches!(
+            &ty,
+            Type::Record(row) if row.entries.is_empty() && row.tail == RowTail::Closed
+        );
+        if inferred_empty
+            && let Some(rebuilt) = rebuild_value_export_record(entries, &semantic.top_level_types)
+        {
+            return CheckExport::Record {
+                ty: rebuilt,
+                type_exports: HashMap::new(),
+            };
+        }
         return CheckExport::Record {
             ty,
             type_exports: HashMap::new(),
@@ -941,6 +957,33 @@ fn expr_name(expr: &Expr) -> Option<&str> {
         ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name),
         _ => None,
     }
+}
+
+fn rebuild_value_export_record(
+    entries: &[RecordEntry],
+    top_level_types: &HashMap<String, Type>,
+) -> Option<Type> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut fields = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let (name, source_name) = match entry {
+            RecordEntry::Field { name, value, .. } => (name.as_str(), expr_name(value)?),
+            RecordEntry::Shorthand { name, .. } => (name.as_str(), name.as_str()),
+            RecordEntry::Rename { from, to, .. } => (to.as_str(), from.as_str()),
+            _ => return None,
+        };
+        let field_ty = top_level_types.get(source_name)?.clone();
+        fields.push(aven_check::RowEntry::Field {
+            name: name.to_owned(),
+            ty: field_ty,
+        });
+    }
+    Some(Type::Record(aven_check::Row {
+        entries: fields,
+        tail: RowTail::Closed,
+    }))
 }
 
 fn export_provenance_for_node(

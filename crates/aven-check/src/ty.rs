@@ -745,29 +745,20 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
     concrete_types && concrete_rows
 }
 
-pub(crate) fn has_only_meta_unknowns(ty: &Type) -> bool {
-    let mut valid_types = true;
-    let mut valid_rows = true;
-    visit_type_with_rows(
-        ty,
-        &mut |node| {
-            if matches!(node, Type::Deferred | Type::Variable(_)) {
-                valid_types = false;
-            }
-        },
-        &mut |tail| {
-            if matches!(tail, RowTail::Var(_)) {
-                valid_rows = false;
-            }
-        },
-    );
-    valid_types && valid_rows
-}
-
 pub(crate) fn type_contains_deferred(ty: &Type) -> bool {
     let mut found = false;
     visit_type(ty, &mut |node| {
         if matches!(node, Type::Deferred) {
+            found = true;
+        }
+    });
+    found
+}
+
+pub(crate) fn type_contains_variable(ty: &Type) -> bool {
+    let mut found = false;
+    visit_type(ty, &mut |node| {
+        if matches!(node, Type::Variable(_)) {
             found = true;
         }
     });

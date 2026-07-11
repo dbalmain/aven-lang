@@ -1,4 +1,6 @@
-# Error propagation with ?^, explicit @Ok, @Ok/@Err matching, and ?! panic.
+# Error propagation with ?^, mapErr/orElse, explicit @Ok, @Ok/@Err matching, and ?!.
+{ mapErr, orElse } = import("std/result")
+
 Config = { name: Text, version: Text }
 
 # No return annotation needed: `?^` propagation infers
@@ -9,15 +11,27 @@ loadConfig = (path: Text) =>
   config = Json.decode(text, Config)?^
   @Ok(config)
 
+# Flattened chain: rewrite the error, then propagate with ?^.
+loadNamed = (path: Text) =>
+  value = mapErr(loadConfig(path), (e) => "load ${path} failed: ${e}")?^
+  @Ok(value)
+
 onErr = (err) => writeLine("error: ${err}")
 
 demo = () =>
-  loadConfig("missing.json") ?>
+  # mapErr rewrites the @Err payload; match still sees a Result.
+  loadNamed("missing.json") ?>
     @Ok(config) => writeLine("config: ${config}")
     @Err(err) => onErr(err)
 
-  loadConfig("config.json") ?>
+  loadNamed("config.json") ?>
     @Ok(config) => writeLine("loaded: ${config}")
+    @Err(err) => onErr(err)
+
+  # orElse recovers an @Err into a default Result (or any Result-producing arm).
+  recovered = orElse(@Err("gone"), (_) => @Ok("fallback"))
+  recovered ?>
+    @Ok(v) => writeLine("recovered: ${v}")
     @Err(err) => onErr(err)
 
   boom : Result[Unit, Text] = @Err("demo")

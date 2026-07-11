@@ -1,0 +1,6 @@
+# Result helpers: `import("std/result")`. Pure Aven — no host natives.
+mapErr = (r, f) => r ?> @Ok(v) => @Ok(v), @Err(e) => @Err(f(e))
+
+orElse = (r, f) => r ?> @Ok(v) => @Ok(v), @Err(e) => f(e)
+
+{ mapErr, orElse }

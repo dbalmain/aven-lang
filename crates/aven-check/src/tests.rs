@@ -2905,10 +2905,13 @@ fn nested_record_match_pattern_binders_use_subject_field_types() {
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
-    assert_eq!(
+    assert!(matches!(
         checker.infer_top_level_value("matched"),
-        Some(named("Bool"))
-    );
+        Some(Type::Variant(Row {
+            entries,
+            tail: RowTail::Closed,
+        })) if entries.iter().all(|entry| matches!(entry, RowEntry::Literal { value: Literal::Bool(_) }))
+    ));
     assert!(checker.diagnostics.is_empty());
 }
 
@@ -3212,6 +3215,30 @@ fn match_results_merge_closed_variant_rows() {
 
     assert_eq!(tags, HashSet::from(["Zero", "Pos"]));
     assert_eq!(row.tail, RowTail::Closed);
+}
+
+#[test]
+fn unannotated_result_match_helpers_are_generic_and_join_result_arms() {
+    let source = "mapErr = (r, f) => r ?> @Ok(v) => @Ok(v), @Err(e) => @Err(f(e))\n\
+                  orElse = (r, f) => r ?> @Ok(v) => @Ok(v), @Err(e) => f(e)\n\
+                  ok : Result[Int, Text] = @Ok(1)\n\
+                  err : Result[Int, Text] = @Err(\"x\")\n\
+                  mapped = mapErr(err, (e) => \"wrap: ${e}\")\n\
+                  recovered = orElse(err, (_) => @Ok(0))\n";
+    let output = parse_module(source);
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    for name in ["mapErr", "orElse"] {
+        let scheme = checker
+            .infer_top_level_scheme(name)
+            .unwrap_or_else(|| panic!("scheme for {name}"));
+        assert!(!crate::ty::type_contains_deferred(&scheme.ty));
+        assert!(scheme.ty.render().contains("Result"));
+    }
+    assert!(checker.infer_top_level_value("mapped").is_some());
+    assert!(checker.diagnostics.is_empty());
 }
 
 #[test]

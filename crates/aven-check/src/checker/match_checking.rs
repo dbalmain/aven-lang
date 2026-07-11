@@ -10,9 +10,14 @@ impl<'a> Checker<'a> {
         self.check_value_expr(subject);
         let env = self.local_types.inference_env();
         let inferred_subject = self.infer(&env, subject);
+        let seeded = self.seed_tag_match_subject(&inferred_subject, arms);
         let resolved_subject = self.normalize(&self.resolve_and_default(&inferred_subject));
         self.check_match_exhaustiveness(subject, arms, &resolved_subject);
-        let subject_type = is_resolved_value_type(&resolved_subject).then_some(resolved_subject);
+        let subject_type = if is_resolved_value_type(&resolved_subject) {
+            Some(resolved_subject)
+        } else {
+            seeded
+        };
 
         let mut body_types = Vec::new();
         for arm in arms {
@@ -308,7 +313,8 @@ impl<'a> Checker<'a> {
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let inferred_subject = self.infer(env, subject);
-        let subject_type = self.resolve_if_concrete(&inferred_subject);
+        let seeded = self.seed_tag_match_subject(&inferred_subject, arms);
+        let subject_type = self.resolve_if_concrete(&inferred_subject).or(seeded);
         let mut body_types = Vec::new();
 
         for arm in arms {
@@ -333,6 +339,51 @@ impl<'a> Checker<'a> {
                 Type::Deferred
             }
         }
+    }
+
+    fn seed_tag_match_subject(&mut self, subject: &Type, arms: &[MatchArm]) -> Option<Type> {
+        if self.resolve_if_concrete(subject).is_some() {
+            return None;
+        }
+        let seed = self.pure_tag_match_subject(arms)?;
+        self.unifier.unify(subject, &seed).ok()?;
+        Some(self.normalize(&self.unifier.resolve(&seed)))
+    }
+
+    fn pure_tag_match_subject(&mut self, arms: &[MatchArm]) -> Option<Type> {
+        let mut tags = Vec::new();
+        for arm in arms {
+            let (name, arity) = pure_tag_pattern(&arm.pattern)?;
+            if tags
+                .iter()
+                .any(|(existing, _): &(String, Vec<Type>)| existing == name)
+            {
+                return None;
+            }
+            tags.push((
+                name.to_owned(),
+                (0..arity).map(|_| self.unifier.fresh()).collect(),
+            ));
+        }
+
+        if tags.len() == 2 {
+            let ok = tags.iter().find(|(name, _)| name == "Ok");
+            let err = tags.iter().find(|(name, _)| name == "Err");
+            if let (Some(ok), Some(err)) = (ok, err)
+                && ok.1.len() == 1
+                && err.1.len() == 1
+            {
+                return Some(result_type(ok.1[0].clone(), err.1[0].clone()));
+            }
+        }
+
+        Some(Type::Variant(Row {
+            entries: tags
+                .into_iter()
+                .map(|(name, payload)| RowEntry::Tag { name, payload })
+                .collect(),
+            tail: RowTail::Closed,
+        }))
     }
 
     pub(super) fn comptime_selected_match_arm<'b>(
@@ -370,15 +421,17 @@ impl<'a> Checker<'a> {
         &mut self,
         body_types: &[MatchArmBodyType],
     ) -> Option<MatchArmCombination> {
+        if let Some(result) = self.seed_result_meta_match_arms(body_types) {
+            return Some(result);
+        }
         let mut entries = Vec::new();
         let mut open = false;
         let mut kind = None;
         let mut literal_kind = None;
 
         for body_type in body_types {
-            let Type::Variant(row) = self.unifier.resolve(&body_type.ty) else {
-                return None;
-            };
+            let resolved = self.unifier.resolve(&body_type.ty);
+            let row = subject_variant_row(&resolved, &self.type_definitions)?.into_owned();
 
             let prior = Type::Variant(Row {
                 entries: entries.clone(),
@@ -475,7 +528,84 @@ impl<'a> Checker<'a> {
             entries,
             tail: if open { RowTail::Open } else { RowTail::Closed },
         });
-        Some(MatchArmCombination::Joined(self.unifier.resolve(&result)))
+        Some(MatchArmCombination::Joined(
+            self.result_type_from_variant_row(&self.unifier.resolve(&result)),
+        ))
+    }
+
+    fn seed_result_meta_match_arms(
+        &mut self,
+        body_types: &[MatchArmBodyType],
+    ) -> Option<MatchArmCombination> {
+        if !body_types
+            .iter()
+            .any(|body_type| matches!(self.unifier.resolve(&body_type.ty), Type::Meta(_)))
+        {
+            return None;
+        }
+
+        let mut saw_ok_err_shape = false;
+        let ok = self.unifier.fresh();
+        let err = self.unifier.fresh();
+        for body_type in body_types {
+            let resolved = self.unifier.resolve(&body_type.ty);
+            if matches!(resolved, Type::Meta(_)) {
+                continue;
+            }
+            let row = subject_variant_row(&resolved, &self.type_definitions)?.into_owned();
+            for entry in row.entries {
+                let RowEntry::Tag { name, payload } = entry else {
+                    return None;
+                };
+                let target = match name.as_str() {
+                    "Ok" if payload.len() == 1 => {
+                        saw_ok_err_shape = true;
+                        &ok
+                    }
+                    "Err" if payload.len() == 1 => {
+                        saw_ok_err_shape = true;
+                        &err
+                    }
+                    _ => return None,
+                };
+                if self.unifier.unify(target, &payload[0]).is_err() {
+                    return Some(MatchArmCombination::Conflict(self.match_arm_type_conflict(
+                        result_type(ok.clone(), err.clone()),
+                        body_type,
+                    )));
+                }
+            }
+        }
+        if !saw_ok_err_shape {
+            return None;
+        }
+
+        let result = result_type(ok, err);
+        for body_type in body_types {
+            if matches!(self.unifier.resolve(&body_type.ty), Type::Meta(_))
+                && self.unifier.unify(&body_type.ty, &result).is_err()
+            {
+                return Some(MatchArmCombination::Conflict(
+                    self.match_arm_type_conflict(result.clone(), body_type),
+                ));
+            }
+        }
+        Some(MatchArmCombination::Joined(result))
+    }
+
+    fn result_type_from_variant_row(&self, ty: &Type) -> Type {
+        let Some(row) = subject_variant_row(ty, &self.type_definitions) else {
+            return ty.clone();
+        };
+        if row.tail != RowTail::Closed || row.entries.len() != 2 {
+            return ty.clone();
+        }
+        let ok = literal_variant_payload(&row, "Ok");
+        let err = literal_variant_payload(&row, "Err");
+        match (ok, err) {
+            (Some([ok]), Some([err])) => result_type(ok.clone(), err.clone()),
+            _ => ty.clone(),
+        }
     }
 
     pub(super) fn unify_match_arm_body_types(

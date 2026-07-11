@@ -713,6 +713,7 @@ pub fn std_library() -> HashMap<String, &'static str> {
     HashMap::from([
         ("std".to_owned(), include_str!("../std/std.av")),
         ("std/time".to_owned(), include_str!("../std/time.av")),
+        ("std/result".to_owned(), include_str!("../std/result.av")),
     ])
 }
 
@@ -901,7 +902,7 @@ mod tests {
 
         let mut specifiers: Vec<_> = library.keys().cloned().collect();
         specifiers.sort();
-        assert_eq!(specifiers, ["std", "std/time"]);
+        assert_eq!(specifiers, ["std", "std/result", "std/time"]);
 
         for (specifier, source) in &library {
             assert!(

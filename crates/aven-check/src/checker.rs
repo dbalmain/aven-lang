@@ -24,11 +24,11 @@ use crate::lower::{
 };
 use crate::ty::{
     LiteralBase, Row, RowEntry, RowKind, RowMergeSource, RowTail, Type, TypeScheme,
-    builtin_collection_method_type, display_inferred_type, free_metas, generalize,
-    has_only_meta_unknowns, is_concrete_type, is_meta_type, is_null_value, is_resolved_value_type,
-    is_text_type, is_undefined_value, literal_base, literal_variant_base, map_type,
-    mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
-    numeric_type_name, render_literal_value, type_contains_deferred,
+    builtin_collection_method_type, display_inferred_type, generalize, is_concrete_type,
+    is_meta_type, is_null_value, is_resolved_value_type, is_text_type, is_undefined_value,
+    literal_base, literal_variant_base, map_type, mismatched_literal_kind, named_builtin,
+    named_type_mismatch, named_type_name, numeric_type_name, render_literal_value,
+    type_contains_deferred, type_contains_variable,
 };
 use crate::unify::Unifier;
 use crate::{InferredType, ModuleImports};
@@ -668,7 +668,12 @@ fn collect_known_pattern_types(
         (_, Type::Nullable(inner)) if empty_value_pattern(pattern) != Some(EmptyValue::Null) => {
             collect_known_pattern_types(type_definitions, pattern, inner, known);
         }
-        (ExprKind::Name(name), _) if name != "_" && is_resolved_value_type(expected) => {
+        (ExprKind::Name(name), _)
+            if name != "_"
+                && (is_resolved_value_type(expected)
+                    || matches!(expected, Type::Meta(_))
+                    || type_contains_variable(expected)) =>
+        {
             known.insert(name.clone(), expected.clone());
         }
         (
@@ -725,14 +730,14 @@ fn collect_known_record_pattern_types(
             }
             RecordEntry::Shorthand { name, .. } => {
                 if let Some(field_ty) = row_field_type(row, name)
-                    && is_concrete_type(field_ty)
+                    && (is_concrete_type(field_ty) || type_contains_variable(field_ty))
                 {
                     known.insert(name.clone(), field_ty.clone());
                 }
             }
             RecordEntry::Rename { from, to, .. } => {
                 if let Some(field_ty) = row_field_type(row, from)
-                    && is_concrete_type(field_ty)
+                    && (is_concrete_type(field_ty) || type_contains_variable(field_ty))
                 {
                     known.insert(to.clone(), field_ty.clone());
                 }
@@ -1282,6 +1287,18 @@ fn arm_covered_tags(pattern: &Expr) -> Vec<&str> {
         .into_iter()
         .filter_map(variant_pattern_tag)
         .collect()
+}
+
+fn pure_tag_pattern(pattern: &Expr) -> Option<(&str, usize)> {
+    match &pattern.kind {
+        ExprKind::Group(inner) => pure_tag_pattern(inner),
+        ExprKind::Tag(tag) => Some((tag, 0)),
+        ExprKind::Call { callee, args } => match &callee.kind {
+            ExprKind::Tag(tag) => Some((tag, args.len())),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {

@@ -93,6 +93,68 @@ fn clock_and_zones_capabilities_are_imported_as_modules() {
 }
 
 #[test]
+fn std_result_type_exports_check() {
+    let dir = TempDir::new("std-result-check");
+    let entry = dir.write(
+        "main.av",
+        r#"{ mapErr, orElse } = import("std/result")
+ok : Result[Int, Text] = @Ok(1)
+err : Result[Int, Text] = @Err("x")
+mappedOk = mapErr(ok, (e) => "wrap: ${e}")
+mappedErr = mapErr(err, (e) => "wrap: ${e}")
+recovered = orElse(err, (_) => @Ok(0))
+passed = orElse(ok, (_) => @Ok(0))
+chain = (r: Result[Int, Text]) =>
+  value = mapErr(r, (e) => "step failed: ${e}")?^
+  @Ok(value)
+{ mapErr, orElse, mappedOk, mappedErr, recovered, passed, chain }
+"#,
+    );
+
+    let output = aven(&["check", entry.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        output.status.success(),
+        "aven check failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+}
+
+#[test]
+fn std_result_map_err_and_or_else_run() {
+    let dir = TempDir::new("std-result-run");
+    let entry = dir.write(
+        "main.av",
+        r#"{ mapErr, orElse } = import("std/result")
+show = (r) => r ?> @Ok(v) => writeLine("Ok(${v})"), @Err(e) => writeLine("Err(${e})")
+show(mapErr(@Ok(7), (e) => "wrap: ${e}"))
+show(mapErr(@Err("boom"), (e) => "wrap: ${e}"))
+show(orElse(@Err("boom"), (_) => @Ok(0)))
+show(orElse(@Ok(3), (_) => @Ok(0)))
+chain = (r) =>
+  value = mapErr(r, (e) => "step failed: ${e}")?^
+  @Ok(value)
+show(chain(@Ok(9)))
+show(chain(@Err("nope")))
+"#,
+    );
+
+    let output = aven(&["run", entry.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        output.status.success(),
+        "aven run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(
+        stdout(&output),
+        "Ok(7)\nErr(wrap: boom)\nOk(0)\nOk(3)\nOk(9)\nErr(step failed: nope)\n"
+    );
+}
+
+#[test]
 fn unregistered_library_and_missing_std_module_diagnose() {
     let dir = TempDir::new("std-time-errors");
     let entry = dir.write(

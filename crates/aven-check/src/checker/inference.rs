@@ -13,13 +13,39 @@ impl<'a> Checker<'a> {
 
     #[cfg(test)]
     pub(crate) fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
-        self.infer_top_level_value_for_output(name)
+        let scheme = self.infer_top_level(name)?;
+        let ty = self.unifier.instantiate_scheme(&scheme);
+        self.resolve_if_concrete(&ty)
     }
 
     pub(crate) fn infer_top_level_value_for_output(&mut self, name: &str) -> Option<Type> {
         let scheme = self.infer_top_level(name)?;
-        let ty = self.unifier.instantiate_scheme(&scheme);
-        self.resolve_if_concrete(&ty)
+        if scheme.vars.is_empty() && scheme.row_vars.is_empty() {
+            return self.resolve_if_concrete(&scheme.ty);
+        }
+        // Reify quantified schemes as Type::Variable form so module exports
+        // carry host-style generics (`scheme_from_global` understands them).
+        let names = scheme
+            .vars
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, Type::Variable(export_generic_name(index))))
+            .collect::<HashMap<_, _>>();
+        let ty = crate::ty::map_type_with_rows(
+            &scheme.ty,
+            &mut |node| match node {
+                Type::Meta(id) => names.get(id).cloned(),
+                _ => None,
+            },
+            &mut |tail| match tail {
+                RowTail::Var(id) if scheme.row_vars.contains(&id) => Some(Row {
+                    entries: Vec::new(),
+                    tail: RowTail::Open,
+                }),
+                RowTail::Closed | RowTail::Open | RowTail::Var(_) => None,
+            },
+        );
+        Some(ty)
     }
 
     #[cfg(test)]
@@ -74,7 +100,14 @@ impl<'a> Checker<'a> {
                 .find_map(|(binding_name, ty)| (binding_name == name).then_some(ty))
                 .and_then(local_value_type_as_type)
                 .unwrap_or(Type::Deferred);
-            self.generalize_with_row_merges(ty, &[], &[])
+            // Module exports reify polymorphic functions as `Type::Variable`
+            // binders. Treat them like host-generic globals so each use
+            // instantiates fresh metas.
+            if crate::ty::type_contains_variable(&ty) {
+                super::scheme_from_global(&ty, &mut self.unifier)
+            } else {
+                self.generalize_with_row_merges(ty, &[], &[])
+            }
         } else {
             TypeScheme::mono(Type::Deferred)
         };
@@ -2144,11 +2177,7 @@ impl<'a> Checker<'a> {
         for arg in args {
             let arg_type = self.infer(env, arg);
             let arg_type = self.unifier.resolve(&arg_type);
-            let numeric_metas_only = has_only_meta_unknowns(&arg_type)
-                && free_metas(&arg_type)
-                    .into_iter()
-                    .all(|id| self.unifier.is_numeric_meta(&Type::Meta(id)));
-            if !is_resolved_value_type(&arg_type) && !numeric_metas_only {
+            if type_contains_deferred(&arg_type) {
                 return Type::Deferred;
             }
             payload.push(arg_type);
@@ -2356,6 +2385,14 @@ impl<'a> Checker<'a> {
             _ => None,
         })
     }
+}
+
+fn export_generic_name(index: usize) -> String {
+    const LETTERS: &[u8; 26] = b"abcdefghijklmnopqrstuvwxyz";
+    LETTERS
+        .get(index)
+        .map(|letter| char::from(*letter).to_string())
+        .unwrap_or_else(|| format!("t{index}"))
 }
 
 fn host_comptime_reifiable_type(ty: &Type) -> bool {
