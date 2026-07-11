@@ -61,11 +61,17 @@ pub struct SourceOverlay {
     sources: HashMap<PathBuf, String>,
 }
 
+/// Embedded library modules, keyed by module specifier (`std`, `std/time`).
+pub type LibraryModules = HashMap<String, &'static str>;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModuleRoots {
     pub project: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub filesystem: bool,
+    /// Host-registered libraries resolving bare import specifiers: library
+    /// name -> module specifier -> embedded source text. Empty by default.
+    pub libraries: HashMap<String, LibraryModules>,
 }
 
 impl ModuleRoots {
@@ -84,7 +90,13 @@ impl ModuleRoots {
             project: Some(project),
             home,
             filesystem: true,
+            libraries: HashMap::new(),
         }
+    }
+
+    pub fn with_library(mut self, name: impl Into<String>, modules: LibraryModules) -> Self {
+        self.libraries.insert(name.into(), modules);
+        self
     }
 }
 
@@ -229,7 +241,7 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
         let export = if semantic_has_errors {
             CheckExport::HasErrors
         } else {
-            check_export_for_node(&graph.nodes[node_id], &semantic)
+            check_export_for_node(&graph.nodes[node_id], &semantic, globals)
         };
         let export = match export {
             CheckExport::UppercaseExportNotType { name, span } => {
@@ -386,7 +398,7 @@ impl ModuleGraph {
             return Ok(node_id);
         }
 
-        let file = self.load_source(path, overlay)?;
+        let file = self.load_source(path, overlay, roots)?;
         let parse = if self.nodes.is_empty() {
             entry_parse
                 .cloned()
@@ -419,14 +431,29 @@ impl ModuleGraph {
         Ok(node_id)
     }
 
-    fn load_source(&mut self, path: &Path, overlay: &SourceOverlay) -> io::Result<SourceFile> {
-        let source = overlay
-            .source(path)
-            .map_or_else(|| fs::read_to_string(path), |source| Ok(source.to_owned()))?;
-        let name = path.display().to_string();
-        let id = self
-            .source_map
-            .add(name.clone(), Some(path.to_path_buf()), source);
+    fn load_source(
+        &mut self,
+        path: &Path,
+        overlay: &SourceOverlay,
+        roots: &ModuleRoots,
+    ) -> io::Result<SourceFile> {
+        // Embedded library modules read from the registered library map (their
+        // virtual key never exists on disk); diagnostics render the bare
+        // specifier (`std/time`) as the file name.
+        let (name, path_hint, source) = match library_specifier(path) {
+            Some(specifier) => {
+                let source = library_module_source(roots, &specifier)
+                    .expect("library modules are resolved against the registry before loading");
+                (specifier, None, source.to_owned())
+            }
+            None => {
+                let source = overlay
+                    .source(path)
+                    .map_or_else(|| fs::read_to_string(path), |source| Ok(source.to_owned()))?;
+                (path.display().to_string(), Some(path.to_path_buf()), source)
+            }
+        };
+        let id = self.source_map.add(name, path_hint, source);
         Ok(self
             .source_map
             .get(id)
@@ -453,36 +480,66 @@ impl ModuleGraph {
             });
         };
 
-        let Some(resolved) = resolve_import_path(&self.nodes[importer].path, &specifier, roots)
-        else {
-            let diagnostic = if is_root_prefixed_import_specifier(&specifier) {
-                root_unavailable(call.specifier_span, &specifier)
-            } else {
-                unsupported_root(call.specifier_span, &specifier)
-            };
-            self.nodes[importer].parse.diagnostics.push(diagnostic);
-            return Ok(ImportRef {
-                specifier,
-                specifier_span: call.specifier_span,
-                call_span: call.call_span,
-                target: None,
-                failed: false,
-            });
-        };
-
-        let Ok(canonical) = fs::canonicalize(&resolved) else {
-            self.nodes[importer].parse.diagnostics.push(not_found(
-                call.specifier_span,
-                &specifier,
-                &resolved,
-            ));
-            return Ok(ImportRef {
-                specifier,
-                specifier_span: call.specifier_span,
-                call_span: call.call_span,
-                target: None,
-                failed: true,
-            });
+        let canonical = match resolve_import_target(&self.nodes[importer].path, &specifier, roots) {
+            ResolvedImport::File(resolved) => match fs::canonicalize(&resolved) {
+                Ok(canonical) => canonical,
+                Err(_) => {
+                    self.nodes[importer].parse.diagnostics.push(not_found(
+                        call.specifier_span,
+                        &specifier,
+                        &format!("tried {}", resolved.display()),
+                    ));
+                    return Ok(ImportRef {
+                        specifier,
+                        specifier_span: call.specifier_span,
+                        call_span: call.call_span,
+                        target: None,
+                        failed: true,
+                    });
+                }
+            },
+            // Library keys are virtual: already canonical, never touch disk.
+            ResolvedImport::Library(virtual_path) => virtual_path,
+            ResolvedImport::RootUnavailable => {
+                self.nodes[importer]
+                    .parse
+                    .diagnostics
+                    .push(root_unavailable(call.specifier_span, &specifier));
+                return Ok(ImportRef {
+                    specifier,
+                    specifier_span: call.specifier_span,
+                    call_span: call.call_span,
+                    target: None,
+                    failed: false,
+                });
+            }
+            ResolvedImport::UnknownLibrary => {
+                self.nodes[importer]
+                    .parse
+                    .diagnostics
+                    .push(unsupported_root(call.specifier_span, &specifier));
+                return Ok(ImportRef {
+                    specifier,
+                    specifier_span: call.specifier_span,
+                    call_span: call.call_span,
+                    target: None,
+                    failed: false,
+                });
+            }
+            ResolvedImport::LibraryModuleMissing { library, tried } => {
+                self.nodes[importer].parse.diagnostics.push(not_found(
+                    call.specifier_span,
+                    &specifier,
+                    &format!("tried `{tried}` in library `{library}`"),
+                ));
+                return Ok(ImportRef {
+                    specifier,
+                    specifier_span: call.specifier_span,
+                    call_span: call.call_span,
+                    target: None,
+                    failed: true,
+                });
+            }
         };
 
         if states.get(&canonical) == Some(&VisitState::Loading) {
@@ -633,7 +690,11 @@ fn eval_imports_for_node(
     imports
 }
 
-fn check_export_for_node(node: &ModuleNode, semantic: &SemanticOutput) -> CheckExport {
+fn check_export_for_node(
+    node: &ModuleNode,
+    semantic: &SemanticOutput,
+    globals: &HostGlobals,
+) -> CheckExport {
     let Some(final_expr) = final_expr(&node.parse.module) else {
         return CheckExport::NotImportable {
             note: format!("{} has no final expression to export", node.file.name),
@@ -724,11 +785,38 @@ fn check_export_for_node(node: &ModuleNode, semantic: &SemanticOutput) -> CheckE
         };
         let is_type = name.chars().next().is_some_and(char::is_uppercase);
         let field_ty = if is_type {
-            source_name
+            // Type exports cover module-local aliases AND host-registered type
+            // definitions (`Instant`, ...), which live in the same merged map.
+            let Some(definition) = source_name
                 .and_then(|source| semantic.type_definitions.get(source))
                 .cloned()
-        } else {
+            else {
+                return CheckExport::UppercaseExportNotType {
+                    name: name.clone(),
+                    span: value_span,
+                };
+            };
+            type_exports.insert(name.clone(), definition.clone());
+            // The *value* side of a type export is the type value: for a
+            // statics-carrying host type that value answers `Instant.parse`
+            // etc., so type its field as the statics record (mirroring the
+            // evaluator, where `Value::Type` field access resolves statics).
             source_name
+                .and_then(|source| aven_check::type_statics(globals, source))
+                .map_or(definition, |statics| {
+                    Type::Record(aven_check::Row {
+                        entries: statics
+                            .into_iter()
+                            .map(|field| aven_check::RowEntry::Field {
+                                name: field.name,
+                                ty: field.ty,
+                            })
+                            .collect(),
+                        tail: RowTail::Closed,
+                    })
+                })
+        } else {
+            let field_ty = source_name
                 .and_then(|source| semantic.top_level_types.get(source))
                 .cloned()
                 .or_else(|| {
@@ -740,22 +828,14 @@ fn check_export_for_node(node: &ModuleNode, semantic: &SemanticOutput) -> CheckE
                         })
                         .min_by_key(|inferred| inferred.name_span.len())
                         .map(|inferred| inferred.ty.clone())
-                })
-        };
-        let Some(field_ty) = field_ty else {
-            if is_type {
-                return CheckExport::UppercaseExportNotType {
-                    name: name.clone(),
-                    span: value_span,
+                });
+            let Some(field_ty) = field_ty else {
+                return CheckExport::NotImportable {
+                    note: format!("export field `{name}` is not statically known"),
                 };
-            }
-            return CheckExport::NotImportable {
-                note: format!("export field `{name}` is not statically known"),
             };
+            field_ty
         };
-        if is_type {
-            type_exports.insert(name.clone(), field_ty.clone());
-        }
         fields.push(aven_check::RowEntry::Field {
             name: name.clone(),
             ty: field_ty,
@@ -1038,11 +1118,139 @@ fn resolve_relative_path(importer: &Path, specifier: &str) -> PathBuf {
     }
 }
 
-fn resolve_import_path(importer: &Path, specifier: &str, roots: &ModuleRoots) -> Option<PathBuf> {
-    if specifier.starts_with("./") || specifier.starts_with("../") {
-        return Some(resolve_relative_path(importer, specifier));
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolvedImport {
+    File(PathBuf),
+    Library(PathBuf),
+    RootUnavailable,
+    UnknownLibrary,
+    LibraryModuleMissing { library: String, tried: String },
+}
+
+fn resolve_import_target(importer: &Path, specifier: &str, roots: &ModuleRoots) -> ResolvedImport {
+    if let Some(importer_specifier) = library_specifier(importer) {
+        return resolve_import_from_library(&importer_specifier, specifier, roots);
     }
 
+    if specifier.starts_with("./") || specifier.starts_with("../") {
+        return ResolvedImport::File(resolve_relative_path(importer, specifier));
+    }
+
+    if is_root_prefixed_import_specifier(specifier) {
+        return resolve_root_path(specifier, roots)
+            .map_or(ResolvedImport::RootUnavailable, ResolvedImport::File);
+    }
+
+    resolve_library_import(specifier, roots)
+}
+
+/// Imports from inside an embedded library module resolve within the same
+/// library: relative specifiers walk the library's module-specifier space, root
+/// prefixes are unavailable (libraries are self-contained), and bare names go
+/// through the ordinary library registry.
+fn resolve_import_from_library(
+    importer_specifier: &str,
+    specifier: &str,
+    roots: &ModuleRoots,
+) -> ResolvedImport {
+    if is_root_prefixed_import_specifier(specifier) {
+        return ResolvedImport::RootUnavailable;
+    }
+
+    if !specifier.starts_with("./") && !specifier.starts_with("../") {
+        return resolve_library_import(specifier, roots);
+    }
+
+    let library = library_name(importer_specifier).to_owned();
+    let mut segments: Vec<&str> = importer_specifier.split('/').collect();
+    segments.pop();
+    let relative = specifier.strip_suffix(".av").unwrap_or(specifier);
+    for segment in relative.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if segments.pop().is_none() {
+                    return ResolvedImport::LibraryModuleMissing {
+                        library,
+                        tried: format!("{specifier} (escapes the library)"),
+                    };
+                }
+            }
+            segment => segments.push(segment),
+        }
+    }
+    let module = segments.join("/");
+    if library_name(&module) == library
+        && roots
+            .libraries
+            .get(&library)
+            .is_some_and(|modules| modules.contains_key(&module))
+    {
+        ResolvedImport::Library(library_virtual_path(&module))
+    } else {
+        ResolvedImport::LibraryModuleMissing {
+            library,
+            tried: module,
+        }
+    }
+}
+
+fn resolve_library_import(specifier: &str, roots: &ModuleRoots) -> ResolvedImport {
+    let module = specifier.strip_suffix(".av").unwrap_or(specifier);
+    let library = library_name(module);
+    let Some(modules) = roots.libraries.get(library) else {
+        return ResolvedImport::UnknownLibrary;
+    };
+    if modules.contains_key(module) {
+        ResolvedImport::Library(library_virtual_path(module))
+    } else {
+        ResolvedImport::LibraryModuleMissing {
+            library: library.to_owned(),
+            tried: module.to_owned(),
+        }
+    }
+}
+
+fn library_name(specifier: &str) -> &str {
+    specifier.split('/').next().unwrap_or(specifier)
+}
+
+/// Virtual module-graph key for an embedded library module: `std/time` maps to
+/// `std:/time` and the bare `std` root module to `std:/`. Filesystem nodes are
+/// canonicalized absolute paths, so the two key spaces cannot collide, and
+/// virtual keys never reach `fs::canonicalize` or disk reads.
+fn library_virtual_path(specifier: &str) -> PathBuf {
+    match specifier.split_once('/') {
+        Some((library, rest)) => PathBuf::from(format!("{library}:/{rest}")),
+        None => PathBuf::from(format!("{specifier}:/")),
+    }
+}
+
+fn library_specifier(path: &Path) -> Option<String> {
+    let text = path.to_str()?;
+    let (library, rest) = text.split_once(":/")?;
+    if library.is_empty() || library.contains('/') {
+        return None;
+    }
+    Some(if rest.is_empty() {
+        library.to_owned()
+    } else {
+        format!("{library}/{rest}")
+    })
+}
+
+fn library_module_source<'roots>(
+    roots: &'roots ModuleRoots,
+    specifier: &str,
+) -> Option<&'roots str> {
+    roots
+        .libraries
+        .get(library_name(specifier))?
+        .get(specifier)
+        .copied()
+}
+
+fn resolve_root_path(specifier: &str, roots: &ModuleRoots) -> Option<PathBuf> {
     let (base, rest) = if let Some(rest) = specifier.strip_prefix("$/") {
         (roots.project.as_ref()?.clone(), rest)
     } else if let Some(rest) = specifier.strip_prefix("~/") {
@@ -1115,11 +1323,11 @@ fn value_type_name(value: &Value) -> &'static str {
     }
 }
 
-fn not_found(span: Span, specifier: &str, resolved: &Path) -> Diagnostic {
+fn not_found(span: Span, specifier: &str, tried: &str) -> Diagnostic {
     Diagnostic::error(format!("module `{specifier}` was not found"))
         .with_code(codes::module::NOT_FOUND)
         .with_label(Label::primary(span, "this import could not be loaded"))
-        .with_note(format!("tried {}", resolved.display()))
+        .with_note(tried)
         .with_note("check the path, directory, and optional `.av` extension")
 }
 
@@ -1128,10 +1336,10 @@ fn unsupported_root(span: Span, specifier: &str) -> Diagnostic {
         .with_code(codes::module::UNSUPPORTED_ROOT)
         .with_label(Label::primary(
             span,
-            "this import root is not supported in this milestone",
+            "the host provides no library by this name",
         ))
-        .with_note("use a local relative specifier or a root prefix provided by the host")
-        .with_note("bare libraries and packages remain unsupported until package resolution lands")
+        .with_note("use a local relative specifier, a root prefix, or a host-registered library")
+        .with_note("versioned packages remain unsupported until package resolution lands")
 }
 
 fn root_unavailable(span: Span, specifier: &str) -> Diagnostic {

@@ -430,9 +430,9 @@ fn home_and_filesystem_roots_use_their_explicit_host_paths() {
     );
     write(dir.path(), "filesystem.av", "value = 2\n{ value }\n");
     let roots = ModuleRoots {
-        project: None,
         home: Some(home),
         filesystem: true,
+        ..ModuleRoots::none()
     };
 
     let output = check_path_with_host_globals_and_roots(
@@ -467,6 +467,188 @@ fn unavailable_root_is_structured_and_bare_names_remain_unsupported() {
         .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::module::ROOT_UNAVAILABLE))
         .count();
     assert_eq!(root_unavailable_count, 3);
+}
+
+fn test_library_roots() -> ModuleRoots {
+    ModuleRoots::none().with_library(
+        "mylib",
+        [
+            ("mylib".to_owned(), "{ version: \"1.0\" }\n"),
+            (
+                "mylib/util".to_owned(),
+                "extra = import(\"./extra\")\njoin = (x: Text): Text => extra.decorate(x)\n{ join }\n",
+            ),
+            (
+                "mylib/extra".to_owned(),
+                "decorate = (x: Text): Text => \"<${x}>\"\n{ decorate }\n",
+            ),
+        ]
+        .into(),
+    )
+}
+
+#[test]
+fn bare_library_import_resolves_and_checks() {
+    let dir = TempDir::new("library-check");
+    write(
+        dir.path(),
+        "main.av",
+        "lib = import(\"mylib\")\nutil = import(\"mylib/util\")\nvalue : Text = util.join(lib.version)\n{ value }\n",
+    );
+
+    let output = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &test_library_roots(),
+    )
+    .expect("check should load library imports");
+
+    assert_no_errors(&output.reports);
+}
+
+#[test]
+fn bare_library_import_evaluates() {
+    let dir = TempDir::new("library-eval");
+    write(
+        dir.path(),
+        "main.av",
+        "util = import(\"mylib/util\")\n{ value: util.join(\"a\") }\n",
+    );
+
+    let output = aven_compiler::eval_path_with_globals_and_roots(
+        &dir.path().join("main.av"),
+        Vec::new(),
+        &test_library_roots(),
+    )
+    .expect("eval should load library imports");
+
+    assert_no_errors(&output.reports);
+    assert!(output.value.is_some());
+}
+
+#[test]
+fn unregistered_library_reports_unsupported_root() {
+    let dir = TempDir::new("library-unregistered");
+    write(dir.path(), "main.av", "x = import(\"other\")\n{ x }\n");
+
+    let output = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &test_library_roots(),
+    )
+    .expect("check should report import diagnostics");
+
+    assert_has_code(&output.reports, codes::module::UNSUPPORTED_ROOT);
+}
+
+#[test]
+fn missing_library_module_reports_not_found() {
+    let dir = TempDir::new("library-missing-module");
+    write(dir.path(), "main.av", "x = import(\"mylib/nope\")\n{ x }\n");
+
+    let output = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &test_library_roots(),
+    )
+    .expect("check should report import diagnostics");
+
+    assert_has_code(&output.reports, codes::module::NOT_FOUND);
+}
+
+#[test]
+fn root_prefixed_import_inside_library_is_root_unavailable() {
+    let dir = TempDir::new("library-root-prefixed");
+    write(dir.path(), "main.av", "x = import(\"esc\")\n{ x }\n");
+    let roots = ModuleRoots {
+        project: Some(dir.path().to_path_buf()),
+        filesystem: true,
+        ..ModuleRoots::none()
+    }
+    .with_library(
+        "esc",
+        [("esc".to_owned(), "y = import(\"$/y\")\n{ y }\n")].into(),
+    );
+
+    let output = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &roots,
+    )
+    .expect("check should report import diagnostics");
+
+    assert_has_code(&output.reports, codes::module::ROOT_UNAVAILABLE);
+}
+
+fn write_library_diamond(dir: &TempDir) {
+    write(
+        dir.path(),
+        "b.av",
+        "counter = import(\"count/counter\")\n{ value: counter.value }\n",
+    );
+    write(
+        dir.path(),
+        "c.av",
+        "counter = import(\"count/counter\")\n{ value: counter.value }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "b = import(\"./b\")\nc = import(\"./c\")\n{ b: b.value, c: c.value }\n",
+    );
+}
+
+fn counter_library(source: &'static str) -> ModuleRoots {
+    ModuleRoots::none().with_library("count", [("count/counter".to_owned(), source)].into())
+}
+
+#[test]
+fn library_diamond_shares_one_node() {
+    let dir = TempDir::new("library-diamond-check");
+    write_library_diamond(&dir);
+
+    let checked = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &counter_library("value = 1\n{ value }\n"),
+    )
+    .expect("check should load graph");
+
+    assert_no_errors(&checked.reports);
+    let library_nodes = checked
+        .nodes
+        .iter()
+        .filter(|node| node.file.name == "count/counter")
+        .count();
+    assert_eq!(library_nodes, 1, "two importers must share one node");
+}
+
+#[test]
+fn library_diamond_evaluates_once() {
+    let dir = TempDir::new("library-diamond-eval");
+    write_library_diamond(&dir);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let tick_calls = Rc::clone(&calls);
+    let globals = vec![(
+        "tick".to_owned(),
+        aven_eval::Value::native(move |args| {
+            let [aven_eval::Value::Text(value)] = args else {
+                return Err("tick expects one Text".to_owned());
+            };
+            tick_calls.borrow_mut().push(value.clone());
+            Ok(aven_eval::Value::Text(value.clone()))
+        }),
+    )];
+
+    let evaluated = aven_compiler::eval_path_with_globals_and_roots(
+        &dir.path().join("main.av"),
+        globals,
+        &counter_library("value = tick(\"counter\")\n{ value }\n"),
+    )
+    .expect("eval should load graph");
+
+    assert_no_errors(&evaluated.reports);
+    assert_eq!(calls.borrow().as_slice(), ["counter"]);
 }
 
 #[test]

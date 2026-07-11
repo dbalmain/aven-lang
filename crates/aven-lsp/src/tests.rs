@@ -1450,6 +1450,25 @@ fn file_backed_semantic_diagnostics_use_dependency_buffer_overlay() {
 }
 
 #[test]
+fn file_backed_documents_resolve_the_std_library() {
+    let dir = TempDir::new("lsp-std-library");
+    let source = "time = import(\"std/time\")\n\
+                  start : time.Instant = time.Instant.parse(\"2026-01-01T00:00:00Z\")?!\n\
+                  { start }\n";
+    write(dir.path(), "main.av", source);
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let mut store = DocumentStore::default();
+    store.set_document(main_uri.clone(), 1, source.to_owned());
+    let (document, overlay) = store
+        .semantic_input(&main_uri)
+        .expect("expected semantic input");
+
+    let semantic = analyze_document_semantics_for_uri(&main_uri, &document, &overlay);
+
+    assert_no_aven_diagnostics(&semantic.diagnostics);
+}
+
+#[test]
 fn file_backed_semantic_diagnostics_report_missing_dependency() {
     let dir = TempDir::new("lsp-missing-dependency");
     write(
@@ -1775,14 +1794,53 @@ fn import_specifier_completion_lists_project_root_children() {
 }
 
 #[test]
-fn import_specifier_completion_ignores_bare_library_names() {
-    let dir = TempDir::new("lsp-import-specifier-bare");
+fn import_specifier_completion_offers_registered_library_names() {
+    let dir = TempDir::new("lsp-import-specifier-library");
     write(dir.path(), "text.av", "value = 1\n{ value }\n");
     let main_uri = file_uri(&dir.path().join("main.av"));
     write(dir.path(), "main.av", "");
-    let document = parsed_file_document(&main_uri, "Dep = import(\"std\")\n");
+    let document = parsed_file_document(&main_uri, "Dep = import(\"st\")\n");
 
-    let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 17));
+    let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 16));
+
+    assert!(
+        completion_item(&completions, "std").is_some(),
+        "labels: {:?}",
+        completions
+            .iter()
+            .map(|item| &item.label)
+            .collect::<Vec<_>>()
+    );
+    assert!(completion_item(&completions, "text").is_none());
+}
+
+#[test]
+fn import_specifier_completion_lists_std_module_paths() {
+    let dir = TempDir::new("lsp-import-specifier-std-modules");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let document = parsed_file_document(&main_uri, "Dep = import(\"std/\")\n");
+
+    let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 18));
+
+    assert!(
+        completion_item(&completions, "time").is_some(),
+        "labels: {:?}",
+        completions
+            .iter()
+            .map(|item| &item.label)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn import_specifier_completion_offers_nothing_for_unknown_library() {
+    let dir = TempDir::new("lsp-import-specifier-unknown-library");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let document = parsed_file_document(&main_uri, "Dep = import(\"other/\")\n");
+
+    let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 20));
 
     assert!(completions.is_empty());
 }

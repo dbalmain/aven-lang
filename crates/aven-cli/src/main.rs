@@ -152,7 +152,7 @@ fn explain(code: &str) -> Result<()> {
 }
 
 fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
-    let roots = aven_compiler::ModuleRoots::discover(path);
+    let roots = discover_roots(path);
     let checked = aven_compiler::check_path_with_host_globals_and_roots(
         path,
         &aven_host::standard_check_host_globals(),
@@ -193,7 +193,7 @@ fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
 }
 
 fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
-    let roots = aven_compiler::ModuleRoots::discover(path);
+    let roots = discover_roots(path);
     let output = aven_compiler::eval_path_with_globals_and_roots(
         path,
         build_host(config)?.eval_globals(),
@@ -226,6 +226,13 @@ fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Module roots for `check`/`run`: filesystem discovery plus the embedded
+/// standard library, so bare `import("std")`/`import("std/time")` resolve.
+fn discover_roots(path: &Path) -> aven_compiler::ModuleRoots {
+    aven_compiler::ModuleRoots::discover(path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
 }
 
 fn is_err_value(value: &aven_eval::Value) -> bool {

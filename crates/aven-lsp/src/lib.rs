@@ -528,6 +528,13 @@ fn analyze_document_semantics_for_uri(
     }
 }
 
+/// Module roots for file-backed documents: filesystem discovery plus the
+/// embedded standard library, matching the CLI's `check`/`run` wiring.
+fn discover_module_roots(entry: &Path) -> aven_compiler::ModuleRoots {
+    aven_compiler::ModuleRoots::discover(entry)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+}
+
 fn module_semantics_for_document(
     uri: &Url,
     document: &ParsedDocument,
@@ -535,7 +542,7 @@ fn module_semantics_for_document(
     overlay: &aven_compiler::SourceOverlay,
 ) -> Option<DocumentSemanticAnalysis> {
     let entry_path = fs::canonicalize(uri.to_file_path().ok()?).ok()?;
-    let roots = aven_compiler::ModuleRoots::discover(&entry_path);
+    let roots = discover_module_roots(&entry_path);
     let output =
         aven_compiler::check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
             &entry_path,
@@ -837,15 +844,27 @@ fn import_specifier_completion_at_position(
     let cursor = offset.clamp(content_start, content_end);
     let typed = document.source().get(content_start..cursor)?;
 
-    if !typed.starts_with("./") && !typed.starts_with("../") && !typed.starts_with("$/") {
-        return Some(Vec::new());
-    }
-
     let (directory_specifier, prefix) = typed
         .rsplit_once('/')
         .map_or(("", typed), |(directory, prefix)| {
             (&typed[..directory.len() + 1], prefix)
         });
+    let replace_start = cursor.saturating_sub(prefix.len());
+    let range = exact_offset_range(document, Span::new(replace_start, cursor));
+
+    if !typed.starts_with("./") && !typed.starts_with("../") && !typed.starts_with("$/") {
+        // Bare specifiers resolve through host-registered libraries: offer
+        // library names first, then the chosen library's module paths.
+        if typed.starts_with("~/") || typed.starts_with("//") {
+            return Some(Vec::new());
+        }
+        return Some(library_import_completions(
+            directory_specifier,
+            prefix,
+            range,
+        ));
+    }
+
     let search_dir = if let Some(rest) = directory_specifier.strip_prefix("$/") {
         aven_compiler::ModuleRoots::discover(&uri.to_file_path().ok()?)
             .project?
@@ -853,8 +872,6 @@ fn import_specifier_completion_at_position(
     } else {
         uri.to_file_path().ok()?.parent()?.join(directory_specifier)
     };
-    let replace_start = cursor.saturating_sub(prefix.len());
-    let range = exact_offset_range(document, Span::new(replace_start, cursor));
 
     let mut items = Vec::new();
     for entry in fs::read_dir(search_dir).ok()? {
@@ -892,6 +909,56 @@ fn import_specifier_completion_at_position(
 
     items.sort_by(|left, right| left.label.cmp(&right.label));
     Some(items)
+}
+
+/// Completions for bare (library) import specifiers: with nothing before the
+/// cursor segment, registered library names; after `std/`, that library's
+/// module paths.
+fn library_import_completions(
+    directory_specifier: &str,
+    prefix: &str,
+    range: Range,
+) -> Vec<CompletionItem> {
+    let libraries = [(aven_host::STD_LIBRARY_NAME, aven_host::std_library())];
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    if directory_specifier.is_empty() {
+        for (name, _) in libraries {
+            if name.starts_with(prefix) && seen.insert(name.to_owned()) {
+                items.push(import_path_completion_item(
+                    name.to_owned(),
+                    CompletionItemKind::MODULE,
+                    range,
+                ));
+            }
+        }
+    } else {
+        for (_, modules) in &libraries {
+            for module in modules.keys() {
+                let Some(remainder) = module.strip_prefix(directory_specifier) else {
+                    continue;
+                };
+                let (segment, is_directory) = remainder
+                    .split_once('/')
+                    .map_or((remainder, false), |(segment, _)| (segment, true));
+                if segment.is_empty() || !segment.starts_with(prefix) {
+                    continue;
+                }
+                let (label, kind) = if is_directory {
+                    (format!("{segment}/"), CompletionItemKind::FOLDER)
+                } else {
+                    (segment.to_owned(), CompletionItemKind::FILE)
+                };
+                if seen.insert(label.clone()) {
+                    items.push(import_path_completion_item(label, kind, range));
+                }
+            }
+        }
+    }
+
+    items.sort_by(|left, right| left.label.cmp(&right.label));
+    items
 }
 
 fn is_import_string_argument(tokens: &[&aven_parser::Token], string_index: usize) -> bool {

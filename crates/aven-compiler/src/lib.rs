@@ -20,7 +20,7 @@ pub use aven_check::{
 
 mod modules;
 pub use modules::{
-    ExportProvenance, ExportProvenanceMap, ModuleCheckOutput, ModuleEvalOutput,
+    ExportProvenance, ExportProvenanceMap, LibraryModules, ModuleCheckOutput, ModuleEvalOutput,
     ModuleImportResolution, ModuleNodeCheckOutput, ModuleRoots, SourceOverlay,
     check_path_with_host_globals, check_path_with_host_globals_and_overlay,
     check_path_with_host_globals_and_overlay_and_entry_parse,

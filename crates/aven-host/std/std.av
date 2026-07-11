@@ -1,0 +1,2 @@
+# The standard-library root module: `import("std")`.
+{ version: "0.1.0" }

@@ -1759,8 +1759,8 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 - H3 open questions (recorded under Milestone H, not scheduled)
 - the Milestone IO watch item: define the bare write tier in terms of the Result
   handles so the two tiers cannot drift
-- Milestone Z — modules and imports: **Z4 module type exports done 2026-07-11**
-  (see below); bare library/package names remain open as package resolution
+- Milestone Z — modules and imports: **Z5 bare library names / embedded std done
+  2026-07-11** (see below); versioned packages remain open as package resolution
 
 ## Milestone N — null/undefined model
 
@@ -2794,8 +2794,8 @@ gate suite passed on current main.
 
 ## Milestone Z — modules and imports
 
-Status: Z4 (module type exports) done 2026-07-11; bare library names remain
-open as package resolution
+Status: Z5 (bare library names, embedded `std`) done 2026-07-11; versioned
+packages remain open as package resolution
 
 Goal: host-controlled module resolution per the spec (`import("./lib/Text")`,
 `Std = import("std")`). Import specifiers are static `Text` (P-rm), so `import`
@@ -2831,11 +2831,11 @@ checker re-entrancy to keep the semantic crates small.
   `//` uses the filesystem root when provided by the host. CLI and file-backed
   LSP resolution discover roots; embeddings can explicitly provide none
   (`module.root-unavailable`). Bare names stay `module.unsupported-root`.
-- Z4 done 2026-07-11: explicitly exported monomorphic type aliases travel in
-  the module export channel. Importers can use `util.User` in annotations and
+- Z4 done 2026-07-11: explicitly exported monomorphic type aliases travel in the
+  module export channel. Importers can use `util.User` in annotations and
   extract `{ User }` (including rename patterns); type exports participate in
-  completion, hover, and goto provenance. Alias-shaped standard modules now
-  meet the type-export prerequisite. Comptime functions producing types and
+  completion, hover, and goto provenance. Alias-shaped standard modules now meet
+  the type-export prerequisite. Comptime functions producing types and
   parameterized aliases remain deferred; bare library names still require
   package-resolution work.
 - Z-LSP diagnostics done 2026-07-09: file-backed documents run the module-graph
@@ -2851,12 +2851,33 @@ checker re-entrancy to keep the semantic crates small.
   hover through import bindings ride the existing type machinery. Goto resolves
   specifier strings, pattern-bound import names, and imported member access to
   the dependency file; import-specifier completion lists sibling dirs/`.av`
-  files (extension omitted) for `./`/`../` and `$/` (from the discovered
-  project root), and offers nothing for bare library names.
-- Z-open: bare library names (`std`, packages) remain open as package
-  resolution (type-export prerequisite met by Z4 for alias-shaped modules).
-  Dynamic import is permanently comptime-only and reports
-  `module.dynamic-import`; it is never a runtime fallback.
+  files (extension omitted) for `./`/`../` and `$/` (from the discovered project
+  root), and offers nothing for bare library names.
+- Z5 done 2026-07-11: bare library names resolve through host-registered
+  libraries on `ModuleRoots` (`libraries`: name → module specifier → embedded
+  source; empty by default). The CLI and file-backed LSP register `std` from
+  `aven_host::std_library()` — `.av` sources embedded via `include_str!` under
+  `crates/aven-host/std/`, so the binary needs no filesystem for std. `std/time`
+  re-exports the five temporal types by punning the host-registered names; `std`
+  itself exports only `version`. Library modules key the graph by a virtual path
+  (`std:/time`) that never touches `fs::canonicalize` or disk, dedups diamonds
+  onto one node, and renders diagnostics as `std/time`. Relative imports inside
+  a library resolve within the same library map; `$/`/`~/`/`//` from a library
+  module diagnose `module.root-unavailable`. Unregistered library →
+  `module.unsupported-root`; registered library with a missing module →
+  `module.not-found` (with a "tried … in library …" note). Export capture
+  widening: an uppercase export whose source is a statics-carrying host type
+  types its _value_ field as the statics record (mirroring `Value::Type` field
+  access at eval), so `Instant.parse` checks through the import; the type-export
+  channel still carries the definition for annotations. LSP import-specifier
+  completion offers library names after `"` and a library's module paths after
+  `std/`; goto into an embedded module is deliberately omitted (the virtual key
+  is not a file URI the editor could open). Deliberate deferrals: `now`/`zone`
+  migration into `std/time` (blocked on droppable-capability composition),
+  packages/versioned dependencies, and `Aven.toml` `[dependencies]`.
+- Z-open: versioned packages remain open as package resolution. Dynamic import
+  is permanently comptime-only and reports `module.dynamic-import`; it is never
+  a runtime fallback.
 - Design decision (user, 2026-07-09): **modules bind lowercase** — a module is
   an ordinary record value; uppercase is reserved for types alone (no
   module/namespace category). `text = import("std/Text")`; types travel inside
@@ -2875,9 +2896,8 @@ checker re-entrancy to keep the semantic crates small.
   match-pattern destructuring; spreads require a statically-known closed record
   (`type.spread-shape-unknown` otherwise); `:..` is block-only
   (`name.no-toplevel-spread-shadow` at top level); uppercase pattern binders on
-  a static import with a matching type export bind ordinary type aliases
-  (Z4); otherwise they still diagnose
-  `type.uppercase-pattern-binder-unsupported`.
+  a static import with a matching type export bind ordinary type aliases (Z4);
+  otherwise they still diagnose `type.uppercase-pattern-binder-unsupported`.
 - Checker bug discovered (2026-07-09), still open: a binding that shadows a
   builtin type name (`Text = import("./text")`) breaks record spread of that
   binding when the imported signatures mention the shadowed type —

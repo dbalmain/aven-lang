@@ -17,6 +17,7 @@ mod text_format;
 mod toml_format;
 mod yaml;
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals, Type};
@@ -660,6 +661,20 @@ pub fn stdio_handle_type() -> Type {
     ])
 }
 
+/// The library name the embedded standard library registers under.
+pub const STD_LIBRARY_NAME: &str = "std";
+
+/// Embedded standard-library sources, keyed by module specifier. std is
+/// written in Aven and only puns host-registered natives, so registering this
+/// map as the `std` library on `ModuleRoots` needs no filesystem at runtime.
+/// The CLI wires it in; embedded hosts opt in explicitly.
+pub fn std_library() -> HashMap<String, &'static str> {
+    HashMap::from([
+        ("std".to_owned(), include_str!("../std/std.av")),
+        ("std/time".to_owned(), include_str!("../std/time.av")),
+    ])
+}
+
 /// Type globals for the standard host prelude used by `aven check` and the LSP.
 pub fn standard_check_globals() -> Vec<(String, Type)> {
     standard_check_host_globals().types
@@ -803,6 +818,31 @@ mod tests {
             span_id: "0".repeat(16),
             trace_flags: "01".to_owned(),
             trace_state: String::new(),
+        }
+    }
+
+    #[test]
+    fn std_library_modules_are_keyed_under_std_and_parse_cleanly() {
+        let library = std_library();
+
+        let mut specifiers: Vec<_> = library.keys().cloned().collect();
+        specifiers.sort();
+        assert_eq!(specifiers, ["std", "std/time"]);
+
+        for (specifier, source) in &library {
+            assert!(
+                specifier == STD_LIBRARY_NAME
+                    || specifier.starts_with(&format!("{STD_LIBRARY_NAME}/")),
+                "module `{specifier}` is not under the std library name"
+            );
+            let file =
+                aven_core::SourceFile::new(aven_core::FileId(0), specifier.clone(), None, *source);
+            let parsed = aven_parser::parse_source(&file);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "std module `{specifier}` has parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
         }
     }
 
