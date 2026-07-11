@@ -1,6 +1,6 @@
 use super::*;
 
-impl<'a> comptime::EvalContext<'a> for Checker<'a> {
+impl comptime::EvalContext for Checker<'_> {
     fn lower_comptime_type(
         &mut self,
         expr: &Expr,
@@ -18,15 +18,8 @@ impl<'a> comptime::EvalContext<'a> for Checker<'a> {
         }
     }
 
-    fn lookup_comptime_function(&self, name: &str) -> Option<comptime::ComptimeFunction<'a>> {
-        let binding = (*self.bindings.get(name)?)?;
-        let (params, body) = lambda_parts(&binding.value)?;
-
-        Some(comptime::ComptimeFunction {
-            name: &binding.name,
-            params,
-            body,
-        })
+    fn lookup_comptime_function(&self, name: &str) -> Option<comptime::ComptimeFunction> {
+        self.lookup_comptime_function_export(name)
     }
 
     fn cached_specialization(

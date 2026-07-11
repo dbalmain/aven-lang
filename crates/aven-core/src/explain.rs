@@ -39,6 +39,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A compile-time reflection function was applied to a concrete type it cannot inspect. Pass the kind of type the reflection function expects, or leave the expression deferred until the subject type is known.",
     },
     DiagnosticExplanation {
+        code: codes::comptime::UNEXPANDABLE_IMPORT,
+        text: "An imported name was applied in type position, but the importer could not expand it to a concrete type. Export a comptime type function from the dependency (params + body that evaluate at compile time), or write the type annotation without that application.",
+    },
+    DiagnosticExplanation {
         code: codes::layout::INCONSISTENT_INDENTATION,
         text: "A line dedented to a column that does not match an open layout block. Align it with an existing block level or change the surrounding indentation.",
     },

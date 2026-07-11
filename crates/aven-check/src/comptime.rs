@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::marker::PhantomData;
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{Expr, ExprKind, Literal, Param};
@@ -117,35 +116,49 @@ pub(crate) struct LoweredType {
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ComptimeFunction<'a> {
-    pub(crate) name: &'a str,
-    pub(crate) params: &'a [Param],
-    pub(crate) body: &'a Expr,
+/// A comptime-evaluable function definition that can be stored and carried
+/// across module boundaries (owned AST — no borrows into the defining module).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComptimeExport {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub body: Expr,
 }
 
-pub(crate) trait EvalContext<'a> {
+impl ComptimeExport {
+    pub fn from_lambda(name: impl Into<String>, params: &[Param], body: &Expr) -> Self {
+        Self {
+            name: name.into(),
+            params: params.to_vec(),
+            body: body.clone(),
+        }
+    }
+}
+
+pub(crate) type ComptimeFunction = ComptimeExport;
+
+pub(crate) trait EvalContext {
     fn lower_comptime_type(
         &mut self,
         expr: &Expr,
         bindings: &HashMap<String, ComptimeValue>,
     ) -> LoweredType;
-    fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction<'a>>;
+    fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction>;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
     fn infer_value_type(&mut self, expr: &Expr) -> Type;
     fn type_is_unresolved(&self, ty: &Type) -> bool;
 }
 
-pub(crate) fn evaluate_type_position<'a>(
-    context: &mut impl EvalContext<'a>,
+pub(crate) fn evaluate_type_position(
+    context: &mut impl EvalContext,
     expr: &Expr,
 ) -> EvaluationResult {
     evaluate_type_position_with_bindings(context, expr, &HashMap::new())
 }
 
-pub(crate) fn evaluate_type_position_with_bindings<'a>(
-    context: &mut impl EvalContext<'a>,
+pub(crate) fn evaluate_type_position_with_bindings(
+    context: &mut impl EvalContext,
     expr: &Expr,
     bindings: &HashMap<String, ComptimeValue>,
 ) -> EvaluationResult {
@@ -153,7 +166,6 @@ pub(crate) fn evaluate_type_position_with_bindings<'a>(
         context,
         visited: HashSet::new(),
         fuel: DEFAULT_EVALUATION_FUEL,
-        module: PhantomData,
     };
     evaluator.evaluate_expr(expr, &Environment::from_bindings(bindings))
 }
@@ -293,19 +305,18 @@ fn evaluate_runtime_bool_binary(
     EvaluationResult::evaluated(ComptimeValue::Bool(value))
 }
 
-struct Evaluator<'ctx, 'a, C>
+struct Evaluator<'ctx, C>
 where
-    C: EvalContext<'a> + ?Sized,
+    C: EvalContext + ?Sized,
 {
     context: &'ctx mut C,
     visited: HashSet<SpecializationKey>,
     fuel: usize,
-    module: PhantomData<&'a ()>,
 }
 
-impl<'a, C> Evaluator<'_, 'a, C>
+impl<C> Evaluator<'_, C>
 where
-    C: EvalContext<'a> + ?Sized,
+    C: EvalContext + ?Sized,
 {
     fn evaluate_expr(&mut self, expr: &Expr, env: &Environment) -> EvaluationResult {
         let expr = ungroup(expr);
@@ -507,7 +518,7 @@ where
 
     fn evaluate_function_application(
         &mut self,
-        function: ComptimeFunction<'a>,
+        function: ComptimeFunction,
         call_span: Span,
         args: &[Expr],
         env: &Environment,
@@ -520,18 +531,18 @@ where
             Ok(values) => values,
             Err(result) => return result,
         };
-        let key = SpecializationKey::new(function.name, &values);
+        let key = SpecializationKey::new(&function.name, &values);
 
         if let Some(result) = self.context.cached_specialization(&key) {
             return result;
         }
 
         if !self.visited.insert(key.clone()) {
-            return EvaluationResult::diagnostic(evaluation_cycle(call_span, function.name));
+            return EvaluationResult::diagnostic(evaluation_cycle(call_span, &function.name));
         }
 
-        let body_env = Environment::from_params(function.params, values);
-        let result = self.evaluate_expr(function.body, &body_env);
+        let body_env = Environment::from_params(&function.params, values);
+        let result = self.evaluate_expr(&function.body, &body_env);
         self.visited.remove(&key);
 
         if !matches!(result.evaluation, Evaluation::Unsupported) {

@@ -1565,6 +1565,22 @@ fn type_export_pattern_binders(
         .collect()
 }
 
+/// Export-field name that a record-pattern binder extracts. Shorthand `{ pair }`
+/// maps binder `pair` → export `pair`; rename `{ pair -> p }` maps `p` → `pair`.
+pub(crate) fn import_pattern_source_for_binder<'a>(
+    pattern: &'a Expr,
+    binder: &str,
+) -> Option<&'a str> {
+    let ExprKind::Record(entries) = &ungroup_expr(pattern).kind else {
+        return None;
+    };
+    entries.iter().find_map(|entry| match entry {
+        RecordEntry::Shorthand { name, .. } if name == binder => Some(name.as_str()),
+        RecordEntry::Rename { from, to, .. } if to == binder => Some(from.as_str()),
+        _ => None,
+    })
+}
+
 fn result_constructor_tag(callee: &Expr) -> Option<&str> {
     let ExprKind::Tag(tag) = &ungroup_expr(callee).kind else {
         return None;

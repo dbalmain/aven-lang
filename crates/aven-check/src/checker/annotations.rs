@@ -272,12 +272,22 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Literal(Literal::Bool(_) | Literal::Number(_) | Literal::String(_))
             | ExprKind::Tag(_) => self.lower_singleton_variant_annotation(annotation),
-            ExprKind::Call { .. } => self
-                .try_lower_comptime_annotation(annotation)
-                .unwrap_or_else(|| {
-                    self.lower_deferred_annotation(annotation);
-                    Type::Deferred
-                }),
+            ExprKind::Call { callee, .. } => {
+                match self.try_lower_comptime_annotation(annotation) {
+                    Some(ty) => ty,
+                    None => {
+                        // Imported names applied in type position must expand; silent
+                        // Deferred would accept anything (the pre-fix module bug).
+                        if let Some(name) = call_callee_name(callee)
+                            && self.is_imported_name(name)
+                        {
+                            self.report_unexpandable_imported_application(name, annotation.span);
+                        }
+                        self.lower_deferred_annotation(annotation);
+                        Type::Deferred
+                    }
+                }
+            }
             ExprKind::Missing => Type::Deferred,
             ExprKind::Literal(_)
             | ExprKind::Interpolation(_)
@@ -372,5 +382,12 @@ impl<'a> Checker<'a> {
         walk_expr_children(annotation, &mut |child| {
             self.lower_annotation(child);
         });
+    }
+}
+
+fn call_callee_name(callee: &Expr) -> Option<&str> {
+    match &ungroup_expr(callee).kind {
+        ExprKind::Name(name) => Some(name.as_str()),
+        _ => None,
     }
 }

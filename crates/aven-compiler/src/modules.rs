@@ -4,11 +4,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use aven_check::{ModuleImports as CheckModuleImports, RowTail, Type};
+use aven_check::{ComptimeExport, ModuleImports as CheckModuleImports, RowTail, Type};
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
 use aven_parser::{
-    Expr, ExprKind, Item, Literal, Module, ParseOutput, RecordEntry, decode_string_literal,
+    Binding, Expr, ExprKind, Item, Literal, Module, Param, ParseOutput, PatternBinding,
+    RecordEntry, decode_string_literal,
 };
 
 use crate::{
@@ -193,6 +194,7 @@ enum CheckExport {
     Record {
         ty: Type,
         type_exports: HashMap<String, Type>,
+        comptime_exports: HashMap<String, ComptimeExport>,
     },
     HasErrors,
     UppercaseExportNotType {
@@ -291,7 +293,7 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
         let export = if semantic_has_errors {
             CheckExport::HasErrors
         } else {
-            check_export_for_node(&graph.nodes[node_id], &semantic, &node_globals)
+            check_export_for_node(&graph.nodes[node_id], &semantic, &node_globals, &imports)
         };
         let export = match export {
             CheckExport::UppercaseExportNotType { name, span } => {
@@ -729,9 +731,14 @@ fn check_imports_for_node(
             continue;
         }
         match import.target.and_then(|target| exports.get(target)) {
-            Some(CheckExport::Record { ty, type_exports }) if !import.failed => {
+            Some(CheckExport::Record {
+                ty,
+                type_exports,
+                comptime_exports,
+            }) if !import.failed => {
                 imports.insert(import.specifier.clone(), ty.clone());
                 imports.insert_type_exports(import.specifier.clone(), type_exports.clone());
+                imports.insert_comptime_exports(import.specifier.clone(), comptime_exports.clone());
             }
             Some(CheckExport::NotImportable { note }) if !import.failed => {
                 imports.insert_failed(import.specifier.clone());
@@ -795,6 +802,7 @@ fn check_export_for_node(
     node: &ModuleNode,
     semantic: &SemanticOutput,
     globals: &HostGlobals,
+    imports: &CheckModuleImports,
 ) -> CheckExport {
     let Some(final_expr) = final_expr(&node.parse.module) else {
         return CheckExport::NotImportable {
@@ -865,14 +873,18 @@ fn check_export_for_node(
         if inferred_empty
             && let Some(rebuilt) = rebuild_value_export_record(entries, &semantic.top_level_types)
         {
+            let comptime_exports = collect_comptime_exports(entries, &node.parse.module, imports);
             return CheckExport::Record {
                 ty: rebuilt,
                 type_exports: HashMap::new(),
+                comptime_exports,
             };
         }
+        let comptime_exports = collect_comptime_exports(entries, &node.parse.module, imports);
         return CheckExport::Record {
             ty,
             type_exports: HashMap::new(),
+            comptime_exports,
         };
     }
     let mut fields = Vec::new();
@@ -958,12 +970,120 @@ fn check_export_for_node(
             ty: field_ty,
         });
     }
+    let comptime_exports = collect_comptime_exports(entries, &node.parse.module, imports);
     CheckExport::Record {
         ty: Type::Record(aven_check::Row {
             entries: fields,
             tail: RowTail::Closed,
         }),
         type_exports,
+        comptime_exports,
+    }
+}
+
+/// Collect comptime-evaluable lambdas among the export fields so importers can
+/// specialize applications such as `pair(Int)`. Local lambdas contribute their
+/// owned params+body; re-exported import binders forward the dependency's
+/// already-owned export (transitive re-export).
+fn collect_comptime_exports(
+    entries: &[RecordEntry],
+    module: &Module,
+    imports: &CheckModuleImports,
+) -> HashMap<String, ComptimeExport> {
+    let mut exports = HashMap::new();
+    for entry in entries {
+        let (export_name, source_name) = match entry {
+            RecordEntry::Field { name, value, .. } => {
+                let Some(source) = expr_name(value) else {
+                    continue;
+                };
+                (name.as_str(), source)
+            }
+            RecordEntry::Shorthand { name, .. } => (name.as_str(), name.as_str()),
+            RecordEntry::Rename { from, to, .. } => (to.as_str(), from.as_str()),
+            _ => continue,
+        };
+        if export_name.chars().next().is_some_and(char::is_uppercase) {
+            continue;
+        }
+        if let Some(export) = comptime_export_for_source(module, source_name, imports) {
+            exports.insert(
+                export_name.to_owned(),
+                ComptimeExport {
+                    name: export_name.to_owned(),
+                    params: export.params,
+                    body: export.body,
+                },
+            );
+        }
+    }
+    exports
+}
+
+fn comptime_export_for_source(
+    module: &Module,
+    source_name: &str,
+    imports: &CheckModuleImports,
+) -> Option<ComptimeExport> {
+    if let Some(binding) = top_level_binding(module, source_name)
+        && let Some((params, body)) = lambda_parts(&binding.value)
+    {
+        return Some(ComptimeExport::from_lambda(source_name, params, body));
+    }
+
+    let pattern_binding = top_level_pattern_binding(module, source_name)?;
+    let specifier = aven_parser::static_import_specifier(&pattern_binding.value)?;
+    let source = import_pattern_source_for_binder(&pattern_binding.pattern, source_name)?;
+    let export = imports.comptime_export(&specifier, source)?;
+    Some(ComptimeExport {
+        name: source_name.to_owned(),
+        params: export.params.clone(),
+        body: export.body.clone(),
+    })
+}
+
+fn top_level_binding<'a>(module: &'a Module, name: &str) -> Option<&'a Binding> {
+    module.items.iter().find_map(|item| match item {
+        Item::Binding(binding) if binding.name == name => Some(binding),
+        _ => None,
+    })
+}
+
+fn top_level_pattern_binding<'a>(module: &'a Module, name: &str) -> Option<&'a PatternBinding> {
+    module.items.iter().find_map(|item| {
+        let Item::PatternBinding(binding) = item else {
+            return None;
+        };
+        aven_parser::pattern_bindings(&binding.pattern)
+            .into_iter()
+            .any(|site| site.name == name)
+            .then_some(binding)
+    })
+}
+
+fn import_pattern_source_for_binder<'a>(pattern: &'a Expr, binder: &str) -> Option<&'a str> {
+    let ExprKind::Record(entries) = &pattern.kind else {
+        // Groups are rare in pattern position; still unwrap one level.
+        if let ExprKind::Group(inner) = &pattern.kind {
+            return import_pattern_source_for_binder(inner, binder);
+        }
+        return None;
+    };
+    entries.iter().find_map(|entry| match entry {
+        RecordEntry::Shorthand { name, .. } if name == binder => Some(name.as_str()),
+        RecordEntry::Rename { from, to, .. } if to == binder => Some(from.as_str()),
+        _ => None,
+    })
+}
+
+fn lambda_parts(expr: &Expr) -> Option<(&[Param], &Expr)> {
+    let mut expr = expr;
+    while let ExprKind::Group(inner) = &expr.kind {
+        expr = inner;
+    }
+    match &expr.kind {
+        ExprKind::Lambda { params, body, .. } => Some((params.as_slice(), body)),
+        _ => None,
     }
 }
 
@@ -1181,7 +1301,10 @@ fn library_interface(
     node: &ModuleNode,
     export: &CheckExport,
 ) -> Option<ModuleInterface> {
-    let CheckExport::Record { ty, type_exports } = export else {
+    let CheckExport::Record {
+        ty, type_exports, ..
+    } = export
+    else {
         return None;
     };
     let Type::Record(row) = ty else {

@@ -14,6 +14,7 @@ pub mod comptime {
     pub const HOST_FUNCTION: &str = "comptime.host-function";
     pub const NON_LIFTABLE_INTO_RUNTIME: &str = "comptime.non-liftable-into-runtime";
     pub const REFLECTION_TYPE_MISMATCH: &str = "comptime.reflection-type-mismatch";
+    pub const UNEXPANDABLE_IMPORT: &str = "comptime.unexpandable-import";
 }
 
 pub mod layout {
@@ -146,6 +147,7 @@ pub const ALL: &[&str] = &[
     comptime::HOST_FUNCTION,
     comptime::NON_LIFTABLE_INTO_RUNTIME,
     comptime::REFLECTION_TYPE_MISMATCH,
+    comptime::UNEXPANDABLE_IMPORT,
     layout::INCONSISTENT_INDENTATION,
     lex::LEADING_BOM,
     lex::RESERVED_OPERATOR,

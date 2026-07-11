@@ -206,6 +206,22 @@ impl<'a> Checker<'a> {
         );
     }
 
+    pub(super) fn report_unexpandable_imported_application(&mut self, name: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "cannot expand imported `{name}` in type position"
+            ))
+            .with_code(codes::comptime::UNEXPANDABLE_IMPORT)
+            .with_label(Label::primary(
+                span,
+                "this imported application could not be evaluated at compile time",
+            ))
+            .with_note(
+                "import a comptime type function (for example `pair = (@t) => { first: t, second: t }`) and apply it with type arguments, or write the type annotation locally",
+            ),
+        );
+    }
+
     pub(super) fn report_unresolved_binding(&mut self, name_span: Span) {
         self.diagnostics.push(
             Diagnostic::error("cannot determine a type for this binding")

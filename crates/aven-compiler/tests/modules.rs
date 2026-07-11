@@ -939,6 +939,110 @@ fn library_nodes_carry_a_generated_interface_in_export_order() {
     assert_eq!(main_node.interface, None, "file-backed nodes stay bare");
 }
 
+#[test]
+fn cross_module_comptime_type_function_checks_fields() {
+    let dir = TempDir::new("comptime-type-fn-export");
+    write(
+        dir.path(),
+        "shapes.av",
+        "pair = (@t) => { first: t, second: t }\n{ pair }\n",
+    );
+    write(
+        dir.path(),
+        "main_ok.av",
+        "{ pair } = import(\"./shapes\")\np: pair(Int) = { first: 1, second: 2 }\n{ p }\n",
+    );
+    let ok = check_path_with_host_globals(&dir.path().join("main_ok.av"), &HostGlobals::default())
+        .expect("matching pair(Int) should check");
+    assert_no_errors(&ok.reports);
+
+    let ran = eval_path_with_globals(&dir.path().join("main_ok.av"), vec![])
+        .expect("matching pair(Int) should evaluate");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ p: { first: 1, second: 2 } }".to_owned())
+    );
+
+    write(
+        dir.path(),
+        "main_bad.av",
+        "{ pair } = import(\"./shapes\")\np: pair(Int) = { first: 1, second: \"two\" }\n{ p }\n",
+    );
+    let bad =
+        check_path_with_host_globals(&dir.path().join("main_bad.av"), &HostGlobals::default())
+            .expect("check should load graph");
+    assert_has_code(&bad.reports, codes::ty::MISMATCH);
+
+    // Standalone comptime binding of an imported type function matches local.
+    write(
+        dir.path(),
+        "main_alias.av",
+        "{ pair } = import(\"./shapes\")\nPairInt = pair(Int)\np: PairInt = { first: 1, second: 2 }\nq: PairInt = { first: 1, second: \"two\" }\n{ p }\n",
+    );
+    let alias =
+        check_path_with_host_globals(&dir.path().join("main_alias.av"), &HostGlobals::default())
+            .expect("check should load graph");
+    assert_has_code(&alias.reports, codes::ty::MISMATCH);
+}
+
+#[test]
+fn cross_module_unexpandable_imported_application_diagnoses() {
+    let dir = TempDir::new("comptime-unexpandable-import");
+    write(dir.path(), "ops.av", "add = (a, b) => a + b\n{ add }\n");
+    write(
+        dir.path(),
+        "main.av",
+        "{ add } = import(\"./ops\")\np: add(Int, Text) = 1\n{ p }\n",
+    );
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+    assert_has_code(&output.reports, codes::comptime::UNEXPANDABLE_IMPORT);
+
+    // Runtime use of the same import must not pick up the new diagnostic.
+    write(
+        dir.path(),
+        "runtime.av",
+        "{ add } = import(\"./ops\")\nx = add(1, 2)\n{ x }\n",
+    );
+    let runtime =
+        check_path_with_host_globals(&dir.path().join("runtime.av"), &HostGlobals::default())
+            .expect("runtime import use should check");
+    assert_no_errors(&runtime.reports);
+}
+
+#[test]
+fn cross_module_comptime_type_function_reexport() {
+    let dir = TempDir::new("comptime-type-fn-reexport");
+    write(
+        dir.path(),
+        "shapes.av",
+        "pair = (@t) => { first: t, second: t }\n{ pair }\n",
+    );
+    write(
+        dir.path(),
+        "mid.av",
+        "{ pair } = import(\"./shapes\")\n{ pair }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "{ pair } = import(\"./mid\")\np: pair(Int) = { first: 1, second: \"two\" }\n{ p }\n",
+    );
+    let bad = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+    assert_has_code(&bad.reports, codes::ty::MISMATCH);
+
+    write(
+        dir.path(),
+        "main_ok.av",
+        "{ pair } = import(\"./mid\")\np: pair(Int) = { first: 1, second: 2 }\n{ p }\n",
+    );
+    let ok = check_path_with_host_globals(&dir.path().join("main_ok.av"), &HostGlobals::default())
+        .expect("re-exported pair(Int) should check");
+    assert_no_errors(&ok.reports);
+}
+
 fn assert_no_errors(reports: &[aven_core::DiagnosticReport]) {
     assert!(
         !reports.iter().any(aven_core::DiagnosticReport::has_errors),

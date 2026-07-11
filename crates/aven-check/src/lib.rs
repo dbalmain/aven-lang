@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use aven_core::{Diagnostic, Span};
 use aven_parser::{Expr, ExprKind, Item, Module, RecordEntry};
 
+pub use comptime::ComptimeExport;
 pub use host_comptime::{
     ComptimeArg, ComptimeError, HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals,
     HostStatics,
@@ -92,6 +93,10 @@ impl InferredType {
 pub struct ModuleImports {
     types: HashMap<String, Option<Type>>,
     type_exports: HashMap<String, HashMap<String, Type>>,
+    /// Comptime-evaluable function exports keyed by import specifier then export
+    /// name. Carries owned AST so importers can specialize type applications
+    /// such as `pair(Int)` without borrowing the dependency's module.
+    comptime_exports: HashMap<String, HashMap<String, ComptimeExport>>,
 }
 
 impl ModuleImports {
@@ -102,6 +107,7 @@ impl ModuleImports {
                 .map(|(specifier, ty)| (specifier, Some(ty)))
                 .collect(),
             type_exports: HashMap::new(),
+            comptime_exports: HashMap::new(),
         }
     }
 
@@ -112,6 +118,7 @@ impl ModuleImports {
                 .map(|specifier| (specifier, None))
                 .collect(),
             type_exports: HashMap::new(),
+            comptime_exports: HashMap::new(),
         }
     }
 
@@ -131,12 +138,24 @@ impl ModuleImports {
         self.type_exports.insert(specifier.into(), exports);
     }
 
+    pub fn insert_comptime_exports(
+        &mut self,
+        specifier: impl Into<String>,
+        exports: HashMap<String, ComptimeExport>,
+    ) {
+        self.comptime_exports.insert(specifier.into(), exports);
+    }
+
     pub fn get(&self, specifier: &str) -> Option<Option<&Type>> {
         self.types.get(specifier).map(Option::as_ref)
     }
 
     pub fn type_export(&self, specifier: &str, name: &str) -> Option<&Type> {
         self.type_exports.get(specifier)?.get(name)
+    }
+
+    pub fn comptime_export(&self, specifier: &str, name: &str) -> Option<&ComptimeExport> {
+        self.comptime_exports.get(specifier)?.get(name)
     }
 }
 
@@ -201,7 +220,7 @@ pub fn check_module_with_host_globals_and_imports(
             .map(|(name, _)| name.clone()),
     );
     let mut type_definitions =
-        type_definitions_excluding(module, &known_types, &reserved_type_names);
+        type_definitions_excluding(module, &known_types, &reserved_type_names, imports);
     let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
     let mut reserved_diagnostics = aven_parser::collect_declarations(module)
         .into_iter()

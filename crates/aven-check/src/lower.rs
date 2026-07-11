@@ -5,7 +5,7 @@ use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Module, collect_declarations,
 };
 
-use crate::{BUILTIN_TYPES, Checker, Type};
+use crate::{BUILTIN_TYPES, Checker, ModuleImports, Type};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeLowering {
@@ -78,13 +78,19 @@ pub(crate) fn type_definitions(
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
-    type_definitions_excluding(module, known_types, &reserved_names)
+    type_definitions_excluding(
+        module,
+        known_types,
+        &reserved_names,
+        &ModuleImports::default(),
+    )
 }
 
 pub(crate) fn type_definitions_excluding(
     module: &Module,
     known_types: &HashSet<String>,
     reserved_names: &HashSet<String>,
+    imports: &ModuleImports,
 ) -> HashMap<String, Type> {
     let mut definitions = HashMap::new();
     let declarations: Vec<_> = collect_declarations(module)
@@ -122,11 +128,13 @@ pub(crate) fn type_definitions_excluding(
             // Lower each definition without its own entry so self-references
             // stay nominal (`Data` keeps `Named("Data")` payload leaves) —
             // recursive definitions unfold lazily at use sites instead of
-            // expanding here.
+            // expanding here. Imports are available so `PairInt = pair(Int)`
+            // expands when `pair` is a pattern-imported comptime export.
             let mut visible = definitions.clone();
             visible.remove(&declaration.name);
             let mut checker =
                 Checker::with_module_environment(known_types.clone(), visible, module);
+            checker.imports = imports.clone();
 
             next.insert(
                 declaration.name.clone(),

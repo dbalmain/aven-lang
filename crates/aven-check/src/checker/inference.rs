@@ -1768,7 +1768,7 @@ impl<'a> Checker<'a> {
         }
 
         self.local_comptime_values.push(body_comptime_values);
-        let result = self.infer(&body_env, body);
+        let result = self.infer(&body_env, &body);
         self.local_comptime_values.pop();
 
         Some(self.resolve_and_default(&result))
@@ -1838,14 +1838,47 @@ impl<'a> Checker<'a> {
         is_concrete_type(&ty).then_some(ty)
     }
 
-    pub(super) fn comptime_param_function(&self, callee: &Expr) -> Option<(&'a [Param], &'a Expr)> {
+    pub(super) fn comptime_param_function(&self, callee: &Expr) -> Option<(Vec<Param>, Expr)> {
         let name = expr_name(callee)?;
-        let binding = (*self.bindings.get(name)?)?;
-        let (params, body) = lambda_parts(&binding.value)?;
-        params
+        let export = self.lookup_comptime_function_export(name)?;
+        export
+            .params
             .iter()
             .any(|param| param.comptime)
-            .then_some((params, body))
+            .then_some((export.params, export.body))
+    }
+
+    /// Resolve a comptime-evaluable function by local binding or imported export.
+    pub(super) fn lookup_comptime_function_export(
+        &self,
+        name: &str,
+    ) -> Option<comptime::ComptimeExport> {
+        if let Some(binding) = self.bindings.get(name).and_then(|binding| *binding)
+            && let Some((params, body)) = lambda_parts(&binding.value)
+        {
+            return Some(comptime::ComptimeExport::from_lambda(
+                binding.name.clone(),
+                params,
+                body,
+            ));
+        }
+
+        let pattern_binding = *self.pattern_bindings.get(name)?;
+        let specifier = aven_parser::static_import_specifier(&pattern_binding.value)?;
+        let source = super::import_pattern_source_for_binder(&pattern_binding.pattern, name)?;
+        let export = self.imports.comptime_export(&specifier, source)?;
+        Some(comptime::ComptimeExport {
+            name: name.to_owned(),
+            params: export.params.clone(),
+            body: export.body.clone(),
+        })
+    }
+
+    /// True when `name` is bound from a static module import (pattern extract).
+    pub(super) fn is_imported_name(&self, name: &str) -> bool {
+        self.pattern_bindings
+            .get(name)
+            .is_some_and(|binding| aven_parser::static_import_specifier(&binding.value).is_some())
     }
 
     pub(super) fn evaluate_comptime_param_domain(
