@@ -26,6 +26,7 @@ pub mod module {
     pub const IMPORT_HAS_ERRORS: &str = "module.import-has-errors";
     pub const NOT_FOUND: &str = "module.not-found";
     pub const NOT_IMPORTABLE: &str = "module.not-importable";
+    pub const ROOT_UNAVAILABLE: &str = "module.root-unavailable";
     pub const UNRESOLVED_IMPORT: &str = "module.unresolved-import";
     pub const UNSUPPORTED_ROOT: &str = "module.unsupported-root";
 }
@@ -153,6 +154,7 @@ pub const ALL: &[&str] = &[
     module::IMPORT_HAS_ERRORS,
     module::NOT_FOUND,
     module::NOT_IMPORTABLE,
+    module::ROOT_UNAVAILABLE,
     module::UNRESOLVED_IMPORT,
     module::UNSUPPORTED_ROOT,
     name::ACCIDENTAL_SHADOWING,

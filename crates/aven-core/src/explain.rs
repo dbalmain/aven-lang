@@ -76,7 +76,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::module::DYNAMIC_IMPORT,
-        text: "The import specifier is not a static string literal. This milestone only supports statically-resolved relative imports; dynamic import is deferred to Milestone Z.",
+        text: "The import specifier is not a static string literal. Import specifiers are comptime-only; dynamic imports never run at runtime.",
     },
     DiagnosticExplanation {
         code: codes::module::IMPORT_CYCLE,
@@ -88,19 +88,23 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::module::NOT_FOUND,
-        text: "A relative module import resolved to a path that does not exist. Check the specifier spelling, directory, and optional .av extension.",
+        text: "A module import resolved to a path that does not exist. Check the specifier spelling, root, directory, and optional .av extension.",
     },
     DiagnosticExplanation {
         code: codes::module::NOT_IMPORTABLE,
         text: "A module's final expression is not a statically-known record, so it cannot be imported as a namespace. End the file with a literal record of exported bindings.",
     },
     DiagnosticExplanation {
+        code: codes::module::ROOT_UNAVAILABLE,
+        text: "This import uses a project, home, or filesystem root that the host did not provide. Configure the embedding host with the required root, or use a root it exposes.",
+    },
+    DiagnosticExplanation {
         code: codes::module::UNRESOLVED_IMPORT,
-        text: "This context checks one file at a time, so the imported module is not loaded and its contents are unknown here. `aven check` and `aven run` resolve local relative imports; editor cross-file support arrives later in Milestone Z.",
+        text: "This context checks one file at a time, so the imported module is not loaded and its contents are unknown here. A module-graph host such as `aven check` or `aven run` can resolve it.",
     },
     DiagnosticExplanation {
         code: codes::module::UNSUPPORTED_ROOT,
-        text: "This import uses a module root that is reserved for a later module milestone. This slice only supports local relative specifiers beginning with ./ or ../.",
+        text: "This import uses a bare library, package, or otherwise unsupported root. Project, home, and filesystem roots are supported when the host provides them.",
     },
     DiagnosticExplanation {
         code: codes::name::ACCIDENTAL_SHADOWING,

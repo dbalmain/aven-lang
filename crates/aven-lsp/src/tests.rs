@@ -1648,6 +1648,34 @@ fn file_backed_goto_on_import_specifier_jumps_to_file_start() {
 }
 
 #[test]
+fn file_backed_goto_on_project_root_import_specifier() {
+    let dir = TempDir::new("lsp-project-root-import-goto");
+    write(dir.path(), "Aven.toml", "");
+    write(dir.path(), "lib/text.av", "join = 1\n{ join }\n");
+    let main_uri = file_uri(&dir.path().join("src/main.av"));
+    let dep_uri = file_uri(&dir.path().join("lib/text.av"));
+    write(dir.path(), "src/main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "text = import(\"$/lib/text\")\n{ text }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    // Cursor on the specifier string: import("$/lib/text")
+    let Some(location) = definition_location(&document, main_uri, position(0, 17), Some(&graph))
+    else {
+        panic!("expected definition location for $/ import");
+    };
+
+    assert_eq!(location.uri, dep_uri);
+    assert_eq!(location.range.start, position(0, 0));
+}
+
+#[test]
 fn file_backed_import_specifier_completion_lists_siblings() {
     let dir = TempDir::new("lsp-import-specifier-completion");
     write(dir.path(), "text.av", "value = 1\n{ value }\n");
@@ -1658,19 +1686,49 @@ fn file_backed_import_specifier_completion_lists_siblings() {
 
     let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 16));
 
-    assert!(completion_item(&completions, "text").is_some());
+    assert!(
+        completion_item(&completions, "text").is_some(),
+        "labels: {:?}",
+        completions
+            .iter()
+            .map(|item| &item.label)
+            .collect::<Vec<_>>()
+    );
     assert!(completion_item(&completions, "lib/").is_some());
 }
 
 #[test]
-fn import_specifier_completion_ignores_unsupported_roots() {
-    let dir = TempDir::new("lsp-import-specifier-unsupported");
+fn import_specifier_completion_lists_project_root_children() {
+    let dir = TempDir::new("lsp-import-specifier-project-root");
+    write(dir.path(), "Aven.toml", "");
     write(dir.path(), "text.av", "value = 1\n{ value }\n");
-    let main_uri = file_uri(&dir.path().join("main.av"));
-    write(dir.path(), "main.av", "");
+    write(dir.path(), "lib/mod.av", "value = 1\n{ value }\n");
+    let main_uri = file_uri(&dir.path().join("src/main.av"));
+    write(dir.path(), "src/main.av", "");
     let document = parsed_file_document(&main_uri, "Dep = import(\"$/\")\n");
 
     let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 16));
+
+    assert!(
+        completion_item(&completions, "text").is_some(),
+        "labels: {:?}",
+        completions
+            .iter()
+            .map(|item| &item.label)
+            .collect::<Vec<_>>()
+    );
+    assert!(completion_item(&completions, "lib/").is_some());
+}
+
+#[test]
+fn import_specifier_completion_ignores_bare_library_names() {
+    let dir = TempDir::new("lsp-import-specifier-bare");
+    write(dir.path(), "text.av", "value = 1\n{ value }\n");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let document = parsed_file_document(&main_uri, "Dep = import(\"std\")\n");
+
+    let completions = completion_at_position_for_uri(&document, &main_uri, position(0, 17));
 
     assert!(completions.is_empty());
 }

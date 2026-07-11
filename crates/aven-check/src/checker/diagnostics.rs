@@ -93,10 +93,7 @@ impl<'a> Checker<'a> {
                     span,
                     "import specifier must be a static string literal",
                 ))
-                .with_note(
-                    "Milestone Z1+Z2 only supports local relative imports with string literals",
-                )
-                .with_note("dynamic import is deferred to Milestone Z"),
+                .with_note("import specifiers must be static strings; dynamic imports never run at runtime"),
         );
     }
 
@@ -112,8 +109,10 @@ impl<'a> Checker<'a> {
                     span,
                     "this import root is not supported in this milestone",
                 ))
-                .with_note("use a local relative specifier beginning with `./` or `../`")
-                .with_note("`$/`, `~/`, `//`, standard libraries, and packages are deferred to Milestone Z"),
+                .with_note("use a local relative specifier or a root prefix provided by the host")
+                .with_note(
+                    "bare libraries and packages remain unsupported until module type exports land",
+                ),
         );
     }
 
@@ -133,8 +132,9 @@ impl<'a> Checker<'a> {
                     span,
                     "this context checks one file at a time, so the module's contents are unknown",
                 ))
-                .with_note("`aven check` and `aven run` resolve local relative imports")
-                .with_note("editor cross-file import support arrives later in Milestone Z"),
+                .with_note(
+                    "`aven check` and `aven run` resolve imports through their module graph",
+                ),
         );
     }
 

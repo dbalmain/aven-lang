@@ -1759,9 +1759,9 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 - H3 open questions (recorded under Milestone H, not scheduled)
 - the Milestone IO watch item: define the bare write tier in terms of the Result
   handles so the two tiers cannot drift
-- Milestone Z — modules and imports: **Z1+Z2 local relative imports done
-  2026-07-09** (see below); `$/`/`~/`/`//`/library roots, LSP cross-file
-  support, and dynamic import remain open
+- Milestone Z — modules and imports: **Z3 root-prefixed imports done
+  2026-07-11** (see below); bare library/package names remain open pending
+  module type exports
 
 ## Milestone N — null/undefined model
 
@@ -2795,8 +2795,8 @@ gate suite passed on current main.
 
 ## Milestone Z — modules and imports
 
-Status: Z1+Z2 (local relative imports) done 2026-07-09; later roots and LSP
-cross-file support open
+Status: Z3 (project, home, and filesystem roots) done 2026-07-11; bare library
+names remain open pending module type exports
 
 Goal: host-controlled module resolution per the spec (`import("./lib/Text")`,
 `Std = import("std")`). Import specifiers are static `Text` (P-rm), so `import`
@@ -2827,8 +2827,11 @@ checker re-entrancy to keep the semantic crates small.
   over early abort), and the single-file relative-import diagnostic is an honest
   `module.unresolved-import` warning instead of a false `module.dynamic-import`
   error.
-- Z-open: `$/` (Aven.toml project root), `~/`, `//`, bare library names (`std`,
-  packages) — the host resolver API in `aven-host` decides these roots.
+- Z3 done 2026-07-11: `$/` discovers the nearest `Aven.toml` ancestor of the
+  entry file (falling back to its directory), `~/` uses the host home root, and
+  `//` uses the filesystem root when provided by the host. CLI and file-backed
+  LSP resolution discover roots; embeddings can explicitly provide none
+  (`module.root-unavailable`). Bare names stay `module.unsupported-root`.
 - Z-LSP diagnostics done 2026-07-09: file-backed documents run the module-graph
   driver with open-buffer overlays (`SourceOverlay`; buffer beats disk, cached
   entry parse reused), publishing the same `module.*` diagnostics as
@@ -2842,9 +2845,11 @@ checker re-entrancy to keep the semantic crates small.
   hover through import bindings ride the existing type machinery. Goto resolves
   specifier strings, pattern-bound import names, and imported member access to
   the dependency file; import-specifier completion lists sibling dirs/`.av`
-  files (extension omitted) for `./`/`../` and offers nothing for unsupported
-  roots.
-- Z-open: dynamic (runtime-string) import fallback.
+  files (extension omitted) for `./`/`../` and `$/` (from the discovered
+  project root), and offers nothing for bare library names.
+- Z-open: bare library names (`std`, packages) remain pending module type
+  exports. Dynamic import is permanently comptime-only and reports
+  `module.dynamic-import`; it is never a runtime fallback.
 - Design decision (user, 2026-07-09): **modules bind lowercase** — a module is
   an ordinary record value; uppercase is reserved for types alone (no
   module/namespace category). `text = import("std/Text")`; types travel inside

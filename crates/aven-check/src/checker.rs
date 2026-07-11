@@ -158,10 +158,6 @@ impl RowSource {
     }
 }
 
-fn is_relative_import_specifier(specifier: &str) -> bool {
-    specifier.starts_with("./") || specifier.starts_with("../")
-}
-
 #[derive(Clone, Copy)]
 enum RowFoldMode<'a> {
     Annotation,

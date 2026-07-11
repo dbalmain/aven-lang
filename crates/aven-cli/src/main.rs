@@ -152,9 +152,11 @@ fn explain(code: &str) -> Result<()> {
 }
 
 fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
-    let checked = aven_compiler::check_path_with_host_globals(
+    let roots = aven_compiler::ModuleRoots::discover(path);
+    let checked = aven_compiler::check_path_with_host_globals_and_roots(
         path,
         &aven_host::standard_check_host_globals(),
+        &roots,
     )
     .with_context(|| format!("failed to load {}", path.display()))?;
     let timings = checked.timings;
@@ -191,8 +193,13 @@ fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
 }
 
 fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
-    let output = aven_compiler::eval_path_with_globals(path, build_host(config)?.eval_globals())
-        .with_context(|| format!("failed to load {}", path.display()))?;
+    let roots = aven_compiler::ModuleRoots::discover(path);
+    let output = aven_compiler::eval_path_with_globals_and_roots(
+        path,
+        build_host(config)?.eval_globals(),
+        &roots,
+    )
+    .with_context(|| format!("failed to load {}", path.display()))?;
     let has_errors = reports_have_errors(&output.reports);
 
     match format {

@@ -1239,7 +1239,7 @@ fn eval_import_call(callee: &Expr, args: &[Expr], env: &Environment) -> Option<E
     match env.imports.get(&specifier) {
         Some(Some(value)) => Some(Ok(value)),
         Some(None) => Some(Err(one_diagnostic(import_failed(&specifier, arg.span)))),
-        None if is_relative_import_specifier(&specifier) => {
+        None if aven_core::is_local_import_specifier(&specifier) => {
             Some(Err(one_diagnostic(unresolved_import(&specifier, arg.span))))
         }
         None => Some(Err(one_diagnostic(unsupported_import_root(
@@ -2506,8 +2506,7 @@ fn dynamic_import(span: Span) -> Diagnostic {
             span,
             "import specifier must be a static string literal",
         ))
-        .with_note("Milestone Z1+Z2 only supports local relative imports with string literals")
-        .with_note("dynamic import is deferred to Milestone Z")
+        .with_note("import specifiers must be static strings; dynamic imports never run at runtime")
 }
 
 fn unsupported_import_root(specifier: &str, span: Span) -> Diagnostic {
@@ -2517,8 +2516,8 @@ fn unsupported_import_root(specifier: &str, span: Span) -> Diagnostic {
             span,
             "this import root is not supported in this milestone",
         ))
-        .with_note("use a local relative specifier beginning with `./` or `../`")
-        .with_note("`$/`, `~/`, `//`, standard libraries, and packages are deferred to Milestone Z")
+        .with_note("use a local relative specifier or a root prefix provided by the host")
+        .with_note("bare libraries and packages remain unsupported until module type exports land")
 }
 
 /// A static relative import evaluated without an injected imports map: this
@@ -2533,7 +2532,7 @@ fn unresolved_import(specifier: &str, span: Span) -> Diagnostic {
             span,
             "this evaluation context loads one file, so the module is not available",
         ))
-        .with_note("`aven run` resolves local relative imports")
+        .with_note("`aven run` resolves imports through the module graph")
 }
 
 fn import_failed(specifier: &str, span: Span) -> Diagnostic {
@@ -2701,10 +2700,6 @@ fn first_diagnostic(flow: Flow) -> Diagnostic {
         .into_iter()
         .next()
         .expect("expression errors include at least one diagnostic")
-}
-
-fn is_relative_import_specifier(specifier: &str) -> bool {
-    specifier.starts_with("./") || specifier.starts_with("../")
 }
 
 /// Collapse a [`Flow`] into the diagnostics it reports. A [`Flow::Propagate`]

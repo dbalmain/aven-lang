@@ -61,6 +61,33 @@ pub struct SourceOverlay {
     sources: HashMap<PathBuf, String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModuleRoots {
+    pub project: Option<PathBuf>,
+    pub home: Option<PathBuf>,
+    pub filesystem: bool,
+}
+
+impl ModuleRoots {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn discover(entry: &Path) -> Self {
+        let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
+        let project = entry_dir
+            .ancestors()
+            .find(|directory| directory.join("Aven.toml").is_file())
+            .map_or_else(|| entry_dir.to_path_buf(), Path::to_path_buf);
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        Self {
+            project: Some(project),
+            home,
+            filesystem: true,
+        }
+    }
+}
+
 impl SourceOverlay {
     pub fn new() -> Self {
         Self::default()
@@ -135,14 +162,44 @@ pub fn check_path_with_host_globals_and_overlay(
     check_path_with_host_globals_and_overlay_and_entry_parse(path, globals, overlay, None)
 }
 
+pub fn check_path_with_host_globals_and_roots(
+    path: &Path,
+    globals: &HostGlobals,
+    roots: &ModuleRoots,
+) -> io::Result<ModuleCheckOutput> {
+    check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
+        path,
+        globals,
+        &SourceOverlay::default(),
+        None,
+        roots,
+    )
+}
+
 pub fn check_path_with_host_globals_and_overlay_and_entry_parse(
     path: &Path,
     globals: &HostGlobals,
     overlay: &SourceOverlay,
     entry_parse: Option<&ParseOutput>,
 ) -> io::Result<ModuleCheckOutput> {
+    check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
+        path,
+        globals,
+        overlay,
+        entry_parse,
+        &ModuleRoots::discover(path),
+    )
+}
+
+pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
+    path: &Path,
+    globals: &HostGlobals,
+    overlay: &SourceOverlay,
+    entry_parse: Option<&ParseOutput>,
+    roots: &ModuleRoots,
+) -> io::Result<ModuleCheckOutput> {
     let total_start = Instant::now();
-    let graph = ModuleGraph::load(path, overlay, entry_parse)?;
+    let graph = ModuleGraph::load(path, overlay, entry_parse, roots)?;
     let mut diagnostics = parse_diagnostics(&graph);
     let mut exports = vec![CheckExport::HasErrors; graph.nodes.len()];
     let mut export_provenance = vec![ExportProvenanceMap::new(); graph.nodes.len()];
@@ -219,7 +276,15 @@ pub fn eval_path_with_globals(
     path: &Path,
     globals: Vec<(String, Value)>,
 ) -> io::Result<ModuleEvalOutput> {
-    let graph = ModuleGraph::load(path, &SourceOverlay::default(), None)?;
+    eval_path_with_globals_and_roots(path, globals, &ModuleRoots::discover(path))
+}
+
+pub fn eval_path_with_globals_and_roots(
+    path: &Path,
+    globals: Vec<(String, Value)>,
+    roots: &ModuleRoots,
+) -> io::Result<ModuleEvalOutput> {
+    let graph = ModuleGraph::load(path, &SourceOverlay::default(), None, roots)?;
     let mut diagnostics = parse_diagnostics(&graph);
     let mut exports = vec![EvalExport::HasErrors; graph.nodes.len()];
     let mut entry_value = None;
@@ -265,6 +330,7 @@ impl ModuleGraph {
         entry_path: &Path,
         overlay: &SourceOverlay,
         entry_parse: Option<&ParseOutput>,
+        roots: &ModuleRoots,
     ) -> io::Result<Self> {
         let entry_path = fs::canonicalize(entry_path)?;
         let mut graph = Self {
@@ -275,7 +341,14 @@ impl ModuleGraph {
         };
         let mut states = HashMap::new();
         let mut stack = Vec::new();
-        graph.load_module(&entry_path, overlay, entry_parse, &mut states, &mut stack)?;
+        graph.load_module(
+            &entry_path,
+            overlay,
+            entry_parse,
+            roots,
+            &mut states,
+            &mut stack,
+        )?;
         Ok(graph)
     }
 
@@ -284,6 +357,7 @@ impl ModuleGraph {
         path: &Path,
         overlay: &SourceOverlay,
         entry_parse: Option<&ParseOutput>,
+        roots: &ModuleRoots,
         states: &mut HashMap<PathBuf, VisitState>,
         stack: &mut Vec<PathBuf>,
     ) -> io::Result<usize> {
@@ -314,7 +388,7 @@ impl ModuleGraph {
         let import_calls = collect_import_calls(&self.nodes[node_id].parse.module);
         let imports = import_calls
             .into_iter()
-            .map(|call| self.resolve_import(node_id, call, overlay, states, stack))
+            .map(|call| self.resolve_import(node_id, call, overlay, roots, states, stack))
             .collect::<io::Result<Vec<_>>>()?;
         self.nodes[node_id].imports = imports;
 
@@ -344,6 +418,7 @@ impl ModuleGraph {
         importer: usize,
         call: ImportCall,
         overlay: &SourceOverlay,
+        roots: &ModuleRoots,
         states: &mut HashMap<PathBuf, VisitState>,
         stack: &mut Vec<PathBuf>,
     ) -> io::Result<ImportRef> {
@@ -357,11 +432,14 @@ impl ModuleGraph {
             });
         };
 
-        if !is_relative_import_specifier(&specifier) {
-            self.nodes[importer]
-                .parse
-                .diagnostics
-                .push(unsupported_root(call.specifier_span, &specifier));
+        let Some(resolved) = resolve_import_path(&self.nodes[importer].path, &specifier, roots)
+        else {
+            let diagnostic = if is_root_prefixed_import_specifier(&specifier) {
+                root_unavailable(call.specifier_span, &specifier)
+            } else {
+                unsupported_root(call.specifier_span, &specifier)
+            };
+            self.nodes[importer].parse.diagnostics.push(diagnostic);
             return Ok(ImportRef {
                 specifier,
                 specifier_span: call.specifier_span,
@@ -369,9 +447,8 @@ impl ModuleGraph {
                 target: None,
                 failed: false,
             });
-        }
+        };
 
-        let resolved = resolve_relative_path(&self.nodes[importer].path, &specifier);
         let Ok(canonical) = fs::canonicalize(&resolved) else {
             self.nodes[importer].parse.diagnostics.push(not_found(
                 call.specifier_span,
@@ -401,7 +478,7 @@ impl ModuleGraph {
             });
         }
 
-        let target = self.load_module(&canonical, overlay, None, states, stack)?;
+        let target = self.load_module(&canonical, overlay, None, roots, states, stack)?;
         Ok(ImportRef {
             specifier,
             specifier_span: call.specifier_span,
@@ -843,8 +920,34 @@ fn resolve_relative_path(importer: &Path, specifier: &str) -> PathBuf {
     }
 }
 
-fn is_relative_import_specifier(specifier: &str) -> bool {
-    specifier.starts_with("./") || specifier.starts_with("../")
+fn resolve_import_path(importer: &Path, specifier: &str, roots: &ModuleRoots) -> Option<PathBuf> {
+    if specifier.starts_with("./") || specifier.starts_with("../") {
+        return Some(resolve_relative_path(importer, specifier));
+    }
+
+    let (base, rest) = if let Some(rest) = specifier.strip_prefix("$/") {
+        (roots.project.as_ref()?.clone(), rest)
+    } else if let Some(rest) = specifier.strip_prefix("~/") {
+        (roots.home.as_ref()?.clone(), rest)
+    } else if let Some(rest) = specifier.strip_prefix("//") {
+        if !roots.filesystem {
+            return None;
+        }
+        (PathBuf::from("/"), rest)
+    } else {
+        return None;
+    };
+
+    let path = base.join(rest);
+    if rest.ends_with(".av") {
+        Some(path)
+    } else {
+        Some(PathBuf::from(format!("{}.av", path.to_string_lossy())))
+    }
+}
+
+fn is_root_prefixed_import_specifier(specifier: &str) -> bool {
+    specifier.starts_with("$/") || specifier.starts_with("~/") || specifier.starts_with("//")
 }
 
 fn cycle_path(stack: &[PathBuf], target: &Path) -> Vec<PathBuf> {
@@ -897,10 +1000,7 @@ fn value_type_name(value: &Value) -> &'static str {
 fn not_found(span: Span, specifier: &str, resolved: &Path) -> Diagnostic {
     Diagnostic::error(format!("module `{specifier}` was not found"))
         .with_code(codes::module::NOT_FOUND)
-        .with_label(Label::primary(
-            span,
-            "this relative import could not be loaded",
-        ))
+        .with_label(Label::primary(span, "this import could not be loaded"))
         .with_note(format!("tried {}", resolved.display()))
         .with_note("check the path, directory, and optional `.av` extension")
 }
@@ -912,8 +1012,18 @@ fn unsupported_root(span: Span, specifier: &str) -> Diagnostic {
             span,
             "this import root is not supported in this milestone",
         ))
-        .with_note("use a local relative specifier beginning with `./` or `../`")
-        .with_note("`$/`, `~/`, `//`, standard libraries, and packages are deferred to Milestone Z")
+        .with_note("use a local relative specifier or a root prefix provided by the host")
+        .with_note("bare libraries and packages remain unsupported until module type exports land")
+}
+
+fn root_unavailable(span: Span, specifier: &str) -> Diagnostic {
+    Diagnostic::error(format!("import root is unavailable for `{specifier}`"))
+        .with_code(codes::module::ROOT_UNAVAILABLE)
+        .with_label(Label::primary(
+            span,
+            "this import root is not provided by the host",
+        ))
+        .with_note("the embedding host does not provide this module root")
 }
 
 fn import_cycle(span: Span, cycle: Vec<PathBuf>) -> Diagnostic {

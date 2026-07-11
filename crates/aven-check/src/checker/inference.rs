@@ -955,7 +955,7 @@ impl<'a> Checker<'a> {
         match self.imports.get(&specifier) {
             Some(Some(ty)) => Some(ty.clone()),
             Some(None) => Some(Type::Deferred),
-            None if is_relative_import_specifier(&specifier) => {
+            None if aven_core::is_local_import_specifier(&specifier) => {
                 self.report_unresolved_import(&specifier, arg.span);
                 Some(Type::Deferred)
             }

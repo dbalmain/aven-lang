@@ -5,8 +5,9 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aven_compiler::{
-    HostGlobals, SourceOverlay, check_path_with_host_globals,
-    check_path_with_host_globals_and_overlay, eval_path_with_globals,
+    HostGlobals, ModuleRoots, SourceOverlay, check_path_with_host_globals,
+    check_path_with_host_globals_and_overlay, check_path_with_host_globals_and_roots,
+    eval_path_with_globals,
 };
 use aven_core::codes;
 
@@ -268,6 +269,100 @@ fn reports_unsupported_root() {
         .expect("check should load graph");
 
     assert_has_code(&output.reports, codes::module::UNSUPPORTED_ROOT);
+}
+
+#[test]
+fn project_root_import_discovers_aven_toml_from_nested_entry() {
+    let dir = TempDir::new("project-root-aven-toml");
+    write(dir.path(), "Aven.toml", "");
+    write(dir.path(), "lib/util.av", "value = 1\n{ value }\n");
+    write(
+        dir.path(),
+        "src/main.av",
+        "Util = import(\"$/lib/util\")\n{ value: Util.value }\n",
+    );
+    let entry = dir.path().join("src/main.av");
+
+    let checked = check_path_with_host_globals(&entry, &HostGlobals::default())
+        .expect("check should load project-root import via Aven.toml discovery");
+    assert_no_errors(&checked.reports);
+
+    let evaluated = eval_path_with_globals(&entry, Vec::new())
+        .expect("eval should load project-root import via Aven.toml discovery");
+    assert_no_errors(&evaluated.reports);
+}
+
+#[test]
+fn project_root_falls_back_to_entry_directory_without_aven_toml() {
+    let dir = TempDir::new("project-root-fallback");
+    write(dir.path(), "util.av", "value = 1\n{ value }\n");
+    write(
+        dir.path(),
+        "main.av",
+        "Util = import(\"$/util\")\n{ value: Util.value }\n",
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should treat the entry directory as the project root");
+    assert_no_errors(&output.reports);
+}
+
+#[test]
+fn home_and_filesystem_roots_use_their_explicit_host_paths() {
+    let dir = TempDir::new("home-filesystem-roots");
+    let home = dir.path().join("home");
+    write(&home, "util.av", "value = 1\n{ value }\n");
+    let filesystem_file = dir.path().join("filesystem.av");
+    write(
+        dir.path(),
+        "main.av",
+        &format!(
+            "Home = import(\"~/util\")\nFs = import(\"//{}\")\n{{ home: Home.value, fs: Fs.value }}\n",
+            filesystem_file
+                .to_str()
+                .expect("temporary paths are valid UTF-8")
+                .trim_start_matches('/')
+        ),
+    );
+    write(dir.path(), "filesystem.av", "value = 2\n{ value }\n");
+    let roots = ModuleRoots {
+        project: None,
+        home: Some(home),
+        filesystem: true,
+    };
+
+    let output = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &roots,
+    )
+    .expect("check should load home and filesystem imports");
+    assert_no_errors(&output.reports);
+}
+
+#[test]
+fn unavailable_root_is_structured_and_bare_names_remain_unsupported() {
+    let dir = TempDir::new("unavailable-root");
+    write(
+        dir.path(),
+        "main.av",
+        "A = import(\"$/missing\")\nB = import(\"~/missing\")\nC = import(\"//missing\")\nD = import(\"std\")\n{ A, B, C, D }\n",
+    );
+    let output = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &ModuleRoots::none(),
+    )
+    .expect("check should report import diagnostics");
+    assert_has_code(&output.reports, codes::module::ROOT_UNAVAILABLE);
+    assert_has_code(&output.reports, codes::module::UNSUPPORTED_ROOT);
+    let root_unavailable_count = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::module::ROOT_UNAVAILABLE))
+        .count();
+    assert_eq!(root_unavailable_count, 3);
 }
 
 #[test]

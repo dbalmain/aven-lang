@@ -535,13 +535,16 @@ fn module_semantics_for_document(
     overlay: &aven_compiler::SourceOverlay,
 ) -> Option<DocumentSemanticAnalysis> {
     let entry_path = fs::canonicalize(uri.to_file_path().ok()?).ok()?;
-    let output = aven_compiler::check_path_with_host_globals_and_overlay_and_entry_parse(
-        &entry_path,
-        globals,
-        overlay,
-        Some(document.parse_output()),
-    )
-    .ok()?;
+    let roots = aven_compiler::ModuleRoots::discover(&entry_path);
+    let output =
+        aven_compiler::check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
+            &entry_path,
+            globals,
+            overlay,
+            Some(document.parse_output()),
+            &roots,
+        )
+        .ok()?;
     let entry_node = output
         .nodes
         .iter()
@@ -834,15 +837,22 @@ fn import_specifier_completion_at_position(
     let cursor = offset.clamp(content_start, content_end);
     let typed = document.source().get(content_start..cursor)?;
 
-    if !typed.starts_with("./") && !typed.starts_with("../") {
+    if !typed.starts_with("./") && !typed.starts_with("../") && !typed.starts_with("$/") {
         return Some(Vec::new());
     }
 
     let (directory_specifier, prefix) = typed
         .rsplit_once('/')
-        .map_or(("", typed), |(directory, prefix)| (directory, prefix));
-    let base_dir = uri.to_file_path().ok()?.parent()?.to_path_buf();
-    let search_dir = base_dir.join(directory_specifier);
+        .map_or(("", typed), |(directory, prefix)| {
+            (&typed[..directory.len() + 1], prefix)
+        });
+    let search_dir = if let Some(rest) = directory_specifier.strip_prefix("$/") {
+        aven_compiler::ModuleRoots::discover(&uri.to_file_path().ok()?)
+            .project?
+            .join(rest)
+    } else {
+        uri.to_file_path().ok()?.parent()?.join(directory_specifier)
+    };
     let replace_start = cursor.saturating_sub(prefix.len());
     let range = exact_offset_range(document, Span::new(replace_start, cursor));
 
