@@ -1,0 +1,3 @@
+error name.runtime-name-alias: type alias `X` cannot bind runtime name `v`
+  label 10..11: this bare lowercase name is a runtime value
+  note: bind a known type here, or rename the binding to lowercase for a runtime value

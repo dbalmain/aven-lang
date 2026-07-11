@@ -131,6 +131,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "The :.. block-spread replacement form is sequential rebinding, but top-level declarations are mutually recursive and cannot be replaced in order. Use .. at top level, or move :.. into a block.",
     },
     DiagnosticExplanation {
+        code: codes::name::RESERVED_TYPE,
+        text: "This type name belongs to Aven's builtins or to a host-provided type definition. Pick another name so annotations and type operations continue to resolve the reserved type consistently.",
+    },
+    DiagnosticExplanation {
+        code: codes::name::RUNTIME_NAME_ALIAS,
+        text: "An uppercase binding is a type alias, but its bare lowercase right-hand side is a runtime name rather than a known type. Bind a type instead, or rename the binding to lowercase for a runtime value.",
+    },
+    DiagnosticExplanation {
         code: codes::name::SHADOW_UNBOUND,
         text: "An explicit shadow binding introduced with := has no visible binding to shadow. Use = to introduce a fresh binding, or move the shadow after the binding it replaces.",
     },

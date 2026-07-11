@@ -23,7 +23,10 @@ pub use ty::{
 };
 
 pub(crate) use checker::Checker;
-pub(crate) use lower::{cyclic_alias_diagnostics, known_type_names, type_definitions};
+pub(crate) use lower::{
+    cyclic_alias_diagnostics, known_type_names, reserved_type_diagnostic, type_definitions,
+    type_definitions_excluding,
+};
 
 const BUILTIN_TYPES: &[&str] = &[
     "Bool",
@@ -180,6 +183,16 @@ pub fn check_module_with_host_globals_and_imports(
     globals: &HostGlobals,
     imports: &ModuleImports,
 ) -> CheckOutput {
+    let mut reserved_type_names: HashSet<_> = BUILTIN_TYPES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    reserved_type_names.extend(
+        globals
+            .type_definitions
+            .iter()
+            .map(|(name, _)| name.clone()),
+    );
     let mut known_types = known_type_names(module);
     known_types.extend(
         globals
@@ -187,17 +200,29 @@ pub fn check_module_with_host_globals_and_imports(
             .iter()
             .map(|(name, _)| name.clone()),
     );
-    let mut type_definitions = type_definitions(module, &known_types);
+    let mut type_definitions =
+        type_definitions_excluding(module, &known_types, &reserved_type_names);
     let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
+    let mut reserved_diagnostics = aven_parser::collect_declarations(module)
+        .into_iter()
+        .filter(|declaration| declaration.phase == aven_parser::DeclarationPhase::Comptime)
+        .filter(|declaration| reserved_type_names.contains(&declaration.name))
+        .filter_map(|declaration| {
+            let binding = lower::binding_for_declaration(module, &declaration)?;
+            (!checker::is_import_call(&binding.value))
+                .then(|| reserved_type_diagnostic(&declaration.name, declaration.name_span))
+        })
+        .collect::<Vec<_>>();
     for (name, ty) in &globals.type_definitions {
-        type_definitions
-            .entry(name.clone())
-            .or_insert_with(|| ty.clone());
+        type_definitions.insert(name.clone(), ty.clone());
     }
     for item in &module.items {
         let Item::PatternBinding(binding) = item else {
             continue;
         };
+        if !checker::is_import_call(&binding.value) {
+            continue;
+        }
         let Some(specifier) = aven_parser::static_import_specifier(&binding.value) else {
             continue;
         };
@@ -205,12 +230,30 @@ pub fn check_module_with_host_globals_and_imports(
             continue;
         };
         for entry in entries {
-            let (source, target) = match entry {
-                RecordEntry::Shorthand { name, .. } => (name, name),
-                RecordEntry::Rename { from, to, .. } => (from, to),
+            let (source, target, target_span) = match entry {
+                RecordEntry::Shorthand {
+                    name, name_span, ..
+                } => (name, name, *name_span),
+                RecordEntry::Rename {
+                    from, to, to_span, ..
+                } => (from, to, *to_span),
                 _ => continue,
             };
             if let Some(ty) = imports.type_export(&specifier, source) {
+                if reserved_type_names.contains(target) {
+                    // Extracting a host re-export under its own name rebinds
+                    // the same definition (`{ Instant } = import("std/time")`)
+                    // — only a *different* definition shadows the reserved
+                    // name.
+                    let rebinds_host_type = globals
+                        .type_definitions
+                        .iter()
+                        .any(|(name, host_ty)| name == target && host_ty == ty);
+                    if !rebinds_host_type {
+                        reserved_diagnostics.push(reserved_type_diagnostic(target, target_span));
+                    }
+                    continue;
+                }
                 known_types.insert(target.clone());
                 type_definitions.insert(target.clone(), ty.clone());
             }
@@ -225,6 +268,7 @@ pub fn check_module_with_host_globals_and_imports(
     );
 
     checker.diagnostics.extend(alias_diagnostics);
+    checker.diagnostics.extend(reserved_diagnostics);
     checker.check_module(module);
     let export_names = final_record_names(module);
     let top_level_types = aven_parser::collect_declarations(module)

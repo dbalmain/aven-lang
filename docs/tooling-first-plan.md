@@ -2920,6 +2920,14 @@ checker re-entrancy to keep the semantic crates small.
   (e.g. `Text = v + 1`) still insert a Deferred definition, but each already
   carries its own error (`comptime.evaluation-unsupported`), so the module never
   exports.
+- Type-binding rules done 2026-07-11: an unannotated uppercase alias whose
+  ungrouped RHS is a bare unknown lowercase name (`X = v`) now reports
+  `name.runtime-name-alias` and stays out of type normalization. The check is
+  intentionally bare-only: lowercase type variables remain valid inside
+  structured aliases and signatures (`Pair = { a: t, b: t }`, `(a) -> a`).
+  Builtin and host-registered type-definition names are also reserved:
+  `name.reserved-type` rejects user aliases and imported type-pattern targets
+  that collide, while retaining the builtin or host definition in the map.
 
 ## To investigate later
 

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
-    Binding, Declaration, DeclarationPhase, Expr, Item, Module, collect_declarations,
+    Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Module, collect_declarations,
 };
 
 use crate::{BUILTIN_TYPES, Checker, Type};
@@ -74,6 +74,18 @@ pub(crate) fn type_definitions(
     module: &Module,
     known_types: &HashSet<String>,
 ) -> HashMap<String, Type> {
+    let reserved_names = BUILTIN_TYPES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    type_definitions_excluding(module, known_types, &reserved_names)
+}
+
+pub(crate) fn type_definitions_excluding(
+    module: &Module,
+    known_types: &HashSet<String>,
+    reserved_names: &HashSet<String>,
+) -> HashMap<String, Type> {
     let mut definitions = HashMap::new();
     let declarations: Vec<_> = collect_declarations(module)
         .into_iter()
@@ -94,6 +106,16 @@ pub(crate) fn type_definitions(
             // normalization; the checker reports the binding itself as
             // `name.uppercase-module-binding`.
             if crate::checker::is_import_call(&binding.value) {
+                continue;
+            }
+
+            // A bare lowercase name is a runtime reference, not a type alias.
+            // Lowercase names remain valid type variables inside structured
+            // aliases such as `{ value: a }`.
+            if (declared_annotation_for_declaration(module, declaration).is_none()
+                && bare_lowercase_unknown_name(&binding.value, known_types).is_some())
+                || reserved_names.contains(&declaration.name)
+            {
                 continue;
             }
 
@@ -120,6 +142,38 @@ pub(crate) fn type_definitions(
     }
 
     definitions
+}
+
+pub(crate) fn bare_lowercase_unknown_name<'a>(
+    expr: &'a Expr,
+    known_types: &HashSet<String>,
+) -> Option<&'a str> {
+    let ExprKind::Name(name) = &ungroup_expr(expr).kind else {
+        return None;
+    };
+    name.as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_lowercase)
+        .then_some(name)
+        .filter(|name| !known_types.contains(*name))
+        .map(String::as_str)
+}
+
+pub(crate) fn reserved_type_diagnostic(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(format!("type name `{name}` is reserved"))
+        .with_code(codes::name::RESERVED_TYPE)
+        .with_label(Label::primary(
+            span,
+            "this name is reserved by Aven or the host",
+        ))
+        .with_note("pick another type name so the builtin or host-provided type remains available")
+}
+
+fn ungroup_expr(mut expr: &Expr) -> &Expr {
+    while let ExprKind::Group(inner) = &expr.kind {
+        expr = inner;
+    }
+    expr
 }
 
 pub(crate) fn cyclic_alias_diagnostics(

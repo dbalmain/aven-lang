@@ -1,0 +1,3 @@
+error name.reserved-type: type name `Text` is reserved
+  label 0..4: this name is reserved by Aven or the host
+  note: pick another type name so the builtin or host-provided type remains available

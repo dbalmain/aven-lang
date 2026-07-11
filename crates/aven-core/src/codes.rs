@@ -49,7 +49,9 @@ pub mod name {
     pub const DUPLICATE_LOCAL: &str = "name.duplicate-local";
     pub const NO_TOPLEVEL_SHADOW: &str = "name.no-toplevel-shadow";
     pub const NO_TOPLEVEL_SPREAD_SHADOW: &str = "name.no-toplevel-spread-shadow";
+    pub const RESERVED_TYPE: &str = "name.reserved-type";
     pub const SHADOW_UNBOUND: &str = "name.shadow-unbound";
+    pub const RUNTIME_NAME_ALIAS: &str = "name.runtime-name-alias";
     pub const UNBOUND: &str = "name.unbound";
     pub const UNUSED_BINDING: &str = "name.unused-binding";
     pub const UPPERCASE_MODULE_BINDING: &str = "name.uppercase-module-binding";
@@ -166,6 +168,8 @@ pub const ALL: &[&str] = &[
     name::DUPLICATE_LOCAL,
     name::NO_TOPLEVEL_SHADOW,
     name::NO_TOPLEVEL_SPREAD_SHADOW,
+    name::RESERVED_TYPE,
+    name::RUNTIME_NAME_ALIAS,
     name::SHADOW_UNBOUND,
     name::UNBOUND,
     name::UNUSED_BINDING,

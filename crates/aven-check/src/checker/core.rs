@@ -304,6 +304,11 @@ impl<'a> Checker<'a> {
                 // Uppercase names are reserved for types; an import binds a
                 // module record, never a type.
                 self.report_uppercase_module_binding(&declaration.name, declaration.name_span);
+            } else if !has_declared_annotation
+                && let Some(name) =
+                    crate::lower::bare_lowercase_unknown_name(&binding.value, &self.known_types)
+            {
+                self.report_runtime_name_alias(&declaration.name, name, binding.value.span);
             } else {
                 self.check_comptime_binding_evaluation_support(&binding.value);
             }

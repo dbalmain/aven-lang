@@ -1600,6 +1600,36 @@ fn type_definitions_compute_closed_transform_aliases() {
 }
 
 #[test]
+fn host_type_definition_stays_visible_when_user_reuses_its_name() {
+    let output = parse_module("Instant = { seconds: Int }\n");
+    let host_shape = build::record(vec![("epoch", named("Int"))]);
+    let host = HostGlobals::default()
+        .with_type_definitions(vec![("Instant".to_owned(), host_shape.clone())]);
+
+    let checked = check_module_with_host_globals(&output.module, &host);
+
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::name::RESERVED_TYPE))
+    );
+    assert_eq!(checked.type_definitions.get("Instant"), Some(&host_shape));
+}
+
+#[test]
+fn structured_aliases_keep_implicit_type_variables() {
+    let output = parse_module("Pair = { a: t, b: t }\n");
+    let checked = check_module(&output.module);
+
+    assert!(
+        !checked.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::name::RUNTIME_NAME_ALIAS)
+        })
+    );
+}
+
+#[test]
 fn deferred_rows_still_report_nested_annotation_diagnostics() {
     let output = parse_module("value : @{..Text, io(Missing)} = value\n");
     let lowering = lower_annotation(&output.module, annotation(&output.module, "value"));
@@ -2771,7 +2801,7 @@ fn result_match_supports_nested_error_payload_patterns() {
 #[test]
 fn result_match_handles_json_decode_shaped_global() {
     let source = concat!(
-        "JsonError = @{@Decode(Text)}\n",
+        "DecodeError = @{@Decode(Text)}\n",
         "userName = Json.decode(\"{}\") ?>\n",
         "  @Ok(user) => user.name\n",
         "  @Err(err) => err ?>\n",
@@ -2786,7 +2816,7 @@ fn result_match_handles_json_decode_shaped_global() {
                 vec![build::text()],
                 build::result(
                     build::record(vec![("name", build::text())]),
-                    build::named("JsonError"),
+                    build::named("DecodeError"),
                 ),
             ),
         )]),
@@ -3348,10 +3378,10 @@ fn variant_match_exhaustiveness_uses_subject_rows() {
 #[test]
 fn recursive_named_variant_matches_and_accepts_inline_constructors() {
     let source = concat!(
-        "Data = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
-        "@Array(Array[Data]), @Object(Map[Text, Data])}\n",
-        "arrayValue : Data = @Array([@Null, @Int(5)])\n",
-        "objectValue : Data = @Object(Map.from([(\"a\", @Int(1))]))\n",
+        "Document = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
+        "@Array(Array[Document]), @Object(Map[Text, Document])}\n",
+        "arrayValue : Document = @Array([@Null, @Int(5)])\n",
+        "objectValue : Document = @Object(Map.from([(\"a\", @Int(1))]))\n",
         "matched = arrayValue ?>\n",
         "  @Null => \"null\"\n",
         "  @Bool(_) => \"bool\"\n",
@@ -3361,7 +3391,7 @@ fn recursive_named_variant_matches_and_accepts_inline_constructors() {
         "  @Array(_) => \"array\"\n",
         "  @Object(_) => \"object\"\n",
         "local = () =>\n",
-        "  localValue : Data = @Null\n",
+        "  localValue : Document = @Null\n",
         "  localValue\n",
     );
     let output = parse_module(source);
@@ -3376,22 +3406,22 @@ fn recursive_named_variant_matches_and_accepts_inline_constructors() {
         check
             .type_at(nth_span(source, "arrayValue", 0))
             .map(Type::render),
-        Some("Data".to_owned())
+        Some("Document".to_owned())
     );
     assert_eq!(
         check
             .type_at(nth_span(source, "localValue", 0))
             .map(Type::render),
-        Some("Data".to_owned())
+        Some("Document".to_owned())
     );
 }
 
 #[test]
 fn match_arm_pattern_bindings_record_inferred_types() {
     let source = concat!(
-        "Data = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
-        "@Array(Array[Data]), @Object(Map[Text, Data])}\n",
-        "subject : Data = @Null\n",
+        "Document = @{@Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text), ",
+        "@Array(Array[Document]), @Object(Map[Text, Document])}\n",
+        "subject : Document = @Null\n",
         "described = subject ?>\n",
         "  @Object(objectFields) => 1\n",
         "  @Array(elements) => 2\n",
@@ -3413,13 +3443,13 @@ fn match_arm_pattern_bindings_record_inferred_types() {
         check
             .type_at(nth_span(source, "objectFields", 0))
             .map(Type::render),
-        Some("Map[Text, Data]".to_owned())
+        Some("Map[Text, Document]".to_owned())
     );
     assert_eq!(
         check
             .type_at(nth_span(source, "elements", 0))
             .map(Type::render),
-        Some("Array[Data]".to_owned())
+        Some("Array[Document]".to_owned())
     );
     assert_eq!(
         check

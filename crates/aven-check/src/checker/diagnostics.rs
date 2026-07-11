@@ -261,6 +261,22 @@ impl<'a> Checker<'a> {
         );
     }
 
+    pub(super) fn report_runtime_name_alias(&mut self, alias: &str, name: &str, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!(
+                "type alias `{alias}` cannot bind runtime name `{name}`"
+            ))
+            .with_code(codes::name::RUNTIME_NAME_ALIAS)
+            .with_label(Label::primary(
+                span,
+                "this bare lowercase name is a runtime value",
+            ))
+            .with_note(
+                "bind a known type here, or rename the binding to lowercase for a runtime value",
+            ),
+        );
+    }
+
     pub(super) fn report_unknown_module_type(&mut self, name: &str, span: Span) {
         self.push_unique_diagnostic(
             Diagnostic::error(format!("module does not export type `{name}`"))

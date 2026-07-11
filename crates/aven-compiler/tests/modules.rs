@@ -138,6 +138,22 @@ fn module_type_exports_work_in_qualified_and_pattern_annotations() {
 }
 
 #[test]
+fn imported_type_cannot_be_renamed_to_a_reserved_type() {
+    let dir = TempDir::new("reserved-imported-type");
+    write(dir.path(), "util.av", "User = { name: Text }\n{ User }\n");
+    write(
+        dir.path(),
+        "main.av",
+        "{ User -> Text } = import(\"./util\")\nvalue : Text = \"Ada\"\n{ value }\n",
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+
+    assert_has_code(&output.reports, codes::name::RESERVED_TYPE);
+}
+
+#[test]
 fn comptime_computed_type_alias_exports_through_modules() {
     let dir = TempDir::new("comptime-alias-export");
     write(
