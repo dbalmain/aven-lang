@@ -171,6 +171,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A field access or nil-safe field access must be followed by a field name.",
     },
     DiagnosticExplanation {
+        code: codes::parse::EXPECTED_MATCH_ARM,
+        text: "A match arm separator comma must be followed by another arm of the form pattern => expression. Remove the trailing comma, or add the missing arm. Inline matches greedily own commas, so nest them in parentheses when they appear inside a call, collection, or another inline arm body.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::EXPECTED_MATCH_ARROW,
         text: "A match arm pattern must be followed by => before its body expression.",
     },
@@ -193,10 +197,6 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::parse::EXPECTED_TYPE,
         text: "The parser expected a type annotation term after :. Type syntax uses the same expression grammar as value syntax.",
-    },
-    DiagnosticExplanation {
-        code: codes::parse::INLINE_MATCH_ARMS,
-        text: "Match arms must be written as an indented block after ?>. Move the arms onto following indented lines.",
     },
     DiagnosticExplanation {
         code: codes::parse::INVALID_BINDING_NAME,

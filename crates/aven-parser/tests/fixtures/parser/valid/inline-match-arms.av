@@ -1,0 +1,3 @@
+single = result ?> @Ok(x) => x
+two = result ?> @Ok(v) => v, @Err(e) => fallback
+nested = f((x ?> @Ok(v) => v, @Err(e) => 0), other)

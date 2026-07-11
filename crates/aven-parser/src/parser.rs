@@ -176,6 +176,15 @@ pub struct MatchArm {
     pub span: Span,
 }
 
+/// Whether a match arm body may be an indented block (`AllowBlock`, used under
+/// a `?>` newline/indent layout) or must be a single same-line expression
+/// (`ExpressionOnly`, used for comma-separated inline arms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchArmBodyStyle {
+    AllowBlock,
+    ExpressionOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordEntry {
     Field {
@@ -1076,10 +1085,9 @@ impl Parser<'_> {
             self.report_missing_match_arms(operator_span.end);
             Vec::new()
         } else {
-            // Tokens follow `?>` on the same line, e.g. `result ?> @Ok(x) => x`.
-            self.report_inline_match_arms(self.current_span());
-            self.recover_to_next_line();
-            Vec::new()
+            // Tokens follow `?>` on the same line: comma-separated inline arms.
+            // The match greedily owns following `, pattern => expr` sequences.
+            self.parse_inline_match_arms()
         };
 
         let end = arms
@@ -1114,7 +1122,7 @@ impl Parser<'_> {
                 continue;
             }
 
-            arms.push(self.parse_match_arm());
+            arms.push(self.parse_match_arm(MatchArmBodyStyle::AllowBlock));
             self.consume_newline();
         }
 
@@ -1125,7 +1133,53 @@ impl Parser<'_> {
         arms
     }
 
-    fn parse_match_arm(&mut self) -> MatchArm {
+    /// Inline arms are comma-separated on the same line as `?>`. A trailing
+    /// comma with no following arm is a diagnostic; arms that continue on the
+    /// next line after a comma are also rejected (mixed layout).
+    fn parse_inline_match_arms(&mut self) -> Vec<MatchArm> {
+        let mut arms = Vec::new();
+
+        loop {
+            arms.push(self.parse_match_arm(MatchArmBodyStyle::ExpressionOnly));
+
+            if !self.current_is(TokenKind::Comma) {
+                break;
+            }
+
+            let comma_span = self.current_span();
+            self.advance();
+
+            if self.inline_match_arm_cannot_start() {
+                // Prefer the comma when the next token is layout/EOF; otherwise
+                // point at the unexpected token that failed to start an arm.
+                let label_span = if self.at_end()
+                    || self.current_is(TokenKind::Newline)
+                    || self.current_is(TokenKind::Indent)
+                    || self.current_is(TokenKind::Dedent)
+                    || self.current_is_any_close_delimiter()
+                {
+                    comma_span
+                } else {
+                    self.current_span()
+                };
+                self.report_expected_match_arm(label_span);
+                break;
+            }
+        }
+
+        arms
+    }
+
+    fn inline_match_arm_cannot_start(&self) -> bool {
+        self.at_end()
+            || self.current_is(TokenKind::Newline)
+            || self.current_is(TokenKind::Indent)
+            || self.current_is(TokenKind::Dedent)
+            || self.current_is_any_close_delimiter()
+            || self.current_is_operator("=>")
+    }
+
+    fn parse_match_arm(&mut self, body_style: MatchArmBodyStyle) -> MatchArm {
         let pattern = self.parse_match_pattern_term();
         let mut guards = Vec::new();
 
@@ -1150,17 +1204,28 @@ impl Parser<'_> {
             };
         }
 
-        let body = if self.current_is(TokenKind::Newline) {
-            self.advance();
-            if self.current_is(TokenKind::Indent) {
-                self.parse_block(self.current_span())
-            } else {
-                self.report_missing_match_body(self.previous_end())
+        let body = match body_style {
+            MatchArmBodyStyle::AllowBlock => {
+                if self.current_is(TokenKind::Newline) {
+                    self.advance();
+                    if self.current_is(TokenKind::Indent) {
+                        self.parse_block(self.current_span())
+                    } else {
+                        self.report_missing_match_body(self.previous_end())
+                    }
+                } else if self.at_item_boundary() {
+                    self.report_missing_match_body(self.previous_end())
+                } else {
+                    self.parse_expression()
+                }
             }
-        } else if self.at_item_boundary() {
-            self.report_missing_match_body(self.previous_end())
-        } else {
-            self.parse_expression()
+            MatchArmBodyStyle::ExpressionOnly => {
+                if self.current_is(TokenKind::Newline) || self.at_item_boundary() {
+                    self.report_missing_match_body(self.previous_end())
+                } else {
+                    self.parse_expression()
+                }
+            }
         };
 
         MatchArm {
@@ -2087,12 +2152,17 @@ impl Parser<'_> {
         );
     }
 
-    fn report_inline_match_arms(&mut self, span: Span) {
+    fn report_expected_match_arm(&mut self, span: Span) {
         self.diagnostics.push(
-            Diagnostic::error("match arms must start on the next line, indented")
-                .with_code(codes::parse::INLINE_MATCH_ARMS)
-                .with_label(Label::primary(span, "move these arms to an indented block"))
-                .with_note("write one arm per line, indented under `?>`, for example:\n  result ?>\n    @Ok(value) => value"),
+            Diagnostic::error("expected match arm")
+                .with_code(codes::parse::EXPECTED_MATCH_ARM)
+                .with_label(Label::primary(
+                    span,
+                    "expected `pattern => expression` after this comma",
+                ))
+                .with_note(
+                    "inline match arms are comma-separated `pattern => expression` forms; a comma must be followed by another arm",
+                ),
         );
     }
 
@@ -3431,6 +3501,109 @@ mod tests {
 
         assert!(output.diagnostics.is_empty());
         assert!(matches!(binding_value(&output, 0), ExprKind::Match { .. }));
+    }
+
+    #[test]
+    fn parses_two_arm_inline_match() {
+        let output = parse_module("value = result ?> @Ok(v) => v, @Err(e) => fallback\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Match { subject, arms, .. } = binding_value(&output, 0) else {
+            panic!("expected match expression");
+        };
+        assert!(matches!(&subject.kind, ExprKind::Name(name) if name == "result"));
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(
+            &arms[0].pattern.kind,
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Tag(name) if name == "Ok")
+        ));
+        assert!(matches!(
+            &arms[1].pattern.kind,
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Tag(name) if name == "Err")
+        ));
+        assert!(matches!(&arms[0].body.kind, ExprKind::Name(name) if name == "v"));
+        assert!(matches!(&arms[1].body.kind, ExprKind::Name(name) if name == "fallback"));
+    }
+
+    #[test]
+    fn parses_single_arm_inline_match() {
+        let output = parse_module("value = result ?> @Ok(x) => x\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
+            panic!("expected match expression");
+        };
+        assert_eq!(arms.len(), 1);
+        assert!(matches!(&arms[0].body.kind, ExprKind::Name(name) if name == "x"));
+    }
+
+    #[test]
+    fn inline_match_arm_commas_before_arrow_are_guards() {
+        let output =
+            parse_module("value = user ?> { age }, age >= 18 => \"adult\", _ => \"child\"\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
+            panic!("expected match expression");
+        };
+        assert_eq!(arms.len(), 2);
+        assert_eq!(arms[0].guards.len(), 1);
+        assert!(matches!(&arms[0].guards[0].kind, ExprKind::Binary { .. }));
+        assert!(arms[1].guards.is_empty());
+        assert!(matches!(&arms[1].pattern.kind, ExprKind::Name(name) if name == "_"));
+    }
+
+    #[test]
+    fn parses_parenthesized_inline_match_inside_call_argument() {
+        let output = parse_module("value = f((x ?> @Ok(v) => v, @Err(e) => 0), other)\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Call { args, .. } = binding_value(&output, 0) else {
+            panic!("expected call expression");
+        };
+        assert_eq!(args.len(), 2);
+        let ExprKind::Group(inner) = &args[0].kind else {
+            panic!("expected parenthesized match argument");
+        };
+        let ExprKind::Match { arms, .. } = &inner.kind else {
+            panic!("expected match inside group");
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(&args[1].kind, ExprKind::Name(name) if name == "other"));
+    }
+
+    #[test]
+    fn trailing_comma_after_inline_match_arm_reports_expected_match_arm() {
+        let output = parse_module("value = result ?> @Ok(x) => x,\n");
+
+        let codes: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .collect();
+        assert_eq!(codes, vec!["parse.expected-match-arm"]);
+    }
+
+    #[test]
+    fn mixed_inline_then_indented_match_reports_existing_layout_diagnostics() {
+        let output = parse_module("value = result ?> @Ok(x) => x\n  @Err(e) => e\n");
+
+        let codes: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .collect();
+        assert!(
+            codes.contains(&"parse.unexpected-indentation"),
+            "expected unexpected-indentation recovery, got {codes:?}"
+        );
+        // Inline arm still parsed before the stray indented residue.
+        let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
+            panic!("expected match expression");
+        };
+        assert_eq!(arms.len(), 1);
     }
 
     #[test]

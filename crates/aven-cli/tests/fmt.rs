@@ -85,6 +85,24 @@ fn check_accepts_valid_source() {
 }
 
 #[test]
+fn check_accepts_inline_match_arms() {
+    let file = TempFile::new(
+        "check-inline-match",
+        "value = 1 ?> 0 => \"zero\", 1 => \"one\", _ => \"other\"\n",
+    );
+
+    let output = run_aven(["check"], file.path());
+
+    assert_success(&output);
+    assert!(
+        stdout(&output)
+            .contains("ok (parse, name, annotation, and partial monomorphic inference checks)"),
+        "expected success message, got:\n{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn check_timings_reports_text_timings() {
     let file = TempFile::new("check-timings", "value = 1\n");
 

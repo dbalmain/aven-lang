@@ -1,5 +1,0 @@
-error parse.inline-match-arms: match arms must start on the next line, indented
-  label 18..21: move these arms to an indented block
-  note: write one arm per line, indented under `?>`, for example:
-  result ?>
-    @Ok(value) => value

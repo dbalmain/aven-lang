@@ -83,16 +83,15 @@ operator:
 - `parse_postfix` consumes `?` as `Nullable` unconditionally (no guard).
 - `parse_expression` calls `finish_match` when the current token is `?>`.
 
-Because the ambiguity is gone, two diagnostics now fire **unambiguously** from
-`finish_match`:
+Because the ambiguity is gone, `finish_match` fires **`parse.missing-match-arms`**
+unambiguously when `?>` is followed by a newline without an indented block, or by
+a boundary/EOF (e.g. `value = result ?>`).
 
-- `parse.missing-match-arms` — `?>` followed by a newline without an indented
-  block, or by a boundary/EOF (e.g. `value = result ?>`).
-- `parse.inline-match-arms` (**new**) — arms written on the same line as `?>`
-  (e.g. `result ?> @Ok(x) => x`); message "match arms must start on the next
-  line, indented", then recover to the next line. The old bare-`?` design could
-  not give this precisely because `result ? @Ok(x)` was a valid nullable-then-call
-  reading.
+Inline arms on the same line as `?>` are **legal syntax** (comma-separated
+`pattern => expression` arms). The match greedily owns following commas, so an
+inline match inside a call/collection/another inline arm body must be
+parenthesized. A trailing comma without a following arm reports
+`parse.expected-match-arm`. The retired `parse.inline-match-arms` code is gone.
 
 Verified by unit tests: `value : Text? = name` parses `Nullable(ComptimeName)`
 and stops at `=`; `value = result ?` parses `Nullable(Name)` with no diagnostics;
@@ -173,10 +172,11 @@ no-match branch is `unreachable!`. Consequence: `Text?,` lexes as `Text` `?`
 
 ### `?` → `?>` match-operator change
 
-- Added: `parser/invalid/inline-match-arms.{av,diag}` — `value = result ?> @Ok(x)
-  => x`, the new `parse.inline-match-arms` diagnostic.
 - Restored: `parser/invalid/missing-match-arms.{av,diag}` — `value = result ?>`
   with no arm block (see deviation 1).
+- Inline arms are legal: `parser/valid/inline-match-arms.av`. Trailing commas
+  use `parser/invalid/trailing-match-arm-comma.{av,diag}`
+  (`parse.expected-match-arm`).
 - Changed (match line `?` → `?>`): `parser/valid/question-operators.av`;
   `parser/invalid/expected-match-arrow.{av,diag}`,
   `single-item-pattern-tuple.{av,diag}` (the `?>` is one byte longer than `?`,

@@ -1,0 +1,6 @@
+error parse.unexpected-indentation: unexpected indentation
+  label 30..32: top-level items cannot be indented
+  note: remove the indentation or place the item inside a block
+error parse.unsupported-syntax: unsupported expression syntax
+  label 40..42: this syntax is not supported by the core parser yet
+  note: custom operators are not supported yet; supported operators are `|`, `|>`, `??`, `||`, `&&`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, and `^`

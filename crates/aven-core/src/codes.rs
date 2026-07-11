@@ -62,13 +62,13 @@ pub mod name {
 pub mod parse {
     pub const EXPECTED_EXPRESSION: &str = "parse.expected-expression";
     pub const EXPECTED_FIELD_NAME: &str = "parse.expected-field-name";
+    pub const EXPECTED_MATCH_ARM: &str = "parse.expected-match-arm";
     pub const EXPECTED_MATCH_ARROW: &str = "parse.expected-match-arrow";
     pub const EXPECTED_PARAMETER: &str = "parse.expected-parameter";
     pub const EXPECTED_PATTERN: &str = "parse.expected-pattern";
     pub const EXPECTED_RECORD_ENTRY: &str = "parse.expected-record-entry";
     pub const EXPECTED_RECORD_LABEL: &str = "parse.expected-record-label";
     pub const EXPECTED_TYPE: &str = "parse.expected-type";
-    pub const INLINE_MATCH_ARMS: &str = "parse.inline-match-arms";
     pub const INVALID_BINDING_NAME: &str = "parse.invalid-binding-name";
     pub const MISMATCHED_DELIMITER: &str = "parse.mismatched-delimiter";
     pub const MISSING_BINDING_NAME: &str = "parse.missing-binding-name";
@@ -179,13 +179,13 @@ pub const ALL: &[&str] = &[
     name::UPPERCASE_RUNTIME_BINDING,
     parse::EXPECTED_EXPRESSION,
     parse::EXPECTED_FIELD_NAME,
+    parse::EXPECTED_MATCH_ARM,
     parse::EXPECTED_MATCH_ARROW,
     parse::EXPECTED_PARAMETER,
     parse::EXPECTED_PATTERN,
     parse::EXPECTED_RECORD_ENTRY,
     parse::EXPECTED_RECORD_LABEL,
     parse::EXPECTED_TYPE,
-    parse::INLINE_MATCH_ARMS,
     parse::INVALID_BINDING_NAME,
     parse::MISMATCHED_DELIMITER,
     parse::MISSING_BINDING_NAME,

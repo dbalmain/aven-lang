@@ -2,11 +2,14 @@ use std::collections::HashMap;
 
 use aven_core::{Diagnostic, Span};
 use aven_parser::{
-    Expr, ExprKind, Item, Module, ParseOutput, RecordEntry, Token, TokenKind, is_identifier,
-    parse_module, walk_expr_children,
+    Expr, ExprKind, Item, MatchArm, Module, ParseOutput, RecordEntry, Token, TokenKind,
+    is_identifier, parse_module, walk_expr_children,
 };
 
 const INDENT_WIDTH: usize = 2;
+/// Soft line-width budget used only for deciding whether an authored inline
+/// match stays on one line or breaks to the standard indented arm block.
+const MAX_LINE_WIDTH: usize = 100;
 
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let parse = parse_module(source);
@@ -24,6 +27,7 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
     let mut line_indents = layout_line_indents(line_count, &line_starts, &parse.layout_tokens);
     fill_trivia_line_indents(source, &mut line_indents);
     let line_tokens = content_tokens_by_line(line_count, &line_starts, &parse.raw_tokens);
+    let inline_matches = collect_inline_matches(&parse.module, &line_starts);
 
     let mut output = String::with_capacity(source.len() + 1);
 
@@ -34,12 +38,203 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
         }
 
         let indent = line_indents.get(line_index).copied().flatten().unwrap_or(0);
-        output.push_str(&" ".repeat(indent * INDENT_WIDTH));
-        emit_line(&mut output, source, tokens, &field_name_spans);
-        output.push('\n');
+        let indent_text = " ".repeat(indent * INDENT_WIDTH);
+
+        let mut flat = String::new();
+        flat.push_str(&indent_text);
+        emit_line(&mut flat, source, tokens, &field_name_spans);
+
+        let breakable = inline_matches
+            .iter()
+            .find(|match_layout| match_layout.line == line_index);
+
+        if flat.chars().count() > MAX_LINE_WIDTH
+            && let Some(match_layout) = breakable
+        {
+            emit_broken_inline_match(
+                &mut output,
+                source,
+                tokens,
+                &field_name_spans,
+                match_layout,
+                indent,
+            );
+        } else {
+            output.push_str(&flat);
+            output.push('\n');
+        }
     }
 
     Ok(output)
+}
+
+/// An authored inline match: `?>` and every arm start on the same source line.
+/// Derived from spans (no AST flag). Block matches are never collected here, so
+/// the formatter never collapses them to inline.
+struct InlineMatchLayout {
+    line: usize,
+    match_span: Span,
+    subject_span: Span,
+    arm_spans: Vec<Span>,
+}
+
+fn collect_inline_matches(module: &Module, line_starts: &[usize]) -> Vec<InlineMatchLayout> {
+    let mut matches = Vec::new();
+    for item in &module.items {
+        collect_item_inline_matches(item, line_starts, &mut matches);
+    }
+    matches
+}
+
+fn collect_item_inline_matches(
+    item: &Item,
+    line_starts: &[usize],
+    matches: &mut Vec<InlineMatchLayout>,
+) {
+    match item {
+        Item::Binding(binding) => {
+            if let Some(annotation) = &binding.annotation {
+                collect_expr_inline_matches(annotation, line_starts, matches);
+            }
+            collect_expr_inline_matches(&binding.value, line_starts, matches);
+        }
+        Item::PatternBinding(binding) => {
+            collect_expr_inline_matches(&binding.pattern, line_starts, matches);
+            collect_expr_inline_matches(&binding.value, line_starts, matches);
+        }
+        Item::SpreadBinding(binding) => {
+            collect_expr_inline_matches(&binding.value, line_starts, matches);
+        }
+        Item::Signature(signature) => {
+            collect_expr_inline_matches(&signature.annotation, line_starts, matches);
+        }
+        Item::Expr(expr) => collect_expr_inline_matches(expr, line_starts, matches),
+    }
+}
+
+fn collect_expr_inline_matches(
+    expr: &Expr,
+    line_starts: &[usize],
+    matches: &mut Vec<InlineMatchLayout>,
+) {
+    if let ExprKind::Match {
+        subject,
+        operator_span,
+        arms,
+    } = &expr.kind
+    {
+        if let Some(layout) =
+            inline_match_layout(expr.span, subject, *operator_span, arms, line_starts)
+        {
+            matches.push(layout);
+        }
+        collect_expr_inline_matches(subject, line_starts, matches);
+        for arm in arms {
+            collect_expr_inline_matches(&arm.pattern, line_starts, matches);
+            for guard in &arm.guards {
+                collect_expr_inline_matches(guard, line_starts, matches);
+            }
+            collect_expr_inline_matches(&arm.body, line_starts, matches);
+        }
+        return;
+    }
+
+    walk_expr_children(expr, &mut |child| {
+        collect_expr_inline_matches(child, line_starts, matches);
+    });
+}
+
+fn inline_match_layout(
+    match_span: Span,
+    subject: &Expr,
+    operator_span: Span,
+    arms: &[MatchArm],
+    line_starts: &[usize],
+) -> Option<InlineMatchLayout> {
+    if arms.is_empty() {
+        return None;
+    }
+
+    let line = line_for_offset(line_starts, operator_span.start);
+    let same_line = |span: Span| {
+        line_for_offset(line_starts, span.start) == line
+            && line_for_offset(line_starts, span.end.saturating_sub(1)) == line
+    };
+
+    if !same_line(operator_span) || !arms.iter().all(|arm| same_line(arm.span)) {
+        return None;
+    }
+
+    Some(InlineMatchLayout {
+        line,
+        match_span,
+        subject_span: subject.span,
+        arm_spans: arms.iter().map(|arm| arm.span).collect(),
+    })
+}
+
+fn emit_broken_inline_match(
+    output: &mut String,
+    source: &str,
+    tokens: &[&Token],
+    field_name_spans: &HashMap<Span, &str>,
+    match_layout: &InlineMatchLayout,
+    indent: usize,
+) {
+    let prefix: Vec<&Token> = tokens
+        .iter()
+        .copied()
+        .filter(|token| token.span.end <= match_layout.match_span.start)
+        .collect();
+    let subject: Vec<&Token> = tokens_in_span(tokens, match_layout.subject_span);
+    let arms: Vec<Vec<&Token>> = match_layout
+        .arm_spans
+        .iter()
+        .map(|span| tokens_in_span(tokens, *span))
+        .collect();
+    let suffix: Vec<&Token> = tokens
+        .iter()
+        .copied()
+        .filter(|token| token.span.start >= match_layout.match_span.end)
+        .collect();
+
+    let base_indent = " ".repeat(indent * INDENT_WIDTH);
+    let arm_indent = " ".repeat((indent + 1) * INDENT_WIDTH);
+
+    output.push_str(&base_indent);
+    if !prefix.is_empty() {
+        emit_line(output, source, &prefix, field_name_spans);
+        if !subject.is_empty() {
+            output.push(' ');
+        }
+    }
+    emit_line(output, source, &subject, field_name_spans);
+    if !subject.is_empty() {
+        output.push(' ');
+    }
+    output.push_str("?>");
+
+    for (index, arm_tokens) in arms.iter().enumerate() {
+        output.push('\n');
+        output.push_str(&arm_indent);
+        if index + 1 == arms.len() && !suffix.is_empty() {
+            let mut last_line = arm_tokens.clone();
+            last_line.extend_from_slice(&suffix);
+            emit_line(output, source, &last_line, field_name_spans);
+        } else {
+            emit_line(output, source, arm_tokens, field_name_spans);
+        }
+    }
+
+    output.push('\n');
+}
+
+fn tokens_in_span<'a>(tokens: &[&'a Token], span: Span) -> Vec<&'a Token> {
+    tokens
+        .iter()
+        .copied()
+        .filter(|token| token.span.start >= span.start && token.span.end <= span.end)
+        .collect()
 }
 
 fn layout_line_indents(

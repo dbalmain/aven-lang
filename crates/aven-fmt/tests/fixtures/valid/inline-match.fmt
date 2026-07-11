@@ -1,0 +1,9 @@
+short = result ?> @Ok(x) => x, @Err(e) => e
+long = result ?>
+  @Ok(value) => value
+  @Err(error) => fallbackFor(error)
+  @Pending(state) => waitFor(state)
+  @Cancelled(reason) => ignore(reason)
+block = result ?>
+  @Ok(x) => x
+  @Err(e) => e
