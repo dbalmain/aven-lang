@@ -1131,6 +1131,42 @@ fn evaluates_null_safe_field_access() {
 }
 
 #[test]
+fn null_safe_field_access_yields_undefined_for_absent_record_field() {
+    // Optional fields may be omitted at construction; the key is then
+    // physically absent. `?.` opts into that case; plain `.` stays strict.
+    assert_eval("{ name: \"Ada\" }?.phone", Value::Undefined);
+    assert_module_value(
+        "user = { name: \"Ada\" }\nuser?.phone ?? \"none\"\n",
+        Value::Text("none".to_owned()),
+    );
+    assert_module_value(
+        "user = { name: \"Ada\", phone: \"555\" }\nuser?.phone ?? \"none\"\n",
+        Value::Text("555".to_owned()),
+    );
+}
+
+#[test]
+fn null_safe_field_access_propagates_empty_receiver_through_variable() {
+    assert_module_value("u = undefined\nu?.phone\n", Value::Undefined);
+    assert_module_value("n = null\nn?.phone\n", Value::Null);
+}
+
+#[test]
+fn plain_field_access_still_errors_on_absent_record_field() {
+    let diagnostic = eval_error("{ name: \"Ada\" }.phone");
+
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::MISSING_FIELD)
+    );
+    let diagnostic = module_error("user = { name: \"Ada\" }\nuser.phone\n");
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::MISSING_FIELD)
+    );
+}
+
+#[test]
 fn evaluates_null_coalescing_with_short_circuiting() {
     assert_eval("undefined ?? 5", Value::Int(5));
     assert_eval("null ?? 6", Value::Int(6));

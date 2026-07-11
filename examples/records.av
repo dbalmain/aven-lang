@@ -11,6 +11,8 @@ Restored = required(Partial)
 k: Keys = "name"
 p: Partial = { name: "Ada" }
 r: Restored = { name: "Ada", email: "ada@x.dev", age: 36 }
+# Omitted optional fields are absent at runtime; `?.` yields undefined.
+partialEmail: Text = p?.email ?? "none"
 
 # Value-level record operations.
 user: User = { name: "Ada", email: "ada@x.dev", age: 36 }
@@ -26,6 +28,8 @@ readers = @{ "ada", "bea" }
 writers = @{ "bea", "cai" }
 members = @{ ..readers, ..writers }
 
+writeLine("partialEmail:")
+writeLine("${partialEmail}")
 writeLine("picked:")
 writeLine("${picked}")
 writeLine("omitted:")

@@ -1640,6 +1640,16 @@ fn eval_field_access(
         return Ok(receiver_value);
     }
 
+    // `?.field` also opts into a missing key on a record: omitted optional
+    // fields are physically absent at runtime, so null-safe access yields
+    // `undefined` instead of `runtime.missing-field`. Plain `.field` and all
+    // other `field_access_value` callers stay strict.
+    if null_safe && let Value::Record(fields) = &receiver_value {
+        return Ok(record_field_value(fields, field)
+            .cloned()
+            .unwrap_or(Value::Undefined));
+    }
+
     field_access_value(receiver_value, receiver.span, field, field_span, env)
 }
 

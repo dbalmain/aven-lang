@@ -137,7 +137,9 @@ fn run_with_expected_output(example: &Path, extra_args: &[&str]) {
         "literal-modes.av" => "1\n",
         "modules.av" => "a, b\n",
         "records.av" => {
-            "picked:\n\
+            "partialEmail:\n\
+            none\n\
+            picked:\n\
             { name: \"Ada\", email: \"ada@x.dev\" }\n\
             omitted:\n\
             { name: \"Ada\", age: 36 }\n\
