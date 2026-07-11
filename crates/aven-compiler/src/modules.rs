@@ -30,6 +30,18 @@ pub struct ModuleNodeCheckOutput {
     pub semantic: SemanticOutput,
     pub imports: Vec<ModuleImportResolution>,
     pub export_provenance: ExportProvenanceMap,
+    /// Generated interface for embedded library nodes (`None` for file-backed
+    /// modules); editors use it as the goto-definition target since the
+    /// library's virtual key has no file behind it.
+    pub interface: Option<ModuleInterface>,
+}
+
+/// Read-only "shape" view of a library module: one signature line per export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleInterface {
+    pub text: String,
+    /// Span of each export's name token within `text`.
+    pub export_spans: HashMap<String, Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,12 +333,15 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
         .enumerate()
         .filter_map(|(node_id, node)| {
             let semantic = semantics[node_id].clone()?;
+            let interface = library_specifier(&node.path)
+                .and_then(|specifier| library_interface(&specifier, node, &exports[node_id]));
             Some(ModuleNodeCheckOutput {
                 canonical_path: node.path.clone(),
                 file: node.file.clone(),
                 semantic,
                 imports: module_import_resolutions(&graph, node),
                 export_provenance: export_provenance[node_id].clone(),
+                interface,
             })
         })
         .collect();
@@ -1157,6 +1172,94 @@ fn module_import_resolutions(
         .collect()
 }
 
+/// Renders a checked library node's exports as a generated interface document:
+/// a header comment plus one `name : <type>` signature per export (type
+/// exports render as their alias definition when one exists, else
+/// `Name : Type`). Bare signatures parse cleanly, so the text is valid Aven.
+fn library_interface(
+    specifier: &str,
+    node: &ModuleNode,
+    export: &CheckExport,
+) -> Option<ModuleInterface> {
+    let CheckExport::Record { ty, type_exports } = export else {
+        return None;
+    };
+    let Type::Record(row) = ty else {
+        return None;
+    };
+    let fields = row
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            aven_check::RowEntry::Field { name, ty } => Some((name.as_str(), ty)),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+
+    let local_declarations = aven_parser::collect_declarations(&node.parse.module)
+        .into_iter()
+        .map(|declaration| declaration.name)
+        .collect::<HashSet<_>>();
+    let mut text =
+        format!("# {specifier} — generated interface (shape view); not the implementation.\n\n");
+    let mut export_spans = HashMap::new();
+    for (name, source_name) in interface_export_order(node, &fields) {
+        let is_local_alias = source_name.is_some_and(|source| local_declarations.contains(source));
+        let line = interface_line(&name, fields[name.as_str()], type_exports, is_local_alias);
+        export_spans.insert(name.clone(), Span::new(text.len(), text.len() + name.len()));
+        text.push_str(&line);
+        text.push('\n');
+    }
+    Some(ModuleInterface { text, export_spans })
+}
+
+/// Export order for the interface, as `(export name, source name)` pairs:
+/// source order from the final export record, with any exports not named there
+/// (spreads, computed entries) following in sorted order.
+fn interface_export_order<'node>(
+    node: &'node ModuleNode,
+    fields: &HashMap<&str, &Type>,
+) -> Vec<(String, Option<&'node str>)> {
+    let mut ordered: Vec<(String, Option<&str>)> = Vec::new();
+    if let Some(ExprKind::Record(entries)) = final_expr(&node.parse.module).map(|expr| &expr.kind) {
+        for entry in entries {
+            let (name, source_name) = match entry {
+                RecordEntry::Field { name, value, .. } => (name, expr_name(value)),
+                RecordEntry::Shorthand { name, .. } => (name, Some(name.as_str())),
+                RecordEntry::Rename { from, to, .. } => (to, Some(from.as_str())),
+                _ => continue,
+            };
+            if fields.contains_key(name.as_str()) && !ordered.iter().any(|(seen, _)| seen == name) {
+                ordered.push((name.clone(), source_name));
+            }
+        }
+    }
+    let mut rest = fields
+        .keys()
+        .filter(|name| !ordered.iter().any(|(seen, _)| seen == *name))
+        .map(|name| ((*name).to_owned(), None))
+        .collect::<Vec<_>>();
+    rest.sort_unstable();
+    ordered.extend(rest);
+    ordered
+}
+
+fn interface_line(
+    name: &str,
+    field_ty: &Type,
+    type_exports: &HashMap<String, Type>,
+    is_local_alias: bool,
+) -> String {
+    match type_exports.get(name) {
+        // Only module-local aliases render as a definition; host-registered
+        // nominal types (whose merged "definition" is their instance shape)
+        // stay at the shape level.
+        Some(definition) if is_local_alias => format!("{name} = {}", definition.render()),
+        Some(_) => format!("{name} : Type"),
+        None => format!("{name} : {}", field_ty.render()),
+    }
+}
+
 fn eval_export_for_node(node: &ModuleNode, value: Option<Value>) -> EvalExport {
     match value {
         Some(value @ Value::Record(_)) => EvalExport::Record(value),
@@ -1367,7 +1470,9 @@ fn library_virtual_path(specifier: &str) -> PathBuf {
     }
 }
 
-fn library_specifier(path: &Path) -> Option<String> {
+/// Recovers the module specifier (`std/time`) from a library node's virtual
+/// module-graph key (`std:/time`); `None` for real (file-backed) paths.
+pub fn library_specifier(path: &Path) -> Option<String> {
     let text = path.to_str()?;
     let (library, rest) = text.split_once(":/")?;
     if library.is_empty() || library.contains('/') {

@@ -891,6 +891,54 @@ fn export_provenance_chases_static_import_spreads_transitively() {
     assert_eq!(provenance.definition_span, nth_span(dep_source, "value", 0));
 }
 
+#[test]
+fn library_nodes_carry_a_generated_interface_in_export_order() {
+    let dir = TempDir::new("library-interface");
+    write(dir.path(), "main.av", "lib = import(\"lib\")\n{ lib }\n");
+    let main_path =
+        fs::canonicalize(dir.path().join("main.av")).expect("main path should canonicalize");
+    let roots = ModuleRoots::discover(&main_path).with_library(
+        "lib",
+        HashMap::from([(
+            "lib".to_owned(),
+            "Id = Int\nfirst = (x: Int): Int => x\n{ first, Id }",
+        )]),
+    );
+
+    let output =
+        check_path_with_host_globals_and_roots(&main_path, &HostGlobals::default(), &roots)
+            .expect("check should load graph");
+
+    assert_no_errors(&output.reports);
+    let node = output
+        .nodes
+        .iter()
+        .find(|node| node.canonical_path == Path::new("lib:/"))
+        .expect("expected library node");
+    let interface = node
+        .interface
+        .as_ref()
+        .expect("expected library node interface");
+    assert_eq!(
+        interface.text,
+        "# lib — generated interface (shape view); not the implementation.\n\
+         \n\
+         first : Int -> Int\n\
+         Id = Int\n"
+    );
+    for name in ["first", "Id"] {
+        let span = interface.export_spans[name];
+        assert_eq!(&interface.text[span.start..span.end], name);
+    }
+
+    let main_node = output
+        .nodes
+        .iter()
+        .find(|node| node.canonical_path == main_path)
+        .expect("expected main node");
+    assert_eq!(main_node.interface, None, "file-backed nodes stay bare");
+}
+
 fn assert_no_errors(reports: &[aven_core::DiagnosticReport]) {
     assert!(
         !reports.iter().any(aven_core::DiagnosticReport::has_errors),

@@ -21,12 +21,12 @@ pub use aven_check::{
 mod modules;
 pub use modules::{
     ExportProvenance, ExportProvenanceMap, LibraryModules, ModuleCheckOutput, ModuleEvalOutput,
-    ModuleImportResolution, ModuleNodeCheckOutput, ModuleRoots, SourceOverlay,
+    ModuleImportResolution, ModuleInterface, ModuleNodeCheckOutput, ModuleRoots, SourceOverlay,
     check_path_with_host_globals, check_path_with_host_globals_and_overlay,
     check_path_with_host_globals_and_overlay_and_entry_parse,
     check_path_with_host_globals_and_overlay_and_entry_parse_with_roots,
     check_path_with_host_globals_and_roots, eval_path_with_globals,
-    eval_path_with_globals_and_roots,
+    eval_path_with_globals_and_roots, library_specifier,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

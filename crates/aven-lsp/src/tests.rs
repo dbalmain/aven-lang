@@ -1752,6 +1752,197 @@ fn file_backed_goto_on_project_root_import_specifier() {
 }
 
 #[test]
+fn library_interface_renders_std_result_signatures() {
+    let dir = TempDir::new("lsp-std-result-interface");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    analyze_file_document(
+        &mut store,
+        &main_uri,
+        "result = import(\"std/result\")\n{ result }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    let interface = graph.nodes[Path::new("std:/result")]
+        .interface
+        .as_ref()
+        .expect("expected std/result interface");
+
+    let lines: Vec<&str> = interface.text.lines().collect();
+    assert_eq!(
+        lines[0],
+        "# std/result — generated interface (shape view); not the implementation."
+    );
+    assert_eq!(lines[1], "");
+    assert_eq!(lines[2], "mapErr : (Result[a, b], b -> c) -> Result[a, c]");
+    assert!(lines[3].starts_with("orElse : "), "line: {:?}", lines[3]);
+    for (name, line) in [("mapErr", 2), ("orElse", 3)] {
+        let span = interface.export_spans[name];
+        assert_eq!(&interface.text[span.start..span.end], name);
+        let index = aven_core::LineIndex::new(&interface.text);
+        assert_eq!(
+            index.offset_to_position(&interface.text, span.start).line,
+            line
+        );
+    }
+}
+
+#[test]
+fn library_interface_lists_std_time_type_exports() {
+    let dir = TempDir::new("lsp-std-time-interface");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    analyze_file_document(
+        &mut store,
+        &main_uri,
+        "time = import(\"std/time\")\n{ time }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    let interface = graph.nodes[Path::new("std:/time")]
+        .interface
+        .as_ref()
+        .expect("expected std/time interface");
+
+    let signatures: Vec<&str> = interface.text.lines().skip(2).collect();
+    assert_eq!(
+        signatures,
+        [
+            "Instant : Type",
+            "Date : Type",
+            "Time : Type",
+            "DateTime : Type",
+            "Duration : Type",
+        ]
+    );
+}
+
+#[test]
+fn file_backed_goto_on_std_export_lands_in_generated_interface() {
+    let dir = TempDir::new("lsp-std-goto");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "{ mapErr } = import(\"std/result\")\nresult = import(\"std/result\")\nvalue = result.mapErr\n{ value }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    // Pattern-site goto: { mapErr } = import("std/result").
+    let Some(location) =
+        definition_location(&document, main_uri.clone(), position(0, 3), Some(&graph))
+    else {
+        panic!("expected definition location for pattern-site goto");
+    };
+    let path = location.uri.to_file_path().expect("expected file URI");
+    assert!(path.starts_with(interface_cache_dir()), "path: {path:?}");
+    let text = fs::read_to_string(&path).expect("expected materialized interface");
+    let line = text
+        .lines()
+        .nth(location.range.start.line as usize)
+        .expect("expected target line");
+    assert!(line.starts_with("mapErr :"), "line: {line:?}");
+    assert_eq!(location.range.start.character, 0);
+
+    // Member-access goto: result.mapErr.
+    let Some(member_location) =
+        definition_location(&document, main_uri, position(2, 16), Some(&graph))
+    else {
+        panic!("expected definition location for member goto");
+    };
+    assert_eq!(member_location, location);
+}
+
+#[test]
+fn file_backed_goto_on_std_import_specifier_lands_at_interface_top() {
+    let dir = TempDir::new("lsp-std-specifier-goto");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "result = import(\"std/result\")\n{ result }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    // Cursor on the specifier string: import("std/result").
+    let Some(location) = definition_location(&document, main_uri, position(0, 20), Some(&graph))
+    else {
+        panic!("expected definition location for std specifier");
+    };
+
+    let path = location.uri.to_file_path().expect("expected file URI");
+    assert_eq!(path, interface_cache_dir().join("std/result.av"));
+    assert_eq!(location.range.start, position(0, 0));
+}
+
+#[test]
+fn interface_cache_documents_are_detected_by_prefix() {
+    let cached = file_uri(&interface_cache_dir().join("std/result.av"));
+    assert!(is_interface_cache_document(&cached));
+
+    let ordinary = file_uri(&std::env::temp_dir().join("aven-lsp-elsewhere/main.av"));
+    assert!(!is_interface_cache_document(&ordinary));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn did_open_under_interface_cache_publishes_no_diagnostics() {
+    let (mut service, mut socket) = LspService::new(test_backend);
+
+    let initialize = Request::build("initialize")
+        .params(json!({"capabilities": {}}))
+        .id(1)
+        .finish();
+    assert!(call_service(&mut service, initialize).await.is_some());
+
+    // A generated interface document; even with invalid content it must not
+    // be analyzed or produce diagnostics.
+    let cache_uri = file_uri(&interface_cache_dir().join("std/result.av"));
+    let open_cached = Request::build("textDocument/didOpen")
+        .params(json!({
+            "textDocument": {
+                "uri": cache_uri.to_string(),
+                "languageId": "aven",
+                "version": 1,
+                "text": "definitely (((( not valid\n"
+            }
+        }))
+        .finish();
+    assert!(call_service(&mut service, open_cached).await.is_none());
+
+    // Opening an ordinary document afterwards proves the cache document
+    // published nothing: the first notification on the socket is for it.
+    let uri = test_uri();
+    let open_ordinary = Request::build("textDocument/didOpen")
+        .params(json!({
+            "textDocument": {
+                "uri": uri.to_string(),
+                "languageId": "aven",
+                "version": 1,
+                "text": "value = 1\n"
+            }
+        }))
+        .finish();
+    assert!(call_service(&mut service, open_ordinary).await.is_none());
+
+    let publish = next_publish_diagnostics(&mut socket).await;
+    assert_eq!(publish.uri, uri);
+}
+
+#[test]
 fn file_backed_import_specifier_completion_lists_siblings() {
     let dir = TempDir::new("lsp-import-specifier-completion");
     write(dir.path(), "text.av", "value = 1\n{ value }\n");

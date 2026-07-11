@@ -72,6 +72,7 @@ struct ModuleNodeCache {
     file: SourceFile,
     imports: Vec<aven_compiler::ModuleImportResolution>,
     export_provenance: aven_compiler::ExportProvenanceMap,
+    interface: Option<aven_compiler::ModuleInterface>,
 }
 
 #[derive(Debug)]
@@ -226,6 +227,9 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
+        if is_interface_cache_document(&uri) {
+            return;
+        }
         let version = params.text_document.version;
         let text = params.text_document.text;
 
@@ -240,6 +244,9 @@ impl LanguageServer for Backend {
         };
 
         let uri = params.text_document.uri;
+        if is_interface_cache_document(&uri) {
+            return;
+        }
         let version = params.text_document.version;
         let text = change.text;
 
@@ -601,6 +608,7 @@ fn module_graph_cache(
                     file: node.file,
                     imports: node.imports,
                     export_provenance: node.export_provenance,
+                    interface: node.interface,
                 },
             )
         })
@@ -2127,6 +2135,14 @@ fn import_specifier_definition_location(
     })?;
     let target_path = import.target_path.as_ref()?;
 
+    if let Some(node) = graph.nodes.get(target_path)
+        && let Some(specifier) = aven_compiler::library_specifier(target_path)
+    {
+        // Whole-module goto on a library lands at the top of its generated
+        // interface document.
+        return library_interface_location(node, &specifier, None);
+    }
+
     location_for_path_span(graph, target_path, Span::point(0))
 }
 
@@ -2159,7 +2175,7 @@ fn import_pattern_definition_location(
             continue;
         };
 
-        return location_for_provenance(graph, provenance);
+        return location_for_provenance(graph, export_name, provenance);
     }
 
     None
@@ -2180,7 +2196,7 @@ fn import_member_definition_location(
         .export_provenance
         .get(&access.field.name)?;
 
-    location_for_provenance(graph, provenance)
+    location_for_provenance(graph, &access.field.name, provenance)
 }
 
 fn spread_import_definition_location(
@@ -2212,7 +2228,7 @@ fn spread_import_definition_location(
             continue;
         };
 
-        return location_for_provenance(graph, provenance);
+        return location_for_provenance(graph, &identifier.name, provenance);
     }
 
     None
@@ -2236,13 +2252,79 @@ fn target_path_for_specifier<'a>(
 
 fn location_for_provenance(
     graph: &DocumentModuleGraph,
+    export_name: &str,
     provenance: &aven_compiler::ExportProvenance,
 ) -> Option<Location> {
+    if let Some(node) = graph.nodes.get(&provenance.canonical_path)
+        && let Some(specifier) = aven_compiler::library_specifier(&provenance.canonical_path)
+    {
+        // Library exports resolve to their signature line in the generated
+        // interface document, not the (mostly punned) implementation source.
+        return library_interface_location(node, &specifier, Some(export_name));
+    }
+
     location_for_path_span(
         graph,
         &provenance.canonical_path,
         provenance.definition_span,
     )
+}
+
+/// Location inside a library node's generated interface document, materialized
+/// under the interface cache dir: the named export's signature line, or the
+/// top of the document when `export_name` is `None` or the interface can't
+/// name it (e.g. a rename whose provenance chased to a differently-named
+/// definition) — a top-of-document landing beats a dead goto.
+fn library_interface_location(
+    node: &ModuleNodeCache,
+    specifier: &str,
+    export_name: Option<&str>,
+) -> Option<Location> {
+    let interface = node.interface.as_ref()?;
+    let path = materialize_interface(specifier, interface)?;
+    let uri = Url::from_file_path(path).ok()?;
+    let span = export_name
+        .and_then(|name| interface.export_spans.get(name).copied())
+        .unwrap_or(Span::point(0));
+    let index = aven_core::LineIndex::new(&interface.text);
+    let (start, end) = index.span_to_range(&interface.text, span);
+    Some(Location::new(
+        uri,
+        Range::new(to_lsp_position(start), to_lsp_position(end)),
+    ))
+}
+
+/// Root directory for materialized library interface documents. Scoped per
+/// server process so concurrent servers (possibly of different versions) never
+/// clobber each other's documents.
+fn interface_cache_dir() -> PathBuf {
+    std::env::temp_dir()
+        .join("aven-lsp-interfaces")
+        .join(std::process::id().to_string())
+}
+
+/// True when the editor hands us a document from the interface cache (any
+/// server instance's): those are generated goto targets, not user code, so
+/// they get no module-graph or semantic analysis and no diagnostics.
+fn is_interface_cache_document(uri: &Url) -> bool {
+    uri.to_file_path()
+        .is_ok_and(|path| path.starts_with(std::env::temp_dir().join("aven-lsp-interfaces")))
+}
+
+/// Writes the interface document to its stable cache path (`std/time` becomes
+/// `<cache dir>/std/time.av`), skipping the write when the on-disk content is
+/// already current.
+fn materialize_interface(
+    specifier: &str,
+    interface: &aven_compiler::ModuleInterface,
+) -> Option<PathBuf> {
+    let path = interface_cache_dir().join(format!("{specifier}.av"));
+    if fs::read_to_string(&path).is_ok_and(|existing| existing == interface.text) {
+        return Some(path);
+    }
+    fs::create_dir_all(path.parent()?).ok()?;
+    fs::write(&path, &interface.text).ok()?;
+    Some(path)
 }
 
 fn location_for_path_span(
