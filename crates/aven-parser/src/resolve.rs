@@ -502,6 +502,23 @@ fn exprs_contain(items: &[Expr], reference: Span) -> bool {
     items.iter().any(|item| item.span.contains(reference))
 }
 
+/// The specifier of a static `import("...")` call, when `expr` is one. This is
+/// the single definition of "a static import" shared by the checker, the
+/// module-graph driver, and tooling — extend it here if the recognized shape
+/// ever widens (e.g. comptime-known non-literal specifiers).
+pub fn static_import_specifier(expr: &Expr) -> Option<String> {
+    let ExprKind::Call { callee, args } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Name(name) if name == "import") {
+        return None;
+    }
+    let ExprKind::Literal(crate::Literal::String(raw)) = &args.first()?.kind else {
+        return None;
+    };
+    Some(crate::decode_string_literal(raw))
+}
+
 pub fn pattern_bindings(pattern: &Expr) -> Vec<BindingSite<'_>> {
     let mut bindings = Vec::new();
     collect_pattern_bindings(pattern, &mut bindings);

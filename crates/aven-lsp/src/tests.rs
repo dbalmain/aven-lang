@@ -1500,6 +1500,60 @@ fn file_backed_member_completion_uses_import_aware_entry_semantics() {
 }
 
 #[test]
+fn file_backed_type_export_completion_hover_and_goto() {
+    let dir = TempDir::new("lsp-type-export");
+    write(
+        dir.path(),
+        "lib/util.av",
+        "User = { name: Text, age: Int }\ngreet = (u: User): Text => u.name\n{ greet, User }\n",
+    );
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let dep_uri = file_uri(&dir.path().join("lib/util.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        "util = import(\"./lib/util\")\nf = (u: util.User): Text => u.name\nvalue = util.\n{ f, value }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    let completions = completion_at_position_for_uri(&document, &main_uri, position(2, 13));
+    let Some(user) = completion_item(&completions, "User") else {
+        panic!("expected User type-export completion, got {completions:?}");
+    };
+    assert!(
+        user.detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("name") && detail.contains("Text")),
+        "expected User detail to show the reified type, got {:?}",
+        user.detail
+    );
+
+    let Some(hover) = hover_at_position(&document, position(1, 14)) else {
+        panic!("expected hover on util.User");
+    };
+    let HoverContents::Markup(markup) = hover.contents else {
+        panic!("expected markup hover");
+    };
+    assert!(
+        markup.value.contains("User") && markup.value.contains("name"),
+        "expected hover to show User type, got {}",
+        markup.value
+    );
+
+    let Some(location) = definition_location(&document, main_uri, position(1, 14), Some(&graph))
+    else {
+        panic!("expected goto definition on util.User");
+    };
+    assert_eq!(location.uri, dep_uri);
+    assert_eq!(location.range.start, position(0, 0));
+    assert_eq!(location.range.end, position(0, 4));
+}
+
+#[test]
 fn file_backed_hover_on_import_binding_shows_record_type() {
     let dir = TempDir::new("lsp-import-hover");
     write(

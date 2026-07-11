@@ -250,6 +250,22 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Tuple(items) => Type::Tuple(self.lower_annotations(items)),
             ExprKind::Record(entries) => self.lower_row_entries(entries, RowKind::Record),
+            ExprKind::FieldAccess {
+                receiver,
+                field,
+                field_span,
+                ..
+            } => {
+                if let Some(specifier) = self.static_import_specifier_for_receiver(receiver) {
+                    if let Some(ty) = self.imports.type_export(&specifier, field) {
+                        return ty.clone();
+                    }
+                    self.report_unknown_module_type(field, *field_span);
+                    return Type::Deferred;
+                }
+                self.lower_deferred_annotation(annotation);
+                Type::Deferred
+            }
             ExprKind::Set(entries) => self.lower_row_entries(entries, RowKind::Variant),
             ExprKind::Binary { operator, .. } if operator == "|" => {
                 self.lower_union_annotation(annotation)
@@ -268,7 +284,6 @@ impl<'a> Checker<'a> {
             | ExprKind::Undefined
             | ExprKind::Null
             | ExprKind::Array(_)
-            | ExprKind::FieldAccess { .. }
             | ExprKind::Binary { .. }
             | ExprKind::Unary { .. }
             | ExprKind::Propagate { .. }
@@ -279,6 +294,14 @@ impl<'a> Checker<'a> {
                 Type::Deferred
             }
         }
+    }
+
+    fn static_import_specifier_for_receiver(&self, receiver: &Expr) -> Option<String> {
+        let ExprKind::Name(name) = &ungroup_expr(receiver).kind else {
+            return None;
+        };
+        let binding = self.bindings.get(name).and_then(|binding| *binding)?;
+        aven_parser::static_import_specifier(&binding.value)
     }
 
     pub(super) fn lower_union_annotation(&mut self, annotation: &Expr) -> Type {

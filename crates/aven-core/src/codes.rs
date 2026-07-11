@@ -26,6 +26,7 @@ pub mod module {
     pub const IMPORT_HAS_ERRORS: &str = "module.import-has-errors";
     pub const NOT_FOUND: &str = "module.not-found";
     pub const NOT_IMPORTABLE: &str = "module.not-importable";
+    pub const UPPERCASE_EXPORT_NOT_TYPE: &str = "module.uppercase-export-not-type";
     pub const ROOT_UNAVAILABLE: &str = "module.root-unavailable";
     pub const UNRESOLVED_IMPORT: &str = "module.unresolved-import";
     pub const UNSUPPORTED_ROOT: &str = "module.unsupported-root";
@@ -127,6 +128,7 @@ pub mod ty {
     pub const UPPERCASE_PATTERN_BINDER_UNSUPPORTED: &str =
         "type.uppercase-pattern-binder-unsupported";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
+    pub const UNKNOWN_MODULE_TYPE: &str = "type.unknown-module-type";
     pub const UNREACHABLE_MATCH_ARM: &str = "type.unreachable-match-arm";
     pub const UNRESOLVED_BINDING: &str = "type.unresolved-binding";
     pub const UNUSED_RESULT: &str = "type.unused-result";
@@ -157,6 +159,7 @@ pub const ALL: &[&str] = &[
     module::ROOT_UNAVAILABLE,
     module::UNRESOLVED_IMPORT,
     module::UNSUPPORTED_ROOT,
+    module::UPPERCASE_EXPORT_NOT_TYPE,
     name::ACCIDENTAL_SHADOWING,
     name::DUPLICATE_DECLARATION,
     name::DUPLICATE_LOCAL,
@@ -226,6 +229,7 @@ pub const ALL: &[&str] = &[
     ty::TYPE_ONLY_RECORD_ENTRY,
     ty::UNEXPECTED_FIELD,
     ty::UNGUARDED_EMPTY_ACCESS,
+    ty::UNKNOWN_MODULE_TYPE,
     ty::UNKNOWN_NAME,
     ty::UNREACHABLE_MATCH_ARM,
     ty::UNRESOLVED_BINDING,

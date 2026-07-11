@@ -111,7 +111,7 @@ impl<'a> Checker<'a> {
                 ))
                 .with_note("use a local relative specifier or a root prefix provided by the host")
                 .with_note(
-                    "bare libraries and packages remain unsupported until module type exports land",
+                    "bare libraries and packages remain unsupported until package resolution lands",
                 ),
         );
     }
@@ -237,14 +237,25 @@ impl<'a> Checker<'a> {
     pub(super) fn report_unsupported_uppercase_pattern_binder(&mut self, name: &str, span: Span) {
         self.push_unique_diagnostic(
             Diagnostic::error(format!(
-                "extracting type `{name}` from a module is not supported yet"
+                "cannot extract type `{name}` from this pattern subject"
             ))
             .with_code(codes::ty::UPPERCASE_PATTERN_BINDER_UNSUPPORTED)
             .with_label(Label::primary(
                 span,
                 "uppercase pattern binder would extract a type",
             ))
-            .with_note("extracting types from modules is not supported yet; this is deferred to Milestone Z"),
+            .with_note(
+                "uppercase binders extract only explicitly exported types from a static module import",
+            ),
+        );
+    }
+
+    pub(super) fn report_unknown_module_type(&mut self, name: &str, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!("module does not export type `{name}`"))
+                .with_code(codes::ty::UNKNOWN_MODULE_TYPE)
+                .with_label(Label::primary(span, "unknown exported type"))
+                .with_note("export the type explicitly in the module's final record"),
         );
     }
 

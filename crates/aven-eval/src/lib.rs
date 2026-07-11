@@ -2517,7 +2517,7 @@ fn unsupported_import_root(specifier: &str, span: Span) -> Diagnostic {
             "this import root is not supported in this milestone",
         ))
         .with_note("use a local relative specifier or a root prefix provided by the host")
-        .with_note("bare libraries and packages remain unsupported until module type exports land")
+        .with_note("bare libraries and packages remain unsupported until package resolution lands")
 }
 
 /// A static relative import evaluated without an injected imports map: this

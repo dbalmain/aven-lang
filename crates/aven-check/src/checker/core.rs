@@ -529,7 +529,7 @@ impl<'a> Checker<'a> {
         self.check_value_expr(value);
         let inferred = self.infer(env, value);
         let resolved = self.normalize(&self.resolve_and_default(&inferred));
-        self.report_unsupported_uppercase_pattern_binders(pattern);
+        self.report_unsupported_uppercase_pattern_binders(pattern, value);
         self.report_missing_record_pattern_fields(pattern, &resolved);
         pattern_local_types(&self.type_definitions, pattern, Some(&resolved))
     }
@@ -561,9 +561,15 @@ impl<'a> Checker<'a> {
         self.local_types.get(name).is_some() || self.value_types.contains_key(name)
     }
 
-    fn report_unsupported_uppercase_pattern_binders(&mut self, pattern: &Expr) {
+    fn report_unsupported_uppercase_pattern_binders(&mut self, pattern: &Expr, value: &Expr) {
+        // Allowed uppercase binders are those that extract a matching type
+        // export field. For `{ User -> Alias }`, the export key is `User` but
+        // the binder name is `Alias`.
+        let imported = aven_parser::static_import_specifier(value)
+            .map(|specifier| type_export_pattern_binders(pattern, &specifier, &self.imports))
+            .unwrap_or_default();
         for site in pattern_bindings(pattern) {
-            if is_comptime_identifier_name(site.name) {
+            if is_comptime_identifier_name(site.name) && !imported.contains(site.name) {
                 self.report_unsupported_uppercase_pattern_binder(site.name, site.span);
             }
         }

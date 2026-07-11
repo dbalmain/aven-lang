@@ -6,10 +6,10 @@ mod lower;
 mod ty;
 mod unify;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use aven_core::{Diagnostic, Span};
-use aven_parser::{Expr, Module};
+use aven_parser::{Expr, ExprKind, Item, Module, RecordEntry};
 
 pub use host_comptime::{
     ComptimeArg, ComptimeError, HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals,
@@ -53,6 +53,8 @@ const CHECKED_NAMED_TYPES: &[&str] = &["Bool", "Float", "Int", "Null", "Text", "
 pub struct CheckOutput {
     pub diagnostics: Vec<Diagnostic>,
     pub inferred_types: Vec<InferredType>,
+    pub type_definitions: HashMap<String, Type>,
+    pub top_level_types: HashMap<String, Type>,
 }
 
 impl CheckOutput {
@@ -86,6 +88,7 @@ impl InferredType {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModuleImports {
     types: HashMap<String, Option<Type>>,
+    type_exports: HashMap<String, HashMap<String, Type>>,
 }
 
 impl ModuleImports {
@@ -95,6 +98,7 @@ impl ModuleImports {
                 .into_iter()
                 .map(|(specifier, ty)| (specifier, Some(ty)))
                 .collect(),
+            type_exports: HashMap::new(),
         }
     }
 
@@ -104,6 +108,7 @@ impl ModuleImports {
                 .into_iter()
                 .map(|specifier| (specifier, None))
                 .collect(),
+            type_exports: HashMap::new(),
         }
     }
 
@@ -115,8 +120,20 @@ impl ModuleImports {
         self.types.insert(specifier.into(), None);
     }
 
+    pub fn insert_type_exports(
+        &mut self,
+        specifier: impl Into<String>,
+        exports: HashMap<String, Type>,
+    ) {
+        self.type_exports.insert(specifier.into(), exports);
+    }
+
     pub fn get(&self, specifier: &str) -> Option<Option<&Type>> {
         self.types.get(specifier).map(Option::as_ref)
+    }
+
+    pub fn type_export(&self, specifier: &str, name: &str) -> Option<&Type> {
+        self.type_exports.get(specifier)?.get(name)
     }
 }
 
@@ -177,9 +194,31 @@ pub fn check_module_with_host_globals_and_imports(
             .entry(name.clone())
             .or_insert_with(|| ty.clone());
     }
+    for item in &module.items {
+        let Item::PatternBinding(binding) = item else {
+            continue;
+        };
+        let Some(specifier) = aven_parser::static_import_specifier(&binding.value) else {
+            continue;
+        };
+        let Some(entries) = record_pattern_entries(&binding.pattern) else {
+            continue;
+        };
+        for entry in entries {
+            let (source, target) = match entry {
+                RecordEntry::Shorthand { name, .. } => (name, name),
+                RecordEntry::Rename { from, to, .. } => (from, to),
+                _ => continue,
+            };
+            if let Some(ty) = imports.type_export(&specifier, source) {
+                known_types.insert(target.clone());
+                type_definitions.insert(target.clone(), ty.clone());
+            }
+        }
+    }
     let mut checker = Checker::with_module_and_host_globals_and_imports(
         known_types,
-        type_definitions,
+        type_definitions.clone(),
         module,
         globals,
         imports,
@@ -187,10 +226,49 @@ pub fn check_module_with_host_globals_and_imports(
 
     checker.diagnostics.extend(alias_diagnostics);
     checker.check_module(module);
+    let export_names = final_record_names(module);
+    let top_level_types = aven_parser::collect_declarations(module)
+        .into_iter()
+        .filter(|declaration| export_names.contains(&declaration.name))
+        .filter_map(|declaration| {
+            checker
+                .infer_top_level_value_for_output(&declaration.name)
+                .map(|ty| (declaration.name, ty))
+        })
+        .collect();
 
     CheckOutput {
         diagnostics: checker.diagnostics,
         inferred_types: checker.inferred_types,
+        type_definitions,
+        top_level_types,
+    }
+}
+
+fn final_record_names(module: &Module) -> HashSet<String> {
+    let Some(Item::Expr(expr)) = module.items.last() else {
+        return HashSet::new();
+    };
+    let ExprKind::Record(entries) = &expr.kind else {
+        return HashSet::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => {
+                Some(name.clone())
+            }
+            RecordEntry::Rename { to, .. } => Some(to.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn record_pattern_entries(expr: &Expr) -> Option<&[RecordEntry]> {
+    match &expr.kind {
+        ExprKind::Record(entries) => Some(entries),
+        ExprKind::Group(inner) => record_pattern_entries(inner),
+        _ => None,
     }
 }
 

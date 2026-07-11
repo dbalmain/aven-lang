@@ -13,6 +13,10 @@ impl<'a> Checker<'a> {
 
     #[cfg(test)]
     pub(crate) fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
+        self.infer_top_level_value_for_output(name)
+    }
+
+    pub(crate) fn infer_top_level_value_for_output(&mut self, name: &str) -> Option<Type> {
         let scheme = self.infer_top_level(name)?;
         let ty = self.unifier.instantiate_scheme(&scheme);
         self.resolve_if_concrete(&ty)

@@ -107,6 +107,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "This import uses a bare library, package, or otherwise unsupported root. Project, home, and filesystem roots are supported when the host provides them.",
     },
     DiagnosticExplanation {
+        code: codes::module::UPPERCASE_EXPORT_NOT_TYPE,
+        text: "Uppercase fields in a module export record must name explicitly exported type aliases.",
+    },
+    DiagnosticExplanation {
         code: codes::name::ACCIDENTAL_SHADOWING,
         text: "A local binding introduced with = reuses a name that is already visible. Rename it, or use := to shadow the existing binding intentionally.",
     },
@@ -383,6 +387,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A field was accessed on a value that may be `undefined` or `null` (for example an array element) without `?.`. Use `?.` to propagate the empty, `??` to supply a default, or match the empty before access.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNKNOWN_MODULE_TYPE,
+        text: "A module-qualified type name is not one of the explicitly exported type fields of that module.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::UNKNOWN_NAME,
         text: "A type annotation references an uppercase name that is not a known builtin or in-scope compile-time declaration. Define it or correct the spelling.",
     },
@@ -400,7 +408,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::UPPERCASE_PATTERN_BINDER_UNSUPPORTED,
-        text: "Uppercase record-pattern binders are reserved for extracting types from module records, but module type exports are deferred to Milestone Z. Import values with lowercase binders for now.",
+        text: "Uppercase record-pattern binders extract only explicitly exported types from a static module import.",
     },
     DiagnosticExplanation {
         code: codes::ty::WIDE_VALUE_INTO_LITERAL_UNION,

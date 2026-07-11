@@ -1,3 +1,3 @@
-error type.uppercase-pattern-binder-unsupported: extracting type `Text` from a module is not supported yet
+error type.uppercase-pattern-binder-unsupported: cannot extract type `Text` from this pattern subject
   label 2..6: uppercase pattern binder would extract a type
-  note: extracting types from modules is not supported yet; this is deferred to Milestone Z
+  note: uppercase binders extract only explicitly exported types from a static module import

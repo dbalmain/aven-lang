@@ -1509,6 +1509,35 @@ fn final_result_span(expr: &Expr) -> Span {
     final_value_expr(expr).map_or(expr.span, |final_expr| final_expr.span)
 }
 
+/// Binder names in `pattern` that extract a type export from the static import
+/// of `specifier`. Handles rename (`{ User -> Alias }` binds `Alias` from export
+/// field `User`).
+fn type_export_pattern_binders(
+    pattern: &Expr,
+    specifier: &str,
+    imports: &ModuleImports,
+) -> HashSet<String> {
+    let ExprKind::Record(entries) = &ungroup_expr(pattern).kind else {
+        return HashSet::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            RecordEntry::Shorthand { name, .. }
+                if imports.type_export(specifier, name).is_some() =>
+            {
+                Some(name.clone())
+            }
+            RecordEntry::Rename { from, to, .. }
+                if imports.type_export(specifier, from).is_some() =>
+            {
+                Some(to.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn result_constructor_tag(callee: &Expr) -> Option<&str> {
     let ExprKind::Tag(tag) = &ungroup_expr(callee).kind else {
         return None;

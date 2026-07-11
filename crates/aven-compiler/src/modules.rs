@@ -129,9 +129,18 @@ struct ImportRef {
 
 #[derive(Debug, Clone)]
 enum CheckExport {
-    Record(Type),
+    Record {
+        ty: Type,
+        type_exports: HashMap<String, Type>,
+    },
     HasErrors,
-    NotImportable { note: String },
+    UppercaseExportNotType {
+        name: String,
+        span: Span,
+    },
+    NotImportable {
+        note: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +230,18 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
             CheckExport::HasErrors
         } else {
             check_export_for_node(&graph.nodes[node_id], &semantic)
+        };
+        let export = match export {
+            CheckExport::UppercaseExportNotType { name, span } => {
+                diagnostics.entry(file_id).or_default().push(
+                    Diagnostic::error(format!("uppercase export `{name}` is not a type"))
+                        .with_code(codes::module::UPPERCASE_EXPORT_NOT_TYPE)
+                        .with_label(Label::primary(span, "uppercase exports must be types"))
+                        .with_note("export a type binding explicitly, or use a lowercase field for a runtime value"),
+                );
+                CheckExport::HasErrors
+            }
+            other => other,
         };
         let provenance = if semantic_has_errors {
             ExportProvenanceMap::new()
@@ -550,8 +571,9 @@ fn check_imports_for_node(
             continue;
         }
         match import.target.and_then(|target| exports.get(target)) {
-            Some(CheckExport::Record(ty)) if !import.failed => {
+            Some(CheckExport::Record { ty, type_exports }) if !import.failed => {
                 imports.insert(import.specifier.clone(), ty.clone());
+                imports.insert_type_exports(import.specifier.clone(), type_exports.clone());
             }
             Some(CheckExport::NotImportable { note }) if !import.failed => {
                 imports.insert_failed(import.specifier.clone());
@@ -618,13 +640,21 @@ fn check_export_for_node(node: &ModuleNode, semantic: &SemanticOutput) -> CheckE
         };
     };
 
-    let Some(ty) = semantic
+    let ty = semantic
         .inferred_types
         .iter()
         .filter(|inferred| type_span_contains(inferred.name_span, final_expr.span))
         .min_by_key(|inferred| inferred.name_span.len())
         .map(|inferred| inferred.ty.clone())
-    else {
+        .or_else(|| {
+            matches!(final_expr.kind, ExprKind::Record(_)).then(|| {
+                Type::Record(aven_check::Row {
+                    entries: Vec::new(),
+                    tail: RowTail::Closed,
+                })
+            })
+        });
+    let Some(ty) = ty else {
         return CheckExport::NotImportable {
             note: format!(
                 "{} final expression at {} is not a statically-known record",
@@ -634,17 +664,116 @@ fn check_export_for_node(node: &ModuleNode, semantic: &SemanticOutput) -> CheckE
         };
     };
 
-    if matches!(&ty, Type::Record(row) if row.tail == RowTail::Closed) {
-        CheckExport::Record(ty)
-    } else {
-        CheckExport::NotImportable {
+    if !matches!(&ty, Type::Record(row) if row.tail == RowTail::Closed) {
+        return CheckExport::NotImportable {
             note: format!(
                 "{} final expression at {} has type `{}`",
                 node.file.name,
                 render_span(&node.file, final_expr.span),
                 ty.render()
             ),
+        };
+    }
+
+    let Type::Record(_) = ty else {
+        unreachable!("closed record guard above");
+    };
+    let ExprKind::Record(entries) = &final_expr.kind else {
+        return CheckExport::NotImportable {
+            note: "final expression is not a record literal".to_owned(),
+        };
+    };
+    let has_type_shaped_field = entries.iter().any(|entry| {
+        let name = match entry {
+            RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => name,
+            RecordEntry::Rename { to, .. } => to,
+            _ => return false,
+        };
+        name.chars().next().is_some_and(char::is_uppercase)
+    });
+    if !has_type_shaped_field {
+        return CheckExport::Record {
+            ty,
+            type_exports: HashMap::new(),
+        };
+    }
+    let mut fields = Vec::new();
+    let mut type_exports = HashMap::new();
+    for entry in entries {
+        let (name, source_name, value_span, source_is_name) = match entry {
+            RecordEntry::Field {
+                name,
+                value,
+                name_span,
+                ..
+            } => (name, expr_name(value), *name_span, true),
+            RecordEntry::Shorthand {
+                name, name_span, ..
+            } => (name, Some(name.as_str()), *name_span, true),
+            RecordEntry::Rename {
+                from,
+                from_span,
+                to,
+                ..
+            } => (to, Some(from.as_str()), *from_span, true),
+            _ => {
+                return CheckExport::NotImportable {
+                    note: "final expression contains an unsupported export entry".to_owned(),
+                };
+            }
+        };
+        let is_type = name.chars().next().is_some_and(char::is_uppercase);
+        let field_ty = if is_type {
+            source_name
+                .and_then(|source| semantic.type_definitions.get(source))
+                .cloned()
+        } else {
+            source_name
+                .and_then(|source| semantic.top_level_types.get(source))
+                .cloned()
+                .or_else(|| {
+                    semantic
+                        .inferred_types
+                        .iter()
+                        .filter(|inferred| {
+                            source_is_name && type_span_contains(inferred.name_span, value_span)
+                        })
+                        .min_by_key(|inferred| inferred.name_span.len())
+                        .map(|inferred| inferred.ty.clone())
+                })
+        };
+        let Some(field_ty) = field_ty else {
+            if is_type {
+                return CheckExport::UppercaseExportNotType {
+                    name: name.clone(),
+                    span: value_span,
+                };
+            }
+            return CheckExport::NotImportable {
+                note: format!("export field `{name}` is not statically known"),
+            };
+        };
+        if is_type {
+            type_exports.insert(name.clone(), field_ty.clone());
         }
+        fields.push(aven_check::RowEntry::Field {
+            name: name.clone(),
+            ty: field_ty,
+        });
+    }
+    CheckExport::Record {
+        ty: Type::Record(aven_check::Row {
+            entries: fields,
+            tail: RowTail::Closed,
+        }),
+        type_exports,
+    }
+}
+
+fn expr_name(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name),
+        _ => None,
     }
 }
 
@@ -761,7 +890,7 @@ fn top_level_import_bindings(module: &Module) -> HashMap<String, String> {
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Binding(binding) => import_specifier_from_expr(&binding.value)
+            Item::Binding(binding) => aven_parser::static_import_specifier(&binding.value)
                 .map(|specifier| (binding.name.clone(), specifier)),
             _ => None,
         })
@@ -783,7 +912,7 @@ fn static_import_target(
     import_bindings: &HashMap<String, String>,
     imports_by_specifier: &HashMap<String, usize>,
 ) -> Option<usize> {
-    import_specifier_from_expr(expr)
+    aven_parser::static_import_specifier(expr)
         .or_else(|| match &expr.kind {
             ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
                 import_bindings.get(name).cloned()
@@ -791,17 +920,6 @@ fn static_import_target(
             _ => None,
         })
         .and_then(|specifier| imports_by_specifier.get(&specifier).copied())
-}
-
-fn import_specifier_from_expr(expr: &Expr) -> Option<String> {
-    if let ExprKind::Call { callee, args } = &expr.kind
-        && matches!(&callee.kind, ExprKind::Name(name) if name == "import")
-        && let Some(ExprKind::Literal(Literal::String(raw))) = args.first().map(|arg| &arg.kind)
-    {
-        return Some(decode_string_literal(raw));
-    }
-
-    None
 }
 
 fn expr_record_kind(expr: &Expr) -> Option<&[RecordEntry]> {
@@ -1013,7 +1131,7 @@ fn unsupported_root(span: Span, specifier: &str) -> Diagnostic {
             "this import root is not supported in this milestone",
         ))
         .with_note("use a local relative specifier or a root prefix provided by the host")
-        .with_note("bare libraries and packages remain unsupported until module type exports land")
+        .with_note("bare libraries and packages remain unsupported until package resolution lands")
 }
 
 fn root_unavailable(span: Span, specifier: &str) -> Diagnostic {

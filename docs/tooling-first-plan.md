@@ -1759,9 +1759,8 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
 - H3 open questions (recorded under Milestone H, not scheduled)
 - the Milestone IO watch item: define the bare write tier in terms of the Result
   handles so the two tiers cannot drift
-- Milestone Z — modules and imports: **Z3 root-prefixed imports done
-  2026-07-11** (see below); bare library/package names remain open pending
-  module type exports
+- Milestone Z — modules and imports: **Z4 module type exports done 2026-07-11**
+  (see below); bare library/package names remain open as package resolution
 
 ## Milestone N — null/undefined model
 
@@ -2795,8 +2794,8 @@ gate suite passed on current main.
 
 ## Milestone Z — modules and imports
 
-Status: Z3 (project, home, and filesystem roots) done 2026-07-11; bare library
-names remain open pending module type exports
+Status: Z4 (module type exports) done 2026-07-11; bare library names remain
+open as package resolution
 
 Goal: host-controlled module resolution per the spec (`import("./lib/Text")`,
 `Std = import("std")`). Import specifiers are static `Text` (P-rm), so `import`
@@ -2832,6 +2831,13 @@ checker re-entrancy to keep the semantic crates small.
   `//` uses the filesystem root when provided by the host. CLI and file-backed
   LSP resolution discover roots; embeddings can explicitly provide none
   (`module.root-unavailable`). Bare names stay `module.unsupported-root`.
+- Z4 done 2026-07-11: explicitly exported monomorphic type aliases travel in
+  the module export channel. Importers can use `util.User` in annotations and
+  extract `{ User }` (including rename patterns); type exports participate in
+  completion, hover, and goto provenance. Alias-shaped standard modules now
+  meet the type-export prerequisite. Comptime functions producing types and
+  parameterized aliases remain deferred; bare library names still require
+  package-resolution work.
 - Z-LSP diagnostics done 2026-07-09: file-backed documents run the module-graph
   driver with open-buffer overlays (`SourceOverlay`; buffer beats disk, cached
   entry parse reused), publishing the same `module.*` diagnostics as
@@ -2847,8 +2853,9 @@ checker re-entrancy to keep the semantic crates small.
   the dependency file; import-specifier completion lists sibling dirs/`.av`
   files (extension omitted) for `./`/`../` and `$/` (from the discovered
   project root), and offers nothing for bare library names.
-- Z-open: bare library names (`std`, packages) remain pending module type
-  exports. Dynamic import is permanently comptime-only and reports
+- Z-open: bare library names (`std`, packages) remain open as package
+  resolution (type-export prerequisite met by Z4 for alias-shaped modules).
+  Dynamic import is permanently comptime-only and reports
   `module.dynamic-import`; it is never a runtime fallback.
 - Design decision (user, 2026-07-09): **modules bind lowercase** — a module is
   an ordinary record value; uppercase is reserved for types alone (no
@@ -2867,9 +2874,10 @@ checker re-entrancy to keep the semantic crates small.
   LHS parses as an ordinary `Expr` (no parallel pattern AST); eval reuses
   match-pattern destructuring; spreads require a statically-known closed record
   (`type.spread-shape-unknown` otherwise); `:..` is block-only
-  (`name.no-toplevel-spread-shadow` at top level); uppercase pattern binders
-  parse but diagnose `type.uppercase-pattern-binder-unsupported` until modules
-  can export types.
+  (`name.no-toplevel-spread-shadow` at top level); uppercase pattern binders on
+  a static import with a matching type export bind ordinary type aliases
+  (Z4); otherwise they still diagnose
+  `type.uppercase-pattern-binder-unsupported`.
 - Checker bug discovered (2026-07-09), still open: a binding that shadows a
   builtin type name (`Text = import("./text")`) breaks record spread of that
   binding when the imported signatures mention the shadowed type —

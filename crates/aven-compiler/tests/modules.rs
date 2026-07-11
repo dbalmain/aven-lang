@@ -99,6 +99,110 @@ fn record_pattern_binding_selects_from_import_record() {
 }
 
 #[test]
+fn module_type_exports_work_in_qualified_and_pattern_annotations() {
+    let dir = TempDir::new("type-exports");
+    write(
+        dir.path(),
+        "util.av",
+        "User = { name: Text, age: Int }\ngreet = (u: User): Text => u.name\n{ greet, User }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "util = import(\"./util\")\nf = (u: util.User): Text => u.name\n{ f }\n",
+    );
+    let qualified =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("qualified type import should check");
+    assert_no_errors(&qualified.reports);
+
+    write(
+        dir.path(),
+        "pattern.av",
+        "{ User } = import(\"./util\")\nf = (u: User): Text => u.name\n{ f }\n",
+    );
+    let pattern =
+        check_path_with_host_globals(&dir.path().join("pattern.av"), &HostGlobals::default())
+            .expect("type pattern import should check");
+    assert_no_errors(&pattern.reports);
+
+    write(
+        dir.path(),
+        "rename.av",
+        "{ User -> Person } = import(\"./util\")\nf = (u: Person): Text => u.name\n{ f }\n",
+    );
+    let rename =
+        check_path_with_host_globals(&dir.path().join("rename.av"), &HostGlobals::default())
+            .expect("renamed type pattern import should check");
+    assert_no_errors(&rename.reports);
+}
+
+#[test]
+fn module_type_export_diagnostics_are_structured() {
+    let dir = TempDir::new("type-export-diagnostics");
+    write(
+        dir.path(),
+        "util.av",
+        "value = 1\n{ value: value, User: value }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "util = import(\"./util\")\n{ util }\n",
+    );
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+    assert_has_code(&output.reports, codes::module::UPPERCASE_EXPORT_NOT_TYPE);
+
+    write(
+        dir.path(),
+        "util_ok.av",
+        "User = { name: Text }\n{ User }\n",
+    );
+    write(
+        dir.path(),
+        "unknown.av",
+        "util = import(\"./util_ok\")\nx: util.Missing = { name: \"a\" }\n{ x }\n",
+    );
+    let unknown =
+        check_path_with_host_globals(&dir.path().join("unknown.av"), &HostGlobals::default())
+            .expect("check should load graph");
+    assert_has_code(&unknown.reports, codes::ty::UNKNOWN_MODULE_TYPE);
+
+    write(
+        dir.path(),
+        "non_import.av",
+        "rec = { Text: 1 }\n{ Text } = rec\n{ Text }\n",
+    );
+    let non_import =
+        check_path_with_host_globals(&dir.path().join("non_import.av"), &HostGlobals::default())
+            .expect("check should load graph");
+    assert_has_code(
+        &non_import.reports,
+        codes::ty::UPPERCASE_PATTERN_BINDER_UNSUPPORTED,
+    );
+}
+
+#[test]
+fn module_exporting_types_evaluates() {
+    let dir = TempDir::new("type-export-eval");
+    write(
+        dir.path(),
+        "util.av",
+        "User = { name: Text, age: Int }\ngreet = (u: User): Text => u.name\n{ greet, User }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "{ User } = import(\"./util\")\nu = { name: \"Ada\", age: 1 }\n{ u, User }\n",
+    );
+    let output = eval_path_with_globals(&dir.path().join("main.av"), Vec::new())
+        .expect("eval should load graph");
+    assert_no_errors(&output.reports);
+    assert!(output.value.is_some());
+}
+
+#[test]
 fn spread_binding_opens_import_record() {
     let dir = TempDir::new("spread-binding-import");
     write(

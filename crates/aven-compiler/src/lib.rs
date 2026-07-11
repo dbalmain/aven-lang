@@ -632,6 +632,8 @@ pub struct PhaseTimings {
 pub struct SemanticOutput {
     pub diagnostics: Vec<Diagnostic>,
     pub inferred_types: Vec<InferredType>,
+    pub type_definitions: HashMap<String, Type>,
+    pub top_level_types: HashMap<String, Type>,
     pub name_duration: Option<Duration>,
     pub check_duration: Option<Duration>,
 }
@@ -671,6 +673,8 @@ pub fn analyze_semantics_with_host_globals_and_imports(
     let aven_check::CheckOutput {
         diagnostics: check_diagnostics,
         inferred_types,
+        type_definitions,
+        top_level_types,
     } = check_output;
     let diagnostics = if parse_has_errors {
         Vec::new()
@@ -685,6 +689,8 @@ pub fn analyze_semantics_with_host_globals_and_imports(
     SemanticOutput {
         diagnostics,
         inferred_types,
+        type_definitions,
+        top_level_types,
         name_duration: Some(name_duration),
         check_duration: Some(check_duration),
     }
