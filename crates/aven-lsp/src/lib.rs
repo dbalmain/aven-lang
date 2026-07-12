@@ -79,6 +79,7 @@ struct ModuleNodeCache {
 struct DocumentSemanticAnalysis {
     diagnostics: Vec<AvenDiagnostic>,
     inferred_types: Vec<aven_compiler::InferredType>,
+    type_definitions: HashMap<String, aven_compiler::Type>,
     module_graph: Option<DocumentModuleGraph>,
 }
 
@@ -139,6 +140,7 @@ impl DocumentStore {
             revision,
             analysis.diagnostics,
             analysis.inferred_types,
+            analysis.type_definitions,
         ) else {
             return false;
         };
@@ -538,6 +540,7 @@ fn analyze_document_semantics_for_uri(
     DocumentSemanticAnalysis {
         diagnostics: semantic.diagnostics,
         inferred_types: semantic.inferred_types,
+        type_definitions: semantic.type_definitions,
         module_graph: None,
     }
 }
@@ -585,11 +588,13 @@ fn module_semantics_for_document(
         .filter(|diagnostic| !parse_diagnostics.contains(diagnostic))
         .collect();
     let inferred_types = entry_node.semantic.inferred_types.clone();
+    let type_definitions = entry_node.semantic.type_definitions.clone();
     let module_graph = module_graph_cache(document.revision(), entry_path, output.nodes);
 
     Some(DocumentSemanticAnalysis {
         diagnostics,
         inferred_types,
+        type_definitions,
         module_graph: Some(module_graph),
     })
 }
@@ -2478,8 +2483,7 @@ fn identifier_hover_at_position(
 ) -> Option<HoverCandidate> {
     let identifier = identifier_at_position(document, position)?;
 
-    let rendered = if let Some(field_access) =
-        field_access_identifier_at_position(document, position)
+    if let Some(field_access) = field_access_identifier_at_position(document, position)
         && field_access.field.span == identifier.span
         && let Some(field_type) = field_type_for_access(document, &field_access)
     {
@@ -2497,32 +2501,128 @@ fn identifier_hover_at_position(
                 range: Some(span_to_range(document, identifier.span)),
             },
         });
-    } else if let Some(definition) = definition_span_for_identifier(document, &identifier) {
+    }
+
+    let rendered = if let Some(definition) = definition_span_for_identifier(document, &identifier) {
         if let Some(annotation) =
             aven_parser::annotation_for_definition(&document.parse_output().module, definition)
         {
             let rendered = aven_parser::render_annotation(document.source(), annotation);
-            if rendered.is_empty() {
-                return None;
-            }
-            rendered
+            (!rendered.is_empty()).then_some(rendered)
         } else {
-            document.type_at(definition)?.render()
+            document
+                .type_at(definition)
+                .map(aven_compiler::Type::render)
         }
     } else {
-        host_global_type(&identifier.name)?.render()
+        host_global_type(&identifier.name).map(|ty| ty.render())
     };
+
+    let value = rendered
+        .map(|rendered| format!("```aven\n{} : {}\n```", identifier.name, rendered))
+        .or_else(|| comptime_hover_value(document, &identifier))?;
 
     Some(HoverCandidate {
         span: identifier.span,
         hover: Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("```aven\n{} : {}\n```", identifier.name, rendered),
+                value,
             }),
             range: Some(span_to_range(document, identifier.span)),
         },
     })
+}
+
+/// Hover descriptions for the builtin comptime type functions. Membership
+/// comes from [`aven_compiler::COMPTIME_BUILTIN_FUNCTIONS`]; a test asserts
+/// this table covers exactly that list so the two cannot drift apart.
+const COMPTIME_BUILTIN_HOVERS: &[(&str, &str)] = &[
+    (
+        "keysOf",
+        "The keys of a record type as a literal union — `keysOf(User)` is `\"email\" | \"name\"`.",
+    ),
+    (
+        "tagsOf",
+        "The tags of a variant type as a literal union — `tagsOf(Shape)` is `\"circle\" | \"square\"`.",
+    ),
+    (
+        "typeOf",
+        "The type of a value — `typeOf(user)` is the inferred type of `user`.",
+    ),
+    (
+        "pick",
+        "A record type with only the given keys — `pick(User, \"name\")` is `{ name: Text }`.",
+    ),
+    (
+        "omit",
+        "A record type without the given keys — `omit(User, \"email\")` is `{ name: Text }`.",
+    ),
+];
+
+/// Hover fallbacks for comptime type machinery, which is name-bound but has no
+/// inferred type: reified comptime type bindings (`Draft = partial(User)`),
+/// user-defined comptime type functions (`partial`), and the builtin comptime
+/// type functions themselves. Only consulted when the ordinary
+/// annotation/inference branches produced nothing, so identifiers that already
+/// hover keep their rendering.
+fn comptime_hover_value(
+    document: &ParsedDocument,
+    identifier: &IdentifierAtPosition,
+) -> Option<String> {
+    if let Some(ty) = document.type_definition(&identifier.name) {
+        // Deferred definitions (e.g. `Bad = partial(missing)`) get no hover;
+        // `Bad = <deferred>` would only restate that resolution failed.
+        return (!aven_compiler::type_contains_deferred(ty))
+            .then(|| format!("```aven\n{} = {}\n```", identifier.name, ty.render()));
+    }
+
+    if comptime_type_function_binding(document, &identifier.name) {
+        return Some(format!(
+            "```aven\n{} : comptime type function\n```",
+            identifier.name
+        ));
+    }
+
+    let (_, description) = COMPTIME_BUILTIN_HOVERS
+        .iter()
+        .find(|(name, _)| *name == identifier.name)?;
+    Some(format!(
+        "```aven\n{} : comptime type function\n```\n{description}",
+        identifier.name
+    ))
+}
+
+/// Whether `name` is a top-level unannotated lambda whose body references one
+/// of the builtin comptime type functions — the conservative signature of a
+/// user-defined comptime type function (mapped-type template). A plain
+/// deferred runtime lambda like `merge = (a, b) => { ..a, ..b }` does not
+/// qualify.
+fn comptime_type_function_binding(document: &ParsedDocument, name: &str) -> bool {
+    document.parse_output().module.items.iter().any(|item| {
+        let aven_parser::Item::Binding(binding) = item else {
+            return false;
+        };
+        binding.name == name
+            && binding.annotation.is_none()
+            && aven_parser::lambda_parts(&binding.value)
+                .is_some_and(|(_, body)| references_comptime_builtin(body))
+    })
+}
+
+fn references_comptime_builtin(expr: &aven_parser::Expr) -> bool {
+    if let aven_parser::ExprKind::Name(name) | aven_parser::ExprKind::ComptimeName(name) =
+        &expr.kind
+        && aven_compiler::COMPTIME_BUILTIN_FUNCTIONS.contains(&name.as_str())
+    {
+        return true;
+    }
+
+    let mut found = false;
+    aven_parser::walk_expr_children(expr, &mut |child| {
+        found = found || references_comptime_builtin(child);
+    });
+    found
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

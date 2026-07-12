@@ -745,7 +745,7 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
     concrete_types && concrete_rows
 }
 
-pub(crate) fn type_contains_deferred(ty: &Type) -> bool {
+pub fn type_contains_deferred(ty: &Type) -> bool {
     let mut found = false;
     visit_type(ty, &mut |node| {
         if matches!(node, Type::Deferred) {

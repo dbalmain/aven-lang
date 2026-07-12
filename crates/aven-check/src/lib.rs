@@ -20,8 +20,13 @@ pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
 pub use ty::{
     RecordField, Row, RowEntry, RowTail, Type, function_required_arity, function_signature,
-    is_text_type, literal_union_members, record_fields, render_type, variant_tags,
+    is_text_type, literal_union_members, record_fields, render_type, type_contains_deferred,
+    variant_tags,
 };
+
+/// Builtin comptime type functions. Shared with tooling (LSP hover) so the
+/// checker's name binding and the hover descriptions cannot drift apart.
+pub const COMPTIME_BUILTIN_FUNCTIONS: &[&str] = &["keysOf", "tagsOf", "typeOf", "pick", "omit"];
 
 pub(crate) use checker::Checker;
 pub(crate) use lower::{

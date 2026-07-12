@@ -57,6 +57,19 @@ pub fn annotation_for_definition(module: &Module, definition: Span) -> Option<&E
     annotation_for_definition_in_items(&module.items, definition)
 }
 
+/// The parameters and body of a lambda expression, looking through grouping
+/// parens (`((x) => x)` resolves like `(x) => x`).
+pub fn lambda_parts(expr: &Expr) -> Option<(&[crate::Param], &Expr)> {
+    let mut expr = expr;
+    while let ExprKind::Group(inner) = &expr.kind {
+        expr = inner;
+    }
+    match &expr.kind {
+        ExprKind::Lambda { params, body, .. } => Some((params, body)),
+        _ => None,
+    }
+}
+
 pub fn render_annotation(source: &str, annotation: &Expr) -> String {
     source
         .get(annotation.span.start..annotation.span.end)

@@ -59,7 +59,11 @@ fn parsed_document_with_file_id(file_id: FileId, source: impl Into<String>) -> P
 fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
     let document = parsed_document(source);
     let semantic = analyze_document_semantics(&document);
-    document.with_semantic(semantic.diagnostics, semantic.inferred_types)
+    document.with_semantic(
+        semantic.diagnostics,
+        semantic.inferred_types,
+        semantic.type_definitions,
+    )
 }
 
 fn parsed_file_document(uri: &Url, source: impl Into<String>) -> ParsedDocument {
@@ -1393,7 +1397,11 @@ fn parsed_documents_thread_file_ids_into_parse_output() {
 fn parsed_document_diagnostic_report_uses_file_id() {
     let document = parsed_document_with_file_id(FileId(7), "value : Missing = value\n".to_owned());
     let semantic = analyze_document_semantics(&document);
-    let document = document.with_semantic(semantic.diagnostics, semantic.inferred_types);
+    let document = document.with_semantic(
+        semantic.diagnostics,
+        semantic.inferred_types,
+        semantic.type_definitions,
+    );
     let report = document.diagnostic_report();
 
     assert_eq!(report.file_id, FileId(7));
@@ -2141,6 +2149,7 @@ fn document_store_accepts_current_semantic_diagnostics() {
         DocumentSemanticAnalysis {
             diagnostics: vec![AvenDiagnostic::error("semantic diagnostic")],
             inferred_types: Vec::new(),
+            type_definitions: HashMap::new(),
             module_graph: None,
         },
     ));
@@ -2168,6 +2177,7 @@ fn document_store_rejects_stale_semantic_diagnostics() {
         DocumentSemanticAnalysis {
             diagnostics: vec![AvenDiagnostic::error("stale diagnostic")],
             inferred_types: Vec::new(),
+            type_definitions: HashMap::new(),
             module_graph: None,
         },
     ));
@@ -2399,6 +2409,94 @@ fn hover_at_position_returns_none_when_inference_defers() {
     let hover = hover_at_position(&document, position(0, 1));
 
     assert!(hover.is_none());
+}
+
+const COMPTIME_TYPE_SOURCE: &str = "User = { name: Text, email: Text }\n\
+     partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+     Draft = partial(User)\n\
+     value : Draft = { name: \"Ada\" }\n";
+
+#[test]
+fn hover_at_comptime_type_binding_definition_shows_reified_type() {
+    let document = parsed_document_with_semantics(COMPTIME_TYPE_SOURCE);
+    let Some(hover) = hover_at_position(&document, position(2, 1)) else {
+        panic!("expected hover");
+    };
+
+    assert_hover_value(hover, "```aven\nDraft = { email: ?Text, name: ?Text }\n```");
+}
+
+#[test]
+fn hover_at_comptime_type_binding_use_site_shows_reified_type() {
+    let document = parsed_document_with_semantics(COMPTIME_TYPE_SOURCE);
+    let Some(hover) = hover_at_position(&document, position(3, 9)) else {
+        panic!("expected hover");
+    };
+
+    assert_hover_value(hover, "```aven\nDraft = { email: ?Text, name: ?Text }\n```");
+}
+
+#[test]
+fn hover_at_comptime_type_function_definition_shows_comptime_marker() {
+    let document = parsed_document_with_semantics(COMPTIME_TYPE_SOURCE);
+    let Some(hover) = hover_at_position(&document, position(1, 1)) else {
+        panic!("expected hover");
+    };
+
+    assert_hover_value(hover, "```aven\npartial : comptime type function\n```");
+}
+
+#[test]
+fn hover_at_builtin_comptime_function_shows_description() {
+    let document = parsed_document_with_semantics(COMPTIME_TYPE_SOURCE);
+    let Some(hover) = hover_at_position(&document, position(1, 25)) else {
+        panic!("expected hover");
+    };
+
+    assert_hover_value(
+        hover,
+        "```aven\nkeysOf : comptime type function\n```\n\
+         The keys of a record type as a literal union — `keysOf(User)` is `\"email\" | \"name\"`.",
+    );
+}
+
+#[test]
+fn hover_at_deferred_runtime_lambda_gets_no_comptime_function_hover() {
+    let document = parsed_document_with_semantics("merge = (a, b) => { ..a, ..b }\n");
+    let Some(hover) = hover_at_position(&document, position(0, 1)) else {
+        panic!("expected hover");
+    };
+
+    // A plain deferred runtime lambda keeps its inferred rendering; it must
+    // not be misreported as a comptime type function.
+    assert_hover_value(hover, "```aven\nmerge : ({ .. }, { .. }) -> { .. }\n```");
+}
+
+#[test]
+fn hover_at_untyped_lambda_without_builtin_reference_gets_no_hover() {
+    let document = parsed_document_with_semantics("wrap = (a) => missing(a)\n");
+    let hover = hover_at_position(&document, position(0, 1));
+
+    assert!(hover.is_none());
+}
+
+#[test]
+fn hover_at_deferred_comptime_type_binding_gets_no_hover() {
+    let source = format!("{COMPTIME_TYPE_SOURCE}Bad = partial(missing)\n");
+    let document = parsed_document_with_semantics(source);
+    let hover = hover_at_position(&document, position(4, 1));
+
+    assert!(hover.is_none());
+}
+
+#[test]
+fn builtin_comptime_hover_table_matches_checker_builtin_list() {
+    let hover_names: Vec<&str> = COMPTIME_BUILTIN_HOVERS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+
+    assert_eq!(hover_names, aven_compiler::COMPTIME_BUILTIN_FUNCTIONS);
 }
 
 fn position(line: u32, character: u32) -> Position {

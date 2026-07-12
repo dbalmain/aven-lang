@@ -25,7 +25,7 @@ pub use parser::{
     parse_module, parse_source,
 };
 pub use resolve::{
-    BindingSite, annotation_for_definition, pattern_bindings, render_annotation,
+    BindingSite, annotation_for_definition, lambda_parts, pattern_bindings, render_annotation,
     static_import_specifier,
 };
 pub use resolve::{resolve_local_definition, resolve_local_references, visible_local_bindings};

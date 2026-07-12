@@ -13,9 +13,9 @@ use aven_parser::{
 };
 
 pub use aven_check::{
-    HostGlobals, InferredType, ModuleImports as CheckModuleImports, RecordField, Type,
-    function_signature, is_text_type, literal_union_members, record_fields, type_statics,
-    variant_tags,
+    COMPTIME_BUILTIN_FUNCTIONS, HostGlobals, InferredType, ModuleImports as CheckModuleImports,
+    RecordField, Type, function_signature, is_text_type, literal_union_members, record_fields,
+    type_contains_deferred, type_statics, variant_tags,
 };
 
 mod modules;
@@ -99,6 +99,7 @@ pub struct DocumentSnapshot {
     invalidated_declarations: Vec<DeclarationKey>,
     semantic_diagnostics: Vec<Diagnostic>,
     inferred_types: Vec<InferredType>,
+    type_definitions: HashMap<String, Type>,
     has_semantic: bool,
 }
 
@@ -131,6 +132,7 @@ impl DocumentSnapshot {
             invalidated_declarations: declaration_artifacts.invalidated,
             semantic_diagnostics: Vec::new(),
             inferred_types: Vec::new(),
+            type_definitions: HashMap::new(),
             has_semantic: false,
         }
     }
@@ -139,6 +141,7 @@ impl DocumentSnapshot {
         &self,
         semantic_diagnostics: Vec<Diagnostic>,
         inferred_types: Vec<InferredType>,
+        type_definitions: HashMap<String, Type>,
     ) -> Self {
         Self {
             revision: self.revision,
@@ -149,6 +152,7 @@ impl DocumentSnapshot {
             invalidated_declarations: self.invalidated_declarations.clone(),
             semantic_diagnostics,
             inferred_types,
+            type_definitions,
             has_semantic: true,
         }
     }
@@ -200,6 +204,12 @@ impl DocumentSnapshot {
             .filter(|inferred| type_span_contains(inferred.name_span, span))
             .min_by_key(|inferred| inferred.name_span.len())
             .map(|inferred| &inferred.ty)
+    }
+
+    /// The reified type for a comptime type binding or definition, by name
+    /// (e.g. `Draft` for `Draft = partial(User)`). Empty until semantics run.
+    pub fn type_definition(&self, name: &str) -> Option<&Type> {
+        self.type_definitions.get(name)
     }
 
     pub fn has_semantic(&self) -> bool {
@@ -732,7 +742,11 @@ fn check_source_file_at(
     let (parse, parse_duration) = timed(|| aven_parser::parse_source(&file));
     let document = DocumentSnapshot::from_parse(revision, file, parse);
     let semantic = analyze_semantics_with_host_globals(document.parse_output(), globals);
-    let document = document.with_semantic(semantic.diagnostics, semantic.inferred_types);
+    let document = document.with_semantic(
+        semantic.diagnostics,
+        semantic.inferred_types,
+        semantic.type_definitions,
+    );
 
     CheckedDocument {
         document,
@@ -806,6 +820,7 @@ where
         revision: Revision,
         diagnostics: Vec<Diagnostic>,
         inferred_types: Vec<InferredType>,
+        type_definitions: HashMap<String, Type>,
     ) -> Option<Arc<DocumentSnapshot>> {
         let document = self.documents.get(key)?;
 
@@ -813,7 +828,8 @@ where
             return None;
         }
 
-        let document = Arc::new(document.with_semantic(diagnostics, inferred_types));
+        let document =
+            Arc::new(document.with_semantic(diagnostics, inferred_types, type_definitions));
         self.documents.insert(key.clone(), Arc::clone(&document));
         Some(document)
     }
@@ -1256,6 +1272,7 @@ mod tests {
                     Revision::new(1),
                     vec![Diagnostic::error("stale diagnostic")],
                     Vec::new(),
+                    HashMap::new(),
                 )
                 .is_none()
         );

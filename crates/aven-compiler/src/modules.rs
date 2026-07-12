@@ -8,8 +8,8 @@ use aven_check::{ComptimeExport, ModuleImports as CheckModuleImports, RowTail, T
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
 use aven_parser::{
-    Binding, Expr, ExprKind, Item, Literal, Module, Param, ParseOutput, PatternBinding,
-    RecordEntry, decode_string_literal,
+    Binding, Expr, ExprKind, Item, Literal, Module, ParseOutput, PatternBinding, RecordEntry,
+    decode_string_literal, lambda_parts,
 };
 
 use crate::{
@@ -1074,17 +1074,6 @@ fn import_pattern_source_for_binder<'a>(pattern: &'a Expr, binder: &str) -> Opti
         RecordEntry::Rename { from, to, .. } if to == binder => Some(from.as_str()),
         _ => None,
     })
-}
-
-fn lambda_parts(expr: &Expr) -> Option<(&[Param], &Expr)> {
-    let mut expr = expr;
-    while let ExprKind::Group(inner) = &expr.kind {
-        expr = inner;
-    }
-    match &expr.kind {
-        ExprKind::Lambda { params, body, .. } => Some((params.as_slice(), body)),
-        _ => None,
-    }
 }
 
 fn expr_name(expr: &Expr) -> Option<&str> {

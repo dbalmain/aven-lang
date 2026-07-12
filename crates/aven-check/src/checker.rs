@@ -6,7 +6,7 @@ use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
     MatchArm, MergedItem, Module, Param, PatternBinding, PropagationMode, RecordEntry, Signature,
     SpreadBinding, collect_declarations, decode_string_literal, is_comptime_identifier_name,
-    merged_items, pattern_bindings, walk_expr_children,
+    lambda_parts, merged_items, pattern_bindings, walk_expr_children,
 };
 
 use crate::BUILTIN_TYPES;
@@ -1220,10 +1220,7 @@ fn name_is_placeholder(name: &str) -> bool {
 }
 
 fn builtin_value_name_is_bound(name: &str) -> bool {
-    matches!(
-        name,
-        "keysOf" | "tagsOf" | "typeOf" | "pick" | "omit" | "Map"
-    )
+    name == "Map" || crate::COMPTIME_BUILTIN_FUNCTIONS.contains(&name)
 }
 
 fn is_map_receiver_type(ty: &Type) -> bool {
@@ -1449,13 +1446,6 @@ pub(crate) fn comptime_rhs_needs_evaluation(value: &Expr) -> bool {
         | ExprKind::Lambda { .. }
         | ExprKind::Interpolation(_) => true,
         _ => false,
-    }
-}
-
-fn lambda_parts(expr: &Expr) -> Option<(&[Param], &Expr)> {
-    match &ungroup_expr(expr).kind {
-        ExprKind::Lambda { params, body, .. } => Some((params, body)),
-        _ => None,
     }
 }
 
