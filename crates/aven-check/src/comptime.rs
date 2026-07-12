@@ -151,6 +151,7 @@ pub(crate) trait EvalContext {
     fn end_specialization(&mut self, key: &SpecializationKey);
     fn infer_value_type(&mut self, expr: &Expr) -> Type;
     fn type_is_unresolved(&self, ty: &Type) -> bool;
+    fn type_fits_boundary(&mut self, expected: &Type, actual: &Type) -> bool;
 }
 
 pub(crate) fn evaluate_type_position(
@@ -346,6 +347,12 @@ where
             | ExprKind::Tuple(_)
             | ExprKind::Record(_)
             | ExprKind::Set(_) => self.evaluate_type_term(expr, env),
+            ExprKind::Literal(Literal::Bool(value)) => {
+                EvaluationResult::evaluated(ComptimeValue::Bool(*value))
+            }
+            ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
+                EvaluationResult::evaluated(ComptimeValue::Literal(literal.clone()))
+            }
             ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
             ExprKind::Missing
             | ExprKind::Literal(_)
@@ -548,6 +555,11 @@ where
                 return result;
             }
         };
+
+        if let Some(diagnostics) = self.check_param_bounds(&function.params, args, &values, env) {
+            return EvaluationResult::deferred_with_diagnostics(diagnostics);
+        }
+
         let key = SpecializationKey::new(&function.name, &values);
 
         if let Some(result) = self.context.cached_specialization(&key) {
@@ -603,6 +615,45 @@ where
         Ok(values)
     }
 
+    /// Check each argument against its parameter's declared annotation.
+    /// Returns diagnostics on mismatch (caller defers specialization).
+    fn check_param_bounds(
+        &mut self,
+        params: &[Param],
+        args: &[Expr],
+        values: &[ComptimeValue],
+        env: &Environment,
+    ) -> Option<Vec<Diagnostic>> {
+        let mut diagnostics = Vec::new();
+
+        for ((param, arg), value) in params.iter().zip(args).zip(values) {
+            let Some(annotation) = &param.annotation else {
+                continue;
+            };
+
+            let lowering = self.context.lower_comptime_type(annotation, env.bindings());
+            if !lowering.diagnostics.is_empty() {
+                diagnostics.extend(lowering.diagnostics);
+                continue;
+            }
+            if self.context.type_is_unresolved(&lowering.ty) || !is_concrete_type(&lowering.ty) {
+                continue;
+            }
+
+            if let Some(diagnostic) = bound_mismatch_diagnostic(
+                param,
+                arg.span,
+                value,
+                &lowering.ty,
+                |expected, actual| self.context.type_fits_boundary(expected, actual),
+            ) {
+                diagnostics.push(diagnostic);
+            }
+        }
+
+        (!diagnostics.is_empty()).then_some(diagnostics)
+    }
+
     fn evaluate_type_term(&mut self, expr: &Expr, env: &Environment) -> EvaluationResult {
         let lowering = self.context.lower_comptime_type(expr, env.bindings());
         if !lowering.diagnostics.is_empty() {
@@ -614,6 +665,77 @@ where
         }
 
         EvaluationResult::evaluated(ComptimeValue::ReifiedType(lowering.ty))
+    }
+}
+
+fn is_type_kind_annotation(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name) if name == "Type")
+}
+
+fn bound_mismatch_diagnostic(
+    param: &Param,
+    arg_span: Span,
+    value: &ComptimeValue,
+    expected: &Type,
+    mut fits_boundary: impl FnMut(&Type, &Type) -> bool,
+) -> Option<Diagnostic> {
+    let annotation_note = format!(
+        "parameter `{}` is annotated as `{}`",
+        param.name,
+        expected.render()
+    );
+
+    if is_type_kind_annotation(expected) {
+        return match value {
+            ComptimeValue::ReifiedType(_) => None,
+            ComptimeValue::Literal(_) | ComptimeValue::Bool(_) | ComptimeValue::LabelSet(_) => {
+                Some(
+                    Diagnostic::error(format!(
+                        "comptime argument to parameter `{}` must be a type",
+                        param.name
+                    ))
+                    .with_code(codes::comptime::ARGUMENT_KIND_MISMATCH)
+                    .with_label(Label::primary(arg_span, "this is a value, not a type"))
+                    .with_note(annotation_note),
+                )
+            }
+        };
+    }
+
+    match value {
+        ComptimeValue::ReifiedType(_) => Some(
+            Diagnostic::error(format!(
+                "comptime argument to parameter `{}` must be a value",
+                param.name
+            ))
+            .with_code(codes::comptime::ARGUMENT_KIND_MISMATCH)
+            .with_label(Label::primary(arg_span, "this is a type, not a value"))
+            .with_note(annotation_note),
+        ),
+        ComptimeValue::Literal(_) | ComptimeValue::Bool(_) | ComptimeValue::LabelSet(_) => {
+            let actual = match value.clone().reify_type_position() {
+                ComptimeValue::ReifiedType(ty) => ty,
+                ComptimeValue::Literal(_) | ComptimeValue::Bool(_) | ComptimeValue::LabelSet(_) => {
+                    return None;
+                }
+            };
+            if fits_boundary(expected, &actual) {
+                None
+            } else {
+                Some(
+                    Diagnostic::error(format!(
+                        "comptime argument does not fit parameter `{}`'s bound",
+                        param.name
+                    ))
+                    .with_code(codes::comptime::ARGUMENT_BOUND)
+                    .with_label(Label::primary(
+                        arg_span,
+                        format!("expected a value of type `{}`", expected.render()),
+                    ))
+                    .with_note(annotation_note),
+                )
+            }
+        }
     }
 }
 

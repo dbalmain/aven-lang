@@ -60,4 +60,8 @@ impl comptime::EvalContext for Checker<'_> {
     fn type_is_unresolved(&self, ty: &Type) -> bool {
         self.reflection_subject_is_unresolved(ty)
     }
+
+    fn type_fits_boundary(&mut self, expected: &Type, actual: &Type) -> bool {
+        self.type_fits_boundary_without_reporting(expected, actual)
+    }
 }

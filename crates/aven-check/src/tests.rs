@@ -7124,3 +7124,164 @@ fn matching_codes(diagnostics: &[Diagnostic], code: &str) -> usize {
         .filter(|diagnostic| diagnostic.code.as_deref() == Some(code))
         .count()
 }
+
+fn singleton_number(raw: &str) -> Type {
+    Type::Variant(Row {
+        entries: vec![literal_number(raw)],
+        tail: RowTail::Closed,
+    })
+}
+
+#[test]
+fn parameterized_value_param_specializes_distinctly() {
+    // Value parameters flow through evaluate_args as ComptimeValue::Literal;
+    // SpecializationKey hashes the full arg tuple so Sized(Int, 3) and
+    // Sized(Int, 4) cache separately.
+    let source = "Sized = (t: Type, n: Int) => { value: t, size: n }\n\
+        Three = Sized(Int, 3)\n\
+        Four = Sized(Int, 4)\n";
+    let output = parse_module(source);
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    let expected_three = Type::Record(Row {
+        entries: vec![
+            field("value", named("Int")),
+            field("size", singleton_number("3")),
+        ],
+        tail: RowTail::Closed,
+    });
+    let expected_four = Type::Record(Row {
+        entries: vec![
+            field("value", named("Int")),
+            field("size", singleton_number("4")),
+        ],
+        tail: RowTail::Closed,
+    });
+    assert_eq!(definitions.get("Three"), Some(&expected_three));
+    assert_eq!(definitions.get("Four"), Some(&expected_four));
+    assert_ne!(
+        definitions.get("Three"),
+        definitions.get("Four"),
+        "distinct value arguments must not collide in specialization"
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn parameterized_type_param_rejects_value_argument() {
+    let source =
+        "Pair = (t: Type) => { first: t, second: t }\np: Pair(3) = { first: 1, second: 2 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_KIND_MISMATCH),
+        1
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_KIND_MISMATCH)
+        })
+        .expect("kind mismatch diagnostic");
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("annotated as `Type`")),
+        "expected annotation note, got {:?}",
+        diagnostic.notes
+    );
+}
+
+#[test]
+fn parameterized_value_param_rejects_type_argument() {
+    // Value-annotation site so the application is lowered through the comptime
+    // evaluator (uppercase call RHSs on type aliases skip that path).
+    let source = "Sized = (n: Int) => { size: n }\ns: Sized(Int) = { size: 1 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_KIND_MISMATCH),
+        1
+    );
+}
+
+#[test]
+fn parameterized_value_param_rejects_outside_literal_union() {
+    let source = "Pick = (n: 3 | 4) => { size: n }\np: Pick(5) = { size: 5 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_BOUND),
+        1
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_BOUND))
+        .expect("argument-bound diagnostic");
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("annotated as `3 | 4`")),
+        "expected bound note, got {:?}",
+        diagnostic.notes
+    );
+}
+
+#[test]
+fn parameterized_value_param_accepts_int_literal() {
+    let source = "Sized = (t: Type, n: Int) => { value: t, size: n }\n\
+        Three = Sized(Int, 3)\n\
+        value: Three = { value: 1, size: 3 }\n";
+    let output = parse_module(source);
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+    assert_eq!(
+        definitions.get("Three"),
+        Some(&Type::Record(Row {
+            entries: vec![
+                field("value", named("Int")),
+                field("size", singleton_number("3")),
+            ],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn parameterized_bare_param_accepts_type_and_value() {
+    let source = "Id = (x) => { v: x }\nAsType = Id(Int)\nAsValue = Id(3)\n";
+    let output = parse_module(source);
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("AsType"),
+        Some(&Type::Record(Row {
+            entries: vec![field("v", named("Int"))],
+            tail: RowTail::Closed,
+        }))
+    );
+    assert_eq!(
+        definitions.get("AsValue"),
+        Some(&Type::Record(Row {
+            entries: vec![field("v", singleton_number("3"))],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}

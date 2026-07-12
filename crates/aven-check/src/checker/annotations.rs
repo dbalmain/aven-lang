@@ -210,7 +210,7 @@ impl<'a> Checker<'a> {
         match &annotation.kind {
             ExprKind::ComptimeName(name) => {
                 if let Some(ty) = self.lookup_comptime_reified_type(name) {
-                    return ty.clone();
+                    return ty;
                 }
 
                 self.check_type_name(name, annotation.span);
@@ -218,7 +218,6 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Name(name) => self
                 .lookup_comptime_reified_type(name)
-                .cloned()
                 .unwrap_or_else(|| Type::Variable(name.clone())),
             ExprKind::Group(inner) => self.lower_annotation(inner),
             ExprKind::Index { callee, args } => self
@@ -399,14 +398,20 @@ impl<'a> Checker<'a> {
         match &ungroup_expr(expr).kind {
             ExprKind::Name(name) | ExprKind::ComptimeName(name) => self
                 .lookup_comptime_reified_type(name)
-                .cloned()
                 .or_else(|| self.type_definitions.get(name).cloned()),
             _ => None,
         }
     }
 
-    pub(super) fn lookup_comptime_reified_type(&self, name: &str) -> Option<&Type> {
-        match self.lookup_comptime_value(name)? {
+    /// Resolve a local comptime binding in type position. Value bindings
+    /// (`Literal`, `Bool`, `LabelSet`) reify to their type-position form so a
+    /// value parameter such as `n = 3` can appear as a field type `size: n`.
+    pub(super) fn lookup_comptime_reified_type(&self, name: &str) -> Option<Type> {
+        match self
+            .lookup_comptime_value(name)?
+            .clone()
+            .reify_type_position()
+        {
             comptime::ComptimeValue::ReifiedType(ty) => Some(ty),
             comptime::ComptimeValue::LabelSet(_)
             | comptime::ComptimeValue::Literal(_)

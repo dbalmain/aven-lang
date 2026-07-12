@@ -8,6 +8,8 @@
 //! constants are added is the manual step the compiler cannot check.
 
 pub mod comptime {
+    pub const ARGUMENT_BOUND: &str = "comptime.argument-bound";
+    pub const ARGUMENT_KIND_MISMATCH: &str = "comptime.argument-kind-mismatch";
     pub const ARGUMENT_NOT_KNOWN: &str = "comptime.argument-not-known";
     pub const EVALUATION_CYCLE: &str = "comptime.evaluation-cycle";
     pub const EVALUATION_LIMIT: &str = "comptime.evaluation-limit";
@@ -144,6 +146,8 @@ pub mod ty {
 }
 
 pub const ALL: &[&str] = &[
+    comptime::ARGUMENT_BOUND,
+    comptime::ARGUMENT_KIND_MISMATCH,
     comptime::ARGUMENT_NOT_KNOWN,
     comptime::EVALUATION_CYCLE,
     comptime::EVALUATION_LIMIT,

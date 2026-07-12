@@ -15,6 +15,14 @@ pub fn explain(code: &str) -> Option<DiagnosticExplanation> {
 
 const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
+        code: codes::comptime::ARGUMENT_BOUND,
+        text: "A comptime function argument is a value whose type does not fit the parameter's annotated bound. Pass a comptime-known value that fits the declared type (for example a literal that is a member of a literal union).",
+    },
+    DiagnosticExplanation {
+        code: codes::comptime::ARGUMENT_KIND_MISMATCH,
+        text: "A comptime function argument has the wrong kind for its parameter annotation: a parameter annotated `Type` needs a type, and a parameter annotated with a value type needs a comptime-known value. Swap the argument or correct the parameter annotation.",
+    },
+    DiagnosticExplanation {
         code: codes::comptime::ARGUMENT_NOT_KNOWN,
         text: "An uppercase comptime function was applied to an argument that is not known at compile time. Pass a type or another comptime-known value instead of a runtime value.",
     },
