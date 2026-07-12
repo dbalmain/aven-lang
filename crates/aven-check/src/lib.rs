@@ -57,8 +57,6 @@ const BUILTIN_TYPES: &[&str] = &[
     "YamlError",
 ];
 
-const CHECKED_NAMED_TYPES: &[&str] = &["Bool", "Float", "Int", "Null", "Text", "Undefined", "Unit"];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckOutput {
     pub diagnostics: Vec<Diagnostic>,
@@ -273,10 +271,12 @@ pub fn check_module_with_host_globals_and_imports(
                     // the same definition (`{ Instant } = import("std/time")`)
                     // — only a *different* definition shadows the reserved
                     // name.
-                    let rebinds_host_type = globals
-                        .type_definitions
-                        .iter()
-                        .any(|(name, host_ty)| name == target && host_ty == ty);
+                    let rebinds_host_type =
+                        globals.type_definitions.iter().any(|(name, host_ty)| {
+                            name == target
+                                && (host_ty == ty
+                                    || matches!(ty, Type::Named(exported) if exported == name))
+                        });
                     if !rebinds_host_type {
                         reserved_diagnostics.push(reserved_type_diagnostic(target, target_span));
                     }

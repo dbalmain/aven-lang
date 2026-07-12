@@ -2062,8 +2062,8 @@ fn range_contains_range(outer: Range, inner: Range) -> bool {
     inner.start >= outer.start && inner.end <= outer.end
 }
 
-// Hardcoded with reference to aven-check's private BUILTIN_TYPES/CHECKED_NAMED_TYPES
-// rather than adding an LSP dependency on the checker just for completion.
+// Hardcoded with reference to aven-check's private BUILTIN_TYPES rather than
+// adding an LSP dependency on the checker just for completion.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
     "Array",
     "Bool",

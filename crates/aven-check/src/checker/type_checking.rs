@@ -72,7 +72,9 @@ impl<'a> Checker<'a> {
                 self.check_value_against(inner, value);
             }
             (ExprKind::Literal(literal), Type::Named(name)) => {
-                if let Some(found) = mismatched_literal_kind(name, literal) {
+                if let Some(found) = mismatched_literal_kind(name, literal)
+                    && self.known_types.contains(name)
+                {
                     self.report_type_mismatch(name, found, value.span);
                 }
             }
@@ -330,20 +332,19 @@ impl<'a> Checker<'a> {
             (Type::Optional(inner), _) => self.check_type_against_type(inner, actual, span),
             (Type::Nullable(inner), _) => self.check_type_against_type(inner, actual, span),
             (Type::Named(expected), Type::Named(actual))
-                if named_type_mismatch(expected, actual) =>
+                if named_type_mismatch(expected, actual)
+                    && self.known_types.contains(expected)
+                    && self.known_types.contains(actual) =>
             {
                 self.report_type_mismatch_between_types(expected, actual, span);
             }
-            (Type::Named(expected), actual @ (Type::Optional(_) | Type::Nullable(_))) => {
-                let inner = match actual {
-                    Type::Optional(inner) | Type::Nullable(inner) => inner,
-                    _ => unreachable!("actual is constrained by the outer pattern"),
-                };
-                if let Type::Named(actual_name) = inner.as_ref()
-                    && (named_type_mismatch(expected, actual_name) || expected == actual_name)
-                {
-                    self.report_type_mismatch_between_types(expected, &actual.render(), span);
-                }
+            // A bare named type is never Optional/Nullable; wrappers peel on the
+            // expected side above, so an actual wrapper against a named expected
+            // is always a shape mismatch (including `Int` vs `?Int`).
+            (Type::Named(expected), actual @ (Type::Optional(_) | Type::Nullable(_)))
+                if self.known_types.contains(expected) =>
+            {
+                self.report_type_mismatch_between_types(expected, &actual.render(), span);
             }
             (Type::Tuple(expected), Type::Tuple(actual)) => {
                 if expected.len() != actual.len() {
@@ -497,6 +498,23 @@ impl<'a> Checker<'a> {
                     &actual.render(),
                     span,
                 );
+            }
+            // Nominal names that survive normalization do not admit structural
+            // shapes (records, tuples, functions). Apply and Variant have their
+            // own arms above; Deferred/Meta/Variable stay silent via
+            // `reportable_type_shape` / non-match. Unknown names are left
+            // unconstrained (they already report `type.unknown-name`).
+            (
+                Type::Named(expected),
+                actual @ (Type::Record(_) | Type::Tuple(_) | Type::Function { .. }),
+            ) if self.known_types.contains(expected) => {
+                self.report_type_mismatch_between_types(expected, &actual.render(), span);
+            }
+            (
+                expected @ (Type::Record(_) | Type::Tuple(_) | Type::Function { .. }),
+                Type::Named(actual),
+            ) if self.known_types.contains(actual) => {
+                self.report_type_mismatch_between_types(&expected.render(), actual, span);
             }
             _ => {}
         }

@@ -3,8 +3,6 @@ use std::collections::{HashMap, HashSet};
 use aven_core::Span;
 use aven_parser::{Expr, ExprKind, Literal};
 
-use crate::CHECKED_NAMED_TYPES;
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     /// A type expression that is valid to keep for a later comptime/type phase
@@ -1234,15 +1232,23 @@ pub(crate) fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Opti
         ("Text" | "Int" | "Float" | "Null" | "Undefined" | "Unit", Literal::Bool(_)) => {
             Some("bool literal")
         }
-        _ => None,
+        // Core scalars that accept the literal are handled above. Any other
+        // named expectation rejects the literal (including host nominals like
+        // `Data` / `Instant`). Callers should only surface this when `expected`
+        // is a known type name — unknown names already report
+        // `type.unknown-name` and stay unconstrained.
+        _ => Some(match literal {
+            Literal::Bool(_) => "bool literal",
+            Literal::String(_) => "text literal",
+            Literal::Number(_) => "number literal",
+            Literal::Regex(_) => "regex literal",
+        }),
     }
 }
 
+/// Distinct resolved named types never unify. Callers must only invoke this for
+/// `Type::Named` pairs (not Deferred/Meta/Variable).
 pub(crate) fn named_type_mismatch(expected: &str, actual: &str) -> bool {
-    if !CHECKED_NAMED_TYPES.contains(&expected) || !CHECKED_NAMED_TYPES.contains(&actual) {
-        return false;
-    }
-
     expected != actual
 }
 

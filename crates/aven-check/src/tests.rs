@@ -4313,6 +4313,48 @@ fn map_empty_global_is_generalized() {
 }
 
 #[test]
+fn non_core_named_types_reject_cross_named_and_structural_values() {
+    // H6: Data/Map (and other non-core nominals) must not act as top/bottom.
+    for source in [
+        "d : Data = \"hello\"\n",
+        "d : Data = 42\n",
+        "d : Data = { a: 1 }\n",
+        "d : Data = \"hello\"\nn : Int = d\n",
+        "m : Map = Map.empty()\nx : Int = m\n",
+        "m : Map(Text, Int) = Map.empty()\nx : Int = m\n",
+        "x : Int = { a: 1 }\n",
+        "x : Int = (1, 2)\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} should produce type.mismatch: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn data_decode_and_map_set_result_typed_uses_still_check() {
+    // Dynamic Data enters via format decode; collection/result annotations work.
+    let output = parse_module(
+        "d : Data = Json.decode(\"\\\"hello\\\"\", Data)?!\n\
+         m : Map(Text, Int) = Map.empty()\n\
+         s : Set(Int) = @{1, 2}\n\
+         r : Result(Int, Text) = @Ok(1)\n",
+    );
+    let check = check_module_with_host_globals(&output.module, &format_method_host_globals());
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "typed Data/Map/Set/Result uses unexpectedly mismatched: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn map_from_infers_map_key_and_value_types() {
     let output = parse_module("m = Map.from([(\"a\", 1)])\n");
     let known_types = known_type_names(&output.module);
@@ -4887,9 +4929,9 @@ fn variant_value_checking_allows_open_row_extra_tags() {
 
 #[test]
 fn lambda_application_inference_defers_unsolved_values() {
+    // Recursive / self-application stays deferred (no concrete result type).
     for source in [
         "f = (x) => f(x)\nr = f(1)\nvalue : Text = r\n",
-        "f = (x) => x\nx = f\nvalue : Text = x\n",
         "f = (x) => x(x)\nr = f(1)\nvalue : Text = r\n",
     ] {
         let output = parse_module(source);
@@ -4900,6 +4942,21 @@ fn lambda_application_inference_defers_unsolved_values() {
             "{source} unexpectedly produced type.mismatch"
         );
     }
+}
+
+#[test]
+fn identity_function_value_mismatches_scalar_annotation() {
+    // A solved function type is nominal-incompatible with `Text` (was silent
+    // when Named↔Function fell through the comparator).
+    let output = parse_module("f = (x) => x\nx = f\nvalue : Text = x\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "expected type.mismatch for function into Text: {:?}",
+        check.diagnostics
+    );
 }
 
 #[test]
@@ -6948,18 +7005,14 @@ fn cyclic_alias_normalization_terminates() {
         matching_codes(&check.diagnostics, codes::ty::CYCLIC_ALIAS),
         2
     );
-    assert!(!has_diagnostic_code(
-        &check.diagnostics,
-        codes::ty::MISMATCH
-    ));
+    // Cyclic names stay nominal after normalize; a number literal is not `A`.
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
 
+    // Recursive tuple alias stays Named; a concrete tuple does not inhabit it.
     let output = parse_module("A = (A, Int)\nvalue : A = (1, 2)\n");
     let check = check_module(&output.module);
 
-    assert!(!has_diagnostic_code(
-        &check.diagnostics,
-        codes::ty::MISMATCH
-    ));
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
 }
 
 #[test]

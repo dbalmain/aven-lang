@@ -931,7 +931,21 @@ fn check_export_for_node(
                         span: value_span,
                     };
                 };
-                type_exports.insert(name.clone(), definition.clone());
+                // Host-registered types are nominal: export the name, not the
+                // instance interface, so `mod.Instant` in type position means
+                // `Instant` (the definition record only backs field access).
+                let exported = source_name
+                    .filter(|source| {
+                        globals
+                            .type_definitions
+                            .iter()
+                            .any(|(host_name, _)| host_name == source)
+                    })
+                    .map_or_else(
+                        || definition.clone(),
+                        |source| aven_check::Type::Named(source.to_owned()),
+                    );
+                type_exports.insert(name.clone(), exported);
                 // The *value* side of a type export is the type value: for a
                 // statics-carrying host type that value answers `Instant.parse`
                 // etc., so type its field as the statics record (mirroring the
