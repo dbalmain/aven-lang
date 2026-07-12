@@ -251,6 +251,12 @@ enum ExtraFields {
     Allow,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum MissingFields {
+    Reject,
+    Allow,
+}
+
 #[derive(Debug)]
 struct ValueRecordShape<'a> {
     fields: Vec<ValueRecordField<'a>>,

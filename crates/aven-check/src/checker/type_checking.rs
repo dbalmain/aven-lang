@@ -436,21 +436,23 @@ impl<'a> Checker<'a> {
                 else {
                     return;
                 };
-                if actual.open
-                    || actual
-                        .fields
-                        .iter()
-                        .any(|field| self.type_admits_undefined(field.ty))
-                {
-                    return;
-                }
-
                 let actual_fields: Vec<_> = actual
                     .fields
                     .iter()
                     .map(|field| (field.name, span, FieldValue::Type(field.ty)))
                     .collect();
-                self.compare_record(&expected, &actual_fields, ExtraFields::Allow, span);
+                let missing_fields = if actual.open {
+                    MissingFields::Allow
+                } else {
+                    MissingFields::Reject
+                };
+                self.compare_record(
+                    &expected,
+                    &actual_fields,
+                    ExtraFields::Allow,
+                    missing_fields,
+                    span,
+                );
             }
             (Type::Variant(expected), Type::Variant(actual)) => {
                 self.check_variant_type_against_type(expected, actual, span);
@@ -696,7 +698,13 @@ impl<'a> Checker<'a> {
                 .iter()
                 .map(|field| (field.name, field.name_span, FieldValue::Value(field.value)))
                 .collect();
-            self.compare_record(&expected, &actual_fields, ExtraFields::Reject, actual.span);
+            self.compare_record(
+                &expected,
+                &actual_fields,
+                ExtraFields::Reject,
+                MissingFields::Reject,
+                actual.span,
+            );
             return;
         }
 
@@ -852,6 +860,7 @@ impl<'a> Checker<'a> {
         expected: &ExpectedRecordShape<'_>,
         actual: &[(&str, Span, FieldValue<'_>)],
         extra_fields: ExtraFields,
+        missing_fields: MissingFields,
         record_span: Span,
     ) {
         let actual_fields: HashMap<_, _> = actual
@@ -871,7 +880,10 @@ impl<'a> Checker<'a> {
                     self.check_type_against_type(field.ty, ty, record_span)
                 }
                 None if self.type_admits_undefined(field.ty) => {}
-                None => self.report_missing_field(field.name, record_span),
+                None if matches!(missing_fields, MissingFields::Reject) => {
+                    self.report_missing_field(field.name, record_span)
+                }
+                None => {}
             }
         }
 

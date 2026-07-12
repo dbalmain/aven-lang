@@ -6234,6 +6234,51 @@ fn record_identifier_value_checking_defers_open_actual_types() {
 }
 
 #[test]
+fn record_identifier_values_check_shared_open_or_optional_field_types() {
+    for source in [
+        "src : { name: Int, age: Text, .. } = { name: 1, age: \"x\" }\n\
+         dst : { name: Text, age: Int } = src\n",
+        "Expected = { name: Text, age: Int }\n\
+         Source = { name: Int, age: ?Int }\n\
+         s : Source = { name: 99 }\n\
+         bad : Expected = s\n",
+        "Source = { value: ?Int }\n\
+         Expected = { value: Int }\n\
+         source : Source = {}\n\
+         expected : Expected = source\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} should produce type.mismatch"
+        );
+    }
+
+    for source in [
+        "source : { name: Text, age: Int, .. } = record\n\
+         expected : { name: Text } = source\n",
+        "Source = { value: ?Int }\n\
+         Expected = { value: ?Int }\n\
+         source : Source = {}\n\
+         expected : Expected = source\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} unexpectedly produced type.mismatch"
+        );
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+            "{source} unexpectedly produced type.missing-field"
+        );
+    }
+}
+
+#[test]
 fn annotated_identifier_values_are_checked_against_expected_types() {
     for source in [
         "other : Text = \"hi\"\nvalue : Int = other\n",
