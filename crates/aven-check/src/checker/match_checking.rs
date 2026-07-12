@@ -172,6 +172,9 @@ impl<'a> Checker<'a> {
             return;
         }
         let (empty_values, payload_type) = peel_empty_values(&subject_type);
+        // Base-kind conflicts (Text pattern on Int/number subject, etc.) are
+        // independent of exhaustiveness / closed-member membership.
+        self.check_match_literal_pattern_base_kinds(arms, payload_type);
         if !empty_values.is_empty() {
             let missing = empty_values
                 .iter()
@@ -297,6 +300,70 @@ impl<'a> Checker<'a> {
             }
         }
     }
+
+    /// Report `type.mismatch` when a literal pattern's base kind cannot match the
+    /// subject/payload type's base kind (e.g. `"txt"` on an Int / number-base
+    /// open literal union). Non-literal patterns and unresolved subjects stay
+    /// silent. Same-base patterns that are merely non-members of a closed
+    /// literal union are handled by exhaustiveness / unreachable-arm checks.
+    pub(super) fn check_match_literal_pattern_base_kinds(
+        &mut self,
+        arms: &[MatchArm],
+        subject_type: &Type,
+    ) {
+        let Some(expected_name) = self.match_subject_literal_kind_name(subject_type) else {
+            return;
+        };
+
+        for arm in arms {
+            for (literal, span) in arm_covered_literals(&arm.pattern) {
+                if let Some(found) = mismatched_literal_kind(expected_name, literal) {
+                    self.report_type_mismatch(expected_name, found, span);
+                }
+            }
+        }
+    }
+
+    /// Named scalar kind used with [`mismatched_literal_kind`] for match patterns.
+    /// Open literal unions (`5 | ..`) contribute their base (`Number` → `"Int"`),
+    /// not membership of a specific literal. Meta / Variable / mixed-base /
+    /// non-literal subjects return `None` so the check stays silent.
+    fn match_subject_literal_kind_name(&self, subject_type: &Type) -> Option<&'static str> {
+        match subject_type {
+            Type::Named(name) => match name.as_str() {
+                "Int" => Some("Int"),
+                "Float" => Some("Float"),
+                "Text" => Some("Text"),
+                "Bool" => Some("Bool"),
+                other => match self.type_definitions.get(other) {
+                    Some(Type::Variant(row)) => {
+                        Self::literal_base_kind_name(literal_variant_base(row)?)
+                    }
+                    Some(Type::Named(_)) => {
+                        self.match_subject_literal_kind_name(self.type_definitions.get(other)?)
+                    }
+                    Some(_) | None => None,
+                },
+            },
+            Type::Variant(row) => Self::literal_base_kind_name(literal_variant_base(row)?),
+            Type::Deferred | Type::Variable(_) | Type::Meta(_) => None,
+            Type::Optional(inner) | Type::Nullable(inner) => {
+                self.match_subject_literal_kind_name(inner)
+            }
+            Type::Apply { .. } | Type::Function { .. } | Type::Tuple(_) | Type::Record(_) => None,
+        }
+    }
+
+    fn literal_base_kind_name(base: LiteralBase) -> Option<&'static str> {
+        Some(match base {
+            LiteralBase::Bool => "Bool",
+            LiteralBase::Text => "Text",
+            // Number-base open/closed rows share Int|Float acceptance in
+            // `mismatched_literal_kind`; report against Int.
+            LiteralBase::Number => "Int",
+        })
+    }
+
     pub(super) fn infer_match(&mut self, env: &TypeEnv, subject: &Expr, arms: &[MatchArm]) -> Type {
         if arms.is_empty() {
             return Type::Deferred;

@@ -544,19 +544,27 @@ fn merged_or_pattern_local_type(
     name: &str,
     alternative_types: &[HashMap<String, LocalValueType>],
 ) -> LocalValueType {
-    let Some(first) = alternative_types.first().and_then(|types| types.get(name)) else {
-        return LocalValueType::Unknown;
-    };
-
-    if alternative_types
-        .iter()
-        .all(|types| types.get(name) == Some(first))
-        && matches!(first, LocalValueType::Known(_))
-    {
-        first.clone()
-    } else {
-        LocalValueType::Unknown
+    // Join like N simple arms: use a Known payload when every alternative that
+    // successfully types the binder agrees. Unknown from a missing/unresolved
+    // alt (e.g. extra tag on a narrow subject) must not poison the join —
+    // otherwise the arm body never sees a binder type and skips result checks.
+    // Conflicting Known payloads still collapse to Unknown (same as before).
+    let mut joined: Option<&Type> = None;
+    for types in alternative_types {
+        match types.get(name) {
+            Some(LocalValueType::Known(ty)) => match joined {
+                None => joined = Some(ty),
+                Some(existing) if existing == ty => {}
+                Some(_) => return LocalValueType::Unknown,
+            },
+            Some(LocalValueType::Unknown) | None => {}
+            Some(LocalValueType::Scheme(_)) => return LocalValueType::Unknown,
+        }
     }
+    joined
+        .cloned()
+        .map(LocalValueType::Known)
+        .unwrap_or(LocalValueType::Unknown)
 }
 
 fn single_pattern_local_types(

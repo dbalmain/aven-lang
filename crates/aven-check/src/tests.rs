@@ -7965,3 +7965,200 @@ fn parameterized_bare_param_accepts_type_and_value() {
     let check = check_module(&output.module);
     assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
 }
+
+// --- Match-checking holes (or-pattern join + literal pattern base kinds) ---
+
+#[test]
+fn or_pattern_on_narrow_subject_checks_arm_result_type() {
+    // Hole A: open/narrow subject + or-pattern must still type the binder from
+    // the alternatives that resolve, so the arm result is checked against Text.
+    let source = concat!(
+        "v = @A(1)\n",
+        "r: Text = v ?>\n",
+        "  @A(x) | @B(x) => x\n",
+        "  _ => \"z\"\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "expected type.mismatch for Int binder into Text: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn simple_tag_arm_still_mismatches_wrong_result_type() {
+    let source = concat!(
+        "v = @A(1)\n",
+        "r: Text = v ?>\n",
+        "  @A(x) => x\n",
+        "  _ => \"z\"\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "simple arm should still mismatch Text: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn closed_subject_or_pattern_still_mismatches_wrong_result_type() {
+    let source = concat!(
+        "v: @A(Int) | @B(Int) = @A(1)\n",
+        "r: Text = v ?>\n",
+        "  @A(x) | @B(x) => x\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "closed-subject or-pattern should mismatch Text: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn or_pattern_on_narrow_subject_accepts_matching_result_type() {
+    let source = concat!(
+        "v = @A(1)\n",
+        "r: Int = v ?>\n",
+        "  @A(x) | @B(x) => x\n",
+        "  _ => 0\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "correct or-pattern Int result should pass: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn or_pattern_conflicting_payload_types_leave_binder_unresolved() {
+    // Conflicting Known payloads still collapse to Unknown (no join). The arm
+    // body then stays deferred — no new mismatch is invented for the conflict.
+    let source = concat!(
+        "v: @A(Int) | @B(Text) = @A(1)\n",
+        "r = v ?>\n",
+        "  @A(x) | @B(x) => x\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "conflicting or-pattern payloads should not invent a type.mismatch: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn match_literal_pattern_base_kind_mismatch_reports_type_mismatch() {
+    // Hole B: Text literal pattern on number-base subject (`x = 5` → open `5 | ..`).
+    let source = concat!(
+        "x = 5\n",
+        "y = x ?>\n",
+        "  \"text-pattern\" => 1\n",
+        "  _ => 2\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "expected type.mismatch for Text pattern on number subject: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn match_same_base_kind_literal_patterns_pass() {
+    // Non-matching same-kind literal stays legal (open number row / Int).
+    let open_number = parse_module(concat!(
+        "main = () =>\n",
+        "  x = 5\n",
+        "  y = x ?>\n",
+        "    7 => 1\n",
+        "    _ => 2\n",
+        "  y\n",
+    ));
+    let open_check = check_module(&open_number.module);
+    assert!(
+        !has_diagnostic_code(&open_check.diagnostics, codes::ty::MISMATCH),
+        "same-kind number pattern on open number subject should pass: {:?}",
+        open_check.diagnostics
+    );
+
+    let annotated_int = parse_module(concat!(
+        "main = () =>\n",
+        "  x: Int = 5\n",
+        "  y = x ?>\n",
+        "    7 => 1\n",
+        "    _ => 2\n",
+        "  y\n",
+    ));
+    let int_check = check_module(&annotated_int.module);
+    assert!(
+        !has_diagnostic_code(&int_check.diagnostics, codes::ty::MISMATCH),
+        "same-kind number pattern on Int subject should pass: {:?}",
+        int_check.diagnostics
+    );
+}
+
+#[test]
+fn match_text_subject_with_text_literal_arms_passes() {
+    let source = concat!(
+        "main = () =>\n",
+        "  x: Text = \"hi\"\n",
+        "  y = x ?>\n",
+        "    \"a\" => 1\n",
+        "    _ => 2\n",
+        "  y\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "Text subject with Text literal arms should pass: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn match_bool_subject_with_bool_literal_arms_passes() {
+    let source = concat!(
+        "main = () =>\n",
+        "  x: Bool = true\n",
+        "  y = x ?>\n",
+        "    true => 1\n",
+        "    false => 2\n",
+        "  y\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "Bool subject with true/false arms should pass: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn match_deferred_scrutinee_stays_silent_on_literal_base_kinds() {
+    // Unconstrained parameter: subject base kind is unknown — no false positive.
+    let source = concat!(
+        "f = (x) =>\n",
+        "  x ?>\n",
+        "    \"text\" => 1\n",
+        "    _ => 2\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "deferred/unresolved scrutinee should not report base-kind mismatch: {:?}",
+        check.diagnostics
+    );
+}
