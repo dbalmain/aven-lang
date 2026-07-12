@@ -434,7 +434,7 @@ fn needs_space_before_open_delimiter(previous: &Token, current: &Token) -> bool 
     }
 
     if is_open_brace(current) {
-        if is_spread_operator(previous) {
+        if is_spread_operator(previous) || is_open_paren_or_bracket(previous) {
             return false;
         }
         return !is_at_set_marker(previous, Some(current));
@@ -475,6 +475,10 @@ fn is_close_delimiter(token: &Token) -> bool {
 
 fn is_close_paren_or_bracket(token: &Token) -> bool {
     matches!(token.kind, TokenKind::CloseParen | TokenKind::CloseBracket)
+}
+
+fn is_open_paren_or_bracket(token: &Token) -> bool {
+    matches!(token.kind, TokenKind::OpenParen | TokenKind::OpenBracket)
 }
 
 fn is_close_brace(token: &Token) -> bool {
@@ -755,6 +759,19 @@ mod tests {
             Ok(formatted.to_owned())
         );
         // ...and re-formatting an already-formatted lambda is idempotent.
+        assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
+    }
+
+    #[test]
+    fn keeps_braces_tight_inside_parens_and_brackets() {
+        let formatted = "a = signup({ name: \"Dave\" })\nb = h([{ x: 1 }, { x: 2 }])\nc = g(@{ \"s\" })\nd = { x: { y: 1 } }\n";
+
+        assert_eq!(
+            format_source(
+                "a = signup( { name: \"Dave\" })\nb = h([ { x: 1 }, { x: 2 }])\nc = g(@{ \"s\" })\nd = { x: { y: 1 } }\n"
+            ),
+            Ok(formatted.to_owned())
+        );
         assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
     }
 
