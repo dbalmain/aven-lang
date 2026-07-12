@@ -549,10 +549,13 @@ fn collect_pattern_references(pattern: &Expr, references: &mut Vec<Reference>) {
         | ExprKind::NonNull(inner)
         | ExprKind::Unary { value: inner, .. }
         | ExprKind::Propagate { value: inner, .. } => collect_pattern_references(inner, references),
-        ExprKind::Tuple(items) | ExprKind::Array(items) => {
+        ExprKind::Tuple(items) => {
             for item in items {
                 collect_pattern_references(item, references);
             }
+        }
+        ExprKind::Array(entries) => {
+            collect_pattern_references_from_entries(entries, references);
         }
         ExprKind::Arrow { params, result } => {
             for param in params {

@@ -1457,11 +1457,36 @@ fn eval_propagate(
     }
 }
 
-fn eval_array(items: &[Expr], env: &Environment) -> Eval {
-    let mut values = Vec::with_capacity(items.len());
+fn eval_array(entries: &[RecordEntry], env: &Environment) -> Eval {
+    let mut values = Vec::new();
 
-    for item in items {
-        values.push(eval_expr_many(item, env)?);
+    for entry in entries {
+        match entry {
+            RecordEntry::Element(expr) => {
+                values.push(eval_expr_many(expr, env)?);
+            }
+            RecordEntry::Spread {
+                value: source_expr, ..
+            } => {
+                let source = eval_expr_many(source_expr, env)?;
+                let Value::Array(members) = source else {
+                    return Err(one_diagnostic(record_type_error(
+                        source_expr.span,
+                        "spread",
+                        source.type_name(),
+                        "Array",
+                    )));
+                };
+
+                values.extend(members.iter().cloned());
+            }
+            entry => {
+                return Err(one_diagnostic(unsupported_expr(
+                    record_entry_span(entry),
+                    "only element and spread entries are supported in array literals by the current evaluator",
+                )));
+            }
+        }
     }
 
     Ok(Value::Array(Rc::new(values)))
@@ -1746,6 +1771,7 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
     match (receiver, field) {
         (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),
         (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
+        (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
         (Value::Map(entries), "get") => Some(map_get_method(Rc::clone(entries))),
         (Value::Map(entries), "set") => Some(map_set_method(Rc::clone(entries))),
         (Value::Map(entries), "delete") => Some(map_delete_method(Rc::clone(entries))),
@@ -1779,6 +1805,18 @@ fn collection_has_method(kind: &'static str, items: Rc<Vec<Value>>) -> Value {
         }
 
         Ok(Value::Bool(contains_value(&items, &args[0])))
+    })
+}
+
+fn array_push_method(items: Rc<Vec<Value>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Array.push expects 1 argument, got {}", args.len()));
+        }
+
+        let mut next = items.as_ref().clone();
+        next.push(args[0].clone());
+        Ok(Value::Array(Rc::new(next)))
     })
 }
 

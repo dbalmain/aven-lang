@@ -173,7 +173,7 @@ impl<'a> Checker<'a> {
                     .map(|element| self.infer(env, element))
                     .collect(),
             ),
-            ExprKind::Array(elements) => self.infer_array(env, elements),
+            ExprKind::Array(entries) => self.infer_array(env, entries),
             ExprKind::Set(entries) => self.infer_set(env, entries),
             ExprKind::Record(entries) => {
                 if let Some(shape) = literal_record_value(entries, expr.span) {
@@ -2345,14 +2345,24 @@ impl<'a> Checker<'a> {
         })
     }
 
-    pub(super) fn infer_array(&mut self, env: &TypeEnv, elements: &[Expr]) -> Type {
-        self.infer_collection(env, elements, "Array")
+    pub(super) fn infer_array(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
+        self.infer_collection_entries(env, entries, "Array")
     }
 
     pub(super) fn infer_set(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
+        self.infer_collection_entries(env, entries, "Set")
+    }
+
+    /// Infer `Array`/`Set` literals from Element + Spread entries (same shape).
+    pub(super) fn infer_collection_entries(
+        &mut self,
+        env: &TypeEnv,
+        entries: &[RecordEntry],
+        name: &str,
+    ) -> Type {
         let element_type = self.unifier.fresh();
-        let set_type = Type::Apply {
-            callee: Box::new(Type::Named("Set".to_owned())),
+        let collection_type = Type::Apply {
+            callee: Box::new(Type::Named(name.to_owned())),
             args: vec![element_type.clone()],
         };
 
@@ -2366,7 +2376,7 @@ impl<'a> Checker<'a> {
                 }
                 RecordEntry::Spread { value, .. } => {
                     let source_type = self.infer(env, value);
-                    if self.unifier.unify(&set_type, &source_type).is_err() {
+                    if self.unifier.unify(&collection_type, &source_type).is_err() {
                         return Type::Deferred;
                     }
                 }
@@ -2374,7 +2384,7 @@ impl<'a> Checker<'a> {
             }
         }
 
-        set_type
+        collection_type
     }
 
     pub(super) fn infer_set_union(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
@@ -2419,26 +2429,6 @@ impl<'a> Checker<'a> {
                 Some(args[0].clone())
             }
             _ => None,
-        }
-    }
-
-    pub(super) fn infer_collection<'b>(
-        &mut self,
-        env: &TypeEnv,
-        elements: impl IntoIterator<Item = &'b Expr>,
-        name: &str,
-    ) -> Type {
-        let element_type = self.unifier.fresh();
-        for element in elements {
-            let item_type = self.infer(env, element);
-            if self.unifier.unify(&element_type, &item_type).is_err() {
-                return Type::Deferred;
-            }
-        }
-
-        Type::Apply {
-            callee: Box::new(Type::Named(name.to_owned())),
-            args: vec![element_type],
         }
     }
 

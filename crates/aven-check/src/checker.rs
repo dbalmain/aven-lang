@@ -1232,6 +1232,14 @@ fn is_map_receiver_type(ty: &Type) -> bool {
     )
 }
 
+fn is_array_receiver_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Apply { callee, args }
+            if args.len() == 1 && matches!(callee.as_ref(), Type::Named(name) if name == "Array")
+    )
+}
+
 fn is_catch_all_pattern(pattern: &Expr) -> bool {
     match &pattern.kind {
         ExprKind::Group(inner) => is_catch_all_pattern(inner),

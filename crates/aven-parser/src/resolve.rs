@@ -265,7 +265,7 @@ fn scope_at_expr<'a>(expr: &'a Expr, at: Span, outer: &[BindingSite<'a>]) -> Opt
             scope_at_expr(subject, at, outer).or_else(|| scope_at_match_arms(arms, at, outer))
         }
         ExprKind::Block(items) => Some(scope_at_block(items, at, outer)),
-        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+        ExprKind::Record(entries) | ExprKind::Set(entries) | ExprKind::Array(entries) => {
             scope_at_record_entries(entries, at, outer)
                 .or_else(|| Some(ScopeAt::from_visible(outer.to_vec())))
         }
@@ -549,7 +549,7 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
         ExprKind::Binary { operator, .. } if operator == "|" => {
             collect_or_pattern_bindings(pattern, bindings);
         }
-        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+        ExprKind::Record(entries) | ExprKind::Set(entries) | ExprKind::Array(entries) => {
             collect_pattern_bindings_from_record_entries(entries, bindings);
         }
         ExprKind::Index { callee, args } | ExprKind::Call { callee, args } => {

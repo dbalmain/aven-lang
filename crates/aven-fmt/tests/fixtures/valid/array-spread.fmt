@@ -1,0 +1,4 @@
+xs = [1, 2]
+ys = [..xs, 3]
+zs = xs.push(4)
+combined = [0, ..xs, ..ys, 9]

@@ -92,7 +92,7 @@ pub enum ExprKind {
     Tag(String),
     Group(Box<Expr>),
     Tuple(Vec<Expr>),
-    Array(Vec<Expr>),
+    Array(Vec<RecordEntry>),
     Record(Vec<RecordEntry>),
     Set(Vec<RecordEntry>),
     /// Postfix square-bracket indexing (`users[2]`) and empty collection-type
@@ -304,14 +304,14 @@ struct Parser<'a> {
     diagnostics: Vec<Diagnostic>,
 }
 
-/// Whether a brace-entry loop is parsing a record `{...}` or a set/variant
-/// `@{...}`. The only behavioural difference is how bare terms are treated:
-/// a bare label is a `Shorthand` in a record, while a bare term is an `Element`
-/// in a set.
+/// Whether an entry loop is parsing a record `{...}`, a set/variant `@{...}`,
+/// or an array `[...]`. Bare terms are `Shorthand` in records and `Element` in
+/// sets/arrays; only Element + Spread are valid in array value literals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryMode {
     Record,
     Set,
+    Array,
 }
 
 #[derive(Debug, Clone)]
@@ -1506,11 +1506,11 @@ impl Parser<'_> {
     fn parse_array(&mut self) -> Expr {
         let start = self.current_span().start;
         self.advance();
-        let items = self.parse_expression_list(TokenKind::CloseBracket);
+        let entries = self.parse_entry_list(EntryMode::Array);
         let end = self.consume_close(TokenKind::CloseBracket);
 
         Expr {
-            kind: ExprKind::Array(items),
+            kind: ExprKind::Array(entries),
             span: Span::new(start, end),
         }
     }
@@ -1545,11 +1545,14 @@ impl Parser<'_> {
         }
     }
 
-    /// Shared entry loop for both `{...}` records and `@{...}` sets/variants.
-    /// The only difference is how a bare term is interpreted, which is handled
-    /// inside `parse_record_entry` via the `EntryMode`.
+    /// Shared entry loop for `{...}` records, `@{...}` sets/variants, and
+    /// `[...]` arrays. Close delimiter and bare-term treatment depend on mode.
     fn parse_entry_list(&mut self, mode: EntryMode) -> Vec<RecordEntry> {
-        self.parse_delimited(TokenKind::CloseBrace, true, |parser| {
+        let (close, allow_semicolon) = match mode {
+            EntryMode::Array => (TokenKind::CloseBracket, false),
+            EntryMode::Record | EntryMode::Set => (TokenKind::CloseBrace, true),
+        };
+        self.parse_delimited(close, allow_semicolon, |parser| {
             parser.parse_record_entry(mode)
         })
     }
@@ -1606,6 +1609,7 @@ impl Parser<'_> {
 
             if !overwrite
                 && (self.current_is(TokenKind::CloseBrace)
+                    || self.current_is(TokenKind::CloseBracket)
                     || self.current_is(TokenKind::Newline)
                     || self.current_is(TokenKind::Indent)
                     || self.current_is(TokenKind::Dedent)
@@ -1624,6 +1628,18 @@ impl Parser<'_> {
                 overwrite,
                 span,
             });
+        }
+
+        // Arrays only support elements and spreads; avoid the record/set
+        // transform paths so `[-1, 2]` stays unary-minus elements.
+        if mode == EntryMode::Array {
+            let term = self.parse_expression();
+            if matches!(term.kind, ExprKind::Missing) {
+                self.report_expected_record_entry(term.span);
+                self.recover_record_entry();
+                return None;
+            }
+            return Some(RecordEntry::Element(term));
         }
 
         if self.current_is_operator("-") {
@@ -3045,7 +3061,18 @@ mod tests {
             parse_module("items = [1, \"two\"]\npair = (1, \"two\")\ncolors = @{ @Red, @Ok(1) }\n");
 
         assert!(output.diagnostics.is_empty());
-        assert!(matches!(binding_value(&output, 0), ExprKind::Array(items) if items.len() == 2));
+        let ExprKind::Array(array_entries) = binding_value(&output, 0) else {
+            panic!("expected array expression");
+        };
+        assert_eq!(array_entries.len(), 2);
+        assert!(matches!(
+            &array_entries[0],
+            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::Literal(_))
+        ));
+        assert!(matches!(
+            &array_entries[1],
+            RecordEntry::Element(expr) if matches!(&expr.kind, ExprKind::Literal(_))
+        ));
         assert!(matches!(binding_value(&output, 1), ExprKind::Tuple(items) if items.len() == 2));
         let ExprKind::Set(entries) = binding_value(&output, 2) else {
             panic!("expected set expression");

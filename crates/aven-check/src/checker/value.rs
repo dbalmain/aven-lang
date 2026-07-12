@@ -6,7 +6,7 @@ impl<'a> Checker<'a> {
             ExprKind::Record(entries) => {
                 self.check_value_record_entries(entries);
             }
-            ExprKind::Set(entries) => {
+            ExprKind::Set(entries) | ExprKind::Array(entries) => {
                 self.report_value_record_markers(entries);
                 self.walk_value_record_values(entries);
             }
@@ -115,7 +115,19 @@ impl<'a> Checker<'a> {
         if builtin_collection_method_type(&receiver_type, field).is_some() {
             return;
         }
-        if is_map_receiver_type(&receiver_type) && is_concrete_type(&receiver_type) {
+        if is_concrete_type(&receiver_type)
+            && (is_map_receiver_type(&receiver_type)
+                || is_array_receiver_type(&receiver_type)
+                || result_type_args(&receiver_type).is_some())
+        {
+            self.report_missing_field(field, span);
+            return;
+        }
+        // Array methods (`has`, `push`) are not invented on non-array receivers.
+        if is_concrete_type(&receiver_type)
+            && crate::ty::ARRAY_METHOD_NAMES.contains(&field)
+            && !is_array_receiver_type(&receiver_type)
+        {
             self.report_missing_field(field, span);
             return;
         }

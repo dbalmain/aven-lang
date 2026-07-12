@@ -8,7 +8,7 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
         | ExprKind::NonNull(inner)
         | ExprKind::Unary { value: inner, .. }
         | ExprKind::Propagate { value: inner, .. } => visit(inner),
-        ExprKind::Tuple(items) | ExprKind::Array(items) => walk_exprs(items, visit),
+        ExprKind::Tuple(items) => walk_exprs(items, visit),
         ExprKind::Interpolation(segments) => {
             for segment in segments {
                 if let InterpolationSegment::Expr(expr) = segment {
@@ -16,7 +16,7 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
                 }
             }
         }
-        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+        ExprKind::Record(entries) | ExprKind::Set(entries) | ExprKind::Array(entries) => {
             walk_record_entry_exprs(entries, visit);
         }
         ExprKind::Index { callee, args } | ExprKind::Call { callee, args } => {

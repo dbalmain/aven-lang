@@ -1105,6 +1105,43 @@ fn set_and_array_has_report_membership() {
 }
 
 #[test]
+fn array_spread_splices_elements_in_order() {
+    assert_module_value(
+        "xs = [1, 2]\nys = [0, ..xs, 3]\nys\n",
+        array_value(vec![
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+        ]),
+    );
+    assert_module_value(
+        "xs = [1]\nys = [2, 3]\nzs = [..xs, 0, ..ys]\nzs\n",
+        array_value(vec![
+            Value::Int(1),
+            Value::Int(0),
+            Value::Int(2),
+            Value::Int(3),
+        ]),
+    );
+    assert_module_value(
+        "empty = []\nys = [..empty, 1]\nys\n",
+        array_value(vec![Value::Int(1)]),
+    );
+}
+
+#[test]
+fn array_push_returns_new_array_without_mutating_receiver() {
+    assert_module_value(
+        "xs = [1]\nys = xs.push(2)\n[xs, ys]\n",
+        array_value(vec![
+            array_value(vec![Value::Int(1)]),
+            array_value(vec![Value::Int(1), Value::Int(2)]),
+        ]),
+    );
+}
+
+#[test]
 fn has_on_unsupported_receiver_still_reports_type_error() {
     let diagnostic = eval_error("1.has(1)");
 

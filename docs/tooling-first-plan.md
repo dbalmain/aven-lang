@@ -2978,6 +2978,11 @@ expanded result; recursive uppercase functions diagnose for now.
 
 ## To investigate later
 
+- **Roc-style opportunistic in-place mutation.** `push` (and spread of a dying
+  receiver) may mutate in place when the runtime can prove the source array has
+  no other references (refcount 1), preserving value semantics. Deferred until
+  the evaluator/VM has a story for uniqueness; today `push` always copies.
+
 - **Braceless multiline set/record literals.** Allow dropping the braces on
   multiline shapes using a trailing sigil that opens a layout block: `@>` for
   sets/variants and `{>` for records, e.g.

@@ -471,10 +471,10 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             let _ = writeln!(output, "tuple");
             render_expr_list_ast(output, items, indent + 1);
         }
-        ExprKind::Array(items) => {
+        ExprKind::Array(entries) => {
             write_indent(output, indent);
             let _ = writeln!(output, "array");
-            render_expr_list_ast(output, items, indent + 1);
+            render_record_entries_ast(output, entries, indent + 1);
         }
         ExprKind::Record(entries) => {
             write_indent(output, indent);

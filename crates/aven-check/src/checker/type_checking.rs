@@ -122,7 +122,7 @@ impl<'a> Checker<'a> {
                 self.check_match_arms(subject, arms, Some(expected));
             }
             (
-                ExprKind::Array(elements),
+                ExprKind::Array(entries),
                 Type::Apply {
                     callee,
                     args: element_types,
@@ -130,7 +130,8 @@ impl<'a> Checker<'a> {
             ) if matches!(callee.as_ref(), Type::Named(name) if name == "Array")
                 && element_types.len() == 1 =>
             {
-                self.check_collection_elements(&element_types[0], elements);
+                self.report_value_record_markers(entries);
+                self.check_collection_entries_against(expected, &element_types[0], entries);
             }
             (
                 ExprKind::Set(entries),
@@ -142,7 +143,7 @@ impl<'a> Checker<'a> {
                 && element_types.len() == 1 =>
             {
                 self.report_value_record_markers(entries);
-                self.check_set_entries_against(expected, &element_types[0], entries);
+                self.check_collection_entries_against(expected, &element_types[0], entries);
             }
             _ => {
                 self.check_value_expr(value);
@@ -267,10 +268,10 @@ impl<'a> Checker<'a> {
         self.local_types.pop();
     }
 
-    /// Check set-literal entries against an expected `Set(element)`: elements
-    /// against the element type, spread subjects against the whole set type.
-    /// Other entry kinds fall back to walking their value expressions.
-    fn check_set_entries_against(
+    /// Check array/set-literal entries against an expected collection type:
+    /// elements against the element type, spread subjects against the whole
+    /// collection type. Other entry kinds fall back to walking values.
+    fn check_collection_entries_against(
         &mut self,
         expected: &Type,
         element_type: &Type,
@@ -282,16 +283,6 @@ impl<'a> Checker<'a> {
                 RecordEntry::Spread { value, .. } => self.check_value_against(expected, value),
                 entry => self.walk_value_record_values(std::slice::from_ref(entry)),
             }
-        }
-    }
-
-    pub(super) fn check_collection_elements<'b>(
-        &mut self,
-        element_type: &Type,
-        elements: impl IntoIterator<Item = &'b Expr>,
-    ) {
-        for element in elements {
-            self.check_value_against(element_type, element);
         }
     }
 

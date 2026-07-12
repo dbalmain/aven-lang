@@ -51,6 +51,8 @@ pub const MAP_METHOD_NAMES: &[&str] = &[
     "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
 ];
 
+pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "push"];
+
 pub const RESULT_METHOD_NAMES: &[&str] = &["mapErr", "orElse"];
 
 pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
@@ -115,6 +117,17 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
         };
     }
 
+    if let Some(element) = array_type_arg(receiver) {
+        return match name {
+            "has" => Some(function(vec![element.clone()], named_builtin("Bool"))),
+            "push" => Some(function(
+                vec![element.clone()],
+                array_apply(element.clone()),
+            )),
+            _ => None,
+        };
+    }
+
     let (ok, error) = result_type_args(receiver)?;
     let output_ok = Type::Variable("result_ok".to_owned());
     let output_error = Type::Variable("result_error".to_owned());
@@ -137,6 +150,8 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
 fn builtin_collection_fields(receiver: &Type) -> Option<Vec<RecordField>> {
     let names = if map_type_args(receiver).is_some() {
         MAP_METHOD_NAMES
+    } else if array_type_arg(receiver).is_some() {
+        ARRAY_METHOD_NAMES
     } else if result_type_args(receiver).is_some() {
         RESULT_METHOD_NAMES
     } else {
@@ -165,6 +180,19 @@ fn map_type_args(ty: &Type) -> Option<(&Type, &Type)> {
         return None;
     };
     Some((key, value))
+}
+
+fn array_type_arg(ty: &Type) -> Option<&Type> {
+    let Type::Apply { callee, args } = ty else {
+        return None;
+    };
+    if !matches!(callee.as_ref(), Type::Named(name) if name == "Array") {
+        return None;
+    }
+    let [element] = args.as_slice() else {
+        return None;
+    };
+    Some(element)
 }
 
 fn result_type_args(ty: &Type) -> Option<(Type, Type)> {

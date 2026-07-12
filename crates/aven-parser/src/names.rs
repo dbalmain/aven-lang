@@ -188,7 +188,7 @@ fn analyze_expr(expr: &Expr, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
         }
         ExprKind::Block(items) => analyze_block(items, scopes, diagnostics),
         ExprKind::Name(name) | ExprKind::ComptimeName(name) => scopes.mark_used(name),
-        ExprKind::Record(entries) | ExprKind::Set(entries) => {
+        ExprKind::Record(entries) | ExprKind::Set(entries) | ExprKind::Array(entries) => {
             analyze_record_entries(entries, scopes, diagnostics);
         }
         ExprKind::Missing

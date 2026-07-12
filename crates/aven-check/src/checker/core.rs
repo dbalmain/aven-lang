@@ -824,10 +824,8 @@ impl<'a> Checker<'a> {
     pub(super) fn literal_or_tag_value_shape(value: &Expr) -> bool {
         match &ungroup_expr(value).kind {
             ExprKind::Literal(_) | ExprKind::Tag(_) | ExprKind::Undefined | ExprKind::Null => true,
-            ExprKind::Tuple(items) | ExprKind::Array(items) => {
-                items.iter().all(Self::literal_or_tag_value_shape)
-            }
-            ExprKind::Record(entries) | ExprKind::Set(entries) => {
+            ExprKind::Tuple(items) => items.iter().all(Self::literal_or_tag_value_shape),
+            ExprKind::Array(entries) | ExprKind::Record(entries) | ExprKind::Set(entries) => {
                 Self::row_literal_or_tag_value_shape(entries)
             }
             ExprKind::Call { callee, args }

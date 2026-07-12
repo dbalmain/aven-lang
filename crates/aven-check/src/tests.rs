@@ -4029,6 +4029,76 @@ fn array_inference_defers_empty_literals() {
 }
 
 #[test]
+fn array_spread_unifies_element_types() {
+    let output = parse_module("xs = [1, 2]\nys : Array(Int) = [..xs, 3]\n");
+    let check = check_module(&output.module);
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "compatible array spread unexpectedly produced type.mismatch: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn array_spread_mismatch_reports_type_error() {
+    let text_into_int = parse_module("xs = [\"a\"]\nys : Array(Int) = [..xs, 1]\n");
+    let text_into_int_check = check_module(&text_into_int.module);
+    assert!(
+        matching_codes(&text_into_int_check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "spreading Array(Text) into Array(Int) should mismatch"
+    );
+
+    let non_array = parse_module("ys : Array(Int) = [..\"nope\", 1]\n");
+    let non_array_check = check_module(&non_array.module);
+    assert!(
+        matching_codes(&non_array_check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "spreading Text into array literal should mismatch"
+    );
+}
+
+#[test]
+fn array_push_result_type_is_array() {
+    // Annotate the seed so push's result is `Array(Int)`, not an open literal
+    // union `Array(1 | 2 | ..)` from unannotated `[1]` / `2`.
+    let output = parse_module("xs : Array(Int) = [1]\nys = xs.push(2)\n");
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "array push should type-check: {:?}",
+        check.diagnostics
+    );
+
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let scheme = checker.infer_top_level_scheme("ys").expect("scheme for ys");
+    assert_eq!(scheme.ty.render(), "Array(Int)");
+}
+
+#[test]
+fn array_push_on_non_array_reports_error() {
+    let int_receiver = parse_module("value = 1.push(2)\n");
+    let int_check = check_module(&int_receiver.module);
+    assert!(
+        matching_codes(&int_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
+            || !int_check.diagnostics.is_empty(),
+        "1.push should error: {:?}",
+        int_check.diagnostics
+    );
+
+    let text_receiver = parse_module("value = \"a\".push(\"b\")\n");
+    let text_check = check_module(&text_receiver.module);
+    assert!(
+        matching_codes(&text_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
+            || !text_check.diagnostics.is_empty(),
+        "Text.push should error: {:?}",
+        text_check.diagnostics
+    );
+}
+
+#[test]
 fn set_literals_are_checked_against_annotations() {
     let accepted = parse_module("value : Set(Int) = @{1, 2, 3}\n");
     let accepted_check = check_module(&accepted.module);
