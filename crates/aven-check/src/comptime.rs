@@ -538,7 +538,12 @@ where
         env: &Environment,
     ) -> EvaluationResult {
         if function.params.len() != args.len() {
-            return EvaluationResult::unsupported();
+            return EvaluationResult::diagnostic(comptime_function_arity_mismatch(
+                call_span,
+                &function.name,
+                function.params.len(),
+                args.len(),
+            ));
         }
 
         let values = match self.evaluate_args(args, env) {
@@ -954,6 +959,27 @@ fn comptime_argument_not_known(span: Span, function: &str) -> Diagnostic {
         "this argument must be known at compile time",
     ))
     .with_note("uppercase comptime functions accept only comptime-known arguments")
+}
+
+pub(crate) fn comptime_function_arity_mismatch(
+    span: Span,
+    function: &str,
+    expected: usize,
+    given: usize,
+) -> Diagnostic {
+    Diagnostic::error(format!(
+        "comptime function `{function}` expected {expected} argument{}, given {given}",
+        if expected == 1 { "" } else { "s" },
+    ))
+    .with_code(codes::ty::MISMATCH)
+    .with_label(Label::primary(
+        span,
+        "this comptime application has the wrong number of arguments",
+    ))
+    .with_note(format!(
+        "`{function}` expects {expected} argument{}, but this application gives {given}",
+        if expected == 1 { "" } else { "s" },
+    ))
 }
 
 fn evaluation_limit(span: Span) -> Diagnostic {

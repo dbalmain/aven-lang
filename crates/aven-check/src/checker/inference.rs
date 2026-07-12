@@ -1794,6 +1794,17 @@ impl<'a> Checker<'a> {
     ) -> Option<Type> {
         let (params, body) = self.comptime_param_function(callee)?;
         if params.len() != args.len() {
+            let function = match &ungroup_expr(callee).kind {
+                ExprKind::Name(name) | ExprKind::ComptimeName(name) => name,
+                _ => "comptime function",
+            };
+            self.diagnostics
+                .push(comptime::comptime_function_arity_mismatch(
+                    callee.span,
+                    function,
+                    params.len(),
+                    args.len(),
+                ));
             return Some(Type::Deferred);
         }
 

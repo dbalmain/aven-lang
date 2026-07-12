@@ -1115,6 +1115,59 @@ fn uppercase_comptime_functions_specialize_to_expanded_types() {
 }
 
 #[test]
+fn comptime_type_function_application_requires_exact_arity() {
+    let source = "Pair = (t: Type) => { first: t, second: t }\n\
+        exact: Pair(Int) = { first: 1, second: 2 }\n\
+        extra: Pair(Int, Text) = { first: 1, second: 2 }\n\
+        missing: Pair() = { first: 1, second: 2 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    let arity_diagnostics: Vec<_> = check
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::MISMATCH)
+                && diagnostic.message.contains("comptime function `Pair`")
+        })
+        .collect();
+
+    assert_eq!(arity_diagnostics.len(), 2, "{:?}", check.diagnostics);
+    assert!(
+        arity_diagnostics[0]
+            .message
+            .contains("expected 1 argument, given 2")
+    );
+    assert!(
+        arity_diagnostics[1]
+            .message
+            .contains("expected 1 argument, given 0")
+    );
+    assert!(arity_diagnostics.iter().all(|diagnostic| {
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("expects 1 argument") && note.contains("gives"))
+    }));
+}
+
+#[test]
+fn builtin_type_application_arity_behavior_is_unchanged() {
+    let output = parse_module("value: Array(Int, Text) = [1]\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    assert_eq!(
+        check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message.contains("comptime function"))
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn uppercase_comptime_function_params_are_implicitly_comptime() {
     let output = parse_module("Pair = (@t) => { first: t, second: t }\n");
     let check = check_module(&output.module);
