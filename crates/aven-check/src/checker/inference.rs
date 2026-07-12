@@ -2038,6 +2038,7 @@ impl<'a> Checker<'a> {
                 // Array indexing accepts a runtime index that may be out of
                 // bounds, so the result is optional (`?a`): an absent element
                 // yields `undefined`.
+                self.check_value_index_arg(env, arg, named_builtin("Int"));
                 Type::Optional(Box::new(args[0].clone()))
             }
             Type::Apply { callee, args }
@@ -2049,15 +2050,29 @@ impl<'a> Checker<'a> {
                 // key yields `undefined` at runtime.
                 let key_type = args[0].clone();
                 let value_type = args[1].clone();
-                let arg_type = self.infer(env, arg);
-                self.check_call_arg_types_against_params(
-                    std::slice::from_ref(arg),
-                    &[arg_type],
-                    &[key_type],
-                );
+                self.check_value_index_arg(env, arg, key_type);
                 Type::Optional(Box::new(value_type))
             }
             _ => Type::Deferred,
+        }
+    }
+
+    /// Check a value-index argument so deferred index types remain deferred and
+    /// concrete mismatches point to the index expression.
+    fn check_value_index_arg(&mut self, env: &TypeEnv, arg: &Expr, expected: Type) {
+        let actual = self.infer(env, arg);
+        if matches!(&expected, Type::Named(name) if name == "Int") {
+            let actual = self.widen_numeric_operand(&actual);
+            if self.unifier.unify(&actual, &expected).is_err() {
+                let expected = self.normalize(&self.resolve_and_default(&expected));
+                self.check_type_against_type(&expected, &actual, arg.span);
+            }
+        } else {
+            self.check_call_arg_types_against_params(
+                std::slice::from_ref(arg),
+                &[actual],
+                &[expected],
+            );
         }
     }
 

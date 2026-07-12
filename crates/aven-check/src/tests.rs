@@ -5722,6 +5722,66 @@ fn array_index_infers_optional_element_type() {
 }
 
 #[test]
+fn array_index_requires_an_int_index() {
+    for (source, index) in [
+        ("arr = [1, 2, 3]\nvalue = arr[\"key\"]\n", "\"key\""),
+        ("arr = [1, 2, 3]\nvalue = arr[0.5]\n", "0.5"),
+    ] {
+        let output = parse_module(source);
+        let known_types = known_type_names(&output.module);
+        let type_definitions = type_definitions(&output.module, &known_types);
+        let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+        let _ = checker.infer_top_level_scheme("value");
+
+        assert_eq!(
+            matching_codes(&checker.diagnostics, codes::ty::MISMATCH),
+            1,
+            "expected array index mismatch, got {:?}",
+            checker.diagnostics
+        );
+        let diagnostic = checker
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+            .expect("array index type mismatch");
+        assert_eq!(diagnostic.labels[0].span, nth_span(source, index, 0));
+    }
+}
+
+#[test]
+fn array_index_accepts_literal_and_bound_int_indexes() {
+    let output = parse_module("arr = [1, 2, 3]\nliteral = arr[0]\ni = 1\nbound = arr[i]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let _ = checker.infer_top_level_scheme("literal");
+    let _ = checker.infer_top_level_scheme("bound");
+
+    assert!(
+        checker.diagnostics.is_empty(),
+        "expected integer indexes to check, got {:?}",
+        checker.diagnostics
+    );
+}
+
+#[test]
+fn array_index_with_deferred_index_type_defers_without_diagnostic() {
+    let output = parse_module(
+        "arr = [1, 2, 3]\nunknown = \"not a record\"[\"key\"]\nvalue = arr[unknown]\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let _ = checker.infer_top_level_scheme("value");
+
+    assert!(
+        checker.diagnostics.is_empty(),
+        "expected deferred index type to produce no diagnostic, got {:?}",
+        checker.diagnostics
+    );
+}
+
+#[test]
 fn tuple_index_with_literal_infers_exact_element_type() {
     let output = parse_module("pair = (\"Ada\", 36)\nname = pair[0]\nage = pair[1]\n");
     let known_types = known_type_names(&output.module);
