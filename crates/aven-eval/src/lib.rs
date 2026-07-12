@@ -723,13 +723,20 @@ fn select_record_fields(name: &str, args: &[Value], keep_matched: bool) -> Resul
 /// (recovery) while letting `Flow::Propagate` bubble out via `?`. Both the
 /// top-level loop and blocks share this; only their callers decide whether to
 /// catch `Propagate`.
+///
+/// `:=` (explicit shadow) installs a **fresh** binding by pushing a child scope
+/// frame rather than overwriting the current map slot. Closures that already
+/// captured the pre-shadow environment keep seeing the old value; later items
+/// (and later closures) use the extended chain. Plain `=` still binds into the
+/// current frame (name resolution forbids same-scope rebind with `=`).
 fn eval_items(items: &[Item], env: &Environment) -> Eval<EvalOutcome> {
+    let mut env = env.clone();
     let mut value = None;
     let mut diagnostics = Vec::new();
 
     for item in items {
         match item {
-            Item::Expr(expr) => match eval_expr_many(expr, env) {
+            Item::Expr(expr) => match eval_expr_many(expr, &env) {
                 Ok(next_value) => value = Some(next_value),
                 Err(flow @ Flow::Propagate(_)) => return Err(flow),
                 Err(Flow::Fail(mut next_diagnostics)) => {
@@ -737,9 +744,15 @@ fn eval_items(items: &[Item], env: &Environment) -> Eval<EvalOutcome> {
                     diagnostics.append(&mut next_diagnostics);
                 }
             },
-            Item::Binding(binding) => match eval_expr_many(&binding.value, env) {
+            Item::Binding(binding) => match eval_expr_many(&binding.value, &env) {
                 Ok(next_value) => {
-                    env.bind(binding.name.clone(), next_value);
+                    if binding.shadow_span.is_some() {
+                        let next = env.child();
+                        next.bind(binding.name.clone(), next_value);
+                        env = next;
+                    } else {
+                        env.bind(binding.name.clone(), next_value);
+                    }
                     value = None;
                 }
                 Err(flow @ Flow::Propagate(_)) => return Err(flow),
@@ -748,8 +761,8 @@ fn eval_items(items: &[Item], env: &Environment) -> Eval<EvalOutcome> {
                     diagnostics.append(&mut next_diagnostics);
                 }
             },
-            Item::PatternBinding(binding) => match eval_expr_many(&binding.value, env)
-                .and_then(|next_value| bind_pattern_item(&binding.pattern, &next_value, env))
+            Item::PatternBinding(binding) => match eval_expr_many(&binding.value, &env)
+                .and_then(|next_value| bind_pattern_item(&binding.pattern, &next_value, &env))
             {
                 Ok(()) => value = None,
                 Err(flow @ Flow::Propagate(_)) => return Err(flow),
@@ -758,8 +771,8 @@ fn eval_items(items: &[Item], env: &Environment) -> Eval<EvalOutcome> {
                     diagnostics.append(&mut next_diagnostics);
                 }
             },
-            Item::SpreadBinding(binding) => match eval_expr_many(&binding.value, env)
-                .and_then(|next_value| bind_spread_item(&next_value, binding.value.span, env))
+            Item::SpreadBinding(binding) => match eval_expr_many(&binding.value, &env)
+                .and_then(|next_value| bind_spread_item(&next_value, binding.value.span, &env))
             {
                 Ok(()) => value = None,
                 Err(flow @ Flow::Propagate(_)) => return Err(flow),

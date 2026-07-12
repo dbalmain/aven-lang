@@ -480,6 +480,42 @@ fn explicit_shadow_rhs_sees_old_binding_and_does_not_leak() {
     );
 }
 
+/// Spec: `:=` creates a new binding; closures that captured the previous
+/// binding must keep seeing that value (not the post-`:=` one).
+#[test]
+fn explicit_shadow_does_not_mutate_prior_closure_capture() {
+    assert_module_value(
+        "main = () =>\n  x = 1\n  f = () => x + 1\n  x := \"two\"\n  f()\nmain()\n",
+        Value::Int(2),
+    );
+}
+
+#[test]
+fn explicit_shadow_is_visible_to_closures_created_after() {
+    assert_module_value(
+        "main = () =>\n  x = 1\n  x := \"two\"\n  f = () => x\n  f()\nmain()\n",
+        Value::Text("two".to_owned()),
+    );
+}
+
+#[test]
+fn sequential_explicit_shadow_rebinding() {
+    assert_module_value(
+        "main = () =>\n  x = 1\n  x := x + 1\n  x\nmain()\n",
+        Value::Int(2),
+    );
+}
+
+/// Nested-block `:=` rebinds only inside the block (blocks already open a child
+/// scope). Uses after the block still see the outer binding.
+#[test]
+fn nested_block_explicit_shadow_does_not_escape() {
+    assert_module_value(
+        "main = () =>\n  x = 1\n  inner =\n    x := 2\n    x\n  (inner, x)\nmain()\n",
+        tuple_value(vec![Value::Int(2), Value::Int(1)]),
+    );
+}
+
 #[test]
 fn evaluates_block_without_trailing_expression_to_undefined() {
     assert_module_value("value =\n  x = 1\nvalue\n", Value::Undefined);
