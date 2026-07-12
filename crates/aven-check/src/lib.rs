@@ -40,6 +40,7 @@ const BUILTIN_TYPES: &[&str] = &[
     "Int",
     "Null",
     "Text",
+    "Type",
     "Undefined",
     "Unit",
     // Seeded std names until import resolution provides them.

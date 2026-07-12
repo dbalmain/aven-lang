@@ -8,12 +8,14 @@
 //! constants are added is the manual step the compiler cannot check.
 
 pub mod comptime {
+    pub const ARGUMENT_NOT_KNOWN: &str = "comptime.argument-not-known";
     pub const EVALUATION_CYCLE: &str = "comptime.evaluation-cycle";
     pub const EVALUATION_LIMIT: &str = "comptime.evaluation-limit";
     pub const EVALUATION_UNSUPPORTED: &str = "comptime.evaluation-unsupported";
     pub const HOST_FUNCTION: &str = "comptime.host-function";
     pub const NON_LIFTABLE_INTO_RUNTIME: &str = "comptime.non-liftable-into-runtime";
     pub const REFLECTION_TYPE_MISMATCH: &str = "comptime.reflection-type-mismatch";
+    pub const REDUNDANT_COMPTIME_MARKER: &str = "comptime.redundant-comptime-marker";
     pub const UNEXPANDABLE_IMPORT: &str = "comptime.unexpandable-import";
 }
 
@@ -142,11 +144,13 @@ pub mod ty {
 }
 
 pub const ALL: &[&str] = &[
+    comptime::ARGUMENT_NOT_KNOWN,
     comptime::EVALUATION_CYCLE,
     comptime::EVALUATION_LIMIT,
     comptime::EVALUATION_UNSUPPORTED,
     comptime::HOST_FUNCTION,
     comptime::NON_LIFTABLE_INTO_RUNTIME,
+    comptime::REDUNDANT_COMPTIME_MARKER,
     comptime::REFLECTION_TYPE_MISMATCH,
     comptime::UNEXPANDABLE_IMPORT,
     layout::INCONSISTENT_INDENTATION,

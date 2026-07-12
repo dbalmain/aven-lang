@@ -146,6 +146,9 @@ pub(crate) trait EvalContext {
     fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction>;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
+    fn specialization_is_in_progress(&self, key: &SpecializationKey) -> bool;
+    fn begin_specialization(&mut self, key: SpecializationKey);
+    fn end_specialization(&mut self, key: &SpecializationKey);
     fn infer_value_type(&mut self, expr: &Expr) -> Type;
     fn type_is_unresolved(&self, ty: &Type) -> bool;
 }
@@ -533,7 +536,17 @@ where
 
         let values = match self.evaluate_args(args, env) {
             Ok(values) => values,
-            Err(result) => return result,
+            Err((arg_span, result)) => {
+                if function.name.chars().next().is_some_and(char::is_uppercase)
+                    && result.diagnostics.is_empty()
+                {
+                    return EvaluationResult::diagnostic(comptime_argument_not_known(
+                        arg_span,
+                        &function.name,
+                    ));
+                }
+                return result;
+            }
         };
         let key = SpecializationKey::new(&function.name, &values);
 
@@ -541,12 +554,14 @@ where
             return result;
         }
 
-        if !self.visited.insert(key.clone()) {
+        if self.context.specialization_is_in_progress(&key) || !self.visited.insert(key.clone()) {
             return EvaluationResult::diagnostic(evaluation_cycle(call_span, &function.name));
         }
 
+        self.context.begin_specialization(key.clone());
         let body_env = Environment::from_params(&function.params, values);
         let result = self.evaluate_expr(&function.body, &body_env);
+        self.context.end_specialization(&key);
         self.visited.remove(&key);
 
         if !matches!(result.evaluation, Evaluation::Unsupported) {
@@ -560,7 +575,7 @@ where
         &mut self,
         args: &[Expr],
         env: &Environment,
-    ) -> Result<Vec<ComptimeValue>, EvaluationResult> {
+    ) -> Result<Vec<ComptimeValue>, (Span, EvaluationResult)> {
         let mut values = Vec::new();
 
         for arg in args {
@@ -568,15 +583,19 @@ where
             match arg_result.evaluation {
                 Evaluation::Evaluated(value) => values.push(value),
                 Evaluation::Deferred => {
-                    return Err(EvaluationResult::deferred_with_diagnostics(
-                        arg_result.diagnostics,
+                    return Err((
+                        arg.span,
+                        EvaluationResult::deferred_with_diagnostics(arg_result.diagnostics),
                     ));
                 }
                 Evaluation::Unsupported => {
-                    return Err(EvaluationResult {
-                        evaluation: Evaluation::Unsupported,
-                        diagnostics: arg_result.diagnostics,
-                    });
+                    return Err((
+                        arg.span,
+                        EvaluationResult {
+                            evaluation: Evaluation::Unsupported,
+                            diagnostics: arg_result.diagnostics,
+                        },
+                    ));
                 }
             }
         }
@@ -801,6 +820,18 @@ fn evaluation_cycle(span: Span, function: &str) -> Diagnostic {
     .with_note(
         "comptime function specialization is memoized by function and comptime argument tuple; recursive specializations must bottom out before repeating the same tuple",
     )
+}
+
+fn comptime_argument_not_known(span: Span, function: &str) -> Diagnostic {
+    Diagnostic::error(format!(
+        "comptime argument to `{function}` is not known at compile time"
+    ))
+    .with_code(codes::comptime::ARGUMENT_NOT_KNOWN)
+    .with_label(Label::primary(
+        span,
+        "this argument must be known at compile time",
+    ))
+    .with_note("uppercase comptime functions accept only comptime-known arguments")
 }
 
 fn evaluation_limit(span: Span) -> Diagnostic {

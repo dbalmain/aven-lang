@@ -217,6 +217,24 @@ impl<'a> Checker<'a> {
         );
     }
 
+    pub(super) fn report_redundant_comptime_markers(&mut self, value: &Expr) {
+        let Some((params, _)) = lambda_parts(value) else {
+            return;
+        };
+
+        for param in params.iter().filter(|param| param.comptime) {
+            self.diagnostics.push(
+                Diagnostic::warning("redundant comptime parameter marker")
+                    .with_code(codes::comptime::REDUNDANT_COMPTIME_MARKER)
+                    .with_label(Label::primary(
+                        param.span,
+                        "uppercase function parameters are already comptime",
+                    ))
+                    .with_note("drop the `@` marker"),
+            );
+        }
+    }
+
     pub(super) fn report_unexpandable_imported_application(&mut self, name: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!(

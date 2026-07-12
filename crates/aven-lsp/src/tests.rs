@@ -2447,6 +2447,19 @@ fn hover_at_comptime_type_function_definition_shows_comptime_marker() {
 }
 
 #[test]
+fn hover_at_uppercase_comptime_type_function_definition_shows_comptime_marker() {
+    let document = parsed_document_with_semantics(
+        "Pair = (t: Type) => { first: t, second: t }\nvalue: Pair(Int) = { first: 1, second: 2 }\n"
+            .to_owned(),
+    );
+    let Some(hover) = hover_at_position(&document, position(0, 1)) else {
+        panic!("expected hover");
+    };
+
+    assert_hover_value(hover, "```aven\nPair : comptime type function\n```");
+}
+
+#[test]
 fn hover_at_builtin_comptime_function_shows_description() {
     let document = parsed_document_with_semantics(COMPTIME_TYPE_SOURCE);
     let Some(hover) = hover_at_position(&document, position(1, 25)) else {

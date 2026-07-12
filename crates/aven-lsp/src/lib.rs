@@ -2605,8 +2605,10 @@ fn comptime_type_function_binding(document: &ParsedDocument, name: &str) -> bool
         };
         binding.name == name
             && binding.annotation.is_none()
-            && aven_parser::lambda_parts(&binding.value)
-                .is_some_and(|(_, body)| references_comptime_builtin(body))
+            && aven_parser::lambda_parts(&binding.value).is_some_and(|(_, body)| {
+                binding.name.chars().next().is_some_and(char::is_uppercase)
+                    || references_comptime_builtin(body)
+            })
     })
 }
 

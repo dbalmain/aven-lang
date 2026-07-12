@@ -121,6 +121,19 @@ pub(crate) fn type_definitions_excluding(
                 continue;
             }
 
+            // An uppercase lambda is a comptime function definition, not a
+            // lowered type alias. Its applications specialize through the
+            // shared comptime evaluator below.
+            if declaration
+                .name
+                .chars()
+                .next()
+                .is_some_and(char::is_uppercase)
+                && aven_parser::lambda_parts(&binding.value).is_some()
+            {
+                continue;
+            }
+
             // A bare lowercase name is a runtime reference, not a type alias.
             // Lowercase names remain valid type variables inside structured
             // aliases such as `{ value: a }`.

@@ -914,36 +914,43 @@ fn check_export_for_node(
         };
         let is_type = name.chars().next().is_some_and(char::is_uppercase);
         let field_ty = if is_type {
-            // Type exports cover module-local aliases AND host-registered type
-            // definitions (`Instant`, ...), which live in the same merged map.
-            let Some(definition) = source_name
-                .and_then(|source| semantic.type_definitions.get(source))
-                .cloned()
-            else {
-                return CheckExport::UppercaseExportNotType {
-                    name: name.clone(),
-                    span: value_span,
+            if let Some(source) = source_name
+                && let Some(export) =
+                    comptime_export_for_source(&node.parse.module, source, imports)
+            {
+                comptime_function_export_type(&export)
+            } else {
+                // Type exports cover module-local aliases AND host-registered type
+                // definitions (`Instant`, ...), which live in the same merged map.
+                let Some(definition) = source_name
+                    .and_then(|source| semantic.type_definitions.get(source))
+                    .cloned()
+                else {
+                    return CheckExport::UppercaseExportNotType {
+                        name: name.clone(),
+                        span: value_span,
+                    };
                 };
-            };
-            type_exports.insert(name.clone(), definition.clone());
-            // The *value* side of a type export is the type value: for a
-            // statics-carrying host type that value answers `Instant.parse`
-            // etc., so type its field as the statics record (mirroring the
-            // evaluator, where `Value::Type` field access resolves statics).
-            source_name
-                .and_then(|source| aven_check::type_statics(globals, source))
-                .map_or(definition, |statics| {
-                    Type::Record(aven_check::Row {
-                        entries: statics
-                            .into_iter()
-                            .map(|field| aven_check::RowEntry::Field {
-                                name: field.name,
-                                ty: field.ty,
-                            })
-                            .collect(),
-                        tail: RowTail::Closed,
+                type_exports.insert(name.clone(), definition.clone());
+                // The *value* side of a type export is the type value: for a
+                // statics-carrying host type that value answers `Instant.parse`
+                // etc., so type its field as the statics record (mirroring the
+                // evaluator, where `Value::Type` field access resolves statics).
+                source_name
+                    .and_then(|source| aven_check::type_statics(globals, source))
+                    .map_or(definition, |statics| {
+                        Type::Record(aven_check::Row {
+                            entries: statics
+                                .into_iter()
+                                .map(|field| aven_check::RowEntry::Field {
+                                    name: field.name,
+                                    ty: field.ty,
+                                })
+                                .collect(),
+                            tail: RowTail::Closed,
+                        })
                     })
-                })
+            }
         } else {
             let field_ty = source_name
                 .and_then(|source| semantic.top_level_types.get(source))
@@ -981,6 +988,14 @@ fn check_export_for_node(
     }
 }
 
+fn comptime_function_export_type(export: &ComptimeExport) -> Type {
+    Type::Function {
+        params: vec![Type::Named("Type".to_owned()); export.params.len()],
+        result: Box::new(Type::Named("Type".to_owned())),
+        required: export.params.len(),
+    }
+}
+
 /// Collect comptime-evaluable lambdas among the export fields so importers can
 /// specialize applications such as `pair(Int)`. Local lambdas contribute their
 /// owned params+body; re-exported import binders forward the dependency's
@@ -1003,9 +1018,6 @@ fn collect_comptime_exports(
             RecordEntry::Rename { from, to, .. } => (to.as_str(), from.as_str()),
             _ => continue,
         };
-        if export_name.chars().next().is_some_and(char::is_uppercase) {
-            continue;
-        }
         if let Some(export) = comptime_export_for_source(module, source_name, imports) {
             exports.insert(
                 export_name.to_owned(),

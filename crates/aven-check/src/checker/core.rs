@@ -12,6 +12,7 @@ impl<'a> Checker<'a> {
             comptime_bindings: HashSet::new(),
             comptime_artifacts: HashMap::new(),
             comptime_specializations: HashMap::new(),
+            comptime_specializations_in_progress: HashSet::new(),
             local_types: LocalTypeScopes::default(),
             local_comptime_values: Vec::new(),
             local_comptime_params: Vec::new(),
@@ -192,6 +193,12 @@ impl<'a> Checker<'a> {
         for declaration in declarations {
             let name = declaration.name.clone();
 
+            if binding_for_declaration(module, &declaration)
+                .is_some_and(|binding| self.is_uppercase_comptime_function(&name, &binding.value))
+            {
+                continue;
+            }
+
             if binding_for_declaration(module, &declaration).is_none()
                 && !self.pattern_bindings.contains_key(&name)
             {
@@ -300,7 +307,9 @@ impl<'a> Checker<'a> {
         if declaration.phase == DeclarationPhase::Comptime
             && let Some(binding) = binding
         {
-            if is_import_call(&binding.value) {
+            if self.is_uppercase_comptime_function(&declaration.name, &binding.value) {
+                self.report_redundant_comptime_markers(&binding.value);
+            } else if is_import_call(&binding.value) {
                 // Uppercase names are reserved for types; an import binds a
                 // module record, never a type.
                 self.report_uppercase_module_binding(&declaration.name, declaration.name_span);
@@ -329,7 +338,9 @@ impl<'a> Checker<'a> {
 
         if !checked_value && let Some(binding) = binding {
             let diagnostics_start = self.diagnostics.len();
-            if declaration.phase == DeclarationPhase::Comptime {
+            if declaration.phase == DeclarationPhase::Comptime
+                && !self.is_uppercase_comptime_function(&declaration.name, &binding.value)
+            {
                 self.check_value_expr_without_unbound_names(&binding.value);
             } else {
                 self.check_value_expr(&binding.value);
@@ -345,6 +356,10 @@ impl<'a> Checker<'a> {
                 self.deduplicate_diagnostics_since(diagnostics_start);
             }
         }
+    }
+
+    pub(super) fn is_uppercase_comptime_function(&self, name: &str, value: &Expr) -> bool {
+        name.chars().next().is_some_and(char::is_uppercase) && lambda_parts(value).is_some()
     }
 
     pub(super) fn check_value_expr_without_unbound_names(&mut self, expr: &Expr) {

@@ -1082,6 +1082,75 @@ fn comptime_function_application_reports_recursion_cycle() {
 }
 
 #[test]
+fn uppercase_comptime_functions_specialize_to_expanded_types() {
+    let source = "Pair = (t: Type) => { first: t, second: t }\n\
+        PairInt = Pair(Int)\n\
+        p: Pair(Int) = { first: 1, second: 2 }\n\
+        q: PairInt = { first: 1, second: \"two\" }\n";
+    let output = parse_module(source);
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert!(!definitions.contains_key("Pair"));
+    assert_eq!(
+        definitions.get("PairInt"),
+        Some(&Type::Record(Row {
+            entries: vec![field("first", named("Int")), field("second", named("Int"))],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let check = check_module(&output.module);
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+        0
+    );
+}
+
+#[test]
+fn uppercase_comptime_function_params_are_implicitly_comptime() {
+    let output = parse_module("Pair = (@t) => { first: t, second: t }\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(check.diagnostics.len(), 1);
+    assert_eq!(check.diagnostics[0].severity, Severity::Warning);
+    assert_eq!(
+        check.diagnostics[0].code.as_deref(),
+        Some(codes::comptime::REDUNDANT_COMPTIME_MARKER)
+    );
+}
+
+#[test]
+fn uppercase_comptime_functions_reject_runtime_arguments() {
+    let output = parse_module(
+        "Pair = (t) => { first: t, second: t }\nvalue = 1\np: Pair(value) = { first: 1, second: 2 }\n",
+    );
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        1
+    );
+}
+
+#[test]
+fn uppercase_comptime_function_recursion_reports_a_specialization_cycle() {
+    let output =
+        parse_module("List = (t) => @{ @Nil, @Cons(t, List(t)) }\nvalue: List(Int) = @Nil\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_CYCLE),
+        1
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+        0
+    );
+}
+
+#[test]
 fn allows_constructor_guarded_recursive_types() {
     let output = parse_module("Tree = { value: Int, children: Tree }\n");
     let check = check_module(&output.module);

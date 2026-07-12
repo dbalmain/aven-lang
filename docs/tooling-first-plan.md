@@ -2964,9 +2964,13 @@ expanded result; recursive uppercase functions diagnose for now.
   (recovery); tuple-type indexing `T[0]` and the `a[]`/`a@{}` empty-postfix
   sugar are untouched; `Type::render()` and eval's runtime type display print
   parens; corpus (examples, fixtures, expectation strings) migrated.
-- PT2 open: uppercase comptime function definitions (`Pair = (t: Type) => ...`)
-  — lift the uppercase-RHS restriction, implicit comptime params + redundant-`@`
-  diagnostic, runtime-arg diagnostic, recursive-definition diagnostic.
+- PT2 done 2026-07-12: uppercase comptime function definitions
+  (`Pair = (t: Type) => ...`) share PT0's specialization cache, fuel, and cycle
+  detection; their params are implicit comptime (`@` warns as redundant), and
+  runtime arguments diagnose. Uppercase functions are not type aliases, export
+  through pattern imports (including transitive re-exports), and library
+  interfaces render them as `Type -> Type` functions. `Type` annotations are
+  accepted and preserved, but parameter-bound checking remains a later slice.
 - PT-open: value parameters (`Vec = (t: Type, n: Int) => ...`) exercising
   literal types; `Queue(t).empty()` statics (classes milestone); lazy / nominal
   recursion story.

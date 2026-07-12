@@ -50,6 +50,7 @@ pub(crate) struct Checker<'a> {
     comptime_bindings: HashSet<String>,
     comptime_artifacts: HashMap<String, bool>,
     comptime_specializations: HashMap<comptime::SpecializationKey, comptime::EvaluationResult>,
+    comptime_specializations_in_progress: HashSet<comptime::SpecializationKey>,
     local_types: LocalTypeScopes,
     local_comptime_values: Vec<HashMap<String, comptime::ComptimeValue>>,
     local_comptime_params: Vec<HashSet<String>>,
@@ -1530,9 +1531,9 @@ fn final_result_span(expr: &Expr) -> Span {
     final_value_expr(expr).map_or(expr.span, |final_expr| final_expr.span)
 }
 
-/// Binder names in `pattern` that extract a type export from the static import
-/// of `specifier`. Handles rename (`{ User -> Alias }` binds `Alias` from export
-/// field `User`).
+/// Binder names in `pattern` that extract a type or uppercase comptime-function
+/// export from the static import of `specifier`. Handles rename (`{ User ->
+/// Alias }` binds `Alias` from export field `User`).
 fn type_export_pattern_binders(
     pattern: &Expr,
     specifier: &str,
@@ -1545,12 +1546,14 @@ fn type_export_pattern_binders(
         .iter()
         .filter_map(|entry| match entry {
             RecordEntry::Shorthand { name, .. }
-                if imports.type_export(specifier, name).is_some() =>
+                if imports.type_export(specifier, name).is_some()
+                    || imports.comptime_export(specifier, name).is_some() =>
             {
                 Some(name.clone())
             }
             RecordEntry::Rename { from, to, .. }
-                if imports.type_export(specifier, from).is_some() =>
+                if imports.type_export(specifier, from).is_some()
+                    || imports.comptime_export(specifier, from).is_some() =>
             {
                 Some(to.clone())
             }

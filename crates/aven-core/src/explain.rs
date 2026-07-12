@@ -15,6 +15,10 @@ pub fn explain(code: &str) -> Option<DiagnosticExplanation> {
 
 const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
+        code: codes::comptime::ARGUMENT_NOT_KNOWN,
+        text: "An uppercase comptime function was applied to an argument that is not known at compile time. Pass a type or another comptime-known value instead of a runtime value.",
+    },
+    DiagnosticExplanation {
         code: codes::comptime::EVALUATION_CYCLE,
         text: "A compile-time function specialization recursively depends on the same function and compile-time argument tuple while that result is still being evaluated. Rewrite the function so recursive specializations bottom out before repeating the same tuple.",
     },
@@ -33,6 +37,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::comptime::NON_LIFTABLE_INTO_RUNTIME,
         text: "A lowercase runtime binding tried to store a compile-time-only artifact such as a type. Keep type artifacts under capitalized names, or compute a runtime-representable value instead.",
+    },
+    DiagnosticExplanation {
+        code: codes::comptime::REDUNDANT_COMPTIME_MARKER,
+        text: "Parameters of an uppercase comptime function are already compile-time parameters. Remove the `@` marker.",
     },
     DiagnosticExplanation {
         code: codes::comptime::REFLECTION_TYPE_MISMATCH,

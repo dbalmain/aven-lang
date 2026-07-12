@@ -1841,11 +1841,18 @@ impl<'a> Checker<'a> {
     pub(super) fn comptime_param_function(&self, callee: &Expr) -> Option<(Vec<Param>, Expr)> {
         let name = expr_name(callee)?;
         let export = self.lookup_comptime_function_export(name)?;
-        export
-            .params
-            .iter()
-            .any(|param| param.comptime)
-            .then_some((export.params, export.body))
+        let uppercase = name.chars().next().is_some_and(char::is_uppercase);
+        (uppercase || export.params.iter().any(|param| param.comptime)).then(|| {
+            let params = export
+                .params
+                .into_iter()
+                .map(|mut param| {
+                    param.comptime |= uppercase;
+                    param
+                })
+                .collect();
+            (params, export.body)
+        })
     }
 
     /// Resolve a comptime-evaluable function by local binding or imported export.

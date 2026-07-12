@@ -943,7 +943,7 @@ fn library_nodes_carry_a_generated_interface_in_export_order() {
         "lib",
         HashMap::from([(
             "lib".to_owned(),
-            "Id = Int\nfirst = (x: Int): Int => x\n{ first, Id }",
+            "Id = Int\nfirst = (x: Int): Int => x\nPair = (t: Type) => { first: t, second: t }\n{ first, Id, Pair }",
         )]),
     );
 
@@ -966,9 +966,10 @@ fn library_nodes_carry_a_generated_interface_in_export_order() {
         "# lib — generated interface (shape view); not the implementation.\n\
          \n\
          first : Int -> Int\n\
-         Id = Int\n"
+         Id = Int\n\
+         Pair : Type -> Type\n"
     );
-    for name in ["first", "Id"] {
+    for name in ["first", "Id", "Pair"] {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);
     }
@@ -1026,6 +1027,61 @@ fn cross_module_comptime_type_function_checks_fields() {
         check_path_with_host_globals(&dir.path().join("main_alias.av"), &HostGlobals::default())
             .expect("check should load graph");
     assert_has_code(&alias.reports, codes::ty::MISMATCH);
+}
+
+#[test]
+fn cross_module_uppercase_comptime_type_function_checks_fields() {
+    let dir = TempDir::new("uppercase-comptime-type-fn-export");
+    write(
+        dir.path(),
+        "shapes.av",
+        "Pair = (t: Type) => { first: t, second: t }\n{ Pair }\n",
+    );
+    write(
+        dir.path(),
+        "main_ok.av",
+        "{ Pair } = import(\"./shapes\")\np: Pair(Int) = { first: 1, second: 2 }\n{ p }\n",
+    );
+    let ok = check_path_with_host_globals(&dir.path().join("main_ok.av"), &HostGlobals::default())
+        .expect("matching imported Pair(Int) should check");
+    assert_no_errors(&ok.reports);
+
+    write(
+        dir.path(),
+        "main_bad.av",
+        "{ Pair } = import(\"./shapes\")\np: Pair(Int) = { first: 1, second: \"two\" }\n{ p }\n",
+    );
+    let bad =
+        check_path_with_host_globals(&dir.path().join("main_bad.av"), &HostGlobals::default())
+            .expect("mismatched imported Pair(Int) should report a type error");
+    assert_has_code(&bad.reports, codes::ty::MISMATCH);
+    assert!(
+        !bad.reports
+            .iter()
+            .flat_map(|report| &report.diagnostics)
+            .any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::module::UPPERCASE_EXPORT_NOT_TYPE)
+            }),
+        "uppercase comptime function export must not be treated as a non-type: {:#?}",
+        bad.reports
+    );
+
+    write(
+        dir.path(),
+        "mid.av",
+        "{ Pair } = import(\"./shapes\")\n{ Pair }\n",
+    );
+    write(
+        dir.path(),
+        "main_reexport.av",
+        "{ Pair } = import(\"./mid\")\np: Pair(Int) = { first: 1, second: \"two\" }\n{ p }\n",
+    );
+    let reexport = check_path_with_host_globals(
+        &dir.path().join("main_reexport.av"),
+        &HostGlobals::default(),
+    )
+    .expect("re-exported Pair(Int) should resolve");
+    assert_has_code(&reexport.reports, codes::ty::MISMATCH);
 }
 
 #[test]

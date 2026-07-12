@@ -37,6 +37,18 @@ impl comptime::EvalContext for Checker<'_> {
         self.comptime_specializations.insert(key, result);
     }
 
+    fn specialization_is_in_progress(&self, key: &comptime::SpecializationKey) -> bool {
+        self.comptime_specializations_in_progress.contains(key)
+    }
+
+    fn begin_specialization(&mut self, key: comptime::SpecializationKey) {
+        self.comptime_specializations_in_progress.insert(key);
+    }
+
+    fn end_specialization(&mut self, key: &comptime::SpecializationKey) {
+        self.comptime_specializations_in_progress.remove(key);
+    }
+
     fn infer_value_type(&mut self, expr: &Expr) -> Type {
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let inferred = self.infer(&TypeEnv::new(), expr);

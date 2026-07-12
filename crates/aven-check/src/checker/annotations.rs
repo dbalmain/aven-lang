@@ -197,6 +197,8 @@ impl<'a> Checker<'a> {
         checker.comptime_bindings = self.comptime_bindings.clone();
         checker.comptime_artifacts = self.comptime_artifacts.clone();
         checker.comptime_specializations = self.comptime_specializations.clone();
+        checker.comptime_specializations_in_progress =
+            self.comptime_specializations_in_progress.clone();
         checker.local_comptime_values = self.local_comptime_values.clone();
         checker.local_comptime_params = self.local_comptime_params.clone();
         checker.bindings = self.bindings.clone();
@@ -275,7 +277,9 @@ impl<'a> Checker<'a> {
             ExprKind::Literal(Literal::Bool(_) | Literal::Number(_) | Literal::String(_))
             | ExprKind::Tag(_) => self.lower_singleton_variant_annotation(annotation),
             ExprKind::Call { callee, args } => {
-                if self.is_type_application_callee(callee) {
+                if self.is_type_application_callee(callee)
+                    && !self.is_uppercase_comptime_function_callee(callee)
+                {
                     return self.lower_type_application(callee, args);
                 }
 
@@ -327,6 +331,15 @@ impl<'a> Checker<'a> {
         BUILTIN_TYPES.contains(&name)
             || self.known_types.contains(name)
             || name.chars().next().is_some_and(char::is_uppercase)
+    }
+
+    pub(super) fn is_uppercase_comptime_function_callee(&self, callee: &Expr) -> bool {
+        let Some(name) = call_callee_name(callee) else {
+            return false;
+        };
+
+        name.chars().next().is_some_and(char::is_uppercase)
+            && self.lookup_comptime_function_export(name).is_some()
     }
 
     fn static_import_specifier_for_receiver(&self, receiver: &Expr) -> Option<String> {
