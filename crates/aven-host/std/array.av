@@ -69,12 +69,7 @@ find : (Array(a), (a) -> Bool) -> ?a
 find = (xs, pred) => findGo(xs, 0, pred)
 
 # Own recursive helper so a hit returns without scanning the rest.
-# Return is `?b` (not monomorphic `?Int`): a `-> ?Int` annotation on a match
-# that returns bare `index`/`undefined` is checked as `Int` today, not `?Int`
-# (even widening through an annotated local does not rescue it — a real checker
-# gap, see .ai/design-optional-return-widening-gap.md). The public `indexOf`
-# pins the result to `?Int`.
-indexOfGo : (Array(a), Int, a) -> ?b
+indexOfGo : (Array(a), Int, a) -> ?Int
 indexOfGo = (xs, index, target) =>
   next = xs[index]
   next ?>

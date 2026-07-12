@@ -36,15 +36,19 @@ impl<'a> Checker<'a> {
                     self.check_type_against_type(expected, &actual, value.span);
                 }
             }
-            (_, Type::Optional(inner)) => {
-                if !is_undefined_value(value) {
-                    self.check_value_against(inner, value);
-                }
+            // `undefined` / `null` inhabit Optional / Nullable without peeling.
+            (_, Type::Optional(_)) if is_undefined_value(value) => {}
+            (_, Type::Nullable(_)) if is_null_value(value) => {}
+            // Structural forms peel so bare payloads check against the inner
+            // type (N2 `T` → `?T` / `T?` widening). Inference forms — matches,
+            // calls, indexes, ops — keep the full wrapper: match arms must see
+            // `?T` (not stripped `T`), and already-`?T` actuals unify at the
+            // type level via `check_type_against_type`.
+            (_, Type::Optional(inner)) if peels_optional_or_nullable_expected(value) => {
+                self.check_value_against(inner, value);
             }
-            (_, Type::Nullable(inner)) => {
-                if !is_null_value(value) {
-                    self.check_value_against(inner, value);
-                }
+            (_, Type::Nullable(inner)) if peels_optional_or_nullable_expected(value) => {
+                self.check_value_against(inner, value);
             }
             (ExprKind::Literal(literal), Type::Named(name)) => {
                 if let Some(found) = mismatched_literal_kind(name, literal) {
@@ -829,4 +833,19 @@ impl<'a> Checker<'a> {
             }
         }
     }
+}
+
+/// Structural value forms that check against an Optional/Nullable expected type
+/// by peeling the wrapper and checking the payload. Everything else keeps the
+/// full wrapper so type-level N2 subsumption and match-arm expectation flow work.
+fn peels_optional_or_nullable_expected(value: &Expr) -> bool {
+    matches!(
+        &value.kind,
+        ExprKind::Literal(_)
+            | ExprKind::Tuple(_)
+            | ExprKind::Record(_)
+            | ExprKind::Tag(_)
+            | ExprKind::Array(_)
+            | ExprKind::Set(_)
+    )
 }

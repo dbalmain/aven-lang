@@ -6149,6 +6149,69 @@ fn optional_and_nullable_widen_from_inner_values() {
 }
 
 #[test]
+fn optional_return_annotation_widens_bare_int_match_arm() {
+    // Minimal non-recursive: bare `n` / `undefined` under `-> ?Int`.
+    let minimal = parse_module(concat!(
+        "f : (Int) -> ?Int\n",
+        "f = (n) =>\n",
+        "  n ?>\n",
+        "    undefined => undefined\n",
+        "    m => m\n",
+    ));
+    let minimal_check = check_module(&minimal.module);
+    assert!(
+        !has_diagnostic_code(&minimal_check.diagnostics, codes::ty::MISMATCH),
+        "minimal optional return match unexpectedly mismatched: {:?}",
+        minimal_check.diagnostics
+    );
+
+    // indexOfGo shape: nested match, bare `index`, recursive self-call at `?Int`.
+    let index_of = concat!(
+        "indexOfGo : (Array(a), Int, a) -> ?Int\n",
+        "indexOfGo = (xs, index, target) =>\n",
+        "  next = xs[index]\n",
+        "  next ?>\n",
+        "    undefined => undefined\n",
+        "    element =>\n",
+        "      element == target ?>\n",
+        "        true => index\n",
+        "        false => indexOfGo(xs, index + 1, target)\n",
+    );
+    let index_of_output = parse_module(index_of);
+    let index_of_check = check_module(&index_of_output.module);
+    assert!(
+        !has_diagnostic_code(&index_of_check.diagnostics, codes::ty::MISMATCH),
+        "indexOfGo optional return shape unexpectedly mismatched: {:?}",
+        index_of_check.diagnostics
+    );
+    // Signature + binding: type is recorded on the binding name (second occurrence).
+    assert_eq!(
+        index_of_check
+            .type_at(nth_span(index_of, "indexOfGo", 1))
+            .map(Type::render),
+        Some("(Array(a), Int, a) -> ?Int".to_owned())
+    );
+}
+
+#[test]
+fn optional_return_annotation_still_rejects_wrong_arm_payload() {
+    let output = parse_module(concat!(
+        "f : (Int) -> ?Int\n",
+        "f = (n) =>\n",
+        "  n ?>\n",
+        "    undefined => undefined\n",
+        "    m => \"nope\"\n",
+    ));
+    let check = check_module(&output.module);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "wrong arm payload under ?Int should still mismatch: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn normalizes_optional_and_nullable_wrappers() {
     let checker = Checker::with_type_definitions(HashSet::new(), Default::default());
 
