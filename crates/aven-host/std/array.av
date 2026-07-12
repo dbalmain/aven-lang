@@ -1,0 +1,50 @@
+# Array combinators: `import("std/array")`. Pure Aven — no host natives.
+# Iterate by index recursion terminating on out-of-bounds `undefined`.
+# No map/filter/join: Aven has no array-building primitive yet.
+# Helpers are module-private (local recursion is not bound in the checker).
+
+foldGo : (Array(a), Int, b, (b, a) -> b) -> b
+foldGo = (xs, index, acc, f) =>
+  next = xs[index]
+  next ?>
+    undefined => acc
+    element => foldGo(xs, index + 1, f(acc, element), f)
+
+fold : (Array(a), b, (b, a) -> b) -> b
+fold = (xs, init, f) => foldGo(xs, 0, init, f)
+
+length : (Array(a)) -> Int
+length = (xs) =>
+  zero: Int = 0
+  fold(xs, zero, (acc, _) => acc + 1)
+
+sum : (Array(Int)) -> Int
+sum = (xs) =>
+  zero: Int = 0
+  fold(xs, zero, (acc, x) => acc + x)
+
+all : (Array(a), (a) -> Bool) -> Bool
+all = (xs, pred) =>
+  start: Bool = true
+  fold(xs, start, (acc, x) => acc && pred(x))
+
+any : (Array(a), (a) -> Bool) -> Bool
+any = (xs, pred) =>
+  start: Bool = false
+  fold(xs, start, (acc, x) => acc || pred(x))
+
+# Own recursive helper so a hit returns without scanning the rest.
+findGo : (Array(a), Int, (a) -> Bool) -> ?a
+findGo = (xs, index, pred) =>
+  next = xs[index]
+  next ?>
+    undefined => undefined
+    element =>
+      pred(element) ?>
+        true => element
+        false => findGo(xs, index + 1, pred)
+
+find : (Array(a), (a) -> Bool) -> ?a
+find = (xs, pred) => findGo(xs, 0, pred)
+
+{ length, fold, sum, all, any, find }

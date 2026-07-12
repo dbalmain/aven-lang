@@ -93,6 +93,64 @@ fn clock_and_zones_capabilities_are_imported_as_modules() {
 }
 
 #[test]
+fn std_array_type_exports_check() {
+    let dir = TempDir::new("std-array-check");
+    let entry = dir.write(
+        "main.av",
+        r#"{ length, fold, sum, all, any, find } = import("std/array")
+xs = [10, 20, 30]
+zero: Int = 0
+len = length(xs)
+folded = fold(xs, zero, (acc, x) => acc + x)
+total = sum([1, 2, 3])
+allPos = all(xs, (x) => x > 0)
+has20 = any(xs, (x) => x == 20)
+hit = find(xs, (x) => x == 20)
+miss = find(xs, (x) => x == 99)
+{ length, fold, sum, all, any, find, len, folded, total, allPos, has20, hit, miss }
+"#,
+    );
+
+    let output = aven(&["check", entry.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        output.status.success(),
+        "aven check failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+}
+
+#[test]
+fn std_array_combinators_run() {
+    let dir = TempDir::new("std-array-run");
+    let entry = dir.write(
+        "main.av",
+        r#"{ length, fold, sum, all, any, find } = import("std/array")
+xs = [10, 20, 30]
+zero: Int = 0
+writeLine("${length(xs)}")
+writeLine("${fold(xs, zero, (acc, x) => acc + x)}")
+writeLine("${sum([1, 2, 3])}")
+writeLine("${all(xs, (x) => x > 0)}")
+writeLine("${any(xs, (x) => x == 20)}")
+writeLine("${find(xs, (x) => x == 20)}")
+writeLine("${find(xs, (x) => x == 99)}")
+"#,
+    );
+
+    let output = aven(&["run", entry.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        output.status.success(),
+        "aven run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "3\n60\n6\ntrue\ntrue\n20\nundefined\n");
+}
+
+#[test]
 fn std_result_type_exports_check() {
     let dir = TempDir::new("std-result-check");
     let entry = dir.write(

@@ -206,7 +206,13 @@ impl<'a> Checker<'a> {
             }
 
             if let Some(annotation) = self.clean_declared_annotation(&name) {
-                types.insert(name.clone(), Some(TypeScheme::mono(annotation)));
+                // Polymorphic annotations (`Type::Variable`) need quantification
+                // so each use site instantiates fresh metas, matching host
+                // globals and unannotated generalized exports.
+                types.insert(
+                    name.clone(),
+                    Some(scheme_from_global(&annotation, &mut self.unifier)),
+                );
             } else if let Some(inferred) = self.infer_top_level_without_unbound_names(&name)
                 && !type_contains_deferred(&inferred.ty)
             {

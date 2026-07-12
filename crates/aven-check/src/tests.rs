@@ -3366,6 +3366,40 @@ fn unannotated_result_match_helpers_are_generic_and_join_result_arms() {
 }
 
 #[test]
+fn annotated_polymorphic_functions_export_and_instantiate() {
+    // Declaration-form annotations with type variables must quantify (so each
+    // use instantiates fresh) and reify for module export (`top_level_types`).
+    let source = "id : (a) -> a\n\
+                  id = (x) => x\n\
+                  n : Int = id(1)\n\
+                  t : Text = id(\"hi\")\n\
+                  { id }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    let id = check
+        .top_level_types
+        .get("id")
+        .expect("annotated polymorphic export should appear in top_level_types");
+    assert!(
+        crate::ty::type_contains_variable(id),
+        "export type should retain type variables, got {}",
+        id.render()
+    );
+
+    let mismatch = parse_module("id : (a) -> a\nid = (x) => x\nn : Int = id(\"hi\")\n");
+    let mismatch_check = check_module(&mismatch.module);
+    assert_eq!(
+        matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+        1
+    );
+}
+
+#[test]
 fn result_methods_preserve_and_replace_result_type_arguments() {
     let source = "ok : Result(Int, Text) = @Ok(1)\n\
                   err : Result(Int, Text) = @Err(\"x\")\n\

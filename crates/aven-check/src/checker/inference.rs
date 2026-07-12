@@ -21,6 +21,12 @@ impl<'a> Checker<'a> {
     pub(crate) fn infer_top_level_value_for_output(&mut self, name: &str) -> Option<Type> {
         let scheme = self.infer_top_level(name)?;
         if scheme.vars.is_empty() && scheme.row_vars.is_empty() {
+            // Annotation-sourced schemes are mono even when they carry
+            // `Type::Variable` binders (host-style generics). Those are already
+            // export-ready; `resolve_if_concrete` would reject them.
+            if crate::ty::type_contains_variable(&scheme.ty) {
+                return Some(self.normalize(&scheme.ty));
+            }
             return self.resolve_if_concrete(&scheme.ty);
         }
         // Reify quantified schemes as Type::Variable form so module exports
@@ -86,7 +92,13 @@ impl<'a> Checker<'a> {
         self.in_progress.insert(name.to_owned());
 
         let scheme = if let Some(annotation) = self.clean_declared_annotation(name) {
-            TypeScheme::mono(annotation)
+            // Polymorphic annotations use `Type::Variable` binders; publish them
+            // as quantified schemes so each use instantiates fresh metas.
+            if crate::ty::type_contains_variable(&annotation) {
+                super::scheme_from_global(&annotation, &mut self.unifier)
+            } else {
+                TypeScheme::mono(annotation)
+            }
         } else if let Some(binding) = binding {
             let ty = self.infer(&TypeEnv::new(), &binding.value);
             self.generalize_with_row_merges(self.resolve_and_default(&ty), &[], &[])

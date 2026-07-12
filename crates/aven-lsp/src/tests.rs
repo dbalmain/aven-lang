@@ -1799,6 +1799,45 @@ fn library_interface_renders_std_result_signatures() {
 }
 
 #[test]
+fn library_interface_renders_std_array_signatures() {
+    let dir = TempDir::new("lsp-std-array-interface");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    analyze_file_document(
+        &mut store,
+        &main_uri,
+        "array = import(\"std/array\")\n{ array }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+
+    let interface = graph.nodes[Path::new("std:/array")]
+        .interface
+        .as_ref()
+        .expect("expected std/array interface");
+
+    let lines: Vec<&str> = interface.text.lines().collect();
+    assert_eq!(
+        lines[0],
+        "# std/array — generated interface (shape view); not the implementation."
+    );
+    assert_eq!(lines[1], "");
+    // Export order follows the final record: length, fold, sum, all, any, find.
+    assert!(lines[2].starts_with("length : "), "line: {:?}", lines[2]);
+    assert!(lines[3].starts_with("fold : "), "line: {:?}", lines[3]);
+    assert!(lines[4].starts_with("sum : "), "line: {:?}", lines[4]);
+    assert!(lines[5].starts_with("all : "), "line: {:?}", lines[5]);
+    assert!(lines[6].starts_with("any : "), "line: {:?}", lines[6]);
+    assert!(lines[7].starts_with("find : "), "line: {:?}", lines[7]);
+    for name in ["length", "fold", "sum", "all", "any", "find"] {
+        let span = interface.export_spans[name];
+        assert_eq!(&interface.text[span.start..span.end], name);
+    }
+}
+
+#[test]
 fn library_interface_lists_std_time_type_exports() {
     let dir = TempDir::new("lsp-std-time-interface");
     let main_uri = file_uri(&dir.path().join("main.av"));

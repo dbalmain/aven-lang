@@ -1,6 +1,6 @@
 use super::{
-    Environment, EvalOutcome, RuntimeType, Value, eval_expr, eval_module, eval_module_with_globals,
-    logging, record_field_value,
+    Environment, EvalOutcome, ModuleImports, RuntimeType, Value, eval_expr, eval_module,
+    eval_module_with_globals, eval_module_with_globals_and_imports, logging, record_field_value,
 };
 use aven_core::codes;
 use aven_parser::{Item, Module, parse_module};
@@ -968,6 +968,49 @@ fn map_grouping_example_runs() {
             tuple_value(vec![Value::Text("red".to_owned()), Value::Int(2)]),
             tuple_value(vec![Value::Text("blue".to_owned()), Value::Int(1)]),
         ]),
+    );
+}
+
+#[test]
+fn std_array_combinators_run_via_import() {
+    let array_source = include_str!("../../aven-host/std/array.av");
+    let array_module = parse_ok(array_source);
+    let array_export = eval_module(&array_module)
+        .value
+        .expect("std/array should export a record");
+
+    let imports = ModuleImports::new([("std/array".to_owned(), array_export)]);
+    let source = concat!(
+        "{ length, fold, sum, all, any, find } = import(\"std/array\")\n",
+        "xs = [10, 20, 30]\n",
+        "zero: Int = 0\n",
+        "{\n",
+        "  length: length(xs),\n",
+        "  fold: fold(xs, zero, (acc, x) => acc + x),\n",
+        "  sum: sum([1, 2, 3]),\n",
+        "  all: all(xs, (x) => x > 0),\n",
+        "  any: any(xs, (x) => x == 20),\n",
+        "  findHit: find(xs, (x) => x == 20),\n",
+        "  findMiss: find(xs, (x) => x == 99),\n",
+        "}\n",
+    );
+    let module = parse_ok(source);
+    let outcome = eval_module_with_globals_and_imports(&module, Vec::new(), &imports);
+
+    assert_eq!(
+        outcome,
+        EvalOutcome {
+            value: Some(record_value(vec![
+                ("length", Value::Int(3)),
+                ("fold", Value::Int(60)),
+                ("sum", Value::Int(6)),
+                ("all", Value::Bool(true)),
+                ("any", Value::Bool(true)),
+                ("findHit", Value::Int(20)),
+                ("findMiss", Value::Undefined),
+            ])),
+            diagnostics: Vec::new()
+        }
     );
 }
 
