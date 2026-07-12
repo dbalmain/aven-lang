@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::fs;
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -268,22 +268,11 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
 
     host.register_logger(config.log_sink()?, root_trace_context()?);
     host.register("dbg", dbg_native(), aven_host::dbg_type());
-    host.register("write", write_native(), aven_host::io_write_type());
-    host.register(
-        "writeLine",
-        write_line_native(),
-        aven_host::io_write_line_type(),
-    );
-    host.register(
-        "readLine",
-        read_line_native(),
-        aven_host::io_read_line_type(),
-    );
-    host.register("readAll", read_all_native(), aven_host::io_read_all_type());
 
-    // Handle tier + files: reusable platform IO, registered by `aven-host` so any
-    // host wires it with one call each. The bare tier above and the logger stay
-    // owned by the CLI (process-level concerns / config).
+    // Platform IO (bare + handle + files) lives in `aven-host`. `dbg` and the
+    // logger stay CLI-owned: process-level config (log sink destination/format,
+    // stderr-only debug printing).
+    host.register_bare_io();
     host.register_std_streams();
     host.register_files();
     host.register_http();
@@ -317,125 +306,6 @@ fn dbg_native() -> aven_eval::Value {
             _ => aven_eval::Value::unit(),
         })
     })
-}
-
-fn write_native() -> aven_eval::Value {
-    aven_eval::Value::native(|args| {
-        let text = io_text_arg("write", args)?;
-        let mut stdout = io::stdout().lock();
-        write!(stdout, "{text}").map_err(|error| error.to_string())?;
-        Ok(empty_record_value())
-    })
-}
-
-fn write_line_native() -> aven_eval::Value {
-    aven_eval::Value::native(|args| {
-        let text = io_text_arg("writeLine", args)?;
-        let mut stdout = io::stdout().lock();
-        writeln!(stdout, "{text}").map_err(|error| error.to_string())?;
-        Ok(empty_record_value())
-    })
-}
-
-fn read_line_native() -> aven_eval::Value {
-    aven_eval::Value::native(|args| {
-        if !args.is_empty() {
-            return Err(format!("readLine expects 0 arguments, got {}", args.len()));
-        }
-
-        flush_stdout_before_read();
-
-        let mut line = String::new();
-        let bytes = io::stdin()
-            .lock()
-            .read_line(&mut line)
-            .map_err(|error| error.to_string())?;
-        if bytes == 0 {
-            return Ok(aven_eval::Value::Undefined);
-        }
-        strip_trailing_newline(&mut line);
-
-        Ok(aven_eval::Value::Text(line))
-    })
-}
-
-fn read_all_native() -> aven_eval::Value {
-    aven_eval::Value::native(|args| {
-        if !args.is_empty() {
-            return Err(format!("readAll expects 0 arguments, got {}", args.len()));
-        }
-
-        flush_stdout_before_read();
-
-        let mut text = String::new();
-        io::stdin()
-            .lock()
-            .read_to_string(&mut text)
-            .map_err(|error| error.to_string())?;
-        Ok(aven_eval::Value::Text(text))
-    })
-}
-
-/// Flush pending stdout so a prompt written without a trailing newline (e.g.
-/// `write("name: ")`) is visible before a blocking read. Shared by the bare and
-/// handle read natives.
-fn flush_stdout_before_read() {
-    let _ = io::stdout().flush();
-}
-
-/// Strip a single trailing `\n` (and a preceding `\r`) from a line read with
-/// `read_line`, matching shell line semantics. Shared by the bare and handle
-/// `readLine` natives.
-fn strip_trailing_newline(line: &mut String) {
-    if line.ends_with('\n') {
-        line.pop();
-        if line.ends_with('\r') {
-            line.pop();
-        }
-    }
-}
-
-fn io_text_arg<'a>(
-    name: &str,
-    args: &'a [aven_eval::Value],
-) -> std::result::Result<&'a str, String> {
-    if args.len() != 1 {
-        return Err(format!("{name} expects 1 argument, got {}", args.len()));
-    }
-
-    let aven_eval::Value::Text(text) = &args[0] else {
-        return Err(format!(
-            "{name} expects Text, got {}",
-            aven_value_type_name(&args[0])
-        ));
-    };
-
-    Ok(text)
-}
-
-fn aven_value_type_name(value: &aven_eval::Value) -> &'static str {
-    match value {
-        aven_eval::Value::Int(_) => "Int",
-        aven_eval::Value::Float(_) => "Float",
-        aven_eval::Value::Text(_) => "Text",
-        aven_eval::Value::Bool(_) => "Bool",
-        aven_eval::Value::Array(_) => "Array",
-        aven_eval::Value::Tuple(_) => "Tuple",
-        aven_eval::Value::Set(_) => "Set",
-        aven_eval::Value::Map(_) => "Map",
-        aven_eval::Value::Record(_) => "Record",
-        aven_eval::Value::Tag { .. } => "Tag",
-        aven_eval::Value::ResultMethod { .. } => "Function",
-        aven_eval::Value::Closure(_) => "Function",
-        aven_eval::Value::Native(_) => "Native",
-        aven_eval::Value::Type(_) => "Type",
-        aven_eval::Value::Undefined => "Undefined",
-        aven_eval::Value::Null => "Null",
-    }
-}
-
-fn empty_record_value() -> aven_eval::Value {
-    aven_eval::Value::record(vec![])
 }
 
 enum LogDestination {

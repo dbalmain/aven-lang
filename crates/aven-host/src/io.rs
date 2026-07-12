@@ -1,11 +1,19 @@
-//! Reusable platform IO: process-stream handles and files.
+//! Reusable platform IO: bare process streams, handles, and files.
 //!
-//! This module owns the runtime side of the IO handle tier — the natives whose
-//! methods return `Result` instead of aborting — so any host wires platform IO
-//! with one call ([`Host::register_std_streams`] / [`Host::register_files`])
-//! instead of rebuilding the natives inline. The matching types live in the
-//! crate root ([`crate::stdout_handle_type`], [`crate::file_type`], …) so the
-//! value and type halves can't drift.
+//! This module owns the runtime side of platform IO so any host wires it with
+//! one call each ([`Host::register_bare_io`] / [`Host::register_std_streams`] /
+//! [`Host::register_files`]) instead of rebuilding the natives inline. The
+//! matching types live in the crate root ([`crate::io_write_type`],
+//! [`crate::stdout_handle_type`], [`crate::file_type`], …) so the value and
+//! type halves can't drift.
+//!
+//! **Bare tier** (`write` / `writeLine` / `readLine` / `readAll`): abort on a
+//! real IO error (runtime diagnostic). Writes return the empty record;
+//! `readLine` returns `?Text` with `undefined` on EOF.
+//!
+//! **Handle tier** (`stdout` / `stderr` / `stdin` / `stdio` / `File`): methods
+//! return `Result` instead of aborting. Both tiers share the same write
+//! primitive ([`write_text`]) and the same flush-before-read behavior.
 //!
 //! Files use drop-RAII auto-close: a handle is a closed record of method
 //! closures sharing one `Rc<RefCell<FileState>>`, and the OS file stays open
@@ -24,6 +32,25 @@ use aven_eval::Value;
 use crate::Host;
 
 impl Host {
+    /// Register the bare process-stream IO natives `write`/`writeLine`/
+    /// `readLine`/`readAll` (value + the crate's bare IO types). Writes return
+    /// the empty record; real IO errors abort as a runtime diagnostic.
+    /// `readLine` returns `undefined` on EOF.
+    pub fn register_bare_io(&mut self) {
+        self.register("write", bare_write_native(false), crate::io_write_type());
+        self.register(
+            "writeLine",
+            bare_write_native(true),
+            crate::io_write_line_type(),
+        );
+        self.register(
+            "readLine",
+            bare_read_line_native(),
+            crate::io_read_line_type(),
+        );
+        self.register("readAll", bare_read_all_native(), crate::io_read_all_type());
+    }
+
     /// Register the process-stream handles `stdout`/`stderr`/`stdin`/`stdio`
     /// (value + the crate's handle types). Their methods return `Result` rather
     /// than aborting on a real IO error.
@@ -48,6 +75,56 @@ impl Host {
         self.register("File", file_value(), crate::file_type());
         self.register_comptime_resolver("File.open", vec![1], open_comptime_resolver());
     }
+}
+
+// --- bare process-stream natives ------------------------------------------
+
+fn bare_write_native(newline: bool) -> Value {
+    Value::native(move |args| {
+        let name = if newline { "writeLine" } else { "write" };
+        let text = io_text_arg(name, args)?;
+        write_text(&mut io::stdout().lock(), text, newline).map_err(|error| error.to_string())?;
+        Ok(empty_record_value())
+    })
+}
+
+fn bare_read_line_native() -> Value {
+    Value::native(|args| {
+        if !args.is_empty() {
+            return Err(format!("readLine expects 0 arguments, got {}", args.len()));
+        }
+
+        flush_stdout_before_read();
+
+        let mut line = String::new();
+        let bytes = io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(|error| error.to_string())?;
+        if bytes == 0 {
+            return Ok(Value::Undefined);
+        }
+        strip_trailing_newline(&mut line);
+
+        Ok(Value::Text(line))
+    })
+}
+
+fn bare_read_all_native() -> Value {
+    Value::native(|args| {
+        if !args.is_empty() {
+            return Err(format!("readAll expects 0 arguments, got {}", args.len()));
+        }
+
+        flush_stdout_before_read();
+
+        let mut text = String::new();
+        io::stdin()
+            .lock()
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+        Ok(Value::Text(text))
+    })
 }
 
 // --- shared Result/error construction -------------------------------------
@@ -605,6 +682,37 @@ mod tests {
         let mut host = Host::new();
         host.register_files();
         host
+    }
+
+    #[test]
+    fn register_bare_io_exposes_expected_check_types() {
+        let mut host = Host::new();
+        host.register_bare_io();
+
+        let check = host.check_globals();
+        assert_eq!(
+            check,
+            vec![
+                ("write".to_owned(), crate::io_write_type()),
+                ("writeLine".to_owned(), crate::io_write_line_type()),
+                ("readLine".to_owned(), crate::io_read_line_type()),
+                ("readAll".to_owned(), crate::io_read_all_type()),
+            ]
+        );
+
+        let eval = host.eval_globals();
+        assert_eq!(
+            eval.iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["write", "writeLine", "readLine", "readAll"]
+        );
+        for (name, value) in &eval {
+            assert!(
+                matches!(value, Value::Native(_)),
+                "{name} is a native value"
+            );
+        }
     }
 
     /// Run `source` and return the final value, asserting no diagnostics.
