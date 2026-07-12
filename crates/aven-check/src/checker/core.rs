@@ -30,6 +30,7 @@ impl<'a> Checker<'a> {
             reported_unbound_name_spans: HashSet::new(),
             reported_import_spans: HashSet::new(),
             propagation_contexts: Vec::new(),
+            rigid_type_var_scopes: Vec::new(),
             pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
@@ -335,7 +336,7 @@ impl<'a> Checker<'a> {
             self.record_inferred_type(declaration.name_span, declared_type);
 
             if let Some(binding) = binding {
-                self.check_value_against(&expected_type, &binding.value);
+                self.check_value_against_declared_type(&expected_type, &binding.value);
                 checked_value = true;
             }
         } else if let Some(Some(scheme)) = self.value_types.get(&declaration.name).cloned() {
@@ -436,7 +437,7 @@ impl<'a> Checker<'a> {
         let declared_type = signature_type.as_ref().or(binding_type.as_ref());
 
         if let Some((_, expected)) = declared_type {
-            self.check_value_against(expected, &binding.value);
+            self.check_value_against_declared_type(expected, &binding.value);
         }
 
         let inferred_type = if declared_type.is_none() {

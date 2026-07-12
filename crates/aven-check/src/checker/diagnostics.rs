@@ -708,6 +708,29 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// Body pinned a rigid annotation type variable to something else.
+    pub(super) fn report_rigid_type_variable_mismatch(
+        &mut self,
+        var: &str,
+        expected: &str,
+        actual: &str,
+        span: Span,
+    ) {
+        // Prefer the non-variable side in the note when explaining the pin.
+        let assumed = if actual == var { expected } else { actual };
+        self.push_type_mismatch_diagnostic(
+            Diagnostic::error(format!("expected `{expected}`, found `{actual}`"))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    span,
+                    format!("this value has type `{actual}`"),
+                ))
+                .with_note(format!(
+                    "`{var}` is a type parameter chosen by the caller; the body cannot assume it is `{assumed}`"
+                )),
+        );
+    }
+
     pub(super) fn report_redundant_undefined_field(
         &mut self,
         span: Span,

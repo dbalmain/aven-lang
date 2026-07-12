@@ -926,6 +926,17 @@ pub(crate) fn type_contains_variable(ty: &Type) -> bool {
     found
 }
 
+/// Free `Type::Variable` names in `ty` (annotation binders / skolems).
+pub(crate) fn type_variable_names(ty: &Type) -> HashSet<String> {
+    let mut names = HashSet::new();
+    visit_type(ty, &mut |node| {
+        if let Type::Variable(name) = node {
+            names.insert(name.clone());
+        }
+    });
+    names
+}
+
 pub(crate) fn named_builtin(name: &str) -> Type {
     Type::Named(name.to_owned())
 }

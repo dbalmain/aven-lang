@@ -6,6 +6,27 @@ impl<'a> Checker<'a> {
         self.normalize(&ty)
     }
 
+    /// Check a binding value against its declared annotation. Polymorphic
+    /// function signatures push their type variables as rigid (skolem) while
+    /// the body is checked so the body cannot pin caller-chosen parameters.
+    pub(super) fn check_value_against_declared_type(&mut self, expected: &Type, value: &Expr) {
+        let rigid =
+            matches!(expected, Type::Function { .. }).then(|| type_variable_names(expected));
+        if let Some(vars) = rigid.filter(|vars| !vars.is_empty()) {
+            self.rigid_type_var_scopes.push(vars);
+            self.check_value_against(expected, value);
+            self.rigid_type_var_scopes.pop();
+        } else {
+            self.check_value_against(expected, value);
+        }
+    }
+
+    pub(super) fn is_rigid_type_var(&self, name: &str) -> bool {
+        self.rigid_type_var_scopes
+            .iter()
+            .any(|scope| scope.contains(name))
+    }
+
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
         match (&value.kind, expected) {
             (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
@@ -433,6 +454,47 @@ impl<'a> Checker<'a> {
             }
             (Type::Variant(expected), Type::Variant(actual)) => {
                 self.check_variant_type_against_type(expected, actual, span);
+            }
+            // Rigid annotation variables (from an enclosing polymorphic
+            // function signature) unify only with themselves. Free variables
+            // outside that scope keep today's silent deferral (type-alias
+            // implicit vars, free local annotations). Meta/Deferred also stay
+            // silent so incomplete inference does not false-positive.
+            (Type::Variable(expected_name), Type::Variable(actual_name))
+                if expected_name != actual_name
+                    && (self.is_rigid_type_var(expected_name)
+                        || self.is_rigid_type_var(actual_name)) =>
+            {
+                self.report_rigid_type_variable_mismatch(
+                    if self.is_rigid_type_var(expected_name) {
+                        expected_name
+                    } else {
+                        actual_name
+                    },
+                    &expected.render(),
+                    &actual.render(),
+                    span,
+                );
+            }
+            (Type::Variable(name), actual)
+                if reportable_type_shape(actual) && self.is_rigid_type_var(name) =>
+            {
+                self.report_rigid_type_variable_mismatch(
+                    name,
+                    &expected.render(),
+                    &actual.render(),
+                    span,
+                );
+            }
+            (expected, Type::Variable(name))
+                if reportable_type_shape(expected) && self.is_rigid_type_var(name) =>
+            {
+                self.report_rigid_type_variable_mismatch(
+                    name,
+                    &expected.render(),
+                    &actual.render(),
+                    span,
+                );
             }
             _ => {}
         }

@@ -29,6 +29,7 @@ use crate::ty::{
     literal_base, literal_variant_base, map_type, mismatched_literal_kind, named_builtin,
     named_type_mismatch, named_type_name, numeric_type_name, open_literal_variant_base,
     render_literal_value, type_contains_deferred, type_contains_variable, type_is_uninhabited,
+    type_variable_names,
 };
 use crate::unify::Unifier;
 use crate::{InferredType, ModuleImports};
@@ -74,6 +75,10 @@ pub(crate) struct Checker<'a> {
     reported_unbound_name_spans: HashSet<Span>,
     reported_import_spans: HashSet<Span>,
     propagation_contexts: Vec<PropagationContext>,
+    /// Nested scopes of rigid annotation type variables (skolem constants).
+    /// A lowercase binder from a polymorphic function signature is pushed while
+    /// checking that binding's body so the body cannot pin it to a concrete type.
+    rigid_type_var_scopes: Vec<HashSet<String>>,
     pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,

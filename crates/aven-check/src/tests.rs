@@ -3406,6 +3406,78 @@ fn annotated_polymorphic_functions_export_and_instantiate() {
 }
 
 #[test]
+fn annotated_polymorphic_body_cannot_pin_rigid_variables() {
+    // `a` is caller-chosen; the body may not return Text.
+    let ident = parse_module("ident : (a) -> a\nident = (x) => \"oops\"\n");
+    let ident_check = check_module(&ident.module);
+    assert!(
+        matching_codes(&ident_check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "expected mismatch for pinned identity body, got {:?}",
+        ident_check.diagnostics
+    );
+    assert!(
+        ident_check.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("type parameter chosen by the caller"))
+        }),
+        "expected rigid-variable note, got {:?}",
+        ident_check.diagnostics
+    );
+
+    // Distinct result variable `b` is also rigid: body cannot pin it to Int.
+    let sneaky = parse_module("sneaky : (a) -> b\nsneaky = (x) => 1\n");
+    let sneaky_check = check_module(&sneaky.module);
+    assert!(
+        matching_codes(&sneaky_check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "expected mismatch for pinned result variable, got {:?}",
+        sneaky_check.diagnostics
+    );
+
+    // Optional shape of the same white-lie: annotation `-> ?b`, arm returns Int.
+    let optional = parse_module("sneaky : (a) -> ?b\nsneaky = (x) => 1\n");
+    let optional_check = check_module(&optional.module);
+    assert!(
+        matching_codes(&optional_check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "expected mismatch for ?b pinned to Int, got {:?}",
+        optional_check.diagnostics
+    );
+}
+
+#[test]
+fn annotated_polymorphic_bodies_accept_consistent_variables() {
+    // Layout-sensitive: indented block bodies must use real leading spaces, not
+    // continuation-indent padding from concatenated string literals.
+    let source = r#"
+ident : (a) -> a
+ident = (x) => x
+const : (a, b) -> a
+const = (x, _) => x
+fold : (Array(a), b, (b, a) -> b) -> b
+fold = (xs, seed, f) => seed
+map : (Array(a), (a) -> b) -> Array(b)
+map = (xs, f) =>
+  seed: Array(b) = []
+  fold(xs, seed, (acc, x) => acc.push(f(x)))
+n : Int = ident(1)
+t : Text = ident("hi")
+"#;
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn result_methods_preserve_and_replace_result_type_arguments() {
     let source = "ok : Result(Int, Text) = @Ok(1)\n\
                   err : Result(Int, Text) = @Err(\"x\")\n\
