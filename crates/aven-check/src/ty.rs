@@ -195,6 +195,27 @@ fn result_type_args(ty: &Type) -> Option<(Type, Type)> {
     }
 }
 
+/// Whether `ty` has no inhabitants, so no runtime value can ever have it. The
+/// base case is the empty closed variant `@{}`; a tag whose payload is
+/// uninhabited, and hence a closed variant all of whose tags are uninhabited,
+/// are uninhabited too. Exhaustiveness uses this so a `Result(a, @{})` match
+/// need not cover `@Err` — an error that can never be constructed. Conservative
+/// elsewhere (records, open rows, named types count as inhabited): the only
+/// risk is asking for an arm that is technically unreachable, never dropping a
+/// reachable one.
+pub(crate) fn type_is_uninhabited(ty: &Type) -> bool {
+    let Type::Variant(row) = ty else {
+        return false;
+    };
+    if row.tail != RowTail::Closed {
+        return false;
+    }
+    row.entries.iter().all(|entry| match entry {
+        RowEntry::Tag { payload, .. } => payload.iter().any(type_is_uninhabited),
+        RowEntry::Field { .. } | RowEntry::Literal { .. } => false,
+    })
+}
+
 fn map_apply(key: Type, value: Type) -> Type {
     Type::Apply {
         callee: Box::new(named_builtin("Map")),

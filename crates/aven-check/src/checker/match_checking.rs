@@ -251,8 +251,13 @@ impl<'a> Checker<'a> {
                     .entries
                     .iter()
                     .filter_map(|entry| match entry {
-                        RowEntry::Tag { name, .. }
-                            if !covered.contains(name.as_str()) && seen.insert(name.as_str()) =>
+                        // A tag whose payload can never be constructed (e.g.
+                        // `@Err(@{})` on a `Result(a, @{})` that cannot fail)
+                        // needs no arm — omitting it stays exhaustive.
+                        RowEntry::Tag { name, payload }
+                            if !covered.contains(name.as_str())
+                                && !payload.iter().any(type_is_uninhabited)
+                                && seen.insert(name.as_str()) =>
                         {
                             Some(name.as_str())
                         }

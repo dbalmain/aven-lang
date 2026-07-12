@@ -28,7 +28,7 @@ use crate::ty::{
     is_meta_type, is_null_value, is_resolved_value_type, is_text_type, is_undefined_value,
     literal_base, literal_variant_base, map_type, mismatched_literal_kind, named_builtin,
     named_type_mismatch, named_type_name, numeric_type_name, open_literal_variant_base,
-    render_literal_value, type_contains_deferred, type_contains_variable,
+    render_literal_value, type_contains_deferred, type_contains_variable, type_is_uninhabited,
 };
 use crate::unify::Unifier;
 use crate::{InferredType, ModuleImports};

@@ -2863,6 +2863,24 @@ fn result_match_exhaustiveness_uses_result_tags() {
 }
 
 #[test]
+fn result_match_with_uninhabited_error_needs_no_err_arm() {
+    // A `Result(a, @{})` cannot fail — its `@Err` payload is the uninhabited
+    // empty closed variant — so a lone `@Ok` arm is exhaustive.
+    let source = concat!(
+        "source : Result(Int, @{}) = @Ok(1)\n",
+        "r = source ?>\n",
+        "  @Ok(v) => v\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::NON_EXHAUSTIVE_MATCH),
+        "an uninhabited @Err needs no arm: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn result_match_reports_impossible_tag_arm() {
     let source = concat!(
         "source : Result(Int, @{@Nope}) = @Ok(1)\n",
