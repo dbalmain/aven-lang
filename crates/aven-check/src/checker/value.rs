@@ -193,9 +193,8 @@ impl<'a> Checker<'a> {
                     .unwrap_or(LocalValueType::Unknown)
             })
             .collect();
-        if let Some(annotation) = return_annotation {
-            self.lower_annotation(annotation);
-        }
+        let body_expected =
+            return_annotation.map(|annotation| self.lower_normalized_annotation(annotation));
 
         self.local_types.push();
         self.push_local_comptime_param_scope(params);
@@ -203,7 +202,21 @@ impl<'a> Checker<'a> {
             self.record_local_value_type(param.name_span, &ty);
             self.local_types.define(&param.name, ty);
         }
-        self.check_value_expr(body);
+        if let Some(body_expected) = body_expected {
+            // Mirror `check_lambda_against_function`: check the body against the
+            // lowered return annotation with propagation context, so inline
+            // `(x): T => body` mismatches surface the same way as binding-level
+            // `f: (...) -> T = ...`.
+            self.propagation_contexts
+                .push(PropagationContext::default());
+            self.check_value_against(&body_expected, body);
+            let body_type = self.infer_body_type_for_propagation_check(body);
+            let propagation = self.pop_propagation_context();
+            let _ = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
+            self.report_propagated_errors_against_annotation(&body_expected, &propagation);
+        } else {
+            self.check_value_expr(body);
+        }
         self.local_comptime_params.pop();
         self.local_types.pop();
     }

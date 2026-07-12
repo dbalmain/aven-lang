@@ -623,15 +623,22 @@ impl<'a> Checker<'a> {
         let propagation = self.pop_propagation_context();
         let body_type = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
         let result_type = if let Some(annotation) = return_annotation {
-            // A body that contradicts its return annotation defers rather than
-            // reporting here: inference only synthesizes types, and diagnosing
-            // the mismatch is a later return-annotation-checking slice.
+            // Trust the return annotation as the lambda's result type so
+            // downstream uses stay precise. Body-vs-annotation mismatch is
+            // reported on the value-check path (`check_lambda_value_expr`), not
+            // here, to avoid double-reporting when both paths run. Incomplete
+            // body types still defer silently.
             let expected = self.lower_annotation_for_inference(annotation);
             self.report_propagated_errors_against_annotation(&expected, &propagation);
-            if !self.inferred_return_type_fits_annotation(&expected, &body_type) {
-                Type::Deferred
-            } else {
+            if self.inferred_return_type_fits_annotation(&expected, &body_type) {
                 expected
+            } else {
+                let resolved_body = self.normalize(&self.resolve_and_default(&body_type));
+                if is_resolved_value_type(&resolved_body) {
+                    expected
+                } else {
+                    Type::Deferred
+                }
             }
         } else {
             body_type

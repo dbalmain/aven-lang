@@ -1963,6 +1963,81 @@ fn contextual_lambda_checking_reports_body_param_and_return_mismatches() {
 }
 
 #[test]
+fn inline_lambda_return_annotation_mismatch_trusts_annotation() {
+    // Body is Int, annotation says Text. The body mismatch is reported, and
+    // the trusted annotation keeps `g` as `Int -> Text` so use sites see Text
+    // (not Deferred poisoning).
+    let source = concat!(
+        "g = (x: Int): Text => x\n",
+        "n: Int = g(1)\n",
+        "b: Bool = g(1)\n",
+        "h: (Int) -> Text = g\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    // body Int vs Text; n: Int = g(1); b: Bool = g(1). h fits once annotation
+    // is trusted.
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        3,
+        "expected body + n + b mismatches (h should fit); got {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "g", 0)).map(Type::render),
+        Some("Int -> Text".to_owned())
+    );
+}
+
+#[test]
+fn inline_lambda_return_annotation_accepts_matching_bodies() {
+    for source in [
+        "g = (x: Int): Int => x\n",
+        "g = (x: Int): Int =>\n  y = x\n  y\n",
+        "g = (): Result(Int, @{@Nope}) => @Ok(1)\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} unexpectedly produced type.mismatch: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn inline_lambda_return_annotation_defers_unresolved_body_silently() {
+    // Free type-variable param body stays incomplete (not `is_resolved_value_type`);
+    // inference defers the result type and value-check must not invent a mismatch.
+    let source = "g = (x: a): Text => x\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "unresolved body under return annotation should stay silent, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn binding_level_lambda_return_mismatch_still_reports_once() {
+    let source = "g: (Int) -> Text = (x: Int) => x\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "binding-level form should still report exactly one type.mismatch: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn function_identifier_values_are_checked_against_function_annotations() {
     let output = parse_module("g = (x: Int) => x\nh : (Int) -> Text = g\n");
     let check = check_module(&output.module);
