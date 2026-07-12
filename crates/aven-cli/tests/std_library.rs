@@ -155,17 +155,22 @@ fn std_result_type_exports_check() {
     let dir = TempDir::new("std-result-check");
     let entry = dir.write(
         "main.av",
-        r#"{ mapErr, orElse } = import("std/result")
+        r#"{ mapErr, orElse, map, unwrapOr, isOk, isErr } = import("std/result")
 ok : Result(Int, Text) = @Ok(1)
 err : Result(Int, Text) = @Err("x")
+zero: Int = 0
 mappedOk = mapErr(ok, (e) => "wrap: ${e}")
 mappedErr = mapErr(err, (e) => "wrap: ${e}")
 recovered = orElse(err, (_) => @Ok(0))
 passed = orElse(ok, (_) => @Ok(0))
+mapped = map(ok, (v) => v + 1)
+fallback = unwrapOr(err, zero)
+okFlag = isOk(ok)
+errFlag = isErr(err)
 chain = (r: Result(Int, Text)) =>
   value = mapErr(r, (e) => "step failed: ${e}")?^
   @Ok(value)
-{ mapErr, orElse, mappedOk, mappedErr, recovered, passed, chain }
+{ mapErr, orElse, map, unwrapOr, isOk, isErr, mappedOk, mappedErr, recovered, passed, mapped, fallback, okFlag, errFlag, chain }
 "#,
     );
 
@@ -209,6 +214,41 @@ show(chain(@Err("nope")))
     assert_eq!(
         stdout(&output),
         "Ok(7)\nErr(wrap: boom)\nOk(0)\nOk(3)\nOk(9)\nErr(step failed: nope)\n"
+    );
+}
+
+#[test]
+fn std_result_combinators_run() {
+    let dir = TempDir::new("std-result-combinators-run");
+    let entry = dir.write(
+        "main.av",
+        r#"{ map, unwrapOr, isOk, isErr } = import("std/result")
+ok : Result(Int, Text) = @Ok(7)
+err : Result(Int, Text) = @Err("boom")
+zero: Int = 0
+show = (r) => r ?> @Ok(v) => writeLine("Ok(${v})"), @Err(e) => writeLine("Err(${e})")
+show(map(ok, (v) => v + 1))
+show(map(err, (v) => v + 1))
+writeLine("${unwrapOr(ok, zero)}")
+writeLine("${unwrapOr(err, zero)}")
+writeLine("${isOk(ok)}")
+writeLine("${isOk(err)}")
+writeLine("${isErr(ok)}")
+writeLine("${isErr(err)}")
+"#,
+    );
+
+    let output = aven(&["run", entry.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        output.status.success(),
+        "aven run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(
+        stdout(&output),
+        "Ok(8)\nErr(boom)\n7\n0\ntrue\nfalse\nfalse\ntrue\n"
     );
 }
 

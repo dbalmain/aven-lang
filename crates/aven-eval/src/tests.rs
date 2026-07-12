@@ -1015,6 +1015,64 @@ fn std_array_combinators_run_via_import() {
 }
 
 #[test]
+fn std_result_combinators_run_via_import() {
+    let result_source = include_str!("../../aven-host/std/result.av");
+    let result_module = parse_ok(result_source);
+    let result_export = eval_module(&result_module)
+        .value
+        .expect("std/result should export a record");
+
+    let imports = ModuleImports::new([("std/result".to_owned(), result_export)]);
+    let source = concat!(
+        "{ map, unwrapOr, isOk, isErr } = import(\"std/result\")\n",
+        "ok : Result(Int, Text) = @Ok(7)\n",
+        "err : Result(Int, Text) = @Err(\"boom\")\n",
+        "zero: Int = 0\n",
+        "{\n",
+        "  mapOk: map(ok, (v) => v + 1),\n",
+        "  mapErr: map(err, (v) => v + 1),\n",
+        "  unwrapOk: unwrapOr(ok, zero),\n",
+        "  unwrapErr: unwrapOr(err, zero),\n",
+        "  isOkOk: isOk(ok),\n",
+        "  isOkErr: isOk(err),\n",
+        "  isErrOk: isErr(ok),\n",
+        "  isErrErr: isErr(err),\n",
+        "}\n",
+    );
+    let module = parse_ok(source);
+    let outcome = eval_module_with_globals_and_imports(&module, Vec::new(), &imports);
+
+    assert_eq!(
+        outcome,
+        EvalOutcome {
+            value: Some(record_value(vec![
+                (
+                    "mapOk",
+                    Value::Tag {
+                        name: "Ok".to_owned(),
+                        payload: vec![Value::Int(8)],
+                    }
+                ),
+                (
+                    "mapErr",
+                    Value::Tag {
+                        name: "Err".to_owned(),
+                        payload: vec![Value::Text("boom".to_owned())],
+                    }
+                ),
+                ("unwrapOk", Value::Int(7)),
+                ("unwrapErr", Value::Int(0)),
+                ("isOkOk", Value::Bool(true)),
+                ("isOkErr", Value::Bool(false)),
+                ("isErrOk", Value::Bool(false)),
+                ("isErrErr", Value::Bool(true)),
+            ])),
+            diagnostics: Vec::new()
+        }
+    );
+}
+
+#[test]
 fn user_binding_shadows_map_builtin() {
     assert_module_value("Map = 5\nMap\n", Value::Int(5));
 }

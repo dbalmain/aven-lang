@@ -1785,9 +1785,25 @@ fn library_interface_renders_std_result_signatures() {
         "# std/result — generated interface (shape view); not the implementation."
     );
     assert_eq!(lines[1], "");
+    // Export order follows the final record: mapErr, orElse, map, unwrapOr, isOk, isErr.
+    // Type-var names are normalized alphabetically in the shape view.
     assert_eq!(lines[2], "mapErr : (Result(a, b), b -> c) -> Result(a, c)");
-    assert!(lines[3].starts_with("orElse : "), "line: {:?}", lines[3]);
-    for (name, line) in [("mapErr", 2), ("orElse", 3)] {
+    assert_eq!(
+        lines[3],
+        "orElse : (Result(a, b), b -> Result(a, c)) -> Result(a, c)"
+    );
+    assert_eq!(lines[4], "map : (Result(a, b), a -> c) -> Result(c, b)");
+    assert_eq!(lines[5], "unwrapOr : (Result(a, b), a) -> a");
+    assert_eq!(lines[6], "isOk : Result(a, b) -> Bool");
+    assert_eq!(lines[7], "isErr : Result(a, b) -> Bool");
+    for (name, line) in [
+        ("mapErr", 2),
+        ("orElse", 3),
+        ("map", 4),
+        ("unwrapOr", 5),
+        ("isOk", 6),
+        ("isErr", 7),
+    ] {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);
         let index = aven_core::LineIndex::new(&interface.text);
