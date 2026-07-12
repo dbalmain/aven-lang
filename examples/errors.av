@@ -13,7 +13,7 @@ loadConfig = (path: Text) =>
 
 # Flattened chain: rewrite the error, then propagate with ?^.
 loadNamed = (path: Text) =>
-  value = mapErr(loadConfig(path), (e) => "load ${path} failed: ${e}")?^
+  value = loadConfig(path).mapErr((e) => "load ${path} failed: ${e}")?^
   @Ok(value)
 
 onErr = (err) => writeLine("error: ${err}")

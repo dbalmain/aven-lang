@@ -3344,6 +3344,44 @@ fn unannotated_result_match_helpers_are_generic_and_join_result_arms() {
 }
 
 #[test]
+fn result_methods_preserve_and_replace_result_type_arguments() {
+    let source = "ok : Result(Int, Text) = @Ok(1)\n\
+                  err : Result(Int, Text) = @Err(\"x\")\n\
+                  mapped_ok = ok.mapErr((e) => e == \"\")\n\
+                  mapped_err = err.mapErr((e) => e == \"\")\n\
+                  recovered_ok = ok.orElse((e): Result(Bool, Bool) => @Ok(e == \"\"))\n\
+                  recovered_err = err.orElse((e): Result(Bool, Bool) => @Ok(e == \"\"))\n\
+                  unwrapped = err.mapErr((e) => e == \"\")?^\n";
+    let output = parse_module(source);
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let expected = crate::ty::build::result(named("Int"), named("Bool"));
+
+    for name in ["mapped_ok", "mapped_err"] {
+        let scheme = checker
+            .infer_top_level_scheme(name)
+            .unwrap_or_else(|| panic!("scheme for {name}"));
+        assert_eq!(
+            checker.infer_top_level_value(name),
+            Some(expected.clone()),
+            "{name}: {:?}; {:?}",
+            scheme.ty,
+            checker.diagnostics,
+        );
+    }
+    let recovered = crate::ty::build::result(named("Bool"), named("Bool"));
+    for name in ["recovered_ok", "recovered_err"] {
+        assert_eq!(checker.infer_top_level_value(name), Some(recovered.clone()));
+    }
+    assert_eq!(
+        checker.infer_top_level_value("unwrapped"),
+        Some(named("Int"))
+    );
+    assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
+}
+
+#[test]
 fn match_results_merge_open_variant_rows_when_an_arm_is_open() {
     let output = parse_module(
         "open : @{@Zero, ..} = value\nclassify = (n) =>\n  n ?>\n    0 => open\n    _ => @Pos\n",
@@ -4594,6 +4632,29 @@ fn optional_spread_patch_widens_literal_defaults_to_patch_base() {
     });
 
     assert_eq!(checker.infer_top_level_value("user"), Some(user_type));
+    assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn top_level_coalesce_over_comptime_optional_field_infers_payload_type() {
+    let output = parse_module(
+        "User = { name: Text, email: Text, joined: Text }\n\
+         partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+         Draft = partial(User)\n\
+         draft: Draft = { name: \"Dave\" }\n\
+         pendingEmail = draft.email ?? \"no email yet\"\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        checker.infer_top_level_value("pendingEmail"),
+        Some(named("Text"))
+    );
     assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
 
     let check = check_module(&output.module);

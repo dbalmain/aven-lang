@@ -39,7 +39,7 @@ fn mismatch(expected: &str, got: &Value) -> String {
         Value::Map(_) => "Map",
         Value::Record(_) => "Record",
         Value::Tag { .. } => "Tag",
-        Value::Closure(_) | Value::Native(_) => "Function",
+        Value::ResultMethod { .. } | Value::Closure(_) | Value::Native(_) => "Function",
         Value::Type(_) => "Type",
         Value::Undefined => "Undefined",
         Value::Null => "Null",

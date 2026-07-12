@@ -188,6 +188,7 @@ pub(crate) fn aven_value_type_name(value: &Value) -> &'static str {
         Value::Map(_) => "Map",
         Value::Record(_) => "Record",
         Value::Tag { .. } => "Tag",
+        Value::ResultMethod { .. } => "Function",
         Value::Closure(_) => "Function",
         Value::Native(_) => "Native",
         Value::Type(_) => "Type",

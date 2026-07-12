@@ -169,6 +169,7 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
             }
         },
         Value::Null => Err("Toml.encode cannot encode Null because TOML has no null".to_owned()),
+        Value::ResultMethod { .. } => Err("Toml.encode cannot encode Function".to_owned()),
         Value::Closure(_) => Err("Toml.encode cannot encode Function".to_owned()),
         Value::Native(_) => Err("Toml.encode cannot encode Native".to_owned()),
         Value::Type(_) => Err("Toml.encode cannot encode Type".to_owned()),

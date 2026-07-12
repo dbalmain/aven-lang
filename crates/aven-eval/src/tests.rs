@@ -1131,16 +1131,18 @@ fn evaluates_null_safe_field_access() {
 }
 
 #[test]
-fn null_safe_field_access_yields_undefined_for_absent_record_field() {
-    // Optional fields may be omitted at construction; the key is then
-    // physically absent. `?.` opts into that case; plain `.` stays strict.
+fn field_access_yields_undefined_for_absent_record_field() {
+    // Optional fields may be omitted at construction, leaving no physical key.
+    // Both field access forms read that absence as `undefined`; `?.` also
+    // guards an empty receiver.
+    assert_eval("{ name: \"Ada\" }.phone", Value::Undefined);
     assert_eval("{ name: \"Ada\" }?.phone", Value::Undefined);
     assert_module_value(
-        "user = { name: \"Ada\" }\nuser?.phone ?? \"none\"\n",
+        "user = { name: \"Ada\" }\nuser.phone ?? \"none\"\n",
         Value::Text("none".to_owned()),
     );
     assert_module_value(
-        "user = { name: \"Ada\", phone: \"555\" }\nuser?.phone ?? \"none\"\n",
+        "user = { name: \"Ada\", phone: \"555\" }\nuser.phone ?? \"none\"\n",
         Value::Text("555".to_owned()),
     );
 }
@@ -1152,14 +1154,23 @@ fn null_safe_field_access_propagates_empty_receiver_through_variable() {
 }
 
 #[test]
-fn plain_field_access_still_errors_on_absent_record_field() {
-    let diagnostic = eval_error("{ name: \"Ada\" }.phone");
+fn record_patterns_and_type_statics_still_error_on_absent_fields() {
+    for source in [
+        "source = { name: \"Ada\" }\n{ email: address } = source\n",
+        "source = { name: \"Ada\" }\n{ email -> address } = source\n",
+    ] {
+        let diagnostic = module_error(source);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::MISSING_FIELD),
+            "{source}"
+        );
+    }
 
-    assert_eq!(
-        diagnostic.code.as_deref(),
-        Some(codes::runtime::MISSING_FIELD)
+    let diagnostic = module_error_with_globals(
+        "Map.nope\n",
+        vec![("Map".to_owned(), Value::named_type("Map"))],
     );
-    let diagnostic = module_error("user = { name: \"Ada\" }\nuser.phone\n");
     assert_eq!(
         diagnostic.code.as_deref(),
         Some(codes::runtime::MISSING_FIELD)
@@ -1296,16 +1307,6 @@ fn evaluates_mutually_recursive_functions_with_match_base_cases() {
 }
 
 #[test]
-fn reports_missing_record_fields() {
-    let diagnostic = eval_error("{ name: \"Ada\" }.age");
-
-    assert_eq!(
-        diagnostic.code.as_deref(),
-        Some(codes::runtime::MISSING_FIELD)
-    );
-}
-
-#[test]
 fn reports_field_access_on_non_record() {
     let diagnostic = eval_error("1.name");
 
@@ -1383,6 +1384,38 @@ fn user_binding_shadows_primitive_type_name() {
 #[test]
 fn propagate_unwraps_ok_payload() {
     assert_eval("@Ok(7)?^", Value::Int(7));
+}
+
+#[test]
+fn result_methods_map_errors_and_recover_for_ok_and_err() {
+    assert_module_value(
+        "ok = @Ok(7)\nerr = @Err(\"bad\")\n[ok.mapErr((e) => \"wrapped: ${e}\"), err.mapErr((e) => \"wrapped: ${e}\"), ok.orElse((_) => @Ok(0)), err.orElse((_) => @Ok(0))]\n",
+        array_value(vec![
+            Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Int(7)],
+            },
+            Value::Tag {
+                name: "Err".to_owned(),
+                payload: vec![Value::Text("wrapped: bad".to_owned())],
+            },
+            Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Int(7)],
+            },
+            Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Int(0)],
+            },
+        ]),
+    );
+    assert_module_value(
+        "parse = (text) => text ?> \"ok\" => @Ok(1), _ => @Err(text)\nparse(\"bad\").mapErr((e) => \"bad instant: ${e}\")?^\n",
+        Value::Tag {
+            name: "Err".to_owned(),
+            payload: vec![Value::Text("bad instant: bad".to_owned())],
+        },
+    );
 }
 
 #[test]

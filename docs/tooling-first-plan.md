@@ -1898,7 +1898,8 @@ the later bytecode/runtime work.
   evaluator now handles record construction, spread/overwrite, delete, rename,
   shorthand, computed fields/deletes, field access, and text-key record
   indexing. Variant tags evaluate as `@Tag`/`@Tag(payload...)` values. Missing
-  field lookup reports `runtime.missing-field`; nil-safe access, record
+  record keys read as `undefined` (while type statics and record patterns still
+  report `runtime.missing-field`); nil-safe access, record
   comprehensions, and tuple/array indexing remain explicit `runtime.unsupported`
   follow-ups.
 - E5 done: added runtime `?>` pattern matching over literals, wildcards,

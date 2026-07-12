@@ -318,8 +318,25 @@ impl<'a> Checker<'a> {
             "<" | "<=" | ">" | ">=" => self.infer_numeric_comparison_type(left, right),
             "==" | "!=" => self.infer_equality_type(left, right),
             "&&" | "||" => self.infer_same_named_binary_type(left, right, "Bool"),
+            "??" => self.infer_null_coalesce_type(left, right),
             _ => None,
         }
+    }
+
+    pub(super) fn infer_null_coalesce_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
+        let left = self.normalize(&self.unifier.resolve(left));
+        let (_, payload) = peel_empty_values(&left);
+        let payload = payload.clone();
+        let right = self.normalize(&self.unifier.resolve(right));
+
+        if self.type_fits_boundary_without_reporting(&payload, &right) {
+            return Some(payload);
+        }
+        if self.type_fits_boundary_without_reporting(&right, &payload) {
+            return Some(right);
+        }
+
+        None
     }
 
     pub(super) fn fold_binary_literal(
@@ -833,6 +850,8 @@ impl<'a> Checker<'a> {
         let core = core.clone();
 
         if let Some(method_type) = builtin_collection_method_type(&core, field) {
+            let method_type =
+                self.instantiate_annotation_type_variables(&method_type, &mut HashMap::new());
             if empties.is_empty() {
                 return method_type;
             }

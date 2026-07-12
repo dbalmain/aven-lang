@@ -51,6 +51,8 @@ pub const MAP_METHOD_NAMES: &[&str] = &[
     "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
 ];
 
+pub const RESULT_METHOD_NAMES: &[&str] = &["mapErr", "orElse"];
+
 pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
     let mut ty = ty;
     while let Type::Optional(inner) | Type::Nullable(inner) = ty {
@@ -70,7 +72,7 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
                 })
                 .collect(),
         ),
-        Type::Apply { .. } => builtin_collection_fields(ty),
+        Type::Apply { .. } | Type::Variant(_) => builtin_collection_fields(ty),
         Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)
@@ -78,51 +80,75 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
         | Type::Function { .. }
         | Type::Optional(_)
         | Type::Nullable(_)
-        | Type::Tuple(_)
-        | Type::Variant(_) => None,
+        | Type::Tuple(_) => None,
     }
 }
 
 pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Type> {
-    let (key, value) = map_type_args(receiver)?;
+    if let Some((key, value)) = map_type_args(receiver) {
+        return match name {
+            "get" => Some(function(
+                vec![key.clone()],
+                Type::Optional(Box::new(value.clone())),
+            )),
+            "set" => Some(function(
+                vec![key.clone(), value.clone()],
+                map_apply(key.clone(), value.clone()),
+            )),
+            "delete" => Some(function(
+                vec![key.clone()],
+                map_apply(key.clone(), value.clone()),
+            )),
+            "has" => Some(function(vec![key.clone()], named_builtin("Bool"))),
+            "keys" => Some(function(Vec::new(), array_apply(key.clone()))),
+            "values" => Some(function(Vec::new(), array_apply(value.clone()))),
+            "entries" => Some(function(
+                Vec::new(),
+                array_apply(Type::Tuple(vec![key.clone(), value.clone()])),
+            )),
+            "size" => Some(function(Vec::new(), named_builtin("Int"))),
+            "merge" => Some(function(
+                vec![map_apply(key.clone(), value.clone())],
+                map_apply(key.clone(), value.clone()),
+            )),
+            _ => None,
+        };
+    }
+
+    let (ok, error) = result_type_args(receiver)?;
+    let output_ok = Type::Variable("result_ok".to_owned());
+    let output_error = Type::Variable("result_error".to_owned());
     match name {
-        "get" => Some(function(
-            vec![key.clone()],
-            Type::Optional(Box::new(value.clone())),
+        "mapErr" => Some(function(
+            vec![function(vec![error], output_error.clone())],
+            build::result(ok, output_error),
         )),
-        "set" => Some(function(
-            vec![key.clone(), value.clone()],
-            map_apply(key.clone(), value.clone()),
-        )),
-        "delete" => Some(function(
-            vec![key.clone()],
-            map_apply(key.clone(), value.clone()),
-        )),
-        "has" => Some(function(vec![key.clone()], named_builtin("Bool"))),
-        "keys" => Some(function(Vec::new(), array_apply(key.clone()))),
-        "values" => Some(function(Vec::new(), array_apply(value.clone()))),
-        "entries" => Some(function(
-            Vec::new(),
-            array_apply(Type::Tuple(vec![key.clone(), value.clone()])),
-        )),
-        "size" => Some(function(Vec::new(), named_builtin("Int"))),
-        "merge" => Some(function(
-            vec![map_apply(key.clone(), value.clone())],
-            map_apply(key.clone(), value.clone()),
+        "orElse" => Some(function(
+            vec![function(
+                vec![error],
+                build::result(output_ok.clone(), output_error.clone()),
+            )],
+            build::result(output_ok, output_error),
         )),
         _ => None,
     }
 }
 
 fn builtin_collection_fields(receiver: &Type) -> Option<Vec<RecordField>> {
-    map_type_args(receiver)?;
-    Some(
+    let names = if map_type_args(receiver).is_some() {
         MAP_METHOD_NAMES
+    } else if result_type_args(receiver).is_some() {
+        RESULT_METHOD_NAMES
+    } else {
+        return None;
+    };
+    Some(
+        names
             .iter()
             .map(|name| RecordField {
                 name: (*name).to_owned(),
                 ty: builtin_collection_method_type(receiver, name)
-                    .expect("MAP_METHOD_NAMES contains only typed Map methods"),
+                    .expect("builtin method names have method types"),
             })
             .collect(),
     )
@@ -139,6 +165,34 @@ fn map_type_args(ty: &Type) -> Option<(&Type, &Type)> {
         return None;
     };
     Some((key, value))
+}
+
+fn result_type_args(ty: &Type) -> Option<(Type, Type)> {
+    if let Type::Apply { callee, args } = ty
+        && let [ok, error] = args.as_slice()
+        && matches!(callee.as_ref(), Type::Named(name) if name == "Result")
+    {
+        return Some((ok.clone(), error.clone()));
+    }
+
+    let Type::Variant(row) = ty else {
+        return None;
+    };
+    let [RowEntry::Tag { name, payload }] = row.entries.as_slice() else {
+        return None;
+    };
+    let [payload] = payload.as_slice() else {
+        return None;
+    };
+    if row.tail != RowTail::Closed {
+        return None;
+    }
+
+    match name.as_str() {
+        "Ok" => Some((payload.clone(), Type::Variable("result_error".to_owned()))),
+        "Err" => Some((Type::Variable("result_ok".to_owned()), payload.clone())),
+        _ => None,
+    }
 }
 
 fn map_apply(key: Type, value: Type) -> Type {

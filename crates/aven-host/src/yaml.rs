@@ -292,6 +292,7 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
                 Err("Yaml.encode cannot encode undefined array elements".to_owned())
             }
         },
+        Value::ResultMethod { .. } => Err("Yaml.encode cannot encode Function".to_owned()),
         Value::Closure(_) => Err("Yaml.encode cannot encode Function".to_owned()),
         Value::Native(_) => Err("Yaml.encode cannot encode Native".to_owned()),
         Value::Type(_) => Err("Yaml.encode cannot encode Type".to_owned()),

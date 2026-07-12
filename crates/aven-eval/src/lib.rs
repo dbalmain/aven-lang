@@ -79,6 +79,10 @@ pub enum Value {
         name: String,
         payload: Vec<Value>,
     },
+    ResultMethod {
+        receiver: Box<Value>,
+        kind: ResultMethod,
+    },
     Closure(Closure),
     Native(NativeFn),
     /// A runtime type descriptor. The evaluator keeps this intentionally small:
@@ -87,6 +91,12 @@ pub enum Value {
     Type(RuntimeType),
     Undefined,
     Null,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ResultMethod {
+    MapErr,
+    OrElse,
 }
 
 /// Type names bound as `Value::Type` intrinsics. `Array`/`Data`/`Map` are
@@ -131,6 +141,7 @@ impl fmt::Debug for Value {
                 .field("name", name)
                 .field("payload", payload)
                 .finish(),
+            Self::ResultMethod { .. } => f.write_str("ResultMethod(<method>)"),
             Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
             Self::Native(_) => f.write_str("Native(<native>)"),
             Self::Type(ty) => f.debug_tuple("Type").field(ty).finish(),
@@ -163,6 +174,7 @@ impl PartialEq for Value {
                 },
             ) => left_name == right_name && left_payload == right_payload,
             (Self::Type(left), Self::Type(right)) => left == right,
+            (Self::ResultMethod { .. }, _) | (_, Self::ResultMethod { .. }) => false,
             (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
             (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
             (Self::Native(_), _) | (_, Self::Native(_)) => false,
@@ -184,6 +196,7 @@ impl fmt::Display for Value {
             Self::Map(entries) => fmt_map(entries, f),
             Self::Record(fields) => fmt_record(fields, f),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
+            Self::ResultMethod { .. } => write!(f, "<method>"),
             Self::Closure(_) => write!(f, "<function>"),
             Self::Native(_) => write!(f, "<native>"),
             Self::Type(ty) => write!(f, "{ty}"),
@@ -226,6 +239,7 @@ impl Value {
             Self::Map(_) => "Map",
             Self::Record(_) => "Record",
             Self::Tag { .. } => "Tag",
+            Self::ResultMethod { .. } => "Function",
             Self::Closure(_) => "Function",
             Self::Native(_) => "Native",
             Self::Type(_) => "Type",
@@ -1283,6 +1297,13 @@ fn apply_callee(
             }
             apply_native(function, arg_values, span)
         }
+        Value::ResultMethod { receiver, kind } => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_result_method(*receiver, kind, arg_values, callee_span, span)
+        }
         Value::Closure(closure) => apply_closure(closure, args, span, env),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
     }
@@ -1296,8 +1317,46 @@ fn apply_callee_values(
 ) -> Eval {
     match callee_value {
         Value::Native(function) => apply_native(function, arg_values, span),
+        Value::ResultMethod { receiver, kind } => {
+            apply_result_method(*receiver, kind, arg_values, callee_span, span)
+        }
         Value::Closure(closure) => apply_closure_values(closure, arg_values, span),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
+    }
+}
+
+fn apply_result_method(
+    receiver: Value,
+    kind: ResultMethod,
+    args: Vec<Value>,
+    callee_span: Span,
+    span: Span,
+) -> Eval {
+    if args.len() != 1 {
+        return Err(one_diagnostic(arity_mismatch(span, 1, 1, args.len())));
+    }
+
+    let Value::Tag { name, mut payload } = receiver else {
+        return Err(one_diagnostic(not_callable(callee_span, "Tag")));
+    };
+    let [value] = payload.as_mut_slice() else {
+        return Err(one_diagnostic(not_callable(callee_span, "Tag")));
+    };
+
+    if name == "Ok" {
+        return Ok(Value::Tag {
+            name,
+            payload: vec![value.clone()],
+        });
+    }
+
+    let transformed = apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)?;
+    match kind {
+        ResultMethod::MapErr => Ok(Value::Tag {
+            name,
+            payload: vec![transformed],
+        }),
+        ResultMethod::OrElse => Ok(transformed),
     }
 }
 
@@ -1641,16 +1700,6 @@ fn eval_field_access(
         return Ok(receiver_value);
     }
 
-    // `?.field` also opts into a missing key on a record: omitted optional
-    // fields are physically absent at runtime, so null-safe access yields
-    // `undefined` instead of `runtime.missing-field`. Plain `.field` and all
-    // other `field_access_value` callers stay strict.
-    if null_safe && let Value::Record(fields) = &receiver_value {
-        return Ok(record_field_value(fields, field)
-            .cloned()
-            .unwrap_or(Value::Undefined));
-    }
-
     field_access_value(receiver_value, receiver.span, field, field_span, env)
 }
 
@@ -1663,9 +1712,12 @@ fn field_access_value(
     env: &Environment,
 ) -> Eval {
     match &receiver_value {
-        Value::Record(fields) => record_field_value(fields, field)
+        // Optional record fields can be omitted physically at runtime. Reads
+        // treat an absent key as `undefined`; record transforms keep their
+        // stricter, separate missing-field checks.
+        Value::Record(fields) => Ok(record_field_value(fields, field)
             .cloned()
-            .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
+            .unwrap_or(Value::Undefined)),
         // A type value (`Map`, `Json`, ...) carries statics: field access
         // resolves the `"Type.static"`-keyed global bound alongside the type.
         Value::Type(RuntimeType::Named(name)) => env
@@ -1703,6 +1755,19 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
         (Value::Map(entries), "entries") => Some(map_entries_method(Rc::clone(entries))),
         (Value::Map(entries), "size") => Some(map_size_method(Rc::clone(entries))),
         (Value::Map(entries), "merge") => Some(map_merge_method(Rc::clone(entries))),
+        (Value::Tag { name, payload }, "mapErr" | "orElse")
+            if matches!(name.as_str(), "Ok" | "Err") && payload.len() == 1 =>
+        {
+            let kind = if field == "mapErr" {
+                ResultMethod::MapErr
+            } else {
+                ResultMethod::OrElse
+            };
+            Some(Value::ResultMethod {
+                receiver: Box::new(receiver.clone()),
+                kind,
+            })
+        }
         _ => None,
     }
 }
@@ -2044,7 +2109,7 @@ fn ensure_map_key(key: &Value, context: &str) -> Result<(), String> {
 
 fn map_key_is_comparable(key: &Value) -> bool {
     match key {
-        Value::Closure(_) | Value::Native(_) => false,
+        Value::Closure(_) | Value::Native(_) | Value::ResultMethod { .. } => false,
         Value::Array(values) | Value::Tuple(values) | Value::Set(values) => {
             values.iter().all(map_key_is_comparable)
         }
