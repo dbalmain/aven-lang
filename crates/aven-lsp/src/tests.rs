@@ -1841,7 +1841,8 @@ fn library_interface_renders_std_array_signatures() {
     );
     assert_eq!(lines[1], "");
     // Export order follows the final record:
-    // length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf.
+    // length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf,
+    // map, filter, reverse, concat.
     assert!(lines[2].starts_with("length : "), "line: {:?}", lines[2]);
     assert!(lines[3].starts_with("isEmpty : "), "line: {:?}", lines[3]);
     assert!(lines[4].starts_with("first : "), "line: {:?}", lines[4]);
@@ -1853,9 +1854,13 @@ fn library_interface_renders_std_array_signatures() {
     assert!(lines[10].starts_with("any : "), "line: {:?}", lines[10]);
     assert!(lines[11].starts_with("find : "), "line: {:?}", lines[11]);
     assert!(lines[12].starts_with("indexOf : "), "line: {:?}", lines[12]);
+    assert!(lines[13].starts_with("map : "), "line: {:?}", lines[13]);
+    assert!(lines[14].starts_with("filter : "), "line: {:?}", lines[14]);
+    assert!(lines[15].starts_with("reverse : "), "line: {:?}", lines[15]);
+    assert!(lines[16].starts_with("concat : "), "line: {:?}", lines[16]);
     for name in [
         "length", "isEmpty", "first", "last", "fold", "sum", "count", "all", "any", "find",
-        "indexOf",
+        "indexOf", "map", "filter", "reverse", "concat",
     ] {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);

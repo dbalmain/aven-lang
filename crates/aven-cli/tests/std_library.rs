@@ -97,7 +97,7 @@ fn std_array_type_exports_check() {
     let dir = TempDir::new("std-array-check");
     let entry = dir.write(
         "main.av",
-        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf } = import("std/array")
+        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
@@ -113,7 +113,12 @@ has20 = any(xs, (x) => x == 20)
 hit = find(xs, (x) => x == 20)
 miss = find(xs, (x) => x == 99)
 idx = indexOf(xs, 20)
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx }
+mapped = map(xs, (x) => x + 1)
+filtered = filter(xs, (x) => x > 15)
+rev = reverse(xs)
+joined = concat([1], [2, 3])
+composed = map(filter(xs, (x) => x > 15), (x) => x / 10)
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, filtered, rev, joined, composed }
 "#,
     );
 
@@ -132,7 +137,7 @@ fn std_array_combinators_run() {
     let dir = TempDir::new("std-array-run");
     let entry = dir.write(
         "main.av",
-        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf } = import("std/array")
+        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
@@ -153,6 +158,16 @@ writeLine("${find(xs, (x) => x == 99)}")
 writeLine("${indexOf(xs, 20)}")
 writeLine("${indexOf(xs, 99)}")
 writeLine("${indexOf(empty, 1)}")
+writeLine("${map(xs, (x) => x + 1)}")
+writeLine("${map(empty, (x) => x + 1)}")
+writeLine("${filter(xs, (x) => x > 15)}")
+writeLine("${filter(empty, (x) => x > 15)}")
+writeLine("${reverse(xs)}")
+writeLine("${reverse(empty)}")
+writeLine("${concat([1], [2, 3])}")
+writeLine("${concat(empty, xs)}")
+writeLine("${concat(xs, empty)}")
+writeLine("${map(filter(xs, (x) => x > 15), (x) => x / 10)}")
 "#,
     );
 
@@ -166,7 +181,7 @@ writeLine("${indexOf(empty, 1)}")
     );
     assert_eq!(
         stdout(&output),
-        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n"
+        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n"
     );
 }
 

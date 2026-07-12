@@ -981,7 +981,7 @@ fn std_array_combinators_run_via_import() {
 
     let imports = ModuleImports::new([("std/array".to_owned(), array_export)]);
     let source = concat!(
-        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf } = import(\"std/array\")\n",
+        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat } = import(\"std/array\")\n",
         "xs = [10, 20, 30]\n",
         "empty = []\n",
         "zero: Int = 0\n",
@@ -1002,6 +1002,16 @@ fn std_array_combinators_run_via_import() {
         "  indexOfHit: indexOf(xs, 20),\n",
         "  indexOfMiss: indexOf(xs, 99),\n",
         "  indexOfEmpty: indexOf(empty, 1),\n",
+        "  map: map(xs, (x) => x + 1),\n",
+        "  mapEmpty: map(empty, (x) => x + 1),\n",
+        "  filter: filter(xs, (x) => x > 15),\n",
+        "  filterEmpty: filter(empty, (x) => x > 15),\n",
+        "  reverse: reverse(xs),\n",
+        "  reverseEmpty: reverse(empty),\n",
+        "  concat: concat([1], [2, 3]),\n",
+        "  concatLeftEmpty: concat(empty, xs),\n",
+        "  concatRightEmpty: concat(xs, empty),\n",
+        "  composed: map(filter(xs, (x) => x > 15), (x) => x / 10),\n",
         "}\n",
     );
     let module = parse_ok(source);
@@ -1027,6 +1037,31 @@ fn std_array_combinators_run_via_import() {
                 ("indexOfHit", Value::Int(1)),
                 ("indexOfMiss", Value::Undefined),
                 ("indexOfEmpty", Value::Undefined),
+                (
+                    "map",
+                    array_value(vec![Value::Int(11), Value::Int(21), Value::Int(31)])
+                ),
+                ("mapEmpty", array_value(vec![])),
+                ("filter", array_value(vec![Value::Int(20), Value::Int(30)])),
+                ("filterEmpty", array_value(vec![])),
+                (
+                    "reverse",
+                    array_value(vec![Value::Int(30), Value::Int(20), Value::Int(10)])
+                ),
+                ("reverseEmpty", array_value(vec![])),
+                (
+                    "concat",
+                    array_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+                ),
+                (
+                    "concatLeftEmpty",
+                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                ),
+                (
+                    "concatRightEmpty",
+                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                ),
+                ("composed", array_value(vec![Value::Int(2), Value::Int(3)])),
             ])),
             diagnostics: Vec::new()
         }

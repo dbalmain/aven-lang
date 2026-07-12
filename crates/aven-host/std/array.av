@@ -1,7 +1,6 @@
 # Array combinators: `import("std/array")`. Pure Aven — no host natives.
 # Iterate by index recursion terminating on out-of-bounds `undefined`.
 # Array building uses language primitives: spread `[..xs, x]` and `.push(x)`.
-# No map/filter/join helpers here yet (combinators can build on spread/push later).
 # Helpers are module-private (local recursion is not bound in the checker).
 
 foldGo : (Array(a), Int, b, (b, a) -> b) -> b
@@ -85,4 +84,24 @@ indexOf = (xs, target) =>
   zero: Int = 0
   indexOfGo(xs, zero, target)
 
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf }
+# Empty seed annotated so the polymorphic element type is not left open.
+map : (Array(a), (a) -> b) -> Array(b)
+map = (xs, f) =>
+  seed: Array(b) = []
+  fold(xs, seed, (acc, x) => acc.push(f(x)))
+
+filter : (Array(a), (a) -> Bool) -> Array(a)
+filter = (xs, pred) =>
+  seed: Array(a) = []
+  fold(xs, seed, (acc, x) => pred(x) ?> true => acc.push(x), false => acc)
+
+# Fold pushing to the front.
+reverse : (Array(a)) -> Array(a)
+reverse = (xs) =>
+  seed: Array(a) = []
+  fold(xs, seed, (acc, x) => [x, ..acc])
+
+concat : (Array(a), Array(a)) -> Array(a)
+concat = (xs, ys) => [..xs, ..ys]
+
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat }
