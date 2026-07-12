@@ -734,28 +734,44 @@ impl<'a> Checker<'a> {
         let types: Vec<_> = types
             .into_iter()
             .map(|ty| self.normalize(&self.resolve_and_default(&ty)))
+            .filter(|ty| !is_empty_closed_variant(ty))
             .collect();
-        let Some(first) = types.first() else {
-            return Type::Deferred;
+        let Some(first) = types.first().cloned() else {
+            return empty_variant_type();
         };
-        if types.iter().all(|ty| ty == first) {
-            return first.clone();
-        }
-        if types.iter().any(|ty| !matches!(ty, Type::Variant(_))) {
-            return Type::Deferred;
+        if types.iter().all(|ty| ty == &first) {
+            return first;
         }
 
-        let body_types: Vec<_> = types
-            .into_iter()
-            .map(|ty| MatchArmBodyType {
-                span: Span::new(0, 0),
-                ty,
-            })
-            .collect();
-        match self.union_match_variant_arm_body_types(&body_types) {
-            Some(MatchArmCombination::Joined(ty)) => self.normalize(&self.resolve_and_default(&ty)),
-            Some(MatchArmCombination::Conflict(_)) | None => Type::Deferred,
+        if types.iter().all(|ty| matches!(ty, Type::Variant(_))) {
+            let body_types: Vec<_> = types
+                .into_iter()
+                .map(|ty| MatchArmBodyType {
+                    span: Span::new(0, 0),
+                    ty,
+                })
+                .collect();
+            return match self.union_match_variant_arm_body_types(&body_types) {
+                Some(MatchArmCombination::Joined(ty)) => {
+                    self.normalize(&self.resolve_and_default(&ty))
+                }
+                Some(MatchArmCombination::Conflict(_)) | None => Type::Deferred,
+            };
         }
+
+        types
+            .into_iter()
+            .skip(1)
+            .try_fold(first, |combined, ty| {
+                if self.type_fits_boundary_without_reporting(&combined, &ty) {
+                    Some(combined)
+                } else if self.type_fits_boundary_without_reporting(&ty, &combined) {
+                    Some(ty)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(Type::Deferred)
     }
 
     pub(super) fn report_propagated_errors_against_annotation(
@@ -969,7 +985,13 @@ impl<'a> Checker<'a> {
             && arg_types.len() <= params.len()
         {
             self.check_call_arg_types_against_params(args, &arg_types, params);
-            return self.resolve_row_merge_call_result(result);
+            let result = self.resolve_row_merge_call_result(result);
+            if let Some(result) =
+                self.infer_or_else_single_constructor_result(env, callee, &arg_types, &result)
+            {
+                return result;
+            }
+            return result;
         }
 
         let result_type = self.unifier.fresh();
@@ -983,6 +1005,66 @@ impl<'a> Checker<'a> {
             Type::Deferred
         } else {
             self.resolve_row_merge_call_result(&result_type)
+        }
+    }
+
+    fn infer_or_else_single_constructor_result(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        arg_types: &[Type],
+        call_result: &Type,
+    ) -> Option<Type> {
+        if is_resolved_value_type(call_result) {
+            return None;
+        }
+        let ExprKind::FieldAccess {
+            receiver, field, ..
+        } = &ungroup_expr(callee).kind
+        else {
+            return None;
+        };
+        if field != "orElse" {
+            return None;
+        }
+        let inferred_receiver = self.infer(env, receiver);
+        let receiver_type = self.normalize(&self.resolve_and_default(&inferred_receiver));
+        let (receiver_ok, _receiver_error) = result_type_args(&receiver_type)?;
+        let receiver_ok = receiver_ok.clone();
+        let [
+            Type::Function {
+                result: callback_result,
+                ..
+            },
+        ] = arg_types
+        else {
+            return None;
+        };
+        let callback_result = self.normalize(&self.resolve_and_default(callback_result));
+        let Type::Variant(Row {
+            entries,
+            tail: RowTail::Closed,
+        }) = callback_result
+        else {
+            return None;
+        };
+        let [RowEntry::Tag { name, payload }] = entries.as_slice() else {
+            return None;
+        };
+        let [payload] = payload.as_slice() else {
+            return None;
+        };
+
+        match name.as_str() {
+            // A callback that only ever returns `@Ok` recovers every error, so
+            // the chain can no longer fail: the error side collapses to the
+            // empty closed variant. The success type stays the receiver's.
+            "Ok" => Some(result_type(receiver_ok, empty_variant_type())),
+            // A callback that only returns `@Err` never contributes a success,
+            // so the ok side stays the receiver's while the error type is
+            // replaced by the callback's.
+            "Err" => Some(result_type(receiver_ok, payload.clone())),
+            _ => None,
         }
     }
 
@@ -2492,6 +2574,16 @@ fn receiver_type_carries_member(ty: &Type, member: &str) -> bool {
 enum FoldNumber {
     Int(i64),
     Float(f64),
+}
+
+fn is_empty_closed_variant(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Variant(Row {
+            entries,
+            tail: RowTail::Closed,
+        }) if entries.is_empty()
+    )
 }
 
 fn singleton_literal_type(ty: &Type) -> Option<&Literal> {

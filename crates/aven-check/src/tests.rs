@@ -2790,6 +2790,10 @@ fn result_subject_match_with_inline_return_annotation_checks_clean() {
         check.diagnostics
     );
     assert_eq!(
+        check.type_at(nth_span(source, "g", 0)).map(Type::render),
+        Some("() -> Result(Int, @Nope)".to_owned())
+    );
+    assert_eq!(
         check.type_at(nth_span(source, "r", 0)).map(Type::render),
         Some("Int".to_owned())
     );
@@ -3379,6 +3383,55 @@ fn result_methods_preserve_and_replace_result_type_arguments() {
         Some(named("Int"))
     );
     assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
+}
+
+#[test]
+fn result_or_else_ok_only_callback_makes_error_side_uninhabited() {
+    // A callback that only ever returns `@Ok` recovers every error, so the
+    // chain can no longer fail: the error side becomes the empty closed
+    // variant while the success type stays the receiver's.
+    let source = concat!(
+        "source: Result(Text, Text) = @Err(\"no\")\n",
+        "recovered = source.orElse((e) => @Ok(\"recovered: ${e}\"))\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "recovered", 0))
+            .map(Type::render),
+        Some("Result(Text, @{})".to_owned())
+    );
+}
+
+#[test]
+fn result_or_else_err_only_callback_keeps_receiver_ok_and_replaces_error() {
+    // A callback that only returns `@Err` never contributes a success, so the
+    // ok side stays the receiver's while the error type is replaced.
+    let source = concat!(
+        "source: Result(Int, Text) = @Ok(1)\n",
+        "remapped = source.orElse((e) => @Err(42))\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "remapped", 0))
+            .map(Type::render),
+        Some("Result(Int, 42)".to_owned())
+    );
 }
 
 #[test]
@@ -4753,6 +4806,153 @@ fn propagate_with_explicit_ok_infers_result_error_union() {
     assert_eq!(
         check.type_at(nth_span(source, "f", 0)).map(Type::render),
         Some("Text -> Result(Text, @Read(Text))".to_owned())
+    );
+}
+
+#[test]
+fn propagate_with_named_host_error_records_result_type() {
+    let source = concat!(
+        "f = (text: Text) =>\n",
+        "  value = parse(text)?^\n",
+        "  @Ok(\"got ${value}\")\n",
+    );
+    let output = parse_module(source);
+    let globals = vec![(
+        "parse".to_owned(),
+        build::function(
+            vec![build::text()],
+            build::result(build::int(), build::text()),
+        ),
+    )];
+    let check = check_module_with_globals(&output.module, &globals);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "f", 0)).map(Type::render),
+        Some("Text -> Result(Text, Text)".to_owned())
+    );
+}
+
+#[test]
+fn propagate_with_annotated_named_error_records_result_type() {
+    let source = concat!(
+        "f = (flag: Bool) =>\n",
+        "  r: Result(Int, Text) = @Ok(1)\n",
+        "  value = r?^\n",
+        "  @Ok(value + 1)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "f", 0)).map(Type::render),
+        Some("Bool -> Result(Int, Text)".to_owned())
+    );
+}
+
+#[test]
+fn propagate_error_union_prefers_named_supertype_over_literal_row() {
+    let source = concat!(
+        "f = () =>\n",
+        "  literal = literalError()?^\n",
+        "  named: Result(Int, Text) = @Ok(1)\n",
+        "  value = named?^\n",
+        "  @Ok(literal + value)\n",
+    );
+    let output = parse_module(source);
+    let globals = vec![(
+        "literalError".to_owned(),
+        build::function(
+            vec![],
+            build::result(build::int(), build::text_literals(&["no"])),
+        ),
+    )];
+    let check = check_module_with_globals(&output.module, &globals);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "f", 0)).map(Type::render),
+        Some("() -> Result(Int, Text)".to_owned())
+    );
+}
+
+#[test]
+fn incompatible_propagated_error_union_defers() {
+    let source = concat!(
+        "f = () =>\n",
+        "  ignored = textError()?^\n",
+        "  value = intError()?^\n",
+        "  @Ok(value)\n",
+    );
+    let output = parse_module(source);
+    let globals = vec![
+        (
+            "textError".to_owned(),
+            build::function(vec![], build::result(build::int(), build::text())),
+        ),
+        (
+            "intError".to_owned(),
+            build::function(vec![], build::result(build::int(), build::int())),
+        ),
+    ];
+    let check = check_module_with_globals(&output.module, &globals);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert!(check.type_at(nth_span(source, "f", 0)).is_none());
+}
+
+#[test]
+fn propagate_error_union_keeps_literal_rows() {
+    let source = concat!(
+        "f = () =>\n",
+        "  first = firstError()?^\n",
+        "  second = secondError()?^\n",
+        "  @Ok(first + second)\n",
+    );
+    let output = parse_module(source);
+    let globals = vec![
+        (
+            "firstError".to_owned(),
+            build::function(
+                vec![],
+                build::result(build::int(), build::text_literals(&["first"])),
+            ),
+        ),
+        (
+            "secondError".to_owned(),
+            build::function(
+                vec![],
+                build::result(build::int(), build::text_literals(&["second"])),
+            ),
+        ),
+    ];
+    let check = check_module_with_globals(&output.module, &globals);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "f", 0)).map(Type::render),
+        Some("() -> Result(Int, \"first\" | \"second\")".to_owned())
     );
 }
 
