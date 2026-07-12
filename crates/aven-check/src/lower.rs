@@ -83,23 +83,29 @@ pub(crate) fn type_definitions(
         known_types,
         &reserved_names,
         &ModuleImports::default(),
+        &HashMap::new(),
     )
 }
 
+/// `seed_definitions` are definitions that exist before this module's own
+/// comptime declarations — host-global and pattern-imported types. They must
+/// be visible while declarations lower so comptime type functions applied to
+/// them reify instead of deferring.
 pub(crate) fn type_definitions_excluding(
     module: &Module,
     known_types: &HashSet<String>,
     reserved_names: &HashSet<String>,
     imports: &ModuleImports,
+    seed_definitions: &HashMap<String, Type>,
 ) -> HashMap<String, Type> {
-    let mut definitions = HashMap::new();
+    let mut definitions = seed_definitions.clone();
     let declarations: Vec<_> = collect_declarations(module)
         .into_iter()
         .filter(|declaration| declaration.phase == DeclarationPhase::Comptime)
         .collect();
 
     for _ in 0..=declarations.len() {
-        let mut next = HashMap::new();
+        let mut next = seed_definitions.clone();
 
         for declaration in &declarations {
             let Some(binding) = binding_for_declaration(module, declaration) else {

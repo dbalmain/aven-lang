@@ -219,9 +219,6 @@ pub fn check_module_with_host_globals_and_imports(
             .iter()
             .map(|(name, _)| name.clone()),
     );
-    let mut type_definitions =
-        type_definitions_excluding(module, &known_types, &reserved_type_names, imports);
-    let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
     let mut reserved_diagnostics = aven_parser::collect_declarations(module)
         .into_iter()
         .filter(|declaration| declaration.phase == aven_parser::DeclarationPhase::Comptime)
@@ -232,9 +229,15 @@ pub fn check_module_with_host_globals_and_imports(
                 .then(|| reserved_type_diagnostic(&declaration.name, declaration.name_span))
         })
         .collect::<Vec<_>>();
-    for (name, ty) in &globals.type_definitions {
-        type_definitions.insert(name.clone(), ty.clone());
-    }
+    // Host-global and pattern-imported type definitions must be visible while
+    // comptime bindings evaluate, so a local comptime type function applied to
+    // an imported type (`Draft = partial(User)` with `{ User } = import(...)`)
+    // reifies instead of silently deferring.
+    let mut seed_definitions: HashMap<String, Type> = globals
+        .type_definitions
+        .iter()
+        .map(|(name, ty)| (name.clone(), ty.clone()))
+        .collect();
     for item in &module.items {
         let Item::PatternBinding(binding) = item else {
             continue;
@@ -274,10 +277,18 @@ pub fn check_module_with_host_globals_and_imports(
                     continue;
                 }
                 known_types.insert(target.clone());
-                type_definitions.insert(target.clone(), ty.clone());
+                seed_definitions.insert(target.clone(), ty.clone());
             }
         }
     }
+    let type_definitions = type_definitions_excluding(
+        module,
+        &known_types,
+        &reserved_type_names,
+        imports,
+        &seed_definitions,
+    );
+    let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
     let mut checker = Checker::with_module_and_host_globals_and_imports(
         known_types,
         type_definitions.clone(),

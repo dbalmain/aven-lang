@@ -271,6 +271,48 @@ fn comptime_computed_type_alias_exports_through_modules() {
 }
 
 #[test]
+fn local_comptime_fn_applied_to_imported_type_reifies() {
+    // A pattern-imported type export must be visible while local comptime
+    // bindings evaluate: `Draft = partial(User)` reifies to a concrete record
+    // instead of silently deferring (which made checks against it vacuous).
+    let dir = TempDir::new("imported-type-comptime-arg");
+    write(
+        dir.path(),
+        "models.av",
+        "User = { name: Text, email: Text }\n{ User }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "{ User } = import(\"./models\")\n\
+         partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+         Draft = partial(User)\n\
+         complete = (draft: Draft): User => { name: \"anon\", email: \"a@b.c\", ..draft }\n\
+         user = complete({ name: \"Dave\" })\n\
+         { user }\n",
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("imported comptime argument should check");
+    assert_no_errors(&checked.reports);
+
+    // The reified type really constrains call sites: an unknown field errors.
+    write(
+        dir.path(),
+        "bad.av",
+        "{ User } = import(\"./models\")\n\
+         partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+         Draft = partial(User)\n\
+         complete = (draft: Draft): User => { name: \"anon\", email: \"a@b.c\", ..draft }\n\
+         user = complete({ bogus: 1 })\n\
+         { user }\n",
+    );
+    let bad = check_path_with_host_globals(&dir.path().join("bad.av"), &HostGlobals::default())
+        .expect("check should load graph");
+    assert_has_code(&bad.reports, codes::ty::UNEXPECTED_FIELD);
+}
+
+#[test]
 fn module_type_export_diagnostics_are_structured() {
     let dir = TempDir::new("type-export-diagnostics");
     write(

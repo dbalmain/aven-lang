@@ -4506,6 +4506,32 @@ fn optional_spread_patch_fields_preserve_base_shape() {
 }
 
 #[test]
+fn optional_spread_patch_widens_literal_defaults_to_patch_base() {
+    // N-model idiom: literal-typed defaults are join artifacts, so patching
+    // them with an optional base-typed field widens the merged field to the
+    // base instead of reporting `type.wide-value-into-literal-union`.
+    let output = parse_module(
+        "User = { name: Text, email: Text }\n\
+         partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n\
+         complete = (draft: partial(User)): User => { name: \"anon\", email: \"a@b.c\", ..draft }\n\
+         user = complete({ name: \"Dave\" })\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let user_type = Type::Record(Row {
+        entries: vec![field("name", named("Text")), field("email", named("Text"))],
+        tail: RowTail::Closed,
+    });
+
+    assert_eq!(checker.infer_top_level_value("user"), Some(user_type));
+    assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
+
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn value_spread_conflict_reports_duplicate_label() {
     let output = parse_module("a = { x: 1 }\nb = { x: 2 }\nconflict = { ..a, ..b }\n");
     let check = check_module(&output.module);

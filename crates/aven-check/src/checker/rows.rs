@@ -564,8 +564,10 @@ impl<'a> Checker<'a> {
             let label = row_entry_label(&entry).to_owned();
             if let Some(index) = row_entry_index(&row.entries, &label) {
                 if kind == RowKind::Record
-                    && self.merge_optional_record_patch_field(&row.entries[index], &entry, span)
+                    && let Some(merged) =
+                        self.merge_optional_record_patch_field(&row.entries[index], &entry, span)
                 {
+                    row.entries[index] = merged;
                     continue;
                 }
 
@@ -584,28 +586,77 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// An optional incoming field patches the base field: the patch only
+    /// applies when its value is present, so the merged field is the *join* of
+    /// both sides. A literal-typed base (an open row — the join artifact of a
+    /// default value) widens to the patch's base kind instead of constraining
+    /// it; a closed literal union is a declared boundary the patch must fit.
     pub(super) fn merge_optional_record_patch_field(
         &mut self,
         base: &RowEntry,
         incoming: &RowEntry,
         span: Span,
-    ) -> bool {
+    ) -> Option<RowEntry> {
         let (
-            RowEntry::Field { ty: base_ty, .. },
+            RowEntry::Field { name, ty: base_ty },
             RowEntry::Field {
                 ty: incoming_ty, ..
             },
         ) = (base, incoming)
         else {
-            return false;
+            return None;
         };
 
         let Type::Optional(inner) = self.normalize(incoming_ty) else {
-            return false;
+            return None;
         };
 
-        self.check_type_against_type(base_ty, &inner, span);
-        true
+        let ty = match self.join_optional_patch_types(&self.normalize(base_ty), &inner) {
+            Some(ty) => ty,
+            None => {
+                self.check_type_against_type(base_ty, &inner, span);
+                base_ty.clone()
+            }
+        };
+
+        Some(RowEntry::Field {
+            name: name.clone(),
+            ty,
+        })
+    }
+
+    fn join_optional_patch_types(&self, base: &Type, inner: &Type) -> Option<Type> {
+        match (base, inner) {
+            (Type::Variant(base_row), Type::Named(name))
+                if open_literal_variant_base(base_row)
+                    .is_some_and(|literal_base| literal_base.matches_named(name)) =>
+            {
+                Some(inner.clone())
+            }
+            (Type::Named(name), Type::Variant(inner_row))
+                if open_literal_variant_base(inner_row)
+                    .is_some_and(|literal_base| literal_base.matches_named(name)) =>
+            {
+                Some(base.clone())
+            }
+            (Type::Variant(base_row), Type::Variant(inner_row))
+                if open_literal_variant_base(base_row).is_some()
+                    && open_literal_variant_base(base_row)
+                        == open_literal_variant_base(inner_row) =>
+            {
+                let mut entries = base_row.entries.clone();
+                for entry in &inner_row.entries {
+                    if row_entry_index(&entries, row_entry_label(entry)).is_none() {
+                        entries.push(entry.clone());
+                    }
+                }
+                Some(Type::Variant(Row {
+                    entries,
+                    tail: RowTail::Open,
+                }))
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn merge_row_tails(
