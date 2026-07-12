@@ -981,17 +981,27 @@ fn std_array_combinators_run_via_import() {
 
     let imports = ModuleImports::new([("std/array".to_owned(), array_export)]);
     let source = concat!(
-        "{ length, fold, sum, all, any, find } = import(\"std/array\")\n",
+        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf } = import(\"std/array\")\n",
         "xs = [10, 20, 30]\n",
+        "empty = []\n",
         "zero: Int = 0\n",
         "{\n",
         "  length: length(xs),\n",
+        "  isEmpty: isEmpty(empty),\n",
+        "  first: first(xs),\n",
+        "  firstEmpty: first(empty),\n",
+        "  last: last(xs),\n",
+        "  lastEmpty: last(empty),\n",
         "  fold: fold(xs, zero, (acc, x) => acc + x),\n",
         "  sum: sum([1, 2, 3]),\n",
+        "  count: count(xs, (x) => x > 15),\n",
         "  all: all(xs, (x) => x > 0),\n",
         "  any: any(xs, (x) => x == 20),\n",
         "  findHit: find(xs, (x) => x == 20),\n",
         "  findMiss: find(xs, (x) => x == 99),\n",
+        "  indexOfHit: indexOf(xs, 20),\n",
+        "  indexOfMiss: indexOf(xs, 99),\n",
+        "  indexOfEmpty: indexOf(empty, 1),\n",
         "}\n",
     );
     let module = parse_ok(source);
@@ -1002,12 +1012,21 @@ fn std_array_combinators_run_via_import() {
         EvalOutcome {
             value: Some(record_value(vec![
                 ("length", Value::Int(3)),
+                ("isEmpty", Value::Bool(true)),
+                ("first", Value::Int(10)),
+                ("firstEmpty", Value::Undefined),
+                ("last", Value::Int(30)),
+                ("lastEmpty", Value::Undefined),
                 ("fold", Value::Int(60)),
                 ("sum", Value::Int(6)),
+                ("count", Value::Int(2)),
                 ("all", Value::Bool(true)),
                 ("any", Value::Bool(true)),
                 ("findHit", Value::Int(20)),
                 ("findMiss", Value::Undefined),
+                ("indexOfHit", Value::Int(1)),
+                ("indexOfMiss", Value::Undefined),
+                ("indexOfEmpty", Value::Undefined),
             ])),
             diagnostics: Vec::new()
         }

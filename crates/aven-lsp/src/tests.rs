@@ -1840,14 +1840,23 @@ fn library_interface_renders_std_array_signatures() {
         "# std/array — generated interface (shape view); not the implementation."
     );
     assert_eq!(lines[1], "");
-    // Export order follows the final record: length, fold, sum, all, any, find.
+    // Export order follows the final record:
+    // length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf.
     assert!(lines[2].starts_with("length : "), "line: {:?}", lines[2]);
-    assert!(lines[3].starts_with("fold : "), "line: {:?}", lines[3]);
-    assert!(lines[4].starts_with("sum : "), "line: {:?}", lines[4]);
-    assert!(lines[5].starts_with("all : "), "line: {:?}", lines[5]);
-    assert!(lines[6].starts_with("any : "), "line: {:?}", lines[6]);
-    assert!(lines[7].starts_with("find : "), "line: {:?}", lines[7]);
-    for name in ["length", "fold", "sum", "all", "any", "find"] {
+    assert!(lines[3].starts_with("isEmpty : "), "line: {:?}", lines[3]);
+    assert!(lines[4].starts_with("first : "), "line: {:?}", lines[4]);
+    assert!(lines[5].starts_with("last : "), "line: {:?}", lines[5]);
+    assert!(lines[6].starts_with("fold : "), "line: {:?}", lines[6]);
+    assert!(lines[7].starts_with("sum : "), "line: {:?}", lines[7]);
+    assert!(lines[8].starts_with("count : "), "line: {:?}", lines[8]);
+    assert!(lines[9].starts_with("all : "), "line: {:?}", lines[9]);
+    assert!(lines[10].starts_with("any : "), "line: {:?}", lines[10]);
+    assert!(lines[11].starts_with("find : "), "line: {:?}", lines[11]);
+    assert!(lines[12].starts_with("indexOf : "), "line: {:?}", lines[12]);
+    for name in [
+        "length", "isEmpty", "first", "last", "fold", "sum", "count", "all", "any", "find",
+        "indexOf",
+    ] {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);
     }

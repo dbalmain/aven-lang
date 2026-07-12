@@ -97,17 +97,23 @@ fn std_array_type_exports_check() {
     let dir = TempDir::new("std-array-check");
     let entry = dir.write(
         "main.av",
-        r#"{ length, fold, sum, all, any, find } = import("std/array")
+        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf } = import("std/array")
 xs = [10, 20, 30]
+empty = []
 zero: Int = 0
 len = length(xs)
+emptyFlag = isEmpty(empty)
+head = first(xs)
+tail = last(xs)
 folded = fold(xs, zero, (acc, x) => acc + x)
 total = sum([1, 2, 3])
+n = count(xs, (x) => x > 15)
 allPos = all(xs, (x) => x > 0)
 has20 = any(xs, (x) => x == 20)
 hit = find(xs, (x) => x == 20)
 miss = find(xs, (x) => x == 99)
-{ length, fold, sum, all, any, find, len, folded, total, allPos, has20, hit, miss }
+idx = indexOf(xs, 20)
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx }
 "#,
     );
 
@@ -126,16 +132,27 @@ fn std_array_combinators_run() {
     let dir = TempDir::new("std-array-run");
     let entry = dir.write(
         "main.av",
-        r#"{ length, fold, sum, all, any, find } = import("std/array")
+        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf } = import("std/array")
 xs = [10, 20, 30]
+empty = []
 zero: Int = 0
 writeLine("${length(xs)}")
+writeLine("${isEmpty(xs)}")
+writeLine("${isEmpty(empty)}")
+writeLine("${first(xs)}")
+writeLine("${first(empty)}")
+writeLine("${last(xs)}")
+writeLine("${last(empty)}")
 writeLine("${fold(xs, zero, (acc, x) => acc + x)}")
 writeLine("${sum([1, 2, 3])}")
+writeLine("${count(xs, (x) => x > 15)}")
 writeLine("${all(xs, (x) => x > 0)}")
 writeLine("${any(xs, (x) => x == 20)}")
 writeLine("${find(xs, (x) => x == 20)}")
 writeLine("${find(xs, (x) => x == 99)}")
+writeLine("${indexOf(xs, 20)}")
+writeLine("${indexOf(xs, 99)}")
+writeLine("${indexOf(empty, 1)}")
 "#,
     );
 
@@ -147,7 +164,10 @@ writeLine("${find(xs, (x) => x == 99)}")
         stdout(&output),
         stderr(&output)
     );
-    assert_eq!(stdout(&output), "3\n60\n6\ntrue\ntrue\n20\nundefined\n");
+    assert_eq!(
+        stdout(&output),
+        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n"
+    );
 }
 
 #[test]

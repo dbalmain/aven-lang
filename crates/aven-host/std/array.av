@@ -18,10 +18,31 @@ length = (xs) =>
   zero: Int = 0
   fold(xs, zero, (acc, _) => acc + 1)
 
+isEmpty : (Array(a)) -> Bool
+isEmpty = (xs) =>
+  xs[0] ?>
+    undefined => true
+    _ => false
+
+first : (Array(a)) -> ?a
+first = (xs) => xs[0]
+
+# Empty: length is 0, so index is -1 → out-of-bounds `undefined`.
+# Non-empty: length - 1 is the last valid index. (No negative-index wrap.)
+last : (Array(a)) -> ?a
+last = (xs) =>
+  n = length(xs)
+  xs[n - 1]
+
 sum : (Array(Int)) -> Int
 sum = (xs) =>
   zero: Int = 0
   fold(xs, zero, (acc, x) => acc + x)
+
+count : (Array(a), (a) -> Bool) -> Int
+count = (xs, pred) =>
+  zero: Int = 0
+  fold(xs, zero, (acc, x) => pred(x) ?> true => acc + 1, false => acc)
 
 all : (Array(a), (a) -> Bool) -> Bool
 all = (xs, pred) =>
@@ -47,4 +68,25 @@ findGo = (xs, index, pred) =>
 find : (Array(a), (a) -> Bool) -> ?a
 find = (xs, pred) => findGo(xs, 0, pred)
 
-{ length, fold, sum, all, any, find }
+# Own recursive helper so a hit returns without scanning the rest.
+# Return is `?b` (not monomorphic `?Int`): a `-> ?Int` annotation on a match
+# that returns bare `index`/`undefined` is checked as `Int` today, not `?Int`
+# (even widening through an annotated local does not rescue it — a real checker
+# gap, see .ai/design-optional-return-widening-gap.md). The public `indexOf`
+# pins the result to `?Int`.
+indexOfGo : (Array(a), Int, a) -> ?b
+indexOfGo = (xs, index, target) =>
+  next = xs[index]
+  next ?>
+    undefined => undefined
+    element =>
+      element == target ?>
+        true => index
+        false => indexOfGo(xs, index + 1, target)
+
+indexOf : (Array(a), a) -> ?Int
+indexOf = (xs, target) =>
+  zero: Int = 0
+  indexOfGo(xs, zero, target)
+
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf }
