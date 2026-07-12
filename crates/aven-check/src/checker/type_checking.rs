@@ -431,6 +431,16 @@ impl<'a> Checker<'a> {
             (Type::Named(expected), Type::Variant(actual)) => {
                 self.check_variant_type_against_named(expected, actual, span);
             }
+            (
+                expected @ (Type::Record(_) | Type::Tuple(_) | Type::Function { .. }),
+                Type::Variant(actual),
+            ) if literal_variant_base(actual).is_some() => {
+                self.report_type_mismatch_between_types(
+                    &expected.render(),
+                    &display_inferred_type(&Type::Variant(actual.clone())).render(),
+                    span,
+                );
+            }
             (Type::Record(expected), Type::Record(actual)) => {
                 let (Some(expected), Some(actual)) =
                     (literal_record_type(expected), literal_record_type(actual))

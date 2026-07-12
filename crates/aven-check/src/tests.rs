@@ -1833,6 +1833,7 @@ fn literal_bindings_report_definitive_scalar_mismatches() {
         "value : Bool = \"hi\"\n",
         "value : Undefined = 42\n",
         "value : Unit = \"hi\"\n",
+        "value : { name: Text } = \"hi\"\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -1845,7 +1846,6 @@ fn literal_bindings_report_definitive_scalar_mismatches() {
 fn literal_binding_mismatch_defers_non_literals_and_non_scalar_annotations() {
     for source in [
         "value : Float\nvalue = 42\n",
-        "value : { name: Text } = \"hi\"\n",
         "value : Missing = \"hi\"\n",
         "value : Missing\nvalue = \"hi\"\n",
     ] {
@@ -2187,6 +2187,37 @@ fn fresh_literals_check_against_literal_unions_by_membership() {
     assert_eq!(
         matching_codes(&rejected_check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
         2
+    );
+}
+
+#[test]
+fn structural_annotations_reject_literal_values() {
+    let rejected = parse_module(concat!(
+        "R = { x: Int }\n",
+        "r : R = 42\n",
+        "t : (Int, Text) = 42\n",
+        "f : (Int) -> Int = 42\n",
+    ));
+    let rejected_check = check_module(&rejected.module);
+    assert_eq!(
+        matching_codes(&rejected_check.diagnostics, codes::ty::MISMATCH),
+        3,
+        "structural annotations must reject literals: {:?}",
+        rejected_check.diagnostics
+    );
+
+    let accepted = parse_module(concat!(
+        "R = { x: Int }\n",
+        "r : R = { x: 42 }\n",
+        "t : (Int, Text) = (42, \"ok\")\n",
+        "f : (Int) -> Int = (x) => x\n",
+        "mode : \"r\" | \"w\" = \"r\"\n",
+    ));
+    let accepted_check = check_module(&accepted.module);
+    assert!(
+        accepted_check.diagnostics.is_empty(),
+        "valid structural and literal-union annotations failed: {:?}",
+        accepted_check.diagnostics
     );
 }
 
