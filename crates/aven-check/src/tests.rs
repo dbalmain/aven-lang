@@ -4705,6 +4705,7 @@ fn variant_values_are_checked_against_annotations() {
     for source in [
         "value : @{@Ok(Int), @Err(Text)} = @Ok(1)\n",
         "value : @{@Done} = @Done\n",
+        "value : @Point(Int) = @Point(1)\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -4720,6 +4721,9 @@ fn variant_values_are_checked_against_annotations() {
         "value : @{@Ok(Text), ..} = @Ok(1)\n",
         "value : @{@Ok(Int)} = @Err(1)\n",
         "value : @{@Ok(Int)} = @Ok(1, 2)\n",
+        "p : @Point(Int, Int) = @Point(1, \"x\")\n",
+        "q : @Point(Int) = 42\n",
+        "r : @Point(Int, Int) = @Point(1)\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -4730,6 +4734,18 @@ fn variant_values_are_checked_against_annotations() {
             "{source} should produce one type.mismatch"
         );
     }
+}
+
+#[test]
+fn singleton_payload_variant_annotations_support_matching() {
+    let output = parse_module(
+        "point : @Point(Int) = @Point(1)\n\
+         coordinate = point ?> @Point(value) => value\n\
+         checked : Int = coordinate\n",
+    );
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
 }
 
 #[test]

@@ -276,6 +276,10 @@ impl<'a> Checker<'a> {
             ExprKind::Literal(Literal::Bool(_) | Literal::Number(_) | Literal::String(_))
             | ExprKind::Tag(_) => self.lower_singleton_variant_annotation(annotation),
             ExprKind::Call { callee, args } => {
+                if matches!(&callee.kind, ExprKind::Tag(_)) {
+                    return self.lower_singleton_variant_annotation(annotation);
+                }
+
                 if self.is_type_application_callee(callee)
                     && !self.is_uppercase_comptime_function_callee(callee)
                 {
