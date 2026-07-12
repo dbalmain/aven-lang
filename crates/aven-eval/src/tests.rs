@@ -1177,6 +1177,75 @@ fn array_push_returns_new_array_without_mutating_receiver() {
 }
 
 #[test]
+fn text_methods_predicates_and_case() {
+    assert_module_value(
+        "t = \"Hello\"\n\
+         [t.isEmpty(), \"\".isEmpty(), t.contains(\"ell\"), t.startsWith(\"He\"), t.endsWith(\"lo\"), \
+          t.toLower(), t.toUpper()]\n",
+        array_value(vec![
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::Text("hello".to_owned()),
+            Value::Text("HELLO".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn text_methods_trim_replace_and_drop_affix() {
+    assert_module_value(
+        "t = \"  ababa  \"\n\
+         [t.trim(), t.trimStart(), t.trimEnd(), \
+          t.replaceEach(\"a\", \"x\"), t.replaceFirst(\"a\", \"x\"), \
+          \"prefix\".dropPrefix(\"pre\"), \"prefix\".dropPrefix(\"no\"), \
+          \"suffix\".dropSuffix(\"fix\"), \"suffix\".dropSuffix(\"no\")]\n",
+        array_value(vec![
+            Value::Text("ababa".to_owned()),
+            Value::Text("ababa  ".to_owned()),
+            Value::Text("  ababa".to_owned()),
+            Value::Text("  xbxbx  ".to_owned()),
+            Value::Text("  xbaba  ".to_owned()),
+            Value::Text("fix".to_owned()),
+            Value::Text("prefix".to_owned()),
+            Value::Text("suf".to_owned()),
+            Value::Text("suffix".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn text_methods_repeat_split_and_join() {
+    // repeat: n <= 0 → empty; splitOn empty string / no match still ≥1 element;
+    // empty separator returns the original wrapped in a one-element list (Roc).
+    assert_module_value(
+        "[\
+           \"ab\".repeat(3), \"ab\".repeat(0), \"ab\".repeat(-2), \
+           \"a,b,c\".splitOn(\",\"), \"alone\".splitOn(\",\"), \"\".splitOn(\",\"), \
+           \"keep\".splitOn(\"\"), \
+           [\"a\", \"b\", \"c\"].joinWith(\", \"), [].joinWith(\",\")\
+         ]\n",
+        array_value(vec![
+            Value::Text("ababab".to_owned()),
+            Value::Text(String::new()),
+            Value::Text(String::new()),
+            array_value(vec![
+                Value::Text("a".to_owned()),
+                Value::Text("b".to_owned()),
+                Value::Text("c".to_owned()),
+            ]),
+            array_value(vec![Value::Text("alone".to_owned())]),
+            array_value(vec![Value::Text(String::new())]),
+            array_value(vec![Value::Text("keep".to_owned())]),
+            Value::Text("a, b, c".to_owned()),
+            Value::Text(String::new()),
+        ]),
+    );
+}
+
+#[test]
 fn has_on_unsupported_receiver_still_reports_type_error() {
     let diagnostic = eval_error("1.has(1)");
 

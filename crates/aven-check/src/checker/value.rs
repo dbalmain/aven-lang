@@ -64,6 +64,13 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        // `text.decode(Fmt, ...)` is format sugar, not a Text method field. Route
+        // through the desugar before field-access checking would report missing
+        // `decode` on Text (which now has a real method table).
+        if self.infer_text_decode_call(&env, callee, args).is_some() {
+            return;
+        }
+
         self.check_value_expr(callee);
 
         let env = self.local_types.inference_env();
@@ -118,6 +125,7 @@ impl<'a> Checker<'a> {
         if is_concrete_type(&receiver_type)
             && (is_map_receiver_type(&receiver_type)
                 || is_array_receiver_type(&receiver_type)
+                || is_text_type(&receiver_type)
                 || result_type_args(&receiver_type).is_some())
         {
             self.report_missing_field(field, span);
@@ -127,6 +135,14 @@ impl<'a> Checker<'a> {
         if is_concrete_type(&receiver_type)
             && crate::ty::ARRAY_METHOD_NAMES.contains(&field)
             && !is_array_receiver_type(&receiver_type)
+        {
+            self.report_missing_field(field, span);
+            return;
+        }
+        // Text methods are not invented on non-Text receivers.
+        if is_concrete_type(&receiver_type)
+            && crate::ty::TEXT_METHOD_NAMES.contains(&field)
+            && !is_text_type(&receiver_type)
         {
             self.report_missing_field(field, span);
             return;

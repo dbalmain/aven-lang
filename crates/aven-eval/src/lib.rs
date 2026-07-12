@@ -124,6 +124,25 @@ pub const MAP_METHOD_NAMES: &[&str] = &[
     "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
 ];
 
+/// Roc-aligned Text helpers. Keep in lockstep with `aven_check::ty::TEXT_METHOD_NAMES`.
+pub const TEXT_METHOD_NAMES: &[&str] = &[
+    "isEmpty",
+    "contains",
+    "startsWith",
+    "endsWith",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "toLower",
+    "toUpper",
+    "replaceEach",
+    "replaceFirst",
+    "dropPrefix",
+    "dropSuffix",
+    "repeat",
+    "splitOn",
+];
+
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1772,6 +1791,7 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
         (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),
         (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
+        (Value::Array(items), "joinWith") => Some(array_join_with_method(Rc::clone(items))),
         (Value::Map(entries), "get") => Some(map_get_method(Rc::clone(entries))),
         (Value::Map(entries), "set") => Some(map_set_method(Rc::clone(entries))),
         (Value::Map(entries), "delete") => Some(map_delete_method(Rc::clone(entries))),
@@ -1781,6 +1801,7 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
         (Value::Map(entries), "entries") => Some(map_entries_method(Rc::clone(entries))),
         (Value::Map(entries), "size") => Some(map_size_method(Rc::clone(entries))),
         (Value::Map(entries), "merge") => Some(map_merge_method(Rc::clone(entries))),
+        (Value::Text(text), field) => text_method(text, field),
         (Value::Tag { name, payload }, "mapErr" | "orElse")
             if matches!(name.as_str(), "Ok" | "Err") && payload.len() == 1 =>
         {
@@ -1796,6 +1817,206 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+fn text_method(text: &str, field: &str) -> Option<Value> {
+    let text = text.to_owned();
+    match field {
+        "isEmpty" => Some(text_nullary_bool(text, "isEmpty", |s| s.is_empty())),
+        "contains" => Some(text_predicate_method(text, "contains", |s, needle| {
+            s.contains(needle)
+        })),
+        "startsWith" => Some(text_predicate_method(text, "startsWith", |s, prefix| {
+            s.starts_with(prefix)
+        })),
+        "endsWith" => Some(text_predicate_method(text, "endsWith", |s, suffix| {
+            s.ends_with(suffix)
+        })),
+        "trim" => Some(text_nullary_text(text, "trim", |s| s.trim().to_owned())),
+        "trimStart" => Some(text_nullary_text(text, "trimStart", |s| {
+            s.trim_start().to_owned()
+        })),
+        "trimEnd" => Some(text_nullary_text(text, "trimEnd", |s| {
+            s.trim_end().to_owned()
+        })),
+        // Full Unicode case mapping (Rust `to_lowercase` / `to_uppercase`), not
+        // Roc's ASCII-only `toAsciiLowercase` / `toAsciiUppercase`.
+        "toLower" => Some(text_nullary_text(text, "toLower", |s| s.to_lowercase())),
+        "toUpper" => Some(text_nullary_text(text, "toUpper", |s| s.to_uppercase())),
+        "replaceEach" => Some(text_replace_method(text, "replaceEach", false)),
+        "replaceFirst" => Some(text_replace_method(text, "replaceFirst", true)),
+        "dropPrefix" => Some(text_drop_affix_method(text, "dropPrefix", true)),
+        "dropSuffix" => Some(text_drop_affix_method(text, "dropSuffix", false)),
+        "repeat" => Some(text_repeat_method(text)),
+        "splitOn" => Some(text_split_on_method(text)),
+        _ => None,
+    }
+}
+
+fn text_nullary_bool(
+    text: String,
+    name: &'static str,
+    f: impl Fn(&str) -> bool + 'static,
+) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Text.{name} expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(Value::Bool(f(&text)))
+    })
+}
+
+fn text_nullary_text(
+    text: String,
+    name: &'static str,
+    f: impl Fn(&str) -> String + 'static,
+) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Text.{name} expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(Value::Text(f(&text)))
+    })
+}
+
+fn text_predicate_method(
+    text: String,
+    name: &'static str,
+    f: impl Fn(&str, &str) -> bool + 'static,
+) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Text.{name} expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let needle = expect_text_arg(&args[0], &format!("Text.{name}"))?;
+        Ok(Value::Bool(f(&text, needle)))
+    })
+}
+
+fn text_replace_method(text: String, name: &'static str, first_only: bool) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "Text.{name} expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let from = expect_text_arg(&args[0], &format!("Text.{name}"))?;
+        let to = expect_text_arg(&args[1], &format!("Text.{name}"))?;
+        let replaced = if first_only {
+            text.replacen(from, to, 1)
+        } else {
+            text.replace(from, to)
+        };
+        Ok(Value::Text(replaced))
+    })
+}
+
+fn text_drop_affix_method(text: String, name: &'static str, prefix: bool) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Text.{name} expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let affix = expect_text_arg(&args[0], &format!("Text.{name}"))?;
+        // Roc semantics: no match leaves the input unchanged.
+        let next = if prefix {
+            text.strip_prefix(affix).unwrap_or(&text)
+        } else {
+            text.strip_suffix(affix).unwrap_or(&text)
+        };
+        Ok(Value::Text(next.to_owned()))
+    })
+}
+
+fn text_repeat_method(text: String) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Text.repeat expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let Value::Int(count) = &args[0] else {
+            return Err(format!(
+                "Text.repeat expects Int, got {}",
+                args[0].type_name()
+            ));
+        };
+        // Negative count → empty text (same as count 0). Documented choice.
+        if *count <= 0 {
+            return Ok(Value::Text(String::new()));
+        }
+        let Ok(n) = usize::try_from(*count) else {
+            return Err("Text.repeat count is too large".to_owned());
+        };
+        Ok(Value::Text(text.repeat(n)))
+    })
+}
+
+fn text_split_on_method(text: String) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Text.splitOn expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let sep = expect_text_arg(&args[0], "Text.splitOn")?;
+        // Empty separator is not useful (and panics in Rust `str::split`);
+        // match Roc: return the original string wrapped in a one-element list.
+        if sep.is_empty() {
+            return Ok(Value::Array(Rc::new(vec![Value::Text(text.clone())])));
+        }
+        // Rust `str::split` semantics: no match and empty input still yield at
+        // least one element (`[""]` for empty input; `[self]` when sep absent).
+        let parts = text
+            .split(sep)
+            .map(|part| Value::Text(part.to_owned()))
+            .collect::<Vec<_>>();
+        Ok(Value::Array(Rc::new(parts)))
+    })
+}
+
+fn expect_text_arg<'a>(value: &'a Value, context: &str) -> Result<&'a str, String> {
+    match value {
+        Value::Text(text) => Ok(text),
+        other => Err(format!("{context} expects Text, got {}", other.type_name())),
+    }
+}
+
+fn array_join_with_method(items: Rc<Vec<Value>>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Array.joinWith expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let sep = expect_text_arg(&args[0], "Array.joinWith")?;
+        let mut parts = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            let Value::Text(text) = item else {
+                return Err(format!(
+                    "Array.joinWith expects Array(Text), got element {}",
+                    item.type_name()
+                ));
+            };
+            parts.push(text.as_str());
+        }
+        Ok(Value::Text(parts.join(sep)))
+    })
 }
 
 fn collection_has_method(kind: &'static str, items: Rc<Vec<Value>>) -> Value {

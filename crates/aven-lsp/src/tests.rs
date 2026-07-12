@@ -756,6 +756,48 @@ fn completion_at_text_field_access_offers_format_methods() {
 }
 
 #[test]
+fn completion_at_text_field_access_returns_builtin_methods() {
+    let completions = completions_at_marker("text : Text = \"hi\"\nresult = text.|");
+    let labels = completions
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+
+    for name in [
+        "isEmpty",
+        "contains",
+        "startsWith",
+        "endsWith",
+        "trim",
+        "trimStart",
+        "trimEnd",
+        "toLower",
+        "toUpper",
+        "replaceEach",
+        "replaceFirst",
+        "dropPrefix",
+        "dropSuffix",
+        "repeat",
+        "splitOn",
+    ] {
+        assert!(
+            labels.contains(&name),
+            "expected Text.{name} completion, got {labels:?}"
+        );
+    }
+    assert!(!labels.contains(&"length") && !labels.contains(&"len"));
+
+    let Some(is_empty) = completion_item(&completions, "isEmpty") else {
+        panic!("expected Text.isEmpty completion");
+    };
+    assert_eq!(is_empty.detail.as_deref(), Some("() -> Bool"));
+    let Some(repeat) = completion_item(&completions, "repeat") else {
+        panic!("expected Text.repeat completion");
+    };
+    assert_eq!(repeat.detail.as_deref(), Some("Int -> Text"));
+}
+
+#[test]
 fn completion_at_record_field_access_keeps_real_encode_member_detail() {
     let completions =
         completions_at_marker("user : { encode: (Int) -> Text } = current\nresult = user.|\n");

@@ -456,7 +456,13 @@ fn record_fields_query_enumerates_record_fields_and_peels_wrappers() {
         Some(expected.clone())
     );
     assert_eq!(record_fields(&nullable(record)), Some(expected));
-    assert_eq!(record_fields(&named("Text")), None);
+    // Named primitives without methods still yield None; Text carries methods.
+    assert_eq!(record_fields(&named("Int")), None);
+    let text_fields = record_fields(&named("Text")).expect("Text has methods");
+    assert!(
+        text_fields.iter().any(|field| field.name == "isEmpty"),
+        "Text methods should include isEmpty: {text_fields:?}"
+    );
 }
 
 #[test]
@@ -4469,6 +4475,139 @@ fn map_method_field_query_returns_typed_methods() {
 #[test]
 fn map_method_names_match_evaluator_dispatch() {
     assert_eq!(crate::ty::MAP_METHOD_NAMES, aven_eval::MAP_METHOD_NAMES);
+}
+
+#[test]
+fn text_method_names_match_evaluator_dispatch() {
+    assert_eq!(crate::ty::TEXT_METHOD_NAMES, aven_eval::TEXT_METHOD_NAMES);
+}
+
+#[test]
+fn text_method_field_query_returns_typed_methods() {
+    let fields = record_fields(&named("Text")).expect("Text fields");
+    let is_empty = fields
+        .iter()
+        .find(|field| field.name == "isEmpty")
+        .expect("isEmpty method");
+    let contains = fields
+        .iter()
+        .find(|field| field.name == "contains")
+        .expect("contains method");
+    let repeat = fields
+        .iter()
+        .find(|field| field.name == "repeat")
+        .expect("repeat method");
+    let split_on = fields
+        .iter()
+        .find(|field| field.name == "splitOn")
+        .expect("splitOn method");
+    let replace_each = fields
+        .iter()
+        .find(|field| field.name == "replaceEach")
+        .expect("replaceEach method");
+
+    assert_eq!(is_empty.ty.render(), "() -> Bool");
+    assert_eq!(contains.ty.render(), "Text -> Bool");
+    assert_eq!(repeat.ty.render(), "Int -> Text");
+    assert_eq!(split_on.ty.render(), "Text -> Array(Text)");
+    assert_eq!(replace_each.ty.render(), "(Text, Text) -> Text");
+    assert!(
+        !fields
+            .iter()
+            .any(|field| field.name == "length" || field.name == "len"),
+        "Text must not expose length/len"
+    );
+}
+
+#[test]
+fn text_methods_type_check_and_reject_mismatches() {
+    let ok = parse_module(concat!(
+        "t : Text = \"hi\"\n",
+        "a = t.isEmpty()\n",
+        "b = t.contains(\"h\")\n",
+        "c = t.startsWith(\"h\")\n",
+        "d = t.endsWith(\"i\")\n",
+        "e = t.trim()\n",
+        "f = t.trimStart()\n",
+        "g = t.trimEnd()\n",
+        "h = t.toLower()\n",
+        "i = t.toUpper()\n",
+        "j = t.replaceEach(\"h\", \"H\")\n",
+        "k = t.replaceFirst(\"h\", \"H\")\n",
+        "l = t.dropPrefix(\"h\")\n",
+        "m = t.dropSuffix(\"i\")\n",
+        "n = t.repeat(2)\n",
+        "o = t.splitOn(\"\")\n",
+        "p = [\"a\", \"b\"].joinWith(\", \")\n",
+    ));
+    let ok_check = check_module(&ok.module);
+    assert!(
+        ok_check.diagnostics.is_empty(),
+        "text methods should type-check: {:?}",
+        ok_check.diagnostics
+    );
+
+    let mismatch = parse_module("t : Text = \"hi\"\nvalue = t.repeat(\"x\")\n");
+    let mismatch_check = check_module(&mismatch.module);
+    assert_eq!(
+        matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "t.repeat(\"x\") should be a type mismatch: {:?}",
+        mismatch_check.diagnostics
+    );
+
+    let unknown = parse_module("t : Text = \"hi\"\nvalue = t.nope()\n");
+    let unknown_check = check_module(&unknown.module);
+    assert_eq!(
+        matching_codes(&unknown_check.diagnostics, codes::ty::MISSING_FIELD),
+        1,
+        "unknown Text method should be missing-field: {:?}",
+        unknown_check.diagnostics
+    );
+
+    let non_text = parse_module("value = 1.isEmpty()\n");
+    let non_text_check = check_module(&non_text.module);
+    assert!(
+        matching_codes(&non_text_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
+            || !non_text_check.diagnostics.is_empty(),
+        "1.isEmpty should error: {:?}",
+        non_text_check.diagnostics
+    );
+}
+
+#[test]
+fn array_join_with_only_on_array_of_text() {
+    let ok = parse_module("parts : Array(Text) = [\"a\", \"b\"]\njoined = parts.joinWith(\",\")\n");
+    let ok_check = check_module(&ok.module);
+    assert!(
+        ok_check.diagnostics.is_empty(),
+        "Array(Text).joinWith should type-check: {:?}",
+        ok_check.diagnostics
+    );
+
+    let fields =
+        record_fields(&apply(named("Array"), vec![named("Text")])).expect("Array(Text) fields");
+    let join = fields
+        .iter()
+        .find(|field| field.name == "joinWith")
+        .expect("joinWith on Array(Text)");
+    assert_eq!(join.ty.render(), "Text -> Text");
+
+    let int_fields =
+        record_fields(&apply(named("Array"), vec![named("Int")])).expect("Array(Int) fields");
+    assert!(
+        !int_fields.iter().any(|field| field.name == "joinWith"),
+        "Array(Int) must not advertise joinWith"
+    );
+
+    let bad = parse_module("xs : Array(Int) = [1, 2]\nvalue = xs.joinWith(\",\")\n");
+    let bad_check = check_module(&bad.module);
+    assert_eq!(
+        matching_codes(&bad_check.diagnostics, codes::ty::MISSING_FIELD),
+        1,
+        "Array(Int).joinWith should be missing-field: {:?}",
+        bad_check.diagnostics
+    );
 }
 
 #[test]

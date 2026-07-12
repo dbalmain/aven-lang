@@ -53,6 +53,26 @@ pub const MAP_METHOD_NAMES: &[&str] = &[
 
 pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "push"];
 
+/// Roc-aligned `Str` helpers (camelCase). No `length`/`len` — grapheme
+/// ambiguity; Roc omits it on purpose.
+pub const TEXT_METHOD_NAMES: &[&str] = &[
+    "isEmpty",
+    "contains",
+    "startsWith",
+    "endsWith",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "toLower",
+    "toUpper",
+    "replaceEach",
+    "replaceFirst",
+    "dropPrefix",
+    "dropSuffix",
+    "repeat",
+    "splitOn",
+];
+
 pub const RESULT_METHOD_NAMES: &[&str] = &["mapErr", "orElse"];
 
 pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
@@ -74,9 +94,8 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
                 })
                 .collect(),
         ),
-        Type::Apply { .. } | Type::Variant(_) => builtin_collection_fields(ty),
+        Type::Apply { .. } | Type::Variant(_) | Type::Named(_) => builtin_collection_fields(ty),
         Type::Deferred
-        | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)
         | Type::Function { .. }
@@ -124,8 +143,16 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
                 vec![element.clone()],
                 array_apply(element.clone()),
             )),
+            // Roc `Str.join_with` with the list as receiver (`parts.joinWith(", ")`).
+            "joinWith" if is_text_type(element) => {
+                Some(function(vec![named_builtin("Text")], named_builtin("Text")))
+            }
             _ => None,
         };
+    }
+
+    if is_text_type(receiver) {
+        return text_method_type(name);
     }
 
     let (ok, error) = result_type_args(receiver)?;
@@ -147,26 +174,57 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
     }
 }
 
+fn text_method_type(name: &str) -> Option<Type> {
+    let text = named_builtin("Text");
+    let bool_ty = named_builtin("Bool");
+    match name {
+        "isEmpty" => Some(function(Vec::new(), bool_ty)),
+        "contains" | "startsWith" | "endsWith" => Some(function(vec![text.clone()], bool_ty)),
+        "trim" | "trimStart" | "trimEnd" | "toLower" | "toUpper" => {
+            Some(function(Vec::new(), text))
+        }
+        "replaceEach" | "replaceFirst" => Some(function(vec![text.clone(), text.clone()], text)),
+        "dropPrefix" | "dropSuffix" => Some(function(vec![text.clone()], text)),
+        "repeat" => Some(function(vec![named_builtin("Int")], text)),
+        "splitOn" => Some(function(vec![text], array_apply(named_builtin("Text")))),
+        _ => None,
+    }
+}
+
 fn builtin_collection_fields(receiver: &Type) -> Option<Vec<RecordField>> {
     let names = if map_type_args(receiver).is_some() {
         MAP_METHOD_NAMES
     } else if array_type_arg(receiver).is_some() {
         ARRAY_METHOD_NAMES
+    } else if is_text_type(receiver) {
+        TEXT_METHOD_NAMES
     } else if result_type_args(receiver).is_some() {
         RESULT_METHOD_NAMES
     } else {
         return None;
     };
-    Some(
-        names
-            .iter()
-            .map(|name| RecordField {
-                name: (*name).to_owned(),
-                ty: builtin_collection_method_type(receiver, name)
-                    .expect("builtin method names have method types"),
-            })
-            .collect(),
-    )
+    let mut fields = names
+        .iter()
+        .map(|name| RecordField {
+            name: (*name).to_owned(),
+            ty: builtin_collection_method_type(receiver, name)
+                .expect("builtin method names have method types"),
+        })
+        .collect::<Vec<_>>();
+
+    // `joinWith` is Array(Text)-only; keep it out of the generic array table so
+    // Array(Int) does not advertise a method it cannot type.
+    if let Some(element) = array_type_arg(receiver)
+        && is_text_type(element)
+        && let Some(ty) = builtin_collection_method_type(receiver, "joinWith")
+    {
+        fields.push(RecordField {
+            name: "joinWith".to_owned(),
+            ty,
+        });
+    }
+
+    Some(fields)
 }
 
 fn map_type_args(ty: &Type) -> Option<(&Type, &Type)> {
