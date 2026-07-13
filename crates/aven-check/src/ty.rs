@@ -51,6 +51,8 @@ pub const MAP_METHOD_NAMES: &[&str] = &[
 
 pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "push"];
 
+pub const SET_METHOD_NAMES: &[&str] = &["has"];
+
 /// Roc-aligned `Str` helpers (camelCase). No `length`/`len` — grapheme
 /// ambiguity; Roc omits it on purpose.
 pub const TEXT_METHOD_NAMES: &[&str] = &[
@@ -149,8 +151,19 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
         };
     }
 
+    if let Some(element) = set_type_arg(receiver) {
+        return match name {
+            "has" => Some(function(vec![element.clone()], named_builtin("Bool"))),
+            _ => None,
+        };
+    }
+
     if is_text_type(receiver) {
         return text_method_type(name);
+    }
+
+    if let Type::Named(type_name) = receiver {
+        return temporal_method_type(type_name, name);
     }
 
     let (ok, error) = result_type_args(receiver)?;
@@ -189,11 +202,33 @@ fn text_method_type(name: &str) -> Option<Type> {
     }
 }
 
+fn temporal_method_type(type_name: &str, name: &str) -> Option<Type> {
+    let named = |name| named_builtin(name);
+    match (type_name, name) {
+        ("Date", "format")
+        | ("Time", "format")
+        | ("DateTime", "format")
+        | ("Instant", "format")
+        | ("Duration", "format") => Some(function(Vec::new(), named("Text"))),
+        ("Date", "plusDays") => Some(function(vec![named("Int")], named("Date"))),
+        ("DateTime", "instant") => Some(function(vec![named("Int")], named("Instant"))),
+        ("Instant", "dateTime") => Some(function(vec![named("Int")], named("DateTime"))),
+        ("Instant", "plus") | ("Instant", "minus") => {
+            Some(function(vec![named("Duration")], named("Instant")))
+        }
+        ("Instant", "since") => Some(function(vec![named("Instant")], named("Duration"))),
+        ("Duration", "plus") => Some(function(vec![named("Duration")], named("Duration"))),
+        _ => None,
+    }
+}
+
 fn builtin_collection_fields(receiver: &Type) -> Option<Vec<RecordField>> {
     let names = if map_type_args(receiver).is_some() {
         MAP_METHOD_NAMES
     } else if array_type_arg(receiver).is_some() {
         ARRAY_METHOD_NAMES
+    } else if set_type_arg(receiver).is_some() {
+        SET_METHOD_NAMES
     } else if is_text_type(receiver) {
         TEXT_METHOD_NAMES
     } else if result_type_args(receiver).is_some() {
@@ -243,6 +278,19 @@ fn array_type_arg(ty: &Type) -> Option<&Type> {
         return None;
     };
     if !matches!(callee.as_ref(), Type::Named(name) if name == "Array") {
+        return None;
+    }
+    let [element] = args.as_slice() else {
+        return None;
+    };
+    Some(element)
+}
+
+fn set_type_arg(ty: &Type) -> Option<&Type> {
+    let Type::Apply { callee, args } = ty else {
+        return None;
+    };
+    if !matches!(callee.as_ref(), Type::Named(name) if name == "Set") {
         return None;
     }
     let [element] = args.as_slice() else {

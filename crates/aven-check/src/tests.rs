@@ -4993,6 +4993,93 @@ fn text_methods_type_check_and_reject_mismatches() {
 }
 
 #[test]
+fn method_calls_report_missing_fields_on_known_receivers() {
+    for (source, field) in [
+        ("n = 42\nr: Text = n.bar()\n", "bar"),
+        ("r = { a: 1 }\nx: Int = r.get(\"a\")\n", "get"),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+            1,
+            "{source} should report type.missing-field: {:?}",
+            check.diagnostics
+        );
+        let diagnostic = check
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISSING_FIELD))
+            .expect("missing-field diagnostic");
+        assert_eq!(
+            &source[diagnostic.labels[0].span.start..diagnostic.labels[0].span.end],
+            field,
+            "{source} should label the missing field",
+        );
+    }
+}
+
+#[test]
+fn known_method_calls_continue_to_type_check() {
+    let output = parse_module(concat!(
+        "text: Text = \"hi\"\n",
+        "trimmed = text.trim()\n",
+        "map: Map(Text, Int) = Map.empty()\n",
+        "value = map.get(\"key\")\n",
+        "items: Array(Int) = [1]\n",
+        "updated = items.push(2)\n",
+    ));
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "known method calls should type-check: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn builtin_method_tables_cover_sets_and_temporals() {
+    let set = apply(named("Set"), vec![named("Int")]);
+    assert_eq!(
+        crate::ty::builtin_collection_method_type(&set, "has")
+            .expect("Set.has method")
+            .render(),
+        "Int -> Bool"
+    );
+
+    for (receiver, method) in [
+        ("Date", "format"),
+        ("Time", "format"),
+        ("DateTime", "instant"),
+        ("Instant", "dateTime"),
+        ("Duration", "plus"),
+    ] {
+        assert!(
+            crate::ty::builtin_collection_method_type(&named(receiver), method).is_some(),
+            "{receiver}.{method} should have a method type",
+        );
+        assert!(
+            crate::ty::builtin_collection_method_type(&named(receiver), "missing").is_none(),
+            "{receiver}.missing should not have a method type",
+        );
+    }
+}
+
+#[test]
+fn method_calls_defer_for_open_record_receivers() {
+    let output = parse_module("record: { a: Int, .. } = unknown\nvalue = record.missing()\n");
+    let check = check_module(&output.module);
+
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+        "open record method access should defer: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn array_join_with_only_on_array_of_text() {
     let ok = parse_module("parts : Array(Text) = [\"a\", \"b\"]\njoined = parts.joinWith(\",\")\n");
     let ok_check = check_module(&ok.module);

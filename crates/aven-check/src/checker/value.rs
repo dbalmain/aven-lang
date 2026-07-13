@@ -35,9 +35,12 @@ impl<'a> Checker<'a> {
                 self.check_value_expr(&call);
             }
             ExprKind::FieldAccess {
-                receiver, field, ..
+                receiver,
+                field,
+                field_span,
+                ..
             } => {
-                self.check_value_field_access(receiver, field, expr.span);
+                self.check_value_field_access(receiver, field, *field_span);
             }
             ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
                 self.check_name_reference(name, expr.span);
@@ -121,9 +124,9 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Check a field-access expression in statement position. A concretely-known
-    /// closed record receiver that lacks the field is a real missing-field
-    /// error; an unknown/open receiver stays deferred as before.
+    /// Check a field-access expression in statement position. A resolved
+    /// receiver that lacks the field is a real missing-field error; an
+    /// unknown/open receiver stays deferred as before.
     pub(super) fn check_value_field_access(&mut self, receiver: &Expr, field: &str, span: Span) {
         self.check_value_expr(receiver);
 
@@ -160,9 +163,12 @@ impl<'a> Checker<'a> {
         }
 
         let Type::Record(row) = &receiver_type else {
+            if is_resolved_value_type(&receiver_type) {
+                self.report_missing_field(field, span);
+            }
             return;
         };
-        if row.tail != RowTail::Closed || !is_concrete_type(&receiver_type) {
+        if row.tail != RowTail::Closed || !is_resolved_value_type(&receiver_type) {
             return;
         }
 
