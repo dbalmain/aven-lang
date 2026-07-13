@@ -125,6 +125,7 @@ pub mod ty {
     pub const NON_EXHAUSTIVE_MATCH: &str = "type.non-exhaustive-match";
     pub const OPEN_VARIANT_NOT_ASSIGNABLE: &str = "type.open-variant-not-assignable";
     pub const OR_PATTERN_BINDING_MISMATCH: &str = "type.or-pattern-binding-mismatch";
+    pub const OR_PATTERN_BINDING_TYPE_CONFLICT: &str = "type.or-pattern-binding-type-conflict";
     pub const PROPAGATE_NEEDS_RESULT: &str = "type.propagate-needs-result";
     pub const PROPAGATE_NOT_RESULT: &str = "type.propagate-not-result";
     pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
@@ -239,6 +240,7 @@ pub const ALL: &[&str] = &[
     ty::NON_EXHAUSTIVE_MATCH,
     ty::OPEN_VARIANT_NOT_ASSIGNABLE,
     ty::OR_PATTERN_BINDING_MISMATCH,
+    ty::OR_PATTERN_BINDING_TYPE_CONFLICT,
     ty::PROPAGATE_NEEDS_RESULT,
     ty::PROPAGATE_NOT_RESULT,
     ty::RENAME_ABSENT_FIELD,

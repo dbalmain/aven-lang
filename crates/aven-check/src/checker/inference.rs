@@ -2,6 +2,27 @@ use std::cmp::Ordering;
 
 use super::*;
 
+/// Desugar `value |> f(args)` to `f(value, args)` for checking and inference.
+/// Keeping the written subexpressions preserves their source spans in call
+/// diagnostics and inferred-type output.
+pub(super) fn pipe_call_expr(value: &Expr, target: &Expr) -> Expr {
+    let (callee, trailing_args) = match &ungroup_expr(target).kind {
+        ExprKind::Call { callee, args } => ((**callee).clone(), args.clone()),
+        _ => (target.clone(), Vec::new()),
+    };
+    let mut args = Vec::with_capacity(trailing_args.len() + 1);
+    args.push(value.clone());
+    args.extend(trailing_args);
+
+    Expr {
+        kind: ExprKind::Call {
+            callee: Box::new(callee),
+            args,
+        },
+        span: value.span.merge(target.span),
+    }
+}
+
 impl<'a> Checker<'a> {
     /// Instantiate and fully resolve a top-level binding's inferred type, used by
     /// white-box synthesis tests. Production code consumes the generalized scheme
@@ -298,6 +319,14 @@ impl<'a> Checker<'a> {
         operator: &str,
         right: &Expr,
     ) -> Type {
+        if operator == "|>" {
+            let call = pipe_call_expr(left, right);
+            let ExprKind::Call { callee, args } = &call.kind else {
+                return Type::Deferred;
+            };
+            return self.infer_call(env, callee, args);
+        }
+
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let left_type = self.infer(env, left);

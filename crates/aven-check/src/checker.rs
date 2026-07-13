@@ -127,12 +127,21 @@ struct RuntimeMatchArmTypeConflict {
 struct PatternLocalTypes {
     bindings: Vec<(String, LocalValueType)>,
     mismatches: Vec<OrPatternBindingMismatch>,
+    type_conflicts: Vec<OrPatternBindingTypeConflict>,
 }
 
 #[derive(Debug, Clone)]
 struct OrPatternBindingMismatch {
     span: Span,
     names: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OrPatternBindingTypeConflict {
+    span: Span,
+    name: String,
+    first_ty: Type,
+    conflicting_ty: Type,
 }
 
 enum MatchArmCombination {
@@ -495,10 +504,18 @@ fn checked_pattern_local_types(
 ) -> PatternLocalTypes {
     let mut mismatches = Vec::new();
     collect_or_pattern_binding_mismatches(pattern, &mut mismatches);
+    let mut type_conflicts = Vec::new();
+    collect_or_pattern_binding_type_conflicts(
+        type_definitions,
+        pattern,
+        expected,
+        &mut type_conflicts,
+    );
 
     PatternLocalTypes {
         bindings: merged_pattern_local_types(type_definitions, pattern, expected),
         mismatches,
+        type_conflicts,
     }
 }
 
@@ -629,6 +646,86 @@ fn collect_flat_or_pattern_binding_mismatches(
             span: alternative.span,
             names: expected.symmetric_difference(&actual).cloned().collect(),
         });
+    }
+}
+
+fn collect_or_pattern_binding_type_conflicts(
+    type_definitions: &HashMap<String, Type>,
+    pattern: &Expr,
+    expected: Option<&Type>,
+    conflicts: &mut Vec<OrPatternBindingTypeConflict>,
+) {
+    match &ungroup_expr(pattern).kind {
+        ExprKind::Binary { operator, .. } if operator == "|" => {
+            let alternatives = flatten_or_alternatives(pattern);
+            collect_flat_or_pattern_binding_type_conflicts(
+                type_definitions,
+                &alternatives,
+                expected,
+                pattern.span,
+                conflicts,
+            );
+            for alternative in alternatives {
+                collect_or_pattern_binding_type_conflicts(
+                    type_definitions,
+                    alternative,
+                    expected,
+                    conflicts,
+                );
+            }
+        }
+        _ => {
+            walk_expr_children(pattern, &mut |child| {
+                collect_or_pattern_binding_type_conflicts(
+                    type_definitions,
+                    child,
+                    expected,
+                    conflicts,
+                );
+            });
+        }
+    }
+}
+
+fn collect_flat_or_pattern_binding_type_conflicts(
+    type_definitions: &HashMap<String, Type>,
+    alternatives: &[&Expr],
+    expected: Option<&Type>,
+    span: Span,
+    conflicts: &mut Vec<OrPatternBindingTypeConflict>,
+) {
+    let alternative_types = alternatives
+        .iter()
+        .map(|alternative| single_pattern_local_type_map(type_definitions, alternative, expected))
+        .collect::<Vec<_>>();
+    let names = alternative_types
+        .iter()
+        .flat_map(|types| types.keys().cloned())
+        .collect::<BTreeSet<_>>();
+
+    for name in names {
+        let mut first_known: Option<&Type> = None;
+        for types in &alternative_types {
+            let Some(LocalValueType::Known(ty)) = types.get(&name) else {
+                continue;
+            };
+            if !is_resolved_value_type(ty) {
+                continue;
+            }
+            match first_known {
+                Some(first_ty) if first_ty != ty => {
+                    conflicts.push(OrPatternBindingTypeConflict {
+                        span,
+                        name: name.clone(),
+                        first_ty: first_ty.clone(),
+                        conflicting_ty: ty.clone(),
+                    });
+                    break;
+                }
+                Some(_) => {}
+                None => first_known = Some(ty),
+            }
+        }
     }
 }
 

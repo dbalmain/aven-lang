@@ -902,4 +902,24 @@ impl<'a> Checker<'a> {
                 .with_note(note),
         );
     }
+
+    pub(super) fn report_or_pattern_binding_type_conflict(
+        &mut self,
+        conflict: &OrPatternBindingTypeConflict,
+    ) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "binder `{}` has conflicting types `{}` and `{}` across or-pattern alternatives",
+                conflict.name,
+                conflict.first_ty.render(),
+                conflict.conflicting_ty.render(),
+            ))
+            .with_code(codes::ty::OR_PATTERN_BINDING_TYPE_CONFLICT)
+            .with_label(Label::primary(
+                conflict.span,
+                "this or-pattern gives the binder incompatible payload types",
+            ))
+            .with_note("use separate match arms when alternatives bind different payload types"),
+        );
+    }
 }

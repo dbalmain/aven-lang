@@ -8457,3 +8457,75 @@ fn match_deferred_scrutinee_stays_silent_on_literal_base_kinds() {
         check.diagnostics
     );
 }
+
+#[test]
+fn pipe_operator_checks_like_the_equivalent_call() {
+    // Mismatched result and argument both report through the call machinery.
+    for source in [
+        "f = (x: Int): Int => x + 1\nr: Text = 5 |> f\n",
+        "g = (t: Text): Text => t\nr = 5 |> g\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error),
+            "expected a pipe mismatch for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+
+    // Correct pipes pass, including with trailing arguments.
+    let passing = parse_module(concat!(
+        "f = (x: Int): Int => x + 1\n",
+        "add = (x: Int, y: Int): Int => x + y\n",
+        "r: Int = 5 |> f\n",
+        "s: Int = 5 |> add(2)\n",
+    ));
+    let passing_check = check_module(&passing.module);
+    assert!(
+        passing_check.diagnostics.is_empty(),
+        "valid pipes failed: {:?}",
+        passing_check.diagnostics
+    );
+}
+
+#[test]
+fn or_pattern_binders_report_conflicting_payload_types() {
+    let source = concat!(
+        "v: @A(Int) | @B(Text) = @A(1)\n",
+        "r: Text = v ?>\n",
+        "  @A(x) | @B(x) => \"got\"\n",
+        "  _ => \"z\"\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert_eq!(
+        matching_codes(
+            &check.diagnostics,
+            codes::ty::OR_PATTERN_BINDING_TYPE_CONFLICT
+        ),
+        1,
+        "expected an or-pattern binder conflict: {:?}",
+        check.diagnostics
+    );
+
+    // Agreeing payloads stay silent.
+    let agreeing = parse_module(concat!(
+        "v: @A(Int) | @B(Int) = @A(1)\n",
+        "r: Int = v ?>\n",
+        "  @A(x) | @B(x) => x\n",
+        "  _ => 0\n",
+    ));
+    let agreeing_check = check_module(&agreeing.module);
+    assert!(
+        !has_diagnostic_code(
+            &agreeing_check.diagnostics,
+            codes::ty::OR_PATTERN_BINDING_TYPE_CONFLICT
+        ),
+        "agreeing or-pattern payloads should not conflict: {:?}",
+        agreeing_check.diagnostics
+    );
+}

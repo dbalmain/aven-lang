@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::checker::inference::pipe_call_expr;
+
 impl<'a> Checker<'a> {
     pub(super) fn check_value_expr(&mut self, expr: &Expr) {
         match &expr.kind {
@@ -23,6 +25,15 @@ impl<'a> Checker<'a> {
                 self.check_propagate_value_expr(value);
             }
             ExprKind::Call { callee, args } => self.check_value_call(callee, args),
+            ExprKind::Binary {
+                left,
+                operator,
+                right,
+                ..
+            } if operator == "|>" => {
+                let call = pipe_call_expr(left, right);
+                self.check_value_expr(&call);
+            }
             ExprKind::FieldAccess {
                 receiver, field, ..
             } => {

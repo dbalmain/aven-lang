@@ -30,6 +30,9 @@ impl<'a> Checker<'a> {
             for mismatch in &local_types.mismatches {
                 self.report_or_pattern_binding_mismatch(mismatch);
             }
+            for conflict in &local_types.type_conflicts {
+                self.report_or_pattern_binding_type_conflict(conflict);
+            }
             let binding_sites = pattern_bindings(&arm.pattern);
             for (name, ty) in local_types.bindings {
                 for site in binding_sites.iter().filter(|site| site.name == name) {

@@ -387,6 +387,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Every alternative in an or-pattern must bind the same names. Rename, add, or remove binders so the match arm body sees one consistent local environment.",
     },
     DiagnosticExplanation {
+        code: codes::ty::OR_PATTERN_BINDING_TYPE_CONFLICT,
+        text: "An or-pattern binder has different resolved payload types across alternatives. Use separate match arms when the alternatives need different binder types.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::PROPAGATE_NEEDS_RESULT,
         text: "A function body used ?^ to propagate errors, but its final expression is not a Result. Wrap the successful final value in @Ok(...), or handle the error instead of propagating it.",
     },
