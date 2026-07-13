@@ -641,6 +641,13 @@ impl<'a> Checker<'a> {
 
         let rendered_expected = Type::Variant(expected.clone()).render();
         if literal_union_accepts_base_type(&literals, actual) {
+            // An open literal union is a join artifact from fresh literals
+            // (users cannot write `0 | ..`), so a same-base value widens it —
+            // e.g. an instantiated fold accumulator seeded with a literal.
+            // Only closed (user-written) unions reject their base type.
+            if expected.tail != RowTail::Closed {
+                return;
+            }
             self.report_wide_value_into_literal_union(&rendered_expected, actual, span);
         } else {
             self.report_type_mismatch_between_types(&rendered_expected, actual, span);

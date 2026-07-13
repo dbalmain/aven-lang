@@ -3564,6 +3564,98 @@ fn annotated_polymorphic_functions_export_and_instantiate() {
     );
 }
 
+fn generic_array_module_imports() -> ModuleImports {
+    let item = variable("a");
+    let accumulator = variable("b");
+    let array = |item: Type| apply(named("Array"), vec![item]);
+    let map = function(
+        vec![
+            array(item.clone()),
+            function(vec![item.clone()], accumulator.clone()),
+        ],
+        array(accumulator.clone()),
+    );
+    let fold = function(
+        vec![
+            array(item.clone()),
+            accumulator.clone(),
+            function(vec![accumulator.clone(), item], accumulator.clone()),
+        ],
+        accumulator,
+    );
+    ModuleImports::new([(
+        "std/array".to_owned(),
+        Type::Record(Row {
+            entries: vec![field("map", map), field("fold", fold)],
+            tail: RowTail::Closed,
+        }),
+    )])
+}
+
+#[test]
+fn value_position_generic_function_calls_instantiate_per_call() {
+    let imports = generic_array_module_imports();
+
+    for source in [
+        "array = import(\"std/array\")\n\
+         xs = [1, 2, 3]\n\
+         ys: Array(Int) = array.map(xs, (x) => \"x\")\n",
+        "array = import(\"std/array\")\n\
+         xs = [1, 2, 3]\n\
+         zs: Int = array.fold(xs, 0, (acc, x) => \"bad\")\n",
+        "id = (x: a): a => x\n\
+         n: Int = id(\"hi\")\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module_with_host_globals_and_imports(
+            &output.module,
+            &HostGlobals::default(),
+            &imports,
+        );
+        // The fold case reports through the literal-union path (the seed `0`
+        // stays a literal union), the others as plain mismatches — either way
+        // the call site must produce exactly one error.
+        let errors = check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(
+                    diagnostic.code.as_deref(),
+                    Some(codes::ty::MISMATCH | codes::ty::LITERAL_NOT_IN_UNION)
+                )
+            })
+            .count();
+        assert_eq!(
+            errors, 1,
+            "expected a call-site mismatch for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+
+    let passing = parse_module(
+        "array = import(\"std/array\")\n\
+         xs = [1, 2, 3]\n\
+         numbers: Array(Int) = array.map(xs, (x) => x)\n\
+         words: Array(Text) = array.map(xs, (x) => \"x\")\n\
+         total: Int = array.fold(xs, 0, (acc, x) => acc + x)\n\
+         id = (x: a): a => x\n\
+         n: Int = id(5)\n\
+         t: Text = id(\"hi\")\n\
+         { map } = import(\"std/array\")\n\
+         extracted: Array(Text) = map(xs, (x) => \"x\")\n",
+    );
+    let passing_check = check_module_with_host_globals_and_imports(
+        &passing.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+    assert!(
+        passing_check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        passing_check.diagnostics
+    );
+}
+
 #[test]
 fn annotated_polymorphic_body_cannot_pin_rigid_variables() {
     // `a` is caller-chosen; the body may not return Text.

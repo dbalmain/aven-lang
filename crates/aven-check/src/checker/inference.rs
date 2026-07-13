@@ -987,6 +987,12 @@ impl<'a> Checker<'a> {
         }
 
         let callee_type = self.infer(env, callee);
+        let resolved_callee = self.unifier.resolve(&callee_type);
+        let callee_type = if matches!(resolved_callee, Type::Function { .. }) {
+            self.instantiate_nonrigid_type_variables(&resolved_callee, &mut HashMap::new())
+        } else {
+            callee_type
+        };
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
 
         // When the callee already resolves to a function (e.g. a host global or
@@ -2551,8 +2557,32 @@ impl<'a> Checker<'a> {
         ty: &Type,
         metas: &mut HashMap<String, Type>,
     ) -> Type {
+        self.instantiate_type_variables(ty, metas, |_| true)
+    }
+
+    /// Instantiate free annotation variables at a call site, preserving the
+    /// skolems that are rigid while checking an enclosing declaration body.
+    fn instantiate_nonrigid_type_variables(
+        &mut self,
+        ty: &Type,
+        metas: &mut HashMap<String, Type>,
+    ) -> Type {
+        let rigid = self
+            .rigid_type_var_scopes
+            .iter()
+            .flat_map(|scope| scope.iter().cloned())
+            .collect::<HashSet<_>>();
+        self.instantiate_type_variables(ty, metas, |name| !rigid.contains(name))
+    }
+
+    fn instantiate_type_variables(
+        &mut self,
+        ty: &Type,
+        metas: &mut HashMap<String, Type>,
+        should_instantiate: impl Fn(&str) -> bool,
+    ) -> Type {
         map_type(ty, &mut |node| match node {
-            Type::Variable(name) => Some(
+            Type::Variable(name) if should_instantiate(name) => Some(
                 metas
                     .entry(name.clone())
                     .or_insert_with(|| self.unifier.fresh())
