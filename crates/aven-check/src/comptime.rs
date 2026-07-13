@@ -623,13 +623,15 @@ where
             }
         };
 
-        if let Some(diagnostics) = self.check_param_bounds(&function.params, args, &values, env) {
-            return EvaluationResult::deferred_with_diagnostics(diagnostics);
-        }
-
         let key = SpecializationKey::new(&function.name, &values);
 
         if let Some(result) = self.context.cached_specialization(&key) {
+            return result;
+        }
+
+        if let Some(diagnostics) = self.check_param_bounds(&function.params, args, &values, env) {
+            let result = EvaluationResult::deferred_with_diagnostics(diagnostics);
+            self.context.cache_specialization(key, result.clone());
             return result;
         }
 

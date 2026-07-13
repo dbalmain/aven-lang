@@ -661,7 +661,9 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn check_comptime_binding_evaluation_support(&mut self, value: &Expr) {
-        if !comptime_rhs_needs_evaluation(value) {
+        if !comptime_rhs_needs_evaluation(value)
+            && !self.is_uppercase_comptime_function_application(value)
+        {
             return;
         }
 
@@ -689,6 +691,14 @@ impl<'a> Checker<'a> {
 
         comptime::RecordSelectionKind::from_name(name).is_some()
             && !self.record_selection_builtin_is_shadowed(&TypeEnv::new(), name)
+    }
+
+    fn is_uppercase_comptime_function_application(&self, value: &Expr) -> bool {
+        let ExprKind::Call { callee, .. } = &ungroup_expr(value).kind else {
+            return false;
+        };
+
+        self.is_uppercase_comptime_function_callee(callee)
     }
 
     pub(super) fn comptime_binding_is_artifact(

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::checker::comptime_rhs_needs_evaluation;
@@ -8509,6 +8509,131 @@ fn parameterized_value_param_rejects_outside_literal_union() {
         "expected bound note, got {:?}",
         diagnostic.notes
     );
+}
+
+#[test]
+fn bare_alias_reports_out_of_bound_comptime_argument() {
+    let source = "Pick = (n: 1 | 2 | 3) => { size: n }\nBad = Pick(5)\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_BOUND),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_BOUND))
+        .expect("argument-bound diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "5", 0));
+}
+
+#[test]
+fn bare_alias_reports_comptime_argument_kind_mismatch() {
+    let source = "Pair = (t: Type) => { first: t, second: t }\nBad = Pair(1)\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_KIND_MISMATCH),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_KIND_MISMATCH)
+        })
+        .expect("argument-kind-mismatch diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "1", 0));
+}
+
+#[test]
+fn valid_bare_alias_specializes_and_remains_usable() {
+    let source = "Pick = (n: 1 | 2 | 3) => { size: n }\n\
+        Good = Pick(2)\n\
+        good: Good = { size: 2 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn bare_alias_comptime_argument_error_is_not_repeated_at_use() {
+    let source = "Pick = (n: 1 | 2 | 3) => { size: n }\n\
+        Bad = Pick(5)\n\
+        bad: Bad = { size: 5 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_BOUND),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn comptime_param_application_waits_for_specialization() {
+    let source = "Pick = (n: 1 | 2 | 3) => { size: n }\n\
+        Outer = (n) => Pick(n)\n\
+        bad: Outer(5) = { size: 5 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_BOUND),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn imported_comptime_function_alias_reports_out_of_bound_argument() {
+    let export = parse_module("Pick = (n: 1 | 2 | 3) => { size: n }\n");
+    let Item::Binding(binding) = &export.module.items[0] else {
+        panic!("expected comptime function binding");
+    };
+    let Some((params, body)) = aven_parser::lambda_parts(&binding.value) else {
+        panic!("expected comptime function lambda");
+    };
+    let mut imports = ModuleImports::default();
+    imports.insert_comptime_exports(
+        "dep",
+        HashMap::from([(
+            "Pick".to_owned(),
+            ComptimeExport::from_lambda("Pick", params, body),
+        )]),
+    );
+
+    let source = "{ Pick } = import(\"dep\")\nBad = Pick(5)\n";
+    let output = parse_module(source);
+    let check = check_module_with_host_globals_and_imports(
+        &output.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_BOUND),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_BOUND))
+        .expect("argument-bound diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "5", 0));
 }
 
 #[test]
