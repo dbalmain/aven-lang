@@ -104,4 +104,171 @@ reverse = (xs) =>
 concat : (Array(a), Array(a)) -> Array(a)
 concat = (xs, ys) => [..xs, ..ys]
 
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat }
+# First `n` elements. `n <= 0` → []; `n >= length` → whole array (via OOB stop).
+takeGo : (Array(a), Int, Int, Array(a)) -> Array(a)
+takeGo = (xs, index, remaining, acc) =>
+  remaining > 0 ?>
+    true =>
+      next = xs[index]
+      next ?>
+        undefined => acc
+        element => takeGo(xs, index + 1, remaining - 1, acc.push(element))
+    false => acc
+
+take : (Array(a), Int) -> Array(a)
+take = (xs, n) =>
+  seed: Array(a) = []
+  takeGo(xs, 0, n, seed)
+
+# All but the first `n`. `n <= 0` → whole array; `n >= length` → [].
+# Negative `toSkip` never satisfies `toSkip > 0`, so nothing is skipped.
+dropGo : (Array(a), Int, Int, Array(a)) -> Array(a)
+dropGo = (xs, index, toSkip, acc) =>
+  next = xs[index]
+  next ?>
+    undefined => acc
+    element =>
+      toSkip > 0 ?>
+        true => dropGo(xs, index + 1, toSkip - 1, acc)
+        false => dropGo(xs, index + 1, 0, acc.push(element))
+
+drop : (Array(a), Int) -> Array(a)
+drop = (xs, n) =>
+  seed: Array(a) = []
+  dropGo(xs, 0, n, seed)
+
+# Half-open `[start, end)`. Clamp both ends to `[0, length]`; `start >= end` → [].
+# No negative-index wrapping (same as `last`).
+clampIndex : (Int, Int) -> Int
+clampIndex = (i, n) =>
+  zero: Int = 0
+  i < zero ?>
+    true => zero
+    false =>
+      i > n ?>
+        true => n
+        false => i
+
+sliceGo : (Array(a), Int, Int, Array(a)) -> Array(a)
+sliceGo = (xs, index, end, acc) =>
+  index < end ?>
+    true =>
+      next = xs[index]
+      next ?>
+        undefined => acc
+        element => sliceGo(xs, index + 1, end, acc.push(element))
+    false => acc
+
+slice : (Array(a), Int, Int) -> Array(a)
+slice = (xs, start, end) =>
+  n = length(xs)
+  s = clampIndex(start, n)
+  e = clampIndex(end, n)
+  seed: Array(a) = []
+  sliceGo(xs, s, e, seed)
+
+# Pairs up to the shorter length.
+zipGo : (Array(a), Array(b), Int, Array((a, b))) -> Array((a, b))
+zipGo = (xs, ys, index, acc) =>
+  x = xs[index]
+  x ?>
+    undefined => acc
+    xv =>
+      y = ys[index]
+      y ?>
+        undefined => acc
+        yv => zipGo(xs, ys, index + 1, acc.push((xv, yv)))
+
+zip : (Array(a), Array(b)) -> Array((a, b))
+zip = (xs, ys) =>
+  seed: Array((a, b)) = []
+  zipGo(xs, ys, 0, seed)
+
+# One level of nesting.
+flatten : (Array(Array(a))) -> Array(a)
+flatten = (xss) =>
+  seed: Array(a) = []
+  fold(xss, seed, (acc, xs) => [..acc, ..xs])
+
+# Half-open `[start, end)`. Step is always 1. `start >= end` → [].
+rangeGo : (Int, Int, Array(Int)) -> Array(Int)
+rangeGo = (i, end, acc) =>
+  i < end ?>
+    true => rangeGo(i + 1, end, acc.push(i))
+    false => acc
+
+range : (Int, Int) -> Array(Int)
+range = (start, end) =>
+  seed: Array(Int) = []
+  rangeGo(start, end, seed)
+
+# Copy `sorted[index..]` onto `acc`.
+copyFromGo : (Array(a), Int, Array(a)) -> Array(a)
+copyFromGo = (sorted, index, acc) =>
+  next = sorted[index]
+  next ?>
+    undefined => acc
+    y => copyFromGo(sorted, index + 1, acc.push(y))
+
+# Insert `x` into sorted `acc` prefix so equals stay after existing equals (stable).
+insertGo : (Array(a), Int, a, (a, a) -> Bool, Array(a)) -> Array(a)
+insertGo = (sorted, index, x, isLess, acc) =>
+  next = sorted[index]
+  next ?>
+    undefined => acc.push(x)
+    y =>
+      isLess(x, y) ?>
+        true => copyFromGo(sorted, index, acc.push(x))
+        false => insertGo(sorted, index + 1, x, isLess, acc.push(y))
+
+# Stable insertion sort. `isLess(a, b)` is true when `a` sorts strictly before `b`.
+sortWithGo : (Array(a), Int, Array(a), (a, a) -> Bool) -> Array(a)
+sortWithGo = (xs, index, sorted, isLess) =>
+  next = xs[index]
+  next ?>
+    undefined => sorted
+    element =>
+      seed: Array(a) = []
+      inserted = insertGo(sorted, 0, element, isLess, seed)
+      sortWithGo(xs, index + 1, inserted, isLess)
+
+sortWith : (Array(a), (a, a) -> Bool) -> Array(a)
+sortWith = (xs, isLess) =>
+  seed: Array(a) = []
+  sortWithGo(xs, 0, seed, isLess)
+
+minGo : (Array(Int), Int, Int) -> Int
+minGo = (xs, index, best) =>
+  next = xs[index]
+  next ?>
+    undefined => best
+    x =>
+      x < best ?>
+        true => minGo(xs, index + 1, x)
+        false => minGo(xs, index + 1, best)
+
+minimum : (Array(Int)) -> ?Int
+minimum = (xs) =>
+  head = xs[0]
+  head ?>
+    undefined => undefined
+    first => minGo(xs, 1, first)
+
+maxGo : (Array(Int), Int, Int) -> Int
+maxGo = (xs, index, best) =>
+  next = xs[index]
+  next ?>
+    undefined => best
+    x =>
+      x > best ?>
+        true => maxGo(xs, index + 1, x)
+        false => maxGo(xs, index + 1, best)
+
+maximum : (Array(Int)) -> ?Int
+maximum = (xs) =>
+  head = xs[0]
+  head ?>
+    undefined => undefined
+    first => maxGo(xs, 1, first)
+
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum }

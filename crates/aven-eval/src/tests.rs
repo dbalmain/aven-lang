@@ -1017,10 +1017,11 @@ fn std_array_combinators_run_via_import() {
 
     let imports = ModuleImports::new([("std/array".to_owned(), array_export)]);
     let source = concat!(
-        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat } = import(\"std/array\")\n",
+        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import(\"std/array\")\n",
         "xs = [10, 20, 30]\n",
         "empty = []\n",
         "zero: Int = 0\n",
+        "pairs = [{k: 2, id: 1}, {k: 1, id: 2}, {k: 2, id: 3}]\n",
         "{\n",
         "  length: length(xs),\n",
         "  isEmpty: isEmpty(empty),\n",
@@ -1048,6 +1049,36 @@ fn std_array_combinators_run_via_import() {
         "  concatLeftEmpty: concat(empty, xs),\n",
         "  concatRightEmpty: concat(xs, empty),\n",
         "  composed: map(filter(xs, (x) => x > 15), (x) => x / 10),\n",
+        "  take2: take(xs, 2),\n",
+        "  take0: take(xs, 0),\n",
+        "  takeNeg: take(xs, -1),\n",
+        "  takeBig: take(xs, 99),\n",
+        "  takeEmpty: take(empty, 2),\n",
+        "  drop2: drop(xs, 2),\n",
+        "  drop0: drop(xs, 0),\n",
+        "  dropNeg: drop(xs, -1),\n",
+        "  dropBig: drop(xs, 99),\n",
+        "  dropEmpty: drop(empty, 2),\n",
+        "  slice: slice(xs, 1, 3),\n",
+        "  sliceEmpty: slice(xs, 2, 2),\n",
+        "  sliceClampLow: slice(xs, -5, 2),\n",
+        "  slicePastEnd: slice(xs, 1, 99),\n",
+        "  sliceNegEnd: slice(xs, 0, -1),\n",
+        "  zipShort: zip([1, 2, 3], [10, 20]),\n",
+        "  zipLeftEmpty: zip(empty, xs),\n",
+        "  zipRightEmpty: zip(xs, empty),\n",
+        "  flatten: flatten([[1, 2], [3], [], [4]]),\n",
+        "  flattenEmpty: flatten(empty),\n",
+        "  range: range(1, 5),\n",
+        "  rangeEmpty: range(3, 3),\n",
+        "  rangeRev: range(5, 1),\n",
+        "  sort: sortWith([3, 1, 2], (a, b) => a < b),\n",
+        "  sortEmpty: sortWith(empty, (a, b) => a < b),\n",
+        "  sortStable: sortWith(pairs, (a, b) => a.k < b.k),\n",
+        "  minimum: minimum(xs),\n",
+        "  minimumEmpty: minimum(empty),\n",
+        "  maximum: maximum(xs),\n",
+        "  maximumEmpty: maximum(empty),\n",
         "}\n",
     );
     let module = parse_ok(source);
@@ -1098,6 +1129,83 @@ fn std_array_combinators_run_via_import() {
                     array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
                 ),
                 ("composed", array_value(vec![Value::Int(2), Value::Int(3)])),
+                ("take2", array_value(vec![Value::Int(10), Value::Int(20)])),
+                ("take0", array_value(vec![])),
+                ("takeNeg", array_value(vec![])),
+                (
+                    "takeBig",
+                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                ),
+                ("takeEmpty", array_value(vec![])),
+                ("drop2", array_value(vec![Value::Int(30)])),
+                (
+                    "drop0",
+                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                ),
+                (
+                    "dropNeg",
+                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                ),
+                ("dropBig", array_value(vec![])),
+                ("dropEmpty", array_value(vec![])),
+                ("slice", array_value(vec![Value::Int(20), Value::Int(30)])),
+                ("sliceEmpty", array_value(vec![])),
+                (
+                    "sliceClampLow",
+                    array_value(vec![Value::Int(10), Value::Int(20)])
+                ),
+                (
+                    "slicePastEnd",
+                    array_value(vec![Value::Int(20), Value::Int(30)])
+                ),
+                ("sliceNegEnd", array_value(vec![])),
+                (
+                    "zipShort",
+                    array_value(vec![
+                        tuple_value(vec![Value::Int(1), Value::Int(10)]),
+                        tuple_value(vec![Value::Int(2), Value::Int(20)]),
+                    ])
+                ),
+                ("zipLeftEmpty", array_value(vec![])),
+                ("zipRightEmpty", array_value(vec![])),
+                (
+                    "flatten",
+                    array_value(vec![
+                        Value::Int(1),
+                        Value::Int(2),
+                        Value::Int(3),
+                        Value::Int(4)
+                    ])
+                ),
+                ("flattenEmpty", array_value(vec![])),
+                (
+                    "range",
+                    array_value(vec![
+                        Value::Int(1),
+                        Value::Int(2),
+                        Value::Int(3),
+                        Value::Int(4)
+                    ])
+                ),
+                ("rangeEmpty", array_value(vec![])),
+                ("rangeRev", array_value(vec![])),
+                (
+                    "sort",
+                    array_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+                ),
+                ("sortEmpty", array_value(vec![])),
+                (
+                    "sortStable",
+                    array_value(vec![
+                        record_value(vec![("k", Value::Int(1)), ("id", Value::Int(2))]),
+                        record_value(vec![("k", Value::Int(2)), ("id", Value::Int(1))]),
+                        record_value(vec![("k", Value::Int(2)), ("id", Value::Int(3))]),
+                    ])
+                ),
+                ("minimum", Value::Int(10)),
+                ("minimumEmpty", Value::Undefined),
+                ("maximum", Value::Int(30)),
+                ("maximumEmpty", Value::Undefined),
             ])),
             diagnostics: Vec::new()
         }

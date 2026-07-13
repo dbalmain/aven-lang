@@ -97,7 +97,7 @@ fn std_array_type_exports_check() {
     let dir = TempDir::new("std-array-check");
     let entry = dir.write(
         "main.av",
-        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat } = import("std/array")
+        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
@@ -118,7 +118,16 @@ filtered = filter(xs, (x) => x > 15)
 rev = reverse(xs)
 joined = concat([1], [2, 3])
 composed = map(filter(xs, (x) => x > 15), (x) => x / 10)
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, filtered, rev, joined, composed }
+taken = take(xs, 2)
+dropped = drop(xs, 1)
+sliced = slice(xs, 1, 3)
+zipped = zip([1, 2, 3], [10, 20])
+flat = flatten([[1], [2, 3]])
+nums = range(1, 4)
+sorted = sortWith([3, 1, 2], (a, b) => a < b)
+lo = minimum(xs)
+hi = maximum(xs)
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, lo, hi }
 "#,
     );
 
@@ -137,7 +146,7 @@ fn std_array_combinators_run() {
     let dir = TempDir::new("std-array-run");
     let entry = dir.write(
         "main.av",
-        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat } = import("std/array")
+        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
@@ -168,6 +177,37 @@ writeLine("${concat([1], [2, 3])}")
 writeLine("${concat(empty, xs)}")
 writeLine("${concat(xs, empty)}")
 writeLine("${map(filter(xs, (x) => x > 15), (x) => x / 10)}")
+writeLine("${take(xs, 2)}")
+writeLine("${take(xs, 0)}")
+writeLine("${take(xs, -1)}")
+writeLine("${take(xs, 99)}")
+writeLine("${take(empty, 2)}")
+writeLine("${drop(xs, 2)}")
+writeLine("${drop(xs, 0)}")
+writeLine("${drop(xs, -1)}")
+writeLine("${drop(xs, 99)}")
+writeLine("${drop(empty, 2)}")
+writeLine("${slice(xs, 1, 3)}")
+writeLine("${slice(xs, 2, 2)}")
+writeLine("${slice(xs, -5, 2)}")
+writeLine("${slice(xs, 1, 99)}")
+writeLine("${slice(xs, 0, -1)}")
+writeLine("${zip([1, 2, 3], [10, 20])}")
+writeLine("${zip(empty, xs)}")
+writeLine("${zip(xs, empty)}")
+writeLine("${flatten([[1, 2], [3], [], [4]])}")
+writeLine("${flatten(empty)}")
+writeLine("${range(1, 5)}")
+writeLine("${range(3, 3)}")
+writeLine("${range(5, 1)}")
+writeLine("${sortWith([3, 1, 2], (a, b) => a < b)}")
+writeLine("${sortWith(empty, (a, b) => a < b)}")
+pairs = [{k: 2, id: 1}, {k: 1, id: 2}, {k: 2, id: 3}]
+writeLine("${sortWith(pairs, (a, b) => a.k < b.k)}")
+writeLine("${minimum(xs)}")
+writeLine("${minimum(empty)}")
+writeLine("${maximum(xs)}")
+writeLine("${maximum(empty)}")
 "#,
     );
 
@@ -181,7 +221,7 @@ writeLine("${map(filter(xs, (x) => x > 15), (x) => x / 10)}")
     );
     assert_eq!(
         stdout(&output),
-        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n"
+        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[]\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
     );
 }
 

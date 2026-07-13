@@ -1884,7 +1884,8 @@ fn library_interface_renders_std_array_signatures() {
     assert_eq!(lines[1], "");
     // Export order follows the final record:
     // length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf,
-    // map, filter, reverse, concat.
+    // map, filter, reverse, concat, take, drop, slice, zip, flatten, range,
+    // sortWith, minimum, maximum.
     assert!(lines[2].starts_with("length : "), "line: {:?}", lines[2]);
     assert!(lines[3].starts_with("isEmpty : "), "line: {:?}", lines[3]);
     assert!(lines[4].starts_with("first : "), "line: {:?}", lines[4]);
@@ -1900,9 +1901,23 @@ fn library_interface_renders_std_array_signatures() {
     assert!(lines[14].starts_with("filter : "), "line: {:?}", lines[14]);
     assert!(lines[15].starts_with("reverse : "), "line: {:?}", lines[15]);
     assert!(lines[16].starts_with("concat : "), "line: {:?}", lines[16]);
+    assert!(lines[17].starts_with("take : "), "line: {:?}", lines[17]);
+    assert!(lines[18].starts_with("drop : "), "line: {:?}", lines[18]);
+    assert!(lines[19].starts_with("slice : "), "line: {:?}", lines[19]);
+    assert!(lines[20].starts_with("zip : "), "line: {:?}", lines[20]);
+    assert!(lines[21].starts_with("flatten : "), "line: {:?}", lines[21]);
+    assert!(lines[22].starts_with("range : "), "line: {:?}", lines[22]);
+    assert!(
+        lines[23].starts_with("sortWith : "),
+        "line: {:?}",
+        lines[23]
+    );
+    assert!(lines[24].starts_with("minimum : "), "line: {:?}", lines[24]);
+    assert!(lines[25].starts_with("maximum : "), "line: {:?}", lines[25]);
     for name in [
         "length", "isEmpty", "first", "last", "fold", "sum", "count", "all", "any", "find",
-        "indexOf", "map", "filter", "reverse", "concat",
+        "indexOf", "map", "filter", "reverse", "concat", "take", "drop", "slice", "zip", "flatten",
+        "range", "sortWith", "minimum", "maximum",
     ] {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);
