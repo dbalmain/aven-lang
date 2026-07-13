@@ -336,6 +336,29 @@ impl<'a> Checker<'a> {
             return self.open_literal_variant(&literal);
         }
 
+        // Functions have no equality; the evaluator throws on `f == g`. Report
+        // statically and still type the comparison as Bool so downstream
+        // checking stays precise instead of deferring.
+        if matches!(operator, "==" | "!=") {
+            let function_operand = [(&left_type, left), (&right_type, right)]
+                .into_iter()
+                .find(|(ty, _)| matches!(self.unifier.resolve(ty), Type::Function { .. }));
+            if let Some((_, operand)) = function_operand {
+                self.diagnostics.push(
+                    Diagnostic::error("functions are not comparable")
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            operand.span,
+                            "this operand is a function",
+                        ))
+                        .with_note(
+                            "compare the results of calling the functions instead of the functions themselves",
+                        ),
+                );
+                return named_builtin("Bool");
+            }
+        }
+
         if let Some(result) = self.infer_binary_type(operator, &left_type, &right_type) {
             result
         } else {

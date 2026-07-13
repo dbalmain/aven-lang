@@ -8712,3 +8712,29 @@ fn polymorphic_functions_reject_impossible_monotypes() {
         passing_check.diagnostics
     );
 }
+
+#[test]
+fn function_equality_reports_statically() {
+    let source = concat!(
+        "f = (x: Int): Int => x\n",
+        "g = (x: Int): Int => x\n",
+        "b: Bool = f == g\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "expected a function-comparability error: {:?}",
+        check.diagnostics
+    );
+
+    // Ordinary equality is untouched.
+    let passing = parse_module("a = { x: 1 }\nb: Bool = a == { x: 1 }\nc: Bool = 1 == 2\n");
+    let passing_check = check_module(&passing.module);
+    assert!(
+        passing_check.diagnostics.is_empty(),
+        "sound equality failed: {:?}",
+        passing_check.diagnostics
+    );
+}
