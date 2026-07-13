@@ -31,6 +31,7 @@ impl<'a> Checker<'a> {
             reported_import_spans: HashSet::new(),
             propagation_contexts: Vec::new(),
             rigid_type_var_scopes: Vec::new(),
+            inline_lambda_type_var_scopes: Vec::new(),
             pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),

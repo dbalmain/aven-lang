@@ -27,6 +27,46 @@ impl<'a> Checker<'a> {
             .any(|scope| scope.contains(name))
     }
 
+    pub(super) fn push_inline_lambda_type_var_scope(&mut self) {
+        self.inline_lambda_type_var_scopes.push(HashMap::new());
+    }
+
+    pub(super) fn pop_inline_lambda_type_var_scope(&mut self) {
+        self.inline_lambda_type_var_scopes.pop();
+    }
+
+    /// Lower an inline lambda annotation, turning free lowercase names into
+    /// shared inference metas. Declared signature binders remain rigid.
+    pub(super) fn lower_inline_lambda_annotation(&mut self, annotation: &Expr) -> Type {
+        let ty = self.lower_normalized_annotation(annotation);
+        self.resolve_inline_lambda_annotation_variables(&ty)
+    }
+
+    pub(super) fn resolve_inline_lambda_annotation_variables(&mut self, ty: &Type) -> Type {
+        map_type(ty, &mut |node| {
+            let Type::Variable(name) = node else {
+                return None;
+            };
+            if self.is_rigid_type_var(name) {
+                return None;
+            }
+
+            let existing = self
+                .inline_lambda_type_var_scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(name).cloned());
+            Some(existing.unwrap_or_else(|| {
+                let meta = self.unifier.fresh();
+                self.inline_lambda_type_var_scopes
+                    .last_mut()
+                    .expect("inline lambda annotations always have a type-variable scope")
+                    .insert(name.clone(), meta.clone());
+                meta
+            }))
+        })
+    }
+
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
         match (&value.kind, expected) {
             (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
@@ -247,30 +287,38 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        self.push_inline_lambda_type_var_scope();
         let mut param_types = Vec::new();
         for (param, expected) in params.iter().zip(expected_params) {
             let actual = param
                 .annotation
                 .as_ref()
                 .map(|annotation| {
-                    let actual = self.lower_normalized_annotation(annotation);
+                    let actual = self.lower_inline_lambda_annotation(annotation);
                     // Function parameters are contravariant. A lambda's
                     // explicit parameter annotation is the actual accepted type,
                     // so compare it in the same swapped direction as
                     // Function-vs-Function comparison.
                     self.check_type_against_type(&actual, expected, annotation.span);
+                    if !free_metas(&actual).is_empty() {
+                        let _ = self.unifier.unify(&actual, expected);
+                    }
                     actual
                 })
                 .unwrap_or_else(|| expected.clone());
             param_types.push(actual);
         }
 
-        let body_expected = if let Some(annotation) = return_annotation {
-            let actual = self.lower_normalized_annotation(annotation);
+        let (body_expected, body_has_inline_metas) = if let Some(annotation) = return_annotation {
+            let actual = self.lower_inline_lambda_annotation(annotation);
+            let has_inline_metas = !free_metas(&actual).is_empty();
             self.check_type_against_type(expected_result, &actual, annotation.span);
-            actual
+            if has_inline_metas {
+                let _ = self.unifier.unify(expected_result, &actual);
+            }
+            (actual, has_inline_metas)
         } else {
-            expected_result.clone()
+            (expected_result.clone(), false)
         };
 
         self.local_types.push();
@@ -285,10 +333,22 @@ impl<'a> Checker<'a> {
         self.check_value_against(&body_expected, body);
         let body_type = self.infer_body_type_for_propagation_check(body);
         let propagation = self.pop_propagation_context();
-        let _ = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
+        let body_type = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
+        if body_has_inline_metas
+            && !self.inferred_return_type_fits_annotation(&body_expected, &body_type)
+        {
+            let expected = self.normalize(&self.resolve_and_default(&body_expected));
+            let actual = self.normalize(&self.resolve_and_default(&body_type));
+            self.report_type_mismatch_between_types(
+                &expected.render(),
+                &actual.render(),
+                body.span,
+            );
+        }
         self.report_propagated_errors_against_annotation(&body_expected, &propagation);
         self.local_comptime_params.pop();
         self.local_types.pop();
+        self.pop_inline_lambda_type_var_scope();
     }
 
     /// Check array/set-literal entries against an expected collection type:
@@ -392,6 +452,17 @@ impl<'a> Checker<'a> {
                     let instantiated =
                         self.instantiate_nonrigid_type_variables(actual, &mut HashMap::new());
                     if self.unifier.unify(expected, &instantiated).is_err() {
+                        self.report_type_mismatch_between_types(
+                            &expected.render(),
+                            &actual.render(),
+                            span,
+                        );
+                    }
+                } else if !free_metas(actual).is_empty() {
+                    // Instantiated schemes carry fresh metas rather than their
+                    // original variable names. They still need one shared
+                    // instantiation across the whole function comparison.
+                    if self.unifier.unify(expected, actual).is_err() {
                         self.report_type_mismatch_between_types(
                             &expected.render(),
                             &actual.render(),

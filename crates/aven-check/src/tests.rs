@@ -2077,6 +2077,76 @@ fn inline_lambda_return_annotation_defers_unresolved_body_silently() {
 }
 
 #[test]
+fn inline_lambda_free_annotation_variables_are_inference_holes() {
+    let mismatch = parse_module("f = (x: Int): a => x\nuse: (Int) -> Text = f\n");
+    let mismatch_check = check_module(&mismatch.module);
+    assert_eq!(
+        matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "a free inline return variable must be solved by the body: {:?}",
+        mismatch_check.diagnostics
+    );
+
+    let accepted = parse_module("f = (x: Int): a => x\nuse: (Int) -> Int = f\n");
+    let accepted_check = check_module(&accepted.module);
+    assert!(
+        !has_diagnostic_code(&accepted_check.diagnostics, codes::ty::MISMATCH),
+        "a solved inline return variable must retain its solution: {:?}",
+        accepted_check.diagnostics
+    );
+
+    let immediate = parse_module("f: (Int) -> Text = (x: Int): a => x\n");
+    let immediate_check = check_module(&immediate.module);
+    assert!(
+        has_diagnostic_code(&immediate_check.diagnostics, codes::ty::MISMATCH),
+        "inline return annotations must still reject a conflicting declared result: {:?}",
+        immediate_check.diagnostics
+    );
+}
+
+#[test]
+fn inline_lambda_annotation_variables_preserve_rigid_binders() {
+    for source in ["f: (a) -> a = (x): a => x\n", "f: (a) -> a = (x): a => 1\n"] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        let expected_mismatches = usize::from(source.ends_with("=> 1\n"));
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+            expected_mismatches,
+            "rigid declaration binders must not become inline inference holes for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn inline_lambda_free_annotation_variables_generalize_and_share_lexically() {
+    let generalized = parse_module("f = (x: a): a => x\ni: Int = f(1)\nt: Text = f(\"s\")\n");
+    let generalized_check = check_module(&generalized.module);
+    assert!(
+        !has_diagnostic_code(&generalized_check.diagnostics, codes::ty::MISMATCH),
+        "unsolved inline metas should generalize at the top level: {:?}",
+        generalized_check.diagnostics
+    );
+
+    let numeric = parse_module("f = (x: a) => x + 1\nt: Text = f(1)\n");
+    let numeric_check = check_module(&numeric.module);
+    assert!(
+        has_diagnostic_code(&numeric_check.diagnostics, codes::ty::MISMATCH),
+        "a free parameter annotation variable must be solved by numeric use: {:?}",
+        numeric_check.diagnostics
+    );
+
+    let nested = parse_module("g = (x: a) => (y: a) => x\nh = g(1)\nt: Text = h(\"s\")\n");
+    let nested_check = check_module(&nested.module);
+    assert!(
+        has_diagnostic_code(&nested_check.diagnostics, codes::ty::MISMATCH),
+        "nested inline annotations with the same name must share one meta: {:?}",
+        nested_check.diagnostics
+    );
+}
+
+#[test]
 fn binding_level_lambda_return_mismatch_still_reports_once() {
     let source = "g: (Int) -> Text = (x: Int) => x\n";
     let output = parse_module(source);

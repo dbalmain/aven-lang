@@ -24,12 +24,12 @@ use crate::lower::{
 };
 use crate::ty::{
     LiteralBase, Row, RowEntry, RowKind, RowMergeSource, RowTail, Type, TypeScheme,
-    builtin_collection_method_type, display_inferred_type, generalize, is_concrete_type,
-    is_meta_type, is_null_value, is_resolved_value_type, is_text_type, is_undefined_value,
-    literal_base, literal_variant_base, map_type, mismatched_literal_kind, named_builtin,
-    named_type_mismatch, named_type_name, numeric_type_name, open_literal_variant_base,
-    render_literal_value, type_contains_deferred, type_contains_variable, type_is_uninhabited,
-    type_variable_names,
+    builtin_collection_method_type, display_inferred_type, free_metas, generalize,
+    is_concrete_type, is_meta_type, is_null_value, is_resolved_value_type, is_text_type,
+    is_undefined_value, literal_base, literal_variant_base, map_type, mismatched_literal_kind,
+    named_builtin, named_type_mismatch, named_type_name, numeric_type_name,
+    open_literal_variant_base, render_literal_value, type_contains_deferred,
+    type_contains_variable, type_is_uninhabited, type_variable_names,
 };
 use crate::unify::Unifier;
 use crate::{InferredType, ModuleImports};
@@ -79,6 +79,10 @@ pub(crate) struct Checker<'a> {
     /// A lowercase binder from a polymorphic function signature is pushed while
     /// checking that binding's body so the body cannot pin it to a concrete type.
     rigid_type_var_scopes: Vec<HashSet<String>>,
+    /// Nested inline-lambda annotation scopes. Free lowercase names in an
+    /// inline annotation are inference holes, so each scope maps a name to the
+    /// meta shared by every occurrence in that lexical lambda scope.
+    inline_lambda_type_var_scopes: Vec<HashMap<String, Type>>,
     pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,

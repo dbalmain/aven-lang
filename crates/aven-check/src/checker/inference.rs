@@ -754,13 +754,14 @@ impl<'a> Checker<'a> {
     ) -> Type {
         let mut next_env = env.clone();
         let mut param_types = Vec::new();
+        self.push_inline_lambda_type_var_scope();
         // Defaults are trailing (per D1): the required-arity is the count of
         // leading params without a default.
         let mut required = params.len();
 
         for (index, param) in params.iter().enumerate() {
             let ty = if let Some(annotation) = &param.annotation {
-                self.lower_annotation_for_inference(annotation)
+                self.lower_inline_lambda_annotation_for_inference(annotation)
             } else {
                 self.unifier.fresh()
             };
@@ -797,7 +798,7 @@ impl<'a> Checker<'a> {
             // reported on the value-check path (`check_lambda_value_expr`), not
             // here, to avoid double-reporting when both paths run. Incomplete
             // body types still defer silently.
-            let expected = self.lower_annotation_for_inference(annotation);
+            let expected = self.lower_inline_lambda_annotation_for_inference(annotation);
             self.report_propagated_errors_against_annotation(&expected, &propagation);
             if self.inferred_return_type_fits_annotation(&expected, &body_type) {
                 expected
@@ -813,11 +814,13 @@ impl<'a> Checker<'a> {
             body_type
         };
 
-        Type::Function {
+        let lambda_type = Type::Function {
             params: param_types,
             result: Box::new(result_type),
             required,
-        }
+        };
+        self.pop_inline_lambda_type_var_scope();
+        lambda_type
     }
 
     pub(super) fn pop_propagation_context(&mut self) -> PropagationContext {
@@ -2725,6 +2728,14 @@ impl<'a> Checker<'a> {
         let mut checker = self.fork_annotation_checker();
         let ty = checker.lower_annotation(annotation);
         checker.normalize(&ty)
+    }
+
+    pub(super) fn lower_inline_lambda_annotation_for_inference(
+        &mut self,
+        annotation: &Expr,
+    ) -> Type {
+        let ty = self.lower_annotation_for_inference(annotation);
+        self.resolve_inline_lambda_annotation_variables(&ty)
     }
 
     /// Replace each `Type::Variable` (a generic type binder from a parameter

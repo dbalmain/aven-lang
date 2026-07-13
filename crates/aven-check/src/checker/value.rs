@@ -198,6 +198,7 @@ impl<'a> Checker<'a> {
         return_annotation: Option<&Expr>,
         body: &Expr,
     ) {
+        self.push_inline_lambda_type_var_scope();
         let param_types: Vec<_> = params
             .iter()
             .map(|param| {
@@ -205,13 +206,13 @@ impl<'a> Checker<'a> {
                     .annotation
                     .as_ref()
                     .map(|annotation| {
-                        LocalValueType::Known(self.lower_normalized_annotation(annotation))
+                        LocalValueType::Known(self.lower_inline_lambda_annotation(annotation))
                     })
                     .unwrap_or(LocalValueType::Unknown)
             })
             .collect();
         let body_expected =
-            return_annotation.map(|annotation| self.lower_normalized_annotation(annotation));
+            return_annotation.map(|annotation| self.lower_inline_lambda_annotation(annotation));
 
         self.local_types.push();
         self.push_local_comptime_param_scope(params);
@@ -236,6 +237,7 @@ impl<'a> Checker<'a> {
         }
         self.local_comptime_params.pop();
         self.local_types.pop();
+        self.pop_inline_lambda_type_var_scope();
     }
 
     pub(super) fn check_value_exprs(&mut self, items: &[Expr]) {
