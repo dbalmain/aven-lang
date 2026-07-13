@@ -7162,6 +7162,178 @@ fn transparent_alias_chains_are_normalized_before_checking() {
 }
 
 #[test]
+fn pick_omit_alias_annotations_enforce_result_record_types() {
+    // `pick`/`omit` reify to closed records at alias definition time, so
+    // transparent-alias normalization feeds structural value checking.
+    let missing = parse_module(
+        "User = { name: Text, age: Int }\n\
+         P = pick(User, @{\"name\", \"age\"})\n\
+         u: P = { name: \"a\" }\n",
+    );
+    let missing_check = check_module(&missing.module);
+    assert_eq!(
+        matching_codes(&missing_check.diagnostics, codes::ty::MISSING_FIELD),
+        1,
+        "pick alias must require all picked fields; diagnostics: {:?}",
+        missing_check.diagnostics
+    );
+
+    let wrong_type = parse_module(
+        "User = { name: Text, age: Int }\n\
+         T = omit(User, @{\"age\"})\n\
+         v: T = { name: 99 }\n",
+    );
+    let wrong_type_check = check_module(&wrong_type.module);
+    assert_eq!(
+        matching_codes(&wrong_type_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "omit alias must enforce remaining field types; diagnostics: {:?}",
+        wrong_type_check.diagnostics
+    );
+    assert_eq!(
+        wrong_type_check.diagnostics[0].message,
+        "expected `Text`, found a number literal"
+    );
+
+    let ok = parse_module(
+        "User = { name: Text, age: Int }\n\
+         P = pick(User, @{\"name\", \"age\"})\n\
+         T = omit(User, @{\"age\"})\n\
+         u: P = { name: \"a\", age: 1 }\n\
+         v: T = { name: \"a\" }\n",
+    );
+    let ok_check = check_module(&ok.module);
+    assert!(
+        !has_diagnostic_code(&ok_check.diagnostics, codes::ty::MISSING_FIELD)
+            && !has_diagnostic_code(&ok_check.diagnostics, codes::ty::MISMATCH),
+        "correct values against pick/omit aliases must pass; diagnostics: {:?}",
+        ok_check.diagnostics
+    );
+}
+
+#[test]
+fn pick_omit_inline_annotations_enforce_result_record_types() {
+    let missing = parse_module(
+        "User = { name: Text, age: Int }\n\
+         u: pick(User, @{\"name\", \"age\"}) = { name: \"a\" }\n",
+    );
+    let missing_check = check_module(&missing.module);
+    assert_eq!(
+        matching_codes(&missing_check.diagnostics, codes::ty::MISSING_FIELD),
+        1,
+        "inline pick annotation must require all picked fields; diagnostics: {:?}",
+        missing_check.diagnostics
+    );
+
+    let wrong_type = parse_module(
+        "User = { name: Text, age: Int }\n\
+         v: omit(User, @{\"age\"}) = { name: 99 }\n",
+    );
+    let wrong_type_check = check_module(&wrong_type.module);
+    assert_eq!(
+        matching_codes(&wrong_type_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "inline omit annotation must enforce remaining field types; diagnostics: {:?}",
+        wrong_type_check.diagnostics
+    );
+
+    let ok = parse_module(
+        "User = { name: Text, age: Int }\n\
+         u: pick(User, @{\"name\"}) = { name: \"a\" }\n\
+         v: omit(User, @{\"age\"}) = { name: \"a\" }\n",
+    );
+    let ok_check = check_module(&ok.module);
+    assert!(
+        !has_diagnostic_code(&ok_check.diagnostics, codes::ty::MISSING_FIELD)
+            && !has_diagnostic_code(&ok_check.diagnostics, codes::ty::MISMATCH),
+        "correct values against inline pick/omit annotations must pass; diagnostics: {:?}",
+        ok_check.diagnostics
+    );
+}
+
+#[test]
+fn pick_omit_fn_param_annotations_enforce_result_record_types() {
+    // Function parameter annotations share lower_normalized_annotation; a
+    // pick/omit expected type must reject a structurally wrong argument.
+    let output = parse_module(
+        "User = { name: Text, age: Int }\n\
+         P = pick(User, @{\"name\", \"age\"})\n\
+         take = (x: P) => x\n\
+         bad = take({ name: \"a\" })\n",
+    );
+    let check = check_module(&output.module);
+    assert!(
+        matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD) >= 1
+            || matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+        "pick/omit param annotations must enforce argument shape; diagnostics: {:?}",
+        check.diagnostics
+    );
+
+    let ok = parse_module(
+        "User = { name: Text, age: Int }\n\
+         P = pick(User, @{\"name\", \"age\"})\n\
+         take = (x: P) => x\n\
+         good = take({ name: \"a\", age: 1 })\n",
+    );
+    let ok_check = check_module(&ok.module);
+    assert!(
+        !has_diagnostic_code(&ok_check.diagnostics, codes::ty::MISSING_FIELD)
+            && !has_diagnostic_code(&ok_check.diagnostics, codes::ty::MISMATCH),
+        "well-typed call against pick param must pass; diagnostics: {:?}",
+        ok_check.diagnostics
+    );
+}
+
+#[test]
+fn pick_alias_definition_reifies_closed_record_type() {
+    let output = parse_module(
+        "User = { name: Text, age: Int }\n\
+         P = pick(User, @{\"name\", \"age\"})\n\
+         T = omit(User, @{\"age\"})\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    assert_eq!(
+        definitions.get("P"),
+        Some(&Type::Record(Row {
+            entries: vec![field("name", named("Text")), field("age", named("Int"))],
+            tail: RowTail::Closed,
+        })),
+        "pick alias must store the selected closed record, not Deferred"
+    );
+    assert_eq!(
+        definitions.get("T"),
+        Some(&Type::Record(Row {
+            entries: vec![field("name", named("Text"))],
+            tail: RowTail::Closed,
+        })),
+        "omit alias must store the remaining closed record, not Deferred"
+    );
+}
+
+#[test]
+fn pick_domain_checked_bad_key_still_reports_literal_not_in_union() {
+    // Domain validation on user-defined pick (`@keys: keysOf(r)@{}`) must
+    // stay independent of the builtin type-position reification path.
+    let source = "User = { name: Text, age: Int }\n\
+         user : User = { name: \"a\", age: 1 }\n\
+         pick = (o: {..r}, @keys: keysOf(r)@{}) => { keys -> k; (k, o[k]) }\n\
+         result = pick(user, @{\"name\", \"nope\"})\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::LITERAL_NOT_IN_UNION)),
+        "expected literal-not-in-union for out-of-domain pick key; got: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn deferred_alias_definitions_do_not_emit_mismatches() {
     let output = parse_module("Wrapped = opaque(Text)\nvalue : Wrapped = 42\n");
     let check = check_module(&output.module);

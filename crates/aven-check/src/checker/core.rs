@@ -727,6 +727,10 @@ impl<'a> Checker<'a> {
             ExprKind::Name(_) => false,
             _ if Self::literal_or_tag_value_shape(value) => false,
             _ if Self::literal_operation_value_shape(value) => false,
+            // `pick`/`omit` are runtime builtins (they also reify in type
+            // position). A direct call is a value computation even when its
+            // subject is a type record — not a pure type artifact.
+            _ if self.is_unshadowed_record_selection_builtin_call(value) => false,
             _ => self.rhs_is_non_liftable_artifact(value, visiting),
         }
     }

@@ -468,6 +468,10 @@ where
             return self.evaluate_reflection_application(args, env, kind);
         }
 
+        if let Some(kind) = RecordSelectionKind::from_name(name) {
+            return self.evaluate_record_selection_application(args, env, kind);
+        }
+
         if name == "typeOf" {
             return self.evaluate_type_of(args);
         }
@@ -514,6 +518,64 @@ where
             &subject,
             arg.span,
             self.context.type_is_unresolved(&subject),
+        )
+    }
+
+    /// Type-position `pick`/`omit`: reify a closed record type so aliases and
+    /// inline annotations participate in value checking (same shape as a
+    /// hand-written record alias after transparent-alias normalization).
+    fn evaluate_record_selection_application(
+        &mut self,
+        args: &[Expr],
+        env: &Environment,
+        kind: RecordSelectionKind,
+    ) -> EvaluationResult {
+        let [subject_arg, labels_arg] = args else {
+            return EvaluationResult::deferred();
+        };
+
+        let subject_result = self.evaluate_expr(subject_arg, env);
+        let subject = match subject_result.evaluation {
+            Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
+            Evaluation::Deferred => {
+                return EvaluationResult::deferred_with_diagnostics(subject_result.diagnostics);
+            }
+            Evaluation::Unsupported => {
+                return EvaluationResult {
+                    evaluation: Evaluation::Unsupported,
+                    diagnostics: subject_result.diagnostics,
+                };
+            }
+        };
+        let Some(subject) = subject else {
+            return EvaluationResult::deferred_with_diagnostics(subject_result.diagnostics);
+        };
+
+        let labels_result = self.evaluate_expr(labels_arg, env);
+        let labels = match labels_result.evaluation {
+            Evaluation::Evaluated(value) => match labels_from_comptime_value(&value) {
+                Some(labels) => labels,
+                None => {
+                    return EvaluationResult::deferred_with_diagnostics(labels_result.diagnostics);
+                }
+            },
+            Evaluation::Deferred => {
+                return EvaluationResult::deferred_with_diagnostics(labels_result.diagnostics);
+            }
+            Evaluation::Unsupported => {
+                return EvaluationResult {
+                    evaluation: Evaluation::Unsupported,
+                    diagnostics: labels_result.diagnostics,
+                };
+            }
+        };
+
+        evaluate_record_selection(
+            &subject,
+            &labels,
+            subject_arg.span,
+            self.context.type_is_unresolved(&subject),
+            kind,
         )
     }
 
@@ -856,6 +918,39 @@ fn label_set_type(labels: Vec<String>) -> Type {
             .collect(),
         tail: RowTail::Closed,
     })
+}
+
+/// Recover key labels from a comptime value used as the second arg of
+/// `pick`/`omit`. Accepts a reified `LabelSet`, a single string literal, or a
+/// closed string-literal variant (the type-position form of `@{...}`).
+fn labels_from_comptime_value(value: &ComptimeValue) -> Option<Vec<String>> {
+    match value {
+        ComptimeValue::LabelSet(labels) => Some(labels.clone()),
+        ComptimeValue::Literal(Literal::String(text)) => Some(vec![string_literal_label(text)?]),
+        ComptimeValue::ReifiedType(ty) => labels_from_literal_variant(ty),
+        ComptimeValue::Literal(_) | ComptimeValue::Bool(_) => None,
+    }
+}
+
+fn labels_from_literal_variant(ty: &Type) -> Option<Vec<String>> {
+    let Type::Variant(row) = ty else {
+        return None;
+    };
+    if row.tail != RowTail::Closed {
+        return None;
+    }
+
+    let mut labels = Vec::with_capacity(row.entries.len());
+    for entry in &row.entries {
+        let RowEntry::Literal {
+            value: Literal::String(text),
+        } = entry
+        else {
+            return None;
+        };
+        labels.push(string_literal_label(text)?);
+    }
+    Some(labels)
 }
 
 fn literal_type(literal: Literal) -> Type {
