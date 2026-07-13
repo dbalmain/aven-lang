@@ -8529,3 +8529,47 @@ fn or_pattern_binders_report_conflicting_payload_types() {
         agreeing_check.diagnostics
     );
 }
+
+#[test]
+fn polymorphic_functions_reject_impossible_monotypes() {
+    // One shared instantiation: (a) -> a cannot inhabit (Int) -> Text.
+    for source in [
+        "id = (x: a): a => x\nf: (Int) -> Text = id\n",
+        concat!(
+            "app : ((Int) -> Text, Int) -> Text\n",
+            "app = (f, x) => f(x)\n",
+            "id = (x: a): a => x\n",
+            "r = app(id, 1)\n",
+        ),
+        concat!(
+            "getId : () -> ((Int) -> Text)\n",
+            "getId = () =>\n",
+            "  id = (x: a): a => x\n",
+            "  id\n",
+        ),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+            "expected an instantiation mismatch for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+
+    // Sound instantiations keep passing.
+    let passing = parse_module(concat!(
+        "apply : ((Int) -> Int, Int) -> Int\n",
+        "apply = (f, x) => f(x)\n",
+        "id = (x: a): a => x\n",
+        "f: (Int) -> Int = id\n",
+        "g: (Text) -> Text = id\n",
+        "r = apply(id, 1)\n",
+    ));
+    let passing_check = check_module(&passing.module);
+    assert!(
+        passing_check.diagnostics.is_empty(),
+        "sound polymorphic instantiations failed: {:?}",
+        passing_check.diagnostics
+    );
+}

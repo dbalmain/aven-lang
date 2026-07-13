@@ -381,6 +381,23 @@ impl<'a> Checker<'a> {
                         actual_params.len(),
                         span,
                     );
+                } else if type_variable_names(actual)
+                    .iter()
+                    .any(|name| !self.is_rigid_type_var(name))
+                {
+                    // A polymorphic actual must be checked with ONE
+                    // instantiation shared across every occurrence of each
+                    // variable — comparing params and result independently
+                    // would let `(a) -> a` inhabit `(Int) -> Text`.
+                    let instantiated =
+                        self.instantiate_nonrigid_type_variables(actual, &mut HashMap::new());
+                    if self.unifier.unify(expected, &instantiated).is_err() {
+                        self.report_type_mismatch_between_types(
+                            &expected.render(),
+                            &actual.render(),
+                            span,
+                        );
+                    }
                 } else {
                     for (expected, actual) in expected_params.iter().zip(actual_params) {
                         // Function parameters are contravariant: the actual

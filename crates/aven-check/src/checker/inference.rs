@@ -2591,7 +2591,7 @@ impl<'a> Checker<'a> {
 
     /// Instantiate free annotation variables at a call site, preserving the
     /// skolems that are rigid while checking an enclosing declaration body.
-    fn instantiate_nonrigid_type_variables(
+    pub(super) fn instantiate_nonrigid_type_variables(
         &mut self,
         ty: &Type,
         metas: &mut HashMap<String, Type>,
