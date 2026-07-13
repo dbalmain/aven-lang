@@ -873,14 +873,24 @@ fn check_export_for_node(
         if inferred_empty
             && let Some(rebuilt) = rebuild_value_export_record(entries, &semantic.top_level_types)
         {
-            let comptime_exports = collect_comptime_exports(entries, &node.parse.module, imports);
+            let comptime_exports = collect_comptime_exports(
+                entries,
+                &node.parse.module,
+                imports,
+                &semantic.type_definitions,
+            );
             return CheckExport::Record {
                 ty: rebuilt,
                 type_exports: HashMap::new(),
                 comptime_exports,
             };
         }
-        let comptime_exports = collect_comptime_exports(entries, &node.parse.module, imports);
+        let comptime_exports = collect_comptime_exports(
+            entries,
+            &node.parse.module,
+            imports,
+            &semantic.type_definitions,
+        );
         return CheckExport::Record {
             ty,
             type_exports: HashMap::new(),
@@ -915,8 +925,12 @@ fn check_export_for_node(
         let is_type = name.chars().next().is_some_and(char::is_uppercase);
         let field_ty = if is_type {
             if let Some(source) = source_name
-                && let Some(export) =
-                    comptime_export_for_source(&node.parse.module, source, imports)
+                && let Some(export) = comptime_export_for_source(
+                    &node.parse.module,
+                    source,
+                    imports,
+                    &semantic.type_definitions,
+                )
             {
                 comptime_function_export_type(&export)
             } else {
@@ -991,7 +1005,12 @@ fn check_export_for_node(
             ty: field_ty,
         });
     }
-    let comptime_exports = collect_comptime_exports(entries, &node.parse.module, imports);
+    let comptime_exports = collect_comptime_exports(
+        entries,
+        &node.parse.module,
+        imports,
+        &semantic.type_definitions,
+    );
     CheckExport::Record {
         ty: Type::Record(aven_check::Row {
             entries: fields,
@@ -1018,6 +1037,7 @@ fn collect_comptime_exports(
     entries: &[RecordEntry],
     module: &Module,
     imports: &CheckModuleImports,
+    type_definitions: &HashMap<String, Type>,
 ) -> HashMap<String, ComptimeExport> {
     let mut exports = HashMap::new();
     for entry in entries {
@@ -1032,15 +1052,10 @@ fn collect_comptime_exports(
             RecordEntry::Rename { from, to, .. } => (to.as_str(), from.as_str()),
             _ => continue,
         };
-        if let Some(export) = comptime_export_for_source(module, source_name, imports) {
-            exports.insert(
-                export_name.to_owned(),
-                ComptimeExport {
-                    name: export_name.to_owned(),
-                    params: export.params,
-                    body: export.body,
-                },
-            );
+        if let Some(export) =
+            comptime_export_for_source(module, source_name, imports, type_definitions)
+        {
+            exports.insert(export_name.to_owned(), export.renamed(export_name));
         }
     }
     exports
@@ -1050,22 +1065,49 @@ fn comptime_export_for_source(
     module: &Module,
     source_name: &str,
     imports: &CheckModuleImports,
+    type_definitions: &HashMap<String, Type>,
 ) -> Option<ComptimeExport> {
     if let Some(binding) = top_level_binding(module, source_name)
         && let Some((params, body)) = lambda_parts(&binding.value)
     {
-        return Some(ComptimeExport::from_lambda(source_name, params, body));
+        return Some(
+            ComptimeExport::from_module_lambda(
+                source_name,
+                params,
+                body,
+                type_definitions.clone(),
+                module_comptime_function_definitions(module),
+            )
+            .with_foreign_module_token(),
+        );
     }
 
     let pattern_binding = top_level_pattern_binding(module, source_name)?;
     let specifier = aven_parser::static_import_specifier(&pattern_binding.value)?;
     let source = import_pattern_source_for_binder(&pattern_binding.pattern, source_name)?;
     let export = imports.comptime_export(&specifier, source)?;
-    Some(ComptimeExport {
-        name: source_name.to_owned(),
-        params: export.params.clone(),
-        body: export.body.clone(),
-    })
+    Some(export.renamed(source_name))
+}
+
+fn module_comptime_function_definitions(
+    module: &Module,
+) -> Vec<(String, Vec<aven_parser::Param>, Expr)> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| {
+            let Item::Binding(binding) = item else {
+                return None;
+            };
+            let (params, body) = lambda_parts(&binding.value)?;
+            binding
+                .name
+                .chars()
+                .next()
+                .is_some_and(char::is_uppercase)
+                .then(|| (binding.name.clone(), params.to_vec(), body.clone()))
+        })
+        .collect()
 }
 
 fn top_level_binding<'a>(module: &'a Module, name: &str) -> Option<&'a Binding> {

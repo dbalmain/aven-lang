@@ -5,17 +5,42 @@ impl comptime::EvalContext for Checker<'_> {
         &mut self,
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
+        captured_types: &HashMap<String, Type>,
+        _in_function_body: bool,
     ) -> comptime::LoweredType {
         let start = self.diagnostics.len();
+        let mut visible_type_definitions = self.type_definitions.clone();
+        visible_type_definitions.extend(captured_types.clone());
+        let mut visible_known_types = self.known_types.clone();
+        visible_known_types.extend(captured_types.keys().cloned());
+        let saved_type_definitions =
+            std::mem::replace(&mut self.type_definitions, visible_type_definitions);
+        let saved_known_types = std::mem::replace(&mut self.known_types, visible_known_types);
         self.local_comptime_values.push(bindings.clone());
         let ty = self.lower_annotation(expr);
         self.local_comptime_values.pop();
+        self.known_types = saved_known_types;
+        self.type_definitions = saved_type_definitions;
         let diagnostics = self.diagnostics.split_off(start);
 
         comptime::LoweredType {
             ty: self.normalize(&ty),
             diagnostics,
         }
+    }
+
+    fn runtime_binding_reference(&self, name: &str, span: Span) -> Option<Diagnostic> {
+        (self.bindings.contains_key(name) && !self.comptime_bindings.contains(name)).then(|| {
+            Diagnostic::error(format!(
+                "runtime binding `{name}` cannot be used while specializing a comptime function"
+            ))
+            .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
+            .with_label(Label::primary(
+                span,
+                "this reference is not known at compile time",
+            ))
+            .with_note("comptime function bodies may capture only comptime-known module bindings")
+        })
     }
 
     fn lookup_comptime_function(&self, name: &str) -> Option<comptime::ComptimeFunction> {

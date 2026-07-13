@@ -1085,6 +1085,46 @@ fn cross_module_uppercase_comptime_type_function_checks_fields() {
 }
 
 #[test]
+fn imported_comptime_type_function_captures_its_home_module_aliases() {
+    let dir = TempDir::new("comptime-type-fn-home-scope");
+    write(
+        dir.path(),
+        "shapes.av",
+        "Id = { id: Int }\nWithId = (t: Type) => { ..t, ..Id }\n{ WithId }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "{ WithId } = import(\"./shapes\")\nvalue: WithId({ name: Text }) = { id: 1, name: \"Aven\" }\n{ value }\n",
+    );
+
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("captured imported alias should resolve in its home module scope");
+    assert_no_errors(&checked.reports);
+}
+
+#[test]
+fn imported_comptime_sibling_does_not_alias_importer_function_of_same_name() {
+    let dir = TempDir::new("comptime-type-fn-name-collision");
+    write(
+        dir.path(),
+        "lib.av",
+        "G = (t: Type) => { b: t }\nF = (t: Type) => G(t)\n{ F, G }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "{ F } = import(\"./lib\")\nG = (t: Type) => { a: t }\nmine: G(Int) = { a: 1 }\ntheirs: F(Int) = { b: 2 }\n{ mine, theirs }\n",
+    );
+
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("same-named comptime functions must not share specializations");
+    assert_no_errors(&checked.reports);
+}
+
+#[test]
 fn cross_module_unexpandable_imported_application_diagnoses() {
     let dir = TempDir::new("comptime-unexpandable-import");
     write(dir.path(), "ops.av", "add = (a, b) => a + b\n{ add }\n");

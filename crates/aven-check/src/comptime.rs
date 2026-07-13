@@ -97,14 +97,16 @@ impl EvaluationResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct SpecializationKey {
+    module_token: u64,
     function: String,
     args: Vec<ComptimeValue>,
 }
 
 impl SpecializationKey {
-    pub(crate) fn new(function: &str, args: &[ComptimeValue]) -> Self {
+    pub(crate) fn new(function: &ComptimeExport, args: &[ComptimeValue]) -> Self {
         Self {
-            function: function.to_owned(),
+            module_token: function.environment.module_token,
+            function: function.name.clone(),
             args: args.to_vec(),
         }
     }
@@ -123,6 +125,7 @@ pub struct ComptimeExport {
     pub name: String,
     pub params: Vec<Param>,
     pub body: Expr,
+    environment: ComptimeModuleEnvironment,
 }
 
 impl ComptimeExport {
@@ -131,8 +134,70 @@ impl ComptimeExport {
             name: name.into(),
             params: params.to_vec(),
             body: body.clone(),
+            environment: ComptimeModuleEnvironment::default(),
         }
     }
+
+    /// Construct a function with the module scope in which its body was
+    /// defined. The scope is owned so an importing checker never resolves a
+    /// free reference against its own module.
+    pub fn from_module_lambda(
+        name: impl Into<String>,
+        params: &[Param],
+        body: &Expr,
+        type_definitions: HashMap<String, Type>,
+        functions: impl IntoIterator<Item = (String, Vec<Param>, Expr)>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            params: params.to_vec(),
+            body: body.clone(),
+            environment: ComptimeModuleEnvironment {
+                module_token: 0,
+                type_definitions,
+                functions: functions
+                    .into_iter()
+                    .map(|(name, params, body)| (name, (params, body)))
+                    .collect(),
+            },
+        }
+    }
+
+    /// Preserve a function's defining environment while giving it an import or
+    /// re-export binding name.
+    pub fn renamed(&self, name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            params: self.params.clone(),
+            body: self.body.clone(),
+            environment: self.environment.clone(),
+        }
+    }
+
+    /// Mark this function's environment as belonging to a foreign module, so
+    /// its specializations never share cache entries with same-named functions
+    /// from the importing module. Call once when a module's exports are
+    /// collected; the token stays stable through `renamed` clones.
+    pub fn with_foreign_module_token(mut self) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.environment.module_token = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+}
+
+/// The stable, module-level part of a comptime function closure. Function
+/// definitions deliberately store only params+body here: all siblings share
+/// this one environment, which represents mutual references without a
+/// recursive owned data structure.
+///
+/// `module_token` is 0 for the module currently being checked and unique per
+/// collected foreign export otherwise; it keys the specialization cache so
+/// same-named functions from different modules cannot alias.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ComptimeModuleEnvironment {
+    module_token: u64,
+    type_definitions: HashMap<String, Type>,
+    functions: HashMap<String, (Vec<Param>, Expr)>,
 }
 
 pub(crate) type ComptimeFunction = ComptimeExport;
@@ -142,7 +207,10 @@ pub(crate) trait EvalContext {
         &mut self,
         expr: &Expr,
         bindings: &HashMap<String, ComptimeValue>,
+        captured_types: &HashMap<String, Type>,
+        in_function_body: bool,
     ) -> LoweredType;
+    fn runtime_binding_reference(&self, name: &str, span: Span) -> Option<Diagnostic>;
     fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction>;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
@@ -334,6 +402,13 @@ where
                     return EvaluationResult::evaluated(value.clone());
                 }
 
+                if env.in_function_body()
+                    && let Some(diagnostic) =
+                        self.context.runtime_binding_reference(name, expr.span)
+                {
+                    return EvaluationResult::diagnostic(diagnostic);
+                }
+
                 self.evaluate_type_term(expr, env)
             }
             ExprKind::Call { callee, args } => {
@@ -476,7 +551,10 @@ where
             return self.evaluate_type_of(args);
         }
 
-        if let Some(function) = self.context.lookup_comptime_function(name) {
+        if let Some(function) = env
+            .captured_function(name)
+            .or_else(|| self.context.lookup_comptime_function(name))
+        {
             return self.evaluate_function_application(function, call_span, args, env);
         }
 
@@ -623,7 +701,7 @@ where
             }
         };
 
-        let key = SpecializationKey::new(&function.name, &values);
+        let key = SpecializationKey::new(&function, &values);
 
         if let Some(result) = self.context.cached_specialization(&key) {
             return result;
@@ -640,7 +718,7 @@ where
         }
 
         self.context.begin_specialization(key.clone());
-        let body_env = Environment::from_params(&function.params, values);
+        let body_env = Environment::from_function(&function, values);
         let result = self.evaluate_expr(&function.body, &body_env);
         self.context.end_specialization(&key);
         self.visited.remove(&key);
@@ -700,7 +778,12 @@ where
                 continue;
             };
 
-            let lowering = self.context.lower_comptime_type(annotation, env.bindings());
+            let lowering = self.context.lower_comptime_type(
+                annotation,
+                env.bindings(),
+                env.captured_types(),
+                env.in_function_body(),
+            );
             if !lowering.diagnostics.is_empty() {
                 diagnostics.extend(lowering.diagnostics);
                 continue;
@@ -724,7 +807,12 @@ where
     }
 
     fn evaluate_type_term(&mut self, expr: &Expr, env: &Environment) -> EvaluationResult {
-        let lowering = self.context.lower_comptime_type(expr, env.bindings());
+        let lowering = self.context.lower_comptime_type(
+            expr,
+            env.bindings(),
+            env.captured_types(),
+            env.in_function_body(),
+        );
         if !lowering.diagnostics.is_empty() {
             return EvaluationResult::deferred_with_diagnostics(lowering.diagnostics);
         }
@@ -1092,22 +1180,37 @@ fn evaluation_limit(span: Span) -> Diagnostic {
 #[derive(Debug, Clone, Default)]
 struct Environment {
     bindings: HashMap<String, ComptimeValue>,
+    module_token: u64,
+    captured_types: HashMap<String, Type>,
+    captured_functions: HashMap<String, (Vec<Param>, Expr)>,
+    in_function_body: bool,
 }
 
 impl Environment {
     fn from_bindings(bindings: &HashMap<String, ComptimeValue>) -> Self {
         Self {
             bindings: bindings.clone(),
+            module_token: 0,
+            captured_types: HashMap::new(),
+            captured_functions: HashMap::new(),
+            in_function_body: false,
         }
     }
 
-    fn from_params(params: &[Param], values: Vec<ComptimeValue>) -> Self {
-        let bindings = params
+    fn from_function(function: &ComptimeExport, values: Vec<ComptimeValue>) -> Self {
+        let bindings = function
+            .params
             .iter()
             .zip(values)
             .map(|(param, value)| (param.name.clone(), value))
             .collect();
-        Self { bindings }
+        Self {
+            bindings,
+            module_token: function.environment.module_token,
+            captured_types: function.environment.type_definitions.clone(),
+            captured_functions: function.environment.functions.clone(),
+            in_function_body: true,
+        }
     }
 
     fn get(&self, name: &str) -> Option<&ComptimeValue> {
@@ -1116,6 +1219,28 @@ impl Environment {
 
     fn bindings(&self) -> &HashMap<String, ComptimeValue> {
         &self.bindings
+    }
+
+    fn captured_types(&self) -> &HashMap<String, Type> {
+        &self.captured_types
+    }
+
+    fn captured_function(&self, name: &str) -> Option<ComptimeExport> {
+        let (params, body) = self.captured_functions.get(name)?;
+        Some(ComptimeExport {
+            name: name.to_owned(),
+            params: params.clone(),
+            body: body.clone(),
+            environment: ComptimeModuleEnvironment {
+                module_token: self.module_token,
+                type_definitions: self.captured_types.clone(),
+                functions: self.captured_functions.clone(),
+            },
+        })
+    }
+
+    fn in_function_body(&self) -> bool {
+        self.in_function_body
     }
 }
 

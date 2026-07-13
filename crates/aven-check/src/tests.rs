@@ -1210,6 +1210,119 @@ fn uppercase_comptime_function_recursion_reports_a_specialization_cycle() {
 }
 
 #[test]
+fn comptime_type_function_captures_module_type_aliases() {
+    let output = parse_module(
+        "Id = { id: Int }\n\
+         WithId = (t: Type) => { ..t, ..Id }\n\
+         w: WithId({ name: Text }) = { id: 1, name: \"Aven\" }\n",
+    );
+    let check = check_module(&output.module);
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != Severity::Error),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn comptime_type_function_captures_sibling_functions_transitively() {
+    let output = parse_module(
+        "C = { marker: Bool }\n\
+         B = (t: Type) => { value: t, ..C }\n\
+         A = (t: Type) => B(t)\n\
+         value: A(Int) = { value: 1, marker: true }\n",
+    );
+    let check = check_module(&output.module);
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != Severity::Error),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn mutually_recursive_comptime_type_functions_still_report_a_cycle() {
+    let output = parse_module(
+        "A = (t: Type) => B(t)\n\
+         B = (t: Type) => A(t)\n\
+         value: A(Int) = 1\n",
+    );
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_CYCLE),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn comptime_type_function_runtime_binding_reference_stays_diagnostic() {
+    let output = parse_module(
+        "runtime = 1\n\
+         F = (t: Type) => runtime\n\
+         value: F(Int) = 1\n",
+    );
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn imported_comptime_type_function_uses_its_defining_alias_scope() {
+    let export = parse_module("A = { id: Int }\nF = (t: Type) => { ..t, ..A }\n");
+    let known_types = known_type_names(&export.module);
+    let definitions = type_definitions(&export.module, &known_types);
+    let Item::Binding(binding) = &export.module.items[1] else {
+        panic!("expected comptime function binding");
+    };
+    let Some((params, body)) = aven_parser::lambda_parts(&binding.value) else {
+        panic!("expected comptime function lambda");
+    };
+    let mut imports = ModuleImports::default();
+    imports.insert_comptime_exports(
+        "./dep",
+        HashMap::from([(
+            "F".to_owned(),
+            ComptimeExport::from_module_lambda("F", params, body, definitions, []),
+        )]),
+    );
+
+    let output = parse_module(
+        "{ F } = import(\"./dep\")\n\
+         value: F({ name: Text }) = { id: 1, name: \"Aven\" }\n",
+    );
+    let check = check_module_with_host_globals_and_imports(
+        &output.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != Severity::Error),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn allows_constructor_guarded_recursive_types() {
     let output = parse_module("Tree = { value: Int, children: Tree }\n");
     let check = check_module(&output.module);

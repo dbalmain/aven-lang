@@ -2204,10 +2204,12 @@ impl<'a> Checker<'a> {
         if let Some(binding) = self.bindings.get(name).and_then(|binding| *binding)
             && let Some((params, body)) = lambda_parts(&binding.value)
         {
-            return Some(comptime::ComptimeExport::from_lambda(
+            return Some(comptime::ComptimeExport::from_module_lambda(
                 binding.name.clone(),
                 params,
                 body,
+                self.type_definitions.clone(),
+                self.local_comptime_function_definitions(),
             ));
         }
 
@@ -2215,11 +2217,21 @@ impl<'a> Checker<'a> {
         let specifier = aven_parser::static_import_specifier(&pattern_binding.value)?;
         let source = super::import_pattern_source_for_binder(&pattern_binding.pattern, name)?;
         let export = self.imports.comptime_export(&specifier, source)?;
-        Some(comptime::ComptimeExport {
-            name: name.to_owned(),
-            params: export.params.clone(),
-            body: export.body.clone(),
-        })
+        Some(export.renamed(name))
+    }
+
+    fn local_comptime_function_definitions(&self) -> Vec<(String, Vec<Param>, Expr)> {
+        self.bindings
+            .iter()
+            .filter_map(|(name, binding)| {
+                let binding = *binding.as_ref()?;
+                let (params, body) = lambda_parts(&binding.value)?;
+                name.chars()
+                    .next()
+                    .is_some_and(char::is_uppercase)
+                    .then(|| (name.clone(), params.to_vec(), body.clone()))
+            })
+            .collect()
     }
 
     /// True when `name` is bound from a static module import (pattern extract).
