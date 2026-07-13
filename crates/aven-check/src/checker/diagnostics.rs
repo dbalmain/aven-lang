@@ -428,6 +428,28 @@ impl<'a> Checker<'a> {
         );
     }
 
+    pub(super) fn report_record_index_not_comptime(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("record index must be a comptime-known string")
+                .with_code(codes::ty::RECORD_INDEX_NOT_COMPTIME)
+                .with_label(Label::primary(
+                    span,
+                    "this index is not a comptime-known string",
+                ))
+                .with_note("use a Map for runtime-keyed lookup"),
+        );
+    }
+
+    pub(super) fn report_not_indexable(&mut self, ty: &Type, span: Span) {
+        let ty = display_inferred_type(ty).render();
+        self.diagnostics.push(
+            Diagnostic::error(format!("values of type `{ty}` cannot be indexed"))
+                .with_code(codes::ty::NOT_INDEXABLE)
+                .with_label(Label::primary(span, "this value is not indexable"))
+                .with_note("index an Array, Map, tuple, or record instead"),
+        );
+    }
+
     pub(super) fn report_tuple_index_out_of_range(
         &mut self,
         span: Span,

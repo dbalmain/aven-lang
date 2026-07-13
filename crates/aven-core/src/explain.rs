@@ -355,6 +355,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "An unannotated runtime match has arms whose result types cannot be combined into one type. Make every arm return the same kind of value, or add a result annotation so each arm is checked against it.",
     },
     DiagnosticExplanation {
+        code: codes::ty::INVALID_OPERATOR_OPERANDS,
+        text: "This operator has no rule for the resolved operand types. Use operands accepted by the operator, or choose an operation that matches their types.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::LITERAL_NOT_IN_UNION,
         text: "A fresh literal value or literal-union type contains a member that is not listed by the expected closed literal union. Use one of the listed literal values or widen the annotation.",
     },
@@ -379,6 +383,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A variant match must cover every tag in a closed row. Matches on open variant rows also need a default arm because additional tags may be present.",
     },
     DiagnosticExplanation {
+        code: codes::ty::NOT_INDEXABLE,
+        text: "This value does not support square-bracket indexing. Index an Array, Map, tuple, or record instead.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE,
         text: "An inferred variant with an open row tail may carry tags not listed in a closed annotation. Make the annotation open with `..` or constrain the value to a closed variant row before assigning it.",
     },
@@ -397,6 +405,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::PROPAGATE_NOT_RESULT,
         text: "The ?^ and ?! operators unwrap Result(ok, err) values. Apply them only to expressions with Result type, or handle the value without a propagation operator.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::RECORD_INDEX_NOT_COMPTIME,
+        text: "Record fields are selected with a comptime-known string. Use a literal or comptime key, or use a Map when the key is chosen at runtime.",
     },
     DiagnosticExplanation {
         code: codes::ty::RENAME_ABSENT_FIELD,

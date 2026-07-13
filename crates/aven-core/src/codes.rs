@@ -117,6 +117,7 @@ pub mod ty {
     pub const DUPLICATE_SPREAD_LABEL: &str = "type.duplicate-spread-label";
     pub const ENCODE_FORMAT: &str = "type.encode-format";
     pub const INCOMPATIBLE_MATCH_ARMS: &str = "type.incompatible-match-arms";
+    pub const INVALID_OPERATOR_OPERANDS: &str = "type.invalid-operator-operands";
     pub const LITERAL_NOT_IN_UNION: &str = "type.literal-not-in-union";
     pub const LOWERCASE_VARIANT_TAG: &str = "type.lowercase-variant-tag";
     pub const MISMATCH: &str = "type.mismatch";
@@ -128,11 +129,13 @@ pub mod ty {
     pub const OR_PATTERN_BINDING_TYPE_CONFLICT: &str = "type.or-pattern-binding-type-conflict";
     pub const PROPAGATE_NEEDS_RESULT: &str = "type.propagate-needs-result";
     pub const PROPAGATE_NOT_RESULT: &str = "type.propagate-not-result";
+    pub const RECORD_INDEX_NOT_COMPTIME: &str = "type.record-index-not-comptime";
     pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
     pub const REPLACE_ABSENT_FIELD: &str = "type.replace-absent-field";
     pub const SPREAD_SHAPE_UNKNOWN: &str = "type.spread-shape-unknown";
     pub const TUPLE_INDEX_NOT_COMPTIME: &str = "type.tuple-index-not-comptime";
     pub const TUPLE_INDEX_OUT_OF_RANGE: &str = "type.tuple-index-out-of-range";
+    pub const NOT_INDEXABLE: &str = "type.not-indexable";
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
     pub const UNGUARDED_EMPTY_ACCESS: &str = "type.unguarded-empty-access";
@@ -232,17 +235,20 @@ pub const ALL: &[&str] = &[
     ty::DUPLICATE_SPREAD_LABEL,
     ty::ENCODE_FORMAT,
     ty::INCOMPATIBLE_MATCH_ARMS,
+    ty::INVALID_OPERATOR_OPERANDS,
     ty::LITERAL_NOT_IN_UNION,
     ty::LOWERCASE_VARIANT_TAG,
     ty::MISMATCH,
     ty::MISSING_FIELD,
     ty::MIXED_VARIANT_ENTRIES,
     ty::NON_EXHAUSTIVE_MATCH,
+    ty::NOT_INDEXABLE,
     ty::OPEN_VARIANT_NOT_ASSIGNABLE,
     ty::OR_PATTERN_BINDING_MISMATCH,
     ty::OR_PATTERN_BINDING_TYPE_CONFLICT,
     ty::PROPAGATE_NEEDS_RESULT,
     ty::PROPAGATE_NOT_RESULT,
+    ty::RECORD_INDEX_NOT_COMPTIME,
     ty::RENAME_ABSENT_FIELD,
     ty::REPLACE_ABSENT_FIELD,
     ty::SPREAD_SHAPE_UNKNOWN,

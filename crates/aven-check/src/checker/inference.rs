@@ -362,9 +362,34 @@ impl<'a> Checker<'a> {
         if let Some(result) = self.infer_binary_type(operator, &left_type, &right_type) {
             result
         } else {
+            let left_type = self.normalize(&self.resolve_and_default(&left_type));
+            let right_type = self.normalize(&self.resolve_and_default(&right_type));
             self.unifier.restore(snapshot);
             self.restore_diagnostic_snapshot(diagnostic_snapshot);
-            Type::Deferred
+            if is_resolved_operator_operand(&left_type) && is_resolved_operator_operand(&right_type)
+            {
+                if matches!(operator, "==" | "!=")
+                    && matches!(
+                        (&left_type, &right_type),
+                        (Type::Record(_), Type::Record(_))
+                    )
+                {
+                    return named_builtin("Bool");
+                }
+                if operator == "??" {
+                    self.report_null_coalesce_mismatch(&left_type, &right_type, right.span);
+                } else {
+                    self.report_invalid_operator_operands(
+                        operator,
+                        &left_type,
+                        &right_type,
+                        left.span.merge(right.span),
+                    );
+                }
+                self.invalid_binary_result_type(operator, &left_type, &right_type)
+            } else {
+                Type::Deferred
+            }
         }
     }
 
@@ -401,6 +426,78 @@ impl<'a> Checker<'a> {
         }
 
         None
+    }
+
+    fn report_null_coalesce_mismatch(&mut self, left: &Type, right: &Type, span: Span) {
+        let (_, payload) = peel_empty_values(left);
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "expected `{}`, found `{}`",
+                display_inferred_type(payload).render(),
+                display_inferred_type(right).render()
+            ))
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(span, "this fallback has the wrong type"))
+            .with_note("the `??` fallback must match the value it replaces"),
+        );
+    }
+
+    fn report_invalid_operator_operands(
+        &mut self,
+        operator: &str,
+        left: &Type,
+        right: &Type,
+        span: Span,
+    ) {
+        let left = operator_operand_type(left);
+        let right = operator_operand_type(right);
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "operator `{operator}` is not defined for `{left}` and `{right}`"
+            ))
+            .with_code(codes::ty::INVALID_OPERATOR_OPERANDS)
+            .with_label(Label::primary(
+                span,
+                "these operand types do not support this operator",
+            ))
+            .with_note(operator_operand_note(operator)),
+        );
+    }
+
+    fn report_invalid_unary_operator_operand(&mut self, operator: &str, value: &Type, span: Span) {
+        let value = operator_operand_type(value);
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "operator `{operator}` is not defined for `{value}`"
+            ))
+            .with_code(codes::ty::INVALID_OPERATOR_OPERANDS)
+            .with_label(Label::primary(
+                span,
+                "this operand type does not support this operator",
+            ))
+            .with_note(operator_operand_note(operator)),
+        );
+    }
+
+    fn invalid_binary_result_type(&self, operator: &str, left: &Type, right: &Type) -> Type {
+        if matches!(
+            operator,
+            "<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||"
+        ) {
+            return named_builtin("Bool");
+        }
+        if matches!(operator, "+" | "-" | "*" | "/" | "%" | "^") {
+            if binary_operand_is_float(left) || binary_operand_is_float(right) {
+                return named_builtin("Float");
+            }
+            if binary_operand_is_numeric(left) || binary_operand_is_numeric(right) {
+                return named_builtin("Int");
+            }
+            if operator == "+" && (binary_operand_is_text(left) || binary_operand_is_text(right)) {
+                return named_builtin("Text");
+            }
+        }
+        Type::Deferred
     }
 
     pub(super) fn fold_binary_literal(
@@ -551,11 +648,19 @@ impl<'a> Checker<'a> {
         }
 
         if is_concrete_type(&left) && is_concrete_type(&right) {
-            return self
-                .unifier
-                .unify(&left, &right)
-                .ok()
-                .map(|()| named_builtin("Bool"));
+            let snapshot = self.unifier.snapshot();
+            if self.unifier.unify(&left, &right).is_ok() {
+                return Some(named_builtin("Bool"));
+            }
+            self.unifier.restore(snapshot);
+            if left.render() == right.render() {
+                return Some(named_builtin("Bool"));
+            }
+            if self.type_fits_boundary_without_reporting(&left, &right)
+                || self.type_fits_boundary_without_reporting(&right, &left)
+            {
+                return Some(named_builtin("Bool"));
+            }
         }
 
         None
@@ -593,9 +698,19 @@ impl<'a> Checker<'a> {
         if let Some(result) = result {
             result
         } else {
+            let value_type = self.normalize(&self.resolve_and_default(&value_type));
             self.unifier.restore(snapshot);
             self.restore_diagnostic_snapshot(diagnostic_snapshot);
-            Type::Deferred
+            if is_resolved_operator_operand(&value_type) {
+                self.report_invalid_unary_operator_operand(operator, &value_type, value.span);
+                match operator {
+                    "-" if binary_operand_is_float(&value_type) => named_builtin("Float"),
+                    "-" if binary_operand_is_numeric(&value_type) => named_builtin("Int"),
+                    _ => Type::Deferred,
+                }
+            } else {
+                Type::Deferred
+            }
         }
     }
 
@@ -669,10 +784,12 @@ impl<'a> Checker<'a> {
             param_types.push(ty);
         }
 
+        self.push_local_comptime_param_scope(params);
         self.propagation_contexts
             .push(PropagationContext::default());
         let body_type = self.infer(&next_env, body);
         let propagation = self.pop_propagation_context();
+        self.local_comptime_params.pop();
         let body_type = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
         let result_type = if let Some(annotation) = return_annotation {
             // Trust the return annotation as the lambda's result type so
@@ -2103,7 +2220,7 @@ impl<'a> Checker<'a> {
         };
 
         let callee_type = self.infer(env, callee);
-        let callee_type = self.normalize(&self.unifier.resolve(&callee_type));
+        let callee_type = self.normalize(&self.resolve_and_default(&callee_type));
         match callee_type {
             Type::Record(row) => self.infer_record_index(&row, arg),
             Type::Tuple(elements) => self.infer_tuple_index(&elements, arg),
@@ -2129,6 +2246,10 @@ impl<'a> Checker<'a> {
                 self.check_value_index_arg(env, arg, key_type);
                 Type::Optional(Box::new(value_type))
             }
+            _ if is_resolved_value_type(&callee_type) => {
+                self.report_not_indexable(&callee_type, callee.span);
+                Type::Deferred
+            }
             _ => Type::Deferred,
         }
     }
@@ -2152,18 +2273,23 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Record indexing with a comptime-known key reads the exact field type from
-    /// a closed row, just like `record.field`.
-    pub(super) fn infer_record_index(&self, row: &Row, arg: &Expr) -> Type {
-        if row.tail != RowTail::Closed {
-            return Type::Deferred;
-        }
+    /// Record indexing with a comptime-known key reads the exact field type,
+    /// just like `record.field`.
+    pub(super) fn infer_record_index(&mut self, row: &Row, arg: &Expr) -> Type {
         let Some(label) = self.comptime_known_label(arg) else {
+            if self.expr_references_unresolved_comptime_param(arg) {
+                return Type::Deferred;
+            }
+            self.report_record_index_not_comptime(arg.span);
             return Type::Deferred;
         };
-        row_field_type(row, &label)
-            .cloned()
-            .unwrap_or(Type::Deferred)
+        if let Some(ty) = row_field_type(row, &label) {
+            return ty.clone();
+        }
+        if row.tail == RowTail::Closed {
+            self.report_missing_field(&label, arg.span);
+        }
+        Type::Deferred
     }
 
     /// Tuple projection requires a comptime-known integer index and returns the
@@ -2715,6 +2841,80 @@ fn singleton_literal_type(ty: &Type) -> Option<&Literal> {
         return None;
     };
     Some(value)
+}
+
+fn operator_operand_type(ty: &Type) -> String {
+    if binary_operand_is_text(ty) {
+        return "Text".to_owned();
+    }
+    if binary_operand_is_numeric(ty) {
+        return if binary_operand_is_float(ty) {
+            "Float".to_owned()
+        } else {
+            "Int".to_owned()
+        };
+    }
+    if matches!(ty, Type::Variant(row) if literal_variant_base(row) == Some(LiteralBase::Bool)) {
+        return "Bool".to_owned();
+    }
+    display_inferred_type(ty).render()
+}
+
+fn is_resolved_operator_operand(ty: &Type) -> bool {
+    is_resolved_value_type(ty) && !type_has_open_row(ty)
+}
+
+fn type_has_open_row(ty: &Type) -> bool {
+    match ty {
+        Type::Apply { callee, args } => {
+            type_has_open_row(callee) || args.iter().any(type_has_open_row)
+        }
+        Type::Function { params, result, .. } => {
+            params.iter().any(type_has_open_row) || type_has_open_row(result)
+        }
+        Type::Optional(inner) | Type::Nullable(inner) => type_has_open_row(inner),
+        Type::Tuple(items) => items.iter().any(type_has_open_row),
+        Type::Variant(row) if literal_variant_base(row).is_some() => false,
+        Type::Record(row) | Type::Variant(row) => {
+            row.tail == RowTail::Open
+                || row.entries.iter().any(|entry| match entry {
+                    RowEntry::Field { ty, .. } => type_has_open_row(ty),
+                    RowEntry::Tag { payload, .. } => payload.iter().any(type_has_open_row),
+                    RowEntry::Literal { .. } => false,
+                })
+        }
+        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => false,
+    }
+}
+
+fn operator_operand_note(operator: &str) -> &'static str {
+    match operator {
+        "+" => "`+` accepts two numbers or two Text values",
+        "-" | "*" | "/" | "%" | "^" => "this operator accepts numeric operands",
+        "<" | "<=" | ">" | ">=" => "this operator accepts numeric operands",
+        "==" | "!=" => "both operands must have compatible types",
+        "&&" | "||" | "!" => "this operator accepts Bool operands",
+        _ => "use operands supported by this operator",
+    }
+}
+
+fn binary_operand_is_text(ty: &Type) -> bool {
+    matches!(named_type_name(ty), Some("Text"))
+        || matches!(ty, Type::Variant(row) if literal_variant_base(row) == Some(LiteralBase::Text))
+}
+
+fn binary_operand_is_numeric(ty: &Type) -> bool {
+    numeric_type_name(ty).is_some()
+        || matches!(ty, Type::Variant(row) if literal_variant_base(row) == Some(LiteralBase::Number))
+}
+
+fn binary_operand_is_float(ty: &Type) -> bool {
+    if numeric_type_name(ty) == Some("Float") {
+        return true;
+    }
+    matches!(ty, Type::Variant(row)
+        if literal_variant_base(row) == Some(LiteralBase::Number)
+            && row.entries.iter().any(|entry| matches!(entry, RowEntry::Literal { value: Literal::Number(number) } if is_float_literal_text(number))))
 }
 
 fn fold_binary_literals(operator: &str, left: &Literal, right: &Literal) -> Option<Literal> {

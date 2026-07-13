@@ -6135,7 +6135,7 @@ fn quoted_computed_record_labels_decode_string_escapes() {
 }
 
 #[test]
-fn computed_value_index_with_runtime_key_defers_without_diagnostic() {
+fn computed_value_index_with_runtime_key_reports_not_comptime() {
     let output = parse_module("user = { name: \"Ada\" }\nkey = \"name\"\nvalue = user[key]\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
@@ -6147,11 +6147,14 @@ fn computed_value_index_with_runtime_key_defers_without_diagnostic() {
             .map(|scheme| scheme.ty),
         Some(Type::Deferred)
     );
-    assert!(checker.diagnostics.is_empty());
+    assert_eq!(
+        matching_codes(&checker.diagnostics, codes::ty::RECORD_INDEX_NOT_COMPTIME),
+        1
+    );
 }
 
 #[test]
-fn computed_value_index_with_non_record_receiver_defers_without_diagnostic() {
+fn computed_value_index_with_non_record_receiver_reports_not_indexable() {
     let output = parse_module("text = \"Ada\"\nvalue = text[\"name\"]\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
@@ -6163,7 +6166,93 @@ fn computed_value_index_with_non_record_receiver_defers_without_diagnostic() {
             .map(|scheme| scheme.ty),
         Some(Type::Deferred)
     );
-    assert!(checker.diagnostics.is_empty());
+    assert_eq!(
+        matching_codes(&checker.diagnostics, codes::ty::NOT_INDEXABLE),
+        1
+    );
+}
+
+#[test]
+fn strict_deferred_failures_report_resolved_operator_and_coalesce_errors_once() {
+    for (source, code) in [
+        ("x: Int = \"a\" + 1\n", codes::ty::INVALID_OPERATOR_OPERANDS),
+        ("x: Int = !1\n", codes::ty::INVALID_OPERATOR_OPERANDS),
+        (
+            "g = (o: ?Int): Int => o ?? \"fallback\"\n",
+            codes::ty::MISMATCH,
+        ),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert_eq!(
+            matching_codes(&check.diagnostics, code),
+            1,
+            "{source} should report exactly one {code}: {:?}",
+            check.diagnostics
+        );
+        assert_eq!(
+            check
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .count(),
+            1,
+            "{source} should not cascade: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn strict_deferred_failures_keep_resolved_valid_operations_and_unresolved_operands_clean() {
+    for source in [
+        "a: Int = 1 + 2\nb: Text = \"a\" + \"b\"\n",
+        "g = (o: ?Int): Int => o ?? 0\n",
+        "g = (x: a) => x + 1\nh = (x: a) => x ?? 0\ni = (r: { a: Int, .. }) => r + 1\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should stay clean: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn record_indexing_is_comptime_only_and_respects_row_openness() {
+    let closed_missing = check_module(&parse_module("r = { a: 1 }\nv = r[\"b\"]\n").module);
+    assert_eq!(
+        matching_codes(&closed_missing.diagnostics, codes::ty::MISSING_FIELD),
+        1
+    );
+
+    let runtime_key =
+        check_module(&parse_module("r = { a: 1 }\nk: Text = \"a\"\nv: Int = r[k]\n").module);
+    assert_eq!(
+        matching_codes(
+            &runtime_key.diagnostics,
+            codes::ty::RECORD_INDEX_NOT_COMPTIME
+        ),
+        1
+    );
+
+    let open = parse_module(
+        "known = (r: { a: Int, .. }): Int => r[\"a\"]\nunknown = (r: { a: Int, .. }) => r[\"b\"]\n",
+    );
+    let known_types = known_type_names(&open.module);
+    let type_definitions = type_definitions(&open.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &open.module);
+    assert_eq!(
+        render_top_level_value(&mut checker, "known"),
+        Some("{ a: Int, .. } -> Int".to_owned())
+    );
+    let unknown = checker.infer_top_level_scheme("unknown");
+    assert!(
+        matches!(unknown.map(|scheme| scheme.ty), Some(Type::Function { result, .. }) if matches!(*result, Type::Deferred))
+    );
+    assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
 }
 
 #[test]
@@ -6228,7 +6317,7 @@ fn array_index_accepts_literal_and_bound_int_indexes() {
 }
 
 #[test]
-fn array_index_with_deferred_index_type_defers_without_diagnostic() {
+fn array_index_with_deferred_index_type_keeps_the_index_deferred() {
     let output = parse_module(
         "arr = [1, 2, 3]\nunknown = \"not a record\"[\"key\"]\nvalue = arr[unknown]\n",
     );
@@ -6237,9 +6326,10 @@ fn array_index_with_deferred_index_type_defers_without_diagnostic() {
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
     let _ = checker.infer_top_level_scheme("value");
 
-    assert!(
-        checker.diagnostics.is_empty(),
-        "expected deferred index type to produce no diagnostic, got {:?}",
+    assert_eq!(
+        matching_codes(&checker.diagnostics, codes::ty::NOT_INDEXABLE),
+        1,
+        "the invalid nested receiver should report once: {:?}",
         checker.diagnostics
     );
 }
