@@ -73,7 +73,7 @@ pub const TEXT_METHOD_NAMES: &[&str] = &[
     "splitOn",
 ];
 
-pub const RESULT_METHOD_NAMES: &[&str] = &["mapErr", "orElse"];
+pub const RESULT_METHOD_NAMES: &[&str] = &["mapErr", "orElse", "map", "unwrapOr", "isOk", "isErr"];
 
 pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
     let mut ty = ty;
@@ -181,6 +181,12 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
             )],
             build::result(output_ok, output_error),
         )),
+        "map" => Some(function(
+            vec![function(vec![ok], output_ok.clone())],
+            build::result(output_ok, error),
+        )),
+        "unwrapOr" => Some(function(vec![ok.clone()], ok)),
+        "isOk" | "isErr" => Some(function(Vec::new(), named_builtin("Bool"))),
         _ => None,
     }
 }

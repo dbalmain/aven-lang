@@ -331,6 +331,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Bracket type application has been removed. Use ordinary call syntax such as Result(Int, Text); postfix square brackets are reserved for indexing.",
     },
     DiagnosticExplanation {
+        code: codes::ty::COALESCE_NEVER_EMPTY,
+        text: "The left operand of `??` has a type that cannot be `null` or `undefined`, so the fallback expression is dead code. Remove the `??` fallback, or give the left operand an optional/nullable type when emptiness is intended.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::CYCLIC_ALIAS,
         text: "A transparent type alias eventually refers back to itself without passing through a type constructor. Wrap one member in a record or variant to make the recursion well-founded, or remove the alias.",
     },

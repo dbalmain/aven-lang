@@ -730,6 +730,33 @@ fn completion_at_map_field_access_returns_builtin_methods() {
 }
 
 #[test]
+fn completion_at_result_field_access_returns_builtin_methods() {
+    let completions = completions_at_marker("r : Result(Int, Text) = @Ok(1)\nvalue = r.|");
+    let labels = completions
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+
+    for name in ["mapErr", "orElse", "map", "unwrapOr", "isOk", "isErr"] {
+        assert!(
+            labels.contains(&name),
+            "expected Result.{name} completion, got {labels:?}"
+        );
+    }
+    let Some(map) = completion_item(&completions, "map") else {
+        panic!("expected Result.map completion");
+    };
+    assert_eq!(
+        map.detail.as_deref(),
+        Some("(Int -> result_ok) -> Result(result_ok, Text)")
+    );
+    let Some(is_ok) = completion_item(&completions, "isOk") else {
+        panic!("expected Result.isOk completion");
+    };
+    assert_eq!(is_ok.detail.as_deref(), Some("() -> Bool"));
+}
+
+#[test]
 fn completion_at_text_field_access_offers_format_methods() {
     let completions = completions_at_marker("text : Text = \"{}\"\nresult = text.|");
     let Some(decode) = completion_item(&completions, "decode") else {

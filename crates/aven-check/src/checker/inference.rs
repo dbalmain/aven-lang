@@ -359,7 +359,8 @@ impl<'a> Checker<'a> {
             }
         }
 
-        if let Some(result) = self.infer_binary_type(operator, &left_type, &right_type) {
+        let result = if let Some(result) = self.infer_binary_type(operator, &left_type, &right_type)
+        {
             result
         } else {
             let left_type = self.normalize(&self.resolve_and_default(&left_type));
@@ -390,7 +391,15 @@ impl<'a> Checker<'a> {
             } else {
                 Type::Deferred
             }
+        };
+
+        // After any snapshot restore above, so this warning is not discarded.
+        if operator == "??" {
+            let left_resolved = self.normalize(&self.unifier.resolve(&left_type));
+            self.maybe_report_coalesce_never_empty(left, &left_resolved);
         }
+
+        result
     }
 
     pub(super) fn infer_binary_type(
@@ -439,6 +448,29 @@ impl<'a> Checker<'a> {
             .with_code(codes::ty::MISMATCH)
             .with_label(Label::primary(span, "this fallback has the wrong type"))
             .with_note("the `??` fallback must match the value it replaces"),
+        );
+    }
+
+    /// Warn when `left ?? fallback` has a left operand that can never be empty,
+    /// so the fallback is dead. Conservative: unresolved / open / variable /
+    /// meta left types stay silent (false negatives are preferred).
+    fn maybe_report_coalesce_never_empty(&mut self, left: &Expr, left_type: &Type) {
+        if self.expr_references_unresolved_comptime_param(left) {
+            return;
+        }
+        if !is_resolved_operator_operand(left_type) {
+            return;
+        }
+        if coalesce_left_can_be_empty(left_type) {
+            return;
+        }
+
+        let rendered = display_inferred_type(left_type).render();
+        self.diagnostics.push(
+            Diagnostic::warning("left operand of `??` is never empty; the fallback is dead")
+                .with_code(codes::ty::COALESCE_NEVER_EMPTY)
+                .with_label(Label::primary(left.span, "this value is never empty"))
+                .with_note(format!("type `{rendered}` cannot be `null` or `undefined`")),
         );
     }
 
@@ -2873,6 +2905,20 @@ fn operator_operand_type(ty: &Type) -> String {
 
 fn is_resolved_operator_operand(ty: &Type) -> bool {
     is_resolved_value_type(ty) && !type_has_open_row(ty)
+}
+
+/// Whether a resolved left operand of `??` might still be empty at runtime.
+/// Optional/Nullable wrappers, and the empty types themselves, can be empty.
+/// Everything else (including `Result`) cannot.
+fn coalesce_left_can_be_empty(ty: &Type) -> bool {
+    let (empties, core) = peel_empty_values(ty);
+    if !empties.is_empty() {
+        return true;
+    }
+    matches!(
+        core,
+        Type::Named(name) if name == "Null" || name == "Undefined"
+    )
 }
 
 fn type_has_open_row(ty: &Type) -> bool {

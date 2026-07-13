@@ -97,6 +97,10 @@ pub enum Value {
 pub enum ResultMethod {
     MapErr,
     OrElse,
+    Map,
+    UnwrapOr,
+    IsOk,
+    IsErr,
 }
 
 /// Type names bound as `Value::Type` intrinsics. `Array`/`Data`/`Map` are
@@ -1364,8 +1368,20 @@ fn apply_result_method(
     callee_span: Span,
     span: Span,
 ) -> Eval {
-    if args.len() != 1 {
-        return Err(one_diagnostic(arity_mismatch(span, 1, 1, args.len())));
+    let expected_arity = match kind {
+        ResultMethod::IsOk | ResultMethod::IsErr => 0,
+        ResultMethod::MapErr
+        | ResultMethod::OrElse
+        | ResultMethod::Map
+        | ResultMethod::UnwrapOr => 1,
+    };
+    if args.len() != expected_arity {
+        return Err(one_diagnostic(arity_mismatch(
+            span,
+            expected_arity,
+            expected_arity,
+            args.len(),
+        )));
     }
 
     let Value::Tag { name, mut payload } = receiver else {
@@ -1375,20 +1391,56 @@ fn apply_result_method(
         return Err(one_diagnostic(not_callable(callee_span, "Tag")));
     };
 
-    if name == "Ok" {
-        return Ok(Value::Tag {
-            name,
-            payload: vec![value.clone()],
-        });
-    }
-
-    let transformed = apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)?;
     match kind {
-        ResultMethod::MapErr => Ok(Value::Tag {
-            name,
-            payload: vec![transformed],
-        }),
-        ResultMethod::OrElse => Ok(transformed),
+        ResultMethod::IsOk => Ok(Value::Bool(name == "Ok")),
+        ResultMethod::IsErr => Ok(Value::Bool(name == "Err")),
+        ResultMethod::UnwrapOr => {
+            if name == "Ok" {
+                Ok(value.clone())
+            } else {
+                Ok(args[0].clone())
+            }
+        }
+        ResultMethod::Map => {
+            if name == "Ok" {
+                let transformed =
+                    apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)?;
+                Ok(Value::Tag {
+                    name,
+                    payload: vec![transformed],
+                })
+            } else {
+                Ok(Value::Tag {
+                    name,
+                    payload: vec![value.clone()],
+                })
+            }
+        }
+        ResultMethod::MapErr => {
+            if name == "Ok" {
+                Ok(Value::Tag {
+                    name,
+                    payload: vec![value.clone()],
+                })
+            } else {
+                let transformed =
+                    apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)?;
+                Ok(Value::Tag {
+                    name,
+                    payload: vec![transformed],
+                })
+            }
+        }
+        ResultMethod::OrElse => {
+            if name == "Ok" {
+                Ok(Value::Tag {
+                    name,
+                    payload: vec![value.clone()],
+                })
+            } else {
+                apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)
+            }
+        }
     }
 }
 
@@ -1815,13 +1867,18 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
         (Value::Map(entries), "size") => Some(map_size_method(Rc::clone(entries))),
         (Value::Map(entries), "merge") => Some(map_merge_method(Rc::clone(entries))),
         (Value::Text(text), field) => text_method(text, field),
-        (Value::Tag { name, payload }, "mapErr" | "orElse")
-            if matches!(name.as_str(), "Ok" | "Err") && payload.len() == 1 =>
-        {
-            let kind = if field == "mapErr" {
-                ResultMethod::MapErr
-            } else {
-                ResultMethod::OrElse
+        (
+            Value::Tag { name, payload },
+            "mapErr" | "orElse" | "map" | "unwrapOr" | "isOk" | "isErr",
+        ) if matches!(name.as_str(), "Ok" | "Err") && payload.len() == 1 => {
+            let kind = match field {
+                "mapErr" => ResultMethod::MapErr,
+                "orElse" => ResultMethod::OrElse,
+                "map" => ResultMethod::Map,
+                "unwrapOr" => ResultMethod::UnwrapOr,
+                "isOk" => ResultMethod::IsOk,
+                "isErr" => ResultMethod::IsErr,
+                _ => unreachable!("matched result method names"),
             };
             Some(Value::ResultMethod {
                 receiver: Box::new(receiver.clone()),

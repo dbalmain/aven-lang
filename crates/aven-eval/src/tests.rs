@@ -1824,6 +1824,29 @@ fn result_methods_map_errors_and_recover_for_ok_and_err() {
 }
 
 #[test]
+fn result_methods_map_unwrap_or_and_predicates() {
+    assert_module_value(
+        "ok = @Ok(7)\nerr = @Err(\"bad\")\n[\n  ok.map((v) => v + 1),\n  err.map((v) => v + 1),\n  ok.unwrapOr(0),\n  err.unwrapOr(0),\n  ok.isOk(),\n  err.isOk(),\n  ok.isErr(),\n  err.isErr()\n]\n",
+        array_value(vec![
+            Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Int(8)],
+            },
+            Value::Tag {
+                name: "Err".to_owned(),
+                payload: vec![Value::Text("bad".to_owned())],
+            },
+            Value::Int(7),
+            Value::Int(0),
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::Bool(true),
+        ]),
+    );
+}
+
+#[test]
 fn propagate_err_early_returns_enclosing_function() {
     // `?^` on `@Err` returns that whole `@Err` as the function's value, and
     // short-circuits: the unbound `missing` after it must never evaluate.

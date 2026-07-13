@@ -111,6 +111,7 @@ pub mod runtime {
 
 pub mod ty {
     pub const BRACKET_TYPE_APPLICATION: &str = "type.bracket-type-application";
+    pub const COALESCE_NEVER_EMPTY: &str = "type.coalesce-never-empty";
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const DECODE_FORMAT: &str = "type.decode-format";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
@@ -229,6 +230,7 @@ pub const ALL: &[&str] = &[
     runtime::UNBOUND_NAME,
     runtime::UNSUPPORTED,
     ty::BRACKET_TYPE_APPLICATION,
+    ty::COALESCE_NEVER_EMPTY,
     ty::CYCLIC_ALIAS,
     ty::DECODE_FORMAT,
     ty::DELETE_ABSENT_FIELD,

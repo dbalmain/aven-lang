@@ -3889,6 +3889,61 @@ fn result_methods_preserve_and_replace_result_type_arguments() {
 }
 
 #[test]
+fn result_map_unwrap_or_and_predicate_methods_type_check() {
+    let source = "ok : Result(Int, Text) = @Ok(1)\n\
+                  err : Result(Int, Text) = @Err(\"x\")\n\
+                  mapped_ok = ok.map((v) => v + 1)\n\
+                  mapped_err = err.map((v) => v + 1)\n\
+                  fallback_ok = ok.unwrapOr(0)\n\
+                  fallback_err = err.unwrapOr(0)\n\
+                  ok_flag = ok.isOk()\n\
+                  err_flag = err.isErr()\n";
+    let output = parse_module(source);
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let result_int_text = crate::ty::build::result(named("Int"), named("Text"));
+
+    for name in ["mapped_ok", "mapped_err"] {
+        assert_eq!(
+            checker.infer_top_level_value(name),
+            Some(result_int_text.clone()),
+            "{name}: {:?}",
+            checker.diagnostics
+        );
+    }
+    for name in ["fallback_ok", "fallback_err"] {
+        assert_eq!(
+            checker.infer_top_level_value(name),
+            Some(named("Int")),
+            "{name}: {:?}",
+            checker.diagnostics
+        );
+    }
+    for name in ["ok_flag", "err_flag"] {
+        assert_eq!(
+            checker.infer_top_level_value(name),
+            Some(named("Bool")),
+            "{name}: {:?}",
+            checker.diagnostics
+        );
+    }
+    assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
+}
+
+#[test]
+fn result_unwrap_or_rejects_mismatched_default() {
+    let source = "r : Result(Int, Text) = @Ok(1)\nv = r.unwrapOr(\"s\")\n";
+    let check = check_module(&parse_module(source).module);
+    assert!(
+        has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH)
+            || check.diagnostics.iter().any(|d| d.is_error()),
+        "expected type error for unwrapOr default: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn result_or_else_ok_only_callback_makes_error_side_uninhabited() {
     // A callback that only ever returns `@Ok` recovers every error, so the
     // chain can no longer fail: the error side becomes the empty closed
@@ -5555,6 +5610,81 @@ fn optional_spread_patch_widens_literal_defaults_to_patch_base() {
 
     let check = check_module(&output.module);
     assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn coalesce_never_empty_warns_on_resolved_non_empty_left() {
+    let source = "value = 1 ?? 0\n";
+    let check = check_module(&parse_module(source).module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::COALESCE_NEVER_EMPTY),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_deref() == Some(codes::ty::COALESCE_NEVER_EMPTY))
+        .expect("coalesce-never-empty diagnostic");
+    assert_eq!(diagnostic.severity, Severity::Warning);
+    assert!(
+        diagnostic.message.contains("never empty"),
+        "{:?}",
+        diagnostic.message
+    );
+    assert_eq!(
+        &source[diagnostic.labels[0].span.start..diagnostic.labels[0].span.end],
+        "1"
+    );
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("Int") || note.contains("1")),
+        "expected a note naming the left type: {:?}",
+        diagnostic.notes
+    );
+    assert!(
+        !check.diagnostics.iter().any(|d| d.is_error()),
+        "warning must not fail the program: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn coalesce_never_empty_silent_for_optional_nullable_and_unresolved() {
+    for source in [
+        "g = (o: ?Int): Int => o ?? 0\n",
+        "g = (n: Int?): Int => n ?? 0\n",
+        "h = (x: a) => x ?? 0\n",
+    ] {
+        let check = check_module(&parse_module(source).module);
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::COALESCE_NEVER_EMPTY),
+            "{source} should not warn: {:?}",
+            check.diagnostics
+        );
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should stay clean: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn coalesce_never_empty_warns_on_result_left() {
+    let source = "r: Result(Int, Text) = @Ok(1)\nv = r ?? @Ok(0)\n";
+    let check = check_module(&parse_module(source).module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::COALESCE_NEVER_EMPTY),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
 }
 
 #[test]
