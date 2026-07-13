@@ -3205,6 +3205,58 @@ fn nested_record_match_pattern_binders_use_subject_field_types() {
 }
 
 #[test]
+fn record_destructure_binders_use_subject_field_types() {
+    let mismatch = parse_module(
+        "u = { name: \"Ada\", age: 36 }\n\
+         { name } = u\n\
+         n: Int = name\n",
+    );
+    let mismatch_check = check_module(&mismatch.module);
+    assert_eq!(
+        matching_codes(&mismatch_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "record binder should retain its Text field type: {:?}",
+        mismatch_check.diagnostics
+    );
+
+    let correct = parse_module(
+        "u = { name: \"Ada\", person: { active: true }, age: 36 }\n\
+         { name, person: { active }, ..rest } = u\n\
+         text: Text = name\n\
+         flag: Bool = active\n\
+         remaining: { age: Int } = rest\n",
+    );
+    let correct_check = check_module(&correct.module);
+    assert!(
+        correct_check.diagnostics.is_empty(),
+        "record, nested, and rest binders should retain their field types: {:?}",
+        correct_check.diagnostics
+    );
+
+    let deferred = parse_module(
+        "f = (subject) =>\n\
+           { name } = subject\n\
+           n: Int = name\n\
+           n\n",
+    );
+    let deferred_check = check_module(&deferred.module);
+    assert!(
+        !has_diagnostic_code(&deferred_check.diagnostics, codes::ty::MISMATCH),
+        "deferred record subjects must leave binders unknown: {:?}",
+        deferred_check.diagnostics
+    );
+
+    let missing = parse_module("u = { name: \"Ada\" }\n{ age } = u\n");
+    let missing_check = check_module(&missing.module);
+    assert_eq!(
+        matching_codes(&missing_check.diagnostics, codes::ty::MISSING_FIELD),
+        1,
+        "closed record destructures should report missing fields: {:?}",
+        missing_check.diagnostics
+    );
+}
+
+#[test]
 fn open_record_match_rest_binder_stays_unconstrained() {
     let source = "source : { x: Int, y: Text, .. } = value\n\
          picked = source ?>\n  { x, ..rest } => x\n\

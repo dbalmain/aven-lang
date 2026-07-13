@@ -847,14 +847,14 @@ fn collect_known_record_pattern_types(
             }
             RecordEntry::Shorthand { name, .. } => {
                 if let Some(field_ty) = row_field_type(row, name)
-                    && (is_concrete_type(field_ty) || type_contains_variable(field_ty))
+                    && (is_resolved_value_type(field_ty) || type_contains_variable(field_ty))
                 {
                     known.insert(name.clone(), field_ty.clone());
                 }
             }
             RecordEntry::Rename { from, to, .. } => {
                 if let Some(field_ty) = row_field_type(row, from)
-                    && (is_concrete_type(field_ty) || type_contains_variable(field_ty))
+                    && (is_resolved_value_type(field_ty) || type_contains_variable(field_ty))
                 {
                     known.insert(to.clone(), field_ty.clone());
                 }
