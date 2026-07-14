@@ -27,7 +27,7 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
     let mut line_indents = layout_line_indents(line_count, &line_starts, &parse.layout_tokens);
     fill_trivia_line_indents(source, &mut line_indents);
     let line_tokens = content_tokens_by_line(line_count, &line_starts, &parse.raw_tokens);
-    let inline_matches = collect_inline_matches(&parse.module, &line_starts);
+    let inline_matches = collect_inline_matches(&parse.module, &line_starts, &parse.raw_tokens);
 
     let mut output = String::with_capacity(source.len() + 1);
 
@@ -49,7 +49,7 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
             .find(|match_layout| match_layout.line == line_index);
 
         if flat.chars().count() > MAX_LINE_WIDTH
-            && let Some(match_layout) = breakable
+            && let Some(match_layout) = breakable.filter(|layout| layout.can_break_to_layout)
         {
             emit_broken_inline_match(
                 &mut output,
@@ -76,12 +76,17 @@ struct InlineMatchLayout {
     match_span: Span,
     subject_span: Span,
     arm_spans: Vec<Span>,
+    can_break_to_layout: bool,
 }
 
-fn collect_inline_matches(module: &Module, line_starts: &[usize]) -> Vec<InlineMatchLayout> {
+fn collect_inline_matches(
+    module: &Module,
+    line_starts: &[usize],
+    tokens: &[Token],
+) -> Vec<InlineMatchLayout> {
     let mut matches = Vec::new();
     for item in &module.items {
-        collect_item_inline_matches(item, line_starts, &mut matches);
+        collect_item_inline_matches(item, line_starts, tokens, &mut matches);
     }
     matches
 }
@@ -89,32 +94,34 @@ fn collect_inline_matches(module: &Module, line_starts: &[usize]) -> Vec<InlineM
 fn collect_item_inline_matches(
     item: &Item,
     line_starts: &[usize],
+    tokens: &[Token],
     matches: &mut Vec<InlineMatchLayout>,
 ) {
     match item {
         Item::Binding(binding) => {
             if let Some(annotation) = &binding.annotation {
-                collect_expr_inline_matches(annotation, line_starts, matches);
+                collect_expr_inline_matches(annotation, line_starts, tokens, matches);
             }
-            collect_expr_inline_matches(&binding.value, line_starts, matches);
+            collect_expr_inline_matches(&binding.value, line_starts, tokens, matches);
         }
         Item::PatternBinding(binding) => {
-            collect_expr_inline_matches(&binding.pattern, line_starts, matches);
-            collect_expr_inline_matches(&binding.value, line_starts, matches);
+            collect_expr_inline_matches(&binding.pattern, line_starts, tokens, matches);
+            collect_expr_inline_matches(&binding.value, line_starts, tokens, matches);
         }
         Item::SpreadBinding(binding) => {
-            collect_expr_inline_matches(&binding.value, line_starts, matches);
+            collect_expr_inline_matches(&binding.value, line_starts, tokens, matches);
         }
         Item::Signature(signature) => {
-            collect_expr_inline_matches(&signature.annotation, line_starts, matches);
+            collect_expr_inline_matches(&signature.annotation, line_starts, tokens, matches);
         }
-        Item::Expr(expr) => collect_expr_inline_matches(expr, line_starts, matches),
+        Item::Expr(expr) => collect_expr_inline_matches(expr, line_starts, tokens, matches),
     }
 }
 
 fn collect_expr_inline_matches(
     expr: &Expr,
     line_starts: &[usize],
+    tokens: &[Token],
     matches: &mut Vec<InlineMatchLayout>,
 ) {
     if let ExprKind::Match {
@@ -123,24 +130,29 @@ fn collect_expr_inline_matches(
         arms,
     } = &expr.kind
     {
-        if let Some(layout) =
-            inline_match_layout(expr.span, subject, *operator_span, arms, line_starts)
-        {
+        if let Some(layout) = inline_match_layout(
+            expr.span,
+            subject,
+            *operator_span,
+            arms,
+            line_starts,
+            tokens,
+        ) {
             matches.push(layout);
         }
-        collect_expr_inline_matches(subject, line_starts, matches);
+        collect_expr_inline_matches(subject, line_starts, tokens, matches);
         for arm in arms {
-            collect_expr_inline_matches(&arm.pattern, line_starts, matches);
+            collect_expr_inline_matches(&arm.pattern, line_starts, tokens, matches);
             for guard in &arm.guards {
-                collect_expr_inline_matches(guard, line_starts, matches);
+                collect_expr_inline_matches(guard, line_starts, tokens, matches);
             }
-            collect_expr_inline_matches(&arm.body, line_starts, matches);
+            collect_expr_inline_matches(&arm.body, line_starts, tokens, matches);
         }
         return;
     }
 
     walk_expr_children(expr, &mut |child| {
-        collect_expr_inline_matches(child, line_starts, matches);
+        collect_expr_inline_matches(child, line_starts, tokens, matches);
     });
 }
 
@@ -150,6 +162,7 @@ fn inline_match_layout(
     operator_span: Span,
     arms: &[MatchArm],
     line_starts: &[usize],
+    tokens: &[Token],
 ) -> Option<InlineMatchLayout> {
     if arms.is_empty() {
         return None;
@@ -170,7 +183,31 @@ fn inline_match_layout(
         match_span,
         subject_span: subject.span,
         arm_spans: arms.iter().map(|arm| arm.span).collect(),
+        can_break_to_layout: !is_inside_delimiter(match_span, tokens),
     })
+}
+
+/// Layout match arms end at a physical line boundary. Inside a delimiter that
+/// boundary cannot safely terminate the expression, so retain the authored
+/// inline arms even when they exceed the soft width budget.
+fn is_inside_delimiter(span: Span, tokens: &[Token]) -> bool {
+    let mut depth = 0usize;
+
+    for token in tokens {
+        if token.span.start >= span.start {
+            break;
+        }
+
+        match token.kind {
+            TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => depth += 1,
+            TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    depth > 0
 }
 
 fn emit_broken_inline_match(

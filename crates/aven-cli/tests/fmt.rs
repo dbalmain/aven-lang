@@ -103,6 +103,28 @@ fn check_accepts_inline_match_arms() {
 }
 
 #[test]
+fn fmt_preserves_parenthesized_inline_matches_that_exceed_the_line_width() {
+    let file = TempFile::new(
+        "parenthesized-inline-match",
+        "f = (r: Result(Int, Text)) => r.map((n) => (n >= 0 ?> true => \"quite a long ok payload here\", false => \"quite a long error payload here\"))\n",
+    );
+
+    assert_success(&run_aven(["fmt"], file.path()));
+    let once = fs::read_to_string(file.path()).expect("failed to read formatted source");
+    assert_eq!(
+        once,
+        "f = (r: Result(Int, Text)) => r.map((n) => (n >= 0 ?> true => \"quite a long ok payload here\", false => \"quite a long error payload here\"))\n"
+    );
+    assert_success(&run_aven(["check"], file.path()));
+
+    assert_success(&run_aven(["fmt"], file.path()));
+    assert_eq!(
+        fs::read_to_string(file.path()).expect("failed to reread formatted source"),
+        once
+    );
+}
+
+#[test]
 fn check_timings_reports_text_timings() {
     let file = TempFile::new("check-timings", "value = 1\n");
 

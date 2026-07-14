@@ -11,6 +11,16 @@ fn valid_formatter_fixtures_match_expected_output() -> Result<(), Box<dyn Error>
         let actual = aven_fmt::format_source(&source).map_err(|diagnostics| {
             format!("{} produced diagnostics: {diagnostics:?}", path.display())
         })?;
+        let formatted_parse = aven_parser::parse_module(&actual);
+        assert!(
+            !formatted_parse
+                .diagnostics
+                .iter()
+                .any(aven_core::Diagnostic::is_error),
+            "formatted output for {} does not parse: {:?}",
+            path.display(),
+            formatted_parse.diagnostics
+        );
         let expected_path = path.with_extension("fmt");
         let expected = fs::read_to_string(&expected_path)?;
 

@@ -1,0 +1,1 @@
+f = (r: Result(Int, Text)) => r.map((n) => (n >= 0 ?> true => "quite a long ok payload here", false => "quite a long error payload here"))
