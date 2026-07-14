@@ -2382,7 +2382,9 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
                 )));
             };
 
-            Ok(indexed_value(&values, index).unwrap_or(Value::Undefined))
+            // Negative indexes wrap from the end (Python-style): `-1` is last.
+            // Still-out-of-bounds after wrap → `undefined`, same as past-the-end.
+            Ok(array_indexed_value(&values, index).unwrap_or(Value::Undefined))
         }
         Value::Tuple(values) => {
             let Value::Int(index) = arg_value else {
@@ -2394,6 +2396,7 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
                 )));
             };
 
+            // Tuples do not wrap: fixed arity, out-of-bounds is a hard error.
             indexed_value(&values, index).ok_or_else(|| {
                 one_diagnostic(index_out_of_bounds(args[0].span, index, values.len()))
             })
@@ -2457,6 +2460,23 @@ fn runtime_type_target(value: &Value) -> bool {
     }
 }
 
+/// Array index with Python-style negative wrap: `i < 0` → `length + i`.
+/// Returns `None` when the resolved index is still out of bounds.
+fn array_indexed_value(values: &[Value], index: i64) -> Option<Value> {
+    let len = i64::try_from(values.len()).ok()?;
+    let resolved = if index < 0 {
+        index.checked_add(len)?
+    } else {
+        index
+    };
+    if resolved < 0 {
+        return None;
+    }
+    let resolved = usize::try_from(resolved).ok()?;
+    values.get(resolved).cloned()
+}
+
+/// Tuple index: no negative wrap; negative or past-end yields `None`.
 fn indexed_value(values: &[Value], index: i64) -> Option<Value> {
     let index = usize::try_from(index).ok()?;
     values.get(index).cloned()

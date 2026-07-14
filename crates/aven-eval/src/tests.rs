@@ -1067,6 +1067,12 @@ fn std_array_combinators_run_via_import() {
         "  sliceClampLow: slice(xs, -5, 2),\n",
         "  slicePastEnd: slice(xs, 1, 99),\n",
         "  sliceNegEnd: slice(xs, 0, -1),\n",
+        "  sliceNegStart: slice(xs, -2, 99),\n",
+        "  sliceNegStartFar: slice(xs, -99, 2),\n",
+        "  sliceInverted: slice(xs, 3, 2),\n",
+        "  sliceNegInverted: slice(xs, -1, -3),\n",
+        "  sliceEmptyArr: slice(empty, 0, 1),\n",
+        "  sliceEmptyNeg: slice(empty, -1, 0),\n",
         "  zipShort: zip([1, 2, 3], [10, 20]),\n",
         "  zipLeftEmpty: zip(empty, xs),\n",
         "  zipRightEmpty: zip(xs, empty),\n",
@@ -1174,7 +1180,26 @@ fn std_array_combinators_run_via_import() {
                     "slicePastEnd",
                     array_value(vec![Value::Int(20), Value::Int(30)])
                 ),
-                ("sliceNegEnd", array_value(vec![])),
+                // wrap end -1 → 2, half-open [0, 2) → all but last
+                (
+                    "sliceNegEnd",
+                    array_value(vec![Value::Int(10), Value::Int(20)])
+                ),
+                // wrap start -2 → 1; clamp end 99 → 3 → last two
+                (
+                    "sliceNegStart",
+                    array_value(vec![Value::Int(20), Value::Int(30)])
+                ),
+                // wrap start -99 → still < 0 → clamp 0; end 2
+                (
+                    "sliceNegStartFar",
+                    array_value(vec![Value::Int(10), Value::Int(20)])
+                ),
+                ("sliceInverted", array_value(vec![])),
+                // wrap -1 → 2, -3 → 0 → inverted after wrap
+                ("sliceNegInverted", array_value(vec![])),
+                ("sliceEmptyArr", array_value(vec![])),
+                ("sliceEmptyNeg", array_value(vec![])),
                 (
                     "zipShort",
                     array_value(vec![
@@ -1537,7 +1562,12 @@ fn evaluates_array_literals_and_indexing() {
     );
     assert_module_value("xs = [10, 20, 30]\nxs[1]\n", Value::Int(20));
     assert_module_value("xs = [10, 20, 30]\nxs[9]\n", Value::Undefined);
-    assert_module_value("xs = [10, 20, 30]\nxs[-1]\n", Value::Undefined);
+    // Negative indexes wrap from the end (Python-style).
+    assert_module_value("xs = [10, 20, 30]\nxs[-1]\n", Value::Int(30));
+    assert_module_value("xs = [10, 20, 30]\nxs[-3]\n", Value::Int(10));
+    // Beyond the start after wrap → undefined (same as past-the-end positive).
+    assert_module_value("xs = [10, 20, 30]\nxs[-4]\n", Value::Undefined);
+    assert_module_value("xs = []\nxs[-1]\n", Value::Undefined);
     assert_eq!(
         format!(
             "{}",

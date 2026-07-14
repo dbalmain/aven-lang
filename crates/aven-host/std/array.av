@@ -27,12 +27,10 @@ isEmpty = (xs) =>
 first : (Array(a)) -> ?a
 first = (xs) => xs[0]
 
-# Empty: length is 0, so index is -1 → out-of-bounds `undefined`.
-# Non-empty: length - 1 is the last valid index. (No negative-index wrap.)
+# Empty: `xs[-1]` wraps to -1 → still out-of-bounds `undefined`.
+# Non-empty: negative index wraps from the end (`-1` is last).
 last : (Array(a)) -> ?a
-last = (xs) =>
-  n = length(xs)
-  xs[n - 1]
+last = (xs) => xs[-1]
 
 sum : (Array(Int)) -> Int
 sum = (xs) =>
@@ -142,8 +140,11 @@ drop = (xs, n) =>
   seed: Array(a) = []
   dropGo(xs, 0, n, seed)
 
-# Half-open `[start, end)`. Clamp both ends to `[0, length]`; `start >= end` → [].
-# No negative-index wrapping (same as `last`).
+# Half-open `[start, end)`. Negative indexes wrap from the end first
+# (`length + v`), then both ends clamp to `[0, length]`. After wrap+clamp,
+# `start >= end` → `[]`. Partially/fully out of range → only what is in range.
+# Examples (xs length 3): `slice(xs, 0, -1)` → all but last; `slice(xs, -2, 99)`
+# → last two; `slice(xs, 3, 2)` → `[]`.
 clampIndex : (Int, Int) -> Int
 clampIndex = (i, n) =>
   zero: Int = 0
@@ -153,6 +154,16 @@ clampIndex = (i, n) =>
       i > n ?>
         true => n
         false => i
+
+# Wrap negative `i` from the end, then clamp into `[0, n]`.
+normalizeSliceIndex : (Int, Int) -> Int
+normalizeSliceIndex = (i, n) =>
+  zero: Int = 0
+  wrapped =
+    i < zero ?>
+      true => n + i
+      false => i
+  clampIndex(wrapped, n)
 
 sliceGo : (Array(a), Int, Int, Array(a)) -> Array(a)
 sliceGo = (xs, index, end, acc) =>
@@ -167,8 +178,8 @@ sliceGo = (xs, index, end, acc) =>
 slice : (Array(a), Int, Int) -> Array(a)
 slice = (xs, start, end) =>
   n = length(xs)
-  s = clampIndex(start, n)
-  e = clampIndex(end, n)
+  s = normalizeSliceIndex(start, n)
+  e = normalizeSliceIndex(end, n)
   seed: Array(a) = []
   sliceGo(xs, s, e, seed)
 

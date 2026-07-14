@@ -196,6 +196,16 @@ writeLine("${slice(xs, 2, 2)}")
 writeLine("${slice(xs, -5, 2)}")
 writeLine("${slice(xs, 1, 99)}")
 writeLine("${slice(xs, 0, -1)}")
+writeLine("${slice(xs, -2, 99)}")
+writeLine("${slice(xs, -99, 2)}")
+writeLine("${slice(xs, 3, 2)}")
+writeLine("${slice(xs, -1, -3)}")
+writeLine("${slice(empty, 0, 1)}")
+writeLine("${slice(empty, -1, 0)}")
+writeLine("${xs[-1]}")
+writeLine("${xs[-3]}")
+writeLine("${xs[-4]}")
+writeLine("${empty[-1]}")
 writeLine("${zip([1, 2, 3], [10, 20])}")
 writeLine("${zip(empty, xs)}")
 writeLine("${zip(xs, empty)}")
@@ -223,9 +233,10 @@ writeLine("${maximum(empty)}")
         stdout(&output),
         stderr(&output)
     );
+    // Hand-verified: slice negatives wrap then clamp; xs[-1]/[-3] wrap; xs[-4]/empty[-1] undefined.
     assert_eq!(
         stdout(&output),
-        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[]\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
+        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[10, 20]\n[20, 30]\n[10, 20]\n[]\n[]\n[]\n[]\n30\n10\nundefined\nundefined\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
     );
 }
 
