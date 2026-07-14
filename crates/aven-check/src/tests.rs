@@ -5183,12 +5183,28 @@ fn text_method_field_query_returns_typed_methods() {
         .iter()
         .find(|field| field.name == "replaceEach")
         .expect("replaceEach method");
+    let to_int = fields
+        .iter()
+        .find(|field| field.name == "toInt")
+        .expect("toInt method");
+    let to_float = fields
+        .iter()
+        .find(|field| field.name == "toFloat")
+        .expect("toFloat method");
 
     assert_eq!(is_empty.ty.render(), "() -> Bool");
     assert_eq!(contains.ty.render(), "Text -> Bool");
     assert_eq!(repeat.ty.render(), "Int -> Text");
     assert_eq!(split_on.ty.render(), "Text -> Array(Text)");
     assert_eq!(replace_each.ty.render(), "(Text, Text) -> Text");
+    assert_eq!(to_int.ty.render(), "() -> ?Int");
+    assert_eq!(to_float.ty.render(), "() -> ?Float");
+    let literal_fields = record_fields(&build::text_literals(&["42"]))
+        .expect("text literal unions have Text methods");
+    assert!(
+        literal_fields.iter().any(|field| field.name == "toInt"),
+        "text literal unions must expose Text.toInt"
+    );
     assert!(
         !fields
             .iter()
@@ -5217,6 +5233,8 @@ fn text_methods_type_check_and_reject_mismatches() {
         "n = t.repeat(2)\n",
         "o = t.splitOn(\"\")\n",
         "p = [\"a\", \"b\"].joinWith(\", \")\n",
+        "q : Int = t.toInt() ?? 0\n",
+        "r : Float = t.toFloat() ?? 0.0\n",
     ));
     let ok_check = check_module(&ok.module);
     assert!(
@@ -5232,6 +5250,13 @@ fn text_methods_type_check_and_reject_mismatches() {
         1,
         "t.repeat(\"x\") should be a type mismatch: {:?}",
         mismatch_check.diagnostics
+    );
+
+    let numeric_mismatch = parse_module("t : Text = \"hi\"\nvalue = t.toInt(1)\n");
+    let numeric_mismatch_check = check_module(&numeric_mismatch.module);
+    assert!(
+        !numeric_mismatch_check.diagnostics.is_empty(),
+        "t.toInt(1) should reject an argument"
     );
 
     let unknown = parse_module("t : Text = \"hi\"\nvalue = t.nope()\n");

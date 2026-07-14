@@ -71,6 +71,8 @@ pub const TEXT_METHOD_NAMES: &[&str] = &[
     "dropSuffix",
     "repeat",
     "splitOn",
+    "toInt",
+    "toFloat",
 ];
 
 pub const RESULT_METHOD_NAMES: &[&str] = &[
@@ -213,6 +215,14 @@ fn text_method_type(name: &str) -> Option<Type> {
         "dropPrefix" | "dropSuffix" => Some(function(vec![text.clone()], text)),
         "repeat" => Some(function(vec![named_builtin("Int")], text)),
         "splitOn" => Some(function(vec![text], array_apply(named_builtin("Text")))),
+        "toInt" => Some(function(
+            Vec::new(),
+            Type::Optional(Box::new(named_builtin("Int"))),
+        )),
+        "toFloat" => Some(function(
+            Vec::new(),
+            Type::Optional(Box::new(named_builtin("Float"))),
+        )),
         _ => None,
     }
 }

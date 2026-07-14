@@ -350,6 +350,19 @@ fn run_prints_function_call_value() {
 }
 
 #[test]
+fn run_parses_text_numbers_with_optional_fallbacks() {
+    let file = TempFile::new(
+        "run-text-number-parsing",
+        "[\"42\".toInt() ?? 0, \"not a float\".toFloat() ?? 1.5]\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "[42, 1.5]\n");
+}
+
+#[test]
 fn run_applies_parameter_default_when_omitted() {
     let file = TempFile::new(
         "run-default-omitted",

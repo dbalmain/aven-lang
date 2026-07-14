@@ -146,6 +146,8 @@ pub const TEXT_METHOD_NAMES: &[&str] = &[
     "dropSuffix",
     "repeat",
     "splitOn",
+    "toInt",
+    "toFloat",
 ];
 
 impl fmt::Debug for Value {
@@ -1932,6 +1934,12 @@ fn text_method(text: &str, field: &str) -> Option<Value> {
         "dropSuffix" => Some(text_drop_affix_method(text, "dropSuffix", false)),
         "repeat" => Some(text_repeat_method(text)),
         "splitOn" => Some(text_split_on_method(text)),
+        "toInt" => Some(text_nullary_optional(text, "toInt", |s| {
+            s.parse::<i64>().ok().map(Value::Int)
+        })),
+        "toFloat" => Some(text_nullary_optional(text, "toFloat", |s| {
+            s.parse::<f64>().ok().map(Value::Float)
+        })),
         _ => None,
     }
 }
@@ -1965,6 +1973,22 @@ fn text_nullary_text(
             ));
         }
         Ok(Value::Text(f(&text)))
+    })
+}
+
+fn text_nullary_optional(
+    text: String,
+    name: &'static str,
+    f: impl Fn(&str) -> Option<Value> + 'static,
+) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Text.{name} expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(f(&text).unwrap_or(Value::Undefined))
     })
 }
 

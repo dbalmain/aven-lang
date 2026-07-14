@@ -815,6 +815,8 @@ fn completion_at_text_field_access_returns_builtin_methods() {
         "dropSuffix",
         "repeat",
         "splitOn",
+        "toInt",
+        "toFloat",
     ] {
         assert!(
             labels.contains(&name),
@@ -831,6 +833,14 @@ fn completion_at_text_field_access_returns_builtin_methods() {
         panic!("expected Text.repeat completion");
     };
     assert_eq!(repeat.detail.as_deref(), Some("Int -> Text"));
+    let Some(to_int) = completion_item(&completions, "toInt") else {
+        panic!("expected Text.toInt completion");
+    };
+    assert_eq!(to_int.detail.as_deref(), Some("() -> ?Int"));
+    let Some(to_float) = completion_item(&completions, "toFloat") else {
+        panic!("expected Text.toFloat completion");
+    };
+    assert_eq!(to_float.detail.as_deref(), Some("() -> ?Float"));
 }
 
 #[test]

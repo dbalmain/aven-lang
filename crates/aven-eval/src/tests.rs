@@ -1482,6 +1482,47 @@ fn text_methods_repeat_split_and_join() {
 }
 
 #[test]
+fn text_methods_parse_numbers() {
+    assert_module_value(
+        concat!(
+            "[\"42\".toInt() ?? 0, \"-7\".toInt() ?? 0, \"+3\".toInt() ?? 0, ",
+            "\"2.5\".toFloat() ?? 0.0, \"1e3\".toFloat() ?? 0.0]\n",
+        ),
+        array_value(vec![
+            Value::Int(42),
+            Value::Int(-7),
+            Value::Int(3),
+            Value::Float(2.5),
+            Value::Float(1000.0),
+        ]),
+    );
+
+    for source in [
+        "\"\".toInt()\n",
+        "\"abc\".toInt()\n",
+        "\"1.5\".toInt()\n",
+        "\" 42 \".toInt()\n",
+        "\"9223372036854775808\".toInt()\n",
+        "\"\".toFloat()\n",
+        "\"abc\".toFloat()\n",
+        "\" 42 \".toFloat()\n",
+    ] {
+        assert_module_value(source, Value::Undefined);
+    }
+
+    assert_module_value("\"not a number\".toFloat() ?? 1.5\n", Value::Float(1.5));
+
+    for source in ["\"nan\".toFloat()\n", "\"inf\".toFloat()\n"] {
+        let outcome = eval_module(&parse_ok(source));
+        let Some(Value::Float(value)) = outcome.value else {
+            panic!("expected Float from {source:?}, got {outcome:?}");
+        };
+        assert!(outcome.diagnostics.is_empty());
+        assert!(value.is_nan() || value.is_infinite());
+    }
+}
+
+#[test]
 fn has_on_unsupported_receiver_still_reports_type_error() {
     let diagnostic = eval_error("1.has(1)");
 
