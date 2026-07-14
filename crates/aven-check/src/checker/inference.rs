@@ -371,12 +371,16 @@ impl<'a> Checker<'a> {
             if is_resolved_operator_operand(&left_type) && is_resolved_operator_operand(&right_type)
             {
                 if matches!(operator, "==" | "!=")
-                    && matches!(
-                        (&left_type, &right_type),
-                        (Type::Record(_), Type::Record(_))
-                    )
+                    && let (Type::Record(left_row), Type::Record(right_row)) =
+                        (&left_type, &right_type)
                 {
-                    return named_builtin("Bool");
+                    let compatibility = self.record_equality_compatibility(left_row, right_row);
+                    if compatibility != EqualityCompatibility::Mismatched
+                        || self.expr_references_unresolved_comptime_param(left)
+                        || self.expr_references_unresolved_comptime_param(right)
+                    {
+                        return named_builtin("Bool");
+                    }
                 }
                 if operator == "??" {
                     self.report_null_coalesce_mismatch(&left_type, &right_type, right.span);
@@ -649,6 +653,12 @@ impl<'a> Checker<'a> {
         let left = self.widen_equality_operand(left);
         let right = self.widen_equality_operand(right);
 
+        if let (Type::Record(left), Type::Record(right)) = (&left, &right) {
+            return (self.record_equality_compatibility(left, right)
+                != EqualityCompatibility::Mismatched)
+                .then(|| named_builtin("Bool"));
+        }
+
         if is_meta_type(&left) && is_meta_type(&right) {
             if self.unifier.is_numeric_meta(&left) || self.unifier.is_numeric_meta(&right) {
                 return self
@@ -711,6 +721,127 @@ impl<'a> Checker<'a> {
         }
 
         resolved
+    }
+
+    fn record_equality_compatibility(&mut self, left: &Row, right: &Row) -> EqualityCompatibility {
+        if left.tail != RowTail::Closed || right.tail != RowTail::Closed {
+            return EqualityCompatibility::Unknown;
+        }
+
+        if !left
+            .entries
+            .iter()
+            .chain(&right.entries)
+            .all(|entry| matches!(entry, RowEntry::Field { .. }))
+        {
+            return EqualityCompatibility::Unknown;
+        }
+
+        if left.entries.len() != right.entries.len() {
+            return EqualityCompatibility::Mismatched;
+        }
+
+        let mut compatibility = EqualityCompatibility::Comparable;
+        for left_entry in &left.entries {
+            let RowEntry::Field {
+                name,
+                ty: left_type,
+            } = left_entry
+            else {
+                return EqualityCompatibility::Unknown;
+            };
+            let Some(right_type) = right.entries.iter().find_map(|entry| match entry {
+                RowEntry::Field {
+                    name: right_name,
+                    ty,
+                } if right_name == name => Some(ty),
+                RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+            }) else {
+                return EqualityCompatibility::Mismatched;
+            };
+
+            compatibility = compatibility.and(self.equality_compatibility(left_type, right_type));
+            if compatibility == EqualityCompatibility::Mismatched {
+                return compatibility;
+            }
+        }
+        compatibility
+    }
+
+    fn equality_compatibility(&mut self, left: &Type, right: &Type) -> EqualityCompatibility {
+        let left = self.normalize(&self.unifier.resolve(left));
+        let right = self.normalize(&self.unifier.resolve(right));
+        let (_, left) = peel_empty_values(&left);
+        let (_, right) = peel_empty_values(&right);
+
+        if let (Some(left_kind), Some(right_kind)) =
+            (equality_base_kind(left), equality_base_kind(right))
+        {
+            return if left_kind == right_kind {
+                EqualityCompatibility::Comparable
+            } else {
+                EqualityCompatibility::Mismatched
+            };
+        }
+
+        if !is_concrete_type(left) || !is_concrete_type(right) {
+            return EqualityCompatibility::Unknown;
+        }
+
+        match (left, right) {
+            (Type::Record(left), Type::Record(right)) => {
+                self.record_equality_compatibility(left, right)
+            }
+            (Type::Record(_), _) | (_, Type::Record(_)) => EqualityCompatibility::Mismatched,
+            (Type::Tuple(left), Type::Tuple(right)) => {
+                equality_sequence_compatibility(left, right, |left, right| {
+                    self.equality_compatibility(left, right)
+                })
+            }
+            (Type::Tuple(_), _) | (_, Type::Tuple(_)) => EqualityCompatibility::Mismatched,
+            (
+                Type::Apply {
+                    callee: left_callee,
+                    args: left_args,
+                },
+                Type::Apply {
+                    callee: right_callee,
+                    args: right_args,
+                },
+            ) if is_array_constructor(left_callee) && is_array_constructor(right_callee) => {
+                match (left_args.as_slice(), right_args.as_slice()) {
+                    ([left], [right]) => self.equality_compatibility(left, right),
+                    _ => EqualityCompatibility::Unknown,
+                }
+            }
+            (Type::Apply { callee, .. }, _) if is_array_constructor(callee) => {
+                EqualityCompatibility::Mismatched
+            }
+            (_, Type::Apply { callee, .. }) if is_array_constructor(callee) => {
+                EqualityCompatibility::Mismatched
+            }
+            (Type::Variant(_), _)
+            | (_, Type::Variant(_))
+            | (Type::Function { .. }, _)
+            | (_, Type::Function { .. })
+            | (Type::Apply { .. }, _)
+            | (_, Type::Apply { .. }) => EqualityCompatibility::Unknown,
+            (Type::Named(left), Type::Named(right)) => {
+                if left == right {
+                    EqualityCompatibility::Comparable
+                } else {
+                    EqualityCompatibility::Mismatched
+                }
+            }
+            (Type::Deferred | Type::Variable(_) | Type::Meta(_), _)
+            | (_, Type::Deferred | Type::Variable(_) | Type::Meta(_)) => {
+                EqualityCompatibility::Unknown
+            }
+            (Type::Optional(_) | Type::Nullable(_), _)
+            | (_, Type::Optional(_) | Type::Nullable(_)) => {
+                unreachable!("empty-value wrappers were peeled")
+            }
+        }
     }
 
     pub(super) fn infer_unary(&mut self, env: &TypeEnv, operator: &str, value: &Expr) -> Type {
@@ -2949,6 +3080,74 @@ fn operator_operand_type(ty: &Type) -> String {
         return "Bool".to_owned();
     }
     display_inferred_type(ty).render()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EqualityCompatibility {
+    Comparable,
+    Mismatched,
+    Unknown,
+}
+
+impl EqualityCompatibility {
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Mismatched, _) | (_, Self::Mismatched) => Self::Mismatched,
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (Self::Comparable, Self::Comparable) => Self::Comparable,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EqualityBaseKind {
+    Bool,
+    Text,
+    Number,
+}
+
+fn equality_base_kind(ty: &Type) -> Option<EqualityBaseKind> {
+    match ty {
+        Type::Named(name) if name == "Bool" => Some(EqualityBaseKind::Bool),
+        Type::Named(name) if name == "Text" => Some(EqualityBaseKind::Text),
+        Type::Named(name) if name == "Int" || name == "Float" => Some(EqualityBaseKind::Number),
+        Type::Variant(row) => match literal_variant_base(row) {
+            Some(LiteralBase::Bool) => Some(EqualityBaseKind::Bool),
+            Some(LiteralBase::Text) => Some(EqualityBaseKind::Text),
+            Some(LiteralBase::Number) => Some(EqualityBaseKind::Number),
+            None => None,
+        },
+        Type::Deferred
+        | Type::Named(_)
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Apply { .. }
+        | Type::Function { .. }
+        | Type::Optional(_)
+        | Type::Nullable(_)
+        | Type::Tuple(_)
+        | Type::Record(_) => None,
+    }
+}
+
+fn equality_sequence_compatibility(
+    left: &[Type],
+    right: &[Type],
+    mut compare: impl FnMut(&Type, &Type) -> EqualityCompatibility,
+) -> EqualityCompatibility {
+    if left.len() != right.len() {
+        return EqualityCompatibility::Mismatched;
+    }
+
+    left.iter()
+        .zip(right)
+        .fold(EqualityCompatibility::Comparable, |compatibility, pair| {
+            compatibility.and(compare(pair.0, pair.1))
+        })
+}
+
+fn is_array_constructor(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name) if name == "Array")
 }
 
 fn is_resolved_operator_operand(ty: &Type) -> bool {

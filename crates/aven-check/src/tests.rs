@@ -9410,3 +9410,94 @@ fn function_equality_reports_statically() {
         passing_check.diagnostics
     );
 }
+
+#[test]
+fn record_equality_accepts_possibly_equal_structures() {
+    let source = concat!(
+        "one = { x: 1 }\n",
+        "same: Bool = one == { x: 1 }\n",
+        "different_value: Bool = one == { x: 2 }\n",
+        "int_value: Int = 1\n",
+        "base_kind: Bool = one == { x: int_value }\n",
+        "union: { x: 1 | 2 } = { x: 1 }\n",
+        "union_base_kind: Bool = union == { x: int_value }\n",
+        "nested: Bool = { p: { x: 1 } } == { p: { x: 2 } }\n",
+        "tuples: Bool = { x: (1, \"a\") } == { x: (2, \"b\") }\n",
+        "arrays: Bool = { x: [1] } == { x: [2] }\n",
+        "optional: { x: ?Int } = { x: 1 }\n",
+        "plain: { x: Int } = { x: 1 }\n",
+        "wrapped: Bool = optional == plain\n",
+        "open_row = (left: { x: Int, .. }, right: { x: Text }) => left == right\n",
+        "generic = (left: { x: a }, right: { x: b }) => left == right\n",
+        "comptime_dependent = (@x: @{1, 2}) => { value: x } == { value: \"a\" }\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "possibly equal records should stay clean: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn record_equality_reports_each_provable_mismatch_once_and_recovers_to_bool() {
+    for source in [
+        concat!(
+            "left: { x: Int } = { x: 1 }\n",
+            "right: { x: Text } = { x: \"a\" }\n",
+            "bad = left == right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+        concat!(
+            "left = { x: 1 }\n",
+            "right = { x: \"a\" }\n",
+            "bad = left == right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+        concat!(
+            "left: { x: Int } = { x: 1 }\n",
+            "right: { x: Int, y: Int } = { x: 1, y: 2 }\n",
+            "bad = left == right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+        concat!(
+            "left: { p: { x: Int } } = { p: { x: 1 } }\n",
+            "right: { p: { x: Text } } = { p: { x: \"a\" } }\n",
+            "bad = left == right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+        concat!(
+            "left: { x: (Int, Array(Int)) } = { x: (1, [1]) }\n",
+            "right: { x: (Int, Array(Text)) } = { x: (1, [\"a\"]) }\n",
+            "bad = left == right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+        concat!(
+            "left: { x: Int } = { x: 1 }\n",
+            "right: { x: Text } = { x: \"a\" }\n",
+            "bad = left != right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::INVALID_OPERATOR_OPERANDS),
+            1,
+            "expected one invalid-operator diagnostic for {source:?}: {:?}",
+            check.diagnostics
+        );
+        assert_eq!(
+            check
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .count(),
+            1,
+            "record equality should recover to Bool for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
