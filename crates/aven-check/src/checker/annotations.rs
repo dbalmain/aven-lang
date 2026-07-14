@@ -430,7 +430,7 @@ impl<'a> Checker<'a> {
     }
 }
 
-fn call_callee_name(callee: &Expr) -> Option<&str> {
+pub(super) fn call_callee_name(callee: &Expr) -> Option<&str> {
     match &ungroup_expr(callee).kind {
         ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name.as_str()),
         _ => None,

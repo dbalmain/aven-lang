@@ -8760,6 +8760,8 @@ fn bare_alias_reports_out_of_bound_comptime_argument() {
     let output = parse_module(source);
     let check = check_module(&output.module);
 
+    assert_eq!(check.diagnostics.len(), 1, "{:?}", check.diagnostics);
+
     assert_eq!(
         matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_BOUND),
         1,
@@ -8780,6 +8782,8 @@ fn bare_alias_reports_comptime_argument_kind_mismatch() {
     let output = parse_module(source);
     let check = check_module(&output.module);
 
+    assert_eq!(check.diagnostics.len(), 1, "{:?}", check.diagnostics);
+
     assert_eq!(
         matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_KIND_MISMATCH),
         1,
@@ -8794,6 +8798,18 @@ fn bare_alias_reports_comptime_argument_kind_mismatch() {
         })
         .expect("argument-kind-mismatch diagnostic");
     assert_eq!(diagnostic.labels[0].span, nth_span(source, "1", 0));
+}
+
+#[test]
+fn nested_uppercase_comptime_applications_check_cleanly() {
+    let output = parse_module(
+        "Pair = (t: Type) => { first: t, second: t }\n\
+         PairOfPairs = (t: Type) => Pair(Pair(t))\n\
+         p: PairOfPairs(Int) = { first: { first: 1, second: 2 }, second: { first: 3, second: 4 } }\n",
+    );
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
 }
 
 #[test]

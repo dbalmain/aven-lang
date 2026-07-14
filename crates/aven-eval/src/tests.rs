@@ -1276,6 +1276,66 @@ fn user_binding_shadows_map_builtin() {
 }
 
 #[test]
+fn std_map_helpers_run_via_import() {
+    let array_module = parse_ok(include_str!("../../aven-host/std/array.av"));
+    let array_export = eval_module(&array_module)
+        .value
+        .expect("std/array should export a record");
+    let array_imports = ModuleImports::new([("std/array".to_owned(), array_export.clone())]);
+    let map_module = parse_ok(include_str!("../../aven-host/std/map.av"));
+    let map_export = eval_module_with_globals_and_imports(&map_module, Vec::new(), &array_imports)
+        .value
+        .expect("std/map should export a record");
+    let imports = ModuleImports::new([
+        ("std/map".to_owned(), map_export),
+        ("std/array".to_owned(), array_export),
+    ]);
+    let module = parse_ok(
+        "{ getOr, update, fromEntries, toEntries, mapValues, filter } = import(\"std/map\")\n\
+         entries = [(\"one\", 1), (\"two\", 2), (\"one\", 3)]\n\
+         from = fromEntries(entries)\n\
+         { duplicate: getOr(from, \"one\", 0), missing: getOr(from, \"missing\", 99), updated: toEntries(update(from, \"two\", (n) => n + 10)), unchanged: toEntries(update(from, \"missing\", (n) => n + 10)), mapped: toEntries(mapValues(from, (n) => n + 1)), filtered: toEntries(filter(from, (key, _) => key == \"two\")) }\n",
+    );
+    let outcome = eval_module_with_globals_and_imports(&module, Vec::new(), &imports);
+    assert_eq!(outcome.diagnostics, Vec::new());
+    assert_eq!(
+        outcome.value,
+        Some(record_value(vec![
+            ("duplicate", Value::Int(3)),
+            ("missing", Value::Int(99)),
+            (
+                "updated",
+                array_value(vec![
+                    tuple_value(vec![Value::Text("one".to_owned()), Value::Int(3)]),
+                    tuple_value(vec![Value::Text("two".to_owned()), Value::Int(12)])
+                ])
+            ),
+            (
+                "unchanged",
+                array_value(vec![
+                    tuple_value(vec![Value::Text("one".to_owned()), Value::Int(3)]),
+                    tuple_value(vec![Value::Text("two".to_owned()), Value::Int(2)])
+                ])
+            ),
+            (
+                "mapped",
+                array_value(vec![
+                    tuple_value(vec![Value::Text("one".to_owned()), Value::Int(4)]),
+                    tuple_value(vec![Value::Text("two".to_owned()), Value::Int(3)])
+                ])
+            ),
+            (
+                "filtered",
+                array_value(vec![tuple_value(vec![
+                    Value::Text("two".to_owned()),
+                    Value::Int(2)
+                ])])
+            ),
+        ]))
+    );
+}
+
+#[test]
 fn set_and_array_has_report_membership() {
     assert_eval("@{\"name\", \"email\"}.has(\"name\")", Value::Bool(true));
     assert_eval("@{\"name\", \"email\"}.has(\"age\")", Value::Bool(false));

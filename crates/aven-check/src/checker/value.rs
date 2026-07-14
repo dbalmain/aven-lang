@@ -72,6 +72,15 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        // Uppercase comptime functions validate their arguments while they
+        // specialize. Their parameters describe comptime bounds (including
+        // `Type`), not runtime call arguments, so the ordinary value-call
+        // check would report the same failure a second time.
+        if self.is_uppercase_comptime_function_callee(callee) {
+            self.check_value_expr(callee);
+            return;
+        }
+
         if let Some((receiver, _)) = self.value_encode_sugar_receiver(&env, callee) {
             self.check_value_expr(receiver);
             let _ = self.infer_value_encode_call(&env, callee, args);

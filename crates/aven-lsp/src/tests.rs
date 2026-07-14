@@ -1952,6 +1952,48 @@ fn library_interface_renders_std_array_signatures() {
 }
 
 #[test]
+fn library_interface_renders_std_map_signatures() {
+    let dir = TempDir::new("lsp-std-map-interface");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    analyze_file_document(
+        &mut store,
+        &main_uri,
+        "map = import(\"std/map\")\n{ map }\n",
+    );
+    let graph = store
+        .module_graph(&main_uri)
+        .expect("expected module graph");
+    let interface = graph.nodes[Path::new("std:/map")]
+        .interface
+        .as_ref()
+        .expect("expected std/map interface");
+    let lines: Vec<&str> = interface.text.lines().collect();
+
+    assert_eq!(
+        lines[0],
+        "# std/map — generated interface (shape view); not the implementation."
+    );
+    for (index, name) in [
+        "isEmpty",
+        "getOr",
+        "update",
+        "fromEntries",
+        "toEntries",
+        "mapValues",
+        "filter",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(lines[index + 2].starts_with(&format!("{name} : ")));
+        let span = interface.export_spans[*name];
+        assert_eq!(&interface.text[span.start..span.end], *name);
+    }
+}
+
+#[test]
 fn library_interface_lists_std_time_type_exports() {
     let dir = TempDir::new("lsp-std-time-interface");
     let main_uri = file_uri(&dir.path().join("main.av"));

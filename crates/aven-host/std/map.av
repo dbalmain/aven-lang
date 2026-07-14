@@ -1,0 +1,51 @@
+# Map helpers: `import("std/map")`. Pure Aven — no host natives.
+# Builds on the Map builtin methods (`get`, `set`, `entries`, `size`) and
+# `Map.empty()`; rebuild helpers fold over `.entries()` with `std/array`'s fold.
+
+{ fold } = import("std/array")
+
+isEmpty : (Map(k, v)) -> Bool
+isEmpty = (m) => m.size() == 0
+
+getOr : (Map(k, v), k, v) -> v
+getOr = (m, key, default) => m.get(key) ?? default
+
+# Apply `f` to the value when the key is present; absent keys leave the map unchanged.
+update : (Map(k, v), k, (v) -> v) -> Map(k, v)
+update = (m, key, f) =>
+  current = m.get(key)
+  current ?>
+    undefined => m
+    value => m.set(key, f(value))
+
+# Later entries win on duplicate keys.
+fromEntries : (Array((k, v))) -> Map(k, v)
+fromEntries = (entries) =>
+  seed: Map(k, v) = Map.empty()
+  fold(entries, seed, (acc, entry) => entry ?> (key, value) => acc.set(key, value))
+
+toEntries : (Map(k, v)) -> Array((k, v))
+toEntries = (m) => m.entries()
+
+# Index recursion instead of `fold`: a binder-capturing lambda calling the
+# outer `f` inside a polymorphic `fold` argument trips a checker limitation
+# (spurious `name.unbound` on the tuple binder — see the done-note repro).
+mapValuesGo : (Array((k, v)), Int, Map(k, w), (v) -> w) -> Map(k, w)
+mapValuesGo = (entries, index, acc, f) =>
+  next = entries[index]
+  next ?>
+    undefined => acc
+    entry => entry ?> (key, value) => mapValuesGo(entries, index + 1, acc.set(key, f(value)), f)
+
+mapValues : (Map(k, v), (v) -> w) -> Map(k, w)
+mapValues = (m, f) =>
+  seed: Map(k, w) = Map.empty()
+  mapValuesGo(m.entries(), 0, seed, f)
+
+filter : (Map(k, v), (k, v) -> Bool) -> Map(k, v)
+filter = (m, pred) =>
+  seed: Map(k, v) = Map.empty()
+  keep = (acc, entry) => entry ?> (key, value) => (pred(key, value) ?> true => acc.set(key, value), false => acc)
+  fold(m.entries(), seed, keep)
+
+{ isEmpty, getOr, update, fromEntries, toEntries, mapValues, filter }

@@ -328,6 +328,37 @@ writeLine("${isErr(err)}")
 }
 
 #[test]
+fn std_map_helpers_check_and_run() {
+    let dir = TempDir::new("std-map");
+    let entry = dir.write(
+        "main.av",
+        r##"{ isEmpty, getOr, update, fromEntries, toEntries, mapValues, filter } = import("std/map")
+empty: Map(Text, Int) = Map.empty()
+entries: Array((Text, Int)) = [("one", 1), ("two", 2), ("one", 3)]
+from: Map(Text, Int) = fromEntries(entries)
+updated: Map(Text, Int) = update(from, "two", (n) => n + 10)
+unchanged: Map(Text, Int) = update(from, "missing", (n) => n + 10)
+mapped: Map(Text, Text) = mapValues(from, (n) => "#${n}")
+filtered: Map(Text, Int) = filter(updated, (key, n) => key == "two" && n > 10)
+writeLine("${isEmpty(empty)} ${getOr(empty, "missing", 99)} ${getOr(from, "one", 0)}")
+writeLine("${toEntries(updated)}")
+writeLine("${toEntries(unchanged)}")
+writeLine("${toEntries(mapped)}")
+writeLine("${toEntries(filtered)}")
+"##,
+    );
+    let path = entry.to_str().expect("temp path is UTF-8");
+    let checked = aven(&["check", path]);
+    assert!(checked.status.success(), "{}", stderr(&checked));
+    let output = aven(&["run", path]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "true 99 3\n[(\"one\", 3), (\"two\", 12)]\n[(\"one\", 3), (\"two\", 2)]\n[(\"one\", \"#3\"), (\"two\", \"#2\")]\n[(\"two\", 12)]\n"
+    );
+}
+
+#[test]
 fn unregistered_library_and_missing_std_module_diagnose() {
     let dir = TempDir::new("std-time-errors");
     let entry = dir.write(

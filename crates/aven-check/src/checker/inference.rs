@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use super::annotations::call_callee_name;
 use super::*;
 
 /// Desugar `value |> f(args)` to `f(value, args)` for checking and inference.
@@ -2003,6 +2004,9 @@ impl<'a> Checker<'a> {
         args: &[Expr],
     ) -> Option<Type> {
         let (params, body) = self.comptime_param_function(callee)?;
+        let uppercase = call_callee_name(callee)
+            .and_then(|name| name.chars().next())
+            .is_some_and(char::is_uppercase);
         if params.len() != args.len() {
             let function = match &ungroup_expr(callee).kind {
                 ExprKind::Name(name) | ExprKind::ComptimeName(name) => name,
@@ -2062,7 +2066,7 @@ impl<'a> Checker<'a> {
             });
 
             let diagnostics_before_domain_check = self.diagnostics.len();
-            if let Some(row) = domain.as_ref().and_then(literal_union_domain_row) {
+            if !uppercase && let Some(row) = domain.as_ref().and_then(literal_union_domain_row) {
                 match &value {
                     comptime::ComptimeValue::Literal(literal) => {
                         self.check_literal_value_against_variant(row, literal, arg.span);
@@ -2180,7 +2184,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn comptime_param_function(&self, callee: &Expr) -> Option<(Vec<Param>, Expr)> {
-        let name = expr_name(callee)?;
+        let name = call_callee_name(callee)?;
         let export = self.lookup_comptime_function_export(name)?;
         let uppercase = name.chars().next().is_some_and(char::is_uppercase);
         (uppercase || export.params.iter().any(|param| param.comptime)).then(|| {
