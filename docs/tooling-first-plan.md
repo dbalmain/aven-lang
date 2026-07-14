@@ -1899,9 +1899,8 @@ the later bytecode/runtime work.
   shorthand, computed fields/deletes, field access, and text-key record
   indexing. Variant tags evaluate as `@Tag`/`@Tag(payload...)` values. Missing
   record keys read as `undefined` (while type statics and record patterns still
-  report `runtime.missing-field`); nil-safe access, record
-  comprehensions, and tuple/array indexing remain explicit `runtime.unsupported`
-  follow-ups.
+  report `runtime.missing-field`); nil-safe access, record comprehensions, and
+  tuple/array indexing remain explicit `runtime.unsupported` follow-ups.
 - E5 done: added runtime `?>` pattern matching over literals, wildcards,
   nullable empties, variant tags and payloads, record field patterns, and guard
   expressions. Match evaluation reports `runtime.no-match` if the checker safety
@@ -2975,6 +2974,49 @@ expanded result; recursive uppercase functions diagnose for now.
 - PT-open: value parameters (`Vec = (t: Type, n: Int) => ...`) exercising
   literal types; `Queue(t).empty()` statics (classes milestone); lazy / nominal
   recursion story.
+- PT3 done 2026-07-14/15 (sprint): bare alias lines eagerly validate comptime
+  arguments (kind + bound at the argument span; errored specializations cached
+  so later uses stay silent). Comptime functions capture their defining module's
+  bindings — local aliases, siblings, and imports resolving against their home
+  module; exports carry the environment through re-exports; specialization-cache
+  keys include a per-foreign-module token so same-named functions from different
+  modules cannot alias cached expansions. Uppercase comptime calls report
+  argument errors exactly once (comptime validation owns bound/kind; ordinary
+  value checking walks arguments only for nested name/structural diagnostics),
+  which also unblocked nested applications (`Pair(Pair(t))`). Unevaluable
+  lowercase `@`-param arguments report instead of silently deferring the
+  annotation.
+
+## Milestone SL — stdlib growth sprint (2026-07-14/15)
+
+Slices landed on top of the earlier std/array, std/result, and Text-helper work;
+everything pure Aven unless noted:
+
+- `std/array` round 2: `take`/`drop`/`slice` (half-open, clamped, no negative
+  wrap), `zip` (to shorter), `flatten` (one level), `range` (half-open, step 1),
+  `sortWith` (stable insertion sort, `isLess` comparator), `minimum`/ `maximum`
+  (`Array(Int) -> ?Int`), `flatMap`.
+- `std/map` (new): `isEmpty`, `getOr`, `update`, `fromEntries` (later entries
+  win), `toEntries`, `mapValues`, `filter` — over the Map builtins, reusing
+  `std/array.fold`.
+- `std/result`: `andThen` (free fn + method); `map`/`unwrapOr`/`isOk`/`isErr`
+  gained method forms beside the earlier `mapErr`/`orElse` (shared method table,
+  LSP completion picks them up).
+- Text numeric parsing (host builtins): `toInt : () -> ?Int`,
+  `toFloat : () -> ?Float` — exact input (no trim), overflow → `undefined`;
+  `toFloat` keeps Rust non-finite parsing since Float arithmetic already carries
+  non-finite values.
+- `type.coalesce-never-empty` warning: `x ?? y` where the left can never be
+  empty warns (conservative — unresolved/open/comptime-dependent lefts stay
+  silent).
+- Audit round 4 (probe-based, over all of the above plus closure capture): two
+  findings, both fixed; clean sweep on diamond imports, re-export renames,
+  shadowed captures, module cycles, cache tokens, inline-lambda metas against
+  std generics, and std cross-module use.
+
+Open forks (user's): record `==` record strictness (fits-based equality),
+recursive parameterized types, whether `sortWith` should get an `Ordering`
+variant companion.
 
 ## To investigate later
 
