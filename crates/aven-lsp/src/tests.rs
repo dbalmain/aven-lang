@@ -766,6 +766,24 @@ fn completion_at_result_field_access_returns_builtin_methods() {
 }
 
 #[test]
+fn completion_at_optional_field_access_offers_to_result() {
+    let completions = completions_at_marker("value : ?Int = undefined\nresult = value.|");
+    let Some(to_result) = completion_item(&completions, "toResult") else {
+        panic!("expected toResult completion, got {completions:?}");
+    };
+
+    assert_eq!(to_result.kind, Some(CompletionItemKind::FIELD));
+    assert_eq!(
+        to_result.detail.as_deref(),
+        Some("result_error -> Result(Int, result_error)")
+    );
+    assert!(
+        to_result.additional_text_edits.is_none(),
+        "toResult completion must keep plain `.toResult` dispatch"
+    );
+}
+
+#[test]
 fn completion_at_text_field_access_offers_format_methods() {
     let completions = completions_at_marker("text : Text = \"{}\"\nresult = text.|");
     let Some(decode) = completion_item(&completions, "decode") else {

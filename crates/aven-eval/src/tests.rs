@@ -1987,6 +1987,37 @@ fn result_methods_map_errors_and_recover_for_ok_and_err() {
 }
 
 #[test]
+fn optional_to_result_wraps_payload_and_both_empty_values() {
+    assert_module_value(
+        "[7.toResult(\"e\"), undefined.toResult(\"missing\"), null.toResult(@Missing)]\n",
+        array_value(vec![
+            Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Int(7)],
+            },
+            Value::Tag {
+                name: "Err".to_owned(),
+                payload: vec![Value::Text("missing".to_owned())],
+            },
+            Value::Tag {
+                name: "Err".to_owned(),
+                payload: vec![Value::Tag {
+                    name: "Missing".to_owned(),
+                    payload: Vec::new(),
+                }],
+            },
+        ]),
+    );
+
+    let diagnostic = eval_error("7.toResult(1 / 0)");
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::DIVISION_BY_ZERO),
+        "toResult must evaluate its error argument even for a present receiver"
+    );
+}
+
+#[test]
 fn result_methods_map_unwrap_or_and_predicates() {
     assert_module_value(
         "ok = @Ok(7)\nerr = @Err(\"bad\")\n[\n  ok.map((v) => v + 1),\n  err.map((v) => v + 1),\n  ok.unwrapOr(0),\n  err.unwrapOr(0),\n  ok.isOk(),\n  err.isOk(),\n  ok.isErr(),\n  err.isErr()\n]\n",

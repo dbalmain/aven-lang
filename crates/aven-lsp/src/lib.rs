@@ -1133,6 +1133,7 @@ fn field_completion_at_position(
         let mut item = completion_item_for_record_field(field);
         if let Some(edit) = &null_safe_edit
             && !is_synthetic_encode
+            && item.label != "toResult"
         {
             item.additional_text_edits = Some(vec![edit.clone()]);
         }

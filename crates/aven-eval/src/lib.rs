@@ -1867,6 +1867,7 @@ fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
 
 fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
     match (receiver, field) {
+        (receiver, "toResult") => Some(optional_to_result_method(receiver.clone())),
         (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),
         (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
@@ -1902,6 +1903,23 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+fn optional_to_result_method(receiver: Value) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("toResult expects 1 argument, got {}", args.len()));
+        }
+        let (name, value) = if matches!(receiver, Value::Undefined | Value::Null) {
+            ("Err", args[0].clone())
+        } else {
+            ("Ok", receiver.clone())
+        };
+        Ok(Value::Tag {
+            name: name.to_owned(),
+            payload: vec![value],
+        })
+    })
 }
 
 fn text_method(text: &str, field: &str) -> Option<Value> {

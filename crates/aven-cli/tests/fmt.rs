@@ -385,6 +385,24 @@ fn run_parses_text_numbers_with_optional_fallbacks() {
 }
 
 #[test]
+fn run_bridges_optional_parse_to_result() {
+    let file = TempFile::new(
+        "run-optional-to-result",
+        concat!(
+            "parse = (raw: Text): Result(Int, Text) =>\n",
+            "  n = raw.toInt().toResult(\"could not parse: ${raw}\")?^\n",
+            "  @Ok(n)\n",
+            "parse(\"12\")\n",
+        ),
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "@Ok(12)\n");
+}
+
+#[test]
 fn run_applies_parameter_default_when_omitted() {
     let file = TempFile::new(
         "run-default-omitted",

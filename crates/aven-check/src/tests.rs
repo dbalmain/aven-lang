@@ -451,11 +451,15 @@ fn record_fields_query_enumerates_record_fields_and_peels_wrappers() {
     ];
 
     assert_eq!(record_fields(&record), Some(expected.clone()));
-    assert_eq!(
-        record_fields(&optional(record.clone())),
-        Some(expected.clone())
-    );
-    assert_eq!(record_fields(&nullable(record)), Some(expected));
+    for wrapped in [optional(record.clone()), nullable(record)] {
+        let fields = record_fields(&wrapped).expect("wrapped record fields");
+        assert_eq!(&fields[..expected.len()], expected.as_slice());
+        assert_eq!(fields.len(), expected.len() + 1);
+        assert_eq!(
+            fields.last().map(|field| field.name.as_str()),
+            Some("toResult")
+        );
+    }
     // Named primitives without methods still yield None; Text carries methods.
     assert_eq!(record_fields(&named("Int")), None);
     let text_fields = record_fields(&named("Text")).expect("Text has methods");
@@ -3999,6 +4003,89 @@ fn result_methods_preserve_and_replace_result_type_arguments() {
         Some(named("Int"))
     );
     assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
+}
+
+#[test]
+fn optional_to_result_types_payload_error_and_propagation() {
+    let source = concat!(
+        "ParseError = @{@ParseError(Text)}\n",
+        "optional = \"12\".toInt()\n",
+        "parsed = optional.toResult(\"e\")\n",
+        "nullable : Int? = null\n",
+        "nullable_result = nullable.toResult(\"e\")\n",
+        "tagged = optional.toResult(@ParseError(\"m\"))\n",
+        "parse : (Text) -> Result(Int, Text)\n",
+        "parse = (raw) =>\n",
+        "  n = raw.toInt().toResult(\"could not parse: ${raw}\")?^\n",
+        "  @Ok(n)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "optional toResult should check cleanly: {:?}",
+        check.diagnostics
+    );
+    for name in ["parsed", "nullable_result"] {
+        assert_eq!(
+            check.type_at(nth_span(source, name, 0)).map(Type::render),
+            Some("Result(Int, Text)".to_owned()),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "tagged", 0))
+            .map(Type::render),
+        Some("Result(Int, @ParseError(Text))".to_owned())
+    );
+}
+
+#[test]
+fn optional_to_result_strips_exactly_one_wrapper() {
+    let doubly_optional = optional(optional(named("Int")));
+    let optional_nullable = optional(nullable(named("Int")));
+
+    assert_eq!(
+        crate::ty::builtin_collection_method_type(&doubly_optional, "toResult")
+            .expect("toResult on ??Int")
+            .render(),
+        "result_error -> Result(?Int, result_error)"
+    );
+    assert_eq!(
+        crate::ty::builtin_collection_method_type(&optional_nullable, "toResult")
+            .expect("toResult on ?Int?")
+            .render(),
+        "result_error -> Result(Int?, result_error)"
+    );
+}
+
+#[test]
+fn optional_to_result_rejects_non_optional_receivers_and_wrong_arity() {
+    for source in [
+        "value = 1.toResult(\"e\")\n",
+        "value = \"x\".toResult(\"e\")\n",
+    ] {
+        let check = check_module(&parse_module(source).module);
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+            1,
+            "{source}: {:?}",
+            check.diagnostics
+        );
+    }
+
+    for source in [
+        "opt : ?Int = undefined\nvalue = opt.toResult()\n",
+        "opt : ?Int = undefined\nvalue = opt.toResult(1, 2)\n",
+    ] {
+        let check = check_module(&parse_module(source).module);
+        assert!(
+            !check.diagnostics.is_empty(),
+            "wrong toResult arity should report: {source}"
+        );
+    }
 }
 
 #[test]

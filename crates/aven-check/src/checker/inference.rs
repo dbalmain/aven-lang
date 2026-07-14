@@ -1230,6 +1230,9 @@ impl<'a> Checker<'a> {
         // underlying record, then re-wrap the result with the same empties so the
         // access propagates the emptiness (`?.email : ?Text`).
         let resolved = self.normalize(&self.unifier.resolve(&receiver_type));
+        if let Some(method_type) = builtin_collection_method_type(&resolved, field) {
+            return self.instantiate_annotation_type_variables(&method_type, &mut HashMap::new());
+        }
         let (empties, core) = peel_empty_values(&resolved);
         let core = core.clone();
 
@@ -1360,6 +1363,15 @@ impl<'a> Checker<'a> {
         {
             self.check_call_arg_types_against_params(args, &arg_types, params);
             let result = self.resolve_row_merge_call_result(result);
+            if is_to_result_call(callee)
+                && let [error] = arg_types.as_slice()
+                && let Some((ok, _)) = result_type_args(&result)
+            {
+                return result_type(
+                    ok.clone(),
+                    widen_to_result_error_type(&self.unifier.resolve(error)),
+                );
+            }
             if let Some(result) =
                 self.infer_or_else_single_constructor_result(env, callee, &arg_types, &result)
             {
@@ -3035,6 +3047,9 @@ fn host_comptime_reifiable_type(ty: &Type) -> bool {
 }
 
 fn receiver_type_carries_member(ty: &Type, member: &str) -> bool {
+    if builtin_collection_method_type(ty, member).is_some() {
+        return true;
+    }
     let (_, core) = peel_empty_values(ty);
     if builtin_collection_method_type(core, member).is_some() {
         return true;
@@ -3046,6 +3061,31 @@ fn receiver_type_carries_member(ty: &Type, member: &str) -> bool {
     row.entries
         .iter()
         .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == member))
+}
+
+fn is_to_result_call(callee: &Expr) -> bool {
+    matches!(
+        &ungroup_expr(callee).kind,
+        ExprKind::FieldAccess { field, .. } if field == "toResult"
+    )
+}
+
+fn widen_to_result_error_type(ty: &Type) -> Type {
+    map_type(ty, &mut |node| {
+        let Type::Variant(row) = node else {
+            return None;
+        };
+        match literal_variant_base(row)? {
+            LiteralBase::Text => Some(named_builtin("Text")),
+            LiteralBase::Bool => Some(named_builtin("Bool")),
+            LiteralBase::Number => {
+                let is_float = row.entries.iter().any(|entry| {
+                    matches!(entry, RowEntry::Literal { value: Literal::Number(number) } if is_float_literal_text(number))
+                });
+                Some(named_builtin(if is_float { "Float" } else { "Int" }))
+            }
+        }
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

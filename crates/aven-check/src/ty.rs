@@ -80,12 +80,16 @@ pub const RESULT_METHOD_NAMES: &[&str] = &[
 ];
 
 pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
+    let to_result = builtin_collection_method_type(ty, "toResult").map(|ty| RecordField {
+        name: "toResult".to_owned(),
+        ty,
+    });
     let mut ty = ty;
     while let Type::Optional(inner) | Type::Nullable(inner) = ty {
         ty = inner;
     }
 
-    match ty {
+    let fields = match ty {
         Type::Record(row) => Some(
             row.entries
                 .iter()
@@ -106,10 +110,30 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
         | Type::Optional(_)
         | Type::Nullable(_)
         | Type::Tuple(_) => None,
+    };
+
+    match (fields, to_result) {
+        (Some(mut fields), Some(to_result)) => {
+            fields.push(to_result);
+            Some(fields)
+        }
+        (Some(fields), None) => Some(fields),
+        (None, Some(to_result)) => Some(vec![to_result]),
+        (None, None) => None,
     }
 }
 
 pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Type> {
+    if name == "toResult"
+        && let Type::Optional(payload) | Type::Nullable(payload) = receiver
+    {
+        let error = Type::Variable("result_error".to_owned());
+        return Some(function(
+            vec![error.clone()],
+            build::result(payload.as_ref().clone(), error),
+        ));
+    }
+
     if let Some((key, value)) = map_type_args(receiver) {
         return match name {
             "get" => Some(function(
