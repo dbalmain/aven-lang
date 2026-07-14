@@ -1134,7 +1134,7 @@ fn evaluation_cycle(span: Span, function: &str) -> Diagnostic {
     )
 }
 
-fn comptime_argument_not_known(span: Span, function: &str) -> Diagnostic {
+pub(crate) fn comptime_argument_not_known(span: Span, function: &str) -> Diagnostic {
     Diagnostic::error(format!(
         "comptime argument to `{function}` is not known at compile time"
     ))
@@ -1143,7 +1143,7 @@ fn comptime_argument_not_known(span: Span, function: &str) -> Diagnostic {
         span,
         "this argument must be known at compile time",
     ))
-    .with_note("uppercase comptime functions accept only comptime-known arguments")
+    .with_note("comptime parameters accept only comptime-known arguments")
 }
 
 pub(crate) fn comptime_function_arity_mismatch(

@@ -2057,6 +2057,23 @@ impl<'a> Checker<'a> {
             let Some(argument) =
                 self.evaluate_comptime_param_argument(arg, &runtime_value_bindings)
             else {
+                // An unresolved enclosing comptime parameter is intentionally
+                // deferred until its caller specializes this function. Other
+                // unevaluable lowercase arguments still need ordinary value
+                // checking so they cannot turn an annotation into a silent
+                // `Deferred` accept.
+                if !uppercase && !self.expr_references_unresolved_comptime_param(arg) {
+                    let diagnostics_start = self.diagnostics.len();
+                    self.check_value_expr(arg);
+                    if self.diagnostics.len() == diagnostics_start
+                        && self.is_runtime_computation_call(arg)
+                    {
+                        let function = call_callee_name(callee).unwrap_or("comptime function");
+                        self.push_unique_diagnostic(comptime::comptime_argument_not_known(
+                            arg.span, function,
+                        ));
+                    }
+                }
                 return Some(Type::Deferred);
             };
             let value = argument.value.clone();
@@ -2124,6 +2141,14 @@ impl<'a> Checker<'a> {
         arg: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
     ) -> Option<ComptimeArgument> {
+        // A call to a lowercase function with no `@` parameters is a runtime
+        // computation, even if the evaluator can reduce its body. In
+        // particular, `pick(bad())` must not execute `bad` while validating a
+        // comptime argument.
+        if self.is_runtime_computation_call(arg) {
+            return None;
+        }
+
         if let Some(argument) = self.evaluate_comptime_runtime_argument(arg, bindings) {
             return Some(argument);
         }
@@ -2144,6 +2169,13 @@ impl<'a> Checker<'a> {
             });
         }
         None
+    }
+
+    pub(super) fn is_runtime_computation_call(&self, expr: &Expr) -> bool {
+        matches!(&ungroup_expr(expr).kind, ExprKind::Call { callee, .. }
+            if call_callee_name(callee)
+                .and_then(|name| self.lookup_comptime_function_export(name))
+                .is_some_and(|function| function.params.iter().all(|param| !param.comptime)))
     }
 
     pub(super) fn evaluate_comptime_runtime_argument(

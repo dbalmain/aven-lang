@@ -351,7 +351,20 @@ impl<'a> Checker<'a> {
             {
                 self.check_value_expr_without_unbound_names(&binding.value);
             } else {
-                self.check_value_expr(&binding.value);
+                if self.is_uppercase_comptime_function(&declaration.name, &binding.value) {
+                    let Some((params, _)) = lambda_parts(&binding.value) else {
+                        unreachable!("uppercase comptime functions are lambdas")
+                    };
+                    let mut comptime_params = params.to_vec();
+                    for param in &mut comptime_params {
+                        param.comptime = true;
+                    }
+                    self.push_local_comptime_param_scope(&comptime_params);
+                    self.check_value_expr(&binding.value);
+                    self.local_comptime_params.pop();
+                } else {
+                    self.check_value_expr(&binding.value);
+                }
                 if !has_declared_annotation
                     && let Some(ty) = self.top_level_binding_final_type(&declaration.name)
                 {

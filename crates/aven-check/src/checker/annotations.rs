@@ -286,8 +286,18 @@ impl<'a> Checker<'a> {
                     return self.lower_type_application(callee, args);
                 }
 
+                self.check_unevaluable_lowercase_comptime_arguments(callee, args);
                 match self.try_lower_comptime_annotation(annotation) {
-                    Some(ty) => ty,
+                    Some(ty) => {
+                        if self.is_uppercase_comptime_function_callee(callee) {
+                            // Specialization validates the outer comptime
+                            // parameter bounds. This walk supplies only nested
+                            // value/name diagnostics that its evaluator cannot
+                            // collect from unsupported forms.
+                            self.check_value_exprs(args);
+                        }
+                        ty
+                    }
                     None => {
                         // Imported names applied in type position must expand; silent
                         // Deferred would accept anything (the pre-fix module bug).
@@ -315,6 +325,37 @@ impl<'a> Checker<'a> {
             | ExprKind::Block(_) => {
                 self.lower_deferred_annotation(annotation);
                 Type::Deferred
+            }
+        }
+    }
+
+    fn check_unevaluable_lowercase_comptime_arguments(&mut self, callee: &Expr, args: &[Expr]) {
+        let Some((params, _)) = self.comptime_param_function(callee) else {
+            return;
+        };
+        if self.is_uppercase_comptime_function_callee(callee) {
+            return;
+        }
+
+        let bindings = self.current_comptime_value_bindings();
+        for (param, arg) in params.iter().zip(args) {
+            if !param.comptime
+                || self.expr_references_unresolved_comptime_param(arg)
+                || self
+                    .evaluate_comptime_param_argument(arg, &bindings)
+                    .is_some()
+            {
+                continue;
+            }
+
+            let diagnostics_start = self.diagnostics.len();
+            self.check_value_expr(arg);
+            if self.diagnostics.len() == diagnostics_start && self.is_runtime_computation_call(arg)
+            {
+                let function = call_callee_name(callee).unwrap_or("comptime function");
+                self.push_unique_diagnostic(comptime::comptime_argument_not_known(
+                    arg.span, function,
+                ));
             }
         }
     }

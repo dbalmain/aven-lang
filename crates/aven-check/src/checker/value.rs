@@ -78,6 +78,12 @@ impl<'a> Checker<'a> {
         // check would report the same failure a second time.
         if self.is_uppercase_comptime_function_callee(callee) {
             self.check_value_expr(callee);
+            // Specialization owns the outer comptime-parameter validation, but
+            // its evaluator deliberately does not descend into unsupported
+            // value forms such as records and lambdas. Walk the arguments here
+            // to retain name and structural diagnostics without comparing them
+            // against the comptime parameters a second time.
+            self.check_value_exprs(args);
             return;
         }
 

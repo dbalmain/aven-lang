@@ -8861,6 +8861,86 @@ fn nested_uppercase_comptime_applications_check_cleanly() {
 }
 
 #[test]
+fn lowercase_comptime_argument_reports_unbound_name() {
+    let source = "pick = (@t) => { value: t }\nx: pick(missing) = { value: 1 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::name::UNBOUND), 1);
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::name::UNBOUND))
+        .expect("unbound-name diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "missing", 0));
+}
+
+#[test]
+fn lowercase_comptime_argument_checks_runtime_call() {
+    let source =
+        "pick = (@t) => { value: t }\nbad = () => \"not a type\"\nx: pick(bad()) = { value: 1 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(!check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn lowercase_comptime_argument_defers_enclosing_comptime_param() {
+    let source = "pick = (@t) => { value: t }\nOuter = (t: Type) => pick(t)\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn uppercase_comptime_argument_walks_nested_record_errors() {
+    let source = "Pick = (t: Type) => { value: t }\nx: Pick({ bad: missing }) = { value: 1 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::name::UNBOUND), 1);
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::name::UNBOUND))
+        .expect("unbound-name diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "missing", 0));
+}
+
+#[test]
+fn uppercase_comptime_argument_walks_nested_lambda_errors() {
+    let source = "Pick = (t: Type) => { value: t }\nx: Pick((y) => missing) = { value: 1 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::name::UNBOUND), 1);
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::name::UNBOUND))
+        .expect("unbound-name diagnostic");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "missing", 0));
+}
+
+#[test]
+fn uppercase_comptime_runtime_argument_keeps_comptime_diagnostic() {
+    let source =
+        "Pick = (t: Type) => { value: t }\nruntimeVar = 1\nx: Pick(runtimeVar) = { value: 1 }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+    assert_eq!(matching_codes(&check.diagnostics, codes::name::UNBOUND), 0);
+}
+
+#[test]
 fn valid_bare_alias_specializes_and_remains_usable() {
     let source = "Pick = (n: 1 | 2 | 3) => { size: n }\n\
         Good = Pick(2)\n\
