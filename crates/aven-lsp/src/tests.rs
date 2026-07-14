@@ -737,7 +737,9 @@ fn completion_at_result_field_access_returns_builtin_methods() {
         .map(|item| item.label.as_str())
         .collect::<Vec<_>>();
 
-    for name in ["mapErr", "orElse", "map", "unwrapOr", "isOk", "isErr"] {
+    for name in [
+        "mapErr", "orElse", "map", "andThen", "unwrapOr", "isOk", "isErr",
+    ] {
         assert!(
             labels.contains(&name),
             "expected Result.{name} completion, got {labels:?}"
@@ -749,6 +751,13 @@ fn completion_at_result_field_access_returns_builtin_methods() {
     assert_eq!(
         map.detail.as_deref(),
         Some("(Int -> result_ok) -> Result(result_ok, Text)")
+    );
+    let Some(and_then) = completion_item(&completions, "andThen") else {
+        panic!("expected Result.andThen completion");
+    };
+    assert_eq!(
+        and_then.detail.as_deref(),
+        Some("(Int -> Result(result_ok, Text)) -> Result(result_ok, Text)")
     );
     let Some(is_ok) = completion_item(&completions, "isOk") else {
         panic!("expected Result.isOk completion");
@@ -1854,7 +1863,7 @@ fn library_interface_renders_std_result_signatures() {
         "# std/result — generated interface (shape view); not the implementation."
     );
     assert_eq!(lines[1], "");
-    // Export order follows the final record: mapErr, orElse, map, unwrapOr, isOk, isErr.
+    // Export order follows the final record: mapErr, orElse, map, andThen, unwrapOr, isOk, isErr.
     // Type-var names are normalized alphabetically in the shape view.
     assert_eq!(lines[2], "mapErr : (Result(a, b), b -> c) -> Result(a, c)");
     assert_eq!(
@@ -1862,16 +1871,21 @@ fn library_interface_renders_std_result_signatures() {
         "orElse : (Result(a, b), b -> Result(a, c)) -> Result(a, c)"
     );
     assert_eq!(lines[4], "map : (Result(a, b), a -> c) -> Result(c, b)");
-    assert_eq!(lines[5], "unwrapOr : (Result(a, b), a) -> a");
-    assert_eq!(lines[6], "isOk : Result(a, b) -> Bool");
-    assert_eq!(lines[7], "isErr : Result(a, b) -> Bool");
+    assert_eq!(
+        lines[5],
+        "andThen : (Result(a, b), a -> Result(c, b)) -> Result(c, b)"
+    );
+    assert_eq!(lines[6], "unwrapOr : (Result(a, b), a) -> a");
+    assert_eq!(lines[7], "isOk : Result(a, b) -> Bool");
+    assert_eq!(lines[8], "isErr : Result(a, b) -> Bool");
     for (name, line) in [
         ("mapErr", 2),
         ("orElse", 3),
         ("map", 4),
-        ("unwrapOr", 5),
-        ("isOk", 6),
-        ("isErr", 7),
+        ("andThen", 5),
+        ("unwrapOr", 6),
+        ("isOk", 7),
+        ("isErr", 8),
     ] {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);
@@ -1911,7 +1925,7 @@ fn library_interface_renders_std_array_signatures() {
     assert_eq!(lines[1], "");
     // Export order follows the final record:
     // length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf,
-    // map, filter, reverse, concat, take, drop, slice, zip, flatten, range,
+    // map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range,
     // sortWith, minimum, maximum.
     assert!(lines[2].starts_with("length : "), "line: {:?}", lines[2]);
     assert!(lines[3].starts_with("isEmpty : "), "line: {:?}", lines[3]);
@@ -1925,26 +1939,27 @@ fn library_interface_renders_std_array_signatures() {
     assert!(lines[11].starts_with("find : "), "line: {:?}", lines[11]);
     assert!(lines[12].starts_with("indexOf : "), "line: {:?}", lines[12]);
     assert!(lines[13].starts_with("map : "), "line: {:?}", lines[13]);
-    assert!(lines[14].starts_with("filter : "), "line: {:?}", lines[14]);
-    assert!(lines[15].starts_with("reverse : "), "line: {:?}", lines[15]);
-    assert!(lines[16].starts_with("concat : "), "line: {:?}", lines[16]);
-    assert!(lines[17].starts_with("take : "), "line: {:?}", lines[17]);
-    assert!(lines[18].starts_with("drop : "), "line: {:?}", lines[18]);
-    assert!(lines[19].starts_with("slice : "), "line: {:?}", lines[19]);
-    assert!(lines[20].starts_with("zip : "), "line: {:?}", lines[20]);
-    assert!(lines[21].starts_with("flatten : "), "line: {:?}", lines[21]);
-    assert!(lines[22].starts_with("range : "), "line: {:?}", lines[22]);
+    assert!(lines[14].starts_with("flatMap : "), "line: {:?}", lines[14]);
+    assert!(lines[15].starts_with("filter : "), "line: {:?}", lines[15]);
+    assert!(lines[16].starts_with("reverse : "), "line: {:?}", lines[16]);
+    assert!(lines[17].starts_with("concat : "), "line: {:?}", lines[17]);
+    assert!(lines[18].starts_with("take : "), "line: {:?}", lines[18]);
+    assert!(lines[19].starts_with("drop : "), "line: {:?}", lines[19]);
+    assert!(lines[20].starts_with("slice : "), "line: {:?}", lines[20]);
+    assert!(lines[21].starts_with("zip : "), "line: {:?}", lines[21]);
+    assert!(lines[22].starts_with("flatten : "), "line: {:?}", lines[22]);
+    assert!(lines[23].starts_with("range : "), "line: {:?}", lines[23]);
     assert!(
-        lines[23].starts_with("sortWith : "),
+        lines[24].starts_with("sortWith : "),
         "line: {:?}",
-        lines[23]
+        lines[24]
     );
-    assert!(lines[24].starts_with("minimum : "), "line: {:?}", lines[24]);
-    assert!(lines[25].starts_with("maximum : "), "line: {:?}", lines[25]);
+    assert!(lines[25].starts_with("minimum : "), "line: {:?}", lines[25]);
+    assert!(lines[26].starts_with("maximum : "), "line: {:?}", lines[26]);
     for name in [
         "length", "isEmpty", "first", "last", "fold", "sum", "count", "all", "any", "find",
-        "indexOf", "map", "filter", "reverse", "concat", "take", "drop", "slice", "zip", "flatten",
-        "range", "sortWith", "minimum", "maximum",
+        "indexOf", "map", "flatMap", "filter", "reverse", "concat", "take", "drop", "slice", "zip",
+        "flatten", "range", "sortWith", "minimum", "maximum",
     ] {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);

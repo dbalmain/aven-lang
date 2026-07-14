@@ -1017,7 +1017,7 @@ fn std_array_combinators_run_via_import() {
 
     let imports = ModuleImports::new([("std/array".to_owned(), array_export)]);
     let source = concat!(
-        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import(\"std/array\")\n",
+        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import(\"std/array\")\n",
         "xs = [10, 20, 30]\n",
         "empty = []\n",
         "zero: Int = 0\n",
@@ -1041,6 +1041,9 @@ fn std_array_combinators_run_via_import() {
         "  indexOfEmpty: indexOf(empty, 1),\n",
         "  map: map(xs, (x) => x + 1),\n",
         "  mapEmpty: map(empty, (x) => x + 1),\n",
+        "  flatMap: flatMap(xs, (x) => [x, x + 1]),\n",
+        "  flatMapEmpty: flatMap(empty, (x) => [x]),\n",
+        "  flatMapToEmpty: flatMap(xs, (_) => []),\n",
         "  filter: filter(xs, (x) => x > 15),\n",
         "  filterEmpty: filter(empty, (x) => x > 15),\n",
         "  reverse: reverse(xs),\n",
@@ -1109,6 +1112,19 @@ fn std_array_combinators_run_via_import() {
                     array_value(vec![Value::Int(11), Value::Int(21), Value::Int(31)])
                 ),
                 ("mapEmpty", array_value(vec![])),
+                (
+                    "flatMap",
+                    array_value(vec![
+                        Value::Int(10),
+                        Value::Int(11),
+                        Value::Int(20),
+                        Value::Int(21),
+                        Value::Int(30),
+                        Value::Int(31),
+                    ])
+                ),
+                ("flatMapEmpty", array_value(vec![])),
+                ("flatMapToEmpty", array_value(vec![])),
                 ("filter", array_value(vec![Value::Int(20), Value::Int(30)])),
                 ("filterEmpty", array_value(vec![])),
                 (
@@ -1222,13 +1238,15 @@ fn std_result_combinators_run_via_import() {
 
     let imports = ModuleImports::new([("std/result".to_owned(), result_export)]);
     let source = concat!(
-        "{ map, unwrapOr, isOk, isErr } = import(\"std/result\")\n",
+        "{ map, andThen, unwrapOr, isOk, isErr } = import(\"std/result\")\n",
         "ok : Result(Int, Text) = @Ok(7)\n",
         "err : Result(Int, Text) = @Err(\"boom\")\n",
         "zero: Int = 0\n",
         "{\n",
         "  mapOk: map(ok, (v) => v + 1),\n",
         "  mapErr: map(err, (v) => v + 1),\n",
+        "  andThenOk: andThen(ok, (v) => @Ok(v + 1)),\n",
+        "  andThenErr: andThen(err, (v) => @Ok(v + 1)),\n",
         "  unwrapOk: unwrapOr(ok, zero),\n",
         "  unwrapErr: unwrapOr(err, zero),\n",
         "  isOkOk: isOk(ok),\n",
@@ -1253,6 +1271,20 @@ fn std_result_combinators_run_via_import() {
                 ),
                 (
                     "mapErr",
+                    Value::Tag {
+                        name: "Err".to_owned(),
+                        payload: vec![Value::Text("boom".to_owned())],
+                    }
+                ),
+                (
+                    "andThenOk",
+                    Value::Tag {
+                        name: "Ok".to_owned(),
+                        payload: vec![Value::Int(8)],
+                    }
+                ),
+                (
+                    "andThenErr",
                     Value::Tag {
                         name: "Err".to_owned(),
                         payload: vec![Value::Text("boom".to_owned())],
@@ -1902,6 +1934,23 @@ fn result_methods_map_unwrap_or_and_predicates() {
             Value::Bool(false),
             Value::Bool(false),
             Value::Bool(true),
+        ]),
+    );
+}
+
+#[test]
+fn result_methods_and_then_for_ok_and_err() {
+    assert_module_value(
+        "ok = @Ok(7)\nerr = @Err(\"bad\")\n[ok.andThen((v) => @Ok(v + 1)), err.andThen((v) => @Ok(v + 1))]\n",
+        array_value(vec![
+            Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Int(8)],
+            },
+            Value::Tag {
+                name: "Err".to_owned(),
+                payload: vec![Value::Text("bad".to_owned())],
+            },
         ]),
     );
 }

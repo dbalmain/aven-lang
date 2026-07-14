@@ -1,5 +1,5 @@
 # Result helpers: `import("std/result")`. Pure Aven — no host natives.
-# `Result` values also expose `.mapErr(...)` and `.orElse(...)` methods.
+# `Result` values also expose `.mapErr(...)`, `.orElse(...)`, `.map(...)`, and `.andThen(...)` methods.
 
 mapErr = (r, f) => r ?> @Ok(v) => @Ok(v), @Err(e) => @Err(f(e))
 
@@ -7,6 +7,9 @@ orElse = (r, f) => r ?> @Ok(v) => @Ok(v), @Err(e) => f(e)
 
 map : (Result(a, e), (a) -> b) -> Result(b, e)
 map = (r, f) => r ?> @Ok(v) => @Ok(f(v)), @Err(e) => @Err(e)
+
+andThen : (Result(a, e), (a) -> Result(b, e)) -> Result(b, e)
+andThen = (r, f) => r ?> @Ok(v) => f(v), @Err(e) => @Err(e)
 
 unwrapOr : (Result(a, e), a) -> a
 unwrapOr = (r, default) => r ?> @Ok(v) => v, @Err(_) => default
@@ -17,4 +20,4 @@ isOk = (r) => r ?> @Ok(_) => true, @Err(_) => false
 isErr : (Result(a, e)) -> Bool
 isErr = (r) => r ?> @Ok(_) => false, @Err(_) => true
 
-{ mapErr, orElse, map, unwrapOr, isOk, isErr }
+{ mapErr, orElse, map, andThen, unwrapOr, isOk, isErr }

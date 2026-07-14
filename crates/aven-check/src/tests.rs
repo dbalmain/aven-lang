@@ -4045,6 +4045,29 @@ fn result_map_unwrap_or_and_predicate_methods_type_check() {
 }
 
 #[test]
+fn result_and_then_method_type_checks_and_rejects_non_result_callbacks() {
+    let source = "ok : Result(Int, Text) = @Ok(1)\n\
+                  chained : Result(Int, Text) = ok.andThen((v) => @Ok(v + 1))\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    let expected = crate::ty::build::result(named("Int"), named("Text"));
+
+    assert_eq!(
+        check.type_at(nth_span(source, "chained", 0)),
+        Some(&expected)
+    );
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+
+    let mismatch =
+        parse_module("ok : Result(Int, Text) = @Ok(1)\nbad = ok.andThen((v) => v + 1)\n");
+    let mismatch_check = check_module(&mismatch.module);
+    assert!(
+        !mismatch_check.diagnostics.is_empty(),
+        "expected a callback return-type mismatch"
+    );
+}
+
+#[test]
 fn result_unwrap_or_rejects_mismatched_default() {
     let source = "r : Result(Int, Text) = @Ok(1)\nv = r.unwrapOr(\"s\")\n";
     let check = check_module(&parse_module(source).module);

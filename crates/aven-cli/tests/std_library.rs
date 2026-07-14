@@ -97,7 +97,7 @@ fn std_array_type_exports_check() {
     let dir = TempDir::new("std-array-check");
     let entry = dir.write(
         "main.av",
-        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import("std/array")
+r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
@@ -114,6 +114,7 @@ hit = find(xs, (x) => x == 20)
 miss = find(xs, (x) => x == 99)
 idx = indexOf(xs, 20)
 mapped = map(xs, (x) => x + 1)
+flatMapped = flatMap(xs, (x) => [x, x + 1])
 filtered = filter(xs, (x) => x > 15)
 rev = reverse(xs)
 joined = concat([1], [2, 3])
@@ -127,7 +128,7 @@ nums = range(1, 4)
 sorted = sortWith([3, 1, 2], (a, b) => a < b)
 lo = minimum(xs)
 hi = maximum(xs)
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, lo, hi }
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, lo, hi }
 "#,
     );
 
@@ -146,7 +147,7 @@ fn std_array_combinators_run() {
     let dir = TempDir::new("std-array-run");
     let entry = dir.write(
         "main.av",
-        r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import("std/array")
+r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
@@ -169,6 +170,9 @@ writeLine("${indexOf(xs, 99)}")
 writeLine("${indexOf(empty, 1)}")
 writeLine("${map(xs, (x) => x + 1)}")
 writeLine("${map(empty, (x) => x + 1)}")
+writeLine("${flatMap(xs, (x) => [x, x + 1])}")
+writeLine("${flatMap(empty, (x) => [x])}")
+writeLine("${flatMap(xs, (_) => [])}")
 writeLine("${filter(xs, (x) => x > 15)}")
 writeLine("${filter(empty, (x) => x > 15)}")
 writeLine("${reverse(xs)}")
@@ -221,7 +225,7 @@ writeLine("${maximum(empty)}")
     );
     assert_eq!(
         stdout(&output),
-        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[]\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
+        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[]\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
     );
 }
 
@@ -230,7 +234,7 @@ fn std_result_type_exports_check() {
     let dir = TempDir::new("std-result-check");
     let entry = dir.write(
         "main.av",
-        r#"{ mapErr, orElse, map, unwrapOr, isOk, isErr } = import("std/result")
+r#"{ mapErr, orElse, map, andThen, unwrapOr, isOk, isErr } = import("std/result")
 ok : Result(Int, Text) = @Ok(1)
 err : Result(Int, Text) = @Err("x")
 zero: Int = 0
@@ -239,13 +243,14 @@ mappedErr = mapErr(err, (e) => "wrap: ${e}")
 recovered = orElse(err, (_) => @Ok(0))
 passed = orElse(ok, (_) => @Ok(0))
 mapped = map(ok, (v) => v + 1)
+chained = andThen(ok, (v) => @Ok(v + 1))
 fallback = unwrapOr(err, zero)
 okFlag = isOk(ok)
 errFlag = isErr(err)
 chain = (r: Result(Int, Text)) =>
   value = mapErr(r, (e) => "step failed: ${e}")?^
   @Ok(value)
-{ mapErr, orElse, map, unwrapOr, isOk, isErr, mappedOk, mappedErr, recovered, passed, mapped, fallback, okFlag, errFlag, chain }
+{ mapErr, orElse, map, andThen, unwrapOr, isOk, isErr, mappedOk, mappedErr, recovered, passed, mapped, chained, fallback, okFlag, errFlag, chain }
 "#,
     );
 
@@ -297,13 +302,15 @@ fn std_result_combinators_run() {
     let dir = TempDir::new("std-result-combinators-run");
     let entry = dir.write(
         "main.av",
-        r#"{ map, unwrapOr, isOk, isErr } = import("std/result")
+        r#"{ map, andThen, unwrapOr, isOk, isErr } = import("std/result")
 ok : Result(Int, Text) = @Ok(7)
 err : Result(Int, Text) = @Err("boom")
 zero: Int = 0
 show = (r) => r ?> @Ok(v) => writeLine("Ok(${v})"), @Err(e) => writeLine("Err(${e})")
 show(map(ok, (v) => v + 1))
 show(map(err, (v) => v + 1))
+show(andThen(ok, (v) => @Ok(v + 1)))
+show(andThen(err, (v) => @Ok(v + 1)))
 writeLine("${unwrapOr(ok, zero)}")
 writeLine("${unwrapOr(err, zero)}")
 writeLine("${isOk(ok)}")
@@ -323,7 +330,7 @@ writeLine("${isErr(err)}")
     );
     assert_eq!(
         stdout(&output),
-        "Ok(8)\nErr(boom)\n7\n0\ntrue\nfalse\nfalse\ntrue\n"
+        "Ok(8)\nErr(boom)\nOk(8)\nErr(boom)\n7\n0\ntrue\nfalse\nfalse\ntrue\n"
     );
 }
 

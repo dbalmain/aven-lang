@@ -90,6 +90,11 @@ map = (xs, f) =>
   seed: Array(b) = []
   fold(xs, seed, (acc, x) => acc.push(f(x)))
 
+flatMap : (Array(a), (a) -> Array(b)) -> Array(b)
+flatMap = (xs, f) =>
+  seed: Array(b) = []
+  fold(xs, seed, (acc, x) => [..acc, ..f(x)])
+
 filter : (Array(a), (a) -> Bool) -> Array(a)
 filter = (xs, pred) =>
   seed: Array(a) = []
@@ -271,4 +276,4 @@ maximum = (xs) =>
     undefined => undefined
     first => maxGo(xs, 1, first)
 
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum }
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum }

@@ -98,6 +98,7 @@ pub enum ResultMethod {
     MapErr,
     OrElse,
     Map,
+    AndThen,
     UnwrapOr,
     IsOk,
     IsErr,
@@ -1373,6 +1374,7 @@ fn apply_result_method(
         ResultMethod::MapErr
         | ResultMethod::OrElse
         | ResultMethod::Map
+        | ResultMethod::AndThen
         | ResultMethod::UnwrapOr => 1,
     };
     if args.len() != expected_arity {
@@ -1409,6 +1411,16 @@ fn apply_result_method(
                     name,
                     payload: vec![transformed],
                 })
+            } else {
+                Ok(Value::Tag {
+                    name,
+                    payload: vec![value.clone()],
+                })
+            }
+        }
+        ResultMethod::AndThen => {
+            if name == "Ok" {
+                apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)
             } else {
                 Ok(Value::Tag {
                     name,
@@ -1869,12 +1881,13 @@ fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
         (Value::Text(text), field) => text_method(text, field),
         (
             Value::Tag { name, payload },
-            "mapErr" | "orElse" | "map" | "unwrapOr" | "isOk" | "isErr",
+            "mapErr" | "orElse" | "map" | "andThen" | "unwrapOr" | "isOk" | "isErr",
         ) if matches!(name.as_str(), "Ok" | "Err") && payload.len() == 1 => {
             let kind = match field {
                 "mapErr" => ResultMethod::MapErr,
                 "orElse" => ResultMethod::OrElse,
                 "map" => ResultMethod::Map,
+                "andThen" => ResultMethod::AndThen,
                 "unwrapOr" => ResultMethod::UnwrapOr,
                 "isOk" => ResultMethod::IsOk,
                 "isErr" => ResultMethod::IsErr,
