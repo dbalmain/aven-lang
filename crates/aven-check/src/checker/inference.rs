@@ -737,10 +737,6 @@ impl<'a> Checker<'a> {
             return EqualityCompatibility::Unknown;
         }
 
-        if left.entries.len() != right.entries.len() {
-            return EqualityCompatibility::Mismatched;
-        }
-
         let mut compatibility = EqualityCompatibility::Comparable;
         for left_entry in &left.entries {
             let RowEntry::Field {
@@ -750,13 +746,12 @@ impl<'a> Checker<'a> {
             else {
                 return EqualityCompatibility::Unknown;
             };
-            let Some(right_type) = right.entries.iter().find_map(|entry| match entry {
-                RowEntry::Field {
-                    name: right_name,
-                    ty,
-                } if right_name == name => Some(ty),
-                RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
-            }) else {
+            let Some(right_type) = row_field_type(right, name) else {
+                // An optional-key field may be absent at runtime, so the
+                // records could still be equal; a required field cannot.
+                if self.field_type_admits_absence(left_type) {
+                    continue;
+                }
                 return EqualityCompatibility::Mismatched;
             };
 
@@ -765,7 +760,25 @@ impl<'a> Checker<'a> {
                 return compatibility;
             }
         }
+        for right_entry in &right.entries {
+            let RowEntry::Field {
+                name,
+                ty: right_type,
+            } = right_entry
+            else {
+                return EqualityCompatibility::Unknown;
+            };
+            if row_field_type(left, name).is_none() && !self.field_type_admits_absence(right_type) {
+                return EqualityCompatibility::Mismatched;
+            }
+        }
         compatibility
+    }
+
+    /// Whether a field of this type may be absent from the record at runtime
+    /// (optional-key fields: `?T`).
+    fn field_type_admits_absence(&mut self, ty: &Type) -> bool {
+        matches!(self.normalize(&self.unifier.resolve(ty)), Type::Optional(_))
     }
 
     fn equality_compatibility(&mut self, left: &Type, right: &Type) -> EqualityCompatibility {
@@ -3148,6 +3161,13 @@ fn equality_sequence_compatibility(
 
 fn is_array_constructor(ty: &Type) -> bool {
     matches!(ty, Type::Named(name) if name == "Array")
+}
+
+fn row_field_type<'r>(row: &'r Row, field: &str) -> Option<&'r Type> {
+    row.entries.iter().find_map(|entry| match entry {
+        RowEntry::Field { name, ty } if name == field => Some(ty),
+        RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+    })
 }
 
 fn is_resolved_operator_operand(ty: &Type) -> bool {
