@@ -455,6 +455,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A type annotation references an uppercase name that is not a known builtin or in-scope compile-time declaration. Define it or correct the spelling.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNPRODUCTIVE_RECURSION,
+        text: "A recursive type has no finite value because every construction must first construct another member of the same recursion. Add a terminating alternative, make the recursive field optional or nullable, put it in a collection, or return it from a function.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::UNREACHABLE_MATCH_ARM,
         text: "A match arm can never run because its pattern is outside the statically known subject values. Remove the arm or change the subject type to include that value.",
     },

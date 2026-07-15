@@ -1,0 +1,3 @@
+error type.unproductive-recursion: recursive type `Tree` has no finite value
+  label 0..37: unproductive recursive type declared here
+  note: every value of `Tree` requires another recursive value via field `children`

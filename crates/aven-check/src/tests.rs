@@ -1327,11 +1327,98 @@ fn imported_comptime_type_function_uses_its_defining_alias_scope() {
 }
 
 #[test]
-fn allows_constructor_guarded_recursive_types() {
-    let output = parse_module("Tree = { value: Int, children: Tree }\n");
+fn allows_productive_recursive_types() {
+    for source in [
+        "Node = { next: ?Node }\n",
+        "List = @{ @Nil, @Cons((Int, List)) }\n",
+        "Tree2 = { value: Int, children: Array(Tree2) }\n",
+        "Gen = { head: Int, next: () -> Gen }\n",
+        "A = { next: ?B }\nB = { next: A }\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code.as_deref() != Some("type.unproductive-recursion")),
+            "{source}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn reports_unproductive_recursive_types() {
+    for source in [
+        "Tree = { value: Int, children: Tree }\n",
+        "Bad = @{ @Again(Bad) }\n",
+        "Pairy = (Int, Pairy)\n",
+        "A = { next: B }\nB = { next: A }\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        let diagnostics: Vec<_> = check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some("type.unproductive-recursion"))
+            .collect();
+        let expected = usize::from(source.starts_with("A =")) + 1;
+        assert_eq!(
+            diagnostics.len(),
+            expected,
+            "{source}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn unproductive_recursion_is_reported_only_at_its_definition() {
+    let output =
+        parse_module("Tree = { children: Tree }\nfirst: Tree = value\nsecond: Tree = value\n");
     let check = check_module(&output.module);
 
-    assert!(check.diagnostics.is_empty());
+    assert_eq!(
+        check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some("type.unproductive-recursion"))
+            .count(),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn recursive_types_with_unknown_structure_are_silent() {
+    let source = "Unknown = { next: Missing }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("type.unproductive-recursion")),
+        "{source}: {:?}",
+        check.diagnostics
+    );
+
+    let output = parse_module("Open = { next: Open }\n");
+    let mut definitions = check_module(&output.module).type_definitions;
+    definitions.insert(
+        "Open".to_owned(),
+        Type::Record(Row {
+            entries: vec![RowEntry::Field {
+                name: "next".to_owned(),
+                ty: named("Open"),
+            }],
+            tail: RowTail::Open,
+        }),
+    );
+    assert!(
+        crate::lower::unproductive_recursion_diagnostics(&output.module, &definitions).is_empty()
+    );
 }
 
 #[test]

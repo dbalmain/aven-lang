@@ -143,6 +143,7 @@ pub mod ty {
     pub const UPPERCASE_PATTERN_BINDER_UNSUPPORTED: &str =
         "type.uppercase-pattern-binder-unsupported";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
+    pub const UNPRODUCTIVE_RECURSION: &str = "type.unproductive-recursion";
     pub const UNKNOWN_MODULE_TYPE: &str = "type.unknown-module-type";
     pub const UNREACHABLE_MATCH_ARM: &str = "type.unreachable-match-arm";
     pub const UNRESOLVED_BINDING: &str = "type.unresolved-binding";
@@ -261,6 +262,7 @@ pub const ALL: &[&str] = &[
     ty::UNGUARDED_EMPTY_ACCESS,
     ty::UNKNOWN_MODULE_TYPE,
     ty::UNKNOWN_NAME,
+    ty::UNPRODUCTIVE_RECURSION,
     ty::UNREACHABLE_MATCH_ARM,
     ty::UNRESOLVED_BINDING,
     ty::UNUSED_RESULT,

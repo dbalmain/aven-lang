@@ -5,7 +5,7 @@ use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Module, collect_declarations,
 };
 
-use crate::{BUILTIN_TYPES, Checker, ModuleImports, Type};
+use crate::{BUILTIN_TYPES, Checker, ModuleImports, RowEntry, RowTail, Type};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeLowering {
@@ -280,6 +280,241 @@ pub(crate) fn cyclic_alias_diagnostics(
             )
         })
         .collect()
+}
+
+/// Reports recursive aliases whose strict structure cannot produce a finite
+/// value. Unlike transparent alias cycles, these definitions retain a nominal
+/// `Named` knot while lowering, so their productivity is decided here from the
+/// least fixed point of each local recursive SCC.
+pub(crate) fn unproductive_recursion_diagnostics(
+    module: &Module,
+    definitions: &HashMap<String, Type>,
+) -> Vec<Diagnostic> {
+    let names: Vec<_> = collect_declarations(module)
+        .into_iter()
+        .filter(|declaration| definitions.contains_key(&declaration.name))
+        .map(|declaration| declaration.name)
+        .collect();
+    let local: HashSet<_> = names.iter().map(String::as_str).collect();
+    let edges: HashMap<_, _> = names
+        .iter()
+        .map(|name| {
+            let mut targets = HashSet::new();
+            collect_named_references(&definitions[name], &local, &mut targets);
+            (name.as_str(), targets)
+        })
+        .collect();
+    let reverse = reverse_edges(&edges);
+    let mut assigned: HashSet<&str> = HashSet::new();
+    let mut unproductive: HashSet<&str> = HashSet::new();
+
+    for name in &names {
+        if assigned.contains(name.as_str()) {
+            continue;
+        }
+        let forward = reachable(name, &edges);
+        let backward = reachable(name, &reverse);
+        let component: HashSet<_> = forward.intersection(&backward).copied().collect();
+        assigned.extend(&component);
+
+        let recursive = component.len() > 1
+            || edges
+                .get(name.as_str())
+                .is_some_and(|targets| targets.contains(name.as_str()));
+        if !recursive {
+            continue;
+        }
+        // A wholly transparent cycle is owned by `cyclic_alias_diagnostics`.
+        // Keeping it there preserves both its established diagnostic and its
+        // clearer alias-chain explanation.
+        if component.iter().all(|member| {
+            matches!(definitions[*member], Type::Named(ref target) if component.contains(target.as_str()))
+        }) {
+            continue;
+        }
+
+        let mut productive = HashSet::new();
+        loop {
+            let added: Vec<_> = component
+                .iter()
+                .copied()
+                .filter(|member| {
+                    !productive.contains(*member)
+                        && is_productive(&definitions[*member], &component, &productive)
+                })
+                .collect();
+            if added.is_empty() {
+                break;
+            }
+            productive.extend(added);
+        }
+        unproductive.extend(component.difference(&productive).copied());
+    }
+
+    collect_declarations(module)
+        .into_iter()
+        .filter(|declaration| unproductive.contains(declaration.name.as_str()))
+        .map(|declaration| {
+            let forcing = forcing_step(
+                &definitions[&declaration.name],
+                &unproductive,
+                &HashSet::new(),
+            )
+            .unwrap_or_else(|| "strict recursion".to_owned());
+            Diagnostic::error(format!(
+                "recursive type `{}` has no finite value",
+                declaration.name
+            ))
+            .with_code(codes::ty::UNPRODUCTIVE_RECURSION)
+            .with_label(Label::primary(
+                declaration.span,
+                "unproductive recursive type declared here",
+            ))
+            .with_note(format!(
+                "every value of `{}` requires another recursive value via {forcing}",
+                declaration.name
+            ))
+        })
+        .collect()
+}
+
+fn collect_named_references<'a>(
+    ty: &'a Type,
+    local: &HashSet<&'a str>,
+    targets: &mut HashSet<&'a str>,
+) {
+    match ty {
+        Type::Named(name) => {
+            if local.contains(name.as_str()) {
+                targets.insert(name);
+            }
+        }
+        Type::Apply { callee, args } => {
+            collect_named_references(callee, local, targets);
+            for arg in args {
+                collect_named_references(arg, local, targets);
+            }
+        }
+        Type::Function { params, result, .. } => {
+            for param in params {
+                collect_named_references(param, local, targets);
+            }
+            collect_named_references(result, local, targets);
+        }
+        Type::Optional(inner) | Type::Nullable(inner) => {
+            collect_named_references(inner, local, targets)
+        }
+        Type::Tuple(items) => {
+            for item in items {
+                collect_named_references(item, local, targets);
+            }
+        }
+        Type::Record(row) | Type::Variant(row) => {
+            for entry in &row.entries {
+                match entry {
+                    RowEntry::Field { ty, .. } => collect_named_references(ty, local, targets),
+                    RowEntry::Tag { payload, .. } => {
+                        for ty in payload {
+                            collect_named_references(ty, local, targets);
+                        }
+                    }
+                    RowEntry::Literal { .. } => {}
+                }
+            }
+        }
+        Type::Deferred | Type::Variable(_) | Type::Meta(_) => {}
+    }
+}
+
+fn reverse_edges<'a>(
+    edges: &HashMap<&'a str, HashSet<&'a str>>,
+) -> HashMap<&'a str, HashSet<&'a str>> {
+    let mut reverse: HashMap<_, HashSet<_>> =
+        edges.keys().map(|name| (*name, HashSet::new())).collect();
+    for (from, targets) in edges {
+        for target in targets {
+            reverse.entry(*target).or_default().insert(*from);
+        }
+    }
+    reverse
+}
+
+fn reachable<'a>(start: &'a str, edges: &HashMap<&'a str, HashSet<&'a str>>) -> HashSet<&'a str> {
+    let mut seen = HashSet::new();
+    let mut pending = vec![start];
+    while let Some(name) = pending.pop() {
+        if !seen.insert(name) {
+            continue;
+        }
+        if let Some(targets) = edges.get(name) {
+            pending.extend(targets.iter().copied());
+        }
+    }
+    seen
+}
+
+fn is_productive(ty: &Type, component: &HashSet<&str>, productive: &HashSet<&str>) -> bool {
+    match ty {
+        Type::Optional(_) | Type::Nullable(_) | Type::Function { .. } => true,
+        Type::Apply { callee, .. } if matches!(callee.as_ref(), Type::Named(name) if matches!(name.as_str(), "Array" | "Map" | "Set" | "Stream")) => {
+            true
+        }
+        Type::Named(name) => {
+            !component.contains(name.as_str()) || productive.contains(name.as_str())
+        }
+        Type::Tuple(items) => items
+            .iter()
+            .all(|item| is_productive(item, component, productive)),
+        Type::Record(row) => {
+            row.tail != RowTail::Closed
+                || row.entries.iter().all(|entry| match entry {
+                    RowEntry::Field { ty, .. } => is_productive(ty, component, productive),
+                    RowEntry::Literal { .. } | RowEntry::Tag { .. } => true,
+                })
+        }
+        Type::Variant(row) => {
+            row.tail != RowTail::Closed
+                || row.entries.iter().any(|entry| match entry {
+                    RowEntry::Tag { payload, .. } => payload
+                        .iter()
+                        .all(|ty| is_productive(ty, component, productive)),
+                    RowEntry::Literal { .. } => true,
+                    RowEntry::Field { .. } => true,
+                })
+        }
+        // Deferred forms, variables, metas, non-collection applications, and
+        // unresolved names are intentionally conservative: no false positive.
+        Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Apply { .. } => true,
+    }
+}
+
+fn forcing_step(ty: &Type, unproductive: &HashSet<&str>, seen: &HashSet<&str>) -> Option<String> {
+    match ty {
+        Type::Named(name)
+            if unproductive.contains(name.as_str()) && !seen.contains(name.as_str()) =>
+        {
+            Some(format!("type `{name}`"))
+        }
+        Type::Tuple(items) => items.iter().enumerate().find_map(|(index, item)| {
+            forcing_step(item, unproductive, seen).map(|_| format!("tuple item {}", index + 1))
+        }),
+        Type::Record(row) if row.tail == RowTail::Closed => row.entries.iter().find_map(|entry| {
+            let RowEntry::Field { name, ty } = entry else {
+                return None;
+            };
+            forcing_step(ty, unproductive, seen).map(|_| format!("field `{name}`"))
+        }),
+        Type::Variant(row) if row.tail == RowTail::Closed => row.entries.iter().find_map(|entry| {
+            let RowEntry::Tag { name, payload } = entry else {
+                return None;
+            };
+            payload
+                .iter()
+                .find_map(|ty| forcing_step(ty, unproductive, seen))
+                .map(|_| format!("alternative `@{name}`"))
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]

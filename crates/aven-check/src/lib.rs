@@ -31,7 +31,7 @@ pub const COMPTIME_BUILTIN_FUNCTIONS: &[&str] = &["keysOf", "tagsOf", "typeOf", 
 pub(crate) use checker::Checker;
 pub(crate) use lower::{
     cyclic_alias_diagnostics, known_type_names, reserved_type_diagnostic, type_definitions,
-    type_definitions_excluding,
+    type_definitions_excluding, unproductive_recursion_diagnostics,
 };
 
 const BUILTIN_TYPES: &[&str] = &[
@@ -295,6 +295,7 @@ pub fn check_module_with_host_globals_and_imports(
         &seed_definitions,
     );
     let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
+    let unproductive_diagnostics = unproductive_recursion_diagnostics(module, &type_definitions);
     let mut checker = Checker::with_module_and_host_globals_and_imports(
         known_types,
         type_definitions.clone(),
@@ -304,6 +305,7 @@ pub fn check_module_with_host_globals_and_imports(
     );
 
     checker.diagnostics.extend(alias_diagnostics);
+    checker.diagnostics.extend(unproductive_diagnostics);
     checker.diagnostics.extend(reserved_diagnostics);
     checker.check_module(module);
     let export_names = final_record_names(module);
