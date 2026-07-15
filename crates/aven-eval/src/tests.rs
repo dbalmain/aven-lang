@@ -1017,11 +1017,13 @@ fn std_array_combinators_run_via_import() {
 
     let imports = ModuleImports::new([("std/array".to_owned(), array_export)]);
     let source = concat!(
-        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import(\"std/array\")\n",
+        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum } = import(\"std/array\")\n",
         "xs = [10, 20, 30]\n",
         "empty = []\n",
         "zero: Int = 0\n",
         "pairs = [{k: 2, id: 1}, {k: 1, id: 2}, {k: 2, id: 3}]\n",
+        "users = [{name: \"bob\", age: 30}, {name: \"alice\", age: 25}, {name: \"carol\", age: 30}]\n",
+        "emptyUsers: Array({age: Int}) = []\n",
         "{\n",
         "  length: length(xs),\n",
         "  isEmpty: isEmpty(empty),\n",
@@ -1084,6 +1086,10 @@ fn std_array_combinators_run_via_import() {
         "  sort: sortWith([3, 1, 2], (a, b) => a < b),\n",
         "  sortEmpty: sortWith(empty, (a, b) => a < b),\n",
         "  sortStable: sortWith(pairs, (a, b) => a.k < b.k),\n",
+        "  sortByAge: sortBy(users, (u) => u.age),\n",
+        "  sortByAlready: sortBy([{age: 1}, {age: 2}], (u) => u.age),\n",
+        "  sortByEmpty: sortBy(emptyUsers, (u) => u.age),\n",
+        "  sortByStable: sortBy(pairs, (u) => u.k),\n",
         "  minimum: minimum(xs),\n",
         "  minimumEmpty: minimum(empty),\n",
         "  maximum: maximum(xs),\n",
@@ -1237,6 +1243,39 @@ fn std_array_combinators_run_via_import() {
                 ("sortEmpty", array_value(vec![])),
                 (
                     "sortStable",
+                    array_value(vec![
+                        record_value(vec![("k", Value::Int(1)), ("id", Value::Int(2))]),
+                        record_value(vec![("k", Value::Int(2)), ("id", Value::Int(1))]),
+                        record_value(vec![("k", Value::Int(2)), ("id", Value::Int(3))]),
+                    ])
+                ),
+                (
+                    "sortByAge",
+                    array_value(vec![
+                        record_value(vec![
+                            ("name", Value::Text("alice".to_owned())),
+                            ("age", Value::Int(25)),
+                        ]),
+                        record_value(vec![
+                            ("name", Value::Text("bob".to_owned())),
+                            ("age", Value::Int(30)),
+                        ]),
+                        record_value(vec![
+                            ("name", Value::Text("carol".to_owned())),
+                            ("age", Value::Int(30)),
+                        ]),
+                    ])
+                ),
+                (
+                    "sortByAlready",
+                    array_value(vec![
+                        record_value(vec![("age", Value::Int(1))]),
+                        record_value(vec![("age", Value::Int(2))]),
+                    ])
+                ),
+                ("sortByEmpty", array_value(vec![])),
+                (
+                    "sortByStable",
                     array_value(vec![
                         record_value(vec![("k", Value::Int(1)), ("id", Value::Int(2))]),
                         record_value(vec![("k", Value::Int(2)), ("id", Value::Int(1))]),

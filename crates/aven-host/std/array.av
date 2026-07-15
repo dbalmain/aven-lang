@@ -253,6 +253,12 @@ sortWith = (xs, isLess) =>
   seed: Array(a) = []
   sortWithGo(xs, 0, seed, isLess)
 
+# Ascending by projected key. Stable via `sortWith` (equal keys keep input order).
+# Key type `k` is unconstrained: `<` is only valid at numeric instantiations today
+# (no ordered-type constraint machinery). Text keys pass check but fail at runtime.
+sortBy : (Array(a), (a) -> k) -> Array(a)
+sortBy = (xs, key) => sortWith(xs, (l, r) => key(l) < key(r))
+
 minGo : (Array(Int), Int, Int) -> Int
 minGo = (xs, index, best) =>
   next = xs[index]
@@ -287,4 +293,4 @@ maximum = (xs) =>
     undefined => undefined
     first => maxGo(xs, 1, first)
 
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum }
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum }

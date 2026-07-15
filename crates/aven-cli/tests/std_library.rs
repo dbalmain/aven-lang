@@ -97,7 +97,7 @@ fn std_array_type_exports_check() {
     let dir = TempDir::new("std-array-check");
     let entry = dir.write(
         "main.av",
-r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import("std/array")
+r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
@@ -126,9 +126,11 @@ zipped = zip([1, 2, 3], [10, 20])
 flat = flatten([[1], [2, 3]])
 nums = range(1, 4)
 sorted = sortWith([3, 1, 2], (a, b) => a < b)
+users = [{name: "bob", age: 30}, {name: "alice", age: 25}, {name: "carol", age: 30}]
+byAge = sortBy(users, (u) => u.age)
 lo = minimum(xs)
 hi = maximum(xs)
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, lo, hi }
+{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
 "#,
     );
 
@@ -147,7 +149,7 @@ fn std_array_combinators_run() {
     let dir = TempDir::new("std-array-run");
     let entry = dir.write(
         "main.av",
-r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, minimum, maximum } = import("std/array")
+r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
@@ -218,6 +220,12 @@ writeLine("${sortWith([3, 1, 2], (a, b) => a < b)}")
 writeLine("${sortWith(empty, (a, b) => a < b)}")
 pairs = [{k: 2, id: 1}, {k: 1, id: 2}, {k: 2, id: 3}]
 writeLine("${sortWith(pairs, (a, b) => a.k < b.k)}")
+users = [{name: "bob", age: 30}, {name: "alice", age: 25}, {name: "carol", age: 30}]
+writeLine("${sortBy(users, (u) => u.age)}")
+writeLine("${sortBy([{age: 1}, {age: 2}], (u) => u.age)}")
+emptyUsers: Array({age: Int}) = []
+writeLine("${sortBy(emptyUsers, (u) => u.age)}")
+writeLine("${sortBy(pairs, (u) => u.k)}")
 writeLine("${minimum(xs)}")
 writeLine("${minimum(empty)}")
 writeLine("${maximum(xs)}")
@@ -234,9 +242,10 @@ writeLine("${maximum(empty)}")
         stderr(&output)
     );
     // Hand-verified: slice negatives wrap then clamp; xs[-1]/[-3] wrap; xs[-4]/empty[-1] undefined.
+    // sortBy: by age; already sorted; empty; equal keys keep input order (stable).
     assert_eq!(
         stdout(&output),
-        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[10, 20]\n[20, 30]\n[10, 20]\n[]\n[]\n[]\n[]\n30\n10\nundefined\nundefined\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
+        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[10, 20]\n[20, 30]\n[10, 20]\n[]\n[]\n[]\n[]\n30\n10\nundefined\nundefined\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n[{ name: \"alice\", age: 25 }, { name: \"bob\", age: 30 }, { name: \"carol\", age: 30 }]\n[{ age: 1 }, { age: 2 }]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
     );
 }
 

@@ -1954,7 +1954,7 @@ fn library_interface_renders_std_array_signatures() {
     // Export order follows the final record:
     // length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf,
     // map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range,
-    // sortWith, minimum, maximum.
+    // sortWith, sortBy, minimum, maximum.
     assert!(lines[2].starts_with("length : "), "line: {:?}", lines[2]);
     assert!(lines[3].starts_with("isEmpty : "), "line: {:?}", lines[3]);
     assert!(lines[4].starts_with("first : "), "line: {:?}", lines[4]);
@@ -1982,12 +1982,13 @@ fn library_interface_renders_std_array_signatures() {
         "line: {:?}",
         lines[24]
     );
-    assert!(lines[25].starts_with("minimum : "), "line: {:?}", lines[25]);
-    assert!(lines[26].starts_with("maximum : "), "line: {:?}", lines[26]);
+    assert!(lines[25].starts_with("sortBy : "), "line: {:?}", lines[25]);
+    assert!(lines[26].starts_with("minimum : "), "line: {:?}", lines[26]);
+    assert!(lines[27].starts_with("maximum : "), "line: {:?}", lines[27]);
     for name in [
         "length", "isEmpty", "first", "last", "fold", "sum", "count", "all", "any", "find",
         "indexOf", "map", "flatMap", "filter", "reverse", "concat", "take", "drop", "slice", "zip",
-        "flatten", "range", "sortWith", "minimum", "maximum",
+        "flatten", "range", "sortWith", "sortBy", "minimum", "maximum",
     ] {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);
