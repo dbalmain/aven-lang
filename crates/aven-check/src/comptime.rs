@@ -1,19 +1,194 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use aven_core::{Diagnostic, Label, Span, codes};
-use aven_parser::{Expr, ExprKind, Literal, Param};
+use aven_parser::{Expr, ExprKind, Literal, Param, decode_string_literal};
 
 use crate::checker::string_literal_label;
 use crate::ty::{Row, RowEntry, RowTail, Type, is_concrete_type};
 
 const DEFAULT_EVALUATION_FUEL: usize = 128;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ComptimeValue {
     ReifiedType(Type),
     LabelSet(Vec<String>),
     Literal(Literal),
     Bool(bool),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum CanonicalComptimeValue {
+    ReifiedType(CanonicalType),
+    LabelSet(Vec<String>),
+    Literal(CanonicalLiteral),
+    Bool(bool),
+}
+
+impl From<&ComptimeValue> for CanonicalComptimeValue {
+    fn from(value: &ComptimeValue) -> Self {
+        match value {
+            ComptimeValue::ReifiedType(ty) => Self::ReifiedType(CanonicalType::from(ty)),
+            ComptimeValue::LabelSet(labels) => {
+                let mut labels = labels.clone();
+                labels.sort();
+                labels.dedup();
+                Self::LabelSet(labels)
+            }
+            ComptimeValue::Literal(literal) => Self::Literal(CanonicalLiteral::from(literal)),
+            ComptimeValue::Bool(value) => Self::Bool(*value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum CanonicalType {
+    Deferred,
+    Named(String),
+    Variable(String),
+    Meta(u32),
+    Apply {
+        callee: Box<Self>,
+        args: Vec<Self>,
+    },
+    Function {
+        params: Vec<Self>,
+        result: Box<Self>,
+        required: usize,
+    },
+    Optional(Box<Self>),
+    Nullable(Box<Self>),
+    Tuple(Vec<Self>),
+    Record(CanonicalRow),
+    Variant(CanonicalRow),
+}
+
+impl From<&Type> for CanonicalType {
+    fn from(ty: &Type) -> Self {
+        match ty {
+            Type::Deferred => Self::Deferred,
+            Type::Named(name) => Self::Named(name.clone()),
+            Type::Variable(name) => Self::Variable(name.clone()),
+            Type::Meta(id) => Self::Meta(*id),
+            Type::Apply { callee, args } => Self::Apply {
+                callee: Box::new(Self::from(callee.as_ref())),
+                args: args.iter().map(Self::from).collect(),
+            },
+            Type::Function {
+                params,
+                result,
+                required,
+            } => Self::Function {
+                params: params.iter().map(Self::from).collect(),
+                result: Box::new(Self::from(result.as_ref())),
+                required: *required,
+            },
+            Type::Optional(inner) => Self::Optional(Box::new(Self::from(inner.as_ref()))),
+            Type::Nullable(inner) => Self::Nullable(Box::new(Self::from(inner.as_ref()))),
+            Type::Tuple(items) => Self::Tuple(items.iter().map(Self::from).collect()),
+            Type::Record(row) => Self::Record(CanonicalRow::from(row)),
+            Type::Variant(row) => Self::Variant(CanonicalRow::from(row)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct CanonicalRow {
+    entries: Vec<CanonicalRowEntry>,
+    tail: CanonicalRowTail,
+}
+
+impl From<&Row> for CanonicalRow {
+    fn from(row: &Row) -> Self {
+        let mut entries: Vec<_> = row.entries.iter().map(CanonicalRowEntry::from).collect();
+        entries.sort();
+        Self {
+            entries,
+            tail: CanonicalRowTail::from(row.tail),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum CanonicalRowEntry {
+    Field {
+        name: String,
+        ty: CanonicalType,
+    },
+    Tag {
+        name: String,
+        payload: Vec<CanonicalType>,
+    },
+    Literal(CanonicalLiteral),
+}
+
+impl From<&RowEntry> for CanonicalRowEntry {
+    fn from(entry: &RowEntry) -> Self {
+        match entry {
+            RowEntry::Field { name, ty } => Self::Field {
+                name: name.clone(),
+                ty: CanonicalType::from(ty),
+            },
+            RowEntry::Tag { name, payload } => Self::Tag {
+                name: name.clone(),
+                payload: payload.iter().map(CanonicalType::from).collect(),
+            },
+            RowEntry::Literal { value } => Self::Literal(CanonicalLiteral::from(value)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum CanonicalRowTail {
+    Closed,
+    Open,
+    Var(u32),
+}
+
+impl From<RowTail> for CanonicalRowTail {
+    fn from(tail: RowTail) -> Self {
+        match tail {
+            RowTail::Closed => Self::Closed,
+            RowTail::Open => Self::Open,
+            RowTail::Var(id) => Self::Var(id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum CanonicalLiteral {
+    Bool(bool),
+    Int(i64),
+    Float(u64),
+    InvalidNumber(String),
+    String(String),
+    Regex(String),
+}
+
+impl From<&Literal> for CanonicalLiteral {
+    fn from(literal: &Literal) -> Self {
+        match literal {
+            Literal::Bool(value) => Self::Bool(*value),
+            Literal::Number(text) => canonical_number(text),
+            Literal::String(text) => Self::String(decode_string_literal(text)),
+            Literal::Regex(text) => Self::Regex(text.clone()),
+        }
+    }
+}
+
+fn canonical_number(text: &str) -> CanonicalLiteral {
+    let normalized = text.replace('_', "");
+    if text.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
+        return normalized.parse::<f64>().map_or_else(
+            |_| CanonicalLiteral::InvalidNumber(text.to_owned()),
+            |value| CanonicalLiteral::Float(value.to_bits()),
+        );
+    }
+
+    normalized.parse::<i64>().map_or_else(
+        |_| CanonicalLiteral::InvalidNumber(text.to_owned()),
+        CanonicalLiteral::Int,
+    )
 }
 
 impl ComptimeValue {
@@ -95,19 +270,60 @@ impl EvaluationResult {
     }
 }
 
+/// Canonical identity of a module that defines comptime functions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum ComptimeModuleIdentity {
+    /// Reserved identity for direct checker calls that have no module graph.
+    #[default]
+    Current,
+    /// Canonical absolute path used by the compiler's file-module graph.
+    Path(PathBuf),
+    /// Canonical specifier used by embedded or host-provided modules.
+    Specifier(String),
+}
+
+impl ComptimeModuleIdentity {
+    pub fn path(path: impl Into<PathBuf>) -> Self {
+        Self::Path(path.into())
+    }
+
+    pub fn specifier(specifier: impl Into<String>) -> Self {
+        Self::Specifier(specifier.into())
+    }
+}
+
+/// Stable definition-site identity of a comptime function.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct SpecializationKey {
-    module_token: u64,
-    function: String,
-    args: Vec<ComptimeValue>,
+pub struct ComptimeOrigin {
+    pub module: ComptimeModuleIdentity,
+    pub definition: String,
+}
+
+impl ComptimeOrigin {
+    pub fn new(module: ComptimeModuleIdentity, definition: impl Into<String>) -> Self {
+        Self {
+            module,
+            definition: definition.into(),
+        }
+    }
+}
+
+/// Canonical identity of one comptime specialization.
+///
+/// Arguments are stored in a private semantic form so source spelling and row
+/// ordering do not fragment the cache. The key is public so later type-IR
+/// slices can carry it without exposing evaluator values.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SpecializationKey {
+    pub origin: ComptimeOrigin,
+    args: Vec<CanonicalComptimeValue>,
 }
 
 impl SpecializationKey {
     pub(crate) fn new(function: &ComptimeExport, args: &[ComptimeValue]) -> Self {
         Self {
-            module_token: function.environment.module_token,
-            function: function.name.clone(),
-            args: args.to_vec(),
+            origin: function.origin.clone(),
+            args: args.iter().map(CanonicalComptimeValue::from).collect(),
         }
     }
 }
@@ -125,13 +341,16 @@ pub struct ComptimeExport {
     pub name: String,
     pub params: Vec<Param>,
     pub body: Expr,
+    origin: ComptimeOrigin,
     environment: ComptimeModuleEnvironment,
 }
 
 impl ComptimeExport {
     pub fn from_lambda(name: impl Into<String>, params: &[Param], body: &Expr) -> Self {
+        let name = name.into();
         Self {
-            name: name.into(),
+            origin: ComptimeOrigin::new(ComptimeModuleIdentity::Current, name.clone()),
+            name,
             params: params.to_vec(),
             body: body.clone(),
             environment: ComptimeModuleEnvironment::default(),
@@ -148,12 +367,14 @@ impl ComptimeExport {
         type_definitions: HashMap<String, Type>,
         functions: impl IntoIterator<Item = (String, Vec<Param>, Expr)>,
     ) -> Self {
+        let name = name.into();
         Self {
-            name: name.into(),
+            origin: ComptimeOrigin::new(ComptimeModuleIdentity::Current, name.clone()),
+            name,
             params: params.to_vec(),
             body: body.clone(),
             environment: ComptimeModuleEnvironment {
-                module_token: 0,
+                module_identity: ComptimeModuleIdentity::Current,
                 type_definitions,
                 functions: functions
                     .into_iter()
@@ -170,18 +391,31 @@ impl ComptimeExport {
             name: name.into(),
             params: self.params.clone(),
             body: self.body.clone(),
+            origin: self.origin.clone(),
             environment: self.environment.clone(),
         }
     }
 
-    /// Mark this function's environment as belonging to a foreign module, so
-    /// its specializations never share cache entries with same-named functions
-    /// from the importing module. Call once when a module's exports are
-    /// collected; the token stays stable through `renamed` clones.
-    pub fn with_foreign_module_token(mut self) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        self.environment.module_token = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    pub fn origin(&self) -> &ComptimeOrigin {
+        &self.origin
+    }
+
+    /// Attach the canonical identity of the defining module.
+    pub fn with_module_identity(mut self, module_identity: ComptimeModuleIdentity) -> Self {
+        self.origin.module = module_identity.clone();
+        self.environment.module_identity = module_identity;
         self
+    }
+
+    pub(crate) fn with_fallback_module_identity(
+        self,
+        module_identity: ComptimeModuleIdentity,
+    ) -> Self {
+        if self.origin.module == ComptimeModuleIdentity::Current {
+            self.with_module_identity(module_identity)
+        } else {
+            self
+        }
     }
 }
 
@@ -190,12 +424,9 @@ impl ComptimeExport {
 /// this one environment, which represents mutual references without a
 /// recursive owned data structure.
 ///
-/// `module_token` is 0 for the module currently being checked and unique per
-/// collected foreign export otherwise; it keys the specialization cache so
-/// same-named functions from different modules cannot alias.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ComptimeModuleEnvironment {
-    module_token: u64,
+    module_identity: ComptimeModuleIdentity,
     type_definitions: HashMap<String, Type>,
     functions: HashMap<String, (Vec<Param>, Expr)>,
 }
@@ -226,7 +457,14 @@ pub(crate) fn evaluate_type_position(
     context: &mut impl EvalContext,
     expr: &Expr,
 ) -> EvaluationResult {
-    evaluate_type_position_with_bindings(context, expr, &HashMap::new())
+    evaluate_type_position_with_options(context, expr, &HashMap::new(), false)
+}
+
+pub(crate) fn evaluate_type_position_for_eager_validation(
+    context: &mut impl EvalContext,
+    expr: &Expr,
+) -> EvaluationResult {
+    evaluate_type_position_with_options(context, expr, &HashMap::new(), true)
 }
 
 pub(crate) fn evaluate_type_position_with_bindings(
@@ -234,10 +472,20 @@ pub(crate) fn evaluate_type_position_with_bindings(
     expr: &Expr,
     bindings: &HashMap<String, ComptimeValue>,
 ) -> EvaluationResult {
+    evaluate_type_position_with_options(context, expr, bindings, false)
+}
+
+fn evaluate_type_position_with_options(
+    context: &mut impl EvalContext,
+    expr: &Expr,
+    bindings: &HashMap<String, ComptimeValue>,
+    report_cached_bound_diagnostics_at_site: bool,
+) -> EvaluationResult {
     let mut evaluator = Evaluator {
         context,
         visited: HashSet::new(),
         fuel: DEFAULT_EVALUATION_FUEL,
+        report_cached_bound_diagnostics_at_site,
     };
     evaluator.evaluate_expr(expr, &Environment::from_bindings(bindings))
 }
@@ -384,6 +632,7 @@ where
     context: &'ctx mut C,
     visited: HashSet<SpecializationKey>,
     fuel: usize,
+    report_cached_bound_diagnostics_at_site: bool,
 }
 
 impl<C> Evaluator<'_, C>
@@ -704,6 +953,12 @@ where
         let key = SpecializationKey::new(&function, &values);
 
         if let Some(result) = self.context.cached_specialization(&key) {
+            if self.report_cached_bound_diagnostics_at_site
+                && let Some(diagnostics) =
+                    self.check_param_bounds(&function.params, args, &values, env)
+            {
+                return EvaluationResult::deferred_with_diagnostics(diagnostics);
+            }
             return result;
         }
 
@@ -1180,7 +1435,7 @@ fn evaluation_limit(span: Span) -> Diagnostic {
 #[derive(Debug, Clone, Default)]
 struct Environment {
     bindings: HashMap<String, ComptimeValue>,
-    module_token: u64,
+    module_identity: ComptimeModuleIdentity,
     captured_types: HashMap<String, Type>,
     captured_functions: HashMap<String, (Vec<Param>, Expr)>,
     in_function_body: bool,
@@ -1190,7 +1445,7 @@ impl Environment {
     fn from_bindings(bindings: &HashMap<String, ComptimeValue>) -> Self {
         Self {
             bindings: bindings.clone(),
-            module_token: 0,
+            module_identity: ComptimeModuleIdentity::Current,
             captured_types: HashMap::new(),
             captured_functions: HashMap::new(),
             in_function_body: false,
@@ -1206,7 +1461,7 @@ impl Environment {
             .collect();
         Self {
             bindings,
-            module_token: function.environment.module_token,
+            module_identity: function.environment.module_identity.clone(),
             captured_types: function.environment.type_definitions.clone(),
             captured_functions: function.environment.functions.clone(),
             in_function_body: true,
@@ -1231,8 +1486,9 @@ impl Environment {
             name: name.to_owned(),
             params: params.clone(),
             body: body.clone(),
+            origin: ComptimeOrigin::new(self.module_identity.clone(), name),
             environment: ComptimeModuleEnvironment {
-                module_token: self.module_token,
+                module_identity: self.module_identity.clone(),
                 type_definitions: self.captured_types.clone(),
                 functions: self.captured_functions.clone(),
             },
@@ -1256,4 +1512,138 @@ fn ungroup(mut expr: &Expr) -> &Expr {
         expr = inner;
     }
     expr
+}
+
+#[cfg(test)]
+mod tests {
+    use aven_parser::{Item, lambda_parts, parse_module};
+
+    use super::*;
+
+    fn exported_function(source: &str, name: &str) -> ComptimeExport {
+        let parsed = parse_module(source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let binding = parsed
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Binding(binding) if binding.name == name => Some(binding),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected binding {name}"));
+        let (params, body) = lambda_parts(&binding.value)
+            .unwrap_or_else(|| panic!("expected {name} to be a lambda"));
+        ComptimeExport::from_lambda(name, params, body)
+    }
+
+    #[test]
+    fn renamed_export_preserves_origin_and_specialization_identity() {
+        let module = ComptimeModuleIdentity::specifier("std/types");
+        let export = exported_function("Pick = (n: Int) => { size: n }\n", "Pick")
+            .with_module_identity(module.clone());
+        let first_alias = export.renamed("PickA");
+        let reexported_alias = first_alias.renamed("PickB");
+        let args = [ComptimeValue::Literal(Literal::Number("5".to_owned()))];
+
+        assert_eq!(first_alias.name, "PickA");
+        assert_eq!(reexported_alias.name, "PickB");
+        assert_eq!(first_alias.origin(), export.origin());
+        assert_eq!(reexported_alias.origin(), export.origin());
+        assert_eq!(
+            export.origin(),
+            &ComptimeOrigin::new(module, "Pick"),
+            "the definition-site name must survive aliases and re-exports"
+        );
+        assert_eq!(
+            SpecializationKey::new(&first_alias, &args),
+            SpecializationKey::new(&reexported_alias, &args),
+            "two surface aliases of one definition must share a cache key"
+        );
+    }
+
+    #[test]
+    fn specialization_arguments_are_canonicalized_semantically() {
+        let export = exported_function("Pick = (n: Int) => { size: n }\n", "Pick");
+        let spelled = [ComptimeValue::Literal(Literal::Number("1_000".to_owned()))];
+        let plain = [ComptimeValue::Literal(Literal::Number("1000".to_owned()))];
+        assert_eq!(
+            SpecializationKey::new(&export, &spelled),
+            SpecializationKey::new(&export, &plain)
+        );
+
+        let left = Type::Record(Row {
+            entries: vec![
+                RowEntry::Field {
+                    name: "a".to_owned(),
+                    ty: Type::Named("Int".to_owned()),
+                },
+                RowEntry::Field {
+                    name: "b".to_owned(),
+                    ty: Type::Named("Text".to_owned()),
+                },
+            ],
+            tail: RowTail::Closed,
+        });
+        let right = Type::Record(Row {
+            entries: vec![
+                RowEntry::Field {
+                    name: "b".to_owned(),
+                    ty: Type::Named("Text".to_owned()),
+                },
+                RowEntry::Field {
+                    name: "a".to_owned(),
+                    ty: Type::Named("Int".to_owned()),
+                },
+            ],
+            tail: RowTail::Closed,
+        });
+        assert_eq!(
+            SpecializationKey::new(&export, &[ComptimeValue::ReifiedType(left)]),
+            SpecializationKey::new(&export, &[ComptimeValue::ReifiedType(right)])
+        );
+    }
+
+    #[test]
+    fn captured_sibling_uses_its_own_definition_name_in_the_same_module() {
+        let parsed = parse_module("F = (t: Type) => G(t)\nG = (t: Type) => { value: t }\n");
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let Item::Binding(f) = &parsed.module.items[0] else {
+            panic!("expected F binding");
+        };
+        let Item::Binding(g) = &parsed.module.items[1] else {
+            panic!("expected G binding");
+        };
+        let (f_params, f_body) = lambda_parts(&f.value).expect("F lambda");
+        let (g_params, g_body) = lambda_parts(&g.value).expect("G lambda");
+        let module = ComptimeModuleIdentity::path("/project/types.av");
+        let f_export = ComptimeExport::from_module_lambda(
+            "F",
+            f_params,
+            f_body,
+            HashMap::new(),
+            [("G".to_owned(), g_params.to_vec(), g_body.clone())],
+        )
+        .with_module_identity(module.clone());
+        let environment = Environment::from_function(
+            &f_export,
+            vec![ComptimeValue::ReifiedType(Type::Named("Int".to_owned()))],
+        );
+        let sibling = environment
+            .captured_function("G")
+            .expect("captured sibling G");
+
+        assert_eq!(f_export.origin(), &ComptimeOrigin::new(module.clone(), "F"));
+        assert_eq!(sibling.origin(), &ComptimeOrigin::new(module, "G"));
+        assert_ne!(
+            SpecializationKey::new(
+                &f_export,
+                &[ComptimeValue::ReifiedType(Type::Named("Int".to_owned()))]
+            ),
+            SpecializationKey::new(
+                &sibling,
+                &[ComptimeValue::ReifiedType(Type::Named("Int".to_owned()))]
+            )
+        );
+    }
 }

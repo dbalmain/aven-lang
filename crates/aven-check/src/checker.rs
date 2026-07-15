@@ -52,6 +52,7 @@ pub(crate) struct Checker<'a> {
     comptime_artifacts: HashMap<String, bool>,
     comptime_specializations: HashMap<comptime::SpecializationKey, comptime::EvaluationResult>,
     comptime_specializations_in_progress: HashSet<comptime::SpecializationKey>,
+    module_identity: comptime::ComptimeModuleIdentity,
     local_types: LocalTypeScopes,
     local_comptime_values: Vec<HashMap<String, comptime::ComptimeValue>>,
     local_comptime_params: Vec<HashSet<String>>,

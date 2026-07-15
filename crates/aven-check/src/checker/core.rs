@@ -13,6 +13,7 @@ impl<'a> Checker<'a> {
             comptime_artifacts: HashMap::new(),
             comptime_specializations: HashMap::new(),
             comptime_specializations_in_progress: HashSet::new(),
+            module_identity: comptime::ComptimeModuleIdentity::Current,
             local_types: LocalTypeScopes::default(),
             local_comptime_values: Vec::new(),
             local_comptime_params: Vec::new(),
@@ -75,6 +76,7 @@ impl<'a> Checker<'a> {
             module,
             globals,
             &ModuleImports::default(),
+            comptime::ComptimeModuleIdentity::Current,
         )
     }
 
@@ -84,8 +86,10 @@ impl<'a> Checker<'a> {
         module: &'a Module,
         globals: &HostGlobals,
         imports: &ModuleImports,
+        module_identity: comptime::ComptimeModuleIdentity,
     ) -> Self {
         let mut checker = Self::with_module_environment(known_types, type_definitions, module);
+        checker.module_identity = module_identity;
         checker.globals = globals.types.clone();
         checker.imports = imports.clone();
         checker.host_comptime_fns = globals
@@ -680,7 +684,10 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        if self.try_lower_comptime_annotation(value).is_some() {
+        if self
+            .try_lower_comptime_annotation_for_eager_validation(value)
+            .is_some()
+        {
             return;
         }
 

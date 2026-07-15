@@ -2396,13 +2396,16 @@ impl<'a> Checker<'a> {
         if let Some(binding) = self.bindings.get(name).and_then(|binding| *binding)
             && let Some((params, body)) = lambda_parts(&binding.value)
         {
-            return Some(comptime::ComptimeExport::from_module_lambda(
-                binding.name.clone(),
-                params,
-                body,
-                self.type_definitions.clone(),
-                self.local_comptime_function_definitions(),
-            ));
+            return Some(
+                comptime::ComptimeExport::from_module_lambda(
+                    binding.name.clone(),
+                    params,
+                    body,
+                    self.type_definitions.clone(),
+                    self.local_comptime_function_definitions(),
+                )
+                .with_module_identity(self.module_identity.clone()),
+            );
         }
 
         let pattern_binding = *self.pattern_bindings.get(name)?;

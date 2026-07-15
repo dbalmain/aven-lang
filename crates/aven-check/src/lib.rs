@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use aven_core::{Diagnostic, Span};
 use aven_parser::{Expr, ExprKind, Item, Module, RecordEntry};
 
-pub use comptime::ComptimeExport;
+pub use comptime::{ComptimeExport, ComptimeModuleIdentity, ComptimeOrigin, SpecializationKey};
 pub use host_comptime::{
     ComptimeArg, ComptimeError, HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals,
     HostStatics,
@@ -147,7 +147,18 @@ impl ModuleImports {
         specifier: impl Into<String>,
         exports: HashMap<String, ComptimeExport>,
     ) {
-        self.comptime_exports.insert(specifier.into(), exports);
+        let specifier = specifier.into();
+        let module_identity = ComptimeModuleIdentity::specifier(specifier.clone());
+        let exports = exports
+            .into_iter()
+            .map(|(name, export)| {
+                (
+                    name,
+                    export.with_fallback_module_identity(module_identity.clone()),
+                )
+            })
+            .collect();
+        self.comptime_exports.insert(specifier, exports);
     }
 
     pub fn get(&self, specifier: &str) -> Option<Option<&Type>> {
@@ -205,6 +216,24 @@ pub fn check_module_with_host_globals_and_imports(
     module: &Module,
     globals: &HostGlobals,
     imports: &ModuleImports,
+) -> CheckOutput {
+    check_module_with_host_globals_and_imports_in(
+        module,
+        globals,
+        imports,
+        ComptimeModuleIdentity::Current,
+    )
+}
+
+/// Check a module with the canonical identity supplied by a module graph.
+///
+/// Direct checker callers should use [`check_module_with_host_globals_and_imports`],
+/// which reserves [`ComptimeModuleIdentity::Current`] for their single module.
+pub fn check_module_with_host_globals_and_imports_in(
+    module: &Module,
+    globals: &HostGlobals,
+    imports: &ModuleImports,
+    module_identity: ComptimeModuleIdentity,
 ) -> CheckOutput {
     let mut reserved_type_names: HashSet<_> = BUILTIN_TYPES
         .iter()
@@ -302,6 +331,7 @@ pub fn check_module_with_host_globals_and_imports(
         module,
         globals,
         imports,
+        module_identity,
     );
 
     checker.diagnostics.extend(alias_diagnostics);

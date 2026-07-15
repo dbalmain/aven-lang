@@ -9198,6 +9198,45 @@ fn imported_comptime_function_alias_reports_out_of_bound_argument() {
 }
 
 #[test]
+fn cached_import_alias_errors_are_reported_at_each_eager_alias_site() {
+    let export = parse_module("Pick = (n: 1 | 2 | 3) => { size: n }\n");
+    let Item::Binding(binding) = &export.module.items[0] else {
+        panic!("expected comptime function binding");
+    };
+    let Some((params, body)) = aven_parser::lambda_parts(&binding.value) else {
+        panic!("expected comptime function lambda");
+    };
+    let mut imports = ModuleImports::default();
+    imports.insert_comptime_exports(
+        "std/array",
+        HashMap::from([(
+            "Pick".to_owned(),
+            ComptimeExport::from_lambda("Pick", params, body),
+        )]),
+    );
+
+    let source = "{ Pick -> PickA } = import(\"std/array\")\n\
+        { Pick -> PickB } = import(\"std/array\")\n\
+        A = PickA(5)\n\
+        B = PickB(5)\n";
+    let output = parse_module(source);
+    let check = check_module_with_host_globals_and_imports(
+        &output.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+    let diagnostics = check
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_BOUND))
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 2, "{:?}", check.diagnostics);
+    assert_eq!(diagnostics[0].labels[0].span, nth_span(source, "5", 0));
+    assert_eq!(diagnostics[1].labels[0].span, nth_span(source, "5", 1));
+}
+
+#[test]
 fn parameterized_value_param_accepts_int_literal() {
     let source = "Sized = (t: Type, n: Int) => { value: t, size: n }\n\
         Three = Sized(Int, 3)\n\

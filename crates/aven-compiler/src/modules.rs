@@ -4,7 +4,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use aven_check::{ComptimeExport, ModuleImports as CheckModuleImports, RowTail, Type};
+use aven_check::{
+    ComptimeExport, ComptimeModuleIdentity, ModuleImports as CheckModuleImports, RowTail, Type,
+};
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
 use aven_parser::{
@@ -13,7 +15,7 @@ use aven_parser::{
 };
 
 use crate::{
-    HostGlobals, PhaseTimings, SemanticOutput, analyze_semantics_with_host_globals_and_imports,
+    HostGlobals, PhaseTimings, SemanticOutput, analyze_semantics_with_host_globals_and_imports_in,
 };
 
 #[derive(Debug)]
@@ -283,17 +285,25 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
         let imports = check_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
         let file_id = graph.nodes[node_id].file.id;
         let node_globals = globals_for_node(globals, roots, &graph.nodes[node_id].path);
-        let semantic = analyze_semantics_with_host_globals_and_imports(
+        let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
+        let semantic = analyze_semantics_with_host_globals_and_imports_in(
             &graph.nodes[node_id].parse,
             &node_globals,
             &imports,
+            module_identity.clone(),
         );
         merge_semantic_timing(&mut name_duration, &mut check_duration, &semantic);
         let semantic_has_errors = semantic.diagnostics.iter().any(Diagnostic::is_error);
         let export = if semantic_has_errors {
             CheckExport::HasErrors
         } else {
-            check_export_for_node(&graph.nodes[node_id], &semantic, &node_globals, &imports)
+            check_export_for_node(
+                &graph.nodes[node_id],
+                &semantic,
+                &node_globals,
+                &imports,
+                &module_identity,
+            )
         };
         let export = match export {
             CheckExport::UppercaseExportNotType { name, span } => {
@@ -423,6 +433,13 @@ fn globals_for_node(globals: &HostGlobals, roots: &ModuleRoots, path: &Path) -> 
         .types
         .retain(|(name, _)| !roots.library_only_global_names.contains(name));
     filtered
+}
+
+fn comptime_module_identity(path: &Path) -> ComptimeModuleIdentity {
+    library_specifier(path).map_or_else(
+        || ComptimeModuleIdentity::path(path.to_path_buf()),
+        ComptimeModuleIdentity::specifier,
+    )
 }
 
 fn eval_globals_for_node(
@@ -803,6 +820,7 @@ fn check_export_for_node(
     semantic: &SemanticOutput,
     globals: &HostGlobals,
     imports: &CheckModuleImports,
+    module_identity: &ComptimeModuleIdentity,
 ) -> CheckExport {
     let Some(final_expr) = final_expr(&node.parse.module) else {
         return CheckExport::NotImportable {
@@ -878,6 +896,7 @@ fn check_export_for_node(
                 &node.parse.module,
                 imports,
                 &semantic.type_definitions,
+                module_identity,
             );
             return CheckExport::Record {
                 ty: rebuilt,
@@ -890,6 +909,7 @@ fn check_export_for_node(
             &node.parse.module,
             imports,
             &semantic.type_definitions,
+            module_identity,
         );
         return CheckExport::Record {
             ty,
@@ -930,6 +950,7 @@ fn check_export_for_node(
                     source,
                     imports,
                     &semantic.type_definitions,
+                    module_identity,
                 )
             {
                 comptime_function_export_type(&export)
@@ -1010,6 +1031,7 @@ fn check_export_for_node(
         &node.parse.module,
         imports,
         &semantic.type_definitions,
+        module_identity,
     );
     CheckExport::Record {
         ty: Type::Record(aven_check::Row {
@@ -1038,6 +1060,7 @@ fn collect_comptime_exports(
     module: &Module,
     imports: &CheckModuleImports,
     type_definitions: &HashMap<String, Type>,
+    module_identity: &ComptimeModuleIdentity,
 ) -> HashMap<String, ComptimeExport> {
     let mut exports = HashMap::new();
     for entry in entries {
@@ -1052,9 +1075,13 @@ fn collect_comptime_exports(
             RecordEntry::Rename { from, to, .. } => (to.as_str(), from.as_str()),
             _ => continue,
         };
-        if let Some(export) =
-            comptime_export_for_source(module, source_name, imports, type_definitions)
-        {
+        if let Some(export) = comptime_export_for_source(
+            module,
+            source_name,
+            imports,
+            type_definitions,
+            module_identity,
+        ) {
             exports.insert(export_name.to_owned(), export.renamed(export_name));
         }
     }
@@ -1066,6 +1093,7 @@ fn comptime_export_for_source(
     source_name: &str,
     imports: &CheckModuleImports,
     type_definitions: &HashMap<String, Type>,
+    module_identity: &ComptimeModuleIdentity,
 ) -> Option<ComptimeExport> {
     if let Some(binding) = top_level_binding(module, source_name)
         && let Some((params, body)) = lambda_parts(&binding.value)
@@ -1078,7 +1106,7 @@ fn comptime_export_for_source(
                 type_definitions.clone(),
                 module_comptime_function_definitions(module),
             )
-            .with_foreign_module_token(),
+            .with_module_identity(module_identity.clone()),
         );
     }
 
@@ -1823,4 +1851,74 @@ fn not_importable(span: Span, specifier: &str, note: &str) -> Diagnostic {
         ))
         .with_note(note)
         .with_note("end the target file with a literal record of exported bindings")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transitive_comptime_reexport_keeps_original_origin() {
+        let shapes =
+            aven_parser::parse_module("Pair = (t: Type) => { first: t, second: t }\n{ Pair }\n");
+        let shapes_identity = ComptimeModuleIdentity::path("/project/shapes.av");
+        let original = comptime_export_for_source(
+            &shapes.module,
+            "Pair",
+            &CheckModuleImports::default(),
+            &HashMap::new(),
+            &shapes_identity,
+        )
+        .expect("local Pair export");
+
+        let mut shapes_imports = CheckModuleImports::default();
+        shapes_imports.insert_comptime_exports(
+            "./shapes",
+            HashMap::from([("Pair".to_owned(), original.clone())]),
+        );
+        let mid = aven_parser::parse_module(
+            "{ Pair -> PairAgain } = import(\"./shapes\")\n{ PairAgain }\n",
+        );
+        let through_mid = comptime_export_for_source(
+            &mid.module,
+            "PairAgain",
+            &shapes_imports,
+            &HashMap::new(),
+            &ComptimeModuleIdentity::path("/project/mid.av"),
+        )
+        .expect("mid PairAgain re-export");
+
+        let mut mid_imports = CheckModuleImports::default();
+        mid_imports.insert_comptime_exports(
+            "./mid",
+            HashMap::from([("PairAgain".to_owned(), through_mid.clone())]),
+        );
+        let facade = aven_parser::parse_module(
+            "{ PairAgain -> PublicPair } = import(\"./mid\")\n{ PublicPair }\n",
+        );
+        let through_facade = comptime_export_for_source(
+            &facade.module,
+            "PublicPair",
+            &mid_imports,
+            &HashMap::new(),
+            &ComptimeModuleIdentity::path("/project/facade.av"),
+        )
+        .expect("facade PublicPair re-export");
+
+        assert_eq!(through_mid.origin(), original.origin());
+        assert_eq!(through_facade.origin(), original.origin());
+        assert_eq!(
+            through_facade.origin().definition,
+            "Pair",
+            "re-export bindings must not replace the definition-site name"
+        );
+    }
+
+    #[test]
+    fn embedded_library_comptime_identity_uses_its_specifier() {
+        assert_eq!(
+            comptime_module_identity(Path::new("std:/array")),
+            ComptimeModuleIdentity::specifier("std/array")
+        );
+    }
 }

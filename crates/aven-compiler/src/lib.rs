@@ -678,10 +678,29 @@ pub fn analyze_semantics_with_host_globals_and_imports(
     globals: &HostGlobals,
     imports: &CheckModuleImports,
 ) -> SemanticOutput {
+    analyze_semantics_with_host_globals_and_imports_in(
+        parse,
+        globals,
+        imports,
+        aven_check::ComptimeModuleIdentity::Current,
+    )
+}
+
+pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
+    parse: &ParseOutput,
+    globals: &HostGlobals,
+    imports: &CheckModuleImports,
+    module_identity: aven_check::ComptimeModuleIdentity,
+) -> SemanticOutput {
     let parse_has_errors = parse.diagnostics.iter().any(Diagnostic::is_error);
     let (name_analysis, name_duration) = timed(|| aven_parser::analyze_names(&parse.module));
     let (check_output, check_duration) = timed(|| {
-        aven_check::check_module_with_host_globals_and_imports(&parse.module, globals, imports)
+        aven_check::check_module_with_host_globals_and_imports_in(
+            &parse.module,
+            globals,
+            imports,
+            module_identity,
+        )
     });
     let aven_check::CheckOutput {
         diagnostics: check_diagnostics,

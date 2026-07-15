@@ -26,6 +26,21 @@ impl<'a> Checker<'a> {
 
     pub(super) fn try_lower_comptime_annotation(&mut self, annotation: &Expr) -> Option<Type> {
         let evaluation = comptime::evaluate_type_position(self, annotation);
+        self.finish_comptime_annotation_evaluation(evaluation)
+    }
+
+    pub(super) fn try_lower_comptime_annotation_for_eager_validation(
+        &mut self,
+        annotation: &Expr,
+    ) -> Option<Type> {
+        let evaluation = comptime::evaluate_type_position_for_eager_validation(self, annotation);
+        self.finish_comptime_annotation_evaluation(evaluation)
+    }
+
+    fn finish_comptime_annotation_evaluation(
+        &mut self,
+        evaluation: comptime::EvaluationResult,
+    ) -> Option<Type> {
         self.diagnostics.extend(evaluation.diagnostics);
 
         match evaluation.evaluation {
