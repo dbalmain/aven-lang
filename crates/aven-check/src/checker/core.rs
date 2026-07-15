@@ -12,7 +12,11 @@ impl<'a> Checker<'a> {
             comptime_bindings: HashSet::new(),
             comptime_artifacts: HashMap::new(),
             comptime_specializations: HashMap::new(),
-            comptime_specializations_in_progress: HashSet::new(),
+            comptime_specialization_calls: Vec::new(),
+            comptime_specialization_stack: Vec::new(),
+            comptime_specialization_active: HashMap::new(),
+            recursive_type_unfoldings: HashMap::new(),
+            recursive_type_comparisons: HashSet::new(),
             module_identity: comptime::ComptimeModuleIdentity::Current,
             local_types: LocalTypeScopes::default(),
             local_comptime_values: Vec::new(),
@@ -1040,7 +1044,7 @@ impl<'a> Checker<'a> {
                     .any(|ty| self.type_references_name(ty, name, visiting)),
                 RowEntry::Literal { .. } => false,
             }),
-            Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
+            Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Recursive(_) => false,
         }
     }
 

@@ -23,8 +23,8 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    LiteralBase, Row, RowEntry, RowKind, RowMergeSource, RowTail, Type, TypeScheme,
-    builtin_collection_method_type, display_inferred_type, free_metas, generalize,
+    LiteralBase, RecursiveTypeId, Row, RowEntry, RowKind, RowMergeSource, RowTail, Type,
+    TypeScheme, builtin_collection_method_type, display_inferred_type, free_metas, generalize,
     is_concrete_type, is_meta_type, is_null_value, is_resolved_value_type, is_text_type,
     is_undefined_value, literal_base, literal_variant_base, map_type, mismatched_literal_kind,
     named_builtin, named_type_mismatch, named_type_name, numeric_type_name,
@@ -51,7 +51,11 @@ pub(crate) struct Checker<'a> {
     comptime_bindings: HashSet<String>,
     comptime_artifacts: HashMap<String, bool>,
     comptime_specializations: HashMap<comptime::SpecializationKey, comptime::EvaluationResult>,
-    comptime_specializations_in_progress: HashSet<comptime::SpecializationKey>,
+    comptime_specialization_calls: Vec<comptime::SpecializationKey>,
+    comptime_specialization_stack: Vec<SpecializationFrame>,
+    comptime_specialization_active: HashMap<comptime::SpecializationKey, usize>,
+    pub(crate) recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+    recursive_type_comparisons: HashSet<RecursiveTypeId>,
     module_identity: comptime::ComptimeModuleIdentity,
     local_types: LocalTypeScopes,
     local_comptime_values: Vec<HashMap<String, comptime::ComptimeValue>>,
@@ -87,6 +91,17 @@ pub(crate) struct Checker<'a> {
     pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
+}
+
+#[derive(Debug, Clone)]
+struct SpecializationFrame {
+    key: comptime::SpecializationKey,
+    id: RecursiveTypeId,
+    index: usize,
+    lowlink: usize,
+    self_edge: bool,
+    call_span: Span,
+    result: Option<comptime::EvaluationResult>,
 }
 
 #[derive(Clone)]

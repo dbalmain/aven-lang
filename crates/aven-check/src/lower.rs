@@ -422,7 +422,7 @@ fn collect_named_references<'a>(
                 }
             }
         }
-        Type::Deferred | Type::Variable(_) | Type::Meta(_) => {}
+        Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Recursive(_) => {}
     }
 }
 
@@ -454,38 +454,14 @@ fn reachable<'a>(start: &'a str, edges: &HashMap<&'a str, HashSet<&'a str>>) -> 
 }
 
 fn is_productive(ty: &Type, component: &HashSet<&str>, productive: &HashSet<&str>) -> bool {
-    match ty {
-        Type::Optional(_) | Type::Nullable(_) | Type::Function { .. } => true,
-        Type::Apply { callee, .. } if matches!(callee.as_ref(), Type::Named(name) if matches!(name.as_str(), "Array" | "Map" | "Set" | "Stream")) => {
-            true
-        }
-        Type::Named(name) => {
-            !component.contains(name.as_str()) || productive.contains(name.as_str())
-        }
-        Type::Tuple(items) => items
-            .iter()
-            .all(|item| is_productive(item, component, productive)),
-        Type::Record(row) => {
-            row.tail != RowTail::Closed
-                || row.entries.iter().all(|entry| match entry {
-                    RowEntry::Field { ty, .. } => is_productive(ty, component, productive),
-                    RowEntry::Literal { .. } | RowEntry::Tag { .. } => true,
-                })
-        }
-        Type::Variant(row) => {
-            row.tail != RowTail::Closed
-                || row.entries.iter().any(|entry| match entry {
-                    RowEntry::Tag { payload, .. } => payload
-                        .iter()
-                        .all(|ty| is_productive(ty, component, productive)),
-                    RowEntry::Literal { .. } => true,
-                    RowEntry::Field { .. } => true,
-                })
-        }
-        // Deferred forms, variables, metas, non-collection applications, and
-        // unresolved names are intentionally conservative: no false positive.
-        Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Apply { .. } => true,
-    }
+    crate::productivity::is_productive(ty, &mut |node| {
+        let Type::Named(name) = node else {
+            return None;
+        };
+        component
+            .contains(name.as_str())
+            .then(|| productive.contains(name.as_str()))
+    })
 }
 
 fn forcing_step(ty: &Type, unproductive: &HashSet<&str>, seen: &HashSet<&str>) -> Option<String> {

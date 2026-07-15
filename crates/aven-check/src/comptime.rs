@@ -1,13 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use aven_core::{Diagnostic, Label, Span, codes};
-use aven_parser::{Expr, ExprKind, Literal, Param, decode_string_literal};
+use aven_parser::{Expr, ExprKind, Literal, MatchArm, Param, decode_string_literal};
 
 use crate::checker::string_literal_label;
-use crate::ty::{Row, RowEntry, RowTail, Type, is_concrete_type};
+use crate::ty::{
+    RecursiveTypeId, Row, RowEntry, RowTail, Type, is_concrete_type, render_literal_value,
+};
 
-const DEFAULT_EVALUATION_FUEL: usize = 128;
+pub(crate) const DEFAULT_EVALUATION_FUEL: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ComptimeValue {
@@ -47,6 +50,7 @@ enum CanonicalType {
     Named(String),
     Variable(String),
     Meta(u32),
+    Recursive(RecursiveTypeId),
     Apply {
         callee: Box<Self>,
         args: Vec<Self>,
@@ -70,6 +74,7 @@ impl From<&Type> for CanonicalType {
             Type::Named(name) => Self::Named(name.clone()),
             Type::Variable(name) => Self::Variable(name.clone()),
             Type::Meta(id) => Self::Meta(*id),
+            Type::Recursive(id) => Self::Recursive(*id),
             Type::Apply { callee, args } => Self::Apply {
                 callee: Box::new(Self::from(callee.as_ref())),
                 args: args.iter().map(Self::from).collect(),
@@ -328,6 +333,62 @@ impl SpecializationKey {
     }
 }
 
+#[derive(Debug, Default)]
+struct RecursiveTypeInterner {
+    by_key: HashMap<SpecializationKey, RecursiveTypeId>,
+    displays: Vec<String>,
+}
+
+fn recursive_type_interner() -> &'static Mutex<RecursiveTypeInterner> {
+    static INTERNER: OnceLock<Mutex<RecursiveTypeInterner>> = OnceLock::new();
+    INTERNER.get_or_init(|| Mutex::new(RecursiveTypeInterner::default()))
+}
+
+pub(crate) fn intern_recursive_type(
+    key: &SpecializationKey,
+    values: &[ComptimeValue],
+) -> RecursiveTypeId {
+    let display = format!(
+        "{}({})",
+        key.origin.definition,
+        values
+            .iter()
+            .map(render_comptime_value)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut interner = recursive_type_interner()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(id) = interner.by_key.get(key) {
+        return *id;
+    }
+
+    let id = RecursiveTypeId(interner.displays.len() as u32);
+    interner.by_key.insert(key.clone(), id);
+    interner.displays.push(display);
+    id
+}
+
+pub(crate) fn recursive_type_display(id: RecursiveTypeId) -> String {
+    recursive_type_interner()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .displays
+        .get(id.0 as usize)
+        .cloned()
+        .unwrap_or_else(|| format!("<recursive-type-{}>", id.0))
+}
+
+fn render_comptime_value(value: &ComptimeValue) -> String {
+    match value {
+        ComptimeValue::ReifiedType(ty) => ty.render(),
+        ComptimeValue::LabelSet(labels) => labels.join(" | "),
+        ComptimeValue::Literal(literal) => render_literal_value(literal).to_owned(),
+        ComptimeValue::Bool(value) => value.to_string(),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LoweredType {
     pub(crate) ty: Type,
@@ -445,9 +506,22 @@ pub(crate) trait EvalContext {
     fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction>;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
-    fn specialization_is_in_progress(&self, key: &SpecializationKey) -> bool;
-    fn begin_specialization(&mut self, key: SpecializationKey);
-    fn end_specialization(&mut self, key: &SpecializationKey);
+    fn specialization_is_active(&self, key: &SpecializationKey) -> bool;
+    fn active_specialization_reference(
+        &mut self,
+        key: &SpecializationKey,
+    ) -> Option<RecursiveTypeId>;
+    fn begin_specialization(
+        &mut self,
+        key: SpecializationKey,
+        id: RecursiveTypeId,
+        call_span: Span,
+    ) -> Result<(), Diagnostic>;
+    fn finish_specialization(
+        &mut self,
+        key: &SpecializationKey,
+        result: EvaluationResult,
+    ) -> EvaluationResult;
     fn infer_value_type(&mut self, expr: &Expr) -> Type;
     fn type_is_unresolved(&self, ty: &Type) -> bool;
     fn type_fits_boundary(&mut self, expected: &Type, actual: &Type) -> bool;
@@ -677,6 +751,7 @@ where
             ExprKind::Literal(literal @ (Literal::Number(_) | Literal::String(_))) => {
                 EvaluationResult::evaluated(ComptimeValue::Literal(literal.clone()))
             }
+            ExprKind::Match { subject, arms, .. } => self.evaluate_match(subject, arms, env),
             ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
             ExprKind::Missing
             | ExprKind::Literal(_)
@@ -689,10 +764,36 @@ where
             | ExprKind::Binary { .. }
             | ExprKind::Unary { .. }
             | ExprKind::Propagate { .. }
-            | ExprKind::Match { .. }
             | ExprKind::Lambda { .. }
             | ExprKind::Block(_) => EvaluationResult::unsupported(),
         }
+    }
+
+    fn evaluate_match(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        env: &Environment,
+    ) -> EvaluationResult {
+        let subject_result = self.evaluate_expr(subject, env);
+        let Evaluation::Evaluated(value) = subject_result.evaluation else {
+            return subject_result;
+        };
+
+        for arm in arms {
+            if !arm.guards.is_empty() || !comptime_pattern_matches(&arm.pattern, &value) {
+                continue;
+            }
+            let mut arm_env = env.clone();
+            if let ExprKind::Name(name) = &ungroup(&arm.pattern).kind
+                && name != "_"
+            {
+                arm_env.bindings.insert(name.clone(), value);
+            }
+            return self.evaluate_expr(&arm.body, &arm_env);
+        }
+
+        EvaluationResult::unsupported()
     }
 
     fn evaluate_type_application(
@@ -968,21 +1069,31 @@ where
             return result;
         }
 
-        if self.context.specialization_is_in_progress(&key) || !self.visited.insert(key.clone()) {
+        if function.name.chars().next().is_some_and(char::is_uppercase) {
+            if let Some(id) = self.context.active_specialization_reference(&key) {
+                return EvaluationResult::evaluated(ComptimeValue::ReifiedType(Type::Recursive(
+                    id,
+                )));
+            }
+        } else if self.context.specialization_is_active(&key) {
             return EvaluationResult::diagnostic(evaluation_cycle(call_span, &function.name));
         }
 
-        self.context.begin_specialization(key.clone());
+        if !self.visited.insert(key.clone()) {
+            return EvaluationResult::diagnostic(evaluation_cycle(call_span, &function.name));
+        }
+        let id = intern_recursive_type(&key, &values);
+        if let Err(diagnostic) = self
+            .context
+            .begin_specialization(key.clone(), id, call_span)
+        {
+            self.visited.remove(&key);
+            return EvaluationResult::diagnostic(diagnostic);
+        }
         let body_env = Environment::from_function(&function, values);
         let result = self.evaluate_expr(&function.body, &body_env);
-        self.context.end_specialization(&key);
         self.visited.remove(&key);
-
-        if !matches!(result.evaluation, Evaluation::Unsupported) {
-            self.context.cache_specialization(key, result.clone());
-        }
-
-        result
+        self.context.finish_specialization(&key, result)
     }
 
     fn evaluate_args(
@@ -1077,6 +1188,15 @@ where
         }
 
         EvaluationResult::evaluated(ComptimeValue::ReifiedType(lowering.ty))
+    }
+}
+
+fn comptime_pattern_matches(pattern: &Expr, value: &ComptimeValue) -> bool {
+    match (&ungroup(pattern).kind, value) {
+        (ExprKind::Name(_), _) => true,
+        (ExprKind::Literal(Literal::Bool(pattern)), ComptimeValue::Bool(value)) => pattern == value,
+        (ExprKind::Literal(pattern), ComptimeValue::Literal(value)) => pattern == value,
+        _ => false,
     }
 }
 
@@ -1422,7 +1542,7 @@ pub(crate) fn comptime_function_arity_mismatch(
     ))
 }
 
-fn evaluation_limit(span: Span) -> Diagnostic {
+pub(crate) fn evaluation_limit(span: Span) -> Diagnostic {
     Diagnostic::error("comptime evaluation limit exceeded")
         .with_code(codes::comptime::EVALUATION_LIMIT)
         .with_label(Label::primary(

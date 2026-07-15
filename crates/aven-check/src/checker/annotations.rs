@@ -54,6 +54,7 @@ impl<'a> Checker<'a> {
         match ty {
             Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
             Type::Named(name) => !BUILTIN_TYPES.contains(&name.as_str()),
+            Type::Recursive(_) => false,
             Type::Apply { callee, args } => {
                 self.reflection_subject_is_unresolved(callee)
                     || args
@@ -109,6 +110,110 @@ impl<'a> Checker<'a> {
         self.normalize_with_visited(ty, HashSet::new())
     }
 
+    /// Unfold exactly one recursive reference when a consumer needs its outer
+    /// constructor. Back-edge references inside the cloned head remain atomic.
+    pub(super) fn unfold_recursive_type_once(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Recursive(id) => self
+                .recursive_type_unfoldings
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| ty.clone()),
+            _ => ty.clone(),
+        }
+    }
+
+    /// Normalize aliases and unfold recursive references at a structural
+    /// demand. Each id unfolds at most once, so a back edge stays a reference.
+    pub(super) fn normalize_for_demand(&self, ty: &Type) -> Type {
+        self.unfold_recursive_type_for_demand(&self.normalize(ty), &mut HashSet::new())
+    }
+
+    fn unfold_recursive_type_for_demand(
+        &self,
+        ty: &Type,
+        visited: &mut HashSet<RecursiveTypeId>,
+    ) -> Type {
+        match ty {
+            Type::Recursive(id) => {
+                if !visited.insert(*id) {
+                    return ty.clone();
+                }
+                let unfolded = self
+                    .recursive_type_unfoldings
+                    .get(id)
+                    .map(|head| self.normalize(head))
+                    .unwrap_or_else(|| ty.clone());
+                visited.remove(id);
+                unfolded
+            }
+            Type::Apply { callee, args } => Type::Apply {
+                callee: Box::new(self.unfold_recursive_type_for_demand(callee, visited)),
+                args: args
+                    .iter()
+                    .map(|arg| self.unfold_recursive_type_for_demand(arg, visited))
+                    .collect(),
+            },
+            Type::Function {
+                params,
+                result,
+                required,
+            } => Type::Function {
+                params: params
+                    .iter()
+                    .map(|param| self.unfold_recursive_type_for_demand(param, visited))
+                    .collect(),
+                result: Box::new(self.unfold_recursive_type_for_demand(result, visited)),
+                required: *required,
+            },
+            Type::Optional(inner) => Type::Optional(Box::new(
+                self.unfold_recursive_type_for_demand(inner, visited),
+            )),
+            Type::Nullable(inner) => Type::Nullable(Box::new(
+                self.unfold_recursive_type_for_demand(inner, visited),
+            )),
+            Type::Tuple(items) => Type::Tuple(
+                items
+                    .iter()
+                    .map(|item| self.unfold_recursive_type_for_demand(item, visited))
+                    .collect(),
+            ),
+            Type::Record(row) => Type::Record(self.unfold_recursive_row_for_demand(row, visited)),
+            Type::Variant(row) => Type::Variant(self.unfold_recursive_row_for_demand(row, visited)),
+            Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => ty.clone(),
+        }
+    }
+
+    fn unfold_recursive_row_for_demand(
+        &self,
+        row: &Row,
+        visited: &mut HashSet<RecursiveTypeId>,
+    ) -> Row {
+        Row {
+            entries: row
+                .entries
+                .iter()
+                .map(|entry| match entry {
+                    RowEntry::Field { name, ty } => RowEntry::Field {
+                        name: name.clone(),
+                        ty: self.unfold_recursive_type_for_demand(ty, visited),
+                    },
+                    RowEntry::Tag { name, payload } => RowEntry::Tag {
+                        name: name.clone(),
+                        payload: payload
+                            .iter()
+                            .map(|ty| self.unfold_recursive_type_for_demand(ty, visited))
+                            .collect(),
+                    },
+                    RowEntry::Literal { value } => RowEntry::Literal {
+                        value: value.clone(),
+                    },
+                })
+                .collect(),
+            tail: row.tail,
+        }
+    }
+
     pub(super) fn normalize_with_visited(&self, ty: &Type, visited: HashSet<String>) -> Type {
         match ty {
             Type::Named(name) => {
@@ -132,6 +237,7 @@ impl<'a> Checker<'a> {
             Type::Deferred => Type::Deferred,
             Type::Variable(name) => Type::Variable(name.clone()),
             Type::Meta(id) => Type::Meta(*id),
+            Type::Recursive(id) => Type::Recursive(*id),
             Type::Apply { callee, args } => Type::Apply {
                 callee: Box::new(self.normalize_with_visited(callee, visited.clone())),
                 args: self.normalize_types(args, &visited),
@@ -212,8 +318,14 @@ impl<'a> Checker<'a> {
         checker.comptime_bindings = self.comptime_bindings.clone();
         checker.comptime_artifacts = self.comptime_artifacts.clone();
         checker.comptime_specializations = self.comptime_specializations.clone();
-        checker.comptime_specializations_in_progress =
-            self.comptime_specializations_in_progress.clone();
+        checker.comptime_specialization_calls = self.comptime_specialization_calls.clone();
+        checker.comptime_specialization_stack = self.comptime_specialization_stack.clone();
+        checker.comptime_specialization_active = self.comptime_specialization_active.clone();
+        checker.recursive_type_unfoldings = self.recursive_type_unfoldings.clone();
+        checker.recursive_type_comparisons = self.recursive_type_comparisons.clone();
+        checker
+            .unifier
+            .set_recursive_type_unfoldings(self.recursive_type_unfoldings.clone());
         checker.local_comptime_values = self.local_comptime_values.clone();
         checker.local_comptime_params = self.local_comptime_params.clone();
         checker.bindings = self.bindings.clone();
@@ -309,7 +421,17 @@ impl<'a> Checker<'a> {
                             // parameter bounds. This walk supplies only nested
                             // value/name diagnostics that its evaluator cannot
                             // collect from unsupported forms.
-                            self.check_value_exprs(args);
+                            for arg in args {
+                                let bound_comptime_name = match &ungroup_expr(arg).kind {
+                                    ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
+                                        self.lookup_comptime_value(name).is_some()
+                                    }
+                                    _ => false,
+                                };
+                                if !bound_comptime_name {
+                                    self.check_value_expr(arg);
+                                }
+                            }
                         }
                         ty
                     }

@@ -1198,15 +1198,12 @@ fn uppercase_comptime_functions_reject_runtime_arguments() {
 }
 
 #[test]
-fn uppercase_comptime_function_recursion_reports_a_specialization_cycle() {
+fn uppercase_comptime_function_recursion_ties_a_productive_knot() {
     let output =
         parse_module("List = (t) => @{ @Nil, @Cons(t, List(t)) }\nvalue: List(Int) = @Nil\n");
     let check = check_module(&output.module);
 
-    assert_eq!(
-        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_CYCLE),
-        1
-    );
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
     assert_eq!(
         matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
         0
@@ -1253,7 +1250,7 @@ fn comptime_type_function_captures_sibling_functions_transitively() {
 }
 
 #[test]
-fn mutually_recursive_comptime_type_functions_still_report_a_cycle() {
+fn transparent_mutually_recursive_comptime_types_are_unproductive() {
     let output = parse_module(
         "A = (t: Type) => B(t)\n\
          B = (t: Type) => A(t)\n\
@@ -1262,7 +1259,7 @@ fn mutually_recursive_comptime_type_functions_still_report_a_cycle() {
     let check = check_module(&output.module);
 
     assert_eq!(
-        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_CYCLE),
+        matching_codes(&check.diagnostics, codes::ty::UNPRODUCTIVE_RECURSION),
         1,
         "{:?}",
         check.diagnostics
@@ -8197,6 +8194,108 @@ fn read_and_parse_globals() -> Vec<(String, Type)> {
             ),
         ),
     ]
+}
+
+#[test]
+fn parameterized_recursive_list_constructs_matches_and_renders_by_name() {
+    let source = concat!(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "xs: List(Int) = @Cons((1, @Cons((2, @Nil))))\n",
+        "len : (List(Int)) -> Int\n",
+        "len = (xs) => xs ?> @Nil => 0, @Cons((_, rest)) => 1 + len(rest)\n",
+        "len(xs)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check.type_at(nth_span(source, "xs", 0)).map(Type::render),
+        Some("List(Int)".to_owned())
+    );
+    assert_eq!(check.recursive_type_unfoldings.len(), 1);
+    assert!(matches!(
+        check.recursive_type_unfoldings.values().next(),
+        Some(Type::Variant(_))
+    ));
+}
+
+#[test]
+fn mutually_recursive_parameterized_types_record_every_head() {
+    let source = concat!(
+        "Even = (t: Type) => @{ @Zero, @Succ(Odd(t)) }\n",
+        "Odd = (t: Type) => @{ @Succ(Even(t)) }\n",
+        "even: Even(Int) = @Succ(@Succ(@Zero))\n",
+        "odd: Odd(Int) = @Succ(@Zero)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check.type_at(nth_span(source, "even", 0)).map(Type::render),
+        Some("Even(Int)".to_owned())
+    );
+    assert_eq!(
+        check.type_at(nth_span(source, "odd", 0)).map(Type::render),
+        Some("Odd(Int)".to_owned())
+    );
+    assert_eq!(check.recursive_type_unfoldings.len(), 2);
+}
+
+#[test]
+fn parameterized_recursive_productivity_uses_a_least_fixed_point() {
+    for source in [
+        "Bad = (t: Type) => { self: Bad(t) }\nvalue: Bad(Int) = value\n",
+        "BadV = (t: Type) => @{ @Only(BadV(t)) }\nvalue: BadV(Int) = value\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::UNPRODUCTIVE_RECURSION),
+            1,
+            "{source}: {:?}",
+            check.diagnostics
+        );
+    }
+
+    let source = concat!(
+        "Flip = (b: Bool) => b ?> true => { next: ?Flip(false) }, false => { next: Flip(true) }\n",
+        "a: Flip(true) = {}\n",
+        "b: Flip(false) = { next: {} }\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(check.recursive_type_unfoldings.len(), 2);
+}
+
+#[test]
+fn recursive_specialization_identity_distinguishes_arguments() {
+    let source = concat!(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "ints: List(Int) = @Nil\n",
+        "same: List(Int) = ints\n",
+        "texts: List(Text) = ints\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    assert_eq!(check.recursive_type_unfoldings.len(), 2);
+}
+
+#[test]
+fn recursive_variant_values_check_against_the_unfolded_head() {
+    let source = concat!(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "nil: List(Int) = @Nil\n",
+        "wrong: List(Int) = @Other\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
 }
 
 fn read_and_parse_unit_error_globals() -> Vec<(String, Type)> {

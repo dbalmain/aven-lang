@@ -782,8 +782,17 @@ impl<'a> Checker<'a> {
     }
 
     fn equality_compatibility(&mut self, left: &Type, right: &Type) -> EqualityCompatibility {
-        let left = self.normalize(&self.unifier.resolve(left));
-        let right = self.normalize(&self.unifier.resolve(right));
+        let left = self.unifier.resolve(left);
+        let right = self.unifier.resolve(right);
+        if let (Type::Recursive(left), Type::Recursive(right)) = (&left, &right) {
+            return if left == right {
+                EqualityCompatibility::Comparable
+            } else {
+                EqualityCompatibility::Mismatched
+            };
+        }
+        let left = self.normalize_for_demand(&left);
+        let right = self.normalize_for_demand(&right);
         let (_, left) = peel_empty_values(&left);
         let (_, right) = peel_empty_values(&right);
 
@@ -846,6 +855,14 @@ impl<'a> Checker<'a> {
                     EqualityCompatibility::Mismatched
                 }
             }
+            (Type::Recursive(left), Type::Recursive(right)) => {
+                if left == right {
+                    EqualityCompatibility::Comparable
+                } else {
+                    EqualityCompatibility::Mismatched
+                }
+            }
+            (Type::Recursive(_), _) | (_, Type::Recursive(_)) => EqualityCompatibility::Unknown,
             (Type::Deferred | Type::Variable(_) | Type::Meta(_), _)
             | (_, Type::Deferred | Type::Variable(_) | Type::Meta(_)) => {
                 EqualityCompatibility::Unknown
@@ -3032,7 +3049,7 @@ fn export_generic_name(index: usize) -> String {
 fn host_comptime_reifiable_type(ty: &Type) -> bool {
     match ty {
         Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
-        Type::Named(_) => true,
+        Type::Named(_) | Type::Recursive(_) => true,
         Type::Apply { callee, args } => {
             host_comptime_reifiable_type(callee) && args.iter().all(host_comptime_reifiable_type)
         }
@@ -3177,6 +3194,7 @@ fn equality_base_kind(ty: &Type) -> Option<EqualityBaseKind> {
         | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)
+        | Type::Recursive(_)
         | Type::Apply { .. }
         | Type::Function { .. }
         | Type::Optional(_)
@@ -3250,7 +3268,11 @@ fn type_has_open_row(ty: &Type) -> bool {
                     RowEntry::Literal { .. } => false,
                 })
         }
-        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => false,
+        Type::Deferred
+        | Type::Named(_)
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Recursive(_) => false,
     }
 }
 

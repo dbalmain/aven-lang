@@ -20,6 +20,29 @@ fn examples_directory_is_not_empty() {
 }
 
 #[test]
+fn parameterized_recursive_list_checks_and_runs() {
+    let dir = TempDir::new("recursive-list");
+    let path = dir.path().join("list.av");
+    fs::write(
+        &path,
+        concat!(
+            "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+            "xs: List(Int) = @Cons((1, @Cons((2, @Nil))))\n",
+            "len : (List(Int)) -> Int\n",
+            "len = (xs) => xs ?> @Nil => 0, @Cons((_, rest)) => 1 + len(rest)\n",
+            "len(xs)\n",
+        ),
+    )
+    .expect("failed to write recursive-list program");
+
+    let checked = run_aven_check(&path, &[]);
+    assert_success(&checked, &stderr(&checked));
+    let ran = run_aven_run(&path, &[]);
+    assert_success(&ran, &stderr(&ran));
+    assert_eq!(stdout(&ran), "2\n");
+}
+
+#[test]
 fn all_examples_check_cleanly() {
     let examples = discover_examples();
     assert!(!examples.is_empty());

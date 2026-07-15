@@ -12,9 +12,10 @@ impl<'a> Checker<'a> {
         let inferred_subject = self.infer(&env, subject);
         let seeded = self.seed_tag_match_subject(&inferred_subject, arms);
         let resolved_subject = self.normalize(&self.resolve_and_default(&inferred_subject));
-        self.check_match_exhaustiveness(subject, arms, &resolved_subject);
-        let subject_type = if is_resolved_value_type(&resolved_subject) {
-            Some(resolved_subject)
+        let demanded_subject = self.normalize_for_demand(&resolved_subject);
+        self.check_match_exhaustiveness(subject, arms, &demanded_subject);
+        let subject_type = if is_resolved_value_type(&demanded_subject) {
+            Some(demanded_subject)
         } else {
             seeded
         };
@@ -170,7 +171,7 @@ impl<'a> Checker<'a> {
         arms: &[MatchArm],
         subject_type: &Type,
     ) {
-        let subject_type = self.normalize(subject_type);
+        let subject_type = self.normalize_for_demand(subject_type);
         if type_contains_deferred(&subject_type) {
             return;
         }
@@ -349,7 +350,7 @@ impl<'a> Checker<'a> {
                 },
             },
             Type::Variant(row) => Self::literal_base_kind_name(literal_variant_base(row)?),
-            Type::Deferred | Type::Variable(_) | Type::Meta(_) => None,
+            Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Recursive(_) => None,
             Type::Optional(inner) | Type::Nullable(inner) => {
                 self.match_subject_literal_kind_name(inner)
             }
@@ -389,7 +390,10 @@ impl<'a> Checker<'a> {
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let inferred_subject = self.infer(env, subject);
         let seeded = self.seed_tag_match_subject(&inferred_subject, arms);
-        let subject_type = self.resolve_if_concrete(&inferred_subject).or(seeded);
+        let subject_type = self
+            .resolve_if_concrete(&inferred_subject)
+            .map(|ty| self.normalize_for_demand(&ty))
+            .or(seeded);
         let mut body_types = Vec::new();
 
         for arm in arms {

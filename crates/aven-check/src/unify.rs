@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use aven_core::Span;
 
 use crate::ty::{
-    LiteralBase, Row, RowEntry, RowMergeConstraint, RowMergeSource, RowTail, Type, TypeScheme,
-    free_row_vars, literal_variant_base, map_type, map_type_with_rows, open_literal_variant_base,
-    render_literal_value, type_contains_meta,
+    LiteralBase, RecursiveTypeId, Row, RowEntry, RowMergeConstraint, RowMergeSource, RowTail, Type,
+    TypeScheme, free_row_vars, literal_variant_base, map_type, map_type_with_rows,
+    open_literal_variant_base, render_literal_value, type_contains_meta,
 };
 
 #[derive(Debug, Default)]
@@ -14,6 +14,7 @@ pub(crate) struct Unifier {
     row_subst: Vec<Option<Row>>,
     row_merges: Vec<RowMergeConstraint>,
     numeric: HashSet<u32>,
+    recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
 }
 
 #[derive(Clone)]
@@ -119,7 +120,7 @@ impl Unifier {
 
     pub(crate) fn unify(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
         let snapshot = self.snapshot();
-        if self.unify_inner(left, right).is_err() {
+        if self.unify_inner(left, right, &mut HashSet::new()).is_err() {
             self.restore(snapshot);
             Err(())
         } else {
@@ -127,12 +128,33 @@ impl Unifier {
         }
     }
 
-    fn unify_inner(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
+    fn unify_inner(
+        &mut self,
+        left: &Type,
+        right: &Type,
+        unfolding: &mut HashSet<RecursiveTypeId>,
+    ) -> Result<(), ()> {
         let left = self.resolve(left);
         let right = self.resolve(right);
 
         match (&left, &right) {
             (Type::Meta(left), Type::Meta(right)) if left == right => Ok(()),
+            (Type::Recursive(left), Type::Recursive(right)) => {
+                (left == right).then_some(()).ok_or(())
+            }
+            (Type::Recursive(id), other) | (other, Type::Recursive(id)) => {
+                if !unfolding.insert(*id) {
+                    return Ok(());
+                }
+                let head = self.recursive_type_unfoldings.get(id).cloned().ok_or(())?;
+                let result = if matches!(left, Type::Recursive(_)) {
+                    self.unify_inner(&head, other, unfolding)
+                } else {
+                    self.unify_inner(other, &head, unfolding)
+                };
+                unfolding.remove(id);
+                result
+            }
             (Type::Meta(id), Type::Variant(row)) | (Type::Variant(row), Type::Meta(id))
                 if self.numeric.contains(id)
                     && open_literal_variant_base(row) == Some(LiteralBase::Number) =>
@@ -157,8 +179,8 @@ impl Unifier {
                     args: right_args,
                 },
             ) if left_args.len() == right_args.len() => {
-                self.unify_inner(left_callee, right_callee)?;
-                self.unify_many(left_args, right_args)
+                self.unify_inner(left_callee, right_callee, unfolding)?;
+                self.unify_many(left_args, right_args, unfolding)
             }
             (
                 Type::Function {
@@ -176,25 +198,45 @@ impl Unifier {
                 // (accepting a fewer-required function where a more-required one
                 // is expected) is deferred.
             ) if left_params.len() == right_params.len() && left_required == right_required => {
-                self.unify_many(left_params, right_params)?;
-                self.unify_inner(left_result, right_result)
+                self.unify_many(left_params, right_params, unfolding)?;
+                self.unify_inner(left_result, right_result, unfolding)
             }
-            (Type::Optional(left), Type::Optional(right)) => self.unify_inner(left, right),
-            (Type::Nullable(left), Type::Nullable(right)) => self.unify_inner(left, right),
+            (Type::Optional(left), Type::Optional(right)) => {
+                self.unify_inner(left, right, unfolding)
+            }
+            (Type::Nullable(left), Type::Nullable(right)) => {
+                self.unify_inner(left, right, unfolding)
+            }
             (Type::Tuple(left), Type::Tuple(right)) if left.len() == right.len() => {
-                self.unify_many(left, right)
+                self.unify_many(left, right, unfolding)
             }
-            (Type::Record(left), Type::Record(right)) => self.unify_rows(left, right),
-            (Type::Variant(left), Type::Variant(right)) => self.unify_rows(left, right),
+            (Type::Record(left), Type::Record(right)) => self.unify_rows(left, right, unfolding),
+            (Type::Variant(left), Type::Variant(right)) => self.unify_rows(left, right, unfolding),
             _ => Err(()),
         }
     }
 
-    fn unify_many(&mut self, left: &[Type], right: &[Type]) -> Result<(), ()> {
+    fn unify_many(
+        &mut self,
+        left: &[Type],
+        right: &[Type],
+        unfolding: &mut HashSet<RecursiveTypeId>,
+    ) -> Result<(), ()> {
         for (left, right) in left.iter().zip(right) {
-            self.unify_inner(left, right)?;
+            self.unify_inner(left, right, unfolding)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn insert_recursive_type(&mut self, id: RecursiveTypeId, head: Type) {
+        self.recursive_type_unfoldings.insert(id, head);
+    }
+
+    pub(crate) fn set_recursive_type_unfoldings(
+        &mut self,
+        unfoldings: HashMap<RecursiveTypeId, Type>,
+    ) {
+        self.recursive_type_unfoldings = unfoldings;
     }
 
     fn bind(&mut self, id: u32, ty: &Type) -> Result<(), ()> {
@@ -223,7 +265,12 @@ impl Unifier {
         Ok(())
     }
 
-    fn unify_rows(&mut self, left: &Row, right: &Row) -> Result<(), ()> {
+    fn unify_rows(
+        &mut self,
+        left: &Row,
+        right: &Row,
+        unfolding: &mut HashSet<RecursiveTypeId>,
+    ) -> Result<(), ()> {
         let left = self.resolve_row(left);
         let right = self.resolve_row(right);
         if let (Some(left_base), Some(right_base)) =
@@ -246,7 +293,7 @@ impl Unifier {
             };
 
             let right_entry = right_entries.remove(position);
-            self.unify_row_entries(&left_entry, &right_entry)?;
+            self.unify_row_entries(&left_entry, &right_entry, unfolding)?;
         }
 
         let left_remainder = Row {
@@ -261,7 +308,7 @@ impl Unifier {
         let resolved_right = self.resolve_row(&right_remainder);
 
         if resolved_left != left_remainder || resolved_right != right_remainder {
-            return self.unify_rows(&resolved_left, &resolved_right);
+            return self.unify_rows(&resolved_left, &resolved_right, unfolding);
         }
 
         let right_tail = self.supply_entries(right_remainder.tail, &left_remainder.entries)?;
@@ -269,10 +316,15 @@ impl Unifier {
         self.unify_row_tails(left_tail, right_tail)
     }
 
-    fn unify_row_entries(&mut self, left: &RowEntry, right: &RowEntry) -> Result<(), ()> {
+    fn unify_row_entries(
+        &mut self,
+        left: &RowEntry,
+        right: &RowEntry,
+        unfolding: &mut HashSet<RecursiveTypeId>,
+    ) -> Result<(), ()> {
         match (left, right) {
             (RowEntry::Field { ty: left_type, .. }, RowEntry::Field { ty: right_type, .. }) => {
-                self.unify_inner(left_type, right_type)
+                self.unify_inner(left_type, right_type, unfolding)
             }
             (
                 RowEntry::Tag {
@@ -284,7 +336,7 @@ impl Unifier {
                     ..
                 },
             ) if left_payload.len() == right_payload.len() => {
-                self.unify_many(left_payload, right_payload)
+                self.unify_many(left_payload, right_payload, unfolding)
             }
             (RowEntry::Literal { value: left }, RowEntry::Literal { value: right })
                 if left == right =>
@@ -632,7 +684,11 @@ fn visit_type_row_tails(ty: &Type, visit: &mut impl FnMut(RowTail)) {
             .iter()
             .for_each(|item| visit_type_row_tails(item, visit)),
         Type::Record(row) | Type::Variant(row) => visit_row_tails(row, visit),
-        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => {}
+        Type::Deferred
+        | Type::Named(_)
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Recursive(_) => {}
     }
 }
 
@@ -940,5 +996,17 @@ mod tests {
         });
 
         assert_eq!(unifier.unify(&too_wide, &only_zero), Err(()));
+    }
+
+    #[test]
+    fn occurs_check_still_rejects_an_unrelated_meta_cycle() {
+        let mut unifier = Unifier::default();
+        let meta = unifier.fresh();
+
+        assert_eq!(
+            unifier.unify(&meta, &Type::Tuple(vec![named("Int"), meta.clone()])),
+            Err(())
+        );
+        assert_eq!(unifier.resolve(&meta), meta);
     }
 }

@@ -503,7 +503,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn annotation_row_source(&self, ty: &Type, kind: RowKind) -> Option<RowSource> {
-        match (self.normalize(ty), kind) {
+        match (self.normalize_for_demand(ty), kind) {
             (Type::Record(row), RowKind::Record) | (Type::Variant(row), RowKind::Variant) => {
                 Some(RowSource::from_row(row))
             }
@@ -517,7 +517,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn value_record_source(&mut self, ty: &Type) -> Option<RowSource> {
         let resolved = self.unifier.resolve(ty);
-        match self.normalize(&resolved) {
+        match self.normalize_for_demand(&resolved) {
             Type::Record(row) => Some(RowSource::from_row(row)),
             Type::Meta(_) => {
                 let tail = self.unifier.fresh_row_var();
@@ -534,6 +534,7 @@ impl<'a> Checker<'a> {
             Type::Deferred
             | Type::Named(_)
             | Type::Variable(_)
+            | Type::Recursive(_)
             | Type::Apply { .. }
             | Type::Function { .. }
             | Type::Optional(_)

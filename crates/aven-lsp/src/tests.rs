@@ -2643,6 +2643,19 @@ fn hover_at_position_prefers_written_annotation() {
 }
 
 #[test]
+fn hover_renders_parameterized_recursive_annotation_by_name() {
+    let document = parsed_document_with_semantics(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n\
+         xs: List(Int) = @Nil\n",
+    );
+    let Some(hover) = hover_at_position(&document, position(1, 1)) else {
+        panic!("expected hover");
+    };
+
+    assert_hover_value(hover, "```aven\nxs : List(Int)\n```");
+}
+
+#[test]
 fn hover_at_position_returns_none_when_inference_defers() {
     let document = parsed_document_with_semantics("value = missing\n".to_owned());
     let hover = hover_at_position(&document, position(0, 1));

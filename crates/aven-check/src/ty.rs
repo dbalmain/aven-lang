@@ -3,6 +3,14 @@ use std::collections::{HashMap, HashSet};
 use aven_core::Span;
 use aven_parser::{Expr, ExprKind, Literal};
 
+/// Interned identity of one canonical recursive comptime specialization.
+///
+/// The completed one-level body is intentionally kept in [`crate::CheckOutput`]
+/// rather than inside every reference node. The process-wide interner stores
+/// only display metadata, so the id stays cheap to copy, compare, and hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RecursiveTypeId(pub(crate) u32);
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     /// A type expression that is valid to keep for a later comptime/type phase
@@ -14,6 +22,10 @@ pub enum Type {
     /// in a lowered annotation or checked output; published schemes quantify any
     /// metas that remain after inference.
     Meta(u32),
+    /// A reference to a parameterized recursive type-function specialization.
+    /// Substitution, occurs checks, and free-variable walks treat this as an
+    /// atomic leaf; demand sites unfold it through the checker's side table.
+    Recursive(RecursiveTypeId),
     Apply {
         callee: Box<Type>,
         args: Vec<Type>,
@@ -106,6 +118,7 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
         Type::Deferred
         | Type::Variable(_)
         | Type::Meta(_)
+        | Type::Recursive(_)
         | Type::Function { .. }
         | Type::Optional(_)
         | Type::Nullable(_)
@@ -614,6 +627,7 @@ impl TypeRenderer {
             Type::Deferred => "?".to_owned(),
             Type::Named(name) | Type::Variable(name) => name.clone(),
             Type::Meta(id) => self.render_meta(*id),
+            Type::Recursive(id) => crate::comptime::recursive_type_display(*id),
             Type::Apply { callee, args } => {
                 let rendered_callee =
                     self.render_type_with_precedence(callee, TypePrecedence::Postfix);
@@ -827,7 +841,11 @@ pub(crate) fn map_type_with_rows(
         ),
         Type::Record(row) => Type::Record(map_row(row, leaf, tail)),
         Type::Variant(row) => Type::Variant(map_row(row, leaf, tail)),
-        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => ty.clone(),
+        Type::Deferred
+        | Type::Named(_)
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Recursive(_) => ty.clone(),
     }
 }
 
@@ -909,7 +927,11 @@ fn visit_type_with_rows(
                 .for_each(|entry| visit_row_entry(entry, visit, visit_tail));
             visit_tail(row.tail);
         }
-        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => {}
+        Type::Deferred
+        | Type::Named(_)
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Recursive(_) => {}
     }
 }
 
@@ -1075,7 +1097,7 @@ pub(crate) fn open_literal_variant_base(row: &Row) -> Option<LiteralBase> {
 pub(crate) fn is_resolved_value_type(ty: &Type) -> bool {
     match ty {
         Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
-        Type::Named(_) => true,
+        Type::Named(_) | Type::Recursive(_) => true,
         Type::Apply { callee, args } => {
             is_resolved_value_type(callee) && args.iter().all(is_resolved_value_type)
         }
@@ -1294,6 +1316,7 @@ pub(crate) fn named_type_name(ty: &Type) -> Option<&str> {
         Type::Deferred
         | Type::Variable(_)
         | Type::Meta(_)
+        | Type::Recursive(_)
         | Type::Apply { .. }
         | Type::Function { .. }
         | Type::Optional(_)

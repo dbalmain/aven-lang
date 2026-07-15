@@ -116,6 +116,20 @@ fn evaluates_module_to_last_expression_value() {
 }
 
 #[test]
+fn evaluates_values_annotated_with_parameterized_recursive_types() {
+    assert_module_value(
+        concat!(
+            "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+            "xs: List(Int) = @Cons((1, @Cons((2, @Nil))))\n",
+            "len : (List(Int)) -> Int\n",
+            "len = (xs) => xs ?> @Nil => 0, @Cons((_, rest)) => 1 + len(rest)\n",
+            "len(xs)\n",
+        ),
+        Value::Int(2),
+    );
+}
+
+#[test]
 fn evaluates_sequential_bindings() {
     assert_module_value("x = 5\ny = x + 1\ny\n", Value::Int(6));
 }

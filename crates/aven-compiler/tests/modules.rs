@@ -1085,6 +1085,40 @@ fn cross_module_uppercase_comptime_type_function_checks_fields() {
 }
 
 #[test]
+fn cross_module_recursive_type_function_constructs_matches_and_runs() {
+    let dir = TempDir::new("recursive-type-fn-export");
+    write(
+        dir.path(),
+        "lists.av",
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n{ List }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "{ List } = import(\"./lists\")\n",
+            "xs: List(Int) = @Cons((1, @Cons((2, @Nil))))\n",
+            "len : (List(Int)) -> Int\n",
+            "len = (xs) => xs ?> @Nil => 0, @Cons((_, rest)) => 1 + len(rest)\n",
+            "len(xs)\n",
+        ),
+    );
+
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("imported recursive List should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![])
+        .expect("imported recursive List should evaluate");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("2".to_owned())
+    );
+}
+
+#[test]
 fn imported_comptime_type_function_captures_its_home_module_aliases() {
     let dir = TempDir::new("comptime-type-fn-home-scope");
     write(

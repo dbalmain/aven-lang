@@ -707,6 +707,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         inferred_types,
         type_definitions,
         top_level_types,
+        ..
     } = check_output;
     let diagnostics = if parse_has_errors {
         Vec::new()

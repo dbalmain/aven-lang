@@ -3,6 +3,7 @@ mod comptime;
 mod env;
 mod host_comptime;
 mod lower;
+mod productivity;
 mod ty;
 mod unify;
 
@@ -19,9 +20,9 @@ pub use host_comptime::{
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
 pub use ty::{
-    RecordField, Row, RowEntry, RowTail, Type, function_required_arity, function_signature,
-    is_text_type, literal_union_members, record_fields, render_type, type_contains_deferred,
-    variant_tags,
+    RecordField, RecursiveTypeId, Row, RowEntry, RowTail, Type, function_required_arity,
+    function_signature, is_text_type, literal_union_members, record_fields, render_type,
+    type_contains_deferred, variant_tags,
 };
 
 /// Builtin comptime type functions. Shared with tooling (LSP hover) so the
@@ -63,6 +64,10 @@ pub struct CheckOutput {
     pub inferred_types: Vec<InferredType>,
     pub type_definitions: HashMap<String, Type>,
     pub top_level_types: HashMap<String, Type>,
+    /// Completed one-level heads for parameterized recursive type references.
+    /// Keeping these in a side map makes `Type::Recursive` a small atomic node
+    /// while allowing checker consumers to unfold only at structural demands.
+    pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
 }
 
 impl CheckOutput {
@@ -350,6 +355,7 @@ pub fn check_module_with_host_globals_and_imports_in(
         .collect();
 
     CheckOutput {
+        recursive_type_unfoldings: checker.recursive_type_unfoldings.clone(),
         diagnostics: checker.diagnostics,
         inferred_types: checker.inferred_types,
         type_definitions,

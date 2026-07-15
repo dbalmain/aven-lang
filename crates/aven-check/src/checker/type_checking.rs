@@ -68,6 +68,22 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
+        if matches!(expected, Type::Recursive(_)) {
+            let Type::Recursive(id) = expected else {
+                unreachable!("recursive guard established the variant")
+            };
+            if !self.recursive_type_comparisons.insert(*id) {
+                return;
+            }
+            let unfolded = self.unfold_recursive_type_once(expected);
+            if unfolded != *expected {
+                self.check_value_against(&unfolded, value);
+                self.recursive_type_comparisons.remove(id);
+                return;
+            }
+            self.recursive_type_comparisons.remove(id);
+        }
+
         match (&value.kind, expected) {
             (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
             (ExprKind::Block(items), _) => self.check_block_against(expected, items),
@@ -380,6 +396,40 @@ impl<'a> Checker<'a> {
     pub(super) fn check_type_against_type(&mut self, expected: &Type, actual: &Type, span: Span) {
         if expected == actual {
             return;
+        }
+
+        match (expected, actual) {
+            (Type::Recursive(expected), Type::Recursive(actual)) => {
+                self.report_type_mismatch_between_types(
+                    &Type::Recursive(*expected).render(),
+                    &Type::Recursive(*actual).render(),
+                    span,
+                );
+                return;
+            }
+            (Type::Recursive(id), _) | (_, Type::Recursive(id)) => {
+                if !self.recursive_type_comparisons.insert(*id) {
+                    return;
+                }
+                let unfolded = self.unfold_recursive_type_once(&Type::Recursive(*id));
+                if unfolded == Type::Recursive(*id) {
+                    self.recursive_type_comparisons.remove(id);
+                    self.report_type_mismatch_between_types(
+                        &expected.render(),
+                        &actual.render(),
+                        span,
+                    );
+                    return;
+                }
+                if matches!(expected, Type::Recursive(_)) {
+                    self.check_type_against_type(&unfolded, actual, span);
+                } else {
+                    self.check_type_against_type(expected, &unfolded, span);
+                }
+                self.recursive_type_comparisons.remove(id);
+                return;
+            }
+            _ => {}
         }
 
         match (expected, actual) {
