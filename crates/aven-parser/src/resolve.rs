@@ -260,6 +260,7 @@ fn scope_at_expr<'a>(expr: &'a Expr, at: Span, outer: &[BindingSite<'a>]) -> Opt
             params,
             return_annotation,
             body,
+            ..
         } => scope_at_lambda(params, return_annotation.as_deref(), body, at, outer),
         ExprKind::Match { subject, arms, .. } => {
             scope_at_expr(subject, at, outer).or_else(|| scope_at_match_arms(arms, at, outer))

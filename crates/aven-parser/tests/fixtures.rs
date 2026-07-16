@@ -586,6 +586,7 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             params,
             return_annotation,
             body,
+            ..
         } => {
             write_indent(output, indent);
             let _ = writeln!(output, "lambda");

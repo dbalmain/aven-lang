@@ -68,6 +68,17 @@ pub struct Param {
     pub span: Span,
 }
 
+/// A parsed requirement line on a lambda signature. Constraint semantics are
+/// intentionally deferred to the qualified-schemes slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Requirement {
+    pub name: String,
+    pub name_span: Span,
+    /// A named requirement reference or an inline, open method row.
+    pub bound: Expr,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BindingOperator {
     Assign,
@@ -150,6 +161,8 @@ pub enum ExprKind {
         params: Vec<Param>,
         /// Optional `: type` return annotation, parsed as an ordinary expression.
         return_annotation: Option<Box<Expr>>,
+        /// Requirement lines between the signature and `=>`.
+        requirements: Vec<Requirement>,
         body: Box<Expr>,
     },
     Block(Vec<Item>),
@@ -722,6 +735,8 @@ impl Parser<'_> {
             None
         };
 
+        let requirements = self.parse_requirement_lines();
+
         self.consume_operator("=>");
 
         let body = if self.current_is(TokenKind::Newline) {
@@ -742,6 +757,7 @@ impl Parser<'_> {
             kind: ExprKind::Lambda {
                 params,
                 return_annotation,
+                requirements,
                 body: Box::new(body),
             },
             span,
@@ -852,6 +868,83 @@ impl Parser<'_> {
         }
 
         params
+    }
+
+    fn parse_requirement_lines(&mut self) -> Vec<Requirement> {
+        let mut requirements = Vec::new();
+
+        if !self.current_is(TokenKind::Newline) {
+            return requirements;
+        }
+
+        self.advance();
+        if !self.current_is(TokenKind::Indent) {
+            return requirements;
+        }
+        self.advance();
+
+        while self.is_requirement_start() {
+            let name_token = self.current().cloned();
+            let Some(Token {
+                kind: TokenKind::Identifier(name),
+                span: name_span,
+            }) = name_token
+            else {
+                break;
+            };
+            self.advance();
+            self.advance(); // `:`
+            let bound = self.parse_annotation_term();
+            let span = name_span.merge(bound.span);
+
+            if matches!(bound.kind, ExprKind::Record(_)) {
+                self.require_open_method_row(&bound);
+            }
+
+            requirements.push(Requirement {
+                name,
+                name_span,
+                bound,
+                span,
+            });
+
+            if !self.consume_newline() {
+                break;
+            }
+        }
+
+        if self.current_is(TokenKind::Dedent) {
+            self.advance();
+        }
+
+        requirements
+    }
+
+    fn is_requirement_start(&self) -> bool {
+        matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::Identifier(_))
+        ) && self.next_is_operator(":")
+    }
+
+    fn require_open_method_row(&mut self, bound: &Expr) {
+        let ExprKind::Record(entries) = &bound.kind else {
+            return;
+        };
+
+        if matches!(entries.last(), Some(RecordEntry::Open { .. })) {
+            return;
+        }
+
+        self.diagnostics.push(
+            Diagnostic::error("missing `..` on a method bound")
+                .with_code(codes::parse::MISSING_METHOD_BOUND_OPEN)
+                .with_label(Label::primary(
+                    bound.span,
+                    "method bounds must end with `..`",
+                ))
+                .with_note("insert `, ..` before the closing `}`"),
+        );
     }
 
     /// Parses an optional `= value` default on a lambda parameter. The default
@@ -1642,7 +1735,7 @@ impl Parser<'_> {
             return Some(RecordEntry::Element(term));
         }
 
-        if self.current_is_operator("-") {
+        if self.current_is_operator("-") && !self.next_is(TokenKind::OpenParen) {
             let operator_span = self.current_span();
             self.advance();
             if self.current_is(TokenKind::OpenBracket) {
@@ -1666,6 +1759,10 @@ impl Parser<'_> {
                 name_span,
                 span: operator_span.merge(name_span),
             });
+        }
+
+        if self.current_is_operator_member_name() {
+            return self.parse_operator_member();
         }
 
         if self.current_is(TokenKind::OpenBracket) {
@@ -1942,6 +2039,93 @@ impl Parser<'_> {
         false
     }
 
+    fn current_is_operator_member_name(&self) -> bool {
+        matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::Operator(operator)) if matches!(
+                operator.as_str(),
+                "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
+            )
+        )
+    }
+
+    fn parse_operator_member(&mut self) -> Option<RecordEntry> {
+        let token = self.current()?.clone();
+        let TokenKind::Operator(name) = token.kind else {
+            return None;
+        };
+
+        self.advance();
+        if !self.current_is(TokenKind::OpenParen) {
+            self.report_operator_member_parameter_list(token.span);
+            self.recover_record_entry();
+            return None;
+        }
+
+        if self.is_lambda_start() {
+            let value = self.parse_lambda();
+            let span = token.span.merge(value.span);
+            return Some(RecordEntry::Field {
+                name,
+                name_span: token.span,
+                value,
+                overwrite: false,
+                span,
+            });
+        }
+
+        let params = self.parse_method_signature_params();
+        self.consume_close_paren();
+        if !self.current_is_operator(":") {
+            self.report_expected_type(self.previous_end());
+            return None;
+        }
+        self.advance();
+        let result = self.parse_annotation_term();
+        let span = token.span.merge(result.span);
+        let value = Expr {
+            kind: ExprKind::Arrow {
+                params,
+                result: Box::new(result),
+            },
+            span: Span::new(token.span.start, span.end),
+        };
+
+        Some(RecordEntry::Field {
+            name,
+            name_span: token.span,
+            value,
+            overwrite: false,
+            span,
+        })
+    }
+
+    fn parse_method_signature_params(&mut self) -> Vec<Expr> {
+        self.advance(); // `(`
+        let mut params = Vec::new();
+
+        while !self.at_end() && !self.current_is(TokenKind::CloseParen) {
+            let param = if matches!(
+                self.current().map(|token| &token.kind),
+                Some(TokenKind::Identifier(_))
+            ) && self.next_is_operator(":")
+            {
+                self.advance();
+                self.advance();
+                self.parse_annotation_term()
+            } else {
+                self.parse_annotation_term()
+            };
+            params.push(param);
+
+            if !self.consume_comma() {
+                break;
+            }
+        }
+
+        params
+    }
+
     fn skip_collection_trivia_from(&self, mut index: usize) -> usize {
         while self.tokens.get(index).is_some_and(|token| {
             matches!(
@@ -2084,7 +2268,7 @@ impl Parser<'_> {
 
     /// After the lambda parameter list's closing `)`, the head is a lambda when
     /// either `=>` follows directly, or a `: returnType` annotation followed by
-    /// a depth-0 `=>` (before any newline) follows.
+    /// a depth-0 `=>` follows. Requirement lines may appear between them.
     fn lambda_arrow_follows(&self, start: usize) -> bool {
         let Some(token) = self.tokens.get(start) else {
             return false;
@@ -2103,12 +2287,17 @@ impl Parser<'_> {
             match &token.kind {
                 TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => depth += 1,
                 TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
-                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
                 }
                 TokenKind::InterpolationStart(_) => depth += 1,
                 TokenKind::InterpolationEnd(_) => depth = depth.saturating_sub(1),
                 TokenKind::Operator(operator) if operator == "=>" && depth == 0 => return true,
-                TokenKind::Newline | TokenKind::Dedent if depth == 0 => return false,
+                TokenKind::Comma | TokenKind::Semicolon if depth == 0 => {
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -2238,6 +2427,18 @@ impl Parser<'_> {
                 .with_note("types include names like `Text`, variables like `a`, functions like `a -> b`, records, variants, and applications like `Array(a)`"),
         );
         missing_expr(span)
+    }
+
+    fn report_operator_member_parameter_list(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("operator members take a parameter list: `<(Self): Bool`")
+                .with_code(codes::parse::OPERATOR_MEMBER_PARAMETER_LIST)
+                .with_label(Label::primary(
+                    span,
+                    "expected `(` after this operator member",
+                ))
+                .with_note("write an operator member like `<(Self): Bool`"),
+        );
     }
 
     fn report_expected_record_entry(&mut self, span: Span) {
@@ -3767,6 +3968,105 @@ mod tests {
         };
         assert_eq!(signature.name, "load");
         assert!(matches!(&signature.annotation.kind, ExprKind::Arrow { .. }));
+    }
+
+    #[test]
+    fn parses_operator_members_and_requirement_lines() {
+        let output = parse_module(
+            "Vector = {\n  x: Float\n  y: Float\n  *(scalar: Float): Vector => { x: scalar, y: scalar }\n}\n\nminimum = (xs: Array(t)): ?t\n  t: Ordered\n  k: { <(Self): Bool, +(other: Self): Self, .. }\n=>\n  xs\n",
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(vector)) = output.module.items.first() else {
+            panic!("expected Vector binding");
+        };
+        let ExprKind::Record(entries) = &vector.value.kind else {
+            panic!("expected Vector record");
+        };
+        assert!(matches!(&entries[2], RecordEntry::Field { name, value, .. }
+            if name == "*" && matches!(value.kind, ExprKind::Lambda { .. })));
+
+        let ExprKind::Lambda { requirements, .. } = binding_value(&output, 1) else {
+            panic!("expected minimum lambda");
+        };
+        assert_eq!(requirements.len(), 2);
+        assert_eq!(requirements[0].name, "t");
+        assert!(
+            matches!(&requirements[0].bound.kind, ExprKind::ComptimeName(name) if name == "Ordered")
+        );
+        assert_eq!(requirements[1].name, "k");
+        let ExprKind::Record(entries) = &requirements[1].bound.kind else {
+            panic!("expected inline method row");
+        };
+        assert!(matches!(&entries[0], RecordEntry::Field { name, value, .. }
+            if name == "<" && matches!(&value.kind, ExprKind::Arrow { params, .. } if params.len() == 1)));
+        assert!(matches!(&entries[2], RecordEntry::Open { .. }));
+    }
+
+    #[test]
+    fn parses_every_supported_operator_as_a_method_row_name() {
+        let output = parse_module(
+            "Operators = { +(Self): Self, -(Self): Self, *(Self): Self, /(Self): Self, %(Self): Self, ^(Self): Self, <(Self): Bool, <=(Self): Bool, >(Self): Bool, >=(Self): Bool, .. }\n",
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected operator row binding");
+        };
+        let ExprKind::Record(entries) = &binding.value.kind else {
+            panic!("expected operator row");
+        };
+        let names: Vec<&str> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                RecordEntry::Field { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["+", "-", "*", "/", "%", "^", "<", "<=", ">", ">="]);
+    }
+
+    #[test]
+    fn operator_member_without_parameter_list_reports_targeted_error() {
+        let output = parse_module("Broken = { < Self }\n");
+        let diagnostic = output
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::parse::OPERATOR_MEMBER_PARAMETER_LIST)
+            })
+            .expect("expected operator-member diagnostic");
+        assert_eq!(
+            diagnostic.message,
+            "operator members take a parameter list: `<(Self): Bool`"
+        );
+        assert_eq!(
+            diagnostic.notes,
+            ["write an operator member like `<(Self): Bool`"]
+        );
+    }
+
+    #[test]
+    fn method_bound_without_open_tail_reports_insertion() {
+        let output =
+            parse_module("minimum = (xs: Array(t)): ?t\n  t: { <(Self): Bool }\n=>\n  xs\n");
+        let diagnostic = output
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::parse::MISSING_METHOD_BOUND_OPEN)
+            })
+            .expect("expected missing method-bound tail diagnostic");
+        assert_eq!(diagnostic.message, "missing `..` on a method bound");
+        assert_eq!(diagnostic.notes, ["insert `, ..` before the closing `}`"]);
+    }
+
+    #[test]
+    fn transform_deletions_remain_distinct_from_operator_members() {
+        let records = parse_module("row = { -field, -[key] }\n");
+        assert!(records.diagnostics.is_empty(), "{:?}", records.diagnostics);
+        let sets = parse_module("tags = @{ -@Tag }\n");
+        assert!(sets.diagnostics.is_empty(), "{:?}", sets.diagnostics);
     }
 
     fn lambda_params(output: &ParseOutput, index: usize) -> &[Param] {

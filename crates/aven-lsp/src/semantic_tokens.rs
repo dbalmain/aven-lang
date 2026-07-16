@@ -167,6 +167,7 @@ impl StyleCollector {
                 params,
                 return_annotation,
                 body,
+                ..
             } => {
                 for param in params {
                     self.styles.insert(

@@ -247,6 +247,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A match arm has a pattern and => but no body expression. Add the expression returned by that arm.",
     },
     DiagnosticExplanation {
+        code: codes::parse::MISSING_METHOD_BOUND_OPEN,
+        text: "A method bound must end with .. so it can accept additional methods. Insert , .. before the closing brace.",
+    },
+    DiagnosticExplanation {
+        code: codes::parse::OPERATOR_MEMBER_PARAMETER_LIST,
+        text: "An operator member must be followed by a parameter list. Write an operator such as <(Self): Bool.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::REQUIRED_PARAM_AFTER_DEFAULT,
         text: "A parameter without a default may not follow one with a default. Give it a default, or move it before the defaulted parameters so defaults stay trailing.",
     },

@@ -43,6 +43,7 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
         ExprKind::Lambda {
             params,
             return_annotation,
+            requirements,
             body,
         } => {
             for param in params {
@@ -55,6 +56,9 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
             }
             if let Some(annotation) = return_annotation {
                 visit(annotation);
+            }
+            for requirement in requirements {
+                visit(&requirement.bound);
             }
             visit(body);
         }

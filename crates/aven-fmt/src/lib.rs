@@ -367,6 +367,7 @@ fn emit_line(
         let next = tokens.get(index + 1).copied();
 
         if let Some(previous) = previous
+            && !is_operator_member_open_paren(previous, token, field_name_spans)
             && needs_space(previous_previous, previous, token, next)
         {
             output.push(' ');
@@ -374,6 +375,17 @@ fn emit_line(
 
         output.push_str(&token_text(source, token, field_name_spans));
     }
+}
+
+fn is_operator_member_open_paren(
+    previous: &Token,
+    current: &Token,
+    field_name_spans: &HashMap<Span, &str>,
+) -> bool {
+    current.kind == TokenKind::OpenParen
+        && field_name_spans
+            .get(&previous.span)
+            .is_some_and(|name| !is_identifier(name))
 }
 
 fn token_text(source: &str, token: &Token, field_name_spans: &HashMap<Span, &str>) -> String {

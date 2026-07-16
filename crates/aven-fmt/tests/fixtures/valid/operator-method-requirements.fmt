@@ -1,0 +1,11 @@
+Vector = {
+  x: Float
+  y: Float
+  *(scalar: Float): Vector => { x: scalar, y: scalar }
+}
+
+minimum = (xs: Array(t)): ?t
+  t: Ordered
+  k: { <(Self): Bool, +(other: Self): Self, .. }
+=>
+  xs

@@ -103,6 +103,7 @@ impl<'a> Checker<'a> {
                     params,
                     return_annotation,
                     body,
+                    ..
                 },
                 Type::Function {
                     params: expected_params,

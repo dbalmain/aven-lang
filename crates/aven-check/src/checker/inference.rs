@@ -228,7 +228,11 @@ impl<'a> Checker<'a> {
                 params,
                 return_annotation,
                 body,
-            } => self.infer_lambda(env, params, return_annotation.as_deref(), body),
+                ..
+            } => {
+                // Requirement semantics land with qualified schemes in a later slice.
+                self.infer_lambda(env, params, return_annotation.as_deref(), body)
+            }
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
             ExprKind::Index { callee, args } => self.infer_value_index(env, callee, args),
             ExprKind::FieldAccess {

@@ -16,6 +16,7 @@ impl<'a> Checker<'a> {
                 params,
                 return_annotation,
                 body,
+                ..
             } => self.check_lambda_value_expr(params, return_annotation.as_deref(), body),
             ExprKind::Block(items) => self.check_items(items),
             ExprKind::Match { subject, arms, .. } => {

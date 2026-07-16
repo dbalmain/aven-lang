@@ -162,6 +162,7 @@ fn analyze_expr(expr: &Expr, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
             params,
             return_annotation,
             body,
+            ..
         } => {
             for param in params {
                 if let Some(annotation) = &param.annotation {
