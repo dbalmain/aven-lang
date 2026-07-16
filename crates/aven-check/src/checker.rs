@@ -40,6 +40,7 @@ mod core;
 mod diagnostics;
 mod inference;
 mod match_checking;
+mod method_sets;
 mod rows;
 mod type_checking;
 mod value;

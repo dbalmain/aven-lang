@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use super::annotations::call_callee_name;
+use super::method_sets::{builtin_method_signature, resolve_builtin_operator_signature};
 use super::*;
 
 /// Desugar `value |> f(args)` to `f(value, args)` for checking and inference.
@@ -424,10 +425,14 @@ impl<'a> Checker<'a> {
     ) -> Option<Type> {
         match operator {
             "+" => self
-                .infer_numeric_binary_type(left, right)
-                .or_else(|| self.infer_same_named_binary_type(left, right, "Text")),
-            "-" | "*" | "/" | "%" | "^" => self.infer_numeric_binary_type(left, right),
-            "<" | "<=" | ">" | ">=" => self.infer_numeric_comparison_type(left, right),
+                .infer_numeric_binary_type(operator, left, right)
+                .or_else(|| {
+                    let owner = self.infer_same_named_binary_type(left, right, "Text")?;
+                    builtin_method_signature(&owner, operator).map(|signature| signature.result)
+                }),
+            "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">=" => {
+                self.infer_numeric_binary_type(operator, left, right)
+            }
             "==" | "!=" => self.infer_equality_type(left, right),
             "&&" | "||" => self.infer_same_named_binary_type(left, right, "Bool"),
             "??" => self.infer_null_coalesce_type(left, right),
@@ -559,7 +564,12 @@ impl<'a> Checker<'a> {
         fold_binary_literals(operator, left, right)
     }
 
-    pub(super) fn infer_numeric_binary_type(&mut self, left: &Type, right: &Type) -> Option<Type> {
+    pub(super) fn infer_numeric_binary_type(
+        &mut self,
+        operator: &str,
+        left: &Type,
+        right: &Type,
+    ) -> Option<Type> {
         let left = self.widen_numeric_operand(left);
         let right = self.widen_numeric_operand(right);
 
@@ -568,33 +578,33 @@ impl<'a> Checker<'a> {
             && (self.unifier.is_numeric_meta(&left) || self.unifier.is_numeric_meta(&right))
         {
             self.unifier.unify(&left, &right).ok()?;
-            return Some(self.unifier.resolve(&left));
+            let owner = self.unifier.resolve(&left);
+            let int = named_builtin("Int");
+            let signature = builtin_method_signature(&int, operator)?;
+            return Some(if signature.result == int {
+                owner
+            } else {
+                signature.result
+            });
         }
 
         match (numeric_type_name(&left), numeric_type_name(&right)) {
-            (Some("Float"), Some(_)) | (Some(_), Some("Float")) => Some(named_builtin("Float")),
-            (Some("Int"), Some("Int")) => Some(named_builtin("Int")),
-            (None, Some(right_name)) if is_meta_type(&left) => self
-                .unifier
-                .unify(&left, &named_builtin(right_name))
-                .ok()
-                .map(|()| named_builtin(right_name)),
-            (Some(left_name), None) if is_meta_type(&right) => self
-                .unifier
-                .unify(&right, &named_builtin(left_name))
-                .ok()
-                .map(|()| named_builtin(left_name)),
+            (Some(_), Some(_)) => resolve_builtin_operator_signature(&left, operator, &right)
+                .map(|signature| signature.result),
+            (None, Some(right_name)) if is_meta_type(&left) => {
+                let right = named_builtin(right_name);
+                self.unifier.unify(&left, &right).ok()?;
+                resolve_builtin_operator_signature(&right, operator, &right)
+                    .map(|signature| signature.result)
+            }
+            (Some(left_name), None) if is_meta_type(&right) => {
+                let left = named_builtin(left_name);
+                self.unifier.unify(&right, &left).ok()?;
+                resolve_builtin_operator_signature(&left, operator, &left)
+                    .map(|signature| signature.result)
+            }
             _ => None,
         }
-    }
-
-    pub(super) fn infer_numeric_comparison_type(
-        &mut self,
-        left: &Type,
-        right: &Type,
-    ) -> Option<Type> {
-        self.infer_numeric_binary_type(left, right)
-            .map(|_| named_builtin("Bool"))
     }
 
     pub(super) fn infer_same_named_binary_type(

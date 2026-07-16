@@ -5810,6 +5810,70 @@ fn builtin_operator_results_are_inferred() {
 }
 
 #[test]
+fn builtin_method_table_preserves_every_concrete_operator_combination() {
+    let arithmetic = ["+", "-", "*", "/", "%", "^"];
+    let comparisons = ["<", "<=", ">", ">="];
+    let numeric_pairs = [
+        ("Int", "7", "Int", "2", "Int"),
+        ("Float", "7.0", "Float", "2.0", "Float"),
+        ("Int", "7", "Float", "2.0", "Float"),
+        ("Float", "7.0", "Int", "2", "Float"),
+    ];
+
+    for (left_type, left_value, right_type, right_value, arithmetic_result) in numeric_pairs {
+        for operator in arithmetic {
+            assert_operator_type_checks(
+                left_type,
+                left_value,
+                operator,
+                right_type,
+                right_value,
+                arithmetic_result,
+            );
+        }
+        for operator in comparisons {
+            assert_operator_type_checks(
+                left_type,
+                left_value,
+                operator,
+                right_type,
+                right_value,
+                "Bool",
+            );
+        }
+    }
+
+    assert_operator_type_checks("Text", "\"a\"", "+", "Text", "\"b\"", "Text");
+}
+
+fn assert_operator_type_checks(
+    left_type: &str,
+    left_value: &str,
+    operator: &str,
+    right_type: &str,
+    right_value: &str,
+    result_type: &str,
+) {
+    let source = format!(
+        "left: {left_type} = {left_value}\n\
+         right: {right_type} = {right_value}\n\
+         result: {result_type} = left {operator} right\n"
+    );
+    let output = parse_module(&source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics for {left_type} {operator} {right_type}: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "{left_type} {operator} {right_type} should resolve to {result_type}: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn numeric_binary_literals_synthesize_folded_singleton() {
     let output = parse_module("n = 1 + 2\n");
     let known_types = known_type_names(&output.module);
