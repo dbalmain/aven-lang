@@ -1420,6 +1420,102 @@ fn cross_module_comptime_type_function_reexport() {
     assert_no_errors(&ok.reports);
 }
 
+#[test]
+fn std_array_ordered_constraints_cross_module_boundaries_and_run() {
+    let dir = TempDir::new("std-array-ordered");
+    write(
+        dir.path(),
+        "mid.av",
+        "{ sortBy } = import(\"std/array\")\n{ sortBy }\n",
+    );
+    write(
+        dir.path(),
+        "good.av",
+        concat!(
+            "array = import(\"std/array\")\n",
+            "{ sortBy } = import(\"./mid\")\n",
+            "ints = sortBy([{ key: 3 }, { key: 1 }, { key: 2 }], (item) => item.key)\n",
+            "floats = array.sortBy([{ key: 2.5 }, { key: 1.5 }], (item) => item.key)\n",
+            "smallest: ?Float = array.minimum([3.5, 1.5, 2.5])\n",
+            "largest: ?Float = array.maximum([3.5, 1.5, 2.5])\n",
+            "{ ints, floats, smallest, largest }\n",
+        ),
+    );
+    let good_path = dir.path().join("good.av");
+    let roots = ModuleRoots::discover(&good_path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library());
+    let checked =
+        check_path_with_host_globals_and_roots(&good_path, &HostGlobals::default(), &roots)
+            .expect("ordered std calls should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals_and_roots(&good_path, vec![], &roots)
+        .expect("ordered std calls should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some(
+            "{ ints: [{ key: 1 }, { key: 2 }, { key: 3 }], floats: [{ key: 1.5 }, { key: 2.5 }], smallest: 1.5, largest: 3.5 }"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn std_array_sort_by_rejects_unsupported_text_keys_at_importer_calls() {
+    let dir = TempDir::new("std-array-unordered");
+    write(
+        dir.path(),
+        "mid.av",
+        "{ sortBy } = import(\"std/array\")\n{ sortBy }\n",
+    );
+    for (file, source) in [
+        (
+            "field.av",
+            "array = import(\"std/array\")\narray.sortBy([{ key: \"b\" }, { key: \"a\" }], (item) => item.key)\n",
+        ),
+        (
+            "pattern.av",
+            "{ sortBy } = import(\"./mid\")\nsortBy([{ key: \"b\" }, { key: \"a\" }], (item) => item.key)\n",
+        ),
+    ] {
+        write(dir.path(), file, source);
+        let path = dir.path().join(file);
+        let roots = ModuleRoots::discover(&path)
+            .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library());
+        let checked =
+            check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+                .expect("unsupported key should produce a checker diagnostic");
+        let messages = checked
+            .reports
+            .iter()
+            .flat_map(|report| &report.diagnostics)
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            messages.iter().any(|message| {
+                message.contains("`Text` does not satisfy")
+                    && message.contains("method `<` is missing")
+            }),
+            "expected qualified Ordered failure in {file}, got {:#?}",
+            checked.reports
+        );
+        assert_has_code(&checked.reports, codes::ty::INVALID_OPERATOR_OPERANDS);
+
+        let ran = eval_path_with_globals_and_roots(&path, vec![], &roots)
+            .expect("run should stop at the qualified checker diagnostic");
+        assert_has_code(&ran.reports, codes::ty::INVALID_OPERATOR_OPERANDS);
+        assert!(
+            !ran.reports
+                .iter()
+                .flat_map(|report| &report.diagnostics)
+                .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::runtime::TYPE_ERROR)),
+            "unsupported key must not reach runtime in {file}: {:#?}",
+            ran.reports
+        );
+    }
+}
+
 fn assert_no_errors(reports: &[aven_core::DiagnosticReport]) {
     assert!(
         !reports.iter().any(aven_core::DiagnosticReport::has_errors),

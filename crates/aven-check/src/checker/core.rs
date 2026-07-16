@@ -43,6 +43,7 @@ impl<'a> Checker<'a> {
             inline_lambda_type_var_scopes: Vec::new(),
             requirement_self_scopes: Vec::new(),
             method_obligations: Vec::new(),
+            next_method_obligation_id: 0,
             method_assumption_scopes: Vec::new(),
             pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),

@@ -378,11 +378,7 @@ impl<'a> Checker<'a> {
             );
         }
         self.report_propagated_errors_against_annotation(&body_expected, &propagation);
-        if requirements.is_empty() && self.checking_embedded_std_before_constraint_migration() {
-            self.finish_checked_lambda_obligations(obligation_marker);
-        } else {
-            self.finish_non_generalizing_lambda_obligations(obligation_marker);
-        }
+        self.finish_non_generalizing_lambda_obligations(obligation_marker);
         self.pop_method_assumptions();
         self.local_comptime_params.pop();
         self.local_types.pop();

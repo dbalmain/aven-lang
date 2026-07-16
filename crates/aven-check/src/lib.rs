@@ -20,9 +20,9 @@ pub use host_comptime::{
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
 pub use ty::{
-    RecordField, RecursiveTypeId, Row, RowEntry, RowTail, Type, function_required_arity,
-    function_signature, is_text_type, literal_union_members, record_fields, render_type,
-    type_contains_deferred, variant_tags,
+    MethodConstraint, QualifiedType, RecordField, RecursiveTypeId, Row, RowEntry, RowTail, Type,
+    function_required_arity, function_signature, is_text_type, literal_union_members,
+    record_fields, render_type, type_contains_deferred, variant_tags,
 };
 
 /// Clone the completed one-level head for a recursive reference. Nested
@@ -70,6 +70,9 @@ pub struct CheckOutput {
     pub inferred_types: Vec<InferredType>,
     pub type_definitions: HashMap<String, Type>,
     pub top_level_types: HashMap<String, Type>,
+    /// Exported value types with any method constraints reified alongside
+    /// their ordinary type.
+    pub top_level_qualified_types: HashMap<String, QualifiedType>,
     /// Completed one-level heads for parameterized recursive type references.
     /// Keeping these in a side map makes `Type::Recursive` a small atomic node
     /// while allowing checker consumers to unfold only at structural demands.
@@ -112,6 +115,7 @@ impl InferredType {
 pub struct ModuleImports {
     types: HashMap<String, Option<Type>>,
     type_exports: HashMap<String, HashMap<String, Type>>,
+    qualified_exports: HashMap<String, HashMap<String, QualifiedType>>,
     /// Comptime-evaluable function exports keyed by import specifier then export
     /// name. Carries owned AST so importers can specialize type applications
     /// such as `pair(Int)` without borrowing the dependency's module.
@@ -127,6 +131,7 @@ impl ModuleImports {
                 .map(|(specifier, ty)| (specifier, Some(ty)))
                 .collect(),
             type_exports: HashMap::new(),
+            qualified_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
         }
@@ -139,6 +144,7 @@ impl ModuleImports {
                 .map(|specifier| (specifier, None))
                 .collect(),
             type_exports: HashMap::new(),
+            qualified_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
         }
@@ -158,6 +164,14 @@ impl ModuleImports {
         exports: HashMap<String, Type>,
     ) {
         self.type_exports.insert(specifier.into(), exports);
+    }
+
+    pub fn insert_qualified_exports(
+        &mut self,
+        specifier: impl Into<String>,
+        exports: HashMap<String, QualifiedType>,
+    ) {
+        self.qualified_exports.insert(specifier.into(), exports);
     }
 
     pub fn insert_comptime_exports(
@@ -192,6 +206,10 @@ impl ModuleImports {
 
     pub fn type_export(&self, specifier: &str, name: &str) -> Option<&Type> {
         self.type_exports.get(specifier)?.get(name)
+    }
+
+    pub fn qualified_export(&self, specifier: &str, name: &str) -> Option<&QualifiedType> {
+        self.qualified_exports.get(specifier)?.get(name)
     }
 
     pub fn comptime_export(&self, specifier: &str, name: &str) -> Option<&ComptimeExport> {
@@ -353,14 +371,18 @@ pub fn check_module_with_host_globals_and_imports_in(
     checker.diagnostics.extend(reserved_diagnostics);
     checker.check_module(module);
     let export_names = final_record_names(module);
-    let top_level_types = aven_parser::collect_declarations(module)
+    let top_level_qualified_types: HashMap<_, _> = aven_parser::collect_declarations(module)
         .into_iter()
         .filter(|declaration| export_names.contains(&declaration.name))
         .filter_map(|declaration| {
             checker
-                .infer_top_level_value_for_output(&declaration.name)
-                .map(|ty| (declaration.name, ty))
+                .infer_top_level_qualified_type_for_output(&declaration.name)
+                .map(|qualified| (declaration.name, qualified))
         })
+        .collect();
+    let top_level_types = top_level_qualified_types
+        .iter()
+        .map(|(name, qualified)| (name.clone(), qualified.ty.clone()))
         .collect();
 
     CheckOutput {
@@ -369,6 +391,7 @@ pub fn check_module_with_host_globals_and_imports_in(
         inferred_types: checker.inferred_types,
         type_definitions: checker.type_definitions.clone(),
         top_level_types,
+        top_level_qualified_types,
     }
 }
 

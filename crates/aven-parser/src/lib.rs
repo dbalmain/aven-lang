@@ -25,8 +25,8 @@ pub use parser::{
     SpreadBinding, parse_module, parse_source,
 };
 pub use resolve::{
-    BindingSite, annotation_for_definition, lambda_parts, pattern_bindings, render_annotation,
-    static_import_specifier,
+    BindingSite, annotation_for_definition, is_method_requirement_row, lambda_parts,
+    pattern_bindings, render_annotation, static_import_specifier,
 };
 pub use resolve::{resolve_local_definition, resolve_local_references, visible_local_bindings};
 pub(crate) use strings::decode_string_fragment;

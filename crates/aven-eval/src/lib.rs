@@ -9,7 +9,7 @@ use std::{
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
     Expr, ExprKind, InterpolationSegment, Item, Literal, MatchArm, Module, PropagationMode,
-    RecordEntry, decode_string_literal,
+    RecordEntry, decode_string_literal, is_method_requirement_row,
 };
 
 pub mod logging;
@@ -933,6 +933,13 @@ fn eval_items(
     let mut diagnostics = Vec::new();
 
     for item in items {
+        if let Item::Binding(binding) = item
+            && is_method_requirement_row(&binding.value)
+        {
+            value = None;
+            continue;
+        }
+
         if let Item::Binding(binding) = item
             && let Some(runtime_type) = runtime_types.and_then(|types| types.get(&binding.name))
         {

@@ -375,7 +375,9 @@ impl<'a> Checker<'a> {
 
         if let Some(arm) = self.comptime_selected_match_arm(subject, arms) {
             let inferred_subject = self.infer(env, subject);
-            let subject_type = self.resolve_if_concrete(&inferred_subject);
+            let subject_type = self
+                .resolve_if_concrete(&inferred_subject)
+                .or_else(|| unresolved_pattern_subject(self.normalize(&inferred_subject)));
             let mut arm_env = env.clone();
             for (name, ty) in
                 pattern_local_types(&self.type_definitions, &arm.pattern, subject_type.as_ref())
@@ -393,6 +395,11 @@ impl<'a> Checker<'a> {
         let subject_type = self
             .resolve_if_concrete(&inferred_subject)
             .map(|ty| self.normalize_for_demand(&ty))
+            .or_else(|| {
+                unresolved_pattern_subject(
+                    self.normalize_for_demand(&self.unifier.resolve(&inferred_subject)),
+                )
+            })
             .or(seeded);
         let mut body_types = Vec::new();
 
@@ -725,4 +732,10 @@ impl<'a> Checker<'a> {
     pub(super) fn resolved_match_result_type(&self, ty: &Type) -> Type {
         self.normalize(&self.resolve_and_default(ty))
     }
+}
+
+fn unresolved_pattern_subject(ty: Type) -> Option<Type> {
+    // A wrapper such as `?a` has enough structure to bind a non-empty arm to
+    // `a`, even though the metavariable keeps the whole subject non-concrete.
+    (!matches!(ty, Type::Deferred | Type::Meta(_) | Type::Variable(_))).then_some(ty)
 }

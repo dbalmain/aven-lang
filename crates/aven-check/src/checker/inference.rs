@@ -41,16 +41,27 @@ impl<'a> Checker<'a> {
         self.resolve_if_concrete(&ty)
     }
 
-    pub(crate) fn infer_top_level_value_for_output(&mut self, name: &str) -> Option<Type> {
+    pub(crate) fn infer_top_level_qualified_type_for_output(
+        &mut self,
+        name: &str,
+    ) -> Option<QualifiedType> {
         let scheme = self.infer_top_level(name)?;
         if scheme.vars.is_empty() && scheme.row_vars.is_empty() {
             // Annotation-sourced schemes are mono even when they carry
             // `Type::Variable` binders (host-style generics). Those are already
             // export-ready; `resolve_if_concrete` would reject them.
             if crate::ty::type_contains_variable(&scheme.ty) {
-                return Some(self.normalize(&scheme.ty));
+                return Some(QualifiedType {
+                    ty: self.normalize(&scheme.ty),
+                    constraints: export_method_constraints(&scheme, &HashMap::new()),
+                });
             }
-            return self.resolve_if_concrete(&scheme.ty);
+            return self
+                .resolve_if_concrete(&scheme.ty)
+                .map(|ty| QualifiedType {
+                    ty,
+                    constraints: export_method_constraints(&scheme, &HashMap::new()),
+                });
         }
         // Reify quantified schemes as Type::Variable form so module exports
         // carry host-style generics (`scheme_from_global` understands them).
@@ -74,7 +85,10 @@ impl<'a> Checker<'a> {
                 RowTail::Closed | RowTail::Open | RowTail::Var(_) => None,
             },
         );
-        Some(ty)
+        Some(QualifiedType {
+            ty,
+            constraints: export_method_constraints(&scheme, &names),
+        })
     }
 
     #[cfg(test)]
@@ -133,23 +147,37 @@ impl<'a> Checker<'a> {
                 Some(name),
             )
         } else if let Some(binding) = pattern_binding {
-            let obligation_marker = self.method_obligation_marker();
-            let ty = self.infer(&TypeEnv::new(), &binding.value);
-            let resolved = self.normalize(&self.resolve_and_default(&ty));
-            let local_types =
-                pattern_local_types(&self.type_definitions, &binding.pattern, Some(&resolved));
-            let ty = local_types
-                .into_iter()
-                .find_map(|(binding_name, ty)| (binding_name == name).then_some(ty))
-                .and_then(local_value_type_as_type)
-                .unwrap_or(Type::Deferred);
-            // Module exports reify polymorphic functions as `Type::Variable`
-            // binders. Treat them like host-generic globals so each use
-            // instantiates fresh metas.
-            if crate::ty::type_contains_variable(&ty) {
-                super::scheme_from_global(&ty, &mut self.unifier)
+            let qualified_import =
+                aven_parser::static_import_specifier(&binding.value).and_then(|specifier| {
+                    let source = super::import_pattern_source_for_binder(&binding.pattern, name)?;
+                    self.imports.qualified_export(&specifier, source).cloned()
+                });
+            if let Some(qualified) = qualified_import {
+                scheme_from_qualified_type(
+                    &qualified,
+                    name,
+                    binding.pattern.span,
+                    &mut self.unifier,
+                )
             } else {
-                self.generalize_method_obligations(ty, &[], &[], obligation_marker, Some(name))
+                let obligation_marker = self.method_obligation_marker();
+                let ty = self.infer(&TypeEnv::new(), &binding.value);
+                let resolved = self.normalize(&self.resolve_and_default(&ty));
+                let local_types =
+                    pattern_local_types(&self.type_definitions, &binding.pattern, Some(&resolved));
+                let ty = local_types
+                    .into_iter()
+                    .find_map(|(binding_name, ty)| (binding_name == name).then_some(ty))
+                    .and_then(local_value_type_as_type)
+                    .unwrap_or(Type::Deferred);
+                // Module exports reify polymorphic functions as `Type::Variable`
+                // binders. Treat them like host-generic globals so each use
+                // instantiates fresh metas.
+                if crate::ty::type_contains_variable(&ty) {
+                    super::scheme_from_global(&ty, &mut self.unifier)
+                } else {
+                    self.generalize_method_obligations(ty, &[], &[], obligation_marker, Some(name))
+                }
             }
         } else {
             TypeScheme::mono(Type::Deferred)
@@ -1328,6 +1356,10 @@ impl<'a> Checker<'a> {
             return self.instantiate_scheme_at(&scheme, field_span);
         }
 
+        if let Some(scheme) = self.imported_field_scheme(env, receiver, field, field_span) {
+            return self.instantiate_scheme_at(&scheme, field_span);
+        }
+
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let receiver_type = self.infer(env, receiver);
@@ -1387,6 +1419,34 @@ impl<'a> Checker<'a> {
             self.report_unguarded_empty_field_access(receiver, field_span, &empties);
         }
         rewrap_empty_values(field_type, &empties)
+    }
+
+    fn imported_field_scheme(
+        &mut self,
+        env: &TypeEnv,
+        receiver: &Expr,
+        field: &str,
+        origin_span: Span,
+    ) -> Option<TypeScheme> {
+        let specifier = aven_parser::static_import_specifier(receiver).or_else(|| {
+            let ExprKind::Name(name) = &ungroup_expr(receiver).kind else {
+                return None;
+            };
+            if env.get(name).is_some() {
+                return None;
+            }
+            self.bindings
+                .get(name)
+                .and_then(|binding| *binding)
+                .and_then(|binding| aven_parser::static_import_specifier(&binding.value))
+        })?;
+        let qualified = self.imports.qualified_export(&specifier, field)?.clone();
+        Some(scheme_from_qualified_type(
+            &qualified,
+            field,
+            origin_span,
+            &mut self.unifier,
+        ))
     }
 
     pub(super) fn report_unguarded_empty_field_access(

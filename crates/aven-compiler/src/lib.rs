@@ -661,6 +661,7 @@ pub struct SemanticOutput {
     pub type_definitions: HashMap<String, Type>,
     pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     pub top_level_types: HashMap<String, Type>,
+    pub top_level_qualified_types: HashMap<String, aven_check::QualifiedType>,
     pub name_duration: Option<Duration>,
     pub check_duration: Option<Duration>,
 }
@@ -722,6 +723,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         type_definitions,
         recursive_type_unfoldings,
         top_level_types,
+        top_level_qualified_types,
     } = check_output;
     let diagnostics = if parse_has_errors {
         Vec::new()
@@ -739,6 +741,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         type_definitions,
         recursive_type_unfoldings,
         top_level_types,
+        top_level_qualified_types,
         name_duration: Some(name_duration),
         check_duration: Some(check_duration),
     }

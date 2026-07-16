@@ -32,7 +32,7 @@ use crate::ty::{
     type_contains_deferred, type_contains_variable, type_is_uninhabited, type_variable_names,
 };
 use crate::unify::Unifier;
-use crate::{InferredType, ModuleImports};
+use crate::{InferredType, MethodConstraint, ModuleImports, QualifiedType};
 
 mod annotations;
 mod comptime_context;
@@ -46,7 +46,7 @@ mod rows;
 mod type_checking;
 mod value;
 
-pub(crate) use constraints::is_method_requirement_row;
+pub(crate) use aven_parser::is_method_requirement_row;
 
 pub(crate) struct Checker<'a> {
     known_types: HashSet<String>,
@@ -98,6 +98,7 @@ pub(crate) struct Checker<'a> {
     inline_lambda_type_var_scopes: Vec<HashMap<String, Type>>,
     requirement_self_scopes: Vec<Type>,
     method_obligations: Vec<MethodPredicate>,
+    next_method_obligation_id: usize,
     method_assumption_scopes: Vec<Vec<MethodPredicate>>,
     pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -1552,6 +1553,67 @@ fn scheme_from_global_with_names(
         .map(|(name, id)| (name, Type::Meta(id)))
         .collect();
     (scheme, names)
+}
+
+fn scheme_from_qualified_type(
+    qualified: &QualifiedType,
+    binding: &str,
+    origin_span: Span,
+    unifier: &mut Unifier,
+) -> TypeScheme {
+    let (mut scheme, names) = scheme_from_global_with_names(&qualified.ty, unifier);
+    scheme.predicates = qualified
+        .constraints
+        .iter()
+        .map(|constraint| MethodPredicate {
+            candidate: instantiate_constraint_type(&constraint.candidate, &names),
+            member: constraint.member.clone(),
+            params: constraint
+                .params
+                .iter()
+                .map(|param| instantiate_constraint_type(param, &names))
+                .collect(),
+            result: instantiate_constraint_type(&constraint.result, &names),
+            operator_span: origin_span,
+            binding: Some(binding.to_owned()),
+            call_span: None,
+            obligation_id: None,
+        })
+        .collect();
+    scheme
+}
+
+fn instantiate_constraint_type(ty: &Type, names: &HashMap<String, Type>) -> Type {
+    map_type(ty, &mut |node| {
+        let Type::Variable(name) = node else {
+            return None;
+        };
+        names.get(name).cloned()
+    })
+}
+
+fn export_method_constraints(
+    scheme: &TypeScheme,
+    names: &HashMap<u32, Type>,
+) -> Vec<MethodConstraint> {
+    let export_type = |ty: &Type| {
+        map_type(ty, &mut |node| {
+            let Type::Meta(id) = node else {
+                return None;
+            };
+            names.get(id).cloned()
+        })
+    };
+    scheme
+        .predicates
+        .iter()
+        .map(|predicate| MethodConstraint {
+            candidate: export_type(&predicate.candidate),
+            member: predicate.member.clone(),
+            params: predicate.params.iter().map(export_type).collect(),
+            result: export_type(&predicate.result),
+        })
+        .collect()
 }
 
 fn applied_type_constructor_mismatch(expected: &Type, actual: &Type) -> bool {

@@ -536,6 +536,25 @@ impl TypeScheme {
     }
 }
 
+/// Export-safe form of a qualified value type.
+///
+/// Quantified variables are reified as [`Type::Variable`] nodes so another
+/// checker can instantiate the ordinary type and its constraints together
+/// without sharing unifier-local metavariable ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualifiedType {
+    pub ty: Type,
+    pub constraints: Vec<MethodConstraint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodConstraint {
+    pub candidate: Type,
+    pub member: String,
+    pub params: Vec<Type>,
+    pub result: Type,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MethodPredicate {
     pub(crate) candidate: Type,
@@ -545,6 +564,7 @@ pub(crate) struct MethodPredicate {
     pub(crate) operator_span: Span,
     pub(crate) binding: Option<String>,
     pub(crate) call_span: Option<Span>,
+    pub(crate) obligation_id: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

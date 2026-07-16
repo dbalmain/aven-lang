@@ -28,17 +28,38 @@ impl<'a> Checker<'a> {
         for predicate in &mut predicates {
             predicate.call_span = Some(call_span);
         }
-        self.method_obligations.extend(predicates);
+        self.push_new_method_obligations(predicates);
         self.simplify_method_obligations(false);
         ty
     }
 
     pub(super) fn method_obligation_marker(&self) -> usize {
-        self.method_obligations.len()
+        self.next_method_obligation_id
     }
 
     pub(super) fn take_method_obligations_since(&mut self, marker: usize) -> Vec<MethodPredicate> {
-        self.method_obligations.split_off(marker)
+        let mut before = Vec::new();
+        let mut since = Vec::new();
+        for predicate in std::mem::take(&mut self.method_obligations) {
+            if predicate.obligation_id.is_some_and(|id| id >= marker) {
+                since.push(predicate);
+            } else {
+                before.push(predicate);
+            }
+        }
+        self.method_obligations = before;
+        since
+    }
+
+    fn push_new_method_obligations(
+        &mut self,
+        predicates: impl IntoIterator<Item = MethodPredicate>,
+    ) {
+        for mut predicate in predicates {
+            predicate.obligation_id = Some(self.next_method_obligation_id);
+            self.next_method_obligation_id += 1;
+            self.method_obligations.push(predicate);
+        }
     }
 
     pub(super) fn add_operator_obligation(
@@ -49,7 +70,7 @@ impl<'a> Checker<'a> {
         result: Type,
         operator_span: Span,
     ) {
-        self.method_obligations.push(MethodPredicate {
+        self.push_new_method_obligations([MethodPredicate {
             candidate: candidate.clone(),
             member: member.to_owned(),
             params: vec![param],
@@ -57,7 +78,8 @@ impl<'a> Checker<'a> {
             operator_span,
             binding: None,
             call_span: None,
-        });
+            obligation_id: None,
+        }]);
         self.simplify_method_obligations(false);
     }
 
@@ -101,6 +123,7 @@ impl<'a> Checker<'a> {
             operator_span: predicate.operator_span,
             binding: predicate.binding.clone(),
             call_span: predicate.call_span,
+            obligation_id: predicate.obligation_id,
         }
     }
 
@@ -286,6 +309,7 @@ impl<'a> Checker<'a> {
                         operator_span: *name_span,
                         binding: None,
                         call_span: None,
+                        obligation_id: None,
                     });
                 }
                 RecordEntry::Spread { value, .. } => self.collect_requirement_bound(
@@ -325,7 +349,7 @@ impl<'a> Checker<'a> {
                 self.report_missing_requirement(&predicate);
             }
         }
-        self.method_obligations.extend(assumptions);
+        self.push_new_method_obligations(assumptions);
     }
 
     pub(super) fn finish_checked_lambda_obligations(&mut self, marker: usize) {
@@ -338,14 +362,6 @@ impl<'a> Checker<'a> {
         for predicate in self.take_method_obligations_since(marker) {
             self.report_missing_requirement(&predicate);
         }
-    }
-
-    pub(super) fn checking_embedded_std_before_constraint_migration(&self) -> bool {
-        matches!(
-            &self.module_identity,
-            comptime::ComptimeModuleIdentity::Specifier(specifier)
-                if specifier.starts_with("std/")
-        )
     }
 
     pub(super) fn qualify_scheme(
@@ -450,23 +466,26 @@ impl<'a> Checker<'a> {
     fn report_missing_method(&mut self, owner: &Type, predicate: &MethodPredicate) {
         let owner = display_inferred_type(owner).render();
         let required = render_predicate_requirement(predicate);
+        let primary_span = predicate.call_span.unwrap_or(predicate.operator_span);
         let mut diagnostic = Diagnostic::error(format!(
             "`{owner}` does not satisfy `{required}`: method `{}` is missing",
             predicate.member
         ))
         .with_code(codes::ty::INVALID_OPERATOR_OPERANDS)
         .with_label(Label::primary(
-            predicate.call_span.unwrap_or(predicate.operator_span),
+            primary_span,
             format!("`{owner}` has no `{}` method", predicate.member),
-        ))
-        .with_label(Label::primary(
-            predicate.operator_span,
-            "operator requirement originated here",
         ))
         .with_note(format!(
             "expected `{}` after substituting `{owner}` for `Self`",
             render_method_signature(&predicate.params, &predicate.result)
         ));
+        if predicate.operator_span != primary_span {
+            diagnostic = diagnostic.with_label(Label::primary(
+                predicate.operator_span,
+                "operator requirement originated here",
+            ));
+        }
         if let Some(binding) = &predicate.binding {
             diagnostic = diagnostic.with_note(format!(
                 "required while instantiating generic binding `{binding}` at this call site"
@@ -482,30 +501,32 @@ impl<'a> Checker<'a> {
         predicate: &MethodPredicate,
     ) {
         let owner = display_inferred_type(owner).render();
-        self.push_unique_diagnostic(
-            Diagnostic::error(format!(
-                "`{owner}` does not satisfy `{}`: method `{}` has an incompatible signature",
-                render_predicate_requirement(predicate),
-                predicate.member
-            ))
-            .with_code(codes::ty::MISMATCH)
-            .with_label(Label::primary(
-                predicate.call_span.unwrap_or(predicate.operator_span),
-                "the concrete method does not match this requirement",
-            ))
-            .with_label(Label::primary(
+        let primary_span = predicate.call_span.unwrap_or(predicate.operator_span);
+        let mut diagnostic = Diagnostic::error(format!(
+            "`{owner}` does not satisfy `{}`: method `{}` has an incompatible signature",
+            render_predicate_requirement(predicate),
+            predicate.member
+        ))
+        .with_code(codes::ty::MISMATCH)
+        .with_label(Label::primary(
+            primary_span,
+            "the concrete method does not match this requirement",
+        ))
+        .with_note(format!(
+            "actual: `{}`",
+            render_method_signature(&actual.params, &actual.result)
+        ))
+        .with_note(format!(
+            "expected after substituting `{owner}` for `Self`: `{}`",
+            render_method_signature(&predicate.params, &predicate.result)
+        ));
+        if predicate.operator_span != primary_span {
+            diagnostic = diagnostic.with_label(Label::primary(
                 predicate.operator_span,
                 "operator requirement originated here",
-            ))
-            .with_note(format!(
-                "actual: `{}`",
-                render_method_signature(&actual.params, &actual.result)
-            ))
-            .with_note(format!(
-                "expected after substituting `{owner}` for `Self`: `{}`",
-                render_method_signature(&predicate.params, &predicate.result)
-            )),
-        );
+            ));
+        }
+        self.push_unique_diagnostic(diagnostic);
     }
 
     fn report_unresolved_method_receiver(&mut self, predicate: &MethodPredicate) {
@@ -636,36 +657,6 @@ impl<'a> Checker<'a> {
                 .with_note("insert `..` before the closing `}`"),
         );
     }
-}
-
-pub(crate) fn is_method_requirement_row(expr: &Expr) -> bool {
-    let ExprKind::Record(entries) = &ungroup_expr(expr).kind else {
-        return false;
-    };
-    entries.iter().all(|entry| {
-        matches!(
-            entry,
-            RecordEntry::Field {
-                value: Expr {
-                    kind: ExprKind::Arrow { .. },
-                    ..
-                },
-                ..
-            } | RecordEntry::Spread { .. }
-                | RecordEntry::Open { .. }
-        )
-    }) && entries.iter().any(|entry| {
-        matches!(
-            entry,
-            RecordEntry::Field {
-                value: Expr {
-                    kind: ExprKind::Arrow { .. },
-                    ..
-                },
-                ..
-            } | RecordEntry::Spread { .. }
-        )
-    })
 }
 
 fn deduplicate_predicates(predicates: Vec<MethodPredicate>) -> Vec<MethodPredicate> {

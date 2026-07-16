@@ -570,6 +570,7 @@ impl Unifier {
                 operator_span: predicate.operator_span,
                 binding: predicate.binding.clone(),
                 call_span: predicate.call_span,
+                obligation_id: predicate.obligation_id,
             })
             .collect();
 

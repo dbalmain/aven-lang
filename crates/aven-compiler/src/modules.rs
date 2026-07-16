@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use aven_check::{
-    ComptimeExport, ComptimeModuleIdentity, ModuleImports as CheckModuleImports, RecursiveTypeId,
-    RowTail, Type,
+    ComptimeExport, ComptimeModuleIdentity, ModuleImports as CheckModuleImports, QualifiedType,
+    RecursiveTypeId, RowTail, Type,
 };
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
@@ -198,6 +198,7 @@ enum CheckExport {
     Record {
         ty: Type,
         type_exports: HashMap<String, Type>,
+        qualified_exports: HashMap<String, QualifiedType>,
         comptime_exports: HashMap<String, ComptimeExport>,
         recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     },
@@ -418,6 +419,12 @@ pub fn eval_path_with_host_globals_and_roots(
             &check_imports,
             module_identity.clone(),
         );
+        let failed_method_constraints = semantic
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| failed_method_constraint(diagnostic))
+            .cloned()
+            .collect::<Vec<_>>();
         let runtime_types = runtime_type_bindings(
             &semantic.type_definitions,
             &semantic.recursive_type_unfoldings,
@@ -433,6 +440,16 @@ pub fn eval_path_with_host_globals_and_roots(
                 &module_identity,
             )
         };
+
+        if !failed_method_constraints.is_empty() {
+            let file_id = graph.nodes[node_id].file.id;
+            diagnostics
+                .entry(file_id)
+                .or_default()
+                .extend(failed_method_constraints);
+            exports[node_id] = EvalExport::HasErrors;
+            continue;
+        }
 
         let imports = eval_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
         let file_id = graph.nodes[node_id].file.id;
@@ -469,6 +486,18 @@ pub fn eval_path_with_host_globals_and_roots(
         reports,
         value: entry_value,
     })
+}
+
+fn failed_method_constraint(diagnostic: &Diagnostic) -> bool {
+    diagnostic.is_error()
+        && diagnostic
+            .notes
+            .iter()
+            .any(|note| note.starts_with("required while instantiating generic binding "))
+        && matches!(
+            diagnostic.code.as_deref(),
+            Some(codes::ty::INVALID_OPERATOR_OPERANDS | codes::ty::MISMATCH)
+        )
 }
 
 fn globals_for_node(globals: &HostGlobals, roots: &ModuleRoots, path: &Path) -> HostGlobals {
@@ -798,11 +827,14 @@ fn check_imports_for_node(
             Some(CheckExport::Record {
                 ty,
                 type_exports,
+                qualified_exports,
                 comptime_exports,
                 recursive_type_unfoldings,
             }) if !import.failed => {
                 imports.insert(import.specifier.clone(), ty.clone());
                 imports.insert_type_exports(import.specifier.clone(), type_exports.clone());
+                imports
+                    .insert_qualified_exports(import.specifier.clone(), qualified_exports.clone());
                 imports.insert_comptime_exports(import.specifier.clone(), comptime_exports.clone());
                 imports.insert_recursive_type_unfoldings(
                     recursive_type_unfoldings
@@ -954,6 +986,10 @@ fn check_export_for_node(
             return CheckExport::Record {
                 ty: rebuilt,
                 type_exports: HashMap::new(),
+                qualified_exports: qualified_value_exports(
+                    entries,
+                    &semantic.top_level_qualified_types,
+                ),
                 comptime_exports,
                 recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
             };
@@ -968,12 +1004,17 @@ fn check_export_for_node(
         return CheckExport::Record {
             ty,
             type_exports: HashMap::new(),
+            qualified_exports: qualified_value_exports(
+                entries,
+                &semantic.top_level_qualified_types,
+            ),
             comptime_exports,
             recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
         };
     }
     let mut fields = Vec::new();
     let mut type_exports = HashMap::new();
+    let mut qualified_exports = HashMap::new();
     for entry in entries {
         let (name, source_name, value_span, source_is_name) = match entry {
             RecordEntry::Field {
@@ -1056,6 +1097,12 @@ fn check_export_for_node(
                     })
             }
         } else {
+            if let Some(qualified) = source_name
+                .and_then(|source| semantic.top_level_qualified_types.get(source))
+                .cloned()
+            {
+                qualified_exports.insert(name.clone(), qualified);
+            }
             let field_ty = source_name
                 .and_then(|source| semantic.top_level_types.get(source))
                 .cloned()
@@ -1094,6 +1141,7 @@ fn check_export_for_node(
             tail: RowTail::Closed,
         }),
         type_exports,
+        qualified_exports,
         comptime_exports,
         recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
     }
@@ -1260,6 +1308,27 @@ fn rebuild_value_export_record(
         entries: fields,
         tail: RowTail::Closed,
     }))
+}
+
+fn qualified_value_exports(
+    entries: &[RecordEntry],
+    top_level_qualified_types: &HashMap<String, QualifiedType>,
+) -> HashMap<String, QualifiedType> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let (export_name, source_name) = match entry {
+                RecordEntry::Field { name, value, .. } => (name.as_str(), expr_name(value)?),
+                RecordEntry::Shorthand { name, .. } => (name.as_str(), name.as_str()),
+                RecordEntry::Rename { from, to, .. } => (to.as_str(), from.as_str()),
+                _ => return None,
+            };
+            top_level_qualified_types
+                .get(source_name)
+                .cloned()
+                .map(|qualified| (export_name.to_owned(), qualified))
+        })
+        .collect()
 }
 
 fn export_provenance_for_node(

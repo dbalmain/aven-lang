@@ -253,41 +253,57 @@ sortWith = (xs, isLess) =>
   seed: Array(a) = []
   sortWithGo(xs, 0, seed, isLess)
 
-# Ascending by projected key. Stable via `sortWith` (equal keys keep input order).
-# Key type `k` is unconstrained: `<` is only valid at numeric instantiations today
-# (no ordered-type constraint machinery). Text keys pass check but fail at runtime.
-sortBy : (Array(a), (a) -> k) -> Array(a)
-sortBy = (xs, key) => sortWith(xs, (l, r) => key(l) < key(r))
+Ordered = {
+  <(Self): Bool
+  ..
+}
 
-minGo : (Array(Int), Int, Int) -> Int
-minGo = (xs, index, best) =>
+# Ascending by projected key. Stable via `sortWith` (equal keys keep input order).
+sortBy : (Array(a), (a) -> k) -> Array(a)
+sortBy = (xs: Array(a), key: (a) -> k): Array(a)
+  k: Ordered
+=>
+  sortWith(xs, (left, right) => key(left) < key(right))
+
+minGo : (Array(t), Int, t) -> t
+minGo = (xs: Array(t), index: Int, best: t): t
+  t: Ordered
+=>
   next = xs[index]
   next ?>
     undefined => best
-    x =>
-      x < best ?>
-        true => minGo(xs, index + 1, x)
+    item =>
+      current: t = item
+      current < best ?>
+        true => minGo(xs, index + 1, current)
         false => minGo(xs, index + 1, best)
 
-minimum : (Array(Int)) -> ?Int
-minimum = (xs) =>
+minimum : (Array(t)) -> ?t
+minimum = (xs: Array(t)): ?t
+  t: Ordered
+=>
   head = xs[0]
   head ?>
     undefined => undefined
     first => minGo(xs, 1, first)
 
-maxGo : (Array(Int), Int, Int) -> Int
-maxGo = (xs, index, best) =>
+maxGo : (Array(t), Int, t) -> t
+maxGo = (xs: Array(t), index: Int, best: t): t
+  t: Ordered
+=>
   next = xs[index]
   next ?>
     undefined => best
-    x =>
-      x > best ?>
-        true => maxGo(xs, index + 1, x)
+    item =>
+      current: t = item
+      best < current ?>
+        true => maxGo(xs, index + 1, current)
         false => maxGo(xs, index + 1, best)
 
-maximum : (Array(Int)) -> ?Int
-maximum = (xs) =>
+maximum : (Array(t)) -> ?t
+maximum = (xs: Array(t)): ?t
+  t: Ordered
+=>
   head = xs[0]
   head ?>
     undefined => undefined

@@ -116,11 +116,17 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        let callee_obligation_marker = self.method_obligation_marker();
         self.check_value_expr(callee);
 
         let env = self.local_types.inference_env();
         let inferred = self.infer(&env, callee);
         let callee_type = self.normalize(&self.resolve_and_default(&inferred));
+        // The callee is inferred above only to choose the directed checking
+        // path. Qualified schemes must be instantiated with the arguments in
+        // `infer_call`; retaining these probe obligations would leave an
+        // unrelated fresh candidate that can never discharge.
+        let _ = self.take_method_obligations_since(callee_obligation_marker);
         let Type::Function {
             params, required, ..
         } = &callee_type

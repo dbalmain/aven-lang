@@ -70,6 +70,42 @@ pub fn lambda_parts(expr: &Expr) -> Option<(&[crate::Param], &Expr)> {
     }
 }
 
+/// Whether an expression is the structural declaration of an operator-method
+/// requirement row rather than a runtime record value.
+pub fn is_method_requirement_row(expr: &Expr) -> bool {
+    let mut expr = expr;
+    while let ExprKind::Group(inner) = &expr.kind {
+        expr = inner;
+    }
+    let ExprKind::Record(entries) = &expr.kind else {
+        return false;
+    };
+    entries.iter().all(|entry| {
+        matches!(
+            entry,
+            RecordEntry::Field {
+                value: Expr {
+                    kind: ExprKind::Arrow { .. },
+                    ..
+                },
+                ..
+            } | RecordEntry::Spread { .. }
+                | RecordEntry::Open { .. }
+        )
+    }) && entries.iter().any(|entry| {
+        matches!(
+            entry,
+            RecordEntry::Field {
+                value: Expr {
+                    kind: ExprKind::Arrow { .. },
+                    ..
+                },
+                ..
+            } | RecordEntry::Spread { .. }
+        )
+    })
+}
+
 pub fn render_annotation(source: &str, annotation: &Expr) -> String {
     source
         .get(annotation.span.start..annotation.span.end)
