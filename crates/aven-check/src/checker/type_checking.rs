@@ -68,6 +68,17 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
+        if matches!(expected, Type::Recursive(_))
+            && let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &value.kind
+        {
+            let env = self.local_types.inference_env();
+            let actual = self.infer_name_reference(&env, name, value.span);
+            if !type_contains_deferred(&actual) {
+                self.check_type_against_type(expected, &actual, value.span);
+            }
+            return;
+        }
+
         if matches!(expected, Type::Recursive(_)) {
             let Type::Recursive(id) = expected else {
                 unreachable!("recursive guard established the variant")

@@ -199,6 +199,29 @@ fn check_reports_type_diagnostics() {
 }
 
 #[test]
+fn check_renders_diagnostics_after_multibyte_source_text() {
+    let file = TempFile::new(
+        "check-unicode-diagnostic-span",
+        "# Strict record self-reference — unproductive\n\
+         Tree = { value: Int, children: Tree }\n",
+    );
+
+    let output = run_aven(["check"], file.path());
+
+    assert_failure(&output);
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("Tree = { value: Int, children: Tree }")
+            && stderr.contains("unproductive recursive type declared here"),
+        "expected the definition and underline label, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(":2:1 ]"),
+        "expected the diagnostic to start at line 2, column 1, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn check_accepts_logger_call_with_optional_fields_omitted() {
     let file = TempFile::new("check-logger-one", "logger.info(\"hi\")\n");
 
@@ -349,6 +372,36 @@ fn run_prints_last_expression_value() {
 
     assert_success(&output);
     assert_eq!(stdout(&output), "7\n");
+}
+
+#[test]
+fn check_and_run_support_applied_recursive_type_values() {
+    let file = TempFile::new(
+        "run-applied-recursive-type",
+        "Chain = (t: Type) => { value: t, next: ?Chain(t) }\n\
+         target = Chain(Int)\n\
+         target\n",
+    );
+
+    assert_success(&run_aven(["check"], file.path()));
+    let output = run_aven(["run"], file.path());
+    assert_success(&output);
+    assert_eq!(stdout(&output), "Chain(Int)\n");
+}
+
+#[test]
+fn check_and_run_support_applied_recursive_decode_targets() {
+    let file = TempFile::new(
+        "run-applied-recursive-decode",
+        "Chain = (t: Type) => { value: t, next: ?Chain(t) }\n\
+         decoded = Json.decode(\"{\\\"value\\\":1}\", Chain(Int))?!\n\
+         decoded.value\n",
+    );
+
+    assert_success(&run_aven(["check"], file.path()));
+    let output = run_aven(["run"], file.path());
+    assert_success(&output);
+    assert_eq!(stdout(&output), "1\n");
 }
 
 #[test]

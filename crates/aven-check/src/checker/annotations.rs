@@ -311,6 +311,7 @@ impl<'a> Checker<'a> {
         checker.comptime_specialization_active = self.comptime_specialization_active.clone();
         checker.recursive_type_unfoldings = self.recursive_type_unfoldings.clone();
         checker.recursive_type_comparisons = self.recursive_type_comparisons.clone();
+        checker.module_identity = self.module_identity.clone();
         checker
             .unifier
             .set_recursive_type_unfoldings(self.recursive_type_unfoldings.clone());

@@ -300,4 +300,41 @@ mod tests {
         assert_eq!(reference.graph.len(), 1);
         assert_eq!(selected, target);
     }
+
+    #[test]
+    fn applied_recursive_type_value_builds_its_own_finite_graph() {
+        let parsed = aven_parser::parse_module(
+            "Chain = (t: Type) => { value: t, next: ?Chain(t) }\n\
+             target = Chain(Int)\n\
+             target\n",
+        );
+        let checked = aven_check::check_module(&parsed.module);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "program checks: {:?}",
+            checked.diagnostics
+        );
+        assert_eq!(checked.recursive_type_unfoldings.len(), 1);
+
+        let bindings = runtime_type_bindings(
+            &checked.type_definitions,
+            &checked.recursive_type_unfoldings,
+        );
+        let outcome = aven_eval::eval_module_with_globals_imports_and_runtime_types(
+            &parsed.module,
+            Vec::new(),
+            &aven_eval::ModuleImports::default(),
+            &bindings,
+        );
+        assert!(
+            outcome.diagnostics.is_empty(),
+            "program evaluates: {:?}",
+            outcome.diagnostics
+        );
+        let Some(Value::Type(RuntimeType::Recursive(reference))) = outcome.value else {
+            panic!("applied specialization evaluates to a recursive type");
+        };
+        assert_eq!(reference.name.as_ref(), "Chain(Int)");
+        assert_eq!(reference.graph.len(), 1);
+    }
 }

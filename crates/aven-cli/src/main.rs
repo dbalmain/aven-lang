@@ -814,10 +814,17 @@ fn span_range(source: &str, span: aven_core::Span) -> Range<usize> {
         source.len()
     );
 
-    let start = span.start.min(source.len());
-    let end = span.end.min(source.len()).max(start);
+    let start = byte_offset_to_char_offset(source, span.start.min(source.len()));
+    let end = byte_offset_to_char_offset(source, span.end.min(source.len())).max(start);
 
     start..end
+}
+
+fn byte_offset_to_char_offset(source: &str, byte_offset: usize) -> usize {
+    source
+        .char_indices()
+        .take_while(|(offset, _)| *offset < byte_offset)
+        .count()
 }
 
 #[cfg(test)]
@@ -848,5 +855,19 @@ mod tests {
             aven_host::standard_check_host_globals().statics
         );
         Ok(())
+    }
+
+    #[test]
+    fn diagnostic_ranges_translate_byte_spans_to_character_offsets() {
+        let source = "# em — dash\nTree = Tree\n";
+        let tree_start = source.find("Tree").expect("source contains Tree");
+
+        assert_eq!(
+            span_range(
+                source,
+                aven_core::Span::new(tree_start, tree_start + "Tree".len())
+            ),
+            12..16
+        );
     }
 }

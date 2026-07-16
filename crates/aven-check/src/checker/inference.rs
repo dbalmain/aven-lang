@@ -162,15 +162,20 @@ impl<'a> Checker<'a> {
         scheme
     }
 
-    pub(super) fn clean_declared_annotation(&self, name: &str) -> Option<Type> {
+    pub(super) fn clean_declared_annotation(&mut self, name: &str) -> Option<Type> {
         let annotation = *self.annotations.get(name)?;
         let mut checker = self.fork_annotation_checker();
         let lowering = checker.lower_annotation_with_diagnostics(annotation);
-        if lowering.diagnostics.is_empty() {
-            Some(checker.normalize(&lowering.ty))
-        } else {
-            None
+        if !lowering.diagnostics.is_empty() {
+            return None;
         }
+
+        let ty = checker.normalize(&lowering.ty);
+        self.comptime_specializations = checker.comptime_specializations;
+        self.recursive_type_unfoldings = checker.recursive_type_unfoldings;
+        self.unifier
+            .set_recursive_type_unfoldings(self.recursive_type_unfoldings.clone());
+        Some(ty)
     }
 
     pub(super) fn infer(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
@@ -2361,9 +2366,14 @@ impl<'a> Checker<'a> {
 
     pub(super) fn is_runtime_computation_call(&self, expr: &Expr) -> bool {
         matches!(&ungroup_expr(expr).kind, ExprKind::Call { callee, .. }
-            if call_callee_name(callee)
-                .and_then(|name| self.lookup_comptime_function_export(name))
-                .is_some_and(|function| function.params.iter().all(|param| !param.comptime)))
+        if call_callee_name(callee).is_some_and(|name| {
+            name.chars().next().is_some_and(char::is_lowercase)
+                && self
+                    .lookup_comptime_function_export(name)
+                    .is_some_and(|function| {
+                        function.params.iter().all(|param| !param.comptime)
+                    })
+        }))
     }
 
     pub(super) fn evaluate_comptime_runtime_argument(

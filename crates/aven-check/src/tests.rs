@@ -162,6 +162,21 @@ fn checked_binding_type(source: &str, name: &str, host: &HostGlobals) -> Type {
         .clone()
 }
 
+fn check_with_file_identity(source: &str) -> CheckOutput {
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    check_module_with_host_globals_and_imports_in(
+        &output.module,
+        &HostGlobals::default(),
+        &ModuleImports::default(),
+        ComptimeModuleIdentity::path("/virtual/recursive-audit.av"),
+    )
+}
+
 fn format_encode_host_globals() -> HostGlobals {
     HostGlobals::default()
         .with_type_definitions(vec![
@@ -8239,6 +8254,134 @@ fn parameterized_recursive_list_constructs_matches_and_renders_by_name() {
         check.recursive_type_unfoldings.values().next(),
         Some(Type::Variant(_))
     ));
+}
+
+#[test]
+fn value_field_check_peels_empty_record_receivers() {
+    let source = concat!(
+        "Node = { value: Int, next: ?Node }\n",
+        "first: Node = { value: 1, next: { value: 2 } }\n",
+        "recursive = first.next?.value\n",
+        "Box = { value: Int }\n",
+        "holder: { box: ?Box } = { box: { value: 9 } }\n",
+        "ordinary = holder.box?.value\n",
+    );
+    let check = check_module(&parse_module(source).module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+
+    let plain = concat!(
+        "Node = { value: Int, next: ?Node }\n",
+        "first: Node = { value: 1, next: { value: 2 } }\n",
+        "bad = first.next.value\n",
+    );
+    let check = check_module(&parse_module(plain).module);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::UNGUARDED_EMPTY_ACCESS),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+        0,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn applied_recursive_record_annotation_uses_its_completed_head() {
+    let check = check_with_file_identity(concat!(
+        "Chain = (t: Type) => { value: t, next: ?Chain(t) }\n",
+        "c: Chain(Int) = { value: 1, next: { value: 2 } }\n",
+        "x = c.value\n",
+        "y = c.next\n",
+    ));
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(check.recursive_type_unfoldings.len(), 1);
+}
+
+#[test]
+fn recursive_specialization_fits_itself_with_file_identity() {
+    let check = check_with_file_identity(concat!(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "ints: List(Int) = @Nil\n",
+        "same: List(Int) = ints\n",
+    ));
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn mutual_recursive_match_payloads_keep_the_canonical_identity() {
+    let check = check_with_file_identity(concat!(
+        "Even = (t: Type) => @{ @Zero, @Succ(Odd(t)) }\n",
+        "Odd = (t: Type) => @{ @Succ(Even(t)) }\n",
+        "depthE : (Even(Int)) -> Int\n",
+        "depthE = (e) => e ?> @Zero => 0, @Succ(o) => 1 + depthO(o)\n",
+        "depthO : (Odd(Int)) -> Int\n",
+        "depthO = (o) => o ?> @Succ(e) => 1 + depthE(e)\n",
+    ));
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn recursive_variant_match_exhaustiveness_unfolds_one_head() {
+    let check = check_with_file_identity(concat!(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "xs: List(Int) = @Nil\n",
+        "v: Int = xs ?> @Cons((n, _)) => n\n",
+    ));
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::NON_EXHAUSTIVE_MATCH),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("missing tag `Nil`")),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn recursive_specialization_mismatches_render_nominal_names() {
+    let check = check_with_file_identity(concat!(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "ints: List(Int) = @Nil\n",
+        "texts: List(Text) = ints\n",
+    ));
+    let mismatches = check
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+        .collect::<Vec<_>>();
+
+    assert_eq!(mismatches.len(), 1, "{:?}", check.diagnostics);
+    assert_eq!(
+        mismatches[0].message,
+        "expected `List(Text)`, found `List(Int)`"
+    );
+}
+
+#[test]
+fn applied_recursive_type_value_produces_a_completed_specialization() {
+    let check = check_with_file_identity(concat!(
+        "Chain = (t: Type) => { value: t, next: ?Chain(t) }\n",
+        "target = Chain(Int)\n",
+        "target\n",
+    ));
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(check.recursive_type_unfoldings.len(), 1);
 }
 
 #[test]

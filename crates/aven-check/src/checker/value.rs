@@ -24,7 +24,7 @@ impl<'a> Checker<'a> {
             ExprKind::Propagate { value, .. } => {
                 self.check_propagate_value_expr(value);
             }
-            ExprKind::Call { callee, args } => self.check_value_call(callee, args),
+            ExprKind::Call { callee, args } => self.check_value_call(expr, callee, args),
             ExprKind::Binary {
                 left,
                 operator,
@@ -66,7 +66,7 @@ impl<'a> Checker<'a> {
     /// argument/arity errors through the existing arity/mismatch machinery
     /// rather than letting inference silently defer them. A non-concrete callee
     /// (unknown/free name) keeps today's permissive behaviour.
-    pub(super) fn check_value_call(&mut self, callee: &Expr, args: &[Expr]) {
+    pub(super) fn check_value_call(&mut self, call: &Expr, callee: &Expr, args: &[Expr]) {
         let env = self.local_types.inference_env();
         if self.infer_import_call(callee, args).is_some() {
             return;
@@ -77,6 +77,16 @@ impl<'a> Checker<'a> {
         // `Type`), not runtime call arguments, so the ordinary value-call
         // check would report the same failure a second time.
         if self.is_uppercase_comptime_function_callee(callee) {
+            // Runtime type applications use the same checked specialization
+            // selector as named aliases. Eagerly produce its recursive head so
+            // the compiler can replace the source lambda with a finite runtime
+            // descriptor graph.
+            if !args
+                .iter()
+                .any(|arg| self.expr_references_unresolved_comptime_param(arg))
+            {
+                let _ = self.try_lower_comptime_annotation_for_eager_validation(call);
+            }
             self.check_value_expr(callee);
             // Specialization owns the outer comptime-parameter validation, but
             // its evaluator deliberately does not descend into unsupported
@@ -148,7 +158,11 @@ impl<'a> Checker<'a> {
         let env = self.local_types.inference_env();
         let inferred = self.infer(&env, receiver);
         let receiver_type = self.normalize(&self.resolve_and_default(&inferred));
-        let receiver_type = self.unfold_recursive_type_once(&receiver_type);
+        if builtin_collection_method_type(&receiver_type, field).is_some() {
+            return;
+        }
+        let (_, core) = peel_empty_values(&receiver_type);
+        let receiver_type = self.unfold_recursive_type_once(core);
         if builtin_collection_method_type(&receiver_type, field).is_some() {
             return;
         }
