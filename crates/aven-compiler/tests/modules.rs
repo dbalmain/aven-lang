@@ -10,8 +10,11 @@ use aven_compiler::{
     HostGlobals, ModuleRoots, SourceOverlay, check_path_with_host_globals,
     check_path_with_host_globals_and_overlay, check_path_with_host_globals_and_roots,
     eval_path_with_globals, eval_path_with_globals_and_roots,
+    eval_path_with_host_globals_and_roots,
 };
 use aven_core::codes;
+use aven_eval::Value;
+use aven_host::Host;
 
 #[test]
 fn checks_diamond_graph_and_private_bindings() {
@@ -1235,6 +1238,157 @@ fn cross_module_unexpandable_imported_application_diagnoses() {
 }
 
 #[test]
+fn recursive_runtime_targets_decode_encode_and_preserve_shape_errors() {
+    let dir = TempDir::new("recursive-runtime-targets");
+    let source = r#"Tree = { value: Int, children: Array(Tree) }
+treeInput = "{\"value\":1,\"children\":[{\"value\":2,\"children\":[{\"value\":3,\"children\":[]}]}]}"
+tree = Json.decode(treeInput, Tree)?!
+treeEncoded = Json.encode(tree)
+treeAgain = Json.decode(treeEncoded, Tree)?!
+
+Chain = (t: Type) => { value: t, next: ?Chain(t) }
+IntChain = Chain(Int)
+chainInput = "{\"value\":1,\"next\":{\"value\":2,\"next\":{\"value\":3}}}"
+chain = Json.decode(chainInput, IntChain)?!
+chainAgain = Json.decode(Json.encode(chain), IntChain)?!
+
+A = { value: Int, b: ?B }
+B = { label: Text, a: ?A }
+mutualInput = "{\"value\":1,\"b\":{\"label\":\"x\",\"a\":{\"value\":2}}}"
+mutual = Json.decode(mutualInput, A)?!
+mutualAgain = Json.decode(Json.encode(mutual), A)?!
+
+malformed = Json.decode("{\"value\":1,\"children\":[{\"value\":2,\"children\":[{\"value\":\"bad\",\"children\":[]}]}]}", Tree)
+
+{
+  treeDepth: tree.children[0].children[0].value,
+  treeRoundTrip: tree == treeAgain,
+  treeEncoded: treeEncoded,
+  chainDepth: chain.next.next.value,
+  chainRoundTrip: chain == chainAgain,
+  mutualDepth: mutual.b.a.value,
+  mutualRoundTrip: mutual == mutualAgain,
+  malformed: malformed,
+}
+"#;
+    write(dir.path(), "main.av", source);
+
+    let mut host = Host::new();
+    host.register_json();
+    let output = eval_with_host(&dir.path().join("main.av"), &host);
+    assert_no_errors(&output.reports);
+    let value = output
+        .value
+        .expect("program returns recursive decode results");
+
+    assert_eq!(value_field(&value, "treeDepth"), &Value::Int(3));
+    assert_eq!(value_field(&value, "treeRoundTrip"), &Value::Bool(true));
+    assert_eq!(
+        value_field(&value, "treeEncoded"),
+        &Value::Text(
+            r#"{"value":1,"children":[{"value":2,"children":[{"value":3,"children":[]}]}]}"#
+                .to_owned()
+        )
+    );
+    assert_eq!(value_field(&value, "chainDepth"), &Value::Int(3));
+    assert_eq!(value_field(&value, "chainRoundTrip"), &Value::Bool(true));
+    assert_eq!(value_field(&value, "mutualDepth"), &Value::Int(2));
+    assert_eq!(value_field(&value, "mutualRoundTrip"), &Value::Bool(true));
+    assert!(
+        value_field(&value, "malformed")
+            .to_string()
+            .contains("$.children[0].children[0].value"),
+        "nested malformed data preserves its path: {value:?}"
+    );
+}
+
+#[test]
+fn recursive_runtime_target_handles_fifty_json_levels() {
+    let dir = TempDir::new("recursive-runtime-depth");
+    let mut input = r#"{"value":50,"children":[]}"#.to_owned();
+    for value in (0..50).rev() {
+        input = format!(r#"{{"value":{value},"children":[{input}]}}"#);
+    }
+    let source = format!(
+        "Tree = {{ value: Int, children: Array(Tree) }}\n\
+         input = {input:?}\n\
+         tree = Json.decode(input, Tree)?!\n\
+         Json.encode(tree) == input\n"
+    );
+    write(dir.path(), "main.av", &source);
+
+    let mut host = Host::new();
+    host.register_json();
+    let output = eval_with_host(&dir.path().join("main.av"), &host);
+    assert_no_errors(&output.reports);
+    assert_eq!(output.value, Some(Value::Bool(true)));
+}
+
+#[test]
+fn recursive_runtime_targets_share_yaml_and_toml_decode_paths() {
+    let dir = TempDir::new("recursive-runtime-formats");
+    let source = r#"Tree = { value: Int, children: Array(Tree) }
+yamlInput = "value: 1\nchildren:\n  - value: 2\n    children: []\n"
+yamlTree = Yaml.decode(yamlInput, Tree)?!
+yamlAgain = Yaml.decode(Yaml.encode(yamlTree), Tree)?!
+
+tomlInput = "value = 1\nchildren = []\n"
+tomlTree = Toml.decode(tomlInput, Tree)?!
+tomlAgain = Toml.decode(Toml.encode(tomlTree), Tree)?!
+
+{
+  yamlDepth: yamlTree.children[0].value,
+  yamlRoundTrip: yamlTree == yamlAgain,
+  tomlEmpty: tomlTree.children == [],
+  tomlRoundTrip: tomlTree == tomlAgain,
+}
+"#;
+    write(dir.path(), "main.av", source);
+
+    let mut host = Host::new();
+    host.register_yaml();
+    host.register_toml();
+    let output = eval_with_host(&dir.path().join("main.av"), &host);
+    assert_no_errors(&output.reports);
+    let value = output
+        .value
+        .expect("program returns format round-trip results");
+
+    assert_eq!(value_field(&value, "yamlDepth"), &Value::Int(2));
+    assert_eq!(value_field(&value, "yamlRoundTrip"), &Value::Bool(true));
+    assert_eq!(value_field(&value, "tomlEmpty"), &Value::Bool(true));
+    assert_eq!(value_field(&value, "tomlRoundTrip"), &Value::Bool(true));
+}
+
+#[test]
+fn recursive_variant_decode_keeps_the_existing_unsupported_wire_boundary() {
+    let dir = TempDir::new("recursive-runtime-variant");
+    write(
+        dir.path(),
+        "main.av",
+        "List = @{ @Nil, @Cons((Int, List)) }\nJson.decode(\"null\", List)\n",
+    );
+
+    let mut host = Host::new();
+    host.register_json();
+    let output = eval_with_host(&dir.path().join("main.av"), &host);
+    let messages = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .flat_map(|diagnostic| {
+            std::iter::once(diagnostic.message.as_str())
+                .chain(diagnostic.labels.iter().map(|label| label.message.as_str()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        messages.contains("cannot decode target type"),
+        "recursive variants fail cleanly until a tag wire form is decided: {output:#?}"
+    );
+}
+
+#[test]
 fn cross_module_comptime_type_function_reexport() {
     let dir = TempDir::new("comptime-type-fn-reexport");
     write(
@@ -1281,6 +1435,26 @@ fn assert_has_code(reports: &[aven_core::DiagnosticReport], code: &str) {
             .any(|diagnostic| diagnostic.code.as_deref() == Some(code)),
         "expected diagnostic code {code}, got {reports:#?}"
     );
+}
+
+fn eval_with_host(path: &Path, host: &Host) -> aven_compiler::ModuleEvalOutput {
+    eval_path_with_host_globals_and_roots(
+        path,
+        &host.check_host_globals(),
+        host.eval_globals(),
+        &ModuleRoots::discover(path),
+    )
+    .expect("evaluation should load the module")
+}
+
+fn value_field<'a>(value: &'a Value, name: &str) -> &'a Value {
+    let Value::Record(fields) = value else {
+        panic!("expected a record, got {value:?}");
+    };
+    fields
+        .iter()
+        .find_map(|(field_name, value)| (field_name == name).then_some(value))
+        .unwrap_or_else(|| panic!("record has field `{name}`"))
 }
 
 fn nth_span(source: &str, needle: &str, index: usize) -> aven_core::Span {

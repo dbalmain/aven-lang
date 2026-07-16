@@ -46,6 +46,79 @@ struct ClosureParam {
     default: Option<Rc<Expr>>,
 }
 
+/// An artifact-local key for a recursive runtime type descriptor.
+///
+/// The checker-to-runtime adapter assigns these compact keys while copying a
+/// checked unfolding table. They are meaningful only together with the
+/// [`RuntimeTypeGraph`] carried by a [`RuntimeTypeReference`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RuntimeTypeId(pub u32);
+
+/// A finite runtime type-description node.
+///
+/// Recursive children are IDs rather than nested descriptor values. The
+/// corresponding one-level heads live in [`RuntimeTypeGraph`], so even mutual
+/// recursion has a finite representation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeTypeDescriptor {
+    Named(String),
+    Optional(Box<Self>),
+    Nullable(Box<Self>),
+    Array(Box<Self>),
+    Map(Box<Self>, Box<Self>),
+    Tuple(Vec<Self>),
+    Record(Vec<(String, Self)>),
+    Variant(Vec<RuntimeVariantDescriptor>),
+    Recursive { id: RuntimeTypeId, name: String },
+    Unsupported(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeVariantDescriptor {
+    Tag {
+        name: String,
+        payload: Vec<RuntimeTypeDescriptor>,
+    },
+    Literal(String),
+}
+
+/// Shared one-level heads for a finite recursive descriptor graph.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RuntimeTypeGraph {
+    unfoldings: HashMap<RuntimeTypeId, RuntimeTypeDescriptor>,
+}
+
+impl RuntimeTypeGraph {
+    pub fn new(
+        unfoldings: impl IntoIterator<Item = (RuntimeTypeId, RuntimeTypeDescriptor)>,
+    ) -> Self {
+        Self {
+            unfoldings: unfoldings.into_iter().collect(),
+        }
+    }
+
+    pub fn unfolding(&self, id: RuntimeTypeId) -> Option<&RuntimeTypeDescriptor> {
+        self.unfoldings.get(&id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.unfoldings.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.unfoldings.is_empty()
+    }
+}
+
+/// A keyed recursive descriptor plus the finite graph that resolves it.
+/// Cloning this artifact clones only two strings/words and an [`Rc`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeTypeReference {
+    pub id: RuntimeTypeId,
+    pub name: Rc<str>,
+    pub graph: Rc<RuntimeTypeGraph>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeType {
     Named(String),
@@ -53,6 +126,31 @@ pub enum RuntimeType {
     Nullable(Box<Value>),
     Array(Box<Value>),
     Map(Box<Value>, Box<Value>),
+    Recursive(RuntimeTypeReference),
+}
+
+/// Checked runtime type bindings which replace evaluation of their source
+/// type expressions. This is necessary for recursive bindings: evaluating the
+/// source expression eagerly would try to build an infinite boxed value.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeTypeBindings {
+    values: HashMap<String, Value>,
+}
+
+impl RuntimeTypeBindings {
+    pub fn new(values: impl IntoIterator<Item = (String, Value)>) -> Self {
+        Self {
+            values: values.into_iter().collect(),
+        }
+    }
+
+    pub fn insert(&mut self, name: impl Into<String>, value: Value) {
+        self.values.insert(name.into(), value);
+    }
+
+    fn get(&self, name: &str) -> Option<Value> {
+        self.values.get(name).cloned()
+    }
 }
 
 impl fmt::Debug for Closure {
@@ -245,6 +343,18 @@ impl Value {
         Self::Type(RuntimeType::Named(name.into()))
     }
 
+    pub fn recursive_type(
+        id: RuntimeTypeId,
+        name: impl Into<String>,
+        graph: Rc<RuntimeTypeGraph>,
+    ) -> Self {
+        Self::Type(RuntimeType::Recursive(RuntimeTypeReference {
+            id,
+            name: Rc::from(name.into()),
+            graph,
+        }))
+    }
+
     pub fn unit() -> Self {
         Self::Tuple(Rc::new(Vec::new()))
     }
@@ -283,6 +393,69 @@ impl fmt::Display for RuntimeType {
             Self::Nullable(inner) => write!(f, "{inner}?"),
             Self::Array(inner) => write!(f, "Array({inner})"),
             Self::Map(key, value) => write!(f, "Map({key}, {value})"),
+            Self::Recursive(reference) => write!(f, "{}", reference.name),
+        }
+    }
+}
+
+impl fmt::Display for RuntimeTypeDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Named(name) | Self::Unsupported(name) => write!(f, "{name}"),
+            Self::Optional(inner) => write!(f, "?{inner}"),
+            Self::Nullable(inner) => write!(f, "{inner}?"),
+            Self::Array(inner) => write!(f, "Array({inner})"),
+            Self::Map(key, value) => write!(f, "Map({key}, {value})"),
+            Self::Tuple(items) => {
+                write!(f, "(")?;
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Record(fields) => {
+                write!(f, "{{")?;
+                for (index, (name, ty)) in fields.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{name}: {ty}")?;
+                }
+                write!(f, "}}")
+            }
+            Self::Variant(entries) => {
+                write!(f, "@{{")?;
+                for (index, entry) in entries.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{entry}")?;
+                }
+                write!(f, "}}")
+            }
+            Self::Recursive { name, .. } => write!(f, "{name}"),
+        }
+    }
+}
+
+impl fmt::Display for RuntimeVariantDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tag { name, payload } if payload.is_empty() => write!(f, "@{name}"),
+            Self::Tag { name, payload } => {
+                write!(f, "@{name}(")?;
+                for (index, ty) in payload.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{ty}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Literal(value) => write!(f, "{value}"),
         }
     }
 }
@@ -566,6 +739,20 @@ pub fn eval_module_with_globals_and_imports(
     globals: Vec<(String, Value)>,
     imports: &ModuleImports,
 ) -> EvalOutcome {
+    eval_module_with_globals_imports_and_runtime_types(
+        module,
+        globals,
+        imports,
+        &RuntimeTypeBindings::default(),
+    )
+}
+
+pub fn eval_module_with_globals_imports_and_runtime_types(
+    module: &Module,
+    globals: Vec<(String, Value)>,
+    imports: &ModuleImports,
+    runtime_types: &RuntimeTypeBindings,
+) -> EvalOutcome {
     let env = Environment::with_imports(imports.clone());
     bind_intrinsics(&env);
     for (name, value) in globals {
@@ -573,7 +760,7 @@ pub fn eval_module_with_globals_and_imports(
     }
     // Top-level: a propagated `@Err` (`?^` with no enclosing function) becomes
     // the program value and stops further items.
-    match eval_items(&module.items, &env) {
+    match eval_items(&module.items, &env, Some(runtime_types)) {
         Ok(outcome) => outcome,
         Err(Flow::Propagate(value)) => EvalOutcome {
             value: Some(value),
@@ -736,12 +923,24 @@ fn select_record_fields(name: &str, args: &[Value], keep_matched: bool) -> Resul
 /// captured the pre-shadow environment keep seeing the old value; later items
 /// (and later closures) use the extended chain. Plain `=` still binds into the
 /// current frame (name resolution forbids same-scope rebind with `=`).
-fn eval_items(items: &[Item], env: &Environment) -> Eval<EvalOutcome> {
+fn eval_items(
+    items: &[Item],
+    env: &Environment,
+    runtime_types: Option<&RuntimeTypeBindings>,
+) -> Eval<EvalOutcome> {
     let mut env = env.clone();
     let mut value = None;
     let mut diagnostics = Vec::new();
 
     for item in items {
+        if let Item::Binding(binding) = item
+            && let Some(runtime_type) = runtime_types.and_then(|types| types.get(&binding.name))
+        {
+            env.bind(binding.name.clone(), runtime_type);
+            value = None;
+            continue;
+        }
+
         match item {
             Item::Expr(expr) => match eval_expr_many(expr, &env) {
                 Ok(next_value) => value = Some(next_value),
@@ -1192,7 +1391,7 @@ fn eval_block(items: &[Item], env: &Environment) -> Eval {
     let child = env.child();
     // `?` lets a `Flow::Propagate` from a binding value bubble past the block to
     // the enclosing function; blocks only recover `Flow::Fail`.
-    let outcome = eval_items(items, &child)?;
+    let outcome = eval_items(items, &child, None)?;
 
     if outcome.diagnostics.is_empty() {
         Ok(outcome.value.unwrap_or(Value::Undefined))

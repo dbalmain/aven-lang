@@ -439,6 +439,8 @@ fn push_hex4(value: u32, output: &mut String) {
 mod tests {
     use super::*;
 
+    use std::rc::Rc;
+
     use aven_core::{Span, codes};
     use aven_parser::parse_module;
 
@@ -692,6 +694,22 @@ mod tests {
     }
 
     #[test]
+    fn encode_rejects_closures_without_invoking_them() {
+        let diagnostics = run_diagnostics(
+            "fail = () => Json.decode(\"not json\")?!\n\
+             Json.encode({ child: fail })\n",
+        );
+
+        assert_platform_error_contains(&diagnostics, "Json.encode cannot encode Function");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code.as_deref() != Some(codes::runtime::PANIC)),
+            "encode must not invoke the closure: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn decode_parse_error_returns_structured_result_error() {
         let value = run("Json.decode(\"{\", { name: Text })\n");
         let (kind, payload) = err_payload(&value);
@@ -762,23 +780,54 @@ mod tests {
     }
 
     #[test]
-    fn recursive_decode_target_reports_a_clean_runtime_diagnostic() {
+    fn recursive_decode_target_uses_a_finite_runtime_descriptor() {
         let source = "Node = { value: Int, next: ?Node }\n\
-                      Json.decode(\"{\\\"value\\\": 1}\", Node)\n";
+                      Json.decode(\"{\\\"value\\\": 1}\", Node)?!\n";
         let checked = check(source);
         assert!(
             checked.diagnostics.is_empty(),
-            "recursive target checking remains deferred: {:?}",
+            "recursive target checks: {:?}",
             checked.diagnostics
         );
 
-        let diagnostics = run_diagnostics(source);
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::runtime::UNBOUND_NAME)),
-            "recursive target evaluation is diagnosed without looping: {diagnostics:?}"
+        let id = aven_eval::RuntimeTypeId(0);
+        let graph = Rc::new(aven_eval::RuntimeTypeGraph::new([(
+            id,
+            aven_eval::RuntimeTypeDescriptor::Record(vec![
+                (
+                    "value".to_owned(),
+                    aven_eval::RuntimeTypeDescriptor::Named("Int".to_owned()),
+                ),
+                (
+                    "next".to_owned(),
+                    aven_eval::RuntimeTypeDescriptor::Optional(Box::new(
+                        aven_eval::RuntimeTypeDescriptor::Recursive {
+                            id,
+                            name: "Node".to_owned(),
+                        },
+                    )),
+                ),
+            ]),
+        )]));
+        let runtime_types = aven_eval::RuntimeTypeBindings::new([(
+            "Node".to_owned(),
+            Value::recursive_type(id, "Node", graph),
+        )]);
+        let parsed = parse_module(source);
+        let outcome = aven_eval::eval_module_with_globals_imports_and_runtime_types(
+            &parsed.module,
+            json_host().eval_globals(),
+            &aven_eval::ModuleImports::default(),
+            &runtime_types,
         );
+        assert!(
+            outcome.diagnostics.is_empty(),
+            "recursive target evaluates without diagnostics: {:?}",
+            outcome.diagnostics
+        );
+        let value = outcome.value.expect("recursive decode returns a value");
+        assert_eq!(field(&value, "value"), &Value::Int(1));
+        assert_eq!(field(&value, "next"), &Value::Undefined);
     }
 
     #[test]

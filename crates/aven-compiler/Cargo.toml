@@ -14,3 +14,6 @@ aven-check.workspace = true
 aven-core.workspace = true
 aven-eval.workspace = true
 aven-parser.workspace = true
+
+[dev-dependencies]
+aven-host.workspace = true

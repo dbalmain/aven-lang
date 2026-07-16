@@ -19,6 +19,7 @@ pub use aven_check::{
 };
 
 mod modules;
+mod runtime_types;
 pub use modules::{
     ExportProvenance, ExportProvenanceMap, LibraryModules, ModuleCheckOutput, ModuleEvalOutput,
     ModuleImportResolution, ModuleInterface, ModuleNodeCheckOutput, ModuleRoots, SourceOverlay,
@@ -26,8 +27,9 @@ pub use modules::{
     check_path_with_host_globals_and_overlay_and_entry_parse,
     check_path_with_host_globals_and_overlay_and_entry_parse_with_roots,
     check_path_with_host_globals_and_roots, eval_path_with_globals,
-    eval_path_with_globals_and_roots, library_specifier,
+    eval_path_with_globals_and_roots, eval_path_with_host_globals_and_roots, library_specifier,
 };
+pub(crate) use runtime_types::runtime_type_bindings;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Revision(i32);

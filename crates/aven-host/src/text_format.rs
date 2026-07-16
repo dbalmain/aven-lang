@@ -1,7 +1,7 @@
-use std::rc::Rc;
+use std::{collections::HashSet, rc::Rc};
 
 use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, RowEntry, Type};
-use aven_eval::{RuntimeType, Value};
+use aven_eval::{RuntimeType, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId, Value};
 
 use crate::io::aven_value_type_name;
 use crate::temporal::{
@@ -149,12 +149,67 @@ fn decode_at(
             }
         }
         Value::Type(RuntimeType::Array(inner)) => decode_array(value, inner, path, format_name),
+        Value::Type(RuntimeType::Recursive(reference)) => {
+            decode_recursive_at(value, reference.id, &reference.graph, path, format_name)
+        }
         Value::Record(fields) if runtime_type_target(target) => {
             decode_record(value, fields, path, format_name)
         }
         other => Err(DecodeError::InvalidTarget(format!(
             "{format_name}.decode target must be a type value or record of type values, got {}",
             aven_value_type_name(other)
+        ))),
+    }
+}
+
+fn decode_recursive_at(
+    value: &FormatValue,
+    id: RuntimeTypeId,
+    graph: &RuntimeTypeGraph,
+    path: &FormatPath,
+    format_name: &str,
+) -> Result<Value, DecodeError> {
+    let descriptor = graph.unfolding(id).ok_or_else(|| {
+        DecodeError::InvalidTarget(format!(
+            "{format_name}.decode recursive target has no descriptor head"
+        ))
+    })?;
+    decode_descriptor_at(value, descriptor, graph, path, format_name)
+}
+
+fn decode_descriptor_at(
+    value: &FormatValue,
+    target: &RuntimeTypeDescriptor,
+    graph: &RuntimeTypeGraph,
+    path: &FormatPath,
+    format_name: &str,
+) -> Result<Value, DecodeError> {
+    match target {
+        RuntimeTypeDescriptor::Named(name) => decode_named(value, name, path, format_name),
+        RuntimeTypeDescriptor::Optional(inner) => {
+            decode_descriptor_at(value, inner, graph, path, format_name)
+        }
+        RuntimeTypeDescriptor::Nullable(inner) => {
+            if matches!(value, FormatValue::Null) {
+                Ok(Value::Null)
+            } else {
+                decode_descriptor_at(value, inner, graph, path, format_name)
+            }
+        }
+        RuntimeTypeDescriptor::Array(inner) => {
+            decode_descriptor_array(value, inner, graph, path, format_name)
+        }
+        RuntimeTypeDescriptor::Record(fields) => {
+            decode_descriptor_record(value, fields, graph, path, format_name)
+        }
+        RuntimeTypeDescriptor::Recursive { id, .. } => {
+            decode_recursive_at(value, *id, graph, path, format_name)
+        }
+        RuntimeTypeDescriptor::Map(_, _)
+        | RuntimeTypeDescriptor::Tuple(_)
+        | RuntimeTypeDescriptor::Variant(_)
+        | RuntimeTypeDescriptor::Unsupported(_) => Err(DecodeError::InvalidTarget(format!(
+            "{format_name}.decode cannot decode target type {target}"
         ))),
     }
 }
@@ -378,6 +433,48 @@ fn decode_record(
     Ok(Value::record(output))
 }
 
+fn decode_descriptor_record(
+    value: &FormatValue,
+    fields: &[(String, RuntimeTypeDescriptor)],
+    graph: &RuntimeTypeGraph,
+    path: &FormatPath,
+    format_name: &str,
+) -> Result<Value, DecodeError> {
+    let FormatValue::Object(object) = value else {
+        return Err(shape_error(path, "Record", value));
+    };
+
+    let mut output = Vec::with_capacity(fields.len());
+    for (name, target) in fields {
+        if !runtime_descriptor_target(target, graph) {
+            return Err(DecodeError::InvalidTarget(format!(
+                "{format_name}.decode target field `{name}` must be a decodable type, got {target}"
+            )));
+        }
+
+        let field_path = path.field(name);
+        let field = match object
+            .iter()
+            .find_map(|(field_name, field_value)| (field_name == name).then_some(field_value))
+        {
+            Some(field_value) => {
+                decode_descriptor_at(field_value, target, graph, &field_path, format_name)?
+            }
+            None if descriptor_is_optional(target, graph) => Value::Undefined,
+            None => {
+                return Err(DecodeError::Shape(ShapeError {
+                    path: field_path.0,
+                    expected: target.to_string(),
+                    found: "Undefined".to_owned(),
+                }));
+            }
+        };
+        output.push((name.clone(), field));
+    }
+
+    Ok(Value::record(output))
+}
+
 fn decode_array(
     value: &FormatValue,
     target: &Value,
@@ -402,8 +499,93 @@ fn decode_array(
     Ok(Value::Array(Rc::new(output)))
 }
 
+fn decode_descriptor_array(
+    value: &FormatValue,
+    target: &RuntimeTypeDescriptor,
+    graph: &RuntimeTypeGraph,
+    path: &FormatPath,
+    format_name: &str,
+) -> Result<Value, DecodeError> {
+    let FormatValue::Array(items) = value else {
+        return Err(shape_error(path, &format!("Array({target})"), value));
+    };
+    if !runtime_descriptor_target(target, graph) {
+        return Err(DecodeError::InvalidTarget(format!(
+            "{format_name}.decode Array target must be a decodable type, got {target}"
+        )));
+    }
+
+    let mut output = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        output.push(decode_descriptor_at(
+            item,
+            target,
+            graph,
+            &path.index(index),
+            format_name,
+        )?);
+    }
+
+    Ok(Value::Array(Rc::new(output)))
+}
+
+fn descriptor_is_optional(target: &RuntimeTypeDescriptor, graph: &RuntimeTypeGraph) -> bool {
+    descriptor_is_optional_inner(target, graph, &mut HashSet::new())
+}
+
+fn descriptor_is_optional_inner(
+    target: &RuntimeTypeDescriptor,
+    graph: &RuntimeTypeGraph,
+    visited: &mut HashSet<RuntimeTypeId>,
+) -> bool {
+    match target {
+        RuntimeTypeDescriptor::Optional(_) => true,
+        RuntimeTypeDescriptor::Recursive { id, .. } if visited.insert(*id) => graph
+            .unfolding(*id)
+            .is_some_and(|head| descriptor_is_optional_inner(head, graph, visited)),
+        _ => false,
+    }
+}
+
+fn runtime_descriptor_target(target: &RuntimeTypeDescriptor, graph: &RuntimeTypeGraph) -> bool {
+    runtime_descriptor_target_inner(target, graph, &mut HashSet::new())
+}
+
+fn runtime_descriptor_target_inner(
+    target: &RuntimeTypeDescriptor,
+    graph: &RuntimeTypeGraph,
+    visited: &mut HashSet<RuntimeTypeId>,
+) -> bool {
+    match target {
+        RuntimeTypeDescriptor::Named(_) => true,
+        RuntimeTypeDescriptor::Optional(inner)
+        | RuntimeTypeDescriptor::Nullable(inner)
+        | RuntimeTypeDescriptor::Array(inner) => {
+            runtime_descriptor_target_inner(inner, graph, visited)
+        }
+        RuntimeTypeDescriptor::Record(fields) => fields
+            .iter()
+            .all(|(_, field)| runtime_descriptor_target_inner(field, graph, visited)),
+        RuntimeTypeDescriptor::Recursive { id, .. } if visited.insert(*id) => graph
+            .unfolding(*id)
+            .is_some_and(|head| runtime_descriptor_target_inner(head, graph, visited)),
+        RuntimeTypeDescriptor::Recursive { .. } => true,
+        RuntimeTypeDescriptor::Map(_, _)
+        | RuntimeTypeDescriptor::Tuple(_)
+        | RuntimeTypeDescriptor::Variant(_)
+        | RuntimeTypeDescriptor::Unsupported(_) => false,
+    }
+}
+
 fn target_is_optional(target: &Value) -> bool {
-    matches!(target, Value::Type(RuntimeType::Optional(_)))
+    match target {
+        Value::Type(RuntimeType::Optional(_)) => true,
+        Value::Type(RuntimeType::Recursive(reference)) => reference
+            .graph
+            .unfolding(reference.id)
+            .is_some_and(|head| descriptor_is_optional(head, &reference.graph)),
+        _ => false,
+    }
 }
 
 fn runtime_type_target(value: &Value) -> bool {
@@ -504,5 +686,78 @@ mod tests {
 
             assert!(error.contains("use Data"));
         }
+    }
+
+    #[test]
+    fn recursive_descriptor_decodes_one_hundred_finite_levels() {
+        let id = RuntimeTypeId(0);
+        let graph = Rc::new(RuntimeTypeGraph::new([(
+            id,
+            RuntimeTypeDescriptor::Record(vec![
+                (
+                    "value".to_owned(),
+                    RuntimeTypeDescriptor::Named("Int".to_owned()),
+                ),
+                (
+                    "children".to_owned(),
+                    RuntimeTypeDescriptor::Array(Box::new(RuntimeTypeDescriptor::Recursive {
+                        id,
+                        name: "Tree".to_owned(),
+                    })),
+                ),
+            ]),
+        )]));
+        let target = Value::recursive_type(id, "Tree", graph);
+        let mut input = FormatValue::Object(vec![
+            (
+                "value".to_owned(),
+                FormatValue::Number(FormatNumber::Int(100)),
+            ),
+            ("children".to_owned(), FormatValue::Array(Vec::new())),
+        ]);
+        for value in (0..100).rev() {
+            input = FormatValue::Object(vec![
+                (
+                    "value".to_owned(),
+                    FormatValue::Number(FormatNumber::Int(value)),
+                ),
+                ("children".to_owned(), FormatValue::Array(vec![input])),
+            ]);
+        }
+
+        let decoded = match decode_value(&input, &target, "Json") {
+            Ok(decoded) => decoded,
+            Err(DecodeError::Shape(error)) => panic!("recursive input shaped: {error:?}"),
+            Err(DecodeError::InvalidTarget(message)) => panic!("{message}"),
+        };
+        let mut node = &decoded;
+        for expected in 0..100 {
+            let Value::Record(fields) = node else {
+                panic!("level {expected} is a record: {node:?}");
+            };
+            assert_eq!(record_field(fields, "value"), &Value::Int(expected));
+            let Value::Array(children) = record_field(fields, "children") else {
+                panic!("level {expected} has children");
+            };
+            let [child] = children.as_slice() else {
+                panic!("level {expected} has one child");
+            };
+            node = child;
+        }
+        let Value::Record(fields) = node else {
+            panic!("leaf is a record: {node:?}");
+        };
+        assert_eq!(record_field(fields, "value"), &Value::Int(100));
+        assert_eq!(
+            record_field(fields, "children"),
+            &Value::Array(Rc::new(Vec::new()))
+        );
+    }
+
+    fn record_field<'a>(fields: &'a [(String, Value)], name: &str) -> &'a Value {
+        fields
+            .iter()
+            .find_map(|(field_name, value)| (field_name == name).then_some(value))
+            .unwrap_or_else(|| panic!("record has field `{name}`"))
     }
 }

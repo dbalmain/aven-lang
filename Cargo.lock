@@ -130,6 +130,7 @@ dependencies = [
  "aven-check",
  "aven-core",
  "aven-eval",
+ "aven-host",
  "aven-parser",
 ]
 

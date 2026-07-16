@@ -17,6 +17,7 @@ use aven_parser::{
 
 use crate::{
     HostGlobals, PhaseTimings, SemanticOutput, analyze_semantics_with_host_globals_and_imports_in,
+    runtime_type_bindings,
 };
 
 #[derive(Debug)]
@@ -384,12 +385,55 @@ pub fn eval_path_with_globals_and_roots(
     globals: Vec<(String, Value)>,
     roots: &ModuleRoots,
 ) -> io::Result<ModuleEvalOutput> {
+    eval_path_with_host_globals_and_roots(path, &HostGlobals::default(), globals, roots)
+}
+
+pub fn eval_path_with_host_globals_and_roots(
+    path: &Path,
+    check_globals: &HostGlobals,
+    globals: Vec<(String, Value)>,
+    roots: &ModuleRoots,
+) -> io::Result<ModuleEvalOutput> {
     let graph = ModuleGraph::load(path, &SourceOverlay::default(), None, roots)?;
     let mut diagnostics = parse_diagnostics(&graph);
+    // Evaluation remains runtime-first: semantic diagnostics are not surfaced
+    // here, but the checked artifacts are needed to reify recursive type
+    // bindings and to carry imported recursive heads between modules.
+    let mut check_diagnostics = HashMap::new();
+    let mut check_exports = vec![CheckExport::HasErrors; graph.nodes.len()];
     let mut exports = vec![EvalExport::HasErrors; graph.nodes.len()];
     let mut entry_value = None;
 
     for node_id in graph.order.iter().copied() {
+        let check_imports = check_imports_for_node(
+            &graph.nodes[node_id],
+            &check_exports,
+            &mut check_diagnostics,
+        );
+        let node_check_globals = globals_for_node(check_globals, roots, &graph.nodes[node_id].path);
+        let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
+        let semantic = analyze_semantics_with_host_globals_and_imports_in(
+            &graph.nodes[node_id].parse,
+            &node_check_globals,
+            &check_imports,
+            module_identity.clone(),
+        );
+        let runtime_types = runtime_type_bindings(
+            &semantic.type_definitions,
+            &semantic.recursive_type_unfoldings,
+        );
+        check_exports[node_id] = if semantic.diagnostics.iter().any(Diagnostic::is_error) {
+            CheckExport::HasErrors
+        } else {
+            check_export_for_node(
+                &graph.nodes[node_id],
+                &semantic,
+                &node_check_globals,
+                &check_imports,
+                &module_identity,
+            )
+        };
+
         let imports = eval_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
         let file_id = graph.nodes[node_id].file.id;
         if file_has_errors(&diagnostics, file_id) {
@@ -398,10 +442,11 @@ pub fn eval_path_with_globals_and_roots(
         }
 
         let node_globals = eval_globals_for_node(&globals, roots, &graph.nodes[node_id].path);
-        let outcome = aven_eval::eval_module_with_globals_and_imports(
+        let outcome = aven_eval::eval_module_with_globals_imports_and_runtime_types(
             &graph.nodes[node_id].parse.module,
             node_globals,
             &imports,
+            &runtime_types,
         );
         entry_value = (node_id == 0).then_some(outcome.value.clone()).flatten();
         diagnostics
