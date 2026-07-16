@@ -15,9 +15,14 @@ impl<'a> Checker<'a> {
             ExprKind::Lambda {
                 params,
                 return_annotation,
+                requirements,
                 body,
-                ..
-            } => self.check_lambda_value_expr(params, return_annotation.as_deref(), body),
+            } => self.check_lambda_value_expr(
+                params,
+                return_annotation.as_deref(),
+                requirements,
+                body,
+            ),
             ExprKind::Block(items) => self.check_items(items),
             ExprKind::Match { subject, arms, .. } => {
                 self.check_match_arms(subject, arms, None);
@@ -227,6 +232,7 @@ impl<'a> Checker<'a> {
         &mut self,
         params: &[Param],
         return_annotation: Option<&Expr>,
+        requirements: &[Requirement],
         body: &Expr,
     ) {
         self.push_inline_lambda_type_var_scope();
@@ -251,6 +257,9 @@ impl<'a> Checker<'a> {
             self.record_local_value_type(param.name_span, &ty);
             self.local_types.define(&param.name, ty);
         }
+        let assumptions = self.requirement_predicates(requirements);
+        let obligation_marker = self.method_obligation_marker();
+        self.push_method_assumptions(assumptions);
         if let Some(body_expected) = body_expected {
             // Mirror `check_lambda_against_function`: check the body against the
             // lowered return annotation with propagation context, so inline
@@ -266,6 +275,8 @@ impl<'a> Checker<'a> {
         } else {
             self.check_value_expr(body);
         }
+        self.finish_checked_lambda_obligations(obligation_marker);
+        self.pop_method_assumptions();
         self.local_comptime_params.pop();
         self.local_types.pop();
         self.pop_inline_lambda_type_var_scope();

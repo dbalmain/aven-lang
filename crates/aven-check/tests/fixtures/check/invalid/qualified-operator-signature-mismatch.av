@@ -1,0 +1,11 @@
+StrangeOrder = {
+  <(Self): Int
+  ..
+}
+
+less = (left: t, right: t): Int
+  t: StrangeOrder
+=>
+  0
+
+invalid: Int = less(1, 2)

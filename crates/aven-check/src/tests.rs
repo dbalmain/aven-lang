@@ -5908,6 +5908,21 @@ fn operator_inference_defers_unknown_operands() {
 }
 
 #[test]
+fn inferred_operator_scheme_renders_qualified_requirement() {
+    let source = "less = (left: t, right: t): Bool => left < right\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .inferred_type_at(nth_span(source, "less", 0))
+            .map(InferredType::render),
+        Some("(a, a) -> Bool\n  a: { <(Self): Bool, .. }".to_owned())
+    );
+}
+
+#[test]
 fn infer_value_synthesizes_literal_record_types() {
     let output = parse_module("other = { id: 1, name: \"Ada\" }\n");
     let known_types = known_type_names(&output.module);

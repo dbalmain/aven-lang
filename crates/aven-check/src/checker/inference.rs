@@ -37,7 +37,7 @@ impl<'a> Checker<'a> {
     #[cfg(test)]
     pub(crate) fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
         let scheme = self.infer_top_level(name)?;
-        let ty = self.unifier.instantiate_scheme(&scheme);
+        let (ty, _) = self.unifier.instantiate_scheme(&scheme);
         self.resolve_if_concrete(&ty)
     }
 
@@ -118,14 +118,22 @@ impl<'a> Checker<'a> {
             // Polymorphic annotations use `Type::Variable` binders; publish them
             // as quantified schemes so each use instantiates fresh metas.
             if crate::ty::type_contains_variable(&annotation) {
-                super::scheme_from_global(&annotation, &mut self.unifier)
+                self.declared_method_scheme(name, &annotation)
             } else {
                 TypeScheme::mono(annotation)
             }
         } else if let Some(binding) = binding {
+            let obligation_marker = self.method_obligation_marker();
             let ty = self.infer(&TypeEnv::new(), &binding.value);
-            self.generalize_with_row_merges(self.resolve_and_default(&ty), &[], &[])
+            self.generalize_method_obligations(
+                self.resolve_and_default(&ty),
+                &[],
+                &[],
+                obligation_marker,
+                Some(name),
+            )
         } else if let Some(binding) = pattern_binding {
+            let obligation_marker = self.method_obligation_marker();
             let ty = self.infer(&TypeEnv::new(), &binding.value);
             let resolved = self.normalize(&self.resolve_and_default(&ty));
             let local_types =
@@ -141,7 +149,7 @@ impl<'a> Checker<'a> {
             if crate::ty::type_contains_variable(&ty) {
                 super::scheme_from_global(&ty, &mut self.unifier)
             } else {
-                self.generalize_with_row_merges(ty, &[], &[])
+                self.generalize_method_obligations(ty, &[], &[], obligation_marker, Some(name))
             }
         } else {
             TypeScheme::mono(Type::Deferred)
@@ -228,12 +236,15 @@ impl<'a> Checker<'a> {
             ExprKind::Lambda {
                 params,
                 return_annotation,
+                requirements,
                 body,
-                ..
-            } => {
-                // Requirement semantics land with qualified schemes in a later slice.
-                self.infer_lambda(env, params, return_annotation.as_deref(), body)
-            }
+            } => self.infer_lambda(
+                env,
+                params,
+                return_annotation.as_deref(),
+                requirements,
+                body,
+            ),
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
             ExprKind::Index { callee, args } => self.infer_value_index(env, callee, args),
             ExprKind::FieldAccess {
@@ -251,9 +262,9 @@ impl<'a> Checker<'a> {
             ExprKind::Binary {
                 left,
                 operator,
+                operator_span,
                 right,
-                ..
-            } => self.infer_binary(env, left, operator, right),
+            } => self.infer_binary(env, left, operator, *operator_span, right),
             ExprKind::Unary {
                 operator, value, ..
             } => self.infer_unary(env, operator, value),
@@ -328,6 +339,7 @@ impl<'a> Checker<'a> {
         env: &TypeEnv,
         left: &Expr,
         operator: &str,
+        operator_span: Span,
         right: &Expr,
     ) -> Type {
         if operator == "|>" {
@@ -372,6 +384,43 @@ impl<'a> Checker<'a> {
 
         let result = if let Some(result) = self.infer_binary_type(operator, &left_type, &right_type)
         {
+            result
+        } else if is_method_operator(operator)
+            && matches!(
+                self.normalize(&self.unifier.resolve(&left_type)),
+                Type::Meta(_) | Type::Variable(_) | Type::Deferred
+            )
+        {
+            let unresolved_deferred = matches!(
+                self.normalize(&self.unifier.resolve(&left_type)),
+                Type::Deferred
+            );
+            let infer_homogeneous =
+                matches!((&left_type, &right_type), (Type::Meta(_), Type::Meta(_)))
+                    && !self.inline_annotation_names_meta(&left_type)
+                    && !self.inline_annotation_names_meta(&right_type);
+            let obligation_right = if infer_homogeneous {
+                let _ = self.unifier.unify(&left_type, &right_type);
+                left_type.clone()
+            } else {
+                right_type.clone()
+            };
+            let result = if unresolved_deferred {
+                Type::Deferred
+            } else if matches!(operator, "<" | "<=" | ">" | ">=") {
+                named_builtin("Bool")
+            } else if infer_homogeneous {
+                left_type.clone()
+            } else {
+                self.unifier.fresh()
+            };
+            self.add_operator_obligation(
+                left_type.clone(),
+                operator,
+                obligation_right,
+                result.clone(),
+                operator_span,
+            );
             result
         } else {
             let left_type = self.normalize(&self.resolve_and_default(&left_type));
@@ -502,17 +551,27 @@ impl<'a> Checker<'a> {
     ) {
         let left = operator_operand_type(left);
         let right = operator_operand_type(right);
-        self.diagnostics.push(
-            Diagnostic::error(format!(
-                "operator `{operator}` is not defined for `{left}` and `{right}`"
+        let attempted_right_fallback =
+            builtin_method_signature(&Type::Named(left.clone()), operator).is_none()
+                && builtin_method_signature(&Type::Named(right.clone()), operator).is_some();
+        let mut diagnostic = Diagnostic::error(format!(
+            "operator `{operator}` is not defined for `{left}` and `{right}`"
+        ))
+        .with_code(codes::ty::INVALID_OPERATOR_OPERANDS)
+        .with_label(Label::primary(
+            span,
+            "these operand types do not support this operator",
+        ))
+        .with_note(operator_operand_note(operator));
+        if attempted_right_fallback {
+            diagnostic = diagnostic.with_note(format!(
+                "dispatch is left-biased: `{left}` is the sole method owner; Aven does not fall back to `{right}.{operator}`"
             ))
-            .with_code(codes::ty::INVALID_OPERATOR_OPERANDS)
-            .with_label(Label::primary(
-                span,
-                "these operand types do not support this operator",
-            ))
-            .with_note(operator_operand_note(operator)),
-        );
+            .with_note(
+                "reverse the operands only when doing so preserves the operation's intended semantics",
+            );
+        }
+        self.diagnostics.push(diagnostic);
     }
 
     fn report_invalid_unary_operator_operand(&mut self, operator: &str, value: &Type, span: Span) {
@@ -963,6 +1022,7 @@ impl<'a> Checker<'a> {
         env: &TypeEnv,
         params: &[Param],
         return_annotation: Option<&Expr>,
+        requirements: &[Requirement],
         body: &Expr,
     ) -> Type {
         let mut next_env = env.clone();
@@ -998,6 +1058,9 @@ impl<'a> Checker<'a> {
             param_types.push(ty);
         }
 
+        let assumptions = self.requirement_predicates(requirements);
+        let obligation_marker = self.method_obligation_marker();
+        self.push_method_assumptions(assumptions.clone());
         self.push_local_comptime_param_scope(params);
         self.propagation_contexts
             .push(PropagationContext::default());
@@ -1032,8 +1095,16 @@ impl<'a> Checker<'a> {
             result: Box::new(result_type),
             required,
         };
+        self.finalize_lambda_requirements(obligation_marker, requirements, assumptions);
+        self.pop_method_assumptions();
         self.pop_inline_lambda_type_var_scope();
         lambda_type
+    }
+
+    fn inline_annotation_names_meta(&self, ty: &Type) -> bool {
+        self.inline_lambda_type_var_scopes
+            .iter()
+            .any(|scope| scope.values().any(|candidate| candidate == ty))
     }
 
     pub(super) fn pop_propagation_context(&mut self) -> PropagationContext {
@@ -1254,7 +1325,7 @@ impl<'a> Checker<'a> {
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
             && let Some(scheme) = self.static_member_scheme(env, name, field)
         {
-            return self.unifier.instantiate_scheme(&scheme);
+            return self.instantiate_scheme_at(&scheme, field_span);
         }
 
         let snapshot = self.unifier.snapshot();
@@ -1398,6 +1469,7 @@ impl<'a> Checker<'a> {
             && arg_types.len() <= params.len()
         {
             self.check_call_arg_types_against_params(args, &arg_types, params);
+            self.simplify_method_obligations(false);
             let result = self.resolve_row_merge_call_result(result);
             if is_to_result_call(callee)
                 && let [error] = arg_types.as_slice()
@@ -1426,6 +1498,7 @@ impl<'a> Checker<'a> {
         if self.unifier.unify(&callee_type, &expected_callee).is_err() {
             Type::Deferred
         } else {
+            self.simplify_method_obligations(false);
             self.resolve_row_merge_call_result(&result_type)
         }
     }
@@ -1803,7 +1876,7 @@ impl<'a> Checker<'a> {
             return false;
         };
         let snapshot = self.unifier.snapshot();
-        let ty = self.unifier.instantiate_scheme(&scheme);
+        let (ty, _) = self.unifier.instantiate_scheme(&scheme);
         let resolved = self.unifier.resolve(&ty);
         self.unifier.restore(snapshot);
 
@@ -2756,13 +2829,13 @@ impl<'a> Checker<'a> {
         if let Some(local) = env.get(name).cloned() {
             return match local {
                 LocalValueType::Known(ty) => ty,
-                LocalValueType::Scheme(scheme) => self.unifier.instantiate_scheme(&scheme),
+                LocalValueType::Scheme(scheme) => self.instantiate_scheme_at(&scheme, span),
                 LocalValueType::Unknown => Type::Deferred,
             };
         }
 
         if let Some(scheme) = self.infer_top_level(name) {
-            return self.unifier.instantiate_scheme(&scheme);
+            return self.instantiate_scheme_at(&scheme, span);
         }
 
         // Seeded host globals have no binding to infer from; read their
@@ -2774,7 +2847,7 @@ impl<'a> Checker<'a> {
         // which would cascade an error onto every later use.
         if let Some(scheme) = self.value_types.get(name).cloned() {
             return match scheme {
-                Some(scheme) => self.unifier.instantiate_scheme(&scheme),
+                Some(scheme) => self.instantiate_scheme_at(&scheme, span),
                 None => Type::Deferred,
             };
         }
@@ -2954,6 +3027,7 @@ impl<'a> Checker<'a> {
         for item in merged_items(items) {
             match item {
                 MergedItem::Binding { signature, binding } => {
+                    let obligation_marker = self.method_obligation_marker();
                     let local_type = signature
                         .map(|signature| self.lower_annotation_for_inference(&signature.annotation))
                         .or_else(|| {
@@ -2973,10 +3047,12 @@ impl<'a> Checker<'a> {
                                 free_row_vars_in_local_values(next_env.values(), |ty| {
                                     self.unifier.resolve(ty)
                                 });
-                            let scheme = self.generalize_with_row_merges(
+                            let scheme = self.generalize_method_obligations(
                                 resolved,
                                 &env_metas,
                                 &env_row_vars,
+                                obligation_marker,
+                                Some(&binding.name),
                             );
                             if type_contains_deferred(&scheme.ty) {
                                 LocalValueType::Unknown
@@ -3325,6 +3401,13 @@ fn operator_operand_note(operator: &str) -> &'static str {
         "&&" | "||" | "!" => "this operator accepts Bool operands",
         _ => "use operands supported by this operator",
     }
+}
+
+fn is_method_operator(operator: &str) -> bool {
+    matches!(
+        operator,
+        "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
+    )
 }
 
 fn binary_operand_is_text(ty: &Type) -> bool {

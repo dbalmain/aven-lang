@@ -2477,7 +2477,7 @@ fn expression_hover_at_position(
     position: Position,
 ) -> Option<HoverCandidate> {
     let span = expr_span_at_position(document, position)?;
-    let rendered = document.type_at(span)?.render();
+    let rendered = document.inferred_type_at(span)?.render();
 
     Some(HoverCandidate {
         span,
@@ -2540,8 +2540,8 @@ fn identifier_hover_at_position(
             (!rendered.is_empty()).then_some(rendered)
         } else {
             document
-                .type_at(definition)
-                .map(aven_compiler::Type::render)
+                .inferred_type_at(definition)
+                .map(aven_compiler::InferredType::render)
         }
     } else {
         host_global_type(&identifier.name).map(|ty| ty.render())

@@ -15,6 +15,7 @@ impl<'a> Checker<'a> {
     pub(super) fn diagnostic_snapshot(&self) -> DiagnosticSnapshot {
         DiagnosticSnapshot {
             diagnostics_len: self.diagnostics.len(),
+            method_obligations_len: self.method_obligations.len(),
             reported_unbound_name_spans: self.reported_unbound_name_spans.clone(),
             reported_import_spans: self.reported_import_spans.clone(),
             propagation_context_site_counts: self
@@ -27,6 +28,8 @@ impl<'a> Checker<'a> {
 
     pub(super) fn restore_diagnostic_snapshot(&mut self, snapshot: DiagnosticSnapshot) {
         self.diagnostics.truncate(snapshot.diagnostics_len);
+        self.method_obligations
+            .truncate(snapshot.method_obligations_len);
         self.reported_unbound_name_spans = snapshot.reported_unbound_name_spans;
         self.reported_import_spans = snapshot.reported_import_spans;
         for (context, site_count) in self
@@ -155,6 +158,20 @@ impl<'a> Checker<'a> {
 
     pub(super) fn check_type_name(&mut self, name: &str, span: Span) {
         if self.known_types.contains(name) {
+            return;
+        }
+        if name == "Self" {
+            self.diagnostics.push(
+                Diagnostic::error("`Self` is not legal in this type context")
+                    .with_code(codes::ty::UNKNOWN_NAME)
+                    .with_label(Label::primary(span, "`Self` has no candidate binding here"))
+                    .with_note(
+                        "`Self` is legal only in a class public interface or a method-requirement row",
+                    )
+                    .with_note(
+                        "named record and variant methods must name their owner type explicitly; carriage-level `Self` is reserved for a later version",
+                    ),
+            );
             return;
         }
 

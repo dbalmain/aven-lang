@@ -96,6 +96,7 @@ pub(crate) fn type_definition_names(
         .filter_map(|declaration| {
             let binding = binding_for_declaration(module, &declaration)?;
             if crate::checker::is_import_call(&binding.value)
+                || crate::checker::is_method_requirement_row(&binding.value)
                 || (declaration
                     .name
                     .chars()

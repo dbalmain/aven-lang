@@ -77,12 +77,15 @@ pub struct CheckOutput {
 }
 
 impl CheckOutput {
-    pub fn type_at(&self, span: Span) -> Option<&Type> {
+    pub fn inferred_type_at(&self, span: Span) -> Option<&InferredType> {
         self.inferred_types
             .iter()
             .filter(|inferred| type_span_contains(inferred.name_span, span))
             .min_by_key(|inferred| inferred.name_span.len())
-            .map(|inferred| &inferred.ty)
+    }
+
+    pub fn type_at(&self, span: Span) -> Option<&Type> {
+        self.inferred_type_at(span).map(|inferred| &inferred.ty)
     }
 }
 
@@ -96,11 +99,12 @@ fn type_span_contains(outer: Span, inner: Span) -> bool {
 pub struct InferredType {
     pub name_span: Span,
     pub ty: Type,
+    pub qualified: Option<String>,
 }
 
 impl InferredType {
     pub fn render(&self) -> String {
-        self.ty.render()
+        self.qualified.clone().unwrap_or_else(|| self.ty.render())
     }
 }
 

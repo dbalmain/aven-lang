@@ -1,0 +1,42 @@
+Ordered = {
+  <(Self): Bool
+  ..
+}
+
+SpreadOrdered = {
+  ..Ordered
+  ..
+}
+
+keyLess = (left: a, right: a, key: a -> k): Bool
+  k: Ordered
+=>
+  key(left) < key(right)
+
+genericKeyLess = (left: a, right: a, key: a -> k): Bool
+  k: Ordered
+=>
+  keyLess(left, right, key)
+
+bothLess = (leftA: a, rightA: a, leftB: b, rightB: b): (Bool, Bool)
+  a: Ordered
+  b: Ordered
+=>
+  (leftA < rightA, leftB < rightB)
+
+inlineLess = (left: t, right: t): Bool
+  t: { <(t): Bool, .. }
+=>
+  left < right
+
+declaredLess: (t, t) -> Bool
+declaredLess = (left, right): Bool
+  t: SpreadOrdered
+=>
+  left < right
+
+intKey: Bool = genericKeyLess(1, 2, (value: Int): Int => value)
+floatKey: Bool = keyLess(1.0, 2.0, (value: Float): Float => value)
+independent: (Bool, Bool) = bothLess(1, 2, 1.0, 2.0)
+inline: Bool = inlineLess(1, 2)
+declared: Bool = declaredLess(1, 2)

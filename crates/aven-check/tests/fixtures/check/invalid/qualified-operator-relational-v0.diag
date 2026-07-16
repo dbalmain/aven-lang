@@ -1,0 +1,4 @@
+error type.mismatch: operator `<` relates more than one generic type, which is not supported in v0
+  label 49..50: this method signature contains a free scheme variable other than its candidate
+  note: the reserved later form is `Op(t, "<", u) = w`
+  note: for v0, pass the operation explicitly as a parameter of type `(t, u) -> w`

@@ -1,0 +1,11 @@
+Ordered = {
+  <(Self): Bool
+  ..
+}
+
+less = (left: t, right: t): Bool
+  t: Ordered
+=>
+  left < right
+
+invalid: Bool = less(true, false)

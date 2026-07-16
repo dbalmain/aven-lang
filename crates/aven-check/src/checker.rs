@@ -4,9 +4,9 @@ use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
-    MatchArm, MergedItem, Module, Param, PatternBinding, PropagationMode, RecordEntry, Signature,
-    SpreadBinding, collect_declarations, decode_string_literal, is_comptime_identifier_name,
-    lambda_parts, merged_items, pattern_bindings, walk_expr_children,
+    MatchArm, MergedItem, Module, Param, PatternBinding, PropagationMode, RecordEntry, Requirement,
+    Signature, SpreadBinding, collect_declarations, decode_string_literal,
+    is_comptime_identifier_name, lambda_parts, merged_items, pattern_bindings, walk_expr_children,
 };
 
 use crate::BUILTIN_TYPES;
@@ -23,19 +23,20 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    LiteralBase, RecursiveTypeId, Row, RowEntry, RowKind, RowMergeSource, RowTail, Type,
-    TypeScheme, builtin_collection_method_type, display_inferred_type, free_metas, generalize,
-    is_concrete_type, is_meta_type, is_null_value, is_resolved_value_type, is_text_type,
-    is_undefined_value, literal_base, literal_variant_base, map_type, mismatched_literal_kind,
-    named_builtin, named_type_mismatch, named_type_name, numeric_type_name,
-    open_literal_variant_base, render_literal_value, type_contains_deferred,
-    type_contains_variable, type_is_uninhabited, type_variable_names,
+    LiteralBase, MethodPredicate, RecursiveTypeId, Row, RowEntry, RowKind, RowMergeSource, RowTail,
+    Type, TypeScheme, builtin_collection_method_type, display_inferred_type, free_metas,
+    generalize, is_concrete_type, is_meta_type, is_null_value, is_resolved_value_type,
+    is_text_type, is_undefined_value, literal_base, literal_variant_base, map_type,
+    mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
+    numeric_type_name, open_literal_variant_base, render_literal_value, render_type_scheme,
+    type_contains_deferred, type_contains_variable, type_is_uninhabited, type_variable_names,
 };
 use crate::unify::Unifier;
 use crate::{InferredType, ModuleImports};
 
 mod annotations;
 mod comptime_context;
+mod constraints;
 mod core;
 mod diagnostics;
 mod inference;
@@ -44,6 +45,8 @@ mod method_sets;
 mod rows;
 mod type_checking;
 mod value;
+
+pub(crate) use constraints::is_method_requirement_row;
 
 pub(crate) struct Checker<'a> {
     known_types: HashSet<String>,
@@ -93,6 +96,9 @@ pub(crate) struct Checker<'a> {
     /// inline annotation are inference holes, so each scope maps a name to the
     /// meta shared by every occurrence in that lexical lambda scope.
     inline_lambda_type_var_scopes: Vec<HashMap<String, Type>>,
+    requirement_self_scopes: Vec<Type>,
+    method_obligations: Vec<MethodPredicate>,
+    method_assumption_scopes: Vec<Vec<MethodPredicate>>,
     pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
@@ -112,6 +118,7 @@ struct SpecializationFrame {
 #[derive(Clone)]
 struct DiagnosticSnapshot {
     diagnostics_len: usize,
+    method_obligations_len: usize,
     reported_unbound_name_spans: HashSet<Span>,
     reported_import_spans: HashSet<Span>,
     propagation_context_site_counts: Vec<usize>,
@@ -1502,6 +1509,13 @@ fn function_type(params: Vec<Type>, result: Type) -> Type {
 }
 
 fn scheme_from_global(ty: &Type, unifier: &mut Unifier) -> TypeScheme {
+    scheme_from_global_with_names(ty, unifier).0
+}
+
+fn scheme_from_global_with_names(
+    ty: &Type,
+    unifier: &mut Unifier,
+) -> (TypeScheme, HashMap<String, Type>) {
     let mut metas_by_name = HashMap::new();
     let mut vars = Vec::new();
     let generalized = map_type(ty, &mut |node| {
@@ -1522,16 +1536,22 @@ fn scheme_from_global(ty: &Type, unifier: &mut Unifier) -> TypeScheme {
         Some(Type::Meta(id))
     });
 
-    if vars.is_empty() {
+    let scheme = if vars.is_empty() {
         TypeScheme::mono(generalized)
     } else {
         TypeScheme {
             vars,
             row_vars: Vec::new(),
             row_merges: Vec::new(),
+            predicates: Vec::new(),
             ty: generalized,
         }
-    }
+    };
+    let names = metas_by_name
+        .into_iter()
+        .map(|(name, id)| (name, Type::Meta(id)))
+        .collect();
+    (scheme, names)
 }
 
 fn applied_type_constructor_mismatch(expected: &Type, actual: &Type) -> bool {

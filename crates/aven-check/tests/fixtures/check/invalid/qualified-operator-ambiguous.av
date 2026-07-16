@@ -1,0 +1,4 @@
+ambiguous = (value: Int): Int
+  hidden: { <(Self): Bool, .. }
+=>
+  value

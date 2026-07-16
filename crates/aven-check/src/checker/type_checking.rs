@@ -102,8 +102,8 @@ impl<'a> Checker<'a> {
                 ExprKind::Lambda {
                     params,
                     return_annotation,
+                    requirements,
                     body,
-                    ..
                 },
                 Type::Function {
                     params: expected_params,
@@ -114,9 +114,9 @@ impl<'a> Checker<'a> {
                 value.span,
                 params,
                 return_annotation.as_deref(),
+                requirements,
                 body,
-                expected_params,
-                expected_result,
+                (expected_params, expected_result),
             ),
             (ExprKind::Name(name) | ExprKind::ComptimeName(name), _) => {
                 let env = self.local_types.inference_env();
@@ -298,10 +298,11 @@ impl<'a> Checker<'a> {
         lambda_span: Span,
         params: &[Param],
         return_annotation: Option<&Expr>,
+        requirements: &[Requirement],
         body: &Expr,
-        expected_params: &[Type],
-        expected_result: &Type,
+        expected: (&[Type], &Type),
     ) {
+        let (expected_params, expected_result) = expected;
         if params.len() != expected_params.len() {
             // The expected type is a function-type annotation, which has no
             // defaults: required == total.
@@ -311,7 +312,7 @@ impl<'a> Checker<'a> {
                 params.len(),
                 lambda_span,
             );
-            self.check_lambda_value_expr(params, return_annotation, body);
+            self.check_lambda_value_expr(params, return_annotation, requirements, body);
             return;
         }
 
@@ -356,6 +357,9 @@ impl<'a> Checker<'a> {
             self.local_types
                 .define(&param.name, LocalValueType::Known(ty));
         }
+        let assumptions = self.requirement_predicates(requirements);
+        let obligation_marker = self.method_obligation_marker();
+        self.push_method_assumptions(assumptions);
         self.propagation_contexts
             .push(PropagationContext::default());
         self.check_value_against(&body_expected, body);
@@ -374,6 +378,12 @@ impl<'a> Checker<'a> {
             );
         }
         self.report_propagated_errors_against_annotation(&body_expected, &propagation);
+        if requirements.is_empty() && self.checking_embedded_std_before_constraint_migration() {
+            self.finish_checked_lambda_obligations(obligation_marker);
+        } else {
+            self.finish_non_generalizing_lambda_obligations(obligation_marker);
+        }
+        self.pop_method_assumptions();
         self.local_comptime_params.pop();
         self.local_types.pop();
         self.pop_inline_lambda_type_var_scope();

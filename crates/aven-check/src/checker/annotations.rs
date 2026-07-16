@@ -325,6 +325,11 @@ impl<'a> Checker<'a> {
     pub(crate) fn lower_annotation(&mut self, annotation: &Expr) -> Type {
         match &annotation.kind {
             ExprKind::ComptimeName(name) => {
+                if name == "Self"
+                    && let Some(candidate) = self.requirement_self_scopes.last()
+                {
+                    return candidate.clone();
+                }
                 if let Some(ty) = self.lookup_comptime_reified_type(name) {
                     return ty;
                 }

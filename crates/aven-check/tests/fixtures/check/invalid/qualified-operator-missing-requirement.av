@@ -1,0 +1,3 @@
+less: (t, t) -> Bool
+less = (left, right) =>
+  left < right

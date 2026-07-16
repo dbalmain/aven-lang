@@ -2623,6 +2623,21 @@ fn hover_at_position_shows_inferred_top_level_type() {
 }
 
 #[test]
+fn hover_at_position_shows_inferred_operator_requirement() {
+    let document = parsed_document_with_semantics(
+        "less = (left: t, right: t): Bool => left < right\n".to_owned(),
+    );
+    let Some(hover) = hover_at_position(&document, position(0, 1)) else {
+        panic!("expected hover");
+    };
+
+    assert_hover_value(
+        hover,
+        "```aven\nless : (a, a) -> Bool\n  a: { <(Self): Bool, .. }\n```",
+    );
+}
+
+#[test]
 fn hover_at_position_shows_inferred_local_type() {
     let document =
         parsed_document_with_semantics("value =\n  local = \"hi\"\n  local\n".to_owned());

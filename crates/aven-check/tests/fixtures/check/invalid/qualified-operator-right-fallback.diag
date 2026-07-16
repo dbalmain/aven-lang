@@ -1,0 +1,5 @@
+error type.invalid-operator-operands: operator `+` is not defined for `Bool` and `Int`
+  label 10..18: these operand types do not support this operator
+  note: `+` accepts two numbers or two Text values
+  note: dispatch is left-biased: `Bool` is the sole method owner; Aven does not fall back to `Int.+`
+  note: reverse the operands only when doing so preserves the operation's intended semantics

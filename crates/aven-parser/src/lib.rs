@@ -21,8 +21,8 @@ pub use lexer::{
 pub use names::{NameAnalysis, analyze_names};
 pub use parser::{
     Binding, Expr, ExprKind, InterpolationSegment, Item, Literal, MatchArm, Module, Param,
-    ParseOutput, PatternBinding, PropagationMode, RecordEntry, Signature, SpreadBinding,
-    parse_module, parse_source,
+    ParseOutput, PatternBinding, PropagationMode, RecordEntry, Requirement, Signature,
+    SpreadBinding, parse_module, parse_source,
 };
 pub use resolve::{
     BindingSite, annotation_for_definition, lambda_parts, pattern_bindings, render_annotation,

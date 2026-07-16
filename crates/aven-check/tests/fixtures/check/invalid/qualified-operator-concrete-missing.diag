@@ -1,0 +1,5 @@
+error type.invalid-operator-operands: `Bool` does not satisfy `{ <(Self): Bool, .. }`: method `<` is missing
+  label 117..121: `Bool` has no `<` method
+  label 14..15: operator requirement originated here
+  note: expected `Bool -> Bool` after substituting `Bool` for `Self`
+  note: required while instantiating generic binding `less` at this call site

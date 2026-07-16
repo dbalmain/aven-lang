@@ -1,0 +1,8 @@
+error type.unknown-name: `Self` is not legal in this type context
+  label 19..23: `Self` has no candidate binding here
+  note: `Self` is legal only in a class public interface or a method-requirement row
+  note: named record and variant methods must name their owner type explicitly; carriage-level `Self` is reserved for a later version
+error type.unknown-name: `Self` is not legal in this type context
+  label 26..30: `Self` has no candidate binding here
+  note: `Self` is legal only in a class public interface or a method-requirement row
+  note: named record and variant methods must name their owner type explicitly; carriage-level `Self` is reserved for a later version

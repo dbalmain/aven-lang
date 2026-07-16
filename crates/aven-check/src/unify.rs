@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use aven_core::Span;
 
 use crate::ty::{
-    LiteralBase, RecursiveTypeId, Row, RowEntry, RowMergeConstraint, RowMergeSource, RowTail, Type,
-    TypeScheme, free_row_vars, literal_variant_base, map_type, map_type_with_rows,
-    open_literal_variant_base, render_literal_value, type_contains_meta,
+    LiteralBase, MethodPredicate, RecursiveTypeId, Row, RowEntry, RowMergeConstraint,
+    RowMergeSource, RowTail, Type, TypeScheme, free_row_vars, literal_variant_base, map_type,
+    map_type_with_rows, open_literal_variant_base, render_literal_value, type_contains_meta,
 };
 
 #[derive(Debug, Default)]
@@ -517,7 +517,10 @@ impl Unifier {
         row
     }
 
-    pub(crate) fn instantiate_scheme(&mut self, scheme: &TypeScheme) -> Type {
+    pub(crate) fn instantiate_scheme(
+        &mut self,
+        scheme: &TypeScheme,
+    ) -> (Type, Vec<MethodPredicate>) {
         let mut replacements: HashMap<u32, Type> = HashMap::new();
         for id in &scheme.vars {
             replacements.insert(*id, self.fresh());
@@ -552,8 +555,47 @@ impl Unifier {
             .collect::<Vec<_>>();
         self.row_merges.extend(instantiated_merges);
 
-        ty
+        let predicates = scheme
+            .predicates
+            .iter()
+            .map(|predicate| MethodPredicate {
+                candidate: instantiate_type(&predicate.candidate, &replacements, &row_replacements),
+                member: predicate.member.clone(),
+                params: predicate
+                    .params
+                    .iter()
+                    .map(|param| instantiate_type(param, &replacements, &row_replacements))
+                    .collect(),
+                result: instantiate_type(&predicate.result, &replacements, &row_replacements),
+                operator_span: predicate.operator_span,
+                binding: predicate.binding.clone(),
+                call_span: predicate.call_span,
+            })
+            .collect();
+
+        (ty, predicates)
     }
+}
+
+fn instantiate_type(
+    ty: &Type,
+    replacements: &HashMap<u32, Type>,
+    row_replacements: &HashMap<u32, u32>,
+) -> Type {
+    map_type_with_rows(
+        ty,
+        &mut |node| match node {
+            Type::Meta(id) => replacements.get(id).cloned(),
+            _ => None,
+        },
+        &mut |tail| match tail {
+            RowTail::Var(id) => row_replacements.get(&id).map(|replacement| Row {
+                entries: Vec::new(),
+                tail: RowTail::Var(*replacement),
+            }),
+            RowTail::Closed | RowTail::Open => None,
+        },
+    )
 }
 
 fn instantiate_row_merge_constraint(

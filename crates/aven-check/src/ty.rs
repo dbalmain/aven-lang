@@ -520,6 +520,7 @@ pub(crate) struct TypeScheme {
     pub(crate) vars: Vec<u32>,
     pub(crate) row_vars: Vec<u32>,
     pub(crate) row_merges: Vec<RowMergeConstraint>,
+    pub(crate) predicates: Vec<MethodPredicate>,
     pub(crate) ty: Type,
 }
 
@@ -529,9 +530,21 @@ impl TypeScheme {
             vars: Vec::new(),
             row_vars: Vec::new(),
             row_merges: Vec::new(),
+            predicates: Vec::new(),
             ty,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MethodPredicate {
+    pub(crate) candidate: Type,
+    pub(crate) member: String,
+    pub(crate) params: Vec<Type>,
+    pub(crate) result: Type,
+    pub(crate) operator_span: Span,
+    pub(crate) binding: Option<String>,
+    pub(crate) call_span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -601,6 +614,53 @@ impl LiteralBase {
 
 pub fn render_type(ty: &Type) -> String {
     TypeRenderer::default().render_type(ty)
+}
+
+pub(crate) fn render_type_scheme(scheme: &TypeScheme) -> String {
+    let mut renderer = TypeRenderer::default();
+    let mut rendered = renderer.render_type(&scheme.ty);
+    let mut groups: Vec<(&Type, Vec<&MethodPredicate>)> = Vec::new();
+    for predicate in &scheme.predicates {
+        if let Some((_, predicates)) = groups
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == &predicate.candidate)
+        {
+            predicates.push(predicate);
+        } else {
+            groups.push((&predicate.candidate, vec![predicate]));
+        }
+    }
+
+    for (candidate, predicates) in groups {
+        let candidate_name = renderer.render_type(candidate);
+        let members = predicates
+            .into_iter()
+            .map(|predicate| {
+                let params = predicate
+                    .params
+                    .iter()
+                    .map(|param| {
+                        let relative = map_type(param, &mut |node| {
+                            (node == candidate).then(|| Type::Named("Self".to_owned()))
+                        });
+                        renderer.render_type(&relative)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let relative_result = map_type(&predicate.result, &mut |node| {
+                    (node == candidate).then(|| Type::Named("Self".to_owned()))
+                });
+                format!(
+                    "{}({params}): {}",
+                    predicate.member,
+                    renderer.render_type(&relative_result)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        rendered.push_str(&format!("\n  {candidate_name}: {{ {members}, .. }}"));
+    }
+    rendered
 }
 
 #[derive(Debug, Default)]
@@ -990,6 +1050,7 @@ pub(crate) fn generalize(resolved: Type, env_metas: &[u32], env_row_vars: &[u32]
         vars,
         row_vars,
         row_merges: Vec::new(),
+        predicates: Vec::new(),
         ty: resolved,
     }
 }

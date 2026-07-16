@@ -205,11 +205,14 @@ impl DocumentSnapshot {
     }
 
     pub fn type_at(&self, span: aven_core::Span) -> Option<&Type> {
+        self.inferred_type_at(span).map(|inferred| &inferred.ty)
+    }
+
+    pub fn inferred_type_at(&self, span: aven_core::Span) -> Option<&InferredType> {
         self.inferred_types
             .iter()
             .filter(|inferred| type_span_contains(inferred.name_span, span))
             .min_by_key(|inferred| inferred.name_span.len())
-            .map(|inferred| &inferred.ty)
     }
 
     /// The reified type for a comptime type binding or definition, by name

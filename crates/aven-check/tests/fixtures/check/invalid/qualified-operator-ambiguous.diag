@@ -1,0 +1,3 @@
+error type.mismatch: binding `ambiguous` has an ambiguous method requirement
+  label 42..43: this constrained type does not occur in the ordinary function type
+  note: every constrained generic type must occur in a parameter or result type

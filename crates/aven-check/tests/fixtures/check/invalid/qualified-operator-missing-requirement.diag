@@ -1,0 +1,3 @@
+error type.mismatch: operator `<` is not covered by this binding's declared requirements
+  label 52..53: this generic operator use needs another requirement line
+  note: add a requirement such as `t: { <(Self): Bool, .. }` for the left operand's generic type

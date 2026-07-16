@@ -41,6 +41,9 @@ impl<'a> Checker<'a> {
             propagation_contexts: Vec::new(),
             rigid_type_var_scopes: Vec::new(),
             inline_lambda_type_var_scopes: Vec::new(),
+            requirement_self_scopes: Vec::new(),
+            method_obligations: Vec::new(),
+            method_assumption_scopes: Vec::new(),
             pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
@@ -240,6 +243,12 @@ impl<'a> Checker<'a> {
 
         for declaration in declarations {
             let name = declaration.name.clone();
+            if name.chars().next().is_some_and(char::is_uppercase)
+                && binding_for_declaration(module, &declaration)
+                    .is_some_and(|binding| is_method_requirement_row(&binding.value))
+            {
+                continue;
+            }
 
             if binding_for_declaration(module, &declaration)
                 .is_some_and(|binding| self.is_uppercase_comptime_function(&name, &binding.value))
@@ -259,7 +268,7 @@ impl<'a> Checker<'a> {
                 // globals and unannotated generalized exports.
                 types.insert(
                     name.clone(),
-                    Some(scheme_from_global(&annotation, &mut self.unifier)),
+                    Some(self.declared_method_scheme(&name, &annotation)),
                 );
             } else if self.zero_argument_type_bindings.contains(&name)
                 && let Some(definition) = self.type_definitions.get(&name).cloned()
@@ -363,6 +372,17 @@ impl<'a> Checker<'a> {
 
     pub(super) fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
         let binding = binding_for_declaration(module, declaration);
+        if declaration
+            .name
+            .chars()
+            .next()
+            .is_some_and(char::is_uppercase)
+            && let Some(binding) = binding
+            && is_method_requirement_row(&binding.value)
+        {
+            self.validate_named_requirement(&binding.value);
+            return;
+        }
         let mut checked_value = false;
         let declared_annotation = declared_annotation_for_declaration(module, declaration);
         let has_declared_annotation = declared_annotation.is_some();
@@ -402,7 +422,7 @@ impl<'a> Checker<'a> {
                 checked_value = true;
             }
         } else if let Some(Some(scheme)) = self.value_types.get(&declaration.name).cloned() {
-            self.record_synthesized_type(declaration.name_span, &scheme.ty);
+            self.record_scheme_type(declaration.name_span, &scheme);
         }
 
         if !checked_value && let Some(binding) = binding {
@@ -517,13 +537,20 @@ impl<'a> Checker<'a> {
 
         let inferred_type = if declared_type.is_none() {
             let env = self.local_types.inference_env();
+            let obligation_marker = self.method_obligation_marker();
             let inferred = self.infer(&env, &binding.value);
             let resolved = self.resolve_and_default(&inferred);
             let env_metas = self.local_types.free_metas(|ty| self.unifier.resolve(ty));
             let env_row_vars = self
                 .local_types
                 .free_row_vars(|ty| self.unifier.resolve(ty));
-            let scheme = self.generalize_with_row_merges(resolved, &env_metas, &env_row_vars);
+            let scheme = self.generalize_method_obligations(
+                resolved,
+                &env_metas,
+                &env_row_vars,
+                obligation_marker,
+                Some(&binding.name),
+            );
             let diagnostics_start = self.diagnostics.len();
             self.check_value_expr(&binding.value);
             self.report_unresolved_runtime_binding_if_stuck(binding, &scheme.ty, diagnostics_start);
@@ -1015,7 +1042,7 @@ impl<'a> Checker<'a> {
         match value_type {
             LocalValueType::Known(ty) => self.record_inferred_type(name_span, ty.clone()),
             LocalValueType::Scheme(scheme) => {
-                self.record_synthesized_type(name_span, &scheme.ty);
+                self.record_scheme_type(name_span, scheme);
             }
             LocalValueType::Unknown => {}
         }
@@ -1026,16 +1053,31 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        self.inferred_types.push(InferredType { name_span, ty });
+        self.inferred_types.push(InferredType {
+            name_span,
+            ty,
+            qualified: None,
+        });
     }
 
     pub(super) fn record_synthesized_type(&mut self, name_span: Span, ty: &Type) {
         self.record_inferred_type(name_span, display_inferred_type(ty));
     }
 
+    pub(super) fn record_scheme_type(&mut self, name_span: Span, scheme: &TypeScheme) {
+        if type_contains_deferred(&scheme.ty) {
+            return;
+        }
+        self.inferred_types.push(InferredType {
+            name_span,
+            ty: display_inferred_type(&scheme.ty),
+            qualified: (!scheme.predicates.is_empty()).then(|| render_type_scheme(scheme)),
+        });
+    }
+
     pub(super) fn top_level_binding_final_type(&mut self, name: &str) -> Option<Type> {
         let scheme = self.memo.get(name).cloned()?;
-        let ty = self.unifier.instantiate_scheme(&scheme);
+        let (ty, _) = self.unifier.instantiate_scheme(&scheme);
         Some(self.normalize(&self.resolve_and_default(&ty)))
     }
 

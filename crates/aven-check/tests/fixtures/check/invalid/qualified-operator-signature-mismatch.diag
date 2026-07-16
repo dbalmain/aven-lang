@@ -1,0 +1,5 @@
+error type.mismatch: `Int` does not satisfy `{ <(Self): Int, .. }`: method `<` has an incompatible signature
+  label 113..117: the concrete method does not match this requirement
+  label 19..20: operator requirement originated here
+  note: actual: `Int -> Bool`
+  note: expected after substituting `Int` for `Self`: `Int -> Int`
