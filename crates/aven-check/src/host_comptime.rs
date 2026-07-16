@@ -163,12 +163,25 @@ impl HostComptimeFnSpec {
 /// table instead of a namespace record.
 pub type HostStatics = Vec<(String, Vec<(String, Type)>)>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct HostGlobals {
     pub types: Vec<(String, Type)>,
     pub type_definitions: Vec<(String, Type)>,
     pub statics: HostStatics,
     pub comptime_fns: Vec<(String, HostComptimeFnSpec)>,
+    pub(crate) type_definition_module: comptime::ComptimeModuleIdentity,
+}
+
+impl Default for HostGlobals {
+    fn default() -> Self {
+        Self {
+            types: Vec::new(),
+            type_definitions: Vec::new(),
+            statics: Vec::new(),
+            comptime_fns: Vec::new(),
+            type_definition_module: comptime::ComptimeModuleIdentity::specifier("host"),
+        }
+    }
 }
 
 impl HostGlobals {
@@ -181,6 +194,7 @@ impl HostGlobals {
             type_definitions: Vec::new(),
             statics: Vec::new(),
             comptime_fns,
+            type_definition_module: comptime::ComptimeModuleIdentity::specifier("host"),
         }
     }
 
@@ -200,6 +214,7 @@ impl HostGlobals {
             type_definitions: Vec::new(),
             statics: Vec::new(),
             comptime_fns: Vec::new(),
+            type_definition_module: comptime::ComptimeModuleIdentity::specifier("host"),
         }
     }
 }

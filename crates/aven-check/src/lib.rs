@@ -25,15 +25,21 @@ pub use ty::{
     type_contains_deferred, variant_tags,
 };
 
+/// Clone the completed one-level head for a recursive reference. Nested
+/// back-edge references in that head stay atomic.
+pub fn unfold_recursive_type_once(ty: &Type, unfoldings: &HashMap<RecursiveTypeId, Type>) -> Type {
+    match ty {
+        Type::Recursive(id) => unfoldings.get(id).cloned().unwrap_or_else(|| ty.clone()),
+        _ => ty.clone(),
+    }
+}
+
 /// Builtin comptime type functions. Shared with tooling (LSP hover) so the
 /// checker's name binding and the hover descriptions cannot drift apart.
 pub const COMPTIME_BUILTIN_FUNCTIONS: &[&str] = &["keysOf", "tagsOf", "typeOf", "pick", "omit"];
 
 pub(crate) use checker::Checker;
-pub(crate) use lower::{
-    cyclic_alias_diagnostics, known_type_names, reserved_type_diagnostic, type_definitions,
-    type_definitions_excluding, unproductive_recursion_diagnostics,
-};
+pub(crate) use lower::{known_type_names, reserved_type_diagnostic, type_definitions};
 
 const BUILTIN_TYPES: &[&str] = &[
     "Bool",
@@ -106,6 +112,7 @@ pub struct ModuleImports {
     /// name. Carries owned AST so importers can specialize type applications
     /// such as `pair(Int)` without borrowing the dependency's module.
     comptime_exports: HashMap<String, HashMap<String, ComptimeExport>>,
+    recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
 }
 
 impl ModuleImports {
@@ -117,6 +124,7 @@ impl ModuleImports {
                 .collect(),
             type_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
+            recursive_type_unfoldings: HashMap::new(),
         }
     }
 
@@ -128,6 +136,7 @@ impl ModuleImports {
                 .collect(),
             type_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
+            recursive_type_unfoldings: HashMap::new(),
         }
     }
 
@@ -164,6 +173,13 @@ impl ModuleImports {
             })
             .collect();
         self.comptime_exports.insert(specifier, exports);
+    }
+
+    pub fn insert_recursive_type_unfoldings(
+        &mut self,
+        unfoldings: impl IntoIterator<Item = (RecursiveTypeId, Type)>,
+    ) {
+        self.recursive_type_unfoldings.extend(unfoldings);
     }
 
     pub fn get(&self, specifier: &str) -> Option<Option<&Type>> {
@@ -321,26 +337,15 @@ pub fn check_module_with_host_globals_and_imports_in(
             }
         }
     }
-    let type_definitions = type_definitions_excluding(
-        module,
-        &known_types,
-        &reserved_type_names,
-        imports,
-        &seed_definitions,
-    );
-    let alias_diagnostics = cyclic_alias_diagnostics(module, &type_definitions);
-    let unproductive_diagnostics = unproductive_recursion_diagnostics(module, &type_definitions);
     let mut checker = Checker::with_module_and_host_globals_and_imports(
         known_types,
-        type_definitions.clone(),
+        seed_definitions,
         module,
         globals,
         imports,
         module_identity,
     );
 
-    checker.diagnostics.extend(alias_diagnostics);
-    checker.diagnostics.extend(unproductive_diagnostics);
     checker.diagnostics.extend(reserved_diagnostics);
     checker.check_module(module);
     let export_names = final_record_names(module);
@@ -358,7 +363,7 @@ pub fn check_module_with_host_globals_and_imports_in(
         recursive_type_unfoldings: checker.recursive_type_unfoldings.clone(),
         diagnostics: checker.diagnostics,
         inferred_types: checker.inferred_types,
-        type_definitions,
+        type_definitions: checker.type_definitions.clone(),
         top_level_types,
     }
 }

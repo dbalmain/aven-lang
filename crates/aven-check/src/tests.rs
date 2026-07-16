@@ -1073,7 +1073,7 @@ fn comptime_type_position_record_comprehension_non_concrete_subject_defers_witho
     assert_eq!(definitions.get("Cloned"), Some(&Type::Deferred));
 
     let check = check_module(&unknown.module);
-    assert!(check.diagnostics.is_empty());
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
 }
 
 #[test]
@@ -1401,9 +1401,8 @@ fn recursive_types_with_unknown_structure_are_silent() {
         check.diagnostics
     );
 
-    let output = parse_module("Open = { next: Open }\n");
-    let mut definitions = check_module(&output.module).type_definitions;
-    definitions.insert(
+    let output = parse_module("");
+    let globals = HostGlobals::default().with_type_definitions(vec![(
         "Open".to_owned(),
         Type::Record(Row {
             entries: vec![RowEntry::Field {
@@ -1412,9 +1411,15 @@ fn recursive_types_with_unknown_structure_are_silent() {
             }],
             tail: RowTail::Open,
         }),
-    );
+    )]);
+    let check = check_module_with_host_globals(&output.module, &globals);
     assert!(
-        crate::lower::unproductive_recursion_diagnostics(&output.module, &definitions).is_empty()
+        check
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some("type.unproductive-recursion")),
+        "{:?}",
+        check.diagnostics
     );
 }
 
@@ -5012,6 +5017,21 @@ fn data_decode_and_map_set_result_typed_uses_still_check() {
         "typed Data/Map/Set/Result uses unexpectedly mismatched: {:?}",
         check.diagnostics
     );
+    let Some(Type::Recursive(data_id)) = check.type_definitions.get("Data") else {
+        panic!("host Data must use the shared recursive identity");
+    };
+    assert_eq!(Type::Recursive(*data_id).render(), "Data");
+    let Some(Type::Variant(data_head)) = check.recursive_type_unfoldings.get(data_id) else {
+        panic!("host Data must record its one-level variant head");
+    };
+    let array_payload = data_head.entries.iter().find_map(|entry| match entry {
+        RowEntry::Tag { name, payload } if name == "Array" => payload.first(),
+        _ => None,
+    });
+    assert_eq!(
+        array_payload,
+        Some(&build::array(Type::Recursive(*data_id)))
+    );
 }
 
 #[test]
@@ -8117,7 +8137,8 @@ fn cyclic_alias_normalization_terminates() {
     // Cyclic names stay nominal after normalize; a number literal is not `A`.
     assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
 
-    // Recursive tuple alias stays Named; a concrete tuple does not inhabit it.
+    // An unproductive recursive tuple has no completed head to unfold; a
+    // concrete tuple does not inhabit its recursive identity.
     let output = parse_module("A = (A, Int)\nvalue : A = (1, 2)\n");
     let check = check_module(&output.module);
 
@@ -8218,6 +8239,170 @@ fn parameterized_recursive_list_constructs_matches_and_renders_by_name() {
         check.recursive_type_unfoldings.values().next(),
         Some(Type::Variant(_))
     ));
+}
+
+#[test]
+fn zero_argument_recursive_record_uses_the_shared_knot() {
+    let source = concat!(
+        "Node = { value: Int, next: ?Node }\n",
+        "tail: Node = { value: 2 }\n",
+        "head: Node = { value: 1, next: tail }\n",
+        "next = head.next\n",
+        "value = head ?> { value, .. } => value\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let Some(Type::Recursive(node_id)) = check.type_definitions.get("Node") else {
+        panic!(
+            "Node must lower to a recursive reference: {:?}",
+            check.type_definitions
+        );
+    };
+    assert_eq!(Type::Recursive(*node_id).render(), "Node");
+    assert_eq!(
+        check.type_at(nth_span(source, "head", 0)).map(Type::render),
+        Some("Node".to_owned())
+    );
+
+    let Some(Type::Record(head)) = check.recursive_type_unfoldings.get(node_id) else {
+        panic!("Node must have a one-level record head");
+    };
+    assert_eq!(
+        head.entries,
+        vec![
+            field("value", named("Int")),
+            field("next", optional(Type::Recursive(*node_id))),
+        ]
+    );
+}
+
+#[test]
+fn zero_argument_mutual_recursion_uses_recursive_ids_and_the_shared_lfp() {
+    let legal = parse_module("A = { next: ?B }\nB = { next: A }\n");
+    let legal = check_module(&legal.module);
+    assert!(legal.diagnostics.is_empty(), "{:?}", legal.diagnostics);
+    assert!(matches!(
+        legal.type_definitions.get("A"),
+        Some(Type::Recursive(_))
+    ));
+    assert!(matches!(
+        legal.type_definitions.get("B"),
+        Some(Type::Recursive(_))
+    ));
+    assert_eq!(legal.recursive_type_unfoldings.len(), 2);
+
+    let strict = parse_module("A = { next: B }\nB = { next: A }\n");
+    let strict = check_module(&strict.module);
+    assert!(matches!(
+        strict.type_definitions.get("A"),
+        Some(Type::Recursive(_))
+    ));
+    assert!(matches!(
+        strict.type_definitions.get("B"),
+        Some(Type::Recursive(_))
+    ));
+    assert_eq!(
+        matching_codes(&strict.diagnostics, codes::ty::UNPRODUCTIVE_RECURSION),
+        2,
+        "{:?}",
+        strict.diagnostics
+    );
+}
+
+#[test]
+fn reflection_and_mapped_types_head_unfold_recursive_references_once() {
+    let source = concat!(
+        "Node = { value: Int, next: ?Node }\n",
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "Chain = (t: Type) => { value: t, next: ?Chain(t) }\n",
+        "partial = (object) => { keysOf(object) -> k; [k]: ?object[k] }\n",
+        "required = (object) => { keysOf(object) -> k; [k]: !object[k] }\n",
+        "NodeKeys = keysOf(Node)\n",
+        "ListTags = tagsOf(List(Int))\n",
+        "NodePatch = partial(Node)\n",
+        "NodeRequired = required(NodePatch)\n",
+        "NodePick = pick(Node, @{\"next\"})\n",
+        "NodeOmit = omit(Node, @{\"value\"})\n",
+        "ChainPatch = partial(Chain(Text))\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check.type_definitions.get("NodeKeys"),
+        Some(&variant_type(
+            vec![literal_string("\"next\""), literal_string("\"value\"")],
+            RowTail::Closed,
+        ))
+    );
+    assert_eq!(
+        check.type_definitions.get("ListTags"),
+        Some(&variant_type(
+            vec![literal_string("\"Cons\""), literal_string("\"Nil\"")],
+            RowTail::Closed,
+        ))
+    );
+
+    let Some(Type::Recursive(node_id)) = check.type_definitions.get("Node") else {
+        panic!("Node must be recursive");
+    };
+    for name in ["NodePatch", "NodePick", "NodeOmit"] {
+        let Some(Type::Record(row)) = check.type_definitions.get(name) else {
+            panic!("{name} must be an ordinary structural record");
+        };
+        let next = row.entries.iter().find_map(|entry| match entry {
+            RowEntry::Field { name, ty } if name == "next" => Some(ty),
+            _ => None,
+        });
+        assert_eq!(next, Some(&optional(Type::Recursive(*node_id))), "{name}");
+    }
+    assert_eq!(
+        check.type_definitions.get("NodeRequired"),
+        Some(&Type::Record(Row {
+            entries: vec![
+                field("next", Type::Recursive(*node_id)),
+                field("value", named("Int")),
+            ],
+            tail: RowTail::Closed,
+        }))
+    );
+
+    let Some(Type::Record(chain_patch)) = check.type_definitions.get("ChainPatch") else {
+        panic!("ChainPatch must be an ordinary structural record");
+    };
+    let Some(RowEntry::Field {
+        ty: Type::Optional(chain_reference),
+        ..
+    }) = chain_patch
+        .entries
+        .iter()
+        .find(|entry| matches!(entry, RowEntry::Field { name, .. } if name == "next"))
+    else {
+        panic!("ChainPatch.next must retain a recursive reference");
+    };
+    assert!(matches!(chain_reference.as_ref(), Type::Recursive(_)));
+    assert_eq!(chain_reference.render(), "Chain(Text)");
+}
+
+#[test]
+fn type_of_recursive_value_reuses_the_recursive_identity() {
+    let source = concat!(
+        "Node = { value: Int, next: ?Node }\n",
+        "node: Node = { value: 1 }\n",
+        "Reflected = typeOf(node)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check.type_definitions.get("Reflected"),
+        check.type_definitions.get("Node")
+    );
+    assert_eq!(check.recursive_type_unfoldings.len(), 1);
 }
 
 #[test]

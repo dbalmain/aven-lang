@@ -8,6 +8,10 @@ impl<'a> Checker<'a> {
         Self {
             known_types,
             type_definitions,
+            zero_argument_type_bindings: HashSet::new(),
+            prelowered_type_bindings: HashMap::new(),
+            prelowered_type_module: comptime::ComptimeModuleIdentity::specifier("host"),
+            transparent_alias_cycles: HashSet::new(),
             value_types: HashMap::new(),
             comptime_bindings: HashSet::new(),
             comptime_artifacts: HashMap::new(),
@@ -96,16 +100,50 @@ impl<'a> Checker<'a> {
         checker.module_identity = module_identity;
         checker.globals = globals.types.clone();
         checker.imports = imports.clone();
+        checker.recursive_type_unfoldings = imports.recursive_type_unfoldings.clone();
+        checker
+            .unifier
+            .set_recursive_type_unfoldings(checker.recursive_type_unfoldings.clone());
         checker.host_comptime_fns = globals
             .comptime_fns
             .iter()
             .map(|(name, spec)| (name.clone(), spec.clone()))
             .collect();
+        checker.prelowered_type_bindings = globals.type_definitions.iter().cloned().collect();
+        checker.prelowered_type_module = globals.type_definition_module.clone();
+        checker.lower_prelowered_type_definitions();
+
+        let mut reserved_names: HashSet<_> = BUILTIN_TYPES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        reserved_names.extend(
+            globals
+                .type_definitions
+                .iter()
+                .map(|(name, _)| name.clone()),
+        );
+        checker.lower_module_type_definitions(module, &reserved_names);
         checker.build_statics(globals);
         checker.collect_top_level_pattern_bindings(module);
         checker.build_value_types(module);
         checker.build_comptime_artifacts(module);
         checker
+    }
+
+    fn lower_module_type_definitions(&mut self, module: &Module, reserved_names: &HashSet<String>) {
+        self.zero_argument_type_bindings =
+            crate::lower::type_definition_names(module, &self.known_types, reserved_names);
+        let cyclic = crate::lower::cyclic_aliases(module, &self.zero_argument_type_bindings);
+        self.transparent_alias_cycles = cyclic.names;
+        self.diagnostics.extend(cyclic.diagnostics);
+
+        for declaration in collect_declarations(module) {
+            if !self.zero_argument_type_bindings.contains(&declaration.name) {
+                continue;
+            }
+            self.lower_zero_argument_type_definition(&declaration.name, declaration.span);
+        }
     }
 
     /// Assemble the statics table (compiler builtins + host-registered) into
@@ -223,6 +261,21 @@ impl<'a> Checker<'a> {
                     name.clone(),
                     Some(scheme_from_global(&annotation, &mut self.unifier)),
                 );
+            } else if self.zero_argument_type_bindings.contains(&name)
+                && let Some(definition) = self.type_definitions.get(&name).cloned()
+                && !matches!(definition, Type::Deferred)
+                && (matches!(definition, Type::Recursive(_))
+                    || binding_for_declaration(module, &declaration).is_some_and(|binding| {
+                        matches!(&ungroup_expr(&binding.value).kind, ExprKind::Call { .. })
+                    }))
+            {
+                // Recursive identities and call-produced type bindings have
+                // already gone through specialization. Reuse that result
+                // instead of recursively inferring the RHS again. Plain value
+                // records and unsupported RHS forms keep ordinary inference.
+                let scheme = scheme_from_global(&definition, &mut self.unifier);
+                self.memo.insert(name.clone(), scheme.clone());
+                types.insert(name.clone(), Some(scheme));
             } else if let Some(inferred) = self.infer_top_level_without_unbound_names(&name)
                 && !type_contains_deferred(&inferred.ty)
             {
@@ -973,79 +1026,11 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        let ty = self.display_named_definitions(ty);
         self.inferred_types.push(InferredType { name_span, ty });
     }
 
     pub(super) fn record_synthesized_type(&mut self, name_span: Span, ty: &Type) {
         self.record_inferred_type(name_span, display_inferred_type(ty));
-    }
-
-    pub(super) fn display_named_definitions(&self, ty: Type) -> Type {
-        let mut names = self.type_definitions.keys().cloned().collect::<Vec<_>>();
-        names.sort();
-        if names.is_empty() {
-            return ty;
-        }
-
-        map_type(&ty, &mut |node| {
-            names.iter().find_map(|name| {
-                let definition = self.type_definitions.get(name)?;
-                if matches!(definition, Type::Named(_))
-                    || !self.type_references_name(node, name, &mut HashSet::new())
-                {
-                    return None;
-                }
-                (self.normalize(definition).render() == node.render())
-                    .then(|| Type::Named(name.clone()))
-            })
-        })
-    }
-
-    pub(super) fn type_references_name(
-        &self,
-        ty: &Type,
-        name: &str,
-        visiting: &mut HashSet<String>,
-    ) -> bool {
-        match ty {
-            Type::Named(candidate) if candidate == name => true,
-            Type::Named(candidate) => {
-                visiting.insert(candidate.clone())
-                    && self
-                        .type_definitions
-                        .get(candidate)
-                        .is_some_and(|definition| {
-                            self.type_references_name(definition, name, visiting)
-                        })
-            }
-            Type::Apply { callee, args } => {
-                self.type_references_name(callee, name, visiting)
-                    || args
-                        .iter()
-                        .any(|arg| self.type_references_name(arg, name, visiting))
-            }
-            Type::Function { params, result, .. } => {
-                params
-                    .iter()
-                    .any(|param| self.type_references_name(param, name, visiting))
-                    || self.type_references_name(result, name, visiting)
-            }
-            Type::Optional(inner) | Type::Nullable(inner) => {
-                self.type_references_name(inner, name, visiting)
-            }
-            Type::Tuple(items) => items
-                .iter()
-                .any(|item| self.type_references_name(item, name, visiting)),
-            Type::Record(row) | Type::Variant(row) => row.entries.iter().any(|entry| match entry {
-                RowEntry::Field { ty, .. } => self.type_references_name(ty, name, visiting),
-                RowEntry::Tag { payload, .. } => payload
-                    .iter()
-                    .any(|ty| self.type_references_name(ty, name, visiting)),
-                RowEntry::Literal { .. } => false,
-            }),
-            Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Recursive(_) => false,
-        }
     }
 
     pub(super) fn top_level_binding_final_type(&mut self, name: &str) -> Option<Type> {

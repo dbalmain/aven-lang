@@ -148,6 +148,7 @@ impl<'a> Checker<'a> {
         let env = self.local_types.inference_env();
         let inferred = self.infer(&env, receiver);
         let receiver_type = self.normalize(&self.resolve_and_default(&inferred));
+        let receiver_type = self.unfold_recursive_type_once(&receiver_type);
         if builtin_collection_method_type(&receiver_type, field).is_some() {
             return;
         }

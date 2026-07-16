@@ -46,7 +46,11 @@ mod value;
 
 pub(crate) struct Checker<'a> {
     known_types: HashSet<String>,
-    type_definitions: HashMap<String, Type>,
+    pub(crate) type_definitions: HashMap<String, Type>,
+    zero_argument_type_bindings: HashSet<String>,
+    prelowered_type_bindings: HashMap<String, Type>,
+    prelowered_type_module: comptime::ComptimeModuleIdentity,
+    transparent_alias_cycles: HashSet<String>,
     value_types: HashMap<String, Option<TypeScheme>>,
     comptime_bindings: HashSet<String>,
     comptime_artifacts: HashMap<String, bool>,

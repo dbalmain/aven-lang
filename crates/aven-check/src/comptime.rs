@@ -331,6 +331,13 @@ impl SpecializationKey {
             args: args.iter().map(CanonicalComptimeValue::from).collect(),
         }
     }
+
+    pub(crate) fn zero_argument(origin: ComptimeOrigin) -> Self {
+        Self {
+            origin,
+            args: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -348,15 +355,19 @@ pub(crate) fn intern_recursive_type(
     key: &SpecializationKey,
     values: &[ComptimeValue],
 ) -> RecursiveTypeId {
-    let display = format!(
-        "{}({})",
-        key.origin.definition,
-        values
-            .iter()
-            .map(render_comptime_value)
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    let display = if values.is_empty() {
+        key.origin.definition.clone()
+    } else {
+        format!(
+            "{}({})",
+            key.origin.definition,
+            values
+                .iter()
+                .map(render_comptime_value)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let mut interner = recursive_type_interner()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -404,6 +415,7 @@ pub struct ComptimeExport {
     pub body: Expr,
     origin: ComptimeOrigin,
     environment: ComptimeModuleEnvironment,
+    type_binding: bool,
 }
 
 impl ComptimeExport {
@@ -415,6 +427,7 @@ impl ComptimeExport {
             params: params.to_vec(),
             body: body.clone(),
             environment: ComptimeModuleEnvironment::default(),
+            type_binding: false,
         }
     }
 
@@ -442,7 +455,19 @@ impl ComptimeExport {
                     .map(|(name, params, body)| (name, (params, body)))
                     .collect(),
             },
+            type_binding: false,
         }
+    }
+
+    pub(crate) fn from_type_binding(
+        name: impl Into<String>,
+        body: &Expr,
+        type_definitions: HashMap<String, Type>,
+        functions: impl IntoIterator<Item = (String, Vec<Param>, Expr)>,
+    ) -> Self {
+        let mut export = Self::from_module_lambda(name, &[], body, type_definitions, functions);
+        export.type_binding = true;
+        export
     }
 
     /// Preserve a function's defining environment while giving it an import or
@@ -454,6 +479,7 @@ impl ComptimeExport {
             body: self.body.clone(),
             origin: self.origin.clone(),
             environment: self.environment.clone(),
+            type_binding: self.type_binding,
         }
     }
 
@@ -524,6 +550,7 @@ pub(crate) trait EvalContext {
     ) -> EvaluationResult;
     fn infer_value_type(&mut self, expr: &Expr) -> Type;
     fn type_is_unresolved(&self, ty: &Type) -> bool;
+    fn unfold_recursive_type_once(&self, ty: &Type) -> Type;
     fn type_fits_boundary(&mut self, expected: &Type, actual: &Type) -> bool;
 }
 
@@ -549,6 +576,21 @@ pub(crate) fn evaluate_type_position_with_bindings(
     evaluate_type_position_with_options(context, expr, bindings, false)
 }
 
+pub(crate) fn evaluate_zero_argument_type_binding(
+    context: &mut impl EvalContext,
+    function: ComptimeExport,
+    definition_span: Span,
+) -> EvaluationResult {
+    let mut evaluator = Evaluator {
+        context,
+        visited: HashSet::new(),
+        fuel: DEFAULT_EVALUATION_FUEL,
+        report_cached_bound_diagnostics_at_site: false,
+        allow_unresolved_type_terms: true,
+    };
+    evaluator.evaluate_function_application(function, definition_span, &[], &Environment::default())
+}
+
 fn evaluate_type_position_with_options(
     context: &mut impl EvalContext,
     expr: &Expr,
@@ -560,6 +602,7 @@ fn evaluate_type_position_with_options(
         visited: HashSet::new(),
         fuel: DEFAULT_EVALUATION_FUEL,
         report_cached_bound_diagnostics_at_site,
+        allow_unresolved_type_terms: false,
     };
     evaluator.evaluate_expr(expr, &Environment::from_bindings(bindings))
 }
@@ -707,6 +750,7 @@ where
     visited: HashSet<SpecializationKey>,
     fuel: usize,
     report_cached_bound_diagnostics_at_site: bool,
+    allow_unresolved_type_terms: bool,
 }
 
 impl<C> Evaluator<'_, C>
@@ -941,6 +985,7 @@ where
         let Some(subject) = subject else {
             return EvaluationResult::deferred();
         };
+        let subject = self.context.unfold_recursive_type_once(&subject);
 
         kind.evaluate(
             &subject,
@@ -978,6 +1023,7 @@ where
         let Some(subject) = subject else {
             return EvaluationResult::deferred_with_diagnostics(subject_result.diagnostics);
         };
+        let subject = self.context.unfold_recursive_type_once(&subject);
 
         let labels_result = self.evaluate_expr(labels_arg, env);
         let labels = match labels_result.evaluation {
@@ -1104,7 +1150,10 @@ where
         let mut values = Vec::new();
 
         for arg in args {
+            let allow_unresolved_type_terms = self.allow_unresolved_type_terms;
+            self.allow_unresolved_type_terms = false;
             let arg_result = self.evaluate_expr(arg, env);
+            self.allow_unresolved_type_terms = allow_unresolved_type_terms;
             match arg_result.evaluation {
                 Evaluation::Evaluated(value) => values.push(value),
                 Evaluation::Deferred => {
@@ -1183,7 +1232,9 @@ where
             return EvaluationResult::deferred_with_diagnostics(lowering.diagnostics);
         }
 
-        if self.context.type_is_unresolved(&lowering.ty) || !is_concrete_type(&lowering.ty) {
+        if !self.allow_unresolved_type_terms
+            && (self.context.type_is_unresolved(&lowering.ty) || !is_concrete_type(&lowering.ty))
+        {
             return EvaluationResult::deferred();
         }
 
@@ -1584,7 +1635,7 @@ impl Environment {
             module_identity: function.environment.module_identity.clone(),
             captured_types: function.environment.type_definitions.clone(),
             captured_functions: function.environment.functions.clone(),
-            in_function_body: true,
+            in_function_body: !function.type_binding,
         }
     }
 
@@ -1612,6 +1663,7 @@ impl Environment {
                 type_definitions: self.captured_types.clone(),
                 functions: self.captured_functions.clone(),
             },
+            type_binding: false,
         })
     }
 

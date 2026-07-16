@@ -167,12 +167,255 @@ impl comptime::EvalContext for Checker<'_> {
         self.reflection_subject_is_unresolved(ty)
     }
 
+    fn unfold_recursive_type_once(&self, ty: &Type) -> Type {
+        Checker::unfold_recursive_type_once(self, ty)
+    }
+
     fn type_fits_boundary(&mut self, expected: &Type, actual: &Type) -> bool {
         self.type_fits_boundary_without_reporting(expected, actual)
     }
 }
 
 impl Checker<'_> {
+    pub(super) fn lower_zero_argument_type_definition(&mut self, name: &str, span: Span) {
+        let Some(function) = self.zero_argument_type_export(name) else {
+            return;
+        };
+        let result = comptime::evaluate_zero_argument_type_binding(self, function, span);
+        self.extend_unique_diagnostics(result.diagnostics);
+
+        let ty = match result.evaluation {
+            Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
+            Evaluation::Deferred | Evaluation::Unsupported => Some(Type::Deferred),
+        };
+        if let Some(ty) = ty {
+            self.type_definitions.insert(name.to_owned(), ty);
+        }
+    }
+
+    fn zero_argument_type_export(&self, name: &str) -> Option<comptime::ComptimeExport> {
+        if !self.zero_argument_type_bindings.contains(name) {
+            return None;
+        }
+        let binding = self.bindings.get(name).and_then(|binding| *binding)?;
+        Some(
+            comptime::ComptimeExport::from_type_binding(
+                name,
+                &binding.value,
+                self.type_definitions.clone(),
+                self.local_comptime_function_definitions(),
+            )
+            .with_module_identity(self.module_identity.clone()),
+        )
+    }
+
+    pub(super) fn try_lower_zero_argument_type(&mut self, name: &str, span: Span) -> Option<Type> {
+        let function = self.zero_argument_type_export(name)?;
+        let result = comptime::evaluate_zero_argument_type_binding(self, function, span);
+        self.extend_unique_diagnostics(result.diagnostics);
+        match result.evaluation {
+            Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
+            Evaluation::Deferred => Some(Type::Deferred),
+            Evaluation::Unsupported => None,
+        }
+    }
+
+    pub(super) fn lower_prelowered_type_definitions(&mut self) {
+        let names = self
+            .prelowered_type_bindings
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in names {
+            let result = self.evaluate_prelowered_type_definition(&name, Span::point(0));
+            self.extend_unique_diagnostics(result.diagnostics);
+            if let Evaluation::Evaluated(comptime::ComptimeValue::ReifiedType(ty)) =
+                result.evaluation
+            {
+                self.type_definitions.insert(name, ty);
+            }
+        }
+        self.prelowered_type_bindings.clear();
+    }
+
+    fn evaluate_prelowered_type_definition(
+        &mut self,
+        name: &str,
+        span: Span,
+    ) -> comptime::EvaluationResult {
+        let origin =
+            comptime::ComptimeOrigin::new(self.prelowered_type_module.clone(), name.to_owned());
+        let key = comptime::SpecializationKey::zero_argument(origin);
+        if let Some(result) = self.comptime_specializations.get(&key) {
+            return result.clone();
+        }
+        if let Some(id) =
+            <Self as comptime::EvalContext>::active_specialization_reference(self, &key)
+        {
+            return comptime::EvaluationResult {
+                evaluation: Evaluation::Evaluated(comptime::ComptimeValue::ReifiedType(
+                    Type::Recursive(id),
+                )),
+                diagnostics: Vec::new(),
+            };
+        }
+
+        let id = comptime::intern_recursive_type(&key, &[]);
+        if let Err(diagnostic) =
+            <Self as comptime::EvalContext>::begin_specialization(self, key.clone(), id, span)
+        {
+            return comptime::EvaluationResult {
+                evaluation: Evaluation::Deferred,
+                diagnostics: vec![diagnostic],
+            };
+        }
+
+        let Some(head) = self.prelowered_type_bindings.get(name).cloned() else {
+            return <Self as comptime::EvalContext>::finish_specialization(
+                self,
+                &key,
+                comptime::EvaluationResult {
+                    evaluation: Evaluation::Unsupported,
+                    diagnostics: Vec::new(),
+                },
+            );
+        };
+        let (head, diagnostics) = self.resolve_prelowered_type_head(&head, span);
+        <Self as comptime::EvalContext>::finish_specialization(
+            self,
+            &key,
+            comptime::EvaluationResult {
+                evaluation: Evaluation::Evaluated(comptime::ComptimeValue::ReifiedType(head)),
+                diagnostics,
+            },
+        )
+    }
+
+    fn resolve_prelowered_type_head(&mut self, ty: &Type, span: Span) -> (Type, Vec<Diagnostic>) {
+        match ty {
+            Type::Named(name) if self.prelowered_type_bindings.contains_key(name) => {
+                let result = self.evaluate_prelowered_type_definition(name, span);
+                let ty = match result.evaluation {
+                    Evaluation::Evaluated(comptime::ComptimeValue::ReifiedType(ty)) => ty,
+                    Evaluation::Evaluated(value) => value
+                        .reify_type_position()
+                        .into_reified_type()
+                        .unwrap_or_else(|| Type::Named(name.clone())),
+                    Evaluation::Deferred | Evaluation::Unsupported => Type::Named(name.clone()),
+                };
+                (ty, result.diagnostics)
+            }
+            Type::Apply { callee, args } => {
+                let (callee, mut diagnostics) = self.resolve_prelowered_type_head(callee, span);
+                let mut resolved_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    let (arg, nested) = self.resolve_prelowered_type_head(arg, span);
+                    resolved_args.push(arg);
+                    diagnostics.extend(nested);
+                }
+                (
+                    Type::Apply {
+                        callee: Box::new(callee),
+                        args: resolved_args,
+                    },
+                    diagnostics,
+                )
+            }
+            Type::Function {
+                params,
+                result,
+                required,
+            } => {
+                let mut diagnostics = Vec::new();
+                let mut resolved_params = Vec::with_capacity(params.len());
+                for param in params {
+                    let (param, nested) = self.resolve_prelowered_type_head(param, span);
+                    resolved_params.push(param);
+                    diagnostics.extend(nested);
+                }
+                let (result, nested) = self.resolve_prelowered_type_head(result, span);
+                diagnostics.extend(nested);
+                (
+                    Type::Function {
+                        params: resolved_params,
+                        result: Box::new(result),
+                        required: *required,
+                    },
+                    diagnostics,
+                )
+            }
+            Type::Optional(inner) => {
+                let (inner, diagnostics) = self.resolve_prelowered_type_head(inner, span);
+                (Type::Optional(Box::new(inner)), diagnostics)
+            }
+            Type::Nullable(inner) => {
+                let (inner, diagnostics) = self.resolve_prelowered_type_head(inner, span);
+                (Type::Nullable(Box::new(inner)), diagnostics)
+            }
+            Type::Tuple(items) => {
+                let mut diagnostics = Vec::new();
+                let mut resolved = Vec::with_capacity(items.len());
+                for item in items {
+                    let (item, nested) = self.resolve_prelowered_type_head(item, span);
+                    resolved.push(item);
+                    diagnostics.extend(nested);
+                }
+                (Type::Tuple(resolved), diagnostics)
+            }
+            Type::Record(row) | Type::Variant(row) => {
+                let mut diagnostics = Vec::new();
+                let mut entries = Vec::with_capacity(row.entries.len());
+                for entry in &row.entries {
+                    entries.push(match entry {
+                        RowEntry::Field { name, ty } => {
+                            let (ty, nested) = self.resolve_prelowered_type_head(ty, span);
+                            diagnostics.extend(nested);
+                            RowEntry::Field {
+                                name: name.clone(),
+                                ty,
+                            }
+                        }
+                        RowEntry::Tag { name, payload } => {
+                            let mut resolved = Vec::with_capacity(payload.len());
+                            for ty in payload {
+                                let (ty, nested) = self.resolve_prelowered_type_head(ty, span);
+                                resolved.push(ty);
+                                diagnostics.extend(nested);
+                            }
+                            RowEntry::Tag {
+                                name: name.clone(),
+                                payload: resolved,
+                            }
+                        }
+                        RowEntry::Literal { value } => RowEntry::Literal {
+                            value: value.clone(),
+                        },
+                    });
+                }
+                let resolved = Row {
+                    entries,
+                    tail: row.tail,
+                };
+                if matches!(ty, Type::Record(_)) {
+                    (Type::Record(resolved), diagnostics)
+                } else {
+                    (Type::Variant(resolved), diagnostics)
+                }
+            }
+            Type::Deferred
+            | Type::Named(_)
+            | Type::Variable(_)
+            | Type::Meta(_)
+            | Type::Recursive(_) => (ty.clone(), Vec::new()),
+        }
+    }
+
+    pub(super) fn extend_unique_diagnostics(&mut self, diagnostics: Vec<Diagnostic>) {
+        for diagnostic in diagnostics {
+            self.push_unique_diagnostic(diagnostic);
+        }
+    }
+
     fn finish_recursive_component(
         &mut self,
         component: Vec<SpecializationFrame>,
@@ -220,16 +463,34 @@ impl Checker<'_> {
             productive.extend(added);
         }
 
-        for (id, head) in &heads {
-            self.recursive_type_unfoldings.insert(*id, head.clone());
-            self.unifier.insert_recursive_type(*id, head.clone());
+        let transparent_alias_component = component.iter().all(|frame| {
+            self.transparent_alias_cycles
+                .contains(&frame.key.origin.definition)
+        });
+
+        if !transparent_alias_component {
+            for (id, head) in &heads {
+                if productive.contains(id) {
+                    self.recursive_type_unfoldings.insert(*id, head.clone());
+                    self.unifier.insert_recursive_type(*id, head.clone());
+                }
+            }
         }
+
+        let unproductive = component_ids
+            .difference(&productive)
+            .copied()
+            .collect::<HashSet<_>>();
 
         for frame in component {
             let mut diagnostics = frame
                 .result
                 .map_or_else(Vec::new, |result| result.diagnostics);
-            if !productive.contains(&frame.id) {
+            if !productive.contains(&frame.id) && !transparent_alias_component {
+                let forcing = heads
+                    .get(&frame.id)
+                    .and_then(|head| crate::productivity::forcing_step(head, &unproductive))
+                    .unwrap_or_else(|| "strict recursion".to_owned());
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "recursive type `{}` has no finite value",
@@ -241,8 +502,8 @@ impl Checker<'_> {
                         "unproductive recursive type declared here",
                     ))
                     .with_note(format!(
-                        "every value of `{}` requires another recursive value via strict recursion",
-                        frame.key.origin.definition
+                        "every value of `{}` requires another recursive value via {forcing}",
+                        frame.key.origin.definition,
                     )),
                 );
             }

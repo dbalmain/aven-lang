@@ -5,7 +5,7 @@ use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, Item, Module, collect_declarations,
 };
 
-use crate::{BUILTIN_TYPES, Checker, ModuleImports, RowEntry, RowTail, Type};
+use crate::{BUILTIN_TYPES, Checker, HostGlobals, ModuleImports, Type, comptime};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeLowering {
@@ -74,101 +74,43 @@ pub(crate) fn type_definitions(
     module: &Module,
     known_types: &HashSet<String>,
 ) -> HashMap<String, Type> {
-    let reserved_names = BUILTIN_TYPES
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect();
-    type_definitions_excluding(
+    Checker::with_module_and_host_globals_and_imports(
+        known_types.clone(),
+        HashMap::new(),
         module,
-        known_types,
-        &reserved_names,
+        &HostGlobals::default(),
         &ModuleImports::default(),
-        &HashMap::new(),
+        comptime::ComptimeModuleIdentity::Current,
     )
+    .type_definitions
 }
 
-/// `seed_definitions` are definitions that exist before this module's own
-/// comptime declarations — host-global and pattern-imported types. They must
-/// be visible while declarations lower so comptime type functions applied to
-/// them reify instead of deferring.
-pub(crate) fn type_definitions_excluding(
+pub(crate) fn type_definition_names(
     module: &Module,
     known_types: &HashSet<String>,
     reserved_names: &HashSet<String>,
-    imports: &ModuleImports,
-    seed_definitions: &HashMap<String, Type>,
-) -> HashMap<String, Type> {
-    let mut definitions = seed_definitions.clone();
-    let declarations: Vec<_> = collect_declarations(module)
+) -> HashSet<String> {
+    collect_declarations(module)
         .into_iter()
         .filter(|declaration| declaration.phase == DeclarationPhase::Comptime)
-        .collect();
-
-    for _ in 0..=declarations.len() {
-        let mut next = seed_definitions.clone();
-
-        for declaration in &declarations {
-            let Some(binding) = binding_for_declaration(module, declaration) else {
-                continue;
-            };
-
-            // An import binds a module *value*, never a type alias. Keep it
-            // out of the definitions map so a binding named like a builtin
-            // type (`Text = import(...)`) cannot shadow that type during
-            // normalization; the checker reports the binding itself as
-            // `name.uppercase-module-binding`.
-            if crate::checker::is_import_call(&binding.value) {
-                continue;
-            }
-
-            // An uppercase lambda is a comptime function definition, not a
-            // lowered type alias. Its applications specialize through the
-            // shared comptime evaluator below.
-            if declaration
-                .name
-                .chars()
-                .next()
-                .is_some_and(char::is_uppercase)
-                && aven_parser::lambda_parts(&binding.value).is_some()
-            {
-                continue;
-            }
-
-            // A bare lowercase name is a runtime reference, not a type alias.
-            // Lowercase names remain valid type variables inside structured
-            // aliases such as `{ value: a }`.
-            if (declared_annotation_for_declaration(module, declaration).is_none()
-                && bare_lowercase_unknown_name(&binding.value, known_types).is_some())
+        .filter_map(|declaration| {
+            let binding = binding_for_declaration(module, &declaration)?;
+            if crate::checker::is_import_call(&binding.value)
+                || (declaration
+                    .name
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_uppercase)
+                    && aven_parser::lambda_parts(&binding.value).is_some())
+                || (declared_annotation_for_declaration(module, &declaration).is_none()
+                    && bare_lowercase_unknown_name(&binding.value, known_types).is_some())
                 || reserved_names.contains(&declaration.name)
             {
-                continue;
+                return None;
             }
-
-            // Lower each definition without its own entry so self-references
-            // stay nominal (`Data` keeps `Named("Data")` payload leaves) —
-            // recursive definitions unfold lazily at use sites instead of
-            // expanding here. Imports are available so `PairInt = pair(Int)`
-            // expands when `pair` is a pattern-imported comptime export.
-            let mut visible = definitions.clone();
-            visible.remove(&declaration.name);
-            let mut checker =
-                Checker::with_module_environment(known_types.clone(), visible, module);
-            checker.imports = imports.clone();
-
-            next.insert(
-                declaration.name.clone(),
-                checker.lower_annotation(&binding.value),
-            );
-        }
-
-        if next == definitions {
-            break;
-        }
-
-        definitions = next;
-    }
-
-    definitions
+            Some(declaration.name)
+        })
+        .collect()
 }
 
 pub(crate) fn bare_lowercase_unknown_name<'a>(
@@ -203,31 +145,38 @@ fn ungroup_expr(mut expr: &Expr) -> &Expr {
     expr
 }
 
-pub(crate) fn cyclic_alias_diagnostics(
-    module: &Module,
-    definitions: &HashMap<String, Type>,
-) -> Vec<Diagnostic> {
-    let edges: HashMap<&str, &str> = definitions
-        .iter()
-        .filter_map(|(name, ty)| match ty {
-            Type::Named(target) if definitions.contains_key(target) => {
-                Some((name.as_str(), target.as_str()))
-            }
-            _ => None,
+pub(crate) struct CyclicAliases {
+    pub(crate) names: HashSet<String>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+}
+
+pub(crate) fn cyclic_aliases(module: &Module, names: &HashSet<String>) -> CyclicAliases {
+    let edges: HashMap<String, String> = collect_declarations(module)
+        .into_iter()
+        .filter(|declaration| names.contains(&declaration.name))
+        .filter_map(|declaration| {
+            let binding = binding_for_declaration(module, &declaration)?;
+            let target = match &ungroup_expr(&binding.value).kind {
+                ExprKind::Name(target) | ExprKind::ComptimeName(target) => target,
+                _ => return None,
+            };
+            names
+                .contains(target)
+                .then_some((declaration.name, target.clone()))
         })
         .collect();
 
     let mut cyclic = HashSet::new();
     let mut finished = HashSet::new();
 
-    for name in edges.keys().copied() {
-        if finished.contains(name) {
+    for name in edges.keys() {
+        if finished.contains(name.as_str()) {
             continue;
         }
 
-        let mut path = Vec::new();
+        let mut path: Vec<&str> = Vec::new();
         let mut positions = HashMap::new();
-        let mut current = name;
+        let mut current = name.as_str();
 
         while !finished.contains(current) {
             if let Some(&cycle_start) = positions.get(current) {
@@ -238,7 +187,7 @@ pub(crate) fn cyclic_alias_diagnostics(
             positions.insert(current, path.len());
             path.push(current);
 
-            let Some(next) = edges.get(current).copied() else {
+            let Some(next) = edges.get(current).map(String::as_str) else {
                 break;
             };
             current = next;
@@ -247,22 +196,27 @@ pub(crate) fn cyclic_alias_diagnostics(
         finished.extend(path);
     }
 
+    let names = collect_declarations(module)
+        .into_iter()
+        .filter(|declaration| cyclic.contains(declaration.name.as_str()))
+        .map(|declaration| declaration.name)
+        .collect::<HashSet<_>>();
     let mut emitted = HashSet::new();
-    collect_declarations(module)
+    let diagnostics = collect_declarations(module)
         .into_iter()
         .filter_map(|declaration| {
             let name = declaration.name;
-            if !cyclic.contains(name.as_str()) || !emitted.insert(name.clone()) {
+            if !names.contains(&name) || !emitted.insert(name.clone()) {
                 return None;
             }
 
-            let mut cycle = vec![name.as_str()];
-            let mut current = edges[name.as_str()];
+            let mut cycle = vec![name.clone()];
+            let mut current = edges[name.as_str()].clone();
             while current != name {
-                cycle.push(current);
-                current = edges[current];
+                cycle.push(current.clone());
+                current = edges[current.as_str()].clone();
             }
-            cycle.push(name.as_str());
+            cycle.push(name.clone());
 
             Some(
                 Diagnostic::error(format!(
@@ -279,218 +233,9 @@ pub(crate) fn cyclic_alias_diagnostics(
                 ),
             )
         })
-        .collect()
-}
-
-/// Reports recursive aliases whose strict structure cannot produce a finite
-/// value. Unlike transparent alias cycles, these definitions retain a nominal
-/// `Named` knot while lowering, so their productivity is decided here from the
-/// least fixed point of each local recursive SCC.
-pub(crate) fn unproductive_recursion_diagnostics(
-    module: &Module,
-    definitions: &HashMap<String, Type>,
-) -> Vec<Diagnostic> {
-    let names: Vec<_> = collect_declarations(module)
-        .into_iter()
-        .filter(|declaration| definitions.contains_key(&declaration.name))
-        .map(|declaration| declaration.name)
         .collect();
-    let local: HashSet<_> = names.iter().map(String::as_str).collect();
-    let edges: HashMap<_, _> = names
-        .iter()
-        .map(|name| {
-            let mut targets = HashSet::new();
-            collect_named_references(&definitions[name], &local, &mut targets);
-            (name.as_str(), targets)
-        })
-        .collect();
-    let reverse = reverse_edges(&edges);
-    let mut assigned: HashSet<&str> = HashSet::new();
-    let mut unproductive: HashSet<&str> = HashSet::new();
 
-    for name in &names {
-        if assigned.contains(name.as_str()) {
-            continue;
-        }
-        let forward = reachable(name, &edges);
-        let backward = reachable(name, &reverse);
-        let component: HashSet<_> = forward.intersection(&backward).copied().collect();
-        assigned.extend(&component);
-
-        let recursive = component.len() > 1
-            || edges
-                .get(name.as_str())
-                .is_some_and(|targets| targets.contains(name.as_str()));
-        if !recursive {
-            continue;
-        }
-        // A wholly transparent cycle is owned by `cyclic_alias_diagnostics`.
-        // Keeping it there preserves both its established diagnostic and its
-        // clearer alias-chain explanation.
-        if component.iter().all(|member| {
-            matches!(definitions[*member], Type::Named(ref target) if component.contains(target.as_str()))
-        }) {
-            continue;
-        }
-
-        let mut productive = HashSet::new();
-        loop {
-            let added: Vec<_> = component
-                .iter()
-                .copied()
-                .filter(|member| {
-                    !productive.contains(*member)
-                        && is_productive(&definitions[*member], &component, &productive)
-                })
-                .collect();
-            if added.is_empty() {
-                break;
-            }
-            productive.extend(added);
-        }
-        unproductive.extend(component.difference(&productive).copied());
-    }
-
-    collect_declarations(module)
-        .into_iter()
-        .filter(|declaration| unproductive.contains(declaration.name.as_str()))
-        .map(|declaration| {
-            let forcing = forcing_step(
-                &definitions[&declaration.name],
-                &unproductive,
-                &HashSet::new(),
-            )
-            .unwrap_or_else(|| "strict recursion".to_owned());
-            Diagnostic::error(format!(
-                "recursive type `{}` has no finite value",
-                declaration.name
-            ))
-            .with_code(codes::ty::UNPRODUCTIVE_RECURSION)
-            .with_label(Label::primary(
-                declaration.span,
-                "unproductive recursive type declared here",
-            ))
-            .with_note(format!(
-                "every value of `{}` requires another recursive value via {forcing}",
-                declaration.name
-            ))
-        })
-        .collect()
-}
-
-fn collect_named_references<'a>(
-    ty: &'a Type,
-    local: &HashSet<&'a str>,
-    targets: &mut HashSet<&'a str>,
-) {
-    match ty {
-        Type::Named(name) => {
-            if local.contains(name.as_str()) {
-                targets.insert(name);
-            }
-        }
-        Type::Apply { callee, args } => {
-            collect_named_references(callee, local, targets);
-            for arg in args {
-                collect_named_references(arg, local, targets);
-            }
-        }
-        Type::Function { params, result, .. } => {
-            for param in params {
-                collect_named_references(param, local, targets);
-            }
-            collect_named_references(result, local, targets);
-        }
-        Type::Optional(inner) | Type::Nullable(inner) => {
-            collect_named_references(inner, local, targets)
-        }
-        Type::Tuple(items) => {
-            for item in items {
-                collect_named_references(item, local, targets);
-            }
-        }
-        Type::Record(row) | Type::Variant(row) => {
-            for entry in &row.entries {
-                match entry {
-                    RowEntry::Field { ty, .. } => collect_named_references(ty, local, targets),
-                    RowEntry::Tag { payload, .. } => {
-                        for ty in payload {
-                            collect_named_references(ty, local, targets);
-                        }
-                    }
-                    RowEntry::Literal { .. } => {}
-                }
-            }
-        }
-        Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Recursive(_) => {}
-    }
-}
-
-fn reverse_edges<'a>(
-    edges: &HashMap<&'a str, HashSet<&'a str>>,
-) -> HashMap<&'a str, HashSet<&'a str>> {
-    let mut reverse: HashMap<_, HashSet<_>> =
-        edges.keys().map(|name| (*name, HashSet::new())).collect();
-    for (from, targets) in edges {
-        for target in targets {
-            reverse.entry(*target).or_default().insert(*from);
-        }
-    }
-    reverse
-}
-
-fn reachable<'a>(start: &'a str, edges: &HashMap<&'a str, HashSet<&'a str>>) -> HashSet<&'a str> {
-    let mut seen = HashSet::new();
-    let mut pending = vec![start];
-    while let Some(name) = pending.pop() {
-        if !seen.insert(name) {
-            continue;
-        }
-        if let Some(targets) = edges.get(name) {
-            pending.extend(targets.iter().copied());
-        }
-    }
-    seen
-}
-
-fn is_productive(ty: &Type, component: &HashSet<&str>, productive: &HashSet<&str>) -> bool {
-    crate::productivity::is_productive(ty, &mut |node| {
-        let Type::Named(name) = node else {
-            return None;
-        };
-        component
-            .contains(name.as_str())
-            .then(|| productive.contains(name.as_str()))
-    })
-}
-
-fn forcing_step(ty: &Type, unproductive: &HashSet<&str>, seen: &HashSet<&str>) -> Option<String> {
-    match ty {
-        Type::Named(name)
-            if unproductive.contains(name.as_str()) && !seen.contains(name.as_str()) =>
-        {
-            Some(format!("type `{name}`"))
-        }
-        Type::Tuple(items) => items.iter().enumerate().find_map(|(index, item)| {
-            forcing_step(item, unproductive, seen).map(|_| format!("tuple item {}", index + 1))
-        }),
-        Type::Record(row) if row.tail == RowTail::Closed => row.entries.iter().find_map(|entry| {
-            let RowEntry::Field { name, ty } = entry else {
-                return None;
-            };
-            forcing_step(ty, unproductive, seen).map(|_| format!("field `{name}`"))
-        }),
-        Type::Variant(row) if row.tail == RowTail::Closed => row.entries.iter().find_map(|entry| {
-            let RowEntry::Tag { name, payload } = entry else {
-                return None;
-            };
-            payload
-                .iter()
-                .find_map(|ty| forcing_step(ty, unproductive, seen))
-                .map(|_| format!("alternative `@{name}`"))
-        }),
-        _ => None,
-    }
+    CyclicAliases { names, diagnostics }
 }
 
 #[derive(Debug, Clone)]

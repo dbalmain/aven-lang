@@ -80,6 +80,7 @@ struct DocumentSemanticAnalysis {
     diagnostics: Vec<AvenDiagnostic>,
     inferred_types: Vec<aven_compiler::InferredType>,
     type_definitions: HashMap<String, aven_compiler::Type>,
+    recursive_type_unfoldings: HashMap<aven_compiler::RecursiveTypeId, aven_compiler::Type>,
     module_graph: Option<DocumentModuleGraph>,
 }
 
@@ -141,6 +142,7 @@ impl DocumentStore {
             analysis.diagnostics,
             analysis.inferred_types,
             analysis.type_definitions,
+            analysis.recursive_type_unfoldings,
         ) else {
             return false;
         };
@@ -541,6 +543,7 @@ fn analyze_document_semantics_for_uri(
         diagnostics: semantic.diagnostics,
         inferred_types: semantic.inferred_types,
         type_definitions: semantic.type_definitions,
+        recursive_type_unfoldings: semantic.recursive_type_unfoldings,
         module_graph: None,
     }
 }
@@ -589,12 +592,14 @@ fn module_semantics_for_document(
         .collect();
     let inferred_types = entry_node.semantic.inferred_types.clone();
     let type_definitions = entry_node.semantic.type_definitions.clone();
+    let recursive_type_unfoldings = entry_node.semantic.recursive_type_unfoldings.clone();
     let module_graph = module_graph_cache(document.revision(), entry_path, output.nodes);
 
     Some(DocumentSemanticAnalysis {
         diagnostics,
         inferred_types,
         type_definitions,
+        recursive_type_unfoldings,
         module_graph: Some(module_graph),
     })
 }
@@ -1106,7 +1111,7 @@ fn field_completion_at_position(
     // static-carrying type value rather than a value receiver.
     let fields = receiver_type
         .as_ref()
-        .and_then(receiver_field_completion_fields)
+        .and_then(|ty| receiver_field_completion_fields(document, ty))
         .or_else(|| {
             access
                 .receiver
@@ -1126,7 +1131,7 @@ fn field_completion_at_position(
 
     let mut items = Vec::new();
     let mut seen = HashSet::new();
-    let receiver_carries_encode = receiver_type_carries_member(&receiver_type, "encode");
+    let receiver_carries_encode = receiver_type_carries_member(document, &receiver_type, "encode");
 
     for field in fields {
         let is_synthetic_encode = field.name == "encode" && !receiver_carries_encode;
@@ -1160,7 +1165,8 @@ fn construction_completion_at_position(
 
     aven_parser::annotation_for_definition(&document.parse_output().module, binding.name_span)?;
 
-    let expected = expected_type_for_construction_binding(document, binding)?;
+    let expected = document
+        .unfold_recursive_type_once(expected_type_for_construction_binding(document, binding)?);
     let (entries, kind) = match &binding.value.kind {
         aven_parser::ExprKind::Record(entries) => {
             (entries.as_slice(), ConstructionCompletionKind::RecordLabels)
@@ -1188,7 +1194,7 @@ fn construction_completion_at_position(
                 .filter_map(record_entry_label)
                 .collect::<HashSet<_>>();
 
-            for field in aven_compiler::record_fields(expected)? {
+            for field in aven_compiler::record_fields(&expected)? {
                 if present.contains(field.name.as_str()) {
                     continue;
                 }
@@ -1206,7 +1212,7 @@ fn construction_completion_at_position(
                 .filter_map(record_entry_tag)
                 .collect::<HashSet<_>>();
 
-            for tag in aven_compiler::variant_tags(expected)? {
+            for tag in aven_compiler::variant_tags(&expected)? {
                 if present.contains(tag.as_str()) {
                     continue;
                 }
@@ -1332,10 +1338,12 @@ fn type_statics_fields(name: &str) -> Option<Vec<aven_compiler::RecordField>> {
 /// Text-only; `encode` is universal sugar unless the receiver type already has
 /// an `encode` member.
 fn receiver_field_completion_fields(
+    document: &ParsedDocument,
     receiver_type: &aven_compiler::Type,
 ) -> Option<Vec<aven_compiler::RecordField>> {
+    let receiver_type = document.unfold_recursive_type_once(receiver_type);
     if matches!(
-        receiver_type,
+        &receiver_type,
         aven_compiler::Type::Deferred
             | aven_compiler::Type::Variable(_)
             | aven_compiler::Type::Meta(_)
@@ -1343,8 +1351,8 @@ fn receiver_field_completion_fields(
         return None;
     }
 
-    let mut fields = aven_compiler::record_fields(receiver_type).unwrap_or_default();
-    if aven_compiler::is_text_type(receiver_type)
+    let mut fields = aven_compiler::record_fields(&receiver_type).unwrap_or_default();
+    if aven_compiler::is_text_type(&receiver_type)
         && !fields.iter().any(|field| field.name == "decode")
     {
         fields.push(format_method_field("decode"));
@@ -1356,8 +1364,13 @@ fn receiver_field_completion_fields(
     (!fields.is_empty()).then_some(fields)
 }
 
-fn receiver_type_carries_member(receiver_type: &aven_compiler::Type, member: &str) -> bool {
-    aven_compiler::record_fields(receiver_type)
+fn receiver_type_carries_member(
+    document: &ParsedDocument,
+    receiver_type: &aven_compiler::Type,
+    member: &str,
+) -> bool {
+    let receiver_type = document.unfold_recursive_type_once(receiver_type);
+    aven_compiler::record_fields(&receiver_type)
         .is_some_and(|fields| fields.iter().any(|field| field.name == member))
 }
 
@@ -2504,6 +2517,21 @@ fn identifier_hover_at_position(
         });
     }
 
+    if comptime_call_type_binding(document, &identifier.name)
+        && let Some(value) = comptime_hover_value(document, &identifier)
+    {
+        return Some(HoverCandidate {
+            span: identifier.span,
+            hover: Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value,
+                }),
+                range: Some(span_to_range(document, identifier.span)),
+            },
+        });
+    }
+
     let rendered = if let Some(definition) = definition_span_for_identifier(document, &identifier) {
         if let Some(annotation) =
             aven_parser::annotation_for_definition(&document.parse_output().module, definition)
@@ -2610,6 +2638,23 @@ fn comptime_type_function_binding(document: &ParsedDocument, name: &str) -> bool
                 binding.name.chars().next().is_some_and(char::is_uppercase)
                     || references_comptime_builtin(body)
             })
+    })
+}
+
+fn comptime_call_type_binding(document: &ParsedDocument, name: &str) -> bool {
+    document.parse_output().module.items.iter().any(|item| {
+        let aven_parser::Item::Binding(binding) = item else {
+            return false;
+        };
+        if binding.name != name || binding.annotation.is_some() {
+            return false;
+        }
+
+        let mut value = &binding.value;
+        while let aven_parser::ExprKind::Group(inner) = &value.kind {
+            value = inner;
+        }
+        matches!(&value.kind, aven_parser::ExprKind::Call { .. })
     })
 }
 
@@ -2841,6 +2886,7 @@ fn field_type_for_access(
     let fields = definition_span_for_identifier(document, &access.receiver)
         .and_then(|span| document.type_at(span).cloned())
         .or_else(|| host_global_type(&access.receiver.name))
+        .map(|ty| document.unfold_recursive_type_once(&ty))
         .as_ref()
         .and_then(aven_compiler::record_fields)
         .or_else(|| type_statics_fields(&access.receiver.name))?;

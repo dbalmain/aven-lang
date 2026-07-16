@@ -41,7 +41,7 @@ impl<'a> Checker<'a> {
         &mut self,
         evaluation: comptime::EvaluationResult,
     ) -> Option<Type> {
-        self.diagnostics.extend(evaluation.diagnostics);
+        self.extend_unique_diagnostics(evaluation.diagnostics);
 
         match evaluation.evaluation {
             Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
@@ -113,14 +113,7 @@ impl<'a> Checker<'a> {
     /// Unfold exactly one recursive reference when a consumer needs its outer
     /// constructor. Back-edge references inside the cloned head remain atomic.
     pub(super) fn unfold_recursive_type_once(&self, ty: &Type) -> Type {
-        match ty {
-            Type::Recursive(id) => self
-                .recursive_type_unfoldings
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| ty.clone()),
-            _ => ty.clone(),
-        }
+        crate::unfold_recursive_type_once(ty, &self.recursive_type_unfoldings)
     }
 
     /// Normalize aliases and unfold recursive references at a structural
@@ -221,12 +214,7 @@ impl<'a> Checker<'a> {
                     return Type::Named(name.clone());
                 };
 
-                // Recursive definitions stay nominal: expanding them is never
-                // idempotent (each pass unfolds one more level), so match and
-                // boundary machinery unfold them lazily instead.
-                if visited.contains(name)
-                    || self.type_references_name(definition, name, &mut HashSet::new())
-                {
+                if visited.contains(name) {
                     return Type::Named(name.clone());
                 }
 
@@ -337,6 +325,9 @@ impl<'a> Checker<'a> {
         match &annotation.kind {
             ExprKind::ComptimeName(name) => {
                 if let Some(ty) = self.lookup_comptime_reified_type(name) {
+                    return ty;
+                }
+                if let Some(ty) = self.try_lower_zero_argument_type(name, annotation.span) {
                     return ty;
                 }
 
@@ -558,7 +549,7 @@ impl<'a> Checker<'a> {
             return Some(Type::Deferred);
         };
 
-        match self.normalize(&subject) {
+        match self.unfold_recursive_type_once(&self.normalize(&subject)) {
             Type::Tuple(items) => Some(self.infer_tuple_index(&items, arg)),
             Type::Record(row) if row.tail == RowTail::Closed => {
                 let Some(label) = self.comptime_known_label(arg) else {

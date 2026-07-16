@@ -1,4 +1,6 @@
-use crate::ty::{RowEntry, RowTail, Type};
+use std::collections::HashSet;
+
+use crate::ty::{RecursiveTypeId, RowEntry, RowTail, Type};
 
 /// Apply the recursive-type productivity constructor rules to one completed
 /// head. `recursive_status` identifies references in the SCC and supplies the
@@ -45,5 +47,33 @@ pub(crate) fn is_productive(
         | Type::Meta(_)
         | Type::Recursive(_)
         | Type::Apply { .. } => true,
+    }
+}
+
+/// Describe the first strict constructor that forces another unproductive
+/// recursive component member. This only formats the unified LFP result; it does not decide
+/// productivity independently.
+pub(crate) fn forcing_step(ty: &Type, unproductive: &HashSet<RecursiveTypeId>) -> Option<String> {
+    match ty {
+        Type::Recursive(id) if unproductive.contains(id) => Some(format!("type `{}`", ty.render())),
+        Type::Tuple(items) => items.iter().enumerate().find_map(|(index, item)| {
+            forcing_step(item, unproductive).map(|_| format!("tuple item {}", index + 1))
+        }),
+        Type::Record(row) if row.tail == RowTail::Closed => row.entries.iter().find_map(|entry| {
+            let RowEntry::Field { name, ty } = entry else {
+                return None;
+            };
+            forcing_step(ty, unproductive).map(|_| format!("field `{name}`"))
+        }),
+        Type::Variant(row) if row.tail == RowTail::Closed => row.entries.iter().find_map(|entry| {
+            let RowEntry::Tag { name, payload } = entry else {
+                return None;
+            };
+            payload
+                .iter()
+                .find_map(|ty| forcing_step(ty, unproductive))
+                .map(|_| format!("alternative `@{name}`"))
+        }),
+        _ => None,
     }
 }

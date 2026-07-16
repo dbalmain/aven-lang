@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use aven_check::{
-    ComptimeExport, ComptimeModuleIdentity, ModuleImports as CheckModuleImports, RowTail, Type,
+    ComptimeExport, ComptimeModuleIdentity, ModuleImports as CheckModuleImports, RecursiveTypeId,
+    RowTail, Type,
 };
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
@@ -197,6 +198,7 @@ enum CheckExport {
         ty: Type,
         type_exports: HashMap<String, Type>,
         comptime_exports: HashMap<String, ComptimeExport>,
+        recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     },
     HasErrors,
     UppercaseExportNotType {
@@ -752,10 +754,16 @@ fn check_imports_for_node(
                 ty,
                 type_exports,
                 comptime_exports,
+                recursive_type_unfoldings,
             }) if !import.failed => {
                 imports.insert(import.specifier.clone(), ty.clone());
                 imports.insert_type_exports(import.specifier.clone(), type_exports.clone());
                 imports.insert_comptime_exports(import.specifier.clone(), comptime_exports.clone());
+                imports.insert_recursive_type_unfoldings(
+                    recursive_type_unfoldings
+                        .iter()
+                        .map(|(id, head)| (*id, head.clone())),
+                );
             }
             Some(CheckExport::NotImportable { note }) if !import.failed => {
                 imports.insert_failed(import.specifier.clone());
@@ -902,6 +910,7 @@ fn check_export_for_node(
                 ty: rebuilt,
                 type_exports: HashMap::new(),
                 comptime_exports,
+                recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
             };
         }
         let comptime_exports = collect_comptime_exports(
@@ -915,6 +924,7 @@ fn check_export_for_node(
             ty,
             type_exports: HashMap::new(),
             comptime_exports,
+            recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
         };
     }
     let mut fields = Vec::new();
@@ -1040,6 +1050,7 @@ fn check_export_for_node(
         }),
         type_exports,
         comptime_exports,
+        recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
     }
 }
 

@@ -762,6 +762,26 @@ mod tests {
     }
 
     #[test]
+    fn recursive_decode_target_reports_a_clean_runtime_diagnostic() {
+        let source = "Node = { value: Int, next: ?Node }\n\
+                      Json.decode(\"{\\\"value\\\": 1}\", Node)\n";
+        let checked = check(source);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "recursive target checking remains deferred: {:?}",
+            checked.diagnostics
+        );
+
+        let diagnostics = run_diagnostics(source);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::runtime::UNBOUND_NAME)),
+            "recursive target evaluation is diagnosed without looping: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn checker_defers_decode_with_runtime_type_argument() {
         let source =
             "text = \"{}\"\ntarget = { name: \"Text\" }\ndecoded = Json.decode(text, target)\n";

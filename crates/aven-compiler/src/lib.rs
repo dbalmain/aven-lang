@@ -14,8 +14,8 @@ use aven_parser::{
 
 pub use aven_check::{
     COMPTIME_BUILTIN_FUNCTIONS, HostGlobals, InferredType, ModuleImports as CheckModuleImports,
-    RecordField, Type, function_signature, is_text_type, literal_union_members, record_fields,
-    type_contains_deferred, type_statics, variant_tags,
+    RecordField, RecursiveTypeId, Type, function_signature, is_text_type, literal_union_members,
+    record_fields, type_contains_deferred, type_statics, unfold_recursive_type_once, variant_tags,
 };
 
 mod modules;
@@ -100,6 +100,7 @@ pub struct DocumentSnapshot {
     semantic_diagnostics: Vec<Diagnostic>,
     inferred_types: Vec<InferredType>,
     type_definitions: HashMap<String, Type>,
+    recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     has_semantic: bool,
 }
 
@@ -133,6 +134,7 @@ impl DocumentSnapshot {
             semantic_diagnostics: Vec::new(),
             inferred_types: Vec::new(),
             type_definitions: HashMap::new(),
+            recursive_type_unfoldings: HashMap::new(),
             has_semantic: false,
         }
     }
@@ -142,6 +144,7 @@ impl DocumentSnapshot {
         semantic_diagnostics: Vec<Diagnostic>,
         inferred_types: Vec<InferredType>,
         type_definitions: HashMap<String, Type>,
+        recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     ) -> Self {
         Self {
             revision: self.revision,
@@ -153,6 +156,7 @@ impl DocumentSnapshot {
             semantic_diagnostics,
             inferred_types,
             type_definitions,
+            recursive_type_unfoldings,
             has_semantic: true,
         }
     }
@@ -210,6 +214,10 @@ impl DocumentSnapshot {
     /// (e.g. `Draft` for `Draft = partial(User)`). Empty until semantics run.
     pub fn type_definition(&self, name: &str) -> Option<&Type> {
         self.type_definitions.get(name)
+    }
+
+    pub fn unfold_recursive_type_once(&self, ty: &Type) -> Type {
+        unfold_recursive_type_once(ty, &self.recursive_type_unfoldings)
     }
 
     pub fn has_semantic(&self) -> bool {
@@ -646,6 +654,7 @@ pub struct SemanticOutput {
     pub diagnostics: Vec<Diagnostic>,
     pub inferred_types: Vec<InferredType>,
     pub type_definitions: HashMap<String, Type>,
+    pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     pub top_level_types: HashMap<String, Type>,
     pub name_duration: Option<Duration>,
     pub check_duration: Option<Duration>,
@@ -706,8 +715,8 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         diagnostics: check_diagnostics,
         inferred_types,
         type_definitions,
+        recursive_type_unfoldings,
         top_level_types,
-        ..
     } = check_output;
     let diagnostics = if parse_has_errors {
         Vec::new()
@@ -723,6 +732,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         diagnostics,
         inferred_types,
         type_definitions,
+        recursive_type_unfoldings,
         top_level_types,
         name_duration: Some(name_duration),
         check_duration: Some(check_duration),
@@ -769,6 +779,7 @@ fn check_source_file_at(
         semantic.diagnostics,
         semantic.inferred_types,
         semantic.type_definitions,
+        semantic.recursive_type_unfoldings,
     );
 
     CheckedDocument {
@@ -844,6 +855,7 @@ where
         diagnostics: Vec<Diagnostic>,
         inferred_types: Vec<InferredType>,
         type_definitions: HashMap<String, Type>,
+        recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     ) -> Option<Arc<DocumentSnapshot>> {
         let document = self.documents.get(key)?;
 
@@ -851,8 +863,12 @@ where
             return None;
         }
 
-        let document =
-            Arc::new(document.with_semantic(diagnostics, inferred_types, type_definitions));
+        let document = Arc::new(document.with_semantic(
+            diagnostics,
+            inferred_types,
+            type_definitions,
+            recursive_type_unfoldings,
+        ));
         self.documents.insert(key.clone(), Arc::clone(&document));
         Some(document)
     }
@@ -1295,6 +1311,7 @@ mod tests {
                     Revision::new(1),
                     vec![Diagnostic::error("stale diagnostic")],
                     Vec::new(),
+                    HashMap::new(),
                     HashMap::new(),
                 )
                 .is_none()

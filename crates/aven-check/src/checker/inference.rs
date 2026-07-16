@@ -1933,7 +1933,7 @@ impl<'a> Checker<'a> {
                 }
                 return Some(Type::Deferred);
             };
-            let Some(argument) = (match param {
+            let Some(mut argument) = (match param {
                 HostComptimeParam::Value(_) => self
                     .evaluate_comptime_param_argument(arg, &bindings)
                     .map(|argument| argument.value),
@@ -1945,6 +1945,20 @@ impl<'a> Checker<'a> {
             }) else {
                 return Some(Type::Deferred);
             };
+            if matches!(param, HostComptimeParam::Value(_))
+                && matches!(&argument, comptime::ComptimeValue::ReifiedType(_))
+                && let Some(name) = call_callee_name(arg)
+                && self.type_definitions.get(name).is_some_and(|definition| {
+                    !matches!(definition, Type::Deferred | Type::Recursive(_))
+                })
+            {
+                // Host resolvers preserve the written nominal leaf for a
+                // direct non-recursive type target. Structural evaluation is
+                // still used to prove that the argument is a type, while the
+                // resolver result keeps established displays such as
+                // `Result(User, JsonError)`.
+                argument = comptime::ComptimeValue::ReifiedType(Type::Named(name.to_owned()));
+            }
             error_span = arg.span;
             comptime_args.push(ComptimeArg::from_comptime_value(argument));
         }
@@ -2076,6 +2090,7 @@ impl<'a> Checker<'a> {
         };
 
         let subject = self.infer_record_selection_subject(env, subject_arg);
+        let subject = self.unfold_recursive_type_once(&subject);
         let subject_is_unresolved = self.reflection_subject_is_unresolved(&subject);
         if subject_is_unresolved || !is_concrete_type(&subject) {
             return Some(Type::Deferred);
@@ -2432,7 +2447,7 @@ impl<'a> Checker<'a> {
         Some(export.renamed(name))
     }
 
-    fn local_comptime_function_definitions(&self) -> Vec<(String, Vec<Param>, Expr)> {
+    pub(super) fn local_comptime_function_definitions(&self) -> Vec<(String, Vec<Param>, Expr)> {
         self.bindings
             .iter()
             .filter_map(|(name, binding)| {
@@ -2615,7 +2630,7 @@ impl<'a> Checker<'a> {
             return None;
         };
         let subject = self.lookup_comptime_reified_type_expr(arg)?;
-        let subject = self.normalize(&subject);
+        let subject = self.unfold_recursive_type_once(&self.normalize(&subject));
 
         let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) = reflection
             .evaluate(
@@ -2648,7 +2663,8 @@ impl<'a> Checker<'a> {
         let LocalValueType::Known(subject) = env.get(name)? else {
             return None;
         };
-        let subject = self.normalize(&self.unifier.resolve(subject));
+        let subject =
+            self.unfold_recursive_type_once(&self.normalize(&self.unifier.resolve(subject)));
 
         let Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) = reflection
             .evaluate(

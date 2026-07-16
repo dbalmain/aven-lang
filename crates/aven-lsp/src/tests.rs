@@ -63,6 +63,7 @@ fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
         semantic.diagnostics,
         semantic.inferred_types,
         semantic.type_definitions,
+        semantic.recursive_type_unfoldings,
     )
 }
 
@@ -904,6 +905,22 @@ fn completion_at_partial_field_access_returns_record_fields() {
 }
 
 #[test]
+fn completion_on_recursive_record_receiver_unfolds_one_level() {
+    let completions = completions_at_marker(
+        "Node = { value: Int, next: ?Node }\nnode: Node = { value: 1 }\nresult = node.|\n",
+    );
+
+    let Some(value) = completion_item(&completions, "value") else {
+        panic!("expected value field completion, got {completions:?}");
+    };
+    let Some(next) = completion_item(&completions, "next") else {
+        panic!("expected next field completion, got {completions:?}");
+    };
+    assert_eq!(value.detail.as_deref(), Some("Int"));
+    assert_eq!(next.detail.as_deref(), Some("?Node"));
+}
+
+#[test]
 fn completion_at_call_result_field_access_returns_record_fields() {
     let document = parsed_document_with_semantics(
         "getUser : () -> { name: Text, email: Text }\n\
@@ -994,6 +1011,22 @@ fn completion_at_variant_construction_after_at_omits_present_tags() {
         .collect::<Vec<_>>();
 
     assert_eq!(labels, vec!["@Green"]);
+}
+
+#[test]
+fn completion_for_recursive_variant_construction_unfolds_one_level() {
+    let completions = completions_at_marker(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\nxs: List(Int) = @{ | }\n",
+    );
+
+    assert!(
+        completion_item(&completions, "@Nil").is_some(),
+        "{completions:?}"
+    );
+    assert!(
+        completion_item(&completions, "@Cons").is_some(),
+        "{completions:?}"
+    );
 }
 
 #[test]
@@ -1507,6 +1540,7 @@ fn parsed_document_diagnostic_report_uses_file_id() {
         semantic.diagnostics,
         semantic.inferred_types,
         semantic.type_definitions,
+        semantic.recursive_type_unfoldings,
     );
     let report = document.diagnostic_report();
 
@@ -2389,6 +2423,7 @@ fn document_store_accepts_current_semantic_diagnostics() {
             diagnostics: vec![AvenDiagnostic::error("semantic diagnostic")],
             inferred_types: Vec::new(),
             type_definitions: HashMap::new(),
+            recursive_type_unfoldings: HashMap::new(),
             module_graph: None,
         },
     ));
@@ -2417,6 +2452,7 @@ fn document_store_rejects_stale_semantic_diagnostics() {
             diagnostics: vec![AvenDiagnostic::error("stale diagnostic")],
             inferred_types: Vec::new(),
             type_definitions: HashMap::new(),
+            recursive_type_unfoldings: HashMap::new(),
             module_graph: None,
         },
     ));
@@ -2653,6 +2689,36 @@ fn hover_renders_parameterized_recursive_annotation_by_name() {
     };
 
     assert_hover_value(hover, "```aven\nxs : List(Int)\n```");
+}
+
+#[test]
+fn hover_renders_zero_argument_recursive_annotation_by_name() {
+    let document = parsed_document_with_semantics(
+        "Node = { value: Int, next: ?Node }\nnode: Node = { value: 1 }\n",
+    );
+    let Some(hover) = hover_at_position(&document, position(1, 1)) else {
+        panic!("expected hover");
+    };
+
+    assert_hover_value(hover, "```aven\nnode : Node\n```");
+}
+
+#[test]
+fn recursive_types_do_not_loop_inlay_or_goto_queries() {
+    let source = "Node = { value: Int, next: ?Node }\n\
+                  node: Node = { value: 1 }\n\
+                  next = node.next\n";
+    let document = parsed_document_with_semantics(source);
+    let hints = inlay_hints_in_range(&document, full_document_range(&document));
+    assert!(hints.iter().any(|hint| {
+        matches!(&hint.label, InlayHintLabel::String(label) if label == ": ?Node")
+    }));
+
+    let Some(location) = definition_location(&document, test_uri(), position(0, 29), None) else {
+        panic!("expected goto definition for recursive Node reference");
+    };
+    assert_eq!(location.range.start, position(0, 0));
+    assert_eq!(location.range.end, position(0, 4));
 }
 
 #[test]

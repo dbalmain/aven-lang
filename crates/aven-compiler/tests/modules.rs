@@ -313,6 +313,57 @@ fn local_comptime_fn_applied_to_imported_type_reifies() {
 }
 
 #[test]
+fn recursive_type_exports_carry_one_level_heads_to_importers() {
+    let dir = TempDir::new("recursive-type-export-heads");
+    write(
+        dir.path(),
+        "types.av",
+        "Node = { next: ?Node }\n\
+         List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n\
+         { Node, List }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "{ Node, List } = import(\"./types\")\n\
+         Keys = keysOf(Node)\n\
+         Tags = tagsOf(List(Int))\n\
+         node: Node = {}\n\
+         xs: List(Int) = @Nil\n\
+         { node, xs }\n",
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("recursive type imports should check");
+    assert_no_errors(&output.reports);
+
+    let main = output
+        .nodes
+        .iter()
+        .find(|node| node.canonical_path == dir.path().join("main.av"))
+        .expect("main module node");
+    assert!(matches!(
+        main.semantic.type_definitions.get("Node"),
+        Some(aven_compiler::Type::Recursive(_))
+    ));
+    assert_eq!(
+        main.semantic
+            .type_definitions
+            .get("Keys")
+            .map(aven_compiler::Type::render),
+        Some("\"next\"".to_owned())
+    );
+    assert_eq!(
+        main.semantic
+            .type_definitions
+            .get("Tags")
+            .map(aven_compiler::Type::render),
+        Some("\"Cons\" | \"Nil\"".to_owned())
+    );
+    assert!(main.semantic.recursive_type_unfoldings.len() >= 2);
+}
+
+#[test]
 fn module_type_export_diagnostics_are_structured() {
     let dir = TempDir::new("type-export-diagnostics");
     write(
