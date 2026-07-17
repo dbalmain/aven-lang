@@ -83,6 +83,7 @@ pub mod parse {
     pub const MISSING_MATCH_BODY: &str = "parse.missing-match-body";
     pub const MISSING_METHOD_BOUND_OPEN: &str = "parse.missing-method-bound-open";
     pub const OPERATOR_MEMBER_PARAMETER_LIST: &str = "parse.operator-member-parameter-list";
+    pub const QUOTED_METHOD_MEMBER: &str = "parse.quoted-method-member";
     pub const REQUIRED_PARAM_AFTER_DEFAULT: &str = "parse.required-param-after-default";
     pub const SINGLE_ITEM_TUPLE: &str = "parse.single-item-tuple";
     pub const UNCLOSED_DELIMITER: &str = "parse.unclosed-delimiter";
@@ -91,6 +92,7 @@ pub mod parse {
     pub const UNEXPECTED_INDENTATION: &str = "parse.unexpected-indentation";
     pub const UNEXPECTED_SEPARATOR: &str = "parse.unexpected-separator";
     pub const UNSUPPORTED_SYNTAX: &str = "parse.unsupported-syntax";
+    pub const VARIANT_METHOD: &str = "parse.variant-method";
 }
 
 pub mod record {
@@ -214,6 +216,7 @@ pub const ALL: &[&str] = &[
     parse::MISSING_MATCH_BODY,
     parse::MISSING_METHOD_BOUND_OPEN,
     parse::OPERATOR_MEMBER_PARAMETER_LIST,
+    parse::QUOTED_METHOD_MEMBER,
     parse::REQUIRED_PARAM_AFTER_DEFAULT,
     parse::SINGLE_ITEM_TUPLE,
     parse::UNCLOSED_DELIMITER,
@@ -222,6 +225,7 @@ pub const ALL: &[&str] = &[
     parse::UNEXPECTED_INDENTATION,
     parse::UNEXPECTED_SEPARATOR,
     parse::UNSUPPORTED_SYNTAX,
+    parse::VARIANT_METHOD,
     record::REDUNDANT_UNDEFINED,
     runtime::ARITY_MISMATCH,
     runtime::DIVISION_BY_ZERO,

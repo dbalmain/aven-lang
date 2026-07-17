@@ -255,6 +255,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "An operator member must be followed by a parameter list. Write an operator such as <(Self): Bool.",
     },
     DiagnosticExplanation {
+        code: codes::parse::QUOTED_METHOD_MEMBER,
+        text: "Method members use bare lowercase names or bare operator tokens. Remove the quotes from the member name.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::REQUIRED_PARAM_AFTER_DEFAULT,
         text: "A parameter without a default may not follow one with a default. Give it a default, or move it before the defaulted parameters so defaults stay trailing.",
     },
@@ -285,6 +289,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::parse::UNSUPPORTED_SYNTAX,
         text: "The syntax is intentionally not supported by the current parser slice. Rewrite using currently supported operators or wait for the planned syntax milestone.",
+    },
+    DiagnosticExplanation {
+        code: codes::parse::VARIANT_METHOD,
+        text: "Type-carried methods may be declared only on named records in this version. Variant method carriage is not implemented yet.",
     },
     DiagnosticExplanation {
         code: codes::record::REDUNDANT_UNDEFINED,

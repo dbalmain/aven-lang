@@ -683,6 +683,26 @@ fn collect_record_entry_field_names<'a>(
             collect_expr_field_names(key, spans);
             collect_expr_field_names(value, spans);
         }
+        RecordEntry::Method {
+            name,
+            name_span,
+            value,
+            ..
+        } => {
+            spans.insert(*name_span, name.as_str());
+            collect_expr_field_names(value, spans);
+        }
+        RecordEntry::FieldDefault {
+            name,
+            name_span,
+            annotation,
+            default,
+            ..
+        } => {
+            spans.insert(*name_span, name.as_str());
+            collect_expr_field_names(annotation, spans);
+            collect_expr_field_names(default, spans);
+        }
         RecordEntry::Spread { value, .. }
         | RecordEntry::DeleteComputed { key: value, .. }
         | RecordEntry::Element(value) => {

@@ -1516,6 +1516,137 @@ fn std_array_sort_by_rejects_unsupported_text_keys_at_importer_calls() {
     }
 }
 
+#[test]
+fn named_family_operator_provider_satisfies_std_minimum_and_runs() {
+    let dir = TempDir::new("named-family-rank-row");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "{ minimum } = import(\"std/array\")\n",
+            "\n",
+            "RankRow = {\n",
+            "  value: Int\n",
+            "\n",
+            "  <(other: RankRow): Bool =>\n",
+            "    .value < other.value\n",
+            "}\n",
+            "\n",
+            "RowRank = RankRow\n",
+            "\n",
+            "lowest = minimum([\n",
+            "  RankRow({ value: 3 })\n",
+            "  RowRank({ value: 1 })\n",
+            "])\n",
+            "\n",
+            "{ lowest }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library());
+    let globals = aven_host::standard_check_host_globals();
+
+    let checked = check_path_with_host_globals_and_roots(&path, &globals, &roots)
+        .expect("named operator provider should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_host_globals_and_roots(&path, &globals, vec![], &roots)
+        .expect("named operator provider should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ lowest: { value: 1 } }".to_owned())
+    );
+}
+
+#[test]
+fn named_family_nullary_method_satisfies_requirement_and_runs() {
+    let dir = TempDir::new("named-family-ticket");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Prioritised = {\n",
+            "  priority(): Int\n",
+            "  ..\n",
+            "}\n",
+            "priorityOf = (item: t): Int\n",
+            "  t: Prioritised\n",
+            "=>\n",
+            "  item.priority()\n",
+            "Ticket = {\n",
+            "  severity: Int\n",
+            "  priority(): Int =>\n",
+            "    .severity\n",
+            "}\n",
+            "ticket = Ticket({ severity: 7 })\n",
+            "result = priorityOf(ticket)\n",
+            "{ result }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+
+    let checked = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("named nullary method provider should check");
+    assert_no_errors(&checked.reports);
+
+    let ran =
+        eval_path_with_globals(&path, vec![]).expect("named nullary method provider should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ result: 7 }".to_owned())
+    );
+}
+
+#[test]
+fn named_family_descriptor_crosses_module_boundary() {
+    let dir = TempDir::new("named-family-import");
+    write(
+        dir.path(),
+        "rank.av",
+        concat!(
+            "RankRow = {\n",
+            "  value: Int\n",
+            "\n",
+            "  <(other: RankRow): Bool =>\n",
+            "    .value < other.value\n",
+            "}\n",
+            "{ RankRow }\n",
+        ),
+    );
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "{ RankRow } = import(\"./rank\")\n",
+            "{ minimum } = import(\"std/array\")\n",
+            "lowest = minimum([\n",
+            "  RankRow({ value: 4 })\n",
+            "  RankRow({ value: 2 })\n",
+            "])\n",
+            "{ lowest }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library());
+    let globals = aven_host::standard_check_host_globals();
+
+    let checked = check_path_with_host_globals_and_roots(&path, &globals, &roots)
+        .expect("imported named-family descriptor should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_host_globals_and_roots(&path, &globals, vec![], &roots)
+        .expect("imported named-family descriptor should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ lowest: { value: 2 } }".to_owned())
+    );
+}
+
 fn assert_no_errors(reports: &[aven_core::DiagnosticReport]) {
     assert!(
         !reports.iter().any(aven_core::DiagnosticReport::has_errors),

@@ -37,10 +37,13 @@ fn mismatch(expected: &str, got: &Value) -> String {
         Value::Tuple(_) => "Tuple",
         Value::Set(_) => "Set",
         Value::Map(_) => "Map",
-        Value::Record(_) => "Record",
+        Value::Record(_) | Value::NamedRecord { .. } => "Record",
         Value::Tag { .. } => "Tag",
-        Value::ResultMethod { .. } | Value::Closure(_) | Value::Native(_) => "Function",
-        Value::Type(_) => "Type",
+        Value::ResultMethod { .. }
+        | Value::NamedMethod { .. }
+        | Value::Closure(_)
+        | Value::Native(_) => "Function",
+        Value::Type(_) | Value::NamedFamily(_) => "Type",
         Value::Undefined => "Undefined",
         Value::Null => "Null",
     };

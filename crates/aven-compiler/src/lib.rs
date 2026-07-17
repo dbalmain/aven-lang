@@ -507,12 +507,21 @@ fn collect_record_entry_references(entries: &[RecordEntry], references: &mut Vec
     for entry in entries {
         match entry {
             RecordEntry::Field { value, .. }
+            | RecordEntry::Method { value, .. }
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => collect_expr_references(value, references),
             RecordEntry::FieldComputed { key, value, .. } => {
                 collect_expr_references(key, references);
                 collect_expr_references(value, references);
+            }
+            RecordEntry::FieldDefault {
+                annotation,
+                default,
+                ..
+            } => {
+                collect_expr_references(annotation, references);
+                collect_expr_references(default, references);
             }
             RecordEntry::Shorthand {
                 name, name_span, ..
@@ -608,12 +617,22 @@ fn collect_pattern_references_from_entries(
 ) {
     for entry in entries {
         match entry {
-            RecordEntry::Field { value, .. } | RecordEntry::Element(value) => {
+            RecordEntry::Field { value, .. }
+            | RecordEntry::Method { value, .. }
+            | RecordEntry::Element(value) => {
                 collect_pattern_references(value, references);
             }
             RecordEntry::FieldComputed { key, value, .. } => {
                 collect_pattern_references(key, references);
                 collect_pattern_references(value, references);
+            }
+            RecordEntry::FieldDefault {
+                annotation,
+                default,
+                ..
+            } => {
+                collect_pattern_references(annotation, references);
+                collect_pattern_references(default, references);
             }
             RecordEntry::Spread { value, .. } => {
                 if !matches!(value.kind, ExprKind::Name(_)) {
@@ -662,6 +681,8 @@ pub struct SemanticOutput {
     pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     pub top_level_types: HashMap<String, Type>,
     pub top_level_qualified_types: HashMap<String, aven_check::QualifiedType>,
+    pub named_families: HashMap<String, aven_check::NamedFamilyType>,
+    pub named_family_aliases: HashMap<String, String>,
     pub name_duration: Option<Duration>,
     pub check_duration: Option<Duration>,
 }
@@ -724,6 +745,8 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         recursive_type_unfoldings,
         top_level_types,
         top_level_qualified_types,
+        named_families,
+        named_family_aliases,
     } = check_output;
     let diagnostics = if parse_has_errors {
         Vec::new()
@@ -742,6 +765,8 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         recursive_type_unfoldings,
         top_level_types,
         top_level_qualified_types,
+        named_families,
+        named_family_aliases,
         name_duration: Some(name_duration),
         check_duration: Some(check_duration),
     }

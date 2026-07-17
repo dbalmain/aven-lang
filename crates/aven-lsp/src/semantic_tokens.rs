@@ -209,6 +209,8 @@ impl StyleCollector {
         for entry in entries {
             match entry {
                 aven_parser::RecordEntry::Field { name_span, .. }
+                | aven_parser::RecordEntry::Method { name_span, .. }
+                | aven_parser::RecordEntry::FieldDefault { name_span, .. }
                 | aven_parser::RecordEntry::Shorthand { name_span, .. }
                 | aven_parser::RecordEntry::Delete { name_span, .. } => {
                     self.styles.insert(*name_span, property);

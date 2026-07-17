@@ -1,0 +1,6 @@
+RankRow = {
+  value: Int,
+  <(other: RankRow): Bool => .value < other.value
+}
+
+row: RankRow = { value: 3 }

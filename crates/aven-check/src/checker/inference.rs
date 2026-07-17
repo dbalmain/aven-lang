@@ -500,6 +500,14 @@ impl<'a> Checker<'a> {
         left: &Type,
         right: &Type,
     ) -> Option<Type> {
+        let owner = self.normalize(&self.unifier.resolve(left));
+        if self.named_family_data_view(&owner).is_some()
+            && let Some(signature) = self.exact_method_signature(&owner, operator)
+            && let [param] = signature.params.as_slice()
+            && self.unifier.unify(param, right).is_ok()
+        {
+            return Some(signature.result);
+        }
         match operator {
             "+" => self
                 .infer_numeric_binary_type(operator, left, right)
@@ -1369,11 +1377,28 @@ impl<'a> Checker<'a> {
         // underlying record, then re-wrap the result with the same empties so the
         // access propagates the emptiness (`?.email : ?Text`).
         let resolved = self.normalize(&self.unifier.resolve(&receiver_type));
+        if let Some(signature) = self.exact_method_signature(&resolved, field) {
+            return Type::Function {
+                required: signature.params.len(),
+                params: signature.params,
+                result: Box::new(signature.result),
+            };
+        }
+        if let Some(Type::Record(data)) = self.named_family_data_view(&resolved)
+            && let Some(ty) = data.entries.iter().find_map(|entry| match entry {
+                RowEntry::Field { name, ty } if name == field => Some(ty.clone()),
+                RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+            })
+        {
+            return ty;
+        }
         if let Some(method_type) = builtin_collection_method_type(&resolved, field) {
             return self.instantiate_annotation_type_variables(&method_type, &mut HashMap::new());
         }
         let (empties, core) = peel_empty_values(&resolved);
-        let core = core.clone();
+        let core = self
+            .named_family_data_view(core)
+            .unwrap_or_else(|| core.clone());
 
         if let Some(method_type) = builtin_collection_method_type(&core, field) {
             let method_type =
@@ -1481,6 +1506,10 @@ impl<'a> Checker<'a> {
             return self.infer_variant_constructor(env, tag, args);
         }
 
+        if let Some(owner) = self.named_family_constructor_owner(callee) {
+            return self.infer_named_family_constructor(env, &owner, args, callee.span);
+        }
+
         if let Some(result) = self.infer_import_call(callee, args) {
             return result;
         }
@@ -1502,6 +1531,10 @@ impl<'a> Checker<'a> {
         }
 
         if let Some(result) = self.infer_comptime_param_call(env, callee, args) {
+            return result;
+        }
+
+        if let Some(result) = self.infer_named_or_constrained_method_call(env, callee, args) {
             return result;
         }
 
@@ -1561,6 +1594,138 @@ impl<'a> Checker<'a> {
             self.simplify_method_obligations(false);
             self.resolve_row_merge_call_result(&result_type)
         }
+    }
+
+    pub(super) fn named_family_constructor_owner(&self, callee: &Expr) -> Option<String> {
+        let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &ungroup_expr(callee).kind
+        else {
+            return None;
+        };
+        self.named_family_aliases.get(name).cloned()
+    }
+
+    fn infer_named_family_constructor(
+        &mut self,
+        env: &TypeEnv,
+        owner: &str,
+        args: &[Expr],
+        callee_span: Span,
+    ) -> Type {
+        if args.len() != 1 {
+            self.report_function_arity_mismatch(1, 1, args.len(), callee_span);
+            for arg in args {
+                self.infer(env, arg);
+            }
+            return Type::Named(owner.to_owned());
+        }
+        let family = self
+            .named_families
+            .get(owner)
+            .cloned()
+            .expect("named-family constructor owners have descriptors");
+        let data = family.data;
+        let constructor_data = constructor_data_row(&data, &family.defaulted_fields);
+        let payload = &args[0];
+        if let ExprKind::Record(entries) = &ungroup_expr(payload).kind {
+            self.check_record_value_against(&constructor_data, entries, payload.span);
+            return Type::Named(owner.to_owned());
+        }
+
+        let actual = self.infer(env, payload);
+        let actual = self.normalize(&self.resolve_and_default(&actual));
+        let actual = self.named_family_data_view(&actual).unwrap_or(actual);
+        let exact = matches!(&actual, Type::Record(row) if {
+            let actual = record_label_set(row);
+            let expected = record_label_set(&data);
+            actual.is_subset(&expected)
+                && expected.difference(&actual).all(|name| {
+                    family.defaulted_fields.contains(name)
+                        || data.entries.iter().any(|entry| {
+                            matches!(entry, RowEntry::Field { name: field, ty } if field == name && self.type_admits_undefined(ty))
+                        })
+                })
+        });
+        if exact {
+            self.check_type_against_type(&Type::Record(constructor_data), &actual, payload.span);
+        } else {
+            let display_owner = Type::Named(owner.to_owned()).render();
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "`{display_owner}` construction requires exactly its declared data fields"
+                ))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    payload.span,
+                    "payload has a different record shape",
+                ))
+                .with_note("pass a record with no missing or extra fields"),
+            );
+        }
+        Type::Named(owner.to_owned())
+    }
+
+    fn infer_named_or_constrained_method_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let ExprKind::FieldAccess {
+            receiver,
+            field,
+            field_span,
+            null_safe: false,
+        } = &ungroup_expr(callee).kind
+        else {
+            return None;
+        };
+        let probed = self.probe_receiver_type(env, receiver);
+        let known = self.exact_method_signature(&probed, field);
+        let constrained = self
+            .method_assumption_scopes
+            .iter()
+            .rev()
+            .flatten()
+            .any(|assumption| {
+                assumption.member == *field
+                    && self.normalize(&self.unifier.resolve(&assumption.candidate)) == probed
+            });
+        if known.is_none() && !constrained {
+            return None;
+        }
+
+        let candidate = self.infer(env, receiver);
+        let arg_types = args
+            .iter()
+            .map(|arg| self.infer(env, arg))
+            .collect::<Vec<_>>();
+        if let Some(signature) = known {
+            if signature.params.len() != arg_types.len() {
+                self.report_function_arity_mismatch(
+                    signature.params.len(),
+                    signature.params.len(),
+                    arg_types.len(),
+                    callee.span,
+                );
+            } else {
+                self.check_call_arg_types_against_params(args, &arg_types, &signature.params);
+            }
+            return Some(signature.result);
+        }
+
+        let result = self.unifier.fresh();
+        self.push_new_method_obligations([MethodPredicate {
+            candidate,
+            member: field.clone(),
+            params: arg_types,
+            result: result.clone(),
+            operator_span: *field_span,
+            binding: None,
+            call_span: None,
+            obligation_id: None,
+        }]);
+        self.simplify_method_obligations(false);
+        Some(result)
     }
 
     fn infer_or_else_single_constructor_result(
@@ -2894,6 +3059,10 @@ impl<'a> Checker<'a> {
             };
         }
 
+        if self.named_family_aliases.contains_key(name) {
+            return Type::Named("Type".to_owned());
+        }
+
         if let Some(scheme) = self.infer_top_level(name) {
             return self.instantiate_scheme_at(&scheme, span);
         }
@@ -3211,6 +3380,35 @@ impl<'a> Checker<'a> {
             ),
             _ => None,
         })
+    }
+}
+
+fn record_label_set(row: &Row) -> HashSet<String> {
+    row.entries
+        .iter()
+        .filter_map(|entry| match entry {
+            RowEntry::Field { name, .. } => Some(name.clone()),
+            RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+        })
+        .collect()
+}
+
+fn constructor_data_row(data: &Row, defaulted_fields: &HashSet<String>) -> Row {
+    Row {
+        entries: data
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                RowEntry::Field { name, ty } if defaulted_fields.contains(name) => {
+                    RowEntry::Field {
+                        name: name.clone(),
+                        ty: Type::Optional(Box::new(ty.clone())),
+                    }
+                }
+                entry => entry.clone(),
+            })
+            .collect(),
+        tail: data.tail,
     }
 }
 

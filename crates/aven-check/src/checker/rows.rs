@@ -139,6 +139,36 @@ impl<'a> Checker<'a> {
                     Ok(())
                 }
             }
+            RecordEntry::FieldDefault {
+                name,
+                annotation,
+                span,
+                ..
+            } => {
+                if kind != RowKind::Record || matches!(mode, RowFoldMode::Value { .. }) {
+                    self.fold_deferred_row_entry(entry, kind, mode);
+                    return Err(());
+                }
+                let ty = self.lower_annotation(annotation);
+                if row_entry_index(&row.entries, name).is_some() {
+                    self.report_duplicate_row_label(
+                        name,
+                        *span,
+                        DuplicateRowLabelContext::RecordAdd,
+                    );
+                    Err(())
+                } else {
+                    row.entries.push(RowEntry::Field {
+                        name: name.clone(),
+                        ty,
+                    });
+                    Ok(())
+                }
+            }
+            RecordEntry::Method { value, .. } => {
+                self.fold_expression(value, mode);
+                Err(())
+            }
             RecordEntry::Shorthand { .. } => Err(()),
             RecordEntry::Delete { name, span, .. } => {
                 if row.tail != RowTail::Closed {
@@ -461,6 +491,7 @@ impl<'a> Checker<'a> {
     ) {
         match entry {
             RecordEntry::Field { value, .. }
+            | RecordEntry::Method { value, .. }
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. } => {
                 self.fold_expression(value, mode);
@@ -468,6 +499,19 @@ impl<'a> Checker<'a> {
             RecordEntry::FieldComputed { key, value, .. } => {
                 self.fold_expression(key, mode);
                 self.fold_expression(value, mode);
+            }
+            RecordEntry::FieldDefault {
+                annotation,
+                default,
+                ..
+            } => {
+                self.fold_expression(annotation, mode);
+                self.fold_expression(
+                    default,
+                    RowFoldMode::Value {
+                        env: &TypeEnv::new(),
+                    },
+                );
             }
             RecordEntry::Element(value) => match kind {
                 RowKind::Record => {

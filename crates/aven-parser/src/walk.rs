@@ -114,12 +114,21 @@ fn walk_record_entry_exprs<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMu
     for entry in entries {
         match entry {
             RecordEntry::Field { value, .. }
+            | RecordEntry::Method { value, .. }
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => visit(value),
             RecordEntry::FieldComputed { key, value, .. } => {
                 visit(key);
                 visit(value);
+            }
+            RecordEntry::FieldDefault {
+                annotation,
+                default,
+                ..
+            } => {
+                visit(annotation);
+                visit(default);
             }
             RecordEntry::Iteration {
                 source,

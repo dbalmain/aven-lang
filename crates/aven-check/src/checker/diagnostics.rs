@@ -161,6 +161,17 @@ impl<'a> Checker<'a> {
             return;
         }
         if name == "Self" {
+            if let Some(owner) = self.provider_owner_scopes.last() {
+                self.diagnostics.push(
+                    Diagnostic::error("`Self` is not legal in a named-family provider signature")
+                        .with_code(codes::ty::UNKNOWN_NAME)
+                        .with_label(Label::primary(span, format!("write `{owner}` here")))
+                        .with_note(format!(
+                            "provider signatures name their canonical owner explicitly: `{owner}`"
+                        )),
+                );
+                return;
+            }
             self.diagnostics.push(
                 Diagnostic::error("`Self` is not legal in this type context")
                     .with_code(codes::ty::UNKNOWN_NAME)

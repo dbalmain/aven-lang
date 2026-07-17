@@ -32,7 +32,9 @@ use crate::ty::{
     type_contains_deferred, type_contains_variable, type_is_uninhabited, type_variable_names,
 };
 use crate::unify::Unifier;
-use crate::{InferredType, MethodConstraint, ModuleImports, QualifiedType};
+use crate::{
+    InferredType, MethodConstraint, ModuleImports, NamedFamilyType, NamedMethodType, QualifiedType,
+};
 
 mod annotations;
 mod comptime_context;
@@ -51,6 +53,10 @@ pub(crate) use aven_parser::is_method_requirement_row;
 pub(crate) struct Checker<'a> {
     known_types: HashSet<String>,
     pub(crate) type_definitions: HashMap<String, Type>,
+    /// Source-visible aliases mapped to their canonical method owner. Owners
+    /// map to themselves; methodless aliases are intentionally absent.
+    pub(crate) named_family_aliases: HashMap<String, String>,
+    pub(crate) named_families: HashMap<String, NamedFamilyType>,
     zero_argument_type_bindings: HashSet<String>,
     prelowered_type_bindings: HashMap<String, Type>,
     prelowered_type_module: comptime::ComptimeModuleIdentity,
@@ -97,6 +103,7 @@ pub(crate) struct Checker<'a> {
     /// meta shared by every occurrence in that lexical lambda scope.
     inline_lambda_type_var_scopes: Vec<HashMap<String, Type>>,
     requirement_self_scopes: Vec<Type>,
+    provider_owner_scopes: Vec<String>,
     method_obligations: Vec<MethodPredicate>,
     next_method_obligation_id: usize,
     method_assumption_scopes: Vec<Vec<MethodPredicate>>,
@@ -421,6 +428,7 @@ fn literal_record_value(entries: &[RecordEntry], span: Span) -> Option<ValueReco
                     value: Some(value),
                 });
             }
+            RecordEntry::Method { .. } | RecordEntry::FieldDefault { .. } => return None,
             RecordEntry::Shorthand {
                 name, name_span, ..
             } => {
@@ -456,6 +464,8 @@ fn literal_set_elements(entries: &[RecordEntry]) -> Option<Vec<&Expr>> {
         .map(|entry| match entry {
             RecordEntry::Element(value) => Some(value),
             RecordEntry::Field { .. }
+            | RecordEntry::Method { .. }
+            | RecordEntry::FieldDefault { .. }
             | RecordEntry::FieldComputed { .. }
             | RecordEntry::Shorthand { .. }
             | RecordEntry::Spread { .. }
@@ -912,6 +922,8 @@ fn collect_known_record_pattern_types(
                 known.insert(name.clone(), Type::Record(residual));
             }
             RecordEntry::Delete { .. }
+            | RecordEntry::Method { .. }
+            | RecordEntry::FieldDefault { .. }
             | RecordEntry::FieldComputed { .. }
             | RecordEntry::DeleteComputed { .. }
             | RecordEntry::Iteration { .. }
@@ -926,6 +938,8 @@ fn record_pattern_label(entry: &RecordEntry) -> Option<&str> {
         RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => Some(name),
         RecordEntry::Rename { from, .. } => Some(from),
         RecordEntry::Spread { .. }
+        | RecordEntry::Method { .. }
+        | RecordEntry::FieldDefault { .. }
         | RecordEntry::Delete { .. }
         | RecordEntry::FieldComputed { .. }
         | RecordEntry::DeleteComputed { .. }
@@ -1031,6 +1045,8 @@ fn collect_record_comptime_type_bindings(
                 collect_comptime_type_bindings(value, &Type::Record(row.clone()), bindings);
             }
             RecordEntry::Shorthand { .. }
+            | RecordEntry::Method { .. }
+            | RecordEntry::FieldDefault { .. }
             | RecordEntry::Delete { .. }
             | RecordEntry::FieldComputed { .. }
             | RecordEntry::DeleteComputed { .. }

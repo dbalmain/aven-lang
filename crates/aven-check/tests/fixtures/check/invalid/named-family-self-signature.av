@@ -1,0 +1,5 @@
+RankRow = {
+  value: Int
+  same(other: Self): Bool =>
+    .value == .value
+}

@@ -1,4 +1,3 @@
-use super::method_sets::builtin_method_signature;
 use super::*;
 
 impl<'a> Checker<'a> {
@@ -51,7 +50,7 @@ impl<'a> Checker<'a> {
         since
     }
 
-    fn push_new_method_obligations(
+    pub(super) fn push_new_method_obligations(
         &mut self,
         predicates: impl IntoIterator<Item = MethodPredicate>,
     ) {
@@ -162,7 +161,7 @@ impl<'a> Checker<'a> {
     }
 
     fn discharge_known_method_predicate(&mut self, owner: &Type, predicate: &MethodPredicate) {
-        let Some(actual) = builtin_method_signature(owner, &predicate.member) else {
+        let Some(actual) = self.exact_method_signature(owner, &predicate.member) else {
             self.report_missing_method(owner, predicate);
             return;
         };
@@ -279,7 +278,7 @@ impl<'a> Checker<'a> {
 
         for entry in entries {
             match entry {
-                RecordEntry::Field {
+                RecordEntry::Method {
                     name,
                     name_span,
                     value,
@@ -689,6 +688,8 @@ fn predicate_contains_meta(predicate: &MethodPredicate, id: u32) -> bool {
 fn record_entry_span(entry: &RecordEntry) -> Span {
     match entry {
         RecordEntry::Field { span, .. }
+        | RecordEntry::Method { span, .. }
+        | RecordEntry::FieldDefault { span, .. }
         | RecordEntry::FieldComputed { span, .. }
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }

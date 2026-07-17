@@ -1,0 +1,10 @@
+Base = {
+  value: Int
+}
+
+RankRow = {
+  ..Base
+  value: Int
+  priority(): Int =>
+    .value
+}

@@ -1,0 +1,6 @@
+Ticket = {
+  severity: Int
+  category = "urgent"
+  priority(): Int =>
+    .severity
+}

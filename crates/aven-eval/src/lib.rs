@@ -37,6 +37,20 @@ pub struct Closure {
     env: Environment,
 }
 
+#[derive(Clone)]
+pub struct NamedFamilyDescriptor {
+    owner: String,
+    fields: Vec<NamedFamilyField>,
+    methods: HashMap<String, Closure>,
+}
+
+#[derive(Clone)]
+struct NamedFamilyField {
+    name: String,
+    optional: bool,
+    default: Option<Rc<Expr>>,
+}
+
 /// A closure parameter: its binding name plus an optional default expression
 /// (trailing-only, enforced by the parser/checker). The default is evaluated in
 /// the call environment, in parameter order, only when the argument is omitted.
@@ -173,6 +187,15 @@ pub enum Value {
     Set(Rc<Vec<Value>>),
     Map(Rc<Vec<(Value, Value)>>),
     Record(Rc<Vec<(String, Value)>>),
+    NamedFamily(Rc<NamedFamilyDescriptor>),
+    NamedRecord {
+        descriptor: Rc<NamedFamilyDescriptor>,
+        fields: Rc<Vec<(String, Value)>>,
+    },
+    NamedMethod {
+        receiver: Box<Value>,
+        implementation: Closure,
+    },
     Tag {
         name: String,
         payload: Vec<Value>,
@@ -260,6 +283,16 @@ impl fmt::Debug for Value {
             Self::Set(values) => f.debug_tuple("Set").field(values).finish(),
             Self::Map(entries) => f.debug_tuple("Map").field(entries).finish(),
             Self::Record(fields) => f.debug_tuple("Record").field(fields).finish(),
+            Self::NamedFamily(descriptor) => f
+                .debug_tuple("NamedFamily")
+                .field(&descriptor.owner)
+                .finish(),
+            Self::NamedRecord { descriptor, fields } => f
+                .debug_struct("NamedRecord")
+                .field("owner", &descriptor.owner)
+                .field("fields", fields)
+                .finish(),
+            Self::NamedMethod { .. } => f.write_str("NamedMethod(<method>)"),
             Self::Tag { name, payload } => f
                 .debug_struct("Tag")
                 .field("name", name)
@@ -288,6 +321,16 @@ impl PartialEq for Value {
             (Self::Map(left), Self::Map(right)) => maps_equal(left, right),
             (Self::Record(left), Self::Record(right)) => records_equal(left, right),
             (
+                Self::NamedRecord {
+                    descriptor: left_owner,
+                    fields: left,
+                },
+                Self::NamedRecord {
+                    descriptor: right_owner,
+                    fields: right,
+                },
+            ) => Rc::ptr_eq(left_owner, right_owner) && records_equal(left, right),
+            (
                 Self::Tag {
                     name: left_name,
                     payload: left_payload,
@@ -299,6 +342,8 @@ impl PartialEq for Value {
             ) => left_name == right_name && left_payload == right_payload,
             (Self::Type(left), Self::Type(right)) => left == right,
             (Self::ResultMethod { .. }, _) | (_, Self::ResultMethod { .. }) => false,
+            (Self::NamedFamily(_), _) | (_, Self::NamedFamily(_)) => false,
+            (Self::NamedMethod { .. }, _) | (_, Self::NamedMethod { .. }) => false,
             (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
             (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
             (Self::Native(_), _) | (_, Self::Native(_)) => false,
@@ -319,6 +364,9 @@ impl fmt::Display for Value {
             Self::Set(values) => fmt_set(values, f),
             Self::Map(entries) => fmt_map(entries, f),
             Self::Record(fields) => fmt_record(fields, f),
+            Self::NamedRecord { fields, .. } => fmt_record(fields, f),
+            Self::NamedFamily(descriptor) => write!(f, "{}", descriptor.owner),
+            Self::NamedMethod { .. } => write!(f, "<method>"),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::ResultMethod { .. } => write!(f, "<method>"),
             Self::Closure(_) => write!(f, "<function>"),
@@ -374,6 +422,9 @@ impl Value {
             Self::Set(_) => "Set",
             Self::Map(_) => "Map",
             Self::Record(_) => "Record",
+            Self::NamedFamily(_) => "Type",
+            Self::NamedRecord { .. } => "Record",
+            Self::NamedMethod { .. } => "Function",
             Self::Tag { .. } => "Tag",
             Self::ResultMethod { .. } => "Function",
             Self::Closure(_) => "Function",
@@ -580,6 +631,7 @@ fn fmt_nested_value(value: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Value::Set(values) => fmt_set(values, f),
         Value::Map(entries) => fmt_map(entries, f),
         Value::Record(fields) => fmt_record(fields, f),
+        Value::NamedRecord { fields, .. } => fmt_record(fields, f),
         Value::Tag { name, payload } => fmt_tag(name, payload, f),
         value => write!(f, "{value}"),
     }
@@ -934,6 +986,18 @@ fn eval_items(
 
     for item in items {
         if let Item::Binding(binding) = item
+            && aven_parser::is_named_method_provider(&binding.value)
+        {
+            match eval_named_family(binding.name.as_str(), &binding.value, &env) {
+                Ok(descriptor) => env.bind(binding.name.clone(), descriptor),
+                Err(Flow::Fail(mut next_diagnostics)) => diagnostics.append(&mut next_diagnostics),
+                Err(flow @ Flow::Propagate(_)) => return Err(flow),
+            }
+            value = None;
+            continue;
+        }
+
+        if let Item::Binding(binding) = item
             && is_method_requirement_row(&binding.value)
         {
             value = None;
@@ -999,6 +1063,64 @@ fn eval_items(
     }
 
     Ok(EvalOutcome { value, diagnostics })
+}
+
+fn eval_named_family(owner: &str, value: &Expr, env: &Environment) -> Eval {
+    let ExprKind::Record(entries) = &value.kind else {
+        return Err(one_diagnostic(unsupported_expr(
+            value.span,
+            "named-family declaration must be a record",
+        )));
+    };
+    let mut fields = Vec::new();
+    let mut methods = HashMap::new();
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { name, value, .. } => fields.push(NamedFamilyField {
+                name: name.clone(),
+                optional: matches!(value.kind, ExprKind::Optional(_)),
+                default: None,
+            }),
+            RecordEntry::FieldDefault {
+                name,
+                annotation,
+                default,
+                ..
+            } => fields.push(NamedFamilyField {
+                name: name.clone(),
+                optional: matches!(annotation.kind, ExprKind::Optional(_)),
+                default: Some(Rc::new(default.clone())),
+            }),
+            RecordEntry::Method { name, value, .. } => {
+                let ExprKind::Lambda { params, body, .. } = &value.kind else {
+                    continue;
+                };
+                let mut closure_params = Vec::with_capacity(params.len() + 1);
+                closure_params.push(ClosureParam {
+                    name: aven_parser::METHOD_RECEIVER_NAME.to_owned(),
+                    default: None,
+                });
+                closure_params.extend(params.iter().map(|param| ClosureParam {
+                    name: param.name.clone(),
+                    default: param.default.clone().map(Rc::new),
+                }));
+                methods.insert(
+                    name.clone(),
+                    Closure {
+                        params: closure_params,
+                        body: Rc::new((**body).clone()),
+                        env: env.clone(),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(Value::NamedFamily(Rc::new(NamedFamilyDescriptor {
+        owner: owner.to_owned(),
+        fields,
+        methods,
+    })))
 }
 
 pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
@@ -1360,8 +1482,9 @@ fn match_record_pattern(
     value: &Value,
     env: &Environment,
 ) -> Result<Option<Vec<(String, Value)>>, Diagnostic> {
-    let Value::Record(fields) = value else {
-        return Ok(None);
+    let fields = match value {
+        Value::Record(fields) | Value::NamedRecord { fields, .. } => fields,
+        _ => return Ok(None),
     };
 
     let mut bindings = Vec::new();
@@ -1549,6 +1672,24 @@ fn apply_callee(
             }
             apply_result_method(*receiver, kind, arg_values, callee_span, span)
         }
+        Value::NamedFamily(descriptor) => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_named_family_constructor(descriptor, arg_values, span)
+        }
+        Value::NamedMethod {
+            receiver,
+            implementation,
+        } => {
+            let mut arg_values = Vec::with_capacity(args.len() + 1);
+            arg_values.push(*receiver);
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_closure_values(implementation, arg_values, span)
+        }
         Value::Closure(closure) => apply_closure(closure, args, span, env),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
     }
@@ -1565,9 +1706,82 @@ fn apply_callee_values(
         Value::ResultMethod { receiver, kind } => {
             apply_result_method(*receiver, kind, arg_values, callee_span, span)
         }
+        Value::NamedFamily(descriptor) => {
+            apply_named_family_constructor(descriptor, arg_values, span)
+        }
+        Value::NamedMethod {
+            receiver,
+            implementation,
+        } => {
+            let mut values = Vec::with_capacity(arg_values.len() + 1);
+            values.push(*receiver);
+            values.extend(arg_values);
+            apply_closure_values(implementation, values, span)
+        }
         Value::Closure(closure) => apply_closure_values(closure, arg_values, span),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
     }
+}
+
+fn apply_named_family_constructor(
+    descriptor: Rc<NamedFamilyDescriptor>,
+    args: Vec<Value>,
+    span: Span,
+) -> Eval {
+    let [payload] = args.as_slice() else {
+        return Err(one_diagnostic(arity_mismatch(span, 1, 1, args.len())));
+    };
+    let payload_fields = match payload {
+        Value::Record(fields) | Value::NamedRecord { fields, .. } => fields,
+        value => {
+            return Err(one_diagnostic(record_type_error(
+                span,
+                "named-family construction",
+                value.type_name(),
+                "Record",
+            )));
+        }
+    };
+    if let Some((extra, _)) = payload_fields
+        .iter()
+        .find(|(name, _)| !descriptor.fields.iter().any(|field| field.name == *name))
+    {
+        return Err(one_diagnostic(record_type_error(
+            span,
+            "named-family construction",
+            &format!("extra field `{extra}`"),
+            "the exact declared data row",
+        )));
+    }
+
+    let call_env = descriptor
+        .methods
+        .values()
+        .next()
+        .map(|method| method.env.clone())
+        .unwrap_or_default();
+    let mut fields = Vec::with_capacity(descriptor.fields.len());
+    for field in &descriptor.fields {
+        if let Some(value) = record_field_value(payload_fields, &field.name) {
+            fields.push((field.name.clone(), value.clone()));
+        } else if let Some(default) = &field.default {
+            fields.push((
+                field.name.clone(),
+                eval_expr_many(default.as_ref(), &call_env)?,
+            ));
+        } else if !field.optional {
+            return Err(one_diagnostic(record_type_error(
+                span,
+                "named-family construction",
+                &format!("missing field `{}`", field.name),
+                "the exact declared data row",
+            )));
+        }
+    }
+    Ok(Value::NamedRecord {
+        descriptor,
+        fields: Rc::new(fields),
+    })
 }
 
 fn apply_result_method(
@@ -1868,6 +2082,14 @@ fn fold_record_entry(
             let value = eval_expr_many(value, env)?;
             insert_or_replace_field(fields, name.clone(), value);
         }
+        RecordEntry::Method { .. } | RecordEntry::FieldDefault { .. } => {
+            return Err(one_diagnostic(record_type_error(
+                record_entry_span(entry),
+                "record construction",
+                "type member",
+                "value record entry",
+            )));
+        }
         RecordEntry::FieldComputed { key, value, .. } => {
             let name = eval_text_key(key, key.span, env)?;
             let value = eval_expr_many(value, env)?;
@@ -1886,7 +2108,7 @@ fn fold_record_entry(
         } => {
             let source = eval_expr_many(source_expr, env)?;
             let source_fields = match source {
-                Value::Record(fields) => fields,
+                Value::Record(fields) | Value::NamedRecord { fields, .. } => fields,
                 value => {
                     return Err(one_diagnostic(record_type_error(
                         source_expr.span,
@@ -2047,6 +2269,20 @@ fn field_access_value(
         Value::Record(fields) => Ok(record_field_value(fields, field)
             .cloned()
             .unwrap_or(Value::Undefined)),
+        Value::NamedRecord { descriptor, fields } => {
+            if let Some(value) = record_field_value(fields, field) {
+                return Ok(value.clone());
+            }
+            descriptor.methods.get(field).cloned().map_or_else(
+                || Ok(Value::Undefined),
+                |implementation| {
+                    Ok(Value::NamedMethod {
+                        receiver: Box::new(receiver_value),
+                        implementation,
+                    })
+                },
+            )
+        }
         // A type value (`Map`, `Json`, ...) carries statics: field access
         // resolves the `"Type.static"`-keyed global bound alongside the type.
         Value::Type(RuntimeType::Named(name)) => env
@@ -2066,6 +2302,9 @@ fn field_access_value(
 fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
     match value {
         Value::Record(fields) => record_field_value(fields, field).is_some(),
+        Value::NamedRecord { descriptor, fields } => {
+            record_field_value(fields, field).is_some() || descriptor.methods.contains_key(field)
+        }
         Value::Type(RuntimeType::Named(name)) => env.lookup(&format!("{name}.{field}")).is_some(),
         value => builtin_method(value, field).is_some(),
     }
@@ -2625,7 +2864,7 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
                 one_diagnostic(index_out_of_bounds(args[0].span, index, values.len()))
             })
         }
-        Value::Record(fields) => {
+        Value::Record(fields) | Value::NamedRecord { fields, .. } => {
             let Value::Text(key) = arg_value else {
                 return Err(one_diagnostic(record_type_error(
                     args[0].span,
@@ -2677,7 +2916,7 @@ fn eval_type_wrapper(
 fn runtime_type_target(value: &Value) -> bool {
     match value {
         Value::Type(_) => true,
-        Value::Record(fields) => fields
+        Value::Record(fields) | Value::NamedRecord { fields, .. } => fields
             .iter()
             .all(|(_, field_value)| runtime_type_target(field_value)),
         _ => false,
@@ -2719,14 +2958,20 @@ fn ensure_map_key(key: &Value, context: &str) -> Result<(), String> {
 
 fn map_key_is_comparable(key: &Value) -> bool {
     match key {
-        Value::Closure(_) | Value::Native(_) | Value::ResultMethod { .. } => false,
+        Value::Closure(_)
+        | Value::Native(_)
+        | Value::ResultMethod { .. }
+        | Value::NamedFamily(_)
+        | Value::NamedMethod { .. } => false,
         Value::Array(values) | Value::Tuple(values) | Value::Set(values) => {
             values.iter().all(map_key_is_comparable)
         }
         Value::Map(entries) => entries
             .iter()
             .all(|(key, value)| map_key_is_comparable(key) && map_key_is_comparable(value)),
-        Value::Record(fields) => fields.iter().all(|(_, value)| map_key_is_comparable(value)),
+        Value::Record(fields) | Value::NamedRecord { fields, .. } => {
+            fields.iter().all(|(_, value)| map_key_is_comparable(value))
+        }
         Value::Tag { payload, .. } => payload.iter().all(map_key_is_comparable),
         Value::Int(_)
         | Value::Float(_)
@@ -2911,7 +3156,6 @@ fn eval_binary(
                 right.span,
                 span,
             )
-            .map_err(one_diagnostic)
         }
     }
 }
@@ -2978,14 +3222,26 @@ fn apply_binary(
     right: Value,
     right_span: Span,
     span: Span,
-) -> Result<Value, Diagnostic> {
+) -> Eval {
+    if let Value::NamedRecord { descriptor, .. } = &left
+        && let Some(implementation) = descriptor.methods.get(operator).cloned()
+    {
+        return apply_closure_values(implementation, vec![left, right], span);
+    }
     match operator {
-        "+" => add(left, right, span),
-        "-" | "*" | "/" | "%" => numeric_arithmetic(left, operator, right, right_span, span),
-        "==" | "!=" => equality(left, operator, right, span),
-        "<" | ">" | "<=" | ">=" => numeric_comparison(left, operator, right, span),
+        "+" => add(left, right, span).map_err(one_diagnostic),
+        "-" | "*" | "/" | "%" => {
+            numeric_arithmetic(left, operator, right, right_span, span).map_err(one_diagnostic)
+        }
+        "==" | "!=" => equality(left, operator, right, span).map_err(one_diagnostic),
+        "<" | ">" | "<=" | ">=" => {
+            numeric_comparison(left, operator, right, span).map_err(one_diagnostic)
+        }
         "|" => Ok(set_union(left, right)),
-        _ => Err(unsupported_operator(operator, operator_span)),
+        _ => Err(one_diagnostic(unsupported_operator(
+            operator,
+            operator_span,
+        ))),
     }
 }
 
@@ -3417,6 +3673,8 @@ fn unsupported_expr(span: Span, label: &str) -> Diagnostic {
 fn record_entry_span(entry: &RecordEntry) -> Span {
     match entry {
         RecordEntry::Field { span, .. }
+        | RecordEntry::Method { span, .. }
+        | RecordEntry::FieldDefault { span, .. }
         | RecordEntry::FieldComputed { span, .. }
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }

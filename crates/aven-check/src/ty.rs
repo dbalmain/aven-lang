@@ -705,7 +705,11 @@ impl TypeRenderer {
             // `?` is intentionally honest: the checker accepted a syntactic
             // type shape but deferred its real meaning to a later phase.
             Type::Deferred => "?".to_owned(),
-            Type::Named(name) | Type::Variable(name) => name.clone(),
+            Type::Named(name) => name.rfind('\0').map_or_else(
+                || name.clone(),
+                |separator| name[separator + 1..].to_owned(),
+            ),
+            Type::Variable(name) => name.clone(),
             Type::Meta(id) => self.render_meta(*id),
             Type::Recursive(id) => crate::comptime::recursive_type_display(*id),
             Type::Apply { callee, args } => {

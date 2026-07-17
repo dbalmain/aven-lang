@@ -234,7 +234,9 @@ fn encode_value(
             encode_sequence(values, output)?;
         }
         Value::Map(_) => return Err("Json.encode cannot encode Map".to_owned()),
-        Value::Record(fields) => encode_record(fields, output)?,
+        Value::Record(fields) | Value::NamedRecord { fields, .. } => {
+            encode_record(fields, output)?;
+        }
         Value::Undefined => match position {
             EncodePosition::RecordField => {}
             EncodePosition::TopLevel => {
@@ -258,9 +260,11 @@ fn encode_value(
             ));
         }
         Value::ResultMethod { .. } => return Err("Json.encode cannot encode Function".to_owned()),
+        Value::NamedMethod { .. } => return Err("Json.encode cannot encode Function".to_owned()),
         Value::Closure(_) => return Err("Json.encode cannot encode Function".to_owned()),
         Value::Native(_) => return Err("Json.encode cannot encode Native".to_owned()),
         Value::Type(_) => return Err("Json.encode cannot encode Type".to_owned()),
+        Value::NamedFamily(_) => return Err("Json.encode cannot encode Type".to_owned()),
     }
 
     Ok(())

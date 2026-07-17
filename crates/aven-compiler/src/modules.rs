@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use aven_check::{
-    ComptimeExport, ComptimeModuleIdentity, ModuleImports as CheckModuleImports, QualifiedType,
-    RecursiveTypeId, RowTail, Type,
+    ComptimeExport, ComptimeModuleIdentity, ModuleImports as CheckModuleImports, NamedFamilyType,
+    QualifiedType, RecursiveTypeId, RowTail, Type,
 };
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
@@ -194,11 +194,15 @@ struct ImportRef {
 }
 
 #[derive(Debug, Clone)]
+struct NamedFamilyExports(HashMap<String, NamedFamilyType>);
+
+#[derive(Debug, Clone)]
 enum CheckExport {
     Record {
         ty: Type,
         type_exports: HashMap<String, Type>,
         qualified_exports: HashMap<String, QualifiedType>,
+        named_family_exports: Box<NamedFamilyExports>,
         comptime_exports: HashMap<String, ComptimeExport>,
         recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     },
@@ -828,6 +832,7 @@ fn check_imports_for_node(
                 ty,
                 type_exports,
                 qualified_exports,
+                named_family_exports,
                 comptime_exports,
                 recursive_type_unfoldings,
             }) if !import.failed => {
@@ -835,6 +840,10 @@ fn check_imports_for_node(
                 imports.insert_type_exports(import.specifier.clone(), type_exports.clone());
                 imports
                     .insert_qualified_exports(import.specifier.clone(), qualified_exports.clone());
+                imports.insert_named_family_exports(
+                    import.specifier.clone(),
+                    named_family_exports.0.clone(),
+                );
                 imports.insert_comptime_exports(import.specifier.clone(), comptime_exports.clone());
                 imports.insert_recursive_type_unfoldings(
                     recursive_type_unfoldings
@@ -990,6 +999,7 @@ fn check_export_for_node(
                     entries,
                     &semantic.top_level_qualified_types,
                 ),
+                named_family_exports: Box::new(NamedFamilyExports(HashMap::new())),
                 comptime_exports,
                 recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
             };
@@ -1008,6 +1018,7 @@ fn check_export_for_node(
                 entries,
                 &semantic.top_level_qualified_types,
             ),
+            named_family_exports: Box::new(NamedFamilyExports(HashMap::new())),
             comptime_exports,
             recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
         };
@@ -1015,6 +1026,7 @@ fn check_export_for_node(
     let mut fields = Vec::new();
     let mut type_exports = HashMap::new();
     let mut qualified_exports = HashMap::new();
+    let mut named_family_exports = HashMap::new();
     for entry in entries {
         let (name, source_name, value_span, source_is_name) = match entry {
             RecordEntry::Field {
@@ -1065,17 +1077,26 @@ fn check_export_for_node(
                 // Host-registered types are nominal: export the name, not the
                 // instance interface, so `mod.Instant` in type position means
                 // `Instant` (the definition record only backs field access).
-                let exported = source_name
-                    .filter(|source| {
-                        globals
-                            .type_definitions
-                            .iter()
-                            .any(|(host_name, _)| host_name == source)
-                    })
-                    .map_or_else(
-                        || definition.clone(),
-                        |source| aven_check::Type::Named(source.to_owned()),
-                    );
+                let named_family = source_name
+                    .and_then(|source| semantic.named_family_aliases.get(source))
+                    .and_then(|owner| semantic.named_families.get(owner))
+                    .cloned();
+                let exported = if let Some(family) = named_family {
+                    named_family_exports.insert(name.clone(), family.clone());
+                    Type::Named(family.owner)
+                } else {
+                    source_name
+                        .filter(|source| {
+                            globals
+                                .type_definitions
+                                .iter()
+                                .any(|(host_name, _)| host_name == source)
+                        })
+                        .map_or_else(
+                            || definition.clone(),
+                            |source| aven_check::Type::Named(source.to_owned()),
+                        )
+                };
                 type_exports.insert(name.clone(), exported);
                 // The *value* side of a type export is the type value: for a
                 // statics-carrying host type that value answers `Instant.parse`
@@ -1142,6 +1163,7 @@ fn check_export_for_node(
         }),
         type_exports,
         qualified_exports,
+        named_family_exports: Box::new(NamedFamilyExports(named_family_exports)),
         comptime_exports,
         recursive_type_unfoldings: semantic.recursive_type_unfoldings.clone(),
     }
@@ -1431,6 +1453,8 @@ fn collect_export_provenance_from_entries(
                 provenance.remove(name);
             }
             RecordEntry::FieldComputed { .. }
+            | RecordEntry::Method { .. }
+            | RecordEntry::FieldDefault { .. }
             | RecordEntry::DeleteComputed { .. }
             | RecordEntry::Iteration { .. }
             | RecordEntry::Open { .. }
@@ -1892,7 +1916,9 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::Tuple(_) => "Tuple",
         Value::Set(_) => "Set",
         Value::Map(_) => "Map",
-        Value::Record(_) => "Record",
+        Value::Record(_) | Value::NamedRecord { .. } => "Record",
+        Value::NamedFamily(_) => "Type",
+        Value::NamedMethod { .. } => "Function",
         Value::Tag { .. } => "Tag",
         Value::ResultMethod { .. } => "Function",
         Value::Closure(_) => "Function",

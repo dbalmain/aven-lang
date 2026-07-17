@@ -91,6 +91,11 @@ pub struct Expr {
     pub span: Span,
 }
 
+/// Parser-internal spelling used to lower leading focus access (`.field`) to a
+/// lexical method receiver. The NUL byte makes the binding impossible to write
+/// in Aven source while keeping focus on the ordinary name/field-access paths.
+pub const METHOD_RECEIVER_NAME: &str = "\0aven.method.receiver";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExprKind {
     Missing,
@@ -205,11 +210,32 @@ pub enum RecordEntry {
         name_span: Span,
         value: Expr,
         overwrite: bool,
+        /// The span of a legacy `=`/`:=` separator. Method-bearing record
+        /// declarations use this to distinguish excluded statics/overrides
+        /// from ordinary data-field syntax before reporting the error.
+        legacy_separator_span: Option<Span>,
         span: Span,
     },
     FieldComputed {
         key: Expr,
         value: Expr,
+        span: Span,
+    },
+    /// A type-carried or requirement-row method member. Body-bearing methods
+    /// store a lambda; no-body requirement/slot forms store an arrow.
+    Method {
+        name: String,
+        name_span: Span,
+        value: Expr,
+        span: Span,
+    },
+    /// A data field declaration with a constructor default (`name: T = value`).
+    /// Contextual validation restricts this to named-family declarations.
+    FieldDefault {
+        name: String,
+        name_span: Span,
+        annotation: Expr,
+        default: Expr,
         span: Span,
     },
     Shorthand {
@@ -1454,6 +1480,13 @@ impl Parser<'_> {
             {
                 self.parse_set()
             }
+            TokenKind::Operator(operator) if operator == "." => {
+                let receiver = Expr {
+                    kind: ExprKind::Name(METHOD_RECEIVER_NAME.to_owned()),
+                    span: Span::point(token.span.start),
+                };
+                self.finish_field_access(receiver)
+            }
             TokenKind::OpenParen => self.parse_group_or_tuple(),
             TokenKind::OpenBracket => self.parse_array(),
             TokenKind::OpenBrace => self.parse_record(),
@@ -1631,6 +1664,7 @@ impl Parser<'_> {
         self.advance();
         let entries = self.parse_entry_list(EntryMode::Record);
         let end = self.consume_close(TokenKind::CloseBrace);
+        self.report_record_legacy_separators(&entries);
 
         Expr {
             kind: ExprKind::Record(entries),
@@ -1762,25 +1796,7 @@ impl Parser<'_> {
         }
 
         if self.current_is_operator_member_name() {
-            return self.parse_operator_member();
-        }
-
-        if self.current_is(TokenKind::OpenBracket) {
-            let Some((key, bracket_span)) = self.parse_bracketed_key() else {
-                self.recover_record_entry();
-                return None;
-            };
-
-            if !self.current_is_operator(":") {
-                self.report_expected_record_entry(self.current_span());
-                self.recover_record_entry();
-                return None;
-            }
-            self.advance();
-
-            let value = self.parse_expression();
-            let span = bracket_span.merge(value.span);
-            return Some(RecordEntry::FieldComputed { key, value, span });
+            return self.parse_operator_member(mode);
         }
 
         if mode == EntryMode::Record && self.iteration_arrow_follows() {
@@ -1821,6 +1837,32 @@ impl Parser<'_> {
                 guard,
                 body,
             });
+        }
+
+        if matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::Identifier(_) | TokenKind::StringLiteral(_))
+        ) && self.named_method_signature_follows()
+        {
+            return self.parse_named_method(mode);
+        }
+
+        if self.current_is(TokenKind::OpenBracket) {
+            let Some((key, bracket_span)) = self.parse_bracketed_key() else {
+                self.recover_record_entry();
+                return None;
+            };
+
+            if !self.current_is_operator(":") {
+                self.report_expected_record_entry(self.current_span());
+                self.recover_record_entry();
+                return None;
+            }
+            self.advance();
+
+            let value = self.parse_expression();
+            let span = bracket_span.merge(value.span);
+            return Some(RecordEntry::FieldComputed { key, value, span });
         }
 
         if mode == EntryMode::Set
@@ -1915,17 +1957,28 @@ impl Parser<'_> {
         };
 
         if let Some((overwrite, legacy)) = separator {
-            if legacy {
-                self.report_legacy_record_field_separator(self.current_span(), &name, overwrite);
-            }
+            let separator_span = self.current_span();
             self.advance();
             let value = self.parse_expression();
+            if !overwrite && !legacy && self.current_is_operator("=") {
+                self.advance();
+                let default = self.parse_expression();
+                let span = name_span.merge(default.span);
+                return Some(RecordEntry::FieldDefault {
+                    name,
+                    name_span,
+                    annotation: value,
+                    default,
+                    span,
+                });
+            }
             let span = name_span.merge(value.span);
             return Some(RecordEntry::Field {
                 name,
                 name_span,
                 value,
                 overwrite,
+                legacy_separator_span: legacy.then_some(separator_span),
                 span,
             });
         }
@@ -2049,7 +2102,39 @@ impl Parser<'_> {
         )
     }
 
-    fn parse_operator_member(&mut self) -> Option<RecordEntry> {
+    fn named_method_signature_follows(&self) -> bool {
+        if !self.next_is(TokenKind::OpenParen) {
+            return false;
+        }
+
+        let mut depth = 0usize;
+        let mut index = self.cursor + 1;
+        while let Some(token) = self.tokens.get(index) {
+            match token.kind {
+                TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
+                    depth += 1;
+                }
+                TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        let after = self.skip_collection_trivia_from(index + 1);
+                        return matches!(
+                            self.tokens.get(after).map(|token| &token.kind),
+                            Some(TokenKind::Operator(operator)) if operator == ":"
+                        );
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
+    fn parse_operator_member(&mut self, mode: EntryMode) -> Option<RecordEntry> {
         let token = self.current()?.clone();
         let TokenKind::Operator(name) = token.kind else {
             return None;
@@ -2062,40 +2147,57 @@ impl Parser<'_> {
             return None;
         }
 
-        if self.is_lambda_start() {
-            let value = self.parse_lambda();
-            let span = token.span.merge(value.span);
-            return Some(RecordEntry::Field {
-                name,
-                name_span: token.span,
-                value,
-                overwrite: false,
-                span,
-            });
-        }
+        self.parse_method_after_name(name, token.span, mode)
+    }
 
-        let params = self.parse_method_signature_params();
-        self.consume_close_paren();
-        if !self.current_is_operator(":") {
-            self.report_expected_type(self.previous_end());
-            return None;
-        }
-        self.advance();
-        let result = self.parse_annotation_term();
-        let span = token.span.merge(result.span);
-        let value = Expr {
-            kind: ExprKind::Arrow {
-                params,
-                result: Box::new(result),
-            },
-            span: Span::new(token.span.start, span.end),
+    fn parse_named_method(&mut self, mode: EntryMode) -> Option<RecordEntry> {
+        let token = self.current()?.clone();
+        let (name, quoted) = match token.kind {
+            TokenKind::Identifier(name) => (name, false),
+            TokenKind::StringLiteral(text) => (decode_string_literal(&text), true),
+            _ => return None,
         };
+        self.advance();
+        if quoted {
+            self.report_quoted_method_member(token.span);
+        }
+        self.parse_method_after_name(name, token.span, mode)
+    }
 
-        Some(RecordEntry::Field {
+    fn parse_method_after_name(
+        &mut self,
+        name: String,
+        name_span: Span,
+        mode: EntryMode,
+    ) -> Option<RecordEntry> {
+        if mode == EntryMode::Set {
+            self.report_variant_method_member(name_span);
+        }
+
+        let value = if self.is_lambda_start() {
+            self.parse_lambda()
+        } else {
+            let params = self.parse_method_signature_params();
+            self.consume_close_paren();
+            if !self.current_is_operator(":") {
+                self.report_expected_type(self.previous_end());
+                return None;
+            }
+            self.advance();
+            let result = self.parse_annotation_term();
+            Expr {
+                span: Span::new(name_span.start, result.span.end),
+                kind: ExprKind::Arrow {
+                    params,
+                    result: Box::new(result),
+                },
+            }
+        };
+        let span = name_span.merge(value.span);
+        Some(RecordEntry::Method {
             name,
-            name_span: token.span,
+            name_span,
             value,
-            overwrite: false,
             span,
         })
     }
@@ -2441,6 +2543,24 @@ impl Parser<'_> {
         );
     }
 
+    fn report_quoted_method_member(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("method members use bare names and operator tokens")
+                .with_code(codes::parse::QUOTED_METHOD_MEMBER)
+                .with_label(Label::primary(span, "quoted method member"))
+                .with_note("remove the quotes from a lowercase method name or operator token"),
+        );
+    }
+
+    fn report_variant_method_member(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("variant methods are not supported yet")
+                .with_code(codes::parse::VARIANT_METHOD)
+                .with_label(Label::primary(span, "method declared inside a variant"))
+                .with_note("declare type-carried methods only on a named record in this version"),
+        );
+    }
+
     fn report_expected_record_entry(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("expected record entry")
@@ -2471,6 +2591,52 @@ impl Parser<'_> {
                 .with_label(Label::primary(span, replacement))
                 .with_note(format!("write `{example}`")),
         );
+    }
+
+    fn report_record_legacy_separators(&mut self, entries: &[RecordEntry]) {
+        let is_provider = entries.iter().any(|entry| {
+            matches!(
+                entry,
+                RecordEntry::Method { value, .. }
+                    if matches!(&value.kind, ExprKind::Lambda { .. })
+            )
+        });
+
+        for entry in entries {
+            let RecordEntry::Field {
+                name,
+                overwrite,
+                legacy_separator_span: Some(separator_span),
+                ..
+            } = entry
+            else {
+                continue;
+            };
+
+            if is_provider {
+                let (message, label, note) = if *overwrite {
+                    (
+                        format!("method-bearing records cannot override `{name}`"),
+                        "unsupported per-instance or type override",
+                        "providers have one shared implementation per named owner",
+                    )
+                } else {
+                    (
+                        format!("static member `{name}` is not supported in a provider"),
+                        "unsupported receiverless static",
+                        "write `name: T = value` for a constructor-filled data default",
+                    )
+                };
+                self.diagnostics.push(
+                    Diagnostic::error(message)
+                        .with_code(codes::parse::UNSUPPORTED_SYNTAX)
+                        .with_label(Label::primary(*separator_span, label))
+                        .with_note(note),
+                );
+            } else {
+                self.report_legacy_record_field_separator(*separator_span, name, *overwrite);
+            }
+        }
     }
 
     fn report_expected_record_label(&mut self, span: Span) {
@@ -2918,6 +3084,8 @@ fn missing_expr(span: Span) -> Expr {
 fn record_entry_span(entry: &RecordEntry) -> Span {
     match entry {
         RecordEntry::Field { span, .. }
+        | RecordEntry::Method { span, .. }
+        | RecordEntry::FieldDefault { span, .. }
         | RecordEntry::FieldComputed { span, .. }
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }
@@ -3983,8 +4151,10 @@ mod tests {
         let ExprKind::Record(entries) = &vector.value.kind else {
             panic!("expected Vector record");
         };
-        assert!(matches!(&entries[2], RecordEntry::Field { name, value, .. }
-            if name == "*" && matches!(value.kind, ExprKind::Lambda { .. })));
+        assert!(
+            matches!(&entries[2], RecordEntry::Method { name, value, .. }
+            if name == "*" && matches!(value.kind, ExprKind::Lambda { .. }))
+        );
 
         let ExprKind::Lambda { requirements, .. } = binding_value(&output, 1) else {
             panic!("expected minimum lambda");
@@ -3998,8 +4168,10 @@ mod tests {
         let ExprKind::Record(entries) = &requirements[1].bound.kind else {
             panic!("expected inline method row");
         };
-        assert!(matches!(&entries[0], RecordEntry::Field { name, value, .. }
-            if name == "<" && matches!(&value.kind, ExprKind::Arrow { params, .. } if params.len() == 1)));
+        assert!(
+            matches!(&entries[0], RecordEntry::Method { name, value, .. }
+            if name == "<" && matches!(&value.kind, ExprKind::Arrow { params, .. } if params.len() == 1))
+        );
         assert!(matches!(&entries[2], RecordEntry::Open { .. }));
     }
 
@@ -4019,7 +4191,7 @@ mod tests {
         let names: Vec<&str> = entries
             .iter()
             .filter_map(|entry| match entry {
-                RecordEntry::Field { name, .. } => Some(name.as_str()),
+                RecordEntry::Method { name, .. } => Some(name.as_str()),
                 _ => None,
             })
             .collect();

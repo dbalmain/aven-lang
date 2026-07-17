@@ -1476,10 +1476,16 @@ fn construction_binding_in_expr_at_position(
 fn record_entry_value_span(entry: &RecordEntry) -> Option<Span> {
     match entry {
         RecordEntry::Field { value, .. }
+        | RecordEntry::Method { value, .. }
         | RecordEntry::Spread { value, .. }
         | RecordEntry::DeleteComputed { key: value, .. }
         | RecordEntry::Element(value) => Some(value.span),
         RecordEntry::FieldComputed { key, value, .. } => Some(key.span.merge(value.span)),
+        RecordEntry::FieldDefault {
+            annotation,
+            default,
+            ..
+        } => Some(annotation.span.merge(default.span)),
         RecordEntry::Iteration {
             source,
             guard,
@@ -1504,8 +1510,11 @@ fn record_entry_value_span(entry: &RecordEntry) -> Option<Span> {
 
 fn record_entry_label(entry: &RecordEntry) -> Option<&str> {
     match entry {
-        RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => Some(name),
+        RecordEntry::Field { name, .. }
+        | RecordEntry::FieldDefault { name, .. }
+        | RecordEntry::Shorthand { name, .. } => Some(name),
         RecordEntry::FieldComputed { .. }
+        | RecordEntry::Method { .. }
         | RecordEntry::Spread { .. }
         | RecordEntry::Delete { .. }
         | RecordEntry::DeleteComputed { .. }
@@ -1522,6 +1531,8 @@ fn record_entry_tag(entry: &RecordEntry) -> Option<&str> {
         RecordEntry::Delete { name, .. } => Some(name),
         RecordEntry::Rename { to, .. } => Some(to),
         RecordEntry::Field { .. }
+        | RecordEntry::Method { .. }
+        | RecordEntry::FieldDefault { .. }
         | RecordEntry::FieldComputed { .. }
         | RecordEntry::Shorthand { .. }
         | RecordEntry::Spread { .. }
@@ -1545,6 +1556,8 @@ fn tag_name_from_expr(expr: &aven_parser::Expr) -> Option<&str> {
 fn record_entry_span(entry: &RecordEntry) -> Span {
     match entry {
         RecordEntry::Field { span, .. }
+        | RecordEntry::Method { span, .. }
+        | RecordEntry::FieldDefault { span, .. }
         | RecordEntry::FieldComputed { span, .. }
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }

@@ -73,10 +73,26 @@ pub struct CheckOutput {
     /// Exported value types with any method constraints reified alongside
     /// their ordinary type.
     pub top_level_qualified_types: HashMap<String, QualifiedType>,
+    pub named_families: HashMap<String, NamedFamilyType>,
+    pub named_family_aliases: HashMap<String, String>,
     /// Completed one-level heads for parameterized recursive type references.
     /// Keeping these in a side map makes `Type::Recursive` a small atomic node
     /// while allowing checker consumers to unfold only at structural demands.
     pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedMethodType {
+    pub params: Vec<Type>,
+    pub result: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedFamilyType {
+    pub owner: String,
+    pub data: Row,
+    pub defaulted_fields: HashSet<String>,
+    pub methods: HashMap<String, NamedMethodType>,
 }
 
 impl CheckOutput {
@@ -116,6 +132,7 @@ pub struct ModuleImports {
     types: HashMap<String, Option<Type>>,
     type_exports: HashMap<String, HashMap<String, Type>>,
     qualified_exports: HashMap<String, HashMap<String, QualifiedType>>,
+    named_family_exports: HashMap<String, HashMap<String, NamedFamilyType>>,
     /// Comptime-evaluable function exports keyed by import specifier then export
     /// name. Carries owned AST so importers can specialize type applications
     /// such as `pair(Int)` without borrowing the dependency's module.
@@ -132,6 +149,7 @@ impl ModuleImports {
                 .collect(),
             type_exports: HashMap::new(),
             qualified_exports: HashMap::new(),
+            named_family_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
         }
@@ -145,6 +163,7 @@ impl ModuleImports {
                 .collect(),
             type_exports: HashMap::new(),
             qualified_exports: HashMap::new(),
+            named_family_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
         }
@@ -172,6 +191,14 @@ impl ModuleImports {
         exports: HashMap<String, QualifiedType>,
     ) {
         self.qualified_exports.insert(specifier.into(), exports);
+    }
+
+    pub fn insert_named_family_exports(
+        &mut self,
+        specifier: impl Into<String>,
+        exports: HashMap<String, NamedFamilyType>,
+    ) {
+        self.named_family_exports.insert(specifier.into(), exports);
     }
 
     pub fn insert_comptime_exports(
@@ -210,6 +237,10 @@ impl ModuleImports {
 
     pub fn qualified_export(&self, specifier: &str, name: &str) -> Option<&QualifiedType> {
         self.qualified_exports.get(specifier)?.get(name)
+    }
+
+    pub fn named_family_export(&self, specifier: &str, name: &str) -> Option<&NamedFamilyType> {
+        self.named_family_exports.get(specifier)?.get(name)
     }
 
     pub fn comptime_export(&self, specifier: &str, name: &str) -> Option<&ComptimeExport> {
@@ -371,9 +402,11 @@ pub fn check_module_with_host_globals_and_imports_in(
     checker.diagnostics.extend(reserved_diagnostics);
     checker.check_module(module);
     let export_names = final_record_names(module);
+    let named_family_aliases = checker.named_family_aliases.clone();
     let top_level_qualified_types: HashMap<_, _> = aven_parser::collect_declarations(module)
         .into_iter()
         .filter(|declaration| export_names.contains(&declaration.name))
+        .filter(|declaration| !named_family_aliases.contains_key(&declaration.name))
         .filter_map(|declaration| {
             checker
                 .infer_top_level_qualified_type_for_output(&declaration.name)
@@ -392,6 +425,8 @@ pub fn check_module_with_host_globals_and_imports_in(
         type_definitions: checker.type_definitions.clone(),
         top_level_types,
         top_level_qualified_types,
+        named_families: checker.named_families.clone(),
+        named_family_aliases: checker.named_family_aliases.clone(),
     }
 }
 

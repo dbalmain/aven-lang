@@ -416,6 +416,31 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        if matches!(expected, Type::Record(_))
+            && let Some(data) = self.named_family_data_view(actual)
+        {
+            self.check_type_against_type(expected, &data, span);
+            return;
+        }
+        if let Type::Named(owner) = expected
+            && self.named_family_data_view(expected).is_some()
+            && matches!(actual, Type::Record(_))
+        {
+            let display_owner = Type::Named(owner.to_owned()).render();
+            self.diagnostics.push(
+                Diagnostic::error(format!("construct `{display_owner}` explicitly"))
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(
+                        span,
+                        "a structural record does not carry this method owner",
+                    ))
+                    .with_note(format!(
+                        "write `{display_owner}({{ ... }})` to attach its methods"
+                    )),
+            );
+            return;
+        }
+
         match (expected, actual) {
             (Type::Recursive(expected), Type::Recursive(actual)) => {
                 self.report_type_mismatch_between_types(

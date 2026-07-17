@@ -8,6 +8,8 @@ impl<'a> Checker<'a> {
         Self {
             known_types,
             type_definitions,
+            named_family_aliases: HashMap::new(),
+            named_families: HashMap::new(),
             zero_argument_type_bindings: HashSet::new(),
             prelowered_type_bindings: HashMap::new(),
             prelowered_type_module: comptime::ComptimeModuleIdentity::specifier("host"),
@@ -42,6 +44,7 @@ impl<'a> Checker<'a> {
             rigid_type_var_scopes: Vec::new(),
             inline_lambda_type_var_scopes: Vec::new(),
             requirement_self_scopes: Vec::new(),
+            provider_owner_scopes: Vec::new(),
             method_obligations: Vec::new(),
             next_method_obligation_id: 0,
             method_assumption_scopes: Vec::new(),
@@ -104,6 +107,7 @@ impl<'a> Checker<'a> {
         checker.module_identity = module_identity;
         checker.globals = globals.types.clone();
         checker.imports = imports.clone();
+        checker.seed_imported_named_families(module);
         checker.recursive_type_unfoldings = imports.recursive_type_unfoldings.clone();
         checker
             .unifier
@@ -117,6 +121,8 @@ impl<'a> Checker<'a> {
         checker.prelowered_type_module = globals.type_definition_module.clone();
         checker.lower_prelowered_type_definitions();
 
+        checker.prepare_named_families(module);
+
         let mut reserved_names: HashSet<_> = BUILTIN_TYPES
             .iter()
             .map(|name| (*name).to_owned())
@@ -128,11 +134,48 @@ impl<'a> Checker<'a> {
                 .map(|(name, _)| name.clone()),
         );
         checker.lower_module_type_definitions(module, &reserved_names);
+        checker.canonicalize_named_family_aliases(module);
+        checker.lower_named_family_methods(module);
         checker.build_statics(globals);
         checker.collect_top_level_pattern_bindings(module);
         checker.build_value_types(module);
         checker.build_comptime_artifacts(module);
         checker
+    }
+
+    fn seed_imported_named_families(&mut self, module: &Module) {
+        for item in &module.items {
+            let Item::PatternBinding(binding) = item else {
+                continue;
+            };
+            let Some(specifier) = aven_parser::static_import_specifier(&binding.value) else {
+                continue;
+            };
+            let ExprKind::Record(entries) = &ungroup_expr(&binding.pattern).kind else {
+                continue;
+            };
+            for entry in entries {
+                let (source, target) = match entry {
+                    RecordEntry::Shorthand { name, .. } => (name, name),
+                    RecordEntry::Rename { from, to, .. } => (from, to),
+                    _ => continue,
+                };
+                let Some(family) = self
+                    .imports
+                    .named_family_export(&specifier, source)
+                    .cloned()
+                else {
+                    continue;
+                };
+                self.named_family_aliases
+                    .insert(target.clone(), family.owner.clone());
+                self.named_family_aliases
+                    .insert(family.owner.clone(), family.owner.clone());
+                self.named_families
+                    .entry(family.owner.clone())
+                    .or_insert(family);
+            }
+        }
     }
 
     fn lower_module_type_definitions(&mut self, module: &Module, reserved_names: &HashSet<String>) {
@@ -147,6 +190,250 @@ impl<'a> Checker<'a> {
                 continue;
             }
             self.lower_zero_argument_type_definition(&declaration.name, declaration.span);
+        }
+    }
+
+    fn prepare_named_families(&mut self, module: &Module) {
+        let providers = collect_declarations(module)
+            .into_iter()
+            .filter(|declaration| declaration.phase == DeclarationPhase::Comptime)
+            .filter_map(|declaration| {
+                let binding = binding_for_declaration(module, &declaration)?;
+                aven_parser::is_named_method_provider(&binding.value)
+                    .then_some((declaration.name, binding.value.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        for (name, _) in &providers {
+            let owner = self.named_family_owner_key(name);
+            self.named_family_aliases
+                .insert(name.clone(), owner.clone());
+            self.named_family_aliases.insert(owner.clone(), owner);
+            self.type_definitions.insert(
+                name.clone(),
+                Type::Record(Row {
+                    entries: Vec::new(),
+                    tail: RowTail::Closed,
+                }),
+            );
+        }
+
+        for (name, value) in providers {
+            let owner = self
+                .named_family_aliases
+                .get(&name)
+                .cloned()
+                .expect("prepared providers have canonical owners");
+            let ExprKind::Record(entries) = &ungroup_expr(&value).kind else {
+                continue;
+            };
+            let mut data_entries = Vec::new();
+            let mut labels = HashSet::new();
+            let mut defaulted_fields = HashSet::new();
+            for entry in entries {
+                let (field, span, annotation) = match entry {
+                    RecordEntry::Field {
+                        name,
+                        name_span,
+                        value,
+                        overwrite: false,
+                        ..
+                    } => (name, *name_span, value),
+                    RecordEntry::FieldDefault {
+                        name,
+                        name_span,
+                        annotation,
+                        ..
+                    } => {
+                        defaulted_fields.insert(name.clone());
+                        (name, *name_span, annotation)
+                    }
+                    _ => continue,
+                };
+                if !labels.insert(field.clone()) {
+                    self.report_duplicate_row_label(
+                        field,
+                        span,
+                        DuplicateRowLabelContext::RecordAdd,
+                    );
+                    continue;
+                }
+                data_entries.push(RowEntry::Field {
+                    name: field.clone(),
+                    ty: self.lower_annotation(annotation),
+                });
+            }
+            let data = Row {
+                entries: data_entries,
+                tail: RowTail::Closed,
+            };
+            self.type_definitions
+                .insert(name.clone(), Type::Record(data.clone()));
+            self.named_families.insert(
+                owner.clone(),
+                NamedFamilyType {
+                    owner,
+                    data,
+                    defaulted_fields,
+                    methods: HashMap::new(),
+                },
+            );
+        }
+    }
+
+    fn named_family_owner_key(&self, name: &str) -> String {
+        let module = match &self.module_identity {
+            comptime::ComptimeModuleIdentity::Current => "current".to_owned(),
+            comptime::ComptimeModuleIdentity::Path(path) => format!("path:{}", path.display()),
+            comptime::ComptimeModuleIdentity::Specifier(specifier) => {
+                format!("specifier:{specifier}")
+            }
+        };
+        format!("\0aven.named-family:{module}\0{name}")
+    }
+
+    fn canonicalize_named_family_aliases(&mut self, module: &Module) {
+        loop {
+            let mut changed = false;
+            for declaration in collect_declarations(module) {
+                if declaration.phase != DeclarationPhase::Comptime
+                    || self.named_family_aliases.contains_key(&declaration.name)
+                {
+                    continue;
+                }
+                let Some(binding) = binding_for_declaration(module, &declaration) else {
+                    continue;
+                };
+                let (ExprKind::Name(target) | ExprKind::ComptimeName(target)) =
+                    &ungroup_expr(&binding.value).kind
+                else {
+                    continue;
+                };
+                let Some(owner) = self.named_family_aliases.get(target).cloned() else {
+                    continue;
+                };
+                self.named_family_aliases
+                    .insert(declaration.name.clone(), owner.clone());
+                self.type_definitions
+                    .insert(declaration.name.clone(), Type::Named(owner));
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn lower_named_family_methods(&mut self, module: &Module) {
+        let providers = collect_declarations(module)
+            .into_iter()
+            .filter_map(|declaration| {
+                let owner = self.named_family_aliases.get(&declaration.name)?;
+                let binding = binding_for_declaration(module, &declaration)?;
+                aven_parser::is_named_method_provider(&binding.value).then_some((
+                    declaration.name,
+                    owner.clone(),
+                    binding.value.clone(),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        for (source_name, owner, value) in providers {
+            self.provider_owner_scopes.push(source_name);
+            let ExprKind::Record(entries) = &ungroup_expr(&value).kind else {
+                self.provider_owner_scopes.pop();
+                continue;
+            };
+            let data_labels = self
+                .named_families
+                .get(&owner)
+                .map(|family| {
+                    family
+                        .data
+                        .entries
+                        .iter()
+                        .filter_map(|entry| match entry {
+                            RowEntry::Field { name, .. } => Some(name.clone()),
+                            RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+                        })
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default();
+            let mut methods = HashMap::new();
+            for entry in entries {
+                let RecordEntry::Method {
+                    name,
+                    name_span,
+                    value,
+                    ..
+                } = entry
+                else {
+                    continue;
+                };
+                let ExprKind::Lambda {
+                    params,
+                    return_annotation: Some(result),
+                    ..
+                } = &ungroup_expr(value).kind
+                else {
+                    continue;
+                };
+                if name.chars().next().is_some_and(char::is_uppercase) {
+                    self.diagnostics.push(
+                        Diagnostic::error("method names must be lowercase or operator tokens")
+                            .with_code(codes::ty::MISMATCH)
+                            .with_label(Label::primary(*name_span, "uppercase method name")),
+                    );
+                    continue;
+                }
+                if data_labels.contains(name) {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "method `{name}` conflicts with a data field of the same name"
+                        ))
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(*name_span, "duplicate member name")),
+                    );
+                    continue;
+                }
+                let mut param_types = Vec::with_capacity(params.len());
+                let mut complete = true;
+                for param in params {
+                    let Some(annotation) = &param.annotation else {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                "provider method parameters must be explicitly typed",
+                            )
+                            .with_code(codes::ty::MISMATCH)
+                            .with_label(Label::primary(param.name_span, "missing parameter type")),
+                        );
+                        complete = false;
+                        continue;
+                    };
+                    let lowered = self.lower_annotation(annotation);
+                    param_types.push(self.normalize(&lowered));
+                }
+                if !complete {
+                    continue;
+                }
+                let lowered_result = self.lower_annotation(result);
+                let result = self.normalize(&lowered_result);
+                let signature = NamedMethodType {
+                    params: param_types,
+                    result,
+                };
+                if methods.insert(name.clone(), signature).is_some() {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!("duplicate method `{name}`"))
+                            .with_code(codes::ty::MISMATCH)
+                            .with_label(Label::primary(*name_span, "method already declared")),
+                    );
+                }
+            }
+            self.provider_owner_scopes.pop();
+            if let Some(family) = self.named_families.get_mut(&owner) {
+                family.methods = methods;
+            }
         }
     }
 
@@ -245,8 +532,10 @@ impl<'a> Checker<'a> {
         for declaration in declarations {
             let name = declaration.name.clone();
             if name.chars().next().is_some_and(char::is_uppercase)
-                && binding_for_declaration(module, &declaration)
-                    .is_some_and(|binding| is_method_requirement_row(&binding.value))
+                && binding_for_declaration(module, &declaration).is_some_and(|binding| {
+                    is_method_requirement_row(&binding.value)
+                        || aven_parser::is_named_method_provider(&binding.value)
+                })
             {
                 continue;
             }
@@ -373,6 +662,17 @@ impl<'a> Checker<'a> {
 
     pub(super) fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
         let binding = binding_for_declaration(module, declaration);
+        if let Some(binding) = binding
+            && aven_parser::is_named_method_provider(&binding.value)
+        {
+            let owner = self
+                .named_family_aliases
+                .get(&declaration.name)
+                .cloned()
+                .expect("named providers have canonical owners");
+            self.check_named_family_declaration(&owner, &binding.value);
+            return;
+        }
         if declaration
             .name
             .chars()
@@ -457,6 +757,105 @@ impl<'a> Checker<'a> {
                     );
                 }
                 self.deduplicate_diagnostics_since(diagnostics_start);
+            }
+        }
+    }
+
+    fn check_named_family_declaration(&mut self, owner: &str, value: &Expr) {
+        let ExprKind::Record(entries) = &ungroup_expr(value).kind else {
+            return;
+        };
+        let family = self.named_families.get(owner).cloned();
+        for entry in entries {
+            match entry {
+                RecordEntry::Method {
+                    name,
+                    name_span,
+                    value,
+                    ..
+                } => match &ungroup_expr(value).kind {
+                    ExprKind::Arrow { .. } => self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "instance-carried method slot `{name}` is not supported"
+                        ))
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            *name_span,
+                            "method signature has no shared implementation",
+                        ))
+                        .with_note("add `=> body` to declare a type-carried provider method"),
+                    ),
+                    ExprKind::Lambda { params, body, .. } => {
+                        let Some(signature) = family
+                            .as_ref()
+                            .and_then(|family| family.methods.get(name))
+                            .cloned()
+                        else {
+                            continue;
+                        };
+                        let mut env = TypeEnv::new();
+                        env.insert(
+                            aven_parser::METHOD_RECEIVER_NAME.to_owned(),
+                            LocalValueType::Known(Type::Named(owner.to_owned())),
+                        );
+                        for (param, ty) in params.iter().zip(&signature.params) {
+                            env.insert(param.name.clone(), LocalValueType::Known(ty.clone()));
+                            self.record_inferred_type(param.name_span, ty.clone());
+                        }
+                        let marker = self.method_obligation_marker();
+                        let actual = self.infer(&env, body);
+                        let actual = self.normalize(&self.resolve_and_default(&actual));
+                        self.check_type_against_type(&signature.result, &actual, body.span);
+                        self.finish_non_generalizing_lambda_obligations(marker);
+                    }
+                    _ => {}
+                },
+                RecordEntry::FieldDefault {
+                    name,
+                    annotation,
+                    default,
+                    ..
+                } => {
+                    let lowered = self.lower_annotation(annotation);
+                    let ty = self.normalize(&lowered);
+                    self.check_value_against(&ty, default);
+                    let _ = name;
+                }
+                RecordEntry::Field {
+                    overwrite: false, ..
+                } => {}
+                RecordEntry::Field {
+                    name, name_span, ..
+                } => self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "per-instance override `{name}` is not supported in a provider"
+                    ))
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(*name_span, "override member")),
+                ),
+                RecordEntry::Spread { span, .. }
+                | RecordEntry::Delete { span, .. }
+                | RecordEntry::DeleteComputed { span, .. }
+                | RecordEntry::Rename { span, .. }
+                | RecordEntry::Iteration { span, .. }
+                | RecordEntry::Open { span }
+                | RecordEntry::FieldComputed { span, .. }
+                | RecordEntry::Shorthand { span, .. } => self.diagnostics.push(
+                    Diagnostic::error("method-bearing record declarations must be closed")
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            *span,
+                            "transform, spread, or open-row entry is not supported here",
+                        ))
+                        .with_note("write a closed list of data fields and body-bearing methods"),
+                ),
+                RecordEntry::Element(expr) => self.diagnostics.push(
+                    Diagnostic::error(
+                        "method-bearing record declarations cannot contain value entries",
+                    )
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(expr.span, "unsupported provider entry")),
+                ),
             }
         }
     }
@@ -745,6 +1144,8 @@ impl<'a> Checker<'a> {
                     }
                 }
                 RecordEntry::Spread { .. }
+                | RecordEntry::Method { .. }
+                | RecordEntry::FieldDefault { .. }
                 | RecordEntry::Delete { .. }
                 | RecordEntry::FieldComputed { .. }
                 | RecordEntry::DeleteComputed { .. }
@@ -1022,6 +1423,8 @@ impl<'a> Checker<'a> {
                     has_value_entry = true;
                 }
                 RecordEntry::Shorthand { .. }
+                | RecordEntry::Method { .. }
+                | RecordEntry::FieldDefault { .. }
                 | RecordEntry::Spread { .. }
                 | RecordEntry::Delete { .. }
                 | RecordEntry::DeleteComputed { .. }

@@ -1,0 +1,5 @@
+Ticket = {
+  severity: Int,
+  sharedPriority(): Int => .severity,
+  <(other: Ticket): Bool
+}

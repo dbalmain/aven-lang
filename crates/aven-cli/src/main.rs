@@ -468,7 +468,7 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
                 })
                 .collect(),
         ),
-        aven_eval::Value::Record(fields) => {
+        aven_eval::Value::Record(fields) | aven_eval::Value::NamedRecord { fields, .. } => {
             let mut output = JsonMap::new();
             for (name, value) in fields.iter() {
                 output.insert(name.clone(), aven_value_json(value));
@@ -480,9 +480,11 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
             "payload": payload.iter().map(aven_value_json).collect::<Vec<_>>(),
         }),
         aven_eval::Value::ResultMethod { .. } => JsonValue::String("<method>".to_owned()),
+        aven_eval::Value::NamedMethod { .. } => JsonValue::String("<method>".to_owned()),
         aven_eval::Value::Closure(_) => JsonValue::String("<function>".to_owned()),
         aven_eval::Value::Native(_) => JsonValue::String("<native>".to_owned()),
         aven_eval::Value::Type(ty) => JsonValue::String(ty.to_string()),
+        aven_eval::Value::NamedFamily(_) => JsonValue::String(value.to_string()),
         aven_eval::Value::Undefined | aven_eval::Value::Null => JsonValue::Null,
     }
 }

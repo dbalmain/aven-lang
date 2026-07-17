@@ -281,7 +281,9 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
             .collect::<Result<Vec<_>, _>>()
             .map(serde_norway::Value::Sequence),
         Value::Map(entries) => yaml_mapping_from_map(entries).map(serde_norway::Value::Mapping),
-        Value::Record(fields) => yaml_mapping_from_record(fields).map(serde_norway::Value::Mapping),
+        Value::Record(fields) | Value::NamedRecord { fields, .. } => {
+            yaml_mapping_from_record(fields).map(serde_norway::Value::Mapping)
+        }
         Value::Tag { name, payload } => yaml_value_from_json_constructor(name, payload),
         Value::Undefined => match position {
             EncodePosition::RecordField => Err("Yaml.encode cannot encode undefined".to_owned()),
@@ -293,9 +295,11 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
             }
         },
         Value::ResultMethod { .. } => Err("Yaml.encode cannot encode Function".to_owned()),
+        Value::NamedMethod { .. } => Err("Yaml.encode cannot encode Function".to_owned()),
         Value::Closure(_) => Err("Yaml.encode cannot encode Function".to_owned()),
         Value::Native(_) => Err("Yaml.encode cannot encode Native".to_owned()),
         Value::Type(_) => Err("Yaml.encode cannot encode Type".to_owned()),
+        Value::NamedFamily(_) => Err("Yaml.encode cannot encode Type".to_owned()),
     }
 }
 

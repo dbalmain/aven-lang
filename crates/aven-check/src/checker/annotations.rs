@@ -110,6 +110,19 @@ impl<'a> Checker<'a> {
         self.normalize_with_visited(ty, HashSet::new())
     }
 
+    /// Project a method-bearing owner's structural data without changing the
+    /// value's ordinary (behavior-carrying) type.
+    pub(super) fn named_family_data_view(&self, ty: &Type) -> Option<Type> {
+        let Type::Named(name) = ty else {
+            return None;
+        };
+        let owner = self.named_family_aliases.get(name)?;
+        let family = self.named_families.get(owner)?;
+        Some(Type::Record(
+            self.normalize_row(&family.data, &HashSet::new()),
+        ))
+    }
+
     /// Unfold exactly one recursive reference when a consumer needs its outer
     /// constructor. Back-edge references inside the cloned head remain atomic.
     pub(super) fn unfold_recursive_type_once(&self, ty: &Type) -> Type {
@@ -210,6 +223,9 @@ impl<'a> Checker<'a> {
     pub(super) fn normalize_with_visited(&self, ty: &Type, visited: HashSet<String>) -> Type {
         match ty {
             Type::Named(name) => {
+                if let Some(owner) = self.named_family_aliases.get(name) {
+                    return Type::Named(owner.clone());
+                }
                 let Some(definition) = self.type_definitions.get(name) else {
                     return Type::Named(name.clone());
                 };
@@ -304,6 +320,9 @@ impl<'a> Checker<'a> {
         let mut checker =
             Checker::with_type_definitions(self.known_types.clone(), self.type_definitions.clone());
         checker.comptime_bindings = self.comptime_bindings.clone();
+        checker.named_family_aliases = self.named_family_aliases.clone();
+        checker.named_families = self.named_families.clone();
+        checker.provider_owner_scopes = self.provider_owner_scopes.clone();
         checker.comptime_artifacts = self.comptime_artifacts.clone();
         checker.comptime_specializations = self.comptime_specializations.clone();
         checker.comptime_specialization_calls = self.comptime_specialization_calls.clone();

@@ -648,6 +648,22 @@ fn render_record_entry_ast(output: &mut String, entry: &RecordEntry, indent: usi
             let _ = writeln!(output, "value");
             render_expr_ast(output, value, indent + 2);
         }
+        RecordEntry::Method { name, value, .. } => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "method {name}");
+            render_expr_ast(output, value, indent + 1);
+        }
+        RecordEntry::FieldDefault {
+            name,
+            annotation,
+            default,
+            ..
+        } => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "field-default {name}");
+            render_expr_ast(output, annotation, indent + 1);
+            render_expr_ast(output, default, indent + 1);
+        }
         RecordEntry::Shorthand { name, .. } => {
             write_indent(output, indent);
             let _ = writeln!(output, "shorthand {name}");

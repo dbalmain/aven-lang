@@ -77,6 +77,10 @@ impl<'a> Checker<'a> {
         if self.infer_import_call(callee, args).is_some() {
             return;
         }
+        if self.named_family_constructor_owner(callee).is_some() {
+            let _ = self.infer_call(&env, callee, args);
+            return;
+        }
 
         // Uppercase comptime functions validate their arguments while they
         // specialize. Their parameters describe comptime bounds (including
@@ -170,11 +174,16 @@ impl<'a> Checker<'a> {
         let env = self.local_types.inference_env();
         let inferred = self.infer(&env, receiver);
         let receiver_type = self.normalize(&self.resolve_and_default(&inferred));
+        if self.exact_method_signature(&receiver_type, field).is_some() {
+            return;
+        }
         if builtin_collection_method_type(&receiver_type, field).is_some() {
             return;
         }
         let (_, core) = peel_empty_values(&receiver_type);
-        let receiver_type = self.unfold_recursive_type_once(core);
+        let receiver_type = self
+            .named_family_data_view(core)
+            .unwrap_or_else(|| self.unfold_recursive_type_once(core));
         if builtin_collection_method_type(&receiver_type, field).is_some() {
             return;
         }
@@ -312,6 +321,8 @@ impl<'a> Checker<'a> {
                     );
                 }
                 RecordEntry::Field { .. }
+                | RecordEntry::Method { .. }
+                | RecordEntry::FieldDefault { .. }
                 | RecordEntry::FieldComputed { .. }
                 | RecordEntry::Shorthand { .. }
                 | RecordEntry::Spread { .. }
@@ -339,6 +350,8 @@ impl<'a> Checker<'a> {
                     self.report_redundant_undefined_record_fields(body);
                 }
                 RecordEntry::Open { .. }
+                | RecordEntry::Method { .. }
+                | RecordEntry::FieldDefault { .. }
                 | RecordEntry::Field { .. }
                 | RecordEntry::FieldComputed { .. }
                 | RecordEntry::Shorthand { .. }
@@ -355,6 +368,7 @@ impl<'a> Checker<'a> {
         for entry in entries {
             match entry {
                 RecordEntry::Field { value, .. }
+                | RecordEntry::Method { value, .. }
                 | RecordEntry::Spread { value, .. }
                 | RecordEntry::DeleteComputed { key: value, .. }
                 | RecordEntry::Element(value) => {
@@ -363,6 +377,14 @@ impl<'a> Checker<'a> {
                 RecordEntry::FieldComputed { key, value, .. } => {
                     self.check_value_expr(key);
                     self.check_value_expr(value);
+                }
+                RecordEntry::FieldDefault {
+                    annotation,
+                    default,
+                    ..
+                } => {
+                    self.lower_annotation(annotation);
+                    self.check_value_expr(default);
                 }
                 RecordEntry::Iteration {
                     source,

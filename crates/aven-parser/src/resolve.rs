@@ -80,30 +80,48 @@ pub fn is_method_requirement_row(expr: &Expr) -> bool {
     let ExprKind::Record(entries) = &expr.kind else {
         return false;
     };
-    entries.iter().all(|entry| {
-        matches!(
-            entry,
-            RecordEntry::Field {
-                value: Expr {
-                    kind: ExprKind::Arrow { .. },
+    matches!(entries.last(), Some(RecordEntry::Open { .. }))
+        && entries.iter().all(|entry| {
+            matches!(
+                entry,
+                RecordEntry::Method {
+                    value: Expr {
+                        kind: ExprKind::Arrow { .. },
+                        ..
+                    },
                     ..
-                },
-                ..
-            } | RecordEntry::Spread { .. }
-                | RecordEntry::Open { .. }
-        )
-    }) && entries.iter().any(|entry| {
-        matches!(
-            entry,
-            RecordEntry::Field {
-                value: Expr {
-                    kind: ExprKind::Arrow { .. },
+                } | RecordEntry::Spread { .. }
+                    | RecordEntry::Open { .. }
+            )
+        })
+        && entries.iter().any(|entry| {
+            matches!(
+                entry,
+                RecordEntry::Method {
+                    value: Expr {
+                        kind: ExprKind::Arrow { .. },
+                        ..
+                    },
                     ..
-                },
-                ..
-            } | RecordEntry::Spread { .. }
-        )
-    })
+                } | RecordEntry::Spread { .. }
+            )
+        })
+}
+
+/// Whether a record is a closed named-family declaration candidate. Contextual
+/// checking validates unsupported slots/transforms after this structural test.
+pub fn is_named_method_provider(expr: &Expr) -> bool {
+    let mut expr = expr;
+    while let ExprKind::Group(inner) = &expr.kind {
+        expr = inner;
+    }
+    let ExprKind::Record(entries) = &expr.kind else {
+        return false;
+    };
+    entries
+        .iter()
+        .any(|entry| matches!(entry, RecordEntry::Method { .. }))
+        && !is_method_requirement_row(expr)
 }
 
 pub fn render_annotation(source: &str, annotation: &Expr) -> String {
@@ -441,6 +459,7 @@ fn scope_at_record_entries<'a>(
 
         match entry {
             RecordEntry::Field { value, .. }
+            | RecordEntry::Method { value, .. }
             | RecordEntry::Spread { value, .. }
             | RecordEntry::DeleteComputed { key: value, .. }
             | RecordEntry::Element(value) => scope_at_expr(value, at, outer)
@@ -456,6 +475,11 @@ fn scope_at_record_entries<'a>(
                 }
                 Some(ScopeAt::from_visible(outer.to_vec()))
             }
+            RecordEntry::FieldDefault {
+                annotation,
+                default,
+                ..
+            } => scope_at_expr(annotation, at, outer).or_else(|| scope_at_expr(default, at, outer)),
             RecordEntry::Iteration {
                 source,
                 binder,
@@ -536,6 +560,8 @@ fn binding_at_reference<'a>(
 fn record_entry_span(entry: &RecordEntry) -> Span {
     match entry {
         RecordEntry::Field { span, .. }
+        | RecordEntry::Method { span, .. }
+        | RecordEntry::FieldDefault { span, .. }
         | RecordEntry::FieldComputed { span, .. }
         | RecordEntry::Shorthand { span, .. }
         | RecordEntry::Spread { span, .. }
@@ -664,6 +690,7 @@ fn collect_pattern_bindings_from_record_entries<'a>(
     for entry in entries {
         match entry {
             RecordEntry::Field { value, .. }
+            | RecordEntry::Method { value, .. }
             | RecordEntry::FieldComputed { value, .. }
             | RecordEntry::Element(value) => {
                 collect_pattern_bindings(value, bindings);
@@ -683,6 +710,9 @@ fn collect_pattern_bindings_from_record_entries<'a>(
                         span: value.span,
                     });
                 }
+            }
+            RecordEntry::FieldDefault { default, .. } => {
+                collect_pattern_bindings(default, bindings);
             }
             RecordEntry::Rename { to, to_span, .. } => bindings.push(BindingSite {
                 name: to,

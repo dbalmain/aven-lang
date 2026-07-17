@@ -1,3 +1,4 @@
+use super::Checker;
 use crate::ty::{Type, named_builtin};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +194,27 @@ pub(crate) fn builtin_method_signature(owner: &Type, member: &str) -> Option<Met
         params: entry.params.iter().map(|param| param.to_type()).collect(),
         result: entry.result.to_type(),
     })
+}
+
+impl Checker<'_> {
+    /// Query one exact owner category. User families never fall back to a
+    /// builtin or another structurally equal declaration.
+    pub(crate) fn exact_method_signature(
+        &self,
+        owner: &Type,
+        member: &str,
+    ) -> Option<MethodSignature> {
+        if let Type::Named(name) = owner
+            && let Some(canonical) = self.named_family_aliases.get(name)
+        {
+            let signature = self.named_families.get(canonical)?.methods.get(member)?;
+            return Some(MethodSignature {
+                params: signature.params.clone(),
+                result: signature.result.clone(),
+            });
+        }
+        builtin_method_signature(owner, member)
+    }
 }
 
 /// Resolve a concrete builtin binary operation, including the closed numeric

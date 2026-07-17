@@ -1,0 +1,3 @@
+error type.mismatch: method-bearing record declarations must be closed
+  label 39..45: transform, spread, or open-row entry is not supported here
+  note: write a closed list of data fields and body-bearing methods
