@@ -366,9 +366,12 @@ impl<'a> Checker<'a> {
         let body_type = self.infer_body_type_for_propagation_check(body);
         let propagation = self.pop_propagation_context();
         let body_type = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
-        if body_has_inline_metas
-            && !self.inferred_return_type_fits_annotation(&body_expected, &body_type)
-        {
+        // A call-site function expectation can carry result metas even without
+        // an inline return annotation. Feed the contextual body type back into
+        // those metas so higher-order arguments refine their caller's result.
+        let body_fits = free_metas(&body_expected).is_empty()
+            || self.inferred_return_type_fits_annotation(&body_expected, &body_type);
+        if body_has_inline_metas && !body_fits {
             let expected = self.normalize(&self.resolve_and_default(&body_expected));
             let actual = self.normalize(&self.resolve_and_default(&body_type));
             self.report_type_mismatch_between_types(

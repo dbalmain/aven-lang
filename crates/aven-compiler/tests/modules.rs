@@ -1522,6 +1522,59 @@ fn std_array_ordered_constraints_cross_module_boundaries_and_run() {
 }
 
 #[test]
+fn imported_constrained_projection_from_named_family_field_checks_and_runs() {
+    let dir = TempDir::new("named-family-imported-projection");
+    write(
+        dir.path(),
+        "lib/util2.av",
+        concat!(
+            "Ordered = {\n",
+            "  <(Self): Bool\n",
+            "  ..\n",
+            "}\n",
+            "\n",
+            "keep : (Array(t), (t) -> k) -> Array(t)\n",
+            "keep = (xs: Array(t), _key: (t) -> k): Array(t)\n",
+            "  k: Ordered\n",
+            "=>\n",
+            "  xs\n",
+            "\n",
+            "{ keep }\n",
+        ),
+    );
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "{ keep } = import(\"./lib/util2\")\n",
+            "Rank = {\n",
+            "  label: Text\n",
+            "  score: Int\n",
+            "\n",
+            "  <(other: Rank): Bool =>\n",
+            "    .score < other.score\n",
+            "}\n",
+            "ranks = [Rank({ label: \"a\", score: 2 })]\n",
+            "byScore = keep(ranks, (r) => r.score)\n",
+            "{ byScore }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+
+    let checked = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("named-family field projection through an imported scheme should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&path, vec![])
+        .expect("named-family field projection through an imported scheme should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ byScore: [{ label: \"a\", score: 2 }] }".to_owned())
+    );
+}
+
+#[test]
 fn std_array_sort_by_rejects_unsupported_text_keys_at_importer_calls() {
     let dir = TempDir::new("std-array-unordered");
     write(
