@@ -1,0 +1,4 @@
+labels: Set(Text) = @{ "aven", "lang" }
+
+baseLeft: Bool = labels == ("aven" | "lang")
+baseRight: Bool = ("aven" | "lang") == labels

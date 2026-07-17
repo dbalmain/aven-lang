@@ -834,6 +834,16 @@ impl<'a> Checker<'a> {
             }
         }
 
+        if let Type::Apply { callee, args } = &resolved {
+            return Type::Apply {
+                callee: callee.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.widen_equality_operand(arg))
+                    .collect(),
+            };
+        }
+
         resolved
     }
 

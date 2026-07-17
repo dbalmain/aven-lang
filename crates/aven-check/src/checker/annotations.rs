@@ -338,6 +338,10 @@ impl<'a> Checker<'a> {
         checker.local_comptime_params = self.local_comptime_params.clone();
         checker.bindings = self.bindings.clone();
         checker.annotations = self.annotations.clone();
+        // Clean annotation inference must resolve imported comptime functions
+        // through the same pattern binding and module export as the main pass.
+        checker.pattern_bindings = self.pattern_bindings.clone();
+        checker.imports = self.imports.clone();
         checker
     }
 

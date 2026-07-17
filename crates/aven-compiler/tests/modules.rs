@@ -1139,6 +1139,36 @@ fn cross_module_uppercase_comptime_type_function_checks_fields() {
 }
 
 #[test]
+fn imported_comptime_type_application_annotation_preserves_fields() {
+    let dir = TempDir::new("imported-comptime-type-annotation-fields");
+    write(
+        dir.path(),
+        "models.av",
+        "Labelled = (t: Type) => { label: Text, value: t }\n{ Labelled }\n",
+    );
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "{ Labelled } = import(\"./models\")\n",
+            "Tagged = Labelled(Int)\n",
+            "answer: Tagged = { label: \"answer\", value: 42 }\n",
+            "note: Labelled(Text) = { label: \"note\", value: \"hello\" }\n",
+            "answerLabel: Text = answer.label\n",
+            "answerValue: Int = answer.value\n",
+            "noteLabel: Text = note.label\n",
+            "noteValue: Text = note.value\n",
+            "{ answerLabel, answerValue, noteLabel, noteValue }\n",
+        ),
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("imported direct type application should check");
+
+    assert_no_errors(&output.reports);
+}
+
+#[test]
 fn cross_module_recursive_type_function_constructs_matches_and_runs() {
     let dir = TempDir::new("recursive-type-fn-export");
     write(
