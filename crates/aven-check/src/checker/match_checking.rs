@@ -24,7 +24,7 @@ impl<'a> Checker<'a> {
         for arm in arms {
             self.local_types.push();
             let local_types = checked_pattern_local_types(
-                &self.type_definitions,
+                self.pattern_type_context(),
                 &arm.pattern,
                 subject_type.as_ref(),
             );
@@ -190,7 +190,7 @@ impl<'a> Checker<'a> {
             }
         }
 
-        let Some(row) = subject_variant_row(payload_type, &self.type_definitions) else {
+        let Some(row) = subject_variant_row(payload_type, self.pattern_type_context()) else {
             return;
         };
         let row = row.into_owned();
@@ -379,9 +379,11 @@ impl<'a> Checker<'a> {
                 .resolve_if_concrete(&inferred_subject)
                 .or_else(|| unresolved_pattern_subject(self.normalize(&inferred_subject)));
             let mut arm_env = env.clone();
-            for (name, ty) in
-                pattern_local_types(&self.type_definitions, &arm.pattern, subject_type.as_ref())
-            {
+            for (name, ty) in pattern_local_types(
+                self.pattern_type_context(),
+                &arm.pattern,
+                subject_type.as_ref(),
+            ) {
                 arm_env.insert(name, ty);
             }
 
@@ -405,9 +407,11 @@ impl<'a> Checker<'a> {
 
         for arm in arms {
             let mut arm_env = env.clone();
-            for (name, ty) in
-                pattern_local_types(&self.type_definitions, &arm.pattern, subject_type.as_ref())
-            {
+            for (name, ty) in pattern_local_types(
+                self.pattern_type_context(),
+                &arm.pattern,
+                subject_type.as_ref(),
+            ) {
                 arm_env.insert(name, ty);
             }
 
@@ -517,7 +521,7 @@ impl<'a> Checker<'a> {
 
         for body_type in body_types {
             let resolved = self.unifier.resolve(&body_type.ty);
-            let row = subject_variant_row(&resolved, &self.type_definitions)?.into_owned();
+            let row = subject_variant_row(&resolved, self.pattern_type_context())?.into_owned();
 
             let prior = Type::Variant(Row {
                 entries: entries.clone(),
@@ -638,7 +642,7 @@ impl<'a> Checker<'a> {
             if matches!(resolved, Type::Meta(_)) {
                 continue;
             }
-            let row = subject_variant_row(&resolved, &self.type_definitions)?.into_owned();
+            let row = subject_variant_row(&resolved, self.pattern_type_context())?.into_owned();
             for entry in row.entries {
                 let RowEntry::Tag { name, payload } = entry else {
                     return None;
@@ -680,7 +684,7 @@ impl<'a> Checker<'a> {
     }
 
     fn result_type_from_variant_row(&self, ty: &Type) -> Type {
-        let Some(row) = subject_variant_row(ty, &self.type_definitions) else {
+        let Some(row) = subject_variant_row(ty, self.pattern_type_context()) else {
             return ty.clone();
         };
         if row.tail != RowTail::Closed || row.entries.len() != 2 {

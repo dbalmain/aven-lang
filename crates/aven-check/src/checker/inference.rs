@@ -163,8 +163,11 @@ impl<'a> Checker<'a> {
                 let obligation_marker = self.method_obligation_marker();
                 let ty = self.infer(&TypeEnv::new(), &binding.value);
                 let resolved = self.normalize(&self.resolve_and_default(&ty));
-                let local_types =
-                    pattern_local_types(&self.type_definitions, &binding.pattern, Some(&resolved));
+                let local_types = pattern_local_types(
+                    self.pattern_type_context(),
+                    &binding.pattern,
+                    Some(&resolved),
+                );
                 let ty = local_types
                     .into_iter()
                     .find_map(|(binding_name, ty)| (binding_name == name).then_some(ty))
@@ -3305,7 +3308,7 @@ impl<'a> Checker<'a> {
                     let inferred = self.infer(&next_env, &binding.value);
                     let resolved = self.normalize(&self.resolve_and_default(&inferred));
                     for (name, ty) in pattern_local_types(
-                        &self.type_definitions,
+                        self.pattern_type_context(),
                         &binding.pattern,
                         Some(&resolved),
                     ) {

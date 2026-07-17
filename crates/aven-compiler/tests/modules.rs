@@ -1169,6 +1169,36 @@ fn imported_comptime_type_application_annotation_preserves_fields() {
 }
 
 #[test]
+fn recursive_variant_sum_checks_and_runs() {
+    let dir = TempDir::new("recursive-variant-sum");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+            "sum : (List(Int)) -> Int\n",
+            "sum = (xs) =>\n",
+            "  xs ?>\n",
+            "    @Nil => 0\n",
+            "    @Cons((n, rest)) => n + sum(rest)\n",
+            "sum(@Cons((1, @Cons((2, @Nil)))))\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+
+    let checked = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("recursive List sum should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&path, vec![]).expect("recursive List sum should evaluate");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("3".to_owned())
+    );
+}
+
+#[test]
 fn cross_module_recursive_type_function_constructs_matches_and_runs() {
     let dir = TempDir::new("recursive-type-fn-export");
     write(

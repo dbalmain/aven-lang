@@ -170,6 +170,21 @@ struct PatternLocalTypes {
     type_conflicts: Vec<OrPatternBindingTypeConflict>,
 }
 
+#[derive(Clone, Copy)]
+struct PatternTypeContext<'a> {
+    type_definitions: &'a HashMap<String, Type>,
+    recursive_type_unfoldings: &'a HashMap<RecursiveTypeId, Type>,
+}
+
+impl<'a> Checker<'a> {
+    fn pattern_type_context(&self) -> PatternTypeContext<'_> {
+        PatternTypeContext {
+            type_definitions: &self.type_definitions,
+            recursive_type_unfoldings: &self.recursive_type_unfoldings,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct OrPatternBindingMismatch {
     span: Span,
@@ -533,48 +548,43 @@ fn collect_value_set_union_parts<'a>(
 }
 
 fn pattern_local_types(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     pattern: &Expr,
     expected: Option<&Type>,
 ) -> Vec<(String, LocalValueType)> {
-    checked_pattern_local_types(type_definitions, pattern, expected).bindings
+    checked_pattern_local_types(context, pattern, expected).bindings
 }
 
 fn checked_pattern_local_types(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     pattern: &Expr,
     expected: Option<&Type>,
 ) -> PatternLocalTypes {
     let mut mismatches = Vec::new();
     collect_or_pattern_binding_mismatches(pattern, &mut mismatches);
     let mut type_conflicts = Vec::new();
-    collect_or_pattern_binding_type_conflicts(
-        type_definitions,
-        pattern,
-        expected,
-        &mut type_conflicts,
-    );
+    collect_or_pattern_binding_type_conflicts(context, pattern, expected, &mut type_conflicts);
 
     PatternLocalTypes {
-        bindings: merged_pattern_local_types(type_definitions, pattern, expected),
+        bindings: merged_pattern_local_types(context, pattern, expected),
         mismatches,
         type_conflicts,
     }
 }
 
 fn merged_pattern_local_types(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     pattern: &Expr,
     expected: Option<&Type>,
 ) -> Vec<(String, LocalValueType)> {
     let alternatives = flatten_or_alternatives(pattern);
     if alternatives.len() == 1 {
-        return single_pattern_local_types(type_definitions, pattern, expected);
+        return single_pattern_local_types(context, pattern, expected);
     }
 
     let alternative_types = alternatives
         .iter()
-        .map(|alternative| single_pattern_local_type_map(type_definitions, alternative, expected))
+        .map(|alternative| single_pattern_local_type_map(context, alternative, expected))
         .collect::<Vec<_>>();
     let names = alternative_types
         .iter()
@@ -591,11 +601,11 @@ fn merged_pattern_local_types(
 }
 
 fn single_pattern_local_type_map(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     pattern: &Expr,
     expected: Option<&Type>,
 ) -> HashMap<String, LocalValueType> {
-    single_pattern_local_types(type_definitions, pattern, expected)
+    single_pattern_local_types(context, pattern, expected)
         .into_iter()
         .collect()
 }
@@ -628,13 +638,13 @@ fn merged_or_pattern_local_type(
 }
 
 fn single_pattern_local_types(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     pattern: &Expr,
     expected: Option<&Type>,
 ) -> Vec<(String, LocalValueType)> {
     let mut known = HashMap::new();
     if let Some(expected) = expected {
-        collect_known_pattern_types(type_definitions, pattern, expected, &mut known);
+        collect_known_pattern_types(context, pattern, expected, &mut known);
     }
 
     pattern_bindings(pattern)
@@ -693,7 +703,7 @@ fn collect_flat_or_pattern_binding_mismatches(
 }
 
 fn collect_or_pattern_binding_type_conflicts(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     pattern: &Expr,
     expected: Option<&Type>,
     conflicts: &mut Vec<OrPatternBindingTypeConflict>,
@@ -702,7 +712,7 @@ fn collect_or_pattern_binding_type_conflicts(
         ExprKind::Binary { operator, .. } if operator == "|" => {
             let alternatives = flatten_or_alternatives(pattern);
             collect_flat_or_pattern_binding_type_conflicts(
-                type_definitions,
+                context,
                 &alternatives,
                 expected,
                 pattern.span,
@@ -710,7 +720,7 @@ fn collect_or_pattern_binding_type_conflicts(
             );
             for alternative in alternatives {
                 collect_or_pattern_binding_type_conflicts(
-                    type_definitions,
+                    context,
                     alternative,
                     expected,
                     conflicts,
@@ -719,19 +729,14 @@ fn collect_or_pattern_binding_type_conflicts(
         }
         _ => {
             walk_expr_children(pattern, &mut |child| {
-                collect_or_pattern_binding_type_conflicts(
-                    type_definitions,
-                    child,
-                    expected,
-                    conflicts,
-                );
+                collect_or_pattern_binding_type_conflicts(context, child, expected, conflicts);
             });
         }
     }
 }
 
 fn collect_flat_or_pattern_binding_type_conflicts(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     alternatives: &[&Expr],
     expected: Option<&Type>,
     span: Span,
@@ -739,7 +744,7 @@ fn collect_flat_or_pattern_binding_type_conflicts(
 ) {
     let alternative_types = alternatives
         .iter()
-        .map(|alternative| single_pattern_local_type_map(type_definitions, alternative, expected))
+        .map(|alternative| single_pattern_local_type_map(context, alternative, expected))
         .collect::<Vec<_>>();
     let names = alternative_types
         .iter()
@@ -811,22 +816,22 @@ fn expr_references_name(expr: &Expr, name: &str) -> bool {
 }
 
 fn collect_known_pattern_types(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     pattern: &Expr,
     expected: &Type,
     known: &mut HashMap<String, Type>,
 ) {
     match (&pattern.kind, expected) {
         (ExprKind::Group(inner), _) => {
-            collect_known_pattern_types(type_definitions, inner, expected, known);
+            collect_known_pattern_types(context, inner, expected, known);
         }
         (_, Type::Optional(inner))
             if empty_value_pattern(pattern) != Some(EmptyValue::Undefined) =>
         {
-            collect_known_pattern_types(type_definitions, pattern, inner, known);
+            collect_known_pattern_types(context, pattern, inner, known);
         }
         (_, Type::Nullable(inner)) if empty_value_pattern(pattern) != Some(EmptyValue::Null) => {
-            collect_known_pattern_types(type_definitions, pattern, inner, known);
+            collect_known_pattern_types(context, pattern, inner, known);
         }
         (ExprKind::Name(name), _)
             if name != "_"
@@ -845,14 +850,14 @@ fn collect_known_pattern_types(
             },
             _,
         ) if operator == "|" => {
-            collect_known_pattern_types(type_definitions, left, expected, known);
-            collect_known_pattern_types(type_definitions, right, expected, known);
+            collect_known_pattern_types(context, left, expected, known);
+            collect_known_pattern_types(context, right, expected, known);
         }
         (ExprKind::Call { callee, args }, _) => {
             let ExprKind::Tag(tag) = &callee.kind else {
                 return;
             };
-            let Some(row) = subject_variant_row(expected, type_definitions) else {
+            let Some(row) = subject_variant_row(expected, context) else {
                 return;
             };
             let Some(payload) = literal_variant_payload(&row, tag) else {
@@ -862,19 +867,26 @@ fn collect_known_pattern_types(
                 return;
             }
             for (arg, ty) in args.iter().zip(payload) {
-                collect_known_pattern_types(type_definitions, arg, ty, known);
+                collect_known_pattern_types(context, arg, ty, known);
+            }
+        }
+        (ExprKind::Tuple(items), Type::Tuple(expected_items))
+            if items.len() == expected_items.len() =>
+        {
+            for (item, ty) in items.iter().zip(expected_items) {
+                collect_known_pattern_types(context, item, ty, known);
             }
         }
         (ExprKind::Record(entries), Type::Record(row)) => {
-            collect_known_record_pattern_types(type_definitions, entries, row, known);
+            collect_known_record_pattern_types(context, entries, row, known);
         }
-        (ExprKind::Tag(_), _) if subject_variant_row(expected, type_definitions).is_some() => {}
+        (ExprKind::Tag(_), _) if subject_variant_row(expected, context).is_some() => {}
         _ => {}
     }
 }
 
 fn collect_known_record_pattern_types(
-    type_definitions: &HashMap<String, Type>,
+    context: PatternTypeContext<'_>,
     entries: &[RecordEntry],
     row: &Row,
     known: &mut HashMap<String, Type>,
@@ -885,7 +897,7 @@ fn collect_known_record_pattern_types(
         match entry {
             RecordEntry::Field { name, value, .. } => {
                 if let Some(field_ty) = row_field_type(row, name) {
-                    collect_known_pattern_types(type_definitions, value, field_ty, known);
+                    collect_known_pattern_types(context, value, field_ty, known);
                 }
             }
             RecordEntry::Shorthand { name, .. } => {
@@ -1116,18 +1128,33 @@ fn literal_union_domain_row(domain: &Type) -> Option<&Row> {
     }
 }
 
-fn subject_variant_row<'a>(
-    ty: &'a Type,
-    type_definitions: &'a HashMap<String, Type>,
-) -> Option<Cow<'a, Row>> {
+fn subject_variant_row<'a>(ty: &'a Type, context: PatternTypeContext<'a>) -> Option<Cow<'a, Row>> {
     if let Type::Variant(row) = ty {
         return Some(Cow::Borrowed(row));
     }
 
-    if let Type::Named(name) = ty
-        && let Some(Type::Variant(row)) = type_definitions.get(name)
-    {
+    // Keep recursive references atomic until a constructor pattern demands
+    // their outer row. Back edges in the returned head remain recursive.
+    if let Type::Recursive(id) = ty {
+        let Type::Variant(row) = context.recursive_type_unfoldings.get(id)? else {
+            return None;
+        };
         return Some(Cow::Borrowed(row));
+    }
+
+    if let Type::Named(name) = ty
+        && let Some(definition) = context.type_definitions.get(name)
+    {
+        match definition {
+            Type::Variant(row) => return Some(Cow::Borrowed(row)),
+            Type::Recursive(id) => {
+                let Type::Variant(row) = context.recursive_type_unfoldings.get(id)? else {
+                    return None;
+                };
+                return Some(Cow::Borrowed(row));
+            }
+            _ => {}
+        }
     }
 
     if matches!(ty, Type::Named(name) if name == "Bool") {

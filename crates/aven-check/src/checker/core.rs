@@ -1057,7 +1057,7 @@ impl<'a> Checker<'a> {
         let resolved = self.normalize(&self.resolve_and_default(&inferred));
         self.report_unsupported_uppercase_pattern_binders(pattern, value);
         self.report_missing_record_pattern_fields(pattern, &resolved);
-        pattern_local_types(&self.type_definitions, pattern, Some(&resolved))
+        pattern_local_types(self.pattern_type_context(), pattern, Some(&resolved))
     }
 
     pub(super) fn closed_spread_row(

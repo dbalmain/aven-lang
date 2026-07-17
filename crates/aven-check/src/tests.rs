@@ -8336,6 +8336,78 @@ fn parameterized_recursive_list_constructs_matches_and_renders_by_name() {
 }
 
 #[test]
+fn direct_recursive_variant_match_binds_concrete_tuple_payload_types() {
+    let source = concat!(
+        "IntList = @{ @Nil, @Cons((Int, IntList)) }\n",
+        "sum : (IntList) -> Int\n",
+        "sum = (xs) => xs ?>\n",
+        "  @Nil => 0\n",
+        "  @Cons((headValue, tailValue)) => headValue + sum(tailValue)\n",
+    );
+    let check = check_module(&parse_module(source).module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "headValue", 0))
+            .map(Type::render),
+        Some("Int".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "tailValue", 0))
+            .map(Type::render),
+        Some("IntList".to_owned())
+    );
+}
+
+#[test]
+fn parameterized_recursive_variant_match_binds_specialized_payload_types() {
+    let source = concat!(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "sum : (List(Int)) -> Int\n",
+        "sum = (xs) => xs ?>\n",
+        "  @Nil => 0\n",
+        "  @Cons((headValue, tailValue)) => headValue + sum(tailValue)\n",
+    );
+    let check = check_module(&parse_module(source).module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "headValue", 0))
+            .map(Type::render),
+        Some("Int".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "tailValue", 0))
+            .map(Type::render),
+        Some("List(Int)".to_owned())
+    );
+}
+
+#[test]
+fn nested_recursive_variant_match_unfolds_each_pattern_depth() {
+    let source = concat!(
+        "List = (t: Type) => @{ @Nil, @Cons((t, List(t))) }\n",
+        "second : (List(Int)) -> Int\n",
+        "second = (xs) => xs ?>\n",
+        "  @Cons((_, @Cons((nestedValue, _)))) => nestedValue + 0\n",
+        "  @Nil | @Cons((_, @Nil)) => -1\n",
+    );
+    let check = check_module(&parse_module(source).module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "nestedValue", 0))
+            .map(Type::render),
+        Some("Int".to_owned())
+    );
+}
+
+#[test]
 fn value_field_check_peels_empty_record_receivers() {
     let source = concat!(
         "Node = { value: Int, next: ?Node }\n",
