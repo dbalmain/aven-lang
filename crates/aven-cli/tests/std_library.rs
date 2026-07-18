@@ -97,28 +97,28 @@ fn std_array_type_exports_check() {
     let dir = TempDir::new("std-array-check");
     let entry = dir.write(
         "main.av",
-r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum } = import("std/array")
+r#"{ isEmpty, first, last, fold, count, all, any, find, indexOf, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, maximum } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
-len = length(xs)
+len = xs.length()
 emptyFlag = isEmpty(empty)
 head = first(xs)
 tail = last(xs)
 folded = fold(xs, zero, (acc, x) => acc + x)
-total = sum([1, 2, 3])
+total = [1, 2, 3].sum()
 n = count(xs, (x) => x > 15)
 allPos = all(xs, (x) => x > 0)
 has20 = any(xs, (x) => x == 20)
 hit = find(xs, (x) => x == 20)
 miss = find(xs, (x) => x == 99)
 idx = indexOf(xs, 20)
-mapped = map(xs, (x) => x + 1)
+mapped = xs.map((x) => x + 1)
 flatMapped = flatMap(xs, (x) => [x, x + 1])
 filtered = filter(xs, (x) => x > 15)
 rev = reverse(xs)
 joined = concat([1], [2, 3])
-composed = map(filter(xs, (x) => x > 15), (x) => x / 10)
+composed = filter(xs, (x) => x > 15).map((x) => x / 10)
 taken = take(xs, 2)
 dropped = drop(xs, 1)
 sliced = slice(xs, 1, 3)
@@ -127,10 +127,10 @@ flat = flatten([[1], [2, 3]])
 nums = range(1, 4)
 sorted = sortWith([3, 1, 2], (a, b) => a < b)
 users = [{name: "bob", age: 30}, {name: "alice", age: 25}, {name: "carol", age: 30}]
-byAge = sortBy(users, (u) => u.age)
-lo = minimum(xs)
+byAge = users.sortBy((u) => u.age)
+lo = xs.minimum()
 hi = maximum(xs)
-{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
+{ isEmpty, first, last, fold, count, all, any, find, indexOf, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, maximum, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
 "#,
     );
 
@@ -149,11 +149,11 @@ fn std_array_combinators_run() {
     let dir = TempDir::new("std-array-run");
     let entry = dir.write(
         "main.av",
-r#"{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum } = import("std/array")
+r#"{ isEmpty, first, last, fold, count, all, any, find, indexOf, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, maximum } = import("std/array")
 xs = [10, 20, 30]
 empty = []
 zero: Int = 0
-writeLine("${length(xs)}")
+writeLine("${xs.length()}")
 writeLine("${isEmpty(xs)}")
 writeLine("${isEmpty(empty)}")
 writeLine("${first(xs)}")
@@ -161,7 +161,7 @@ writeLine("${first(empty)}")
 writeLine("${last(xs)}")
 writeLine("${last(empty)}")
 writeLine("${fold(xs, zero, (acc, x) => acc + x)}")
-writeLine("${sum([1, 2, 3])}")
+writeLine("${[1, 2, 3].sum()}")
 writeLine("${count(xs, (x) => x > 15)}")
 writeLine("${all(xs, (x) => x > 0)}")
 writeLine("${any(xs, (x) => x == 20)}")
@@ -170,8 +170,8 @@ writeLine("${find(xs, (x) => x == 99)}")
 writeLine("${indexOf(xs, 20)}")
 writeLine("${indexOf(xs, 99)}")
 writeLine("${indexOf(empty, 1)}")
-writeLine("${map(xs, (x) => x + 1)}")
-writeLine("${map(empty, (x) => x + 1)}")
+writeLine("${xs.map((x) => x + 1)}")
+writeLine("${empty.map((x) => x + 1)}")
 writeLine("${flatMap(xs, (x) => [x, x + 1])}")
 writeLine("${flatMap(empty, (x) => [x])}")
 writeLine("${flatMap(xs, (_) => [])}")
@@ -182,7 +182,7 @@ writeLine("${reverse(empty)}")
 writeLine("${concat([1], [2, 3])}")
 writeLine("${concat(empty, xs)}")
 writeLine("${concat(xs, empty)}")
-writeLine("${map(filter(xs, (x) => x > 15), (x) => x / 10)}")
+writeLine("${filter(xs, (x) => x > 15).map((x) => x / 10)}")
 writeLine("${take(xs, 2)}")
 writeLine("${take(xs, 0)}")
 writeLine("${take(xs, -1)}")
@@ -221,13 +221,13 @@ writeLine("${sortWith(empty, (a, b) => a < b)}")
 pairs = [{k: 2, id: 1}, {k: 1, id: 2}, {k: 2, id: 3}]
 writeLine("${sortWith(pairs, (a, b) => a.k < b.k)}")
 users = [{name: "bob", age: 30}, {name: "alice", age: 25}, {name: "carol", age: 30}]
-writeLine("${sortBy(users, (u) => u.age)}")
-writeLine("${sortBy([{age: 1}, {age: 2}], (u) => u.age)}")
+writeLine("${users.sortBy((u) => u.age)}")
+writeLine("${[{age: 1}, {age: 2}].sortBy((u) => u.age)}")
 emptyUsers: Array({age: Int}) = []
-writeLine("${sortBy(emptyUsers, (u) => u.age)}")
-writeLine("${sortBy(pairs, (u) => u.k)}")
-writeLine("${minimum(xs)}")
-writeLine("${minimum(empty)}")
+writeLine("${emptyUsers.sortBy((u) => u.age)}")
+writeLine("${pairs.sortBy((u) => u.k)}")
+writeLine("${xs.minimum()}")
+writeLine("${empty.minimum()}")
 writeLine("${maximum(xs)}")
 writeLine("${maximum(empty)}")
 "#,

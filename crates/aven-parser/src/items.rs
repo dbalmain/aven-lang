@@ -1,4 +1,6 @@
-use crate::parser::{Binding, Expr, Item, PatternBinding, Signature, SpreadBinding};
+use crate::parser::{
+    Binding, Expr, Item, MethodAttachment, PatternBinding, Signature, SpreadBinding,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergedItem<'a> {
@@ -8,6 +10,7 @@ pub enum MergedItem<'a> {
     },
     PatternBinding(&'a PatternBinding),
     SpreadBinding(&'a SpreadBinding),
+    MethodAttachment(&'a MethodAttachment),
     Signature(&'a Signature),
     Expr(&'a Expr),
 }
@@ -58,6 +61,10 @@ impl<'a> Iterator for MergedItems<'a> {
             Item::SpreadBinding(binding) => {
                 self.index += 1;
                 Some(MergedItem::SpreadBinding(binding))
+            }
+            Item::MethodAttachment(attachment) => {
+                self.index += 1;
+                Some(MergedItem::MethodAttachment(attachment))
             }
             Item::Expr(expr) => {
                 self.index += 1;

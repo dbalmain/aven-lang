@@ -277,6 +277,7 @@ pub(crate) fn declared_annotation_for_declaration<'a>(
             Item::Binding(_)
             | Item::PatternBinding(_)
             | Item::SpreadBinding(_)
+            | Item::MethodAttachment(_)
             | Item::Signature(_)
             | Item::Expr(_) => {}
         }
@@ -298,6 +299,7 @@ pub(crate) fn binding_for_declaration<'a>(
         Item::Binding(_)
         | Item::PatternBinding(_)
         | Item::SpreadBinding(_)
+        | Item::MethodAttachment(_)
         | Item::Signature(_)
         | Item::Expr(_) => None,
     })

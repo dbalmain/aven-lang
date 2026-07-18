@@ -1391,6 +1391,8 @@ impl<'a> Checker<'a> {
         // access propagates the emptiness (`?.email : ?Text`).
         let resolved = self.normalize(&self.unifier.resolve(&receiver_type));
         if let Some(signature) = self.exact_method_signature(&resolved, field) {
+            self.push_method_obligations_at(signature.predicates, field_span);
+            self.simplify_method_obligations(false);
             return Type::Function {
                 required: signature.params.len(),
                 params: signature.params,
@@ -1692,7 +1694,10 @@ impl<'a> Checker<'a> {
         else {
             return None;
         };
-        let probed = self.probe_receiver_type(env, receiver);
+        // Receiver-first selection: establish the exact owner and instantiate
+        // its qualified method scheme before looking at any explicit argument.
+        let candidate = self.infer(env, receiver);
+        let probed = self.normalize(&self.resolve_and_default(&candidate));
         let known = self.exact_method_signature(&probed, field);
         let constrained = self
             .method_assumption_scopes
@@ -1703,29 +1708,55 @@ impl<'a> Checker<'a> {
                 assumption.member == *field
                     && self.normalize(&self.unifier.resolve(&assumption.candidate)) == probed
             });
+        if known.is_none()
+            && !constrained
+            && let Some(required) = self.attached_builtin_method_required_owner(&probed, field)
+        {
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "`{field}` requires receiver `{}`",
+                    required.render()
+                ))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    *field_span,
+                    format!("receiver is `{}`", probed.render()),
+                ))
+                .with_note(
+                    "fixed owner-pattern components never infer an unresolved receiver type",
+                ),
+            );
+            for arg in args {
+                self.infer(env, arg);
+            }
+            return Some(Type::Deferred);
+        }
         if known.is_none() && !constrained {
             return None;
         }
 
-        let candidate = self.infer(env, receiver);
+        if let Some(signature) = known {
+            self.push_method_obligations_at(signature.predicates, *field_span);
+            if signature.params.len() != args.len() {
+                self.report_function_arity_mismatch(
+                    signature.params.len(),
+                    signature.params.len(),
+                    args.len(),
+                    callee.span,
+                );
+            } else {
+                for (expected, arg) in signature.params.iter().zip(args) {
+                    self.check_call_arg_against_param(expected, arg);
+                }
+            }
+            self.simplify_method_obligations(false);
+            return Some(self.resolve_and_default(&signature.result));
+        }
+
         let arg_types = args
             .iter()
             .map(|arg| self.infer(env, arg))
             .collect::<Vec<_>>();
-        if let Some(signature) = known {
-            if signature.params.len() != arg_types.len() {
-                self.report_function_arity_mismatch(
-                    signature.params.len(),
-                    signature.params.len(),
-                    arg_types.len(),
-                    callee.span,
-                );
-            } else {
-                self.check_call_arg_types_against_params(args, &arg_types, &signature.params);
-            }
-            return Some(signature.result);
-        }
-
         let result = self.unifier.fresh();
         self.push_new_method_obligations([MethodPredicate {
             candidate,
@@ -3094,6 +3125,17 @@ impl<'a> Checker<'a> {
             };
         }
 
+        if name == aven_parser::METHOD_RECEIVER_NAME {
+            if self.report_unbound_names && self.reported_unbound_name_spans.insert(span) {
+                self.diagnostics.push(
+                    Diagnostic::error("receiver focus `.` is only available inside a method body")
+                        .with_code(codes::name::UNBOUND)
+                        .with_label(Label::primary(span, "no hidden receiver is in scope")),
+                );
+            }
+            return Type::Deferred;
+        }
+
         if name_is_placeholder(name)
             || builtin_value_name_is_bound(name)
             || self.known_types.contains(name)
@@ -3325,6 +3367,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                MergedItem::MethodAttachment(_) => {}
                 MergedItem::Signature(signature) => {
                     let ty = self.lower_annotation_for_inference(&signature.annotation);
                     next_env.insert(signature.name.clone(), LocalValueType::Known(ty));

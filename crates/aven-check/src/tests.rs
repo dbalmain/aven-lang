@@ -10295,3 +10295,91 @@ fn record_equality_reports_each_provable_mismatch_once_and_recovers_to_bool() {
         );
     }
 }
+
+fn check_trusted_builtin_methods(source: &str) -> CheckOutput {
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let mut imports = ModuleImports::default();
+    imports.set_trusted_builtin_method_source(true);
+    check_module_with_host_globals_and_imports(&parsed.module, &HostGlobals::default(), &imports)
+}
+
+#[test]
+fn builtin_method_attachments_require_trusted_ambient_source() {
+    let parsed = parse_module("Array(a) { identity(): Array(a) => . }\n");
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.iter().any(|diagnostic| diagnostic.message
+        == "only trusted ambient modules may attach methods to builtin types"));
+}
+
+#[test]
+fn builtin_method_attachment_signatures_cross_declaration_boundaries() {
+    let check = check_trusted_builtin_methods(
+        "Array(a) { doubledLength(): Int => .lengthForTest() * 2 }\n\
+         Array(a) { lengthForTest(): Int => 1 }\n",
+    );
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(check.builtin_methods.methods().len(), 2);
+}
+
+#[test]
+fn overlapping_builtin_method_members_are_rejected() {
+    let check = check_trusted_builtin_methods(
+        "Array(a) { duplicate(): Int => 1 }\n\
+         Array(Int) { duplicate(): Int => 2 }\n",
+    );
+
+    assert!(check.diagnostics.iter().any(|diagnostic| diagnostic.message
+        == "builtin method `duplicate` has overlapping owner patterns"));
+}
+
+#[test]
+fn specialized_builtin_owner_does_not_infer_receiver_components() {
+    let ambient = check_trusted_builtin_methods("Array(Int) { total(): Int => 0 }\n");
+    assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
+    let parsed = parse_module("empty = []\nvalue = empty.total()\n");
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "`total` requires receiver `Array(Int)`")
+    );
+}
+
+#[test]
+fn bare_receiver_focus_is_scoped_to_method_bodies() {
+    let parsed = parse_module("value = .\n");
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.iter().any(|diagnostic| diagnostic.message
+        == "receiver focus `.` is only available inside a method body"));
+}
+
+#[test]
+fn annotated_builtin_method_slot_conversion_reports_sol_b_boundary() {
+    let ambient = check_trusted_builtin_methods("Array(a) { count(): Int => 0 }\n");
+    let parsed = parse_module("slots: { count(): Int } = [1]\n");
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(
+        check.diagnostics.iter().any(|diagnostic| diagnostic.message
+            == "builtin method-slot reification is not available yet")
+    );
+}

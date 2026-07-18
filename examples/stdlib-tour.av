@@ -12,7 +12,7 @@ writeLine("slice(xs, 2, 5)     = ${array.slice(xs, 2, 5)}")
 writeLine("zip with letters    = ${array.zip(array.take(xs, 3), ["a", "b", "c"])}")
 writeLine("flatMap double      = ${array.flatMap(array.take(xs, 3), (x) => [x, x * 10])}")
 writeLine("sortWith descending = ${array.sortWith(xs, (a, b) => a > b)}")
-writeLine("minimum/maximum     = ${array.minimum(xs)} ${array.maximum(xs)}")
+writeLine("minimum/maximum     = ${xs.minimum()} ${array.maximum(xs)}")
 
 # --- std/map -----------------------------------------------------------
 ages = map.fromEntries([("ada", 36), ("gus", 41), ("ada", 37)])

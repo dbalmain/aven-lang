@@ -1485,25 +1485,20 @@ fn std_array_ordered_constraints_cross_module_boundaries_and_run() {
     let dir = TempDir::new("std-array-ordered");
     write(
         dir.path(),
-        "mid.av",
-        "{ sortBy } = import(\"std/array\")\n{ sortBy }\n",
-    );
-    write(
-        dir.path(),
         "good.av",
         concat!(
-            "array = import(\"std/array\")\n",
-            "{ sortBy } = import(\"./mid\")\n",
-            "ints = sortBy([{ key: 3 }, { key: 1 }, { key: 2 }], (item) => item.key)\n",
-            "floats = array.sortBy([{ key: 2.5 }, { key: 1.5 }], (item) => item.key)\n",
-            "smallest: ?Float = array.minimum([3.5, 1.5, 2.5])\n",
-            "largest: ?Float = array.maximum([3.5, 1.5, 2.5])\n",
+            "ints = [{ key: 3 }, { key: 1 }, { key: 2 }].sortBy((item) => item.key)\n",
+            "floats = [{ key: 2.5 }, { key: 1.5 }].sortBy((item) => item.key)\n",
+            "smallest: ?Float = [3.5, 1.5, 2.5].minimum()\n",
+            "{ maximum } = import(\"std/array\")\n",
+            "largest: ?Float = maximum([3.5, 1.5, 2.5])\n",
             "{ ints, floats, smallest, largest }\n",
         ),
     );
     let good_path = dir.path().join("good.av");
     let roots = ModuleRoots::discover(&good_path)
-        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library());
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
     let checked =
         check_path_with_host_globals_and_roots(&good_path, &HostGlobals::default(), &roots)
             .expect("ordered std calls should check");
@@ -1577,56 +1572,44 @@ fn imported_constrained_projection_from_named_family_field_checks_and_runs() {
 #[test]
 fn std_array_sort_by_rejects_unsupported_text_keys_at_importer_calls() {
     let dir = TempDir::new("std-array-unordered");
+    let file = "field.av";
     write(
         dir.path(),
-        "mid.av",
-        "{ sortBy } = import(\"std/array\")\n{ sortBy }\n",
+        file,
+        "[{ key: \"b\" }, { key: \"a\" }].sortBy((item) => item.key)\n",
     );
-    for (file, source) in [
-        (
-            "field.av",
-            "array = import(\"std/array\")\narray.sortBy([{ key: \"b\" }, { key: \"a\" }], (item) => item.key)\n",
-        ),
-        (
-            "pattern.av",
-            "{ sortBy } = import(\"./mid\")\nsortBy([{ key: \"b\" }, { key: \"a\" }], (item) => item.key)\n",
-        ),
-    ] {
-        write(dir.path(), file, source);
-        let path = dir.path().join(file);
-        let roots = ModuleRoots::discover(&path)
-            .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library());
-        let checked =
-            check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
-                .expect("unsupported key should produce a checker diagnostic");
-        let messages = checked
-            .reports
+    let path = dir.path().join(file);
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+    let checked = check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+        .expect("unsupported key should produce a checker diagnostic");
+    let messages = checked
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("`Text` does not satisfy") && message.contains("method `<` is missing")
+        }),
+        "expected qualified Ordered failure in {file}, got {:#?}",
+        checked.reports
+    );
+    assert_has_code(&checked.reports, codes::ty::INVALID_OPERATOR_OPERANDS);
+
+    let ran = eval_path_with_globals_and_roots(&path, vec![], &roots)
+        .expect("run should stop at the qualified checker diagnostic");
+    assert_has_code(&ran.reports, codes::ty::INVALID_OPERATOR_OPERANDS);
+    assert!(
+        !ran.reports
             .iter()
             .flat_map(|report| &report.diagnostics)
-            .map(|diagnostic| diagnostic.message.as_str())
-            .collect::<Vec<_>>();
-        assert!(
-            messages.iter().any(|message| {
-                message.contains("`Text` does not satisfy")
-                    && message.contains("method `<` is missing")
-            }),
-            "expected qualified Ordered failure in {file}, got {:#?}",
-            checked.reports
-        );
-        assert_has_code(&checked.reports, codes::ty::INVALID_OPERATOR_OPERANDS);
-
-        let ran = eval_path_with_globals_and_roots(&path, vec![], &roots)
-            .expect("run should stop at the qualified checker diagnostic");
-        assert_has_code(&ran.reports, codes::ty::INVALID_OPERATOR_OPERANDS);
-        assert!(
-            !ran.reports
-                .iter()
-                .flat_map(|report| &report.diagnostics)
-                .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::runtime::TYPE_ERROR)),
-            "unsupported key must not reach runtime in {file}: {:#?}",
-            ran.reports
-        );
-    }
+            .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::runtime::TYPE_ERROR)),
+        "unsupported key must not reach runtime in {file}: {:#?}",
+        ran.reports
+    );
 }
 
 #[test]
@@ -1636,8 +1619,6 @@ fn named_family_operator_provider_satisfies_std_minimum_and_runs() {
         dir.path(),
         "main.av",
         concat!(
-            "{ minimum } = import(\"std/array\")\n",
-            "\n",
             "RankRow = {\n",
             "  value: Int\n",
             "\n",
@@ -1647,17 +1628,18 @@ fn named_family_operator_provider_satisfies_std_minimum_and_runs() {
             "\n",
             "RowRank = RankRow\n",
             "\n",
-            "lowest = minimum([\n",
+            "lowest = [\n",
             "  RankRow({ value: 3 })\n",
             "  RowRank({ value: 1 })\n",
-            "])\n",
+            "].minimum()\n",
             "\n",
             "{ lowest }\n",
         ),
     );
     let path = dir.path().join("main.av");
     let roots = ModuleRoots::discover(&path)
-        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library());
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
     let globals = aven_host::standard_check_host_globals();
 
     let checked = check_path_with_host_globals_and_roots(&path, &globals, &roots)
@@ -1769,17 +1751,17 @@ fn named_family_descriptor_crosses_module_boundary() {
         "main.av",
         concat!(
             "{ RankRow } = import(\"./rank\")\n",
-            "{ minimum } = import(\"std/array\")\n",
-            "lowest = minimum([\n",
+            "lowest = [\n",
             "  RankRow({ value: 4 })\n",
             "  RankRow({ value: 2 })\n",
-            "])\n",
+            "].minimum()\n",
             "{ lowest }\n",
         ),
     );
     let path = dir.path().join("main.av");
     let roots = ModuleRoots::discover(&path)
-        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library());
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
     let globals = aven_host::standard_check_host_globals();
 
     let checked = check_path_with_host_globals_and_roots(&path, &globals, &roots)
@@ -1792,6 +1774,48 @@ fn named_family_descriptor_crosses_module_boundary() {
     assert_eq!(
         ran.value.as_ref().map(ToString::to_string),
         Some("{ lowest: { value: 2 } }".to_owned())
+    );
+}
+
+#[test]
+fn ambient_sort_by_is_receiver_first_for_named_rank_and_bound_values_run() {
+    let dir = TempDir::new("builtin-method-rank");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Rank = {\n",
+            "  label: Text\n",
+            "  score: Int\n",
+            "\n",
+            "  <(other: Rank): Bool => .score < other.score\n",
+            "}\n",
+            "ranks = [\n",
+            "  Rank({ label: \"silver\", score: 2 })\n",
+            "  Rank({ label: \"gold\", score: 1 })\n",
+            "]\n",
+            "sortRanks = ranks.sortBy\n",
+            "sorted = sortRanks((rank) => rank.score)\n",
+            "labels = sorted.map((rank) => rank.label)\n",
+            "getLength = labels.length\n",
+            "{ labels, length: getLength() }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+
+    let checked = check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+        .expect("receiver-first ambient methods should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals_and_roots(&path, vec![], &roots)
+        .expect("bound ambient methods should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ labels: [\"gold\", \"silver\"], length: 2 }".to_owned())
     );
 }
 

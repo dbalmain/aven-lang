@@ -81,6 +81,7 @@ struct DocumentSemanticAnalysis {
     inferred_types: Vec<aven_compiler::InferredType>,
     type_definitions: HashMap<String, aven_compiler::Type>,
     recursive_type_unfoldings: HashMap<aven_compiler::RecursiveTypeId, aven_compiler::Type>,
+    builtin_methods: aven_compiler::BuiltinMethodEnvironment,
     module_graph: Option<DocumentModuleGraph>,
 }
 
@@ -139,10 +140,13 @@ impl DocumentStore {
         let Some(document) = self.database.set_semantic(
             uri,
             revision,
-            analysis.diagnostics,
-            analysis.inferred_types,
-            analysis.type_definitions,
-            analysis.recursive_type_unfoldings,
+            aven_compiler::DocumentSemantics {
+                diagnostics: analysis.diagnostics,
+                inferred_types: analysis.inferred_types,
+                type_definitions: analysis.type_definitions,
+                recursive_type_unfoldings: analysis.recursive_type_unfoldings,
+                builtin_methods: analysis.builtin_methods,
+            },
         ) else {
             return false;
         };
@@ -518,7 +522,7 @@ async fn publish_semantic_diagnostics(
 fn analyze_document_semantics(document: &ParsedDocument) -> aven_compiler::SemanticOutput {
     // Single-file: public surface only (no bare capability globals).
     let globals = aven_host::standard_public_check_host_globals();
-    aven_compiler::analyze_semantics_with_host_globals(document.parse_output(), &globals)
+    analyze_pathless_semantics(document, &globals)
 }
 
 fn analyze_document_semantics_for_uri(
@@ -535,17 +539,44 @@ fn analyze_document_semantics_for_uri(
 
     // Pathless/untitled: public surface only — no bare `now`/`zone`.
     let public_globals = aven_host::standard_public_check_host_globals();
-    let semantic = aven_compiler::analyze_semantics_with_host_globals(
-        document.parse_output(),
-        &public_globals,
-    );
+    let semantic = analyze_pathless_semantics(document, &public_globals);
     DocumentSemanticAnalysis {
         diagnostics: semantic.diagnostics,
         inferred_types: semantic.inferred_types,
         type_definitions: semantic.type_definitions,
         recursive_type_unfoldings: semantic.recursive_type_unfoldings,
+        builtin_methods: semantic.builtin_methods,
         module_graph: None,
     }
+}
+
+/// Build the same sealed ambient method environment used by the file-backed
+/// module graph, then attach it to the pathless document as a synthetic
+/// package dependency. Std helpers and exports never enter the document scope.
+fn analyze_pathless_semantics(
+    document: &ParsedDocument,
+    globals: &aven_compiler::HostGlobals,
+) -> aven_compiler::SemanticOutput {
+    let library = aven_host::standard_std_library();
+    let source = library
+        .get("std/array")
+        .expect("the standard library registers its ambient array module");
+    let ambient_parse = aven_parser::parse_module(source);
+    let mut ambient_imports = aven_compiler::CheckModuleImports::default();
+    ambient_imports.set_trusted_builtin_method_source(true);
+    let ambient = aven_compiler::analyze_semantics_with_host_globals_and_imports(
+        &ambient_parse,
+        globals,
+        &ambient_imports,
+    );
+
+    let mut imports = aven_compiler::CheckModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    aven_compiler::analyze_semantics_with_host_globals_and_imports(
+        document.parse_output(),
+        globals,
+        &imports,
+    )
 }
 
 /// Module roots for file-backed documents: filesystem discovery plus the
@@ -556,6 +587,7 @@ fn discover_module_roots(entry: &Path) -> aven_compiler::ModuleRoots {
             aven_host::STD_LIBRARY_NAME,
             aven_host::standard_std_library(),
         )
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
         .with_library_only_global_names(aven_host::standard_library_only_global_names())
 }
 
@@ -593,6 +625,7 @@ fn module_semantics_for_document(
     let inferred_types = entry_node.semantic.inferred_types.clone();
     let type_definitions = entry_node.semantic.type_definitions.clone();
     let recursive_type_unfoldings = entry_node.semantic.recursive_type_unfoldings.clone();
+    let builtin_methods = entry_node.semantic.builtin_methods.clone();
     let module_graph = module_graph_cache(document.revision(), entry_path, output.nodes);
 
     Some(DocumentSemanticAnalysis {
@@ -600,6 +633,7 @@ fn module_semantics_for_document(
         inferred_types,
         type_definitions,
         recursive_type_unfoldings,
+        builtin_methods,
         module_graph: Some(module_graph),
     })
 }
@@ -1352,6 +1386,10 @@ fn receiver_field_completion_fields(
     }
 
     let mut fields = aven_compiler::record_fields(&receiver_type).unwrap_or_default();
+    fields.extend(aven_compiler::builtin_method_fields(
+        document.builtin_methods(),
+        &receiver_type,
+    ));
     if aven_compiler::is_text_type(&receiver_type)
         && !fields.iter().any(|field| field.name == "decode")
     {
@@ -1446,6 +1484,7 @@ fn construction_binding_in_item_at_position(
         aven_parser::Item::SpreadBinding(binding) => {
             construction_binding_in_expr_at_position(&binding.value, target)
         }
+        aven_parser::Item::MethodAttachment(_) => None,
         aven_parser::Item::Binding(_) | aven_parser::Item::Signature(_) => None,
         aven_parser::Item::Expr(expr) => construction_binding_in_expr_at_position(expr, target),
     }
@@ -1905,6 +1944,11 @@ fn collect_item_call_callee_label_span(
         aven_parser::Item::SpreadBinding(binding) => {
             collect_expr_call_callee_label_span(&binding.value, open_start, found);
         }
+        aven_parser::Item::MethodAttachment(attachment) => {
+            collect_expr_call_callee_label_span(&attachment.owner, open_start, found);
+            let record = method_attachment_record(attachment);
+            collect_expr_call_callee_label_span(&record, open_start, found);
+        }
         aven_parser::Item::Signature(signature) => {
             collect_expr_call_callee_label_span(&signature.annotation, open_start, found);
         }
@@ -2012,6 +2056,10 @@ fn collect_inlay_hints_in_items(
             }
             aven_parser::Item::SpreadBinding(binding) => {
                 collect_inlay_hints_in_expr(document, &binding.value, range, hints);
+            }
+            aven_parser::Item::MethodAttachment(attachment) => {
+                let record = method_attachment_record(attachment);
+                collect_inlay_hints_in_expr(document, &record, range, hints);
             }
             aven_parser::Item::Signature(_) => {}
             aven_parser::Item::Expr(expr) => {
@@ -2758,10 +2806,22 @@ fn collect_item_expr_span_at(item: &aven_parser::Item, target: Span, found: &mut
         aven_parser::Item::SpreadBinding(binding) => {
             collect_expr_span_at(&binding.value, target, found);
         }
+        aven_parser::Item::MethodAttachment(attachment) => {
+            collect_expr_span_at(&attachment.owner, target, found);
+            let record = method_attachment_record(attachment);
+            collect_expr_span_at(&record, target, found);
+        }
         aven_parser::Item::Signature(signature) => {
             collect_expr_span_at(&signature.annotation, target, found);
         }
         aven_parser::Item::Expr(expr) => collect_expr_span_at(expr, target, found),
+    }
+}
+
+fn method_attachment_record(attachment: &aven_parser::MethodAttachment) -> aven_parser::Expr {
+    aven_parser::Expr {
+        kind: aven_parser::ExprKind::Record(attachment.members.clone()),
+        span: attachment.span,
     }
 }
 
@@ -2896,12 +2956,21 @@ fn field_type_for_access(
         return Some(ty.clone());
     }
 
-    let fields = definition_span_for_identifier(document, &access.receiver)
+    let receiver_type = definition_span_for_identifier(document, &access.receiver)
         .and_then(|span| document.type_at(span).cloned())
         .or_else(|| host_global_type(&access.receiver.name))
-        .map(|ty| document.unfold_recursive_type_once(&ty))
+        .map(|ty| document.unfold_recursive_type_once(&ty));
+    let fields = receiver_type
         .as_ref()
-        .and_then(aven_compiler::record_fields)
+        .map(|receiver| {
+            let mut fields = aven_compiler::record_fields(receiver).unwrap_or_default();
+            fields.extend(aven_compiler::builtin_method_fields(
+                document.builtin_methods(),
+                receiver,
+            ));
+            fields
+        })
+        .filter(|fields| !fields.is_empty())
         .or_else(|| type_statics_fields(&access.receiver.name))?;
 
     fields

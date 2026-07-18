@@ -704,6 +704,7 @@ pub fn stdio_handle_type() -> Type {
 
 /// The library name the embedded standard library registers under.
 pub const STD_LIBRARY_NAME: &str = "std";
+pub const STD_AMBIENT_METHOD_MODULES: &[&str] = &["std/array"];
 
 /// Embedded standard-library sources, keyed by module specifier. std is
 /// written in Aven and only puns host-registered natives, so registering this

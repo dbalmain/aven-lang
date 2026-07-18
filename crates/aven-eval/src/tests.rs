@@ -1,6 +1,9 @@
 use super::{
-    Environment, EvalOutcome, ModuleImports, RuntimeType, Value, eval_expr, eval_module,
-    eval_module_with_globals, eval_module_with_globals_and_imports, logging, record_field_value,
+    BuiltinMethodEnvironment, Environment, EvalOutcome, ModuleImports, RuntimeType,
+    RuntimeTypeBindings, Value, eval_expr, eval_module, eval_module_with_globals,
+    eval_module_with_globals_and_imports,
+    eval_module_with_globals_imports_runtime_types_and_builtin_methods, logging,
+    record_field_value,
 };
 use aven_core::codes;
 use aven_parser::{Item, Module, parse_module};
@@ -1025,13 +1028,21 @@ fn map_grouping_example_runs() {
 fn std_array_combinators_run_via_import() {
     let array_source = include_str!("../../aven-host/std/array.av");
     let array_module = parse_ok(array_source);
-    let array_export = eval_module(&array_module)
-        .value
-        .expect("std/array should export a record");
+    let builtin_methods = BuiltinMethodEnvironment::default();
+    let array_export = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+        &array_module,
+        Vec::new(),
+        &ModuleImports::default(),
+        &RuntimeTypeBindings::default(),
+        &builtin_methods,
+        true,
+    )
+    .value
+    .expect("std/array should export a record");
 
     let imports = ModuleImports::new([("std/array".to_owned(), array_export)]);
     let source = concat!(
-        "{ length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf, map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, sortBy, minimum, maximum } = import(\"std/array\")\n",
+        "{ isEmpty, first, last, fold, count, all, any, find, indexOf, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, maximum } = import(\"std/array\")\n",
         "xs = [10, 20, 30]\n",
         "empty = []\n",
         "zero: Int = 0\n",
@@ -1039,14 +1050,14 @@ fn std_array_combinators_run_via_import() {
         "users = [{name: \"bob\", age: 30}, {name: \"alice\", age: 25}, {name: \"carol\", age: 30}]\n",
         "emptyUsers: Array({age: Int}) = []\n",
         "{\n",
-        "  length: length(xs),\n",
+        "  length: xs.length(),\n",
         "  isEmpty: isEmpty(empty),\n",
         "  first: first(xs),\n",
         "  firstEmpty: first(empty),\n",
         "  last: last(xs),\n",
         "  lastEmpty: last(empty),\n",
         "  fold: fold(xs, zero, (acc, x) => acc + x),\n",
-        "  sum: sum([1, 2, 3]),\n",
+        "  sum: [1, 2, 3].sum(),\n",
         "  count: count(xs, (x) => x > 15),\n",
         "  all: all(xs, (x) => x > 0),\n",
         "  any: any(xs, (x) => x == 20),\n",
@@ -1055,8 +1066,8 @@ fn std_array_combinators_run_via_import() {
         "  indexOfHit: indexOf(xs, 20),\n",
         "  indexOfMiss: indexOf(xs, 99),\n",
         "  indexOfEmpty: indexOf(empty, 1),\n",
-        "  map: map(xs, (x) => x + 1),\n",
-        "  mapEmpty: map(empty, (x) => x + 1),\n",
+        "  map: xs.map((x) => x + 1),\n",
+        "  mapEmpty: empty.map((x) => x + 1),\n",
         "  flatMap: flatMap(xs, (x) => [x, x + 1]),\n",
         "  flatMapEmpty: flatMap(empty, (x) => [x]),\n",
         "  flatMapToEmpty: flatMap(xs, (_) => []),\n",
@@ -1067,7 +1078,7 @@ fn std_array_combinators_run_via_import() {
         "  concat: concat([1], [2, 3]),\n",
         "  concatLeftEmpty: concat(empty, xs),\n",
         "  concatRightEmpty: concat(xs, empty),\n",
-        "  composed: map(filter(xs, (x) => x > 15), (x) => x / 10),\n",
+        "  composed: filter(xs, (x) => x > 15).map((x) => x / 10),\n",
         "  take2: take(xs, 2),\n",
         "  take0: take(xs, 0),\n",
         "  takeNeg: take(xs, -1),\n",
@@ -1100,18 +1111,25 @@ fn std_array_combinators_run_via_import() {
         "  sort: sortWith([3, 1, 2], (a, b) => a < b),\n",
         "  sortEmpty: sortWith(empty, (a, b) => a < b),\n",
         "  sortStable: sortWith(pairs, (a, b) => a.k < b.k),\n",
-        "  sortByAge: sortBy(users, (u) => u.age),\n",
-        "  sortByAlready: sortBy([{age: 1}, {age: 2}], (u) => u.age),\n",
-        "  sortByEmpty: sortBy(emptyUsers, (u) => u.age),\n",
-        "  sortByStable: sortBy(pairs, (u) => u.k),\n",
-        "  minimum: minimum(xs),\n",
-        "  minimumEmpty: minimum(empty),\n",
+        "  sortByAge: users.sortBy((u) => u.age),\n",
+        "  sortByAlready: [{age: 1}, {age: 2}].sortBy((u) => u.age),\n",
+        "  sortByEmpty: emptyUsers.sortBy((u) => u.age),\n",
+        "  sortByStable: pairs.sortBy((u) => u.k),\n",
+        "  minimum: xs.minimum(),\n",
+        "  minimumEmpty: empty.minimum(),\n",
         "  maximum: maximum(xs),\n",
         "  maximumEmpty: maximum(empty),\n",
         "}\n",
     );
     let module = parse_ok(source);
-    let outcome = eval_module_with_globals_and_imports(&module, Vec::new(), &imports);
+    let outcome = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+        &module,
+        Vec::new(),
+        &imports,
+        &RuntimeTypeBindings::default(),
+        &builtin_methods,
+        false,
+    );
 
     assert_eq!(
         outcome,

@@ -24,7 +24,7 @@ Mixed = {
   doubled(): Int =>
     .value * 2
 
-  tripled(): Int =>.value * 3
+  tripled(): Int => .value * 3
 
   label: Text
 }

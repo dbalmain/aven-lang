@@ -111,6 +111,12 @@ fn collect_item_inline_matches(
         Item::SpreadBinding(binding) => {
             collect_expr_inline_matches(&binding.value, line_starts, tokens, matches);
         }
+        Item::MethodAttachment(attachment) => {
+            collect_expr_inline_matches(&attachment.owner, line_starts, tokens, matches);
+            for member in &attachment.members {
+                collect_record_entry_inline_matches(member, line_starts, tokens, matches);
+            }
+        }
         Item::Signature(signature) => {
             collect_expr_inline_matches(&signature.annotation, line_starts, tokens, matches);
         }
@@ -154,6 +160,54 @@ fn collect_expr_inline_matches(
     walk_expr_children(expr, &mut |child| {
         collect_expr_inline_matches(child, line_starts, tokens, matches);
     });
+}
+
+fn collect_record_entry_inline_matches(
+    entry: &RecordEntry,
+    line_starts: &[usize],
+    tokens: &[Token],
+    matches: &mut Vec<InlineMatchLayout>,
+) {
+    let mut collect = |expr: &Expr| {
+        collect_expr_inline_matches(expr, line_starts, tokens, matches);
+    };
+    match entry {
+        RecordEntry::Field { value, .. }
+        | RecordEntry::Method { value, .. }
+        | RecordEntry::Spread { value, .. }
+        | RecordEntry::DeleteComputed { key: value, .. }
+        | RecordEntry::Element(value) => collect(value),
+        RecordEntry::FieldComputed { key, value, .. } => {
+            collect(key);
+            collect(value);
+        }
+        RecordEntry::FieldDefault {
+            annotation,
+            default,
+            ..
+        } => {
+            collect(annotation);
+            collect(default);
+        }
+        RecordEntry::Iteration {
+            source,
+            guard,
+            body,
+            ..
+        } => {
+            collect(source);
+            if let Some(guard) = guard {
+                collect(guard);
+            }
+            for member in body {
+                collect_record_entry_inline_matches(member, line_starts, tokens, matches);
+            }
+        }
+        RecordEntry::Shorthand { .. }
+        | RecordEntry::Delete { .. }
+        | RecordEntry::Rename { .. }
+        | RecordEntry::Open { .. } => {}
+    }
 }
 
 fn inline_match_layout(
@@ -429,7 +483,7 @@ fn needs_space(
         || is_close_paren_or_bracket(current)
         || is_tight_set_postfix_marker(previous, current, next)
         || is_tight_postfix_operator(current, Some(previous))
-        || is_tight_access_operator(current)
+        || (is_tight_access_operator(current) && !is_bare_receiver_after(previous))
         || is_colon(current)
     {
         return false;
@@ -475,6 +529,10 @@ fn needs_space(
     }
 
     true
+}
+
+fn is_bare_receiver_after(previous: &Token) -> bool {
+    is_binary_operator(previous) || is_separator(previous)
 }
 
 fn needs_space_before_open_delimiter(previous: &Token, current: &Token) -> bool {
@@ -640,6 +698,12 @@ fn collect_item_field_names<'a>(item: &'a Item, spans: &mut HashMap<Span, &'a st
             collect_expr_field_names(&binding.value, spans);
         }
         Item::SpreadBinding(binding) => collect_expr_field_names(&binding.value, spans),
+        Item::MethodAttachment(attachment) => {
+            collect_expr_field_names(&attachment.owner, spans);
+            for member in &attachment.members {
+                collect_record_entry_field_names(member, spans);
+            }
+        }
         Item::Signature(signature) => collect_expr_field_names(&signature.annotation, spans),
         Item::Expr(expr) => collect_expr_field_names(expr, spans),
     }
@@ -855,5 +919,25 @@ mod tests {
                     .to_owned()
             )
         );
+    }
+
+    #[test]
+    fn formats_method_attachment_blocks_and_bare_receiver() {
+        let formatted = concat!(
+            "Array(Array(a)) {\n",
+            "  flattenOne(): Array(a) =>\n",
+            "    .[0]\n",
+            "\n",
+            "  self(): Array(Array(a)) => .\n",
+            "}\n",
+        );
+
+        assert_eq!(
+            format_source(
+                "Array(Array(a)){\n    flattenOne():Array(a)=>\n        .[0]\n\n    self():Array(Array(a))=>.\n}\n"
+            ),
+            Ok(formatted.to_owned())
+        );
+        assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
     }
 }

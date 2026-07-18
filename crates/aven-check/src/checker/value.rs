@@ -177,6 +177,14 @@ impl<'a> Checker<'a> {
         if self.exact_method_signature(&receiver_type, field).is_some() {
             return;
         }
+        if self
+            .attached_builtin_method_required_owner(&receiver_type, field)
+            .is_some()
+        {
+            // The enclosing call inference reports the owner-pattern mismatch
+            // after its receiver-first lookup.
+            return;
+        }
         if builtin_collection_method_type(&receiver_type, field).is_some() {
             return;
         }

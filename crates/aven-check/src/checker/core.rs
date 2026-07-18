@@ -10,6 +10,9 @@ impl<'a> Checker<'a> {
             type_definitions,
             named_family_aliases: HashMap::new(),
             named_families: HashMap::new(),
+            builtin_methods: BuiltinMethodEnvironment::default(),
+            local_builtin_methods: Vec::new(),
+            trusted_builtin_method_source: false,
             zero_argument_type_bindings: HashSet::new(),
             prelowered_type_bindings: HashMap::new(),
             prelowered_type_module: comptime::ComptimeModuleIdentity::specifier("host"),
@@ -107,6 +110,8 @@ impl<'a> Checker<'a> {
         checker.module_identity = module_identity;
         checker.globals = globals.types.clone();
         checker.imports = imports.clone();
+        checker.builtin_methods = imports.builtin_methods.clone();
+        checker.trusted_builtin_method_source = imports.trusted_builtin_method_source;
         checker.seed_imported_named_families(module);
         checker.recursive_type_unfoldings = imports.recursive_type_unfoldings.clone();
         checker
@@ -136,6 +141,7 @@ impl<'a> Checker<'a> {
         checker.lower_module_type_definitions(module, &reserved_names);
         checker.canonicalize_named_family_aliases(module);
         checker.lower_named_family_methods(module);
+        checker.lower_builtin_method_attachments(module);
         checker.build_statics(globals);
         checker.collect_top_level_pattern_bindings(module);
         checker.build_value_types(module);
@@ -437,6 +443,218 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn lower_builtin_method_attachments(&mut self, module: &Module) {
+        for item in &module.items {
+            let Item::MethodAttachment(attachment) = item else {
+                continue;
+            };
+            if !self.trusted_builtin_method_source {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "only trusted ambient modules may attach methods to builtin types",
+                    )
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(
+                        attachment.owner.span,
+                        "untrusted builtin method attachment",
+                    ))
+                    .with_note(
+                        "builtin method sets are sealed after the host's ambient roots are checked",
+                    ),
+                );
+                continue;
+            }
+
+            let Some((owner, owner_variables)) =
+                self.lower_builtin_owner_pattern(&attachment.owner)
+            else {
+                continue;
+            };
+            let owner_variable_set = owner_variables.iter().cloned().collect::<HashSet<_>>();
+            self.rigid_type_var_scopes.push(owner_variable_set);
+            for member in &attachment.members {
+                let RecordEntry::Method {
+                    name,
+                    name_span,
+                    value,
+                    ..
+                } = member
+                else {
+                    continue;
+                };
+                let ExprKind::Lambda {
+                    params,
+                    return_annotation: Some(result),
+                    requirements,
+                    ..
+                } = &ungroup_expr(value).kind
+                else {
+                    continue;
+                };
+
+                let mut complete = true;
+                let params = params
+                    .iter()
+                    .filter_map(|param| {
+                        let Some(annotation) = &param.annotation else {
+                            self.diagnostics.push(
+                                Diagnostic::error(
+                                    "builtin method parameters must be explicitly typed",
+                                )
+                                .with_code(codes::ty::MISMATCH)
+                                .with_label(Label::primary(
+                                    param.name_span,
+                                    "missing parameter type",
+                                )),
+                            );
+                            complete = false;
+                            return None;
+                        };
+                        let lowered = self.lower_annotation(annotation);
+                        Some(self.normalize(&lowered))
+                    })
+                    .collect::<Vec<_>>();
+                if !complete {
+                    continue;
+                }
+                let lowered_result = self.lower_annotation(result);
+                let result = self.normalize(&lowered_result);
+                if let Some(variables) = self.rigid_type_var_scopes.last_mut() {
+                    for ty in params.iter().chain(std::iter::once(&result)) {
+                        variables.extend(type_variable_names(ty));
+                    }
+                }
+                let constraints = self
+                    .requirement_predicates(requirements)
+                    .into_iter()
+                    .map(|predicate| MethodConstraint {
+                        candidate: predicate.candidate,
+                        member: predicate.member,
+                        params: predicate.params,
+                        result: predicate.result,
+                    })
+                    .collect::<Vec<_>>();
+                let entry = BuiltinMethodType {
+                    owner: owner.clone(),
+                    owner_variables: owner_variables.clone(),
+                    member: name.clone(),
+                    params,
+                    result,
+                    constraints,
+                    owner_span: attachment.owner.span,
+                    member_span: *name_span,
+                };
+                if self.builtin_method_collides(&entry) {
+                    continue;
+                }
+                self.builtin_methods.extend([entry.clone()]);
+                self.local_builtin_methods.push(entry);
+            }
+            self.rigid_type_var_scopes.pop();
+        }
+    }
+
+    fn lower_builtin_owner_pattern(&mut self, owner: &Expr) -> Option<(Type, Vec<String>)> {
+        let lowered_owner = self.lower_annotation(owner);
+        let lowered = self.normalize(&lowered_owner);
+        let (head, args) = match &lowered {
+            Type::Named(head) => (head.as_str(), &[][..]),
+            Type::Apply { callee, args } => {
+                let Type::Named(head) = callee.as_ref() else {
+                    self.report_invalid_builtin_owner_pattern(owner.span);
+                    return None;
+                };
+                (head.as_str(), args.as_slice())
+            }
+            _ => {
+                self.report_invalid_builtin_owner_pattern(owner.span);
+                return None;
+            }
+        };
+        let Some(arity) = builtin_owner_arity(head) else {
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "`{head}` is not a compiler-known builtin method owner"
+                ))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(owner.span, "unsupported builtin owner")),
+            );
+            return None;
+        };
+        if args.len() != arity {
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "builtin owner `{head}` expects {arity} type argument(s)"
+                ))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    owner.span,
+                    format!("found {} argument(s)", args.len()),
+                )),
+            );
+            return None;
+        }
+        let mut variables = type_variable_names(&lowered)
+            .into_iter()
+            .collect::<Vec<_>>();
+        variables.sort();
+        Some((lowered, variables))
+    }
+
+    fn report_invalid_builtin_owner_pattern(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("builtin method attachments require a builtin owner pattern")
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(span, "invalid owner pattern"))
+                .with_note(
+                    "write a pattern such as `Array(a)`, `Array(Int)`, or `Array(Array(a))`",
+                ),
+        );
+    }
+
+    fn builtin_method_collides(&mut self, candidate: &BuiltinMethodType) -> bool {
+        let collision = self
+            .builtin_methods
+            .methods()
+            .iter()
+            .find(|entry| {
+                entry.member == candidate.member
+                    && builtin_owner_patterns_overlap(&entry.owner, &candidate.owner)
+            })
+            .cloned();
+        if let Some(existing) = collision {
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "builtin method `{}` has overlapping owner patterns",
+                    candidate.member
+                ))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    candidate.member_span,
+                    "colliding method declaration",
+                ))
+                .with_label(Label::primary(existing.member_span, "previous declaration")),
+            );
+            return true;
+        }
+
+        if intrinsic_builtin_method_collides(&candidate.owner, &candidate.member) {
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "builtin method `{}` conflicts with an intrinsic method",
+                    candidate.member
+                ))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    candidate.member_span,
+                    "intrinsic member already exists",
+                )),
+            );
+            return true;
+        }
+        false
+    }
+
     /// Assemble the statics table (compiler builtins + host-registered) into
     /// generalized schemes so each `Type.static` use instantiates fresh.
     fn build_statics(&mut self, globals: &HostGlobals) {
@@ -644,6 +862,9 @@ impl<'a> Checker<'a> {
                 Item::SpreadBinding(binding) => {
                     self.check_top_level_spread_binding(binding, &mut top_level_spread_names);
                 }
+                Item::MethodAttachment(attachment) => {
+                    self.check_builtin_method_attachment(attachment);
+                }
                 Item::Expr(expr) => {
                     if index + 1 != module.items.len() {
                         self.report_unused_result_if_dropped(&TypeEnv::new(), expr);
@@ -714,6 +935,12 @@ impl<'a> Checker<'a> {
         }
 
         if let Some(source) = declared_annotation {
+            if let Some(binding) = binding
+                && self
+                    .report_unavailable_builtin_slot_reification(source.annotation, &binding.value)
+            {
+                return;
+            }
             let declared_type = self.lower_annotation(source.annotation);
             let expected_type = self.normalize(&declared_type);
             self.record_inferred_type(declaration.name_span, declared_type);
@@ -860,6 +1087,142 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn check_builtin_method_attachment(&mut self, attachment: &aven_parser::MethodAttachment) {
+        if !self.trusted_builtin_method_source {
+            return;
+        }
+        let Some(entry_owner) = self
+            .local_builtin_methods
+            .iter()
+            .find(|entry| entry.owner_span == attachment.owner.span)
+            .map(|entry| entry.owner.clone())
+        else {
+            return;
+        };
+
+        for member in &attachment.members {
+            let RecordEntry::Method {
+                name,
+                name_span,
+                value,
+                ..
+            } = member
+            else {
+                self.diagnostics.push(
+                    Diagnostic::error("builtin method attachments contain only method members")
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            builtin_attachment_member_span(member),
+                            "unsupported attachment member",
+                        )),
+                );
+                continue;
+            };
+            let ExprKind::Lambda {
+                params,
+                requirements,
+                body,
+                ..
+            } = &ungroup_expr(value).kind
+            else {
+                self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "builtin method slot `{name}` requires a source implementation"
+                    ))
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(*name_span, "method signature has no body")),
+                );
+                continue;
+            };
+            let Some(signature) = self
+                .local_builtin_methods
+                .iter()
+                .find(|entry| entry.member_span == *name_span)
+                .cloned()
+            else {
+                continue;
+            };
+
+            let mut variables = type_variable_names(&entry_owner);
+            for ty in signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.result))
+            {
+                variables.extend(type_variable_names(ty));
+            }
+            self.rigid_type_var_scopes.push(variables);
+            let assumptions = self.requirement_predicates(requirements);
+            self.push_method_assumptions(assumptions);
+            self.local_types.push();
+            self.local_types.define(
+                aven_parser::METHOD_RECEIVER_NAME,
+                LocalValueType::Known(entry_owner.clone()),
+            );
+            for (param, ty) in params.iter().zip(&signature.params) {
+                self.local_types
+                    .define(&param.name, LocalValueType::Known(ty.clone()));
+                self.record_inferred_type(param.name_span, ty.clone());
+            }
+            let env = self.local_types.inference_env();
+            let marker = self.method_obligation_marker();
+            let actual = self.infer(&env, body);
+            let actual = self.normalize(&self.resolve_and_default(&actual));
+            self.check_type_against_type(&signature.result, &actual, body.span);
+            self.finish_non_generalizing_lambda_obligations(marker);
+            self.local_types.pop();
+            self.pop_method_assumptions();
+            self.rigid_type_var_scopes.pop();
+        }
+    }
+
+    fn report_unavailable_builtin_slot_reification(
+        &mut self,
+        annotation: &Expr,
+        value: &Expr,
+    ) -> bool {
+        let ExprKind::Record(entries) = &ungroup_expr(annotation).kind else {
+            return false;
+        };
+        let requested = entries
+            .iter()
+            .map(|entry| match entry {
+                RecordEntry::Method {
+                    name,
+                    value:
+                        Expr {
+                            kind: ExprKind::Arrow { .. },
+                            ..
+                        },
+                    ..
+                } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(requested) = requested.filter(|requested| !requested.is_empty()) else {
+            return false;
+        };
+        let env = self.local_types.inference_env();
+        let actual = self.infer(&env, value);
+        let actual = self.normalize(&self.resolve_and_default(&actual));
+        if requested
+            .iter()
+            .any(|member| self.exact_method_signature(&actual, member).is_none())
+        {
+            return false;
+        }
+        self.diagnostics.push(
+            Diagnostic::error("builtin method-slot reification is not available yet")
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    value.span,
+                    format!("cannot reify `{}` into method slots", actual.render()),
+                ))
+                .with_note("keep the builtin value at its concrete type until the Sol B reification slice lands"),
+        );
+        true
+    }
+
     pub(super) fn is_uppercase_comptime_function(&self, name: &str, value: &Expr) -> bool {
         name.chars().next().is_some_and(char::is_uppercase) && lambda_parts(value).is_some()
     }
@@ -897,6 +1260,13 @@ impl<'a> Checker<'a> {
                 }
                 MergedItem::SpreadBinding(binding) => {
                     self.check_local_spread_binding(binding);
+                }
+                MergedItem::MethodAttachment(attachment) => {
+                    self.diagnostics.push(
+                        Diagnostic::error("builtin method attachments are top-level declarations")
+                            .with_code(codes::ty::MISMATCH)
+                            .with_label(Label::primary(attachment.span, "nested attachment")),
+                    );
                 }
                 MergedItem::Signature(signature) => {
                     let ty = self.lower_normalized_annotation(&signature.annotation);
@@ -1690,5 +2060,98 @@ impl<'a> Checker<'a> {
         if is_resolved_value_type(&ty) {
             self.record_synthesized_type(span, &ty);
         }
+    }
+}
+
+fn builtin_owner_arity(name: &str) -> Option<usize> {
+    match name {
+        "Array" | "Set" => Some(1),
+        "Map" | "Result" => Some(2),
+        "Bool" | "Float" | "Int" | "Text" => Some(0),
+        _ => None,
+    }
+}
+
+fn builtin_attachment_member_span(member: &RecordEntry) -> Span {
+    match member {
+        RecordEntry::Field { span, .. }
+        | RecordEntry::FieldComputed { span, .. }
+        | RecordEntry::Method { span, .. }
+        | RecordEntry::FieldDefault { span, .. }
+        | RecordEntry::Shorthand { span, .. }
+        | RecordEntry::Spread { span, .. }
+        | RecordEntry::Delete { span, .. }
+        | RecordEntry::DeleteComputed { span, .. }
+        | RecordEntry::Rename { span, .. }
+        | RecordEntry::Iteration { span, .. }
+        | RecordEntry::Open { span } => *span,
+        RecordEntry::Element(expr) => expr.span,
+    }
+}
+
+fn builtin_owner_patterns_overlap(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (Type::Variable(_), _) | (_, Type::Variable(_)) => true,
+        (Type::Named(left), Type::Named(right)) => left == right,
+        (
+            Type::Apply {
+                callee: left_callee,
+                args: left_args,
+            },
+            Type::Apply {
+                callee: right_callee,
+                args: right_args,
+            },
+        ) => {
+            left_args.len() == right_args.len()
+                && builtin_owner_patterns_overlap(left_callee, right_callee)
+                && left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| builtin_owner_patterns_overlap(left, right))
+        }
+        (Type::Optional(left), Type::Optional(right))
+        | (Type::Nullable(left), Type::Nullable(right)) => {
+            builtin_owner_patterns_overlap(left, right)
+        }
+        (Type::Tuple(left), Type::Tuple(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| builtin_owner_patterns_overlap(left, right))
+        }
+        _ => left == right,
+    }
+}
+
+fn intrinsic_builtin_method_collides(owner: &Type, member: &str) -> bool {
+    let head = match owner {
+        Type::Named(name) => name.as_str(),
+        Type::Apply { callee, .. } => match callee.as_ref() {
+            Type::Named(name) => name.as_str(),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    match head {
+        "Array" => {
+            crate::ty::ARRAY_METHOD_NAMES.contains(&member)
+                || (member == "joinWith"
+                    && builtin_owner_patterns_overlap(
+                        owner,
+                        &Type::Apply {
+                            callee: Box::new(Type::Named("Array".to_owned())),
+                            args: vec![Type::Named("Text".to_owned())],
+                        },
+                    ))
+        }
+        "Map" => crate::ty::MAP_METHOD_NAMES.contains(&member),
+        "Set" => crate::ty::SET_METHOD_NAMES.contains(&member),
+        "Text" => crate::ty::TEXT_METHOD_NAMES.contains(&member),
+        "Bool" | "Float" | "Int" => {
+            super::method_sets::builtin_method_signature(owner, member).is_some()
+        }
+        _ => false,
     }
 }

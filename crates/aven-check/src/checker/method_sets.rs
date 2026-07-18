@@ -1,10 +1,13 @@
 use super::Checker;
-use crate::ty::{Type, named_builtin};
+use std::collections::{HashMap, HashSet};
+
+use crate::ty::{MethodPredicate, Type, map_type, named_builtin, type_variable_names};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MethodSignature {
     pub(crate) params: Vec<Type>,
     pub(crate) result: Type,
+    pub(crate) predicates: Vec<MethodPredicate>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +196,7 @@ pub(crate) fn builtin_method_signature(owner: &Type, member: &str) -> Option<Met
     Some(MethodSignature {
         params: entry.params.iter().map(|param| param.to_type()).collect(),
         result: entry.result.to_type(),
+        predicates: Vec::new(),
     })
 }
 
@@ -200,7 +204,7 @@ impl Checker<'_> {
     /// Query one exact owner category. User families never fall back to a
     /// builtin or another structurally equal declaration.
     pub(crate) fn exact_method_signature(
-        &self,
+        &mut self,
         owner: &Type,
         member: &str,
     ) -> Option<MethodSignature> {
@@ -211,9 +215,171 @@ impl Checker<'_> {
             return Some(MethodSignature {
                 params: signature.params.clone(),
                 result: signature.result.clone(),
+                predicates: Vec::new(),
             });
         }
+        if let Some(signature) = self.attached_builtin_method_signature(owner, member) {
+            return Some(signature);
+        }
         builtin_method_signature(owner, member)
+    }
+
+    fn attached_builtin_method_signature(
+        &mut self,
+        owner: &Type,
+        member: &str,
+    ) -> Option<MethodSignature> {
+        let owner = map_type(owner, &mut |node| {
+            let widened = super::constraints::widen_literal_method_owner(node);
+            (&widened != node).then_some(widened)
+        });
+        let entry = self
+            .builtin_methods
+            .methods()
+            .iter()
+            .find(|entry| {
+                entry.member == member
+                    && owner_pattern_bindings(
+                        &entry.owner,
+                        &owner,
+                        &entry.owner_variables.iter().cloned().collect(),
+                    )
+                    .is_some()
+            })?
+            .clone();
+        let owner_variables = entry
+            .owner_variables
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut substitutions = owner_pattern_bindings(&entry.owner, &owner, &owner_variables)?;
+        let mut method_variables = HashSet::new();
+        for ty in entry.params.iter().chain(std::iter::once(&entry.result)) {
+            method_variables.extend(type_variable_names(ty));
+        }
+        for constraint in &entry.constraints {
+            method_variables.extend(type_variable_names(&constraint.candidate));
+            for ty in constraint
+                .params
+                .iter()
+                .chain(std::iter::once(&constraint.result))
+            {
+                method_variables.extend(type_variable_names(ty));
+            }
+        }
+        method_variables.retain(|name| !owner_variables.contains(name));
+        for variable in method_variables {
+            substitutions.insert(variable, self.unifier.fresh());
+        }
+        let instantiate = |ty: &Type| {
+            map_type(ty, &mut |node| match node {
+                Type::Variable(name) => substitutions.get(name).cloned(),
+                _ => None,
+            })
+        };
+        let params = entry.params.iter().map(instantiate).collect();
+        let result = instantiate(&entry.result);
+        let predicates = entry
+            .constraints
+            .iter()
+            .map(|constraint| MethodPredicate {
+                candidate: instantiate(&constraint.candidate),
+                member: constraint.member.clone(),
+                params: constraint.params.iter().map(instantiate).collect(),
+                result: instantiate(&constraint.result),
+                operator_span: entry.member_span,
+                binding: Some(entry.member.clone()),
+                call_span: None,
+                obligation_id: None,
+            })
+            .collect();
+        Some(MethodSignature {
+            params,
+            result,
+            predicates,
+        })
+    }
+
+    pub(crate) fn attached_builtin_method_required_owner(
+        &self,
+        receiver: &Type,
+        member: &str,
+    ) -> Option<Type> {
+        let receiver_head = builtin_owner_head(receiver)?;
+        self.builtin_methods
+            .methods()
+            .iter()
+            .find(|entry| {
+                entry.member == member && builtin_owner_head(&entry.owner) == Some(receiver_head)
+            })
+            .map(|entry| entry.owner.clone())
+    }
+}
+
+fn builtin_owner_head(ty: &Type) -> Option<&str> {
+    match ty {
+        Type::Named(name) => Some(name),
+        Type::Apply { callee, .. } => match callee.as_ref() {
+            Type::Named(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn owner_pattern_bindings(
+    pattern: &Type,
+    receiver: &Type,
+    variables: &HashSet<String>,
+) -> Option<HashMap<String, Type>> {
+    let mut bindings = HashMap::new();
+    owner_pattern_matches(pattern, receiver, variables, &mut bindings).then_some(bindings)
+}
+
+fn owner_pattern_matches(
+    pattern: &Type,
+    receiver: &Type,
+    variables: &HashSet<String>,
+    bindings: &mut HashMap<String, Type>,
+) -> bool {
+    match pattern {
+        Type::Variable(name) if variables.contains(name) => match bindings.get(name) {
+            Some(bound) => bound == receiver,
+            None => {
+                bindings.insert(name.clone(), receiver.clone());
+                true
+            }
+        },
+        Type::Apply { callee, args } => {
+            let Type::Apply {
+                callee: receiver_callee,
+                args: receiver_args,
+            } = receiver
+            else {
+                return false;
+            };
+            args.len() == receiver_args.len()
+                && owner_pattern_matches(callee, receiver_callee, variables, bindings)
+                && args.iter().zip(receiver_args).all(|(pattern, receiver)| {
+                    owner_pattern_matches(pattern, receiver, variables, bindings)
+                })
+        }
+        Type::Optional(inner) => {
+            matches!(receiver, Type::Optional(receiver) if owner_pattern_matches(inner, receiver, variables, bindings))
+        }
+        Type::Nullable(inner) => {
+            matches!(receiver, Type::Nullable(receiver) if owner_pattern_matches(inner, receiver, variables, bindings))
+        }
+        Type::Tuple(items) => {
+            let Type::Tuple(receiver_items) = receiver else {
+                return false;
+            };
+            items.len() == receiver_items.len()
+                && items.iter().zip(receiver_items).all(|(pattern, receiver)| {
+                    owner_pattern_matches(pattern, receiver, variables, bindings)
+                })
+        }
+        _ => pattern == receiver,
     }
 }
 
@@ -311,6 +477,7 @@ mod tests {
                     Some(MethodSignature {
                         params: vec![float.clone()],
                         result: expected_result.clone(),
+                        predicates: Vec::new(),
                     })
                 );
             }
@@ -328,6 +495,7 @@ mod tests {
             Some(MethodSignature {
                 params: vec![named_builtin(param)],
                 result: named_builtin(result),
+                predicates: Vec::new(),
             })
         );
     }

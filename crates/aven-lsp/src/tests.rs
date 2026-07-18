@@ -64,6 +64,7 @@ fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
         semantic.inferred_types,
         semantic.type_definitions,
         semantic.recursive_type_unfoldings,
+        semantic.builtin_methods,
     )
 }
 
@@ -596,6 +597,24 @@ fn completion_at_incomplete_seeded_logger_field_access_returns_logger_methods() 
     );
     assert!(completion_item(&completions, "Text").is_none());
     assert!(completion_item(&completions, "logger").is_none());
+}
+
+#[test]
+fn pathless_completion_includes_ambient_array_methods() {
+    let completions = completions_at_marker("xs = [3, 1, 2]\nxs.|");
+    let labels = completions
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+
+    for method in ["length", "map", "sortBy", "minimum", "sum"] {
+        assert!(
+            labels.contains(&method),
+            "expected ambient `{method}` completion, got {labels:?}"
+        );
+    }
+    let sort_by = completion_item(&completions, "sortBy").expect("sortBy completion");
+    assert_eq!(sort_by.kind, Some(CompletionItemKind::FIELD));
 }
 
 #[test]
@@ -1541,6 +1560,7 @@ fn parsed_document_diagnostic_report_uses_file_id() {
         semantic.inferred_types,
         semantic.type_definitions,
         semantic.recursive_type_unfoldings,
+        semantic.builtin_methods,
     );
     let report = document.diagnostic_report();
 
@@ -1985,47 +2005,25 @@ fn library_interface_renders_std_array_signatures() {
         "# std/array — generated interface (shape view); not the implementation."
     );
     assert_eq!(lines[1], "");
-    // Export order follows the final record:
-    // length, isEmpty, first, last, fold, sum, count, all, any, find, indexOf,
-    // map, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range,
-    // sortWith, sortBy, minimum, maximum.
-    assert!(lines[2].starts_with("length : "), "line: {:?}", lines[2]);
-    assert!(lines[3].starts_with("isEmpty : "), "line: {:?}", lines[3]);
-    assert!(lines[4].starts_with("first : "), "line: {:?}", lines[4]);
-    assert!(lines[5].starts_with("last : "), "line: {:?}", lines[5]);
-    assert!(lines[6].starts_with("fold : "), "line: {:?}", lines[6]);
-    assert!(lines[7].starts_with("sum : "), "line: {:?}", lines[7]);
-    assert!(lines[8].starts_with("count : "), "line: {:?}", lines[8]);
-    assert!(lines[9].starts_with("all : "), "line: {:?}", lines[9]);
-    assert!(lines[10].starts_with("any : "), "line: {:?}", lines[10]);
-    assert!(lines[11].starts_with("find : "), "line: {:?}", lines[11]);
-    assert!(lines[12].starts_with("indexOf : "), "line: {:?}", lines[12]);
-    assert!(lines[13].starts_with("map : "), "line: {:?}", lines[13]);
-    assert!(lines[14].starts_with("flatMap : "), "line: {:?}", lines[14]);
-    assert!(lines[15].starts_with("filter : "), "line: {:?}", lines[15]);
-    assert!(lines[16].starts_with("reverse : "), "line: {:?}", lines[16]);
-    assert!(lines[17].starts_with("concat : "), "line: {:?}", lines[17]);
-    assert!(lines[18].starts_with("take : "), "line: {:?}", lines[18]);
-    assert!(lines[19].starts_with("drop : "), "line: {:?}", lines[19]);
-    assert!(lines[20].starts_with("slice : "), "line: {:?}", lines[20]);
-    assert!(lines[21].starts_with("zip : "), "line: {:?}", lines[21]);
-    assert!(lines[22].starts_with("flatten : "), "line: {:?}", lines[22]);
-    assert!(lines[23].starts_with("range : "), "line: {:?}", lines[23]);
-    assert!(
-        lines[24].starts_with("sortWith : "),
-        "line: {:?}",
-        lines[24]
-    );
-    assert!(lines[25].starts_with("sortBy : "), "line: {:?}", lines[25]);
-    assert!(lines[26].starts_with("minimum : "), "line: {:?}", lines[26]);
-    assert!(lines[27].starts_with("maximum : "), "line: {:?}", lines[27]);
-    for name in [
-        "length", "isEmpty", "first", "last", "fold", "sum", "count", "all", "any", "find",
-        "indexOf", "map", "flatMap", "filter", "reverse", "concat", "take", "drop", "slice", "zip",
-        "flatten", "range", "sortWith", "sortBy", "minimum", "maximum",
-    ] {
+    // The five converted names are ambient methods, not module exports.
+    let exported = [
+        "isEmpty", "first", "last", "fold", "count", "all", "any", "find", "indexOf", "flatMap",
+        "filter", "reverse", "concat", "take", "drop", "slice", "zip", "flatten", "range",
+        "sortWith", "maximum",
+    ];
+    for (index, name) in exported.iter().enumerate() {
+        assert!(
+            lines[index + 2].starts_with(&format!("{name} : ")),
+            "line: {:?}",
+            lines[index + 2]
+        );
+    }
+    for name in exported {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);
+    }
+    for method in ["length", "map", "sortBy", "minimum", "sum"] {
+        assert!(!interface.export_spans.contains_key(method));
     }
 }
 
@@ -2424,6 +2422,7 @@ fn document_store_accepts_current_semantic_diagnostics() {
             inferred_types: Vec::new(),
             type_definitions: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
+            builtin_methods: aven_compiler::BuiltinMethodEnvironment::default(),
             module_graph: None,
         },
     ));
@@ -2453,6 +2452,7 @@ fn document_store_rejects_stale_semantic_diagnostics() {
             inferred_types: Vec::new(),
             type_definitions: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
+            builtin_methods: aven_compiler::BuiltinMethodEnvironment::default(),
             module_graph: None,
         },
     ));
@@ -2620,6 +2620,18 @@ fn hover_at_position_shows_inferred_top_level_type() {
     };
 
     assert_hover_value(hover, "```aven\nvalue : \"hi\"\n```");
+}
+
+#[test]
+fn pathless_hover_shows_ambient_array_method_signature() {
+    let hover =
+        hover_at_marker("xs = [3, 1, 2]\nxs.so|rtBy((n) => n)\n").expect("ambient method hover");
+    let HoverContents::Markup(markup) = hover.contents else {
+        panic!("expected markup hover");
+    };
+
+    assert!(markup.value.contains("xs.sortBy :"), "{}", markup.value);
+    assert!(markup.value.contains("Array(Int)"), "{}", markup.value);
 }
 
 #[test]

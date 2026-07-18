@@ -13,9 +13,10 @@ use aven_parser::{
 };
 
 pub use aven_check::{
-    COMPTIME_BUILTIN_FUNCTIONS, HostGlobals, InferredType, ModuleImports as CheckModuleImports,
-    RecordField, RecursiveTypeId, Type, function_signature, is_text_type, literal_union_members,
-    record_fields, type_contains_deferred, type_statics, unfold_recursive_type_once, variant_tags,
+    BuiltinMethodEnvironment, COMPTIME_BUILTIN_FUNCTIONS, HostGlobals, InferredType,
+    ModuleImports as CheckModuleImports, RecordField, RecursiveTypeId, Type, builtin_method_fields,
+    function_signature, is_text_type, literal_union_members, record_fields, type_contains_deferred,
+    type_statics, unfold_recursive_type_once, variant_tags,
 };
 
 mod modules;
@@ -103,7 +104,17 @@ pub struct DocumentSnapshot {
     inferred_types: Vec<InferredType>,
     type_definitions: HashMap<String, Type>,
     recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+    builtin_methods: BuiltinMethodEnvironment,
     has_semantic: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DocumentSemantics {
+    pub diagnostics: Vec<Diagnostic>,
+    pub inferred_types: Vec<InferredType>,
+    pub type_definitions: HashMap<String, Type>,
+    pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+    pub builtin_methods: BuiltinMethodEnvironment,
 }
 
 impl DocumentSnapshot {
@@ -137,6 +148,7 @@ impl DocumentSnapshot {
             inferred_types: Vec::new(),
             type_definitions: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
+            builtin_methods: BuiltinMethodEnvironment::default(),
             has_semantic: false,
         }
     }
@@ -147,6 +159,7 @@ impl DocumentSnapshot {
         inferred_types: Vec<InferredType>,
         type_definitions: HashMap<String, Type>,
         recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+        builtin_methods: BuiltinMethodEnvironment,
     ) -> Self {
         Self {
             revision: self.revision,
@@ -159,6 +172,7 @@ impl DocumentSnapshot {
             inferred_types,
             type_definitions,
             recursive_type_unfoldings,
+            builtin_methods,
             has_semantic: true,
         }
     }
@@ -223,6 +237,10 @@ impl DocumentSnapshot {
 
     pub fn unfold_recursive_type_once(&self, ty: &Type) -> Type {
         unfold_recursive_type_once(ty, &self.recursive_type_unfoldings)
+    }
+
+    pub fn builtin_methods(&self) -> &BuiltinMethodEnvironment {
+        &self.builtin_methods
     }
 
     pub fn has_semantic(&self) -> bool {
@@ -426,6 +444,7 @@ fn is_declaration_item(item: &Item, declaration: &Declaration) -> bool {
         }
         Item::PatternBinding(binding) => declaration.span.contains(binding.span),
         Item::SpreadBinding(_) => false,
+        Item::MethodAttachment(_) => false,
         Item::Expr(_) => false,
     }
 }
@@ -462,6 +481,12 @@ fn collect_item_references(item: &Item, references: &mut Vec<Reference>) {
         }
         Item::SpreadBinding(binding) => {
             collect_expr_references(&binding.value, references);
+        }
+        Item::MethodAttachment(attachment) => {
+            collect_expr_references(&attachment.owner, references);
+            for member in &attachment.members {
+                collect_pattern_references_from_entries(std::slice::from_ref(member), references);
+            }
         }
         Item::Signature(signature) => collect_expr_references(&signature.annotation, references),
         Item::Expr(expr) => collect_expr_references(expr, references),
@@ -683,6 +708,7 @@ pub struct SemanticOutput {
     pub top_level_qualified_types: HashMap<String, aven_check::QualifiedType>,
     pub named_families: HashMap<String, aven_check::NamedFamilyType>,
     pub named_family_aliases: HashMap<String, String>,
+    pub builtin_methods: aven_check::BuiltinMethodEnvironment,
     pub name_duration: Option<Duration>,
     pub check_duration: Option<Duration>,
 }
@@ -747,6 +773,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         top_level_qualified_types,
         named_families,
         named_family_aliases,
+        builtin_methods,
     } = check_output;
     let diagnostics = if parse_has_errors {
         Vec::new()
@@ -767,6 +794,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         top_level_qualified_types,
         named_families,
         named_family_aliases,
+        builtin_methods,
         name_duration: Some(name_duration),
         check_duration: Some(check_duration),
     }
@@ -813,6 +841,7 @@ fn check_source_file_at(
         semantic.inferred_types,
         semantic.type_definitions,
         semantic.recursive_type_unfoldings,
+        semantic.builtin_methods,
     );
 
     CheckedDocument {
@@ -885,10 +914,7 @@ where
         &mut self,
         key: &K,
         revision: Revision,
-        diagnostics: Vec<Diagnostic>,
-        inferred_types: Vec<InferredType>,
-        type_definitions: HashMap<String, Type>,
-        recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+        semantics: DocumentSemantics,
     ) -> Option<Arc<DocumentSnapshot>> {
         let document = self.documents.get(key)?;
 
@@ -896,11 +922,19 @@ where
             return None;
         }
 
+        let DocumentSemantics {
+            diagnostics,
+            inferred_types,
+            type_definitions,
+            recursive_type_unfoldings,
+            builtin_methods,
+        } = semantics;
         let document = Arc::new(document.with_semantic(
             diagnostics,
             inferred_types,
             type_definitions,
             recursive_type_unfoldings,
+            builtin_methods,
         ));
         self.documents.insert(key.clone(), Arc::clone(&document));
         Some(document)
@@ -1342,10 +1376,10 @@ mod tests {
                 .set_semantic(
                     &"file",
                     Revision::new(1),
-                    vec![Diagnostic::error("stale diagnostic")],
-                    Vec::new(),
-                    HashMap::new(),
-                    HashMap::new(),
+                    DocumentSemantics {
+                        diagnostics: vec![Diagnostic::error("stale diagnostic")],
+                        ..DocumentSemantics::default()
+                    },
                 )
                 .is_none()
         );

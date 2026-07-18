@@ -100,6 +100,7 @@ impl StyleCollector {
                 aven_parser::Item::Signature(signature) => signature.name_span,
                 aven_parser::Item::PatternBinding(_)
                 | aven_parser::Item::SpreadBinding(_)
+                | aven_parser::Item::MethodAttachment(_)
                 | aven_parser::Item::Expr(_) => continue,
             };
 
@@ -146,6 +147,13 @@ impl StyleCollector {
                 }
                 aven_parser::Item::SpreadBinding(binding) => {
                     self.collect_expr(&binding.value);
+                }
+                aven_parser::Item::MethodAttachment(attachment) => {
+                    self.collect_expr(&attachment.owner);
+                    self.collect_record_entries(&attachment.members);
+                    for member in &attachment.members {
+                        collect_record_entry_exprs(member, &mut |expr| self.collect_expr(expr));
+                    }
                 }
                 aven_parser::Item::Signature(signature) => {
                     let style = self
@@ -234,6 +242,49 @@ impl StyleCollector {
                 | aven_parser::RecordEntry::Element(_) => {}
             }
         }
+    }
+}
+
+fn collect_record_entry_exprs(
+    entry: &aven_parser::RecordEntry,
+    visit: &mut impl FnMut(&aven_parser::Expr),
+) {
+    match entry {
+        aven_parser::RecordEntry::Field { value, .. }
+        | aven_parser::RecordEntry::Method { value, .. }
+        | aven_parser::RecordEntry::Spread { value, .. }
+        | aven_parser::RecordEntry::DeleteComputed { key: value, .. }
+        | aven_parser::RecordEntry::Element(value) => visit(value),
+        aven_parser::RecordEntry::FieldComputed { key, value, .. } => {
+            visit(key);
+            visit(value);
+        }
+        aven_parser::RecordEntry::FieldDefault {
+            annotation,
+            default,
+            ..
+        } => {
+            visit(annotation);
+            visit(default);
+        }
+        aven_parser::RecordEntry::Iteration {
+            source,
+            guard,
+            body,
+            ..
+        } => {
+            visit(source);
+            if let Some(guard) = guard {
+                visit(guard);
+            }
+            for entry in body {
+                collect_record_entry_exprs(entry, visit);
+            }
+        }
+        aven_parser::RecordEntry::Shorthand { .. }
+        | aven_parser::RecordEntry::Delete { .. }
+        | aven_parser::RecordEntry::Rename { .. }
+        | aven_parser::RecordEntry::Open { .. } => {}
     }
 }
 

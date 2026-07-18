@@ -139,6 +139,7 @@ fn is_top_level_definition(module: &Module, name: &str, definition: Span) -> boo
             .into_iter()
             .any(|site| site.name == name && site.span == definition),
         Item::SpreadBinding(_) => false,
+        Item::MethodAttachment(_) => false,
         Item::Signature(signature) => signature.name == name && signature.name_span == definition,
         Item::Expr(_) => false,
     })
@@ -175,6 +176,20 @@ fn annotation_for_definition_in_items(items: &[Item], definition: Span) -> Optio
                     return Some(found);
                 }
             }
+            MergedItem::MethodAttachment(attachment) => {
+                if let Some(found) =
+                    annotation_for_definition_in_expr(&attachment.owner, definition)
+                {
+                    return Some(found);
+                }
+                for member in &attachment.members {
+                    if let Some(found) =
+                        annotation_for_definition_in_record_entry(member, definition)
+                    {
+                        return Some(found);
+                    }
+                }
+            }
             MergedItem::Signature(signature) => {
                 if signature.name_span == definition {
                     return Some(&signature.annotation);
@@ -189,6 +204,48 @@ fn annotation_for_definition_in_items(items: &[Item], definition: Span) -> Optio
     }
 
     None
+}
+
+fn annotation_for_definition_in_record_entry(
+    entry: &RecordEntry,
+    definition: Span,
+) -> Option<&Expr> {
+    match entry {
+        RecordEntry::Field { value, .. }
+        | RecordEntry::Method { value, .. }
+        | RecordEntry::Spread { value, .. }
+        | RecordEntry::DeleteComputed { key: value, .. }
+        | RecordEntry::Element(value) => annotation_for_definition_in_expr(value, definition),
+        RecordEntry::FieldComputed { key, value, .. } => {
+            annotation_for_definition_in_expr(key, definition)
+                .or_else(|| annotation_for_definition_in_expr(value, definition))
+        }
+        RecordEntry::FieldDefault {
+            annotation,
+            default,
+            ..
+        } => annotation_for_definition_in_expr(annotation, definition)
+            .or_else(|| annotation_for_definition_in_expr(default, definition)),
+        RecordEntry::Iteration {
+            source,
+            guard,
+            body,
+            ..
+        } => annotation_for_definition_in_expr(source, definition)
+            .or_else(|| {
+                guard
+                    .as_ref()
+                    .and_then(|guard| annotation_for_definition_in_expr(guard, definition))
+            })
+            .or_else(|| {
+                body.iter()
+                    .find_map(|entry| annotation_for_definition_in_record_entry(entry, definition))
+            }),
+        RecordEntry::Shorthand { .. }
+        | RecordEntry::Delete { .. }
+        | RecordEntry::Rename { .. }
+        | RecordEntry::Open { .. } => None,
+    }
 }
 
 fn annotation_for_definition_in_binding(binding: &Binding, definition: Span) -> Option<&Expr> {
@@ -300,6 +357,14 @@ fn scope_at_item<'a>(item: &'a Item, at: Span, outer: &[BindingSite<'a>]) -> Opt
                 })
             })
         }
+        Item::MethodAttachment(attachment) => {
+            if !attachment.span.contains(at) {
+                return None;
+            }
+            scope_at_expr(&attachment.owner, at, outer)
+                .or_else(|| scope_at_record_entries(&attachment.members, at, outer))
+                .or_else(|| Some(ScopeAt::from_visible(outer.to_vec())))
+        }
         Item::Expr(expr) => scope_at_expr(expr, at, outer),
     }
 }
@@ -388,7 +453,10 @@ fn scope_at_block<'a>(items: &'a [Item], at: Span, outer: &[BindingSite<'a>]) ->
                 Item::PatternBinding(binding) => {
                     visible.extend(pattern_bindings(&binding.pattern));
                 }
-                Item::SpreadBinding(_) | Item::Signature(_) | Item::Expr(_) => {}
+                Item::SpreadBinding(_)
+                | Item::MethodAttachment(_)
+                | Item::Signature(_)
+                | Item::Expr(_) => {}
             }
         }
     }
@@ -537,6 +605,7 @@ fn item_span(item: &Item) -> Span {
         Item::Binding(binding) => binding.span,
         Item::PatternBinding(binding) => binding.span,
         Item::SpreadBinding(binding) => binding.span,
+        Item::MethodAttachment(attachment) => attachment.span,
         Item::Signature(signature) => signature.span,
         Item::Expr(expr) => expr.span,
     }

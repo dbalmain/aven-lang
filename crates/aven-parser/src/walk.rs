@@ -76,6 +76,10 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
                         visit(&binding.value);
                     }
                     Item::SpreadBinding(binding) => visit(&binding.value),
+                    Item::MethodAttachment(attachment) => {
+                        visit(&attachment.owner);
+                        walk_record_entry_exprs(&attachment.members, visit);
+                    }
                     Item::Signature(signature) => visit(&signature.annotation),
                     Item::Expr(expr) => visit(expr),
                 }

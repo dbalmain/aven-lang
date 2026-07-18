@@ -61,6 +61,18 @@ impl<'a> Checker<'a> {
         }
     }
 
+    pub(super) fn push_method_obligations_at(
+        &mut self,
+        predicates: impl IntoIterator<Item = MethodPredicate>,
+        call_span: Span,
+    ) {
+        self.push_new_method_obligations(predicates.into_iter().map(|mut predicate| {
+            predicate.operator_span = call_span;
+            predicate.call_span = Some(call_span);
+            predicate
+        }));
+    }
+
     pub(super) fn add_operator_obligation(
         &mut self,
         candidate: Type,
@@ -180,6 +192,10 @@ impl<'a> Checker<'a> {
         if !matches {
             self.unifier.restore(snapshot);
             self.report_method_signature_mismatch(owner, &actual, predicate);
+        } else {
+            let call_span = predicate.call_span.unwrap_or(predicate.operator_span);
+            self.push_method_obligations_at(actual.predicates, call_span);
+            self.simplify_method_obligations(false);
         }
     }
 
@@ -737,7 +753,7 @@ fn render_method_signature(params: &[Type], result: &Type) -> String {
     format!("{params} -> {}", result.render())
 }
 
-fn widen_literal_method_owner(ty: &Type) -> Type {
+pub(super) fn widen_literal_method_owner(ty: &Type) -> Type {
     let Type::Variant(row) = ty else {
         return ty.clone();
     };

@@ -96,6 +96,10 @@ pub struct ModuleRoots {
     /// Host-registered libraries resolving bare import specifiers: library
     /// name -> module specifier -> embedded source text. Empty by default.
     pub libraries: HashMap<String, LibraryModules>,
+    /// Canonical embedded module specifiers allowed to publish ambient builtin
+    /// methods. Filesystem modules and ordinary library registrations never
+    /// acquire this trust implicitly.
+    pub trusted_ambient_modules: HashSet<String>,
     /// Host names available only while evaluating embedded library modules.
     pub library_only_global_names: HashSet<String>,
     /// Known capability modules omitted by this host, keyed by specifier.
@@ -119,6 +123,7 @@ impl ModuleRoots {
             home,
             filesystem: true,
             libraries: HashMap::new(),
+            trusted_ambient_modules: HashSet::new(),
             library_only_global_names: HashSet::new(),
             disabled_capability_modules: HashMap::new(),
         }
@@ -126,6 +131,14 @@ impl ModuleRoots {
 
     pub fn with_library(mut self, name: impl Into<String>, modules: LibraryModules) -> Self {
         self.libraries.insert(name.into(), modules);
+        self
+    }
+
+    pub fn with_trusted_ambient_modules(
+        mut self,
+        specifiers: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.trusted_ambient_modules = specifiers.into_iter().map(Into::into).collect();
         self
     }
 
@@ -288,9 +301,13 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
     let mut semantics = vec![None; graph.nodes.len()];
     let mut name_duration = None;
     let mut check_duration = None;
+    let mut builtin_methods = aven_check::BuiltinMethodEnvironment::default();
 
     for node_id in graph.order.iter().copied() {
-        let imports = check_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
+        let mut imports = check_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
+        imports.set_builtin_method_environment(builtin_methods.clone());
+        let trusted_ambient = is_trusted_ambient_node(roots, &graph.nodes[node_id].path);
+        imports.set_trusted_builtin_method_source(trusted_ambient);
         let file_id = graph.nodes[node_id].file.id;
         let node_globals = globals_for_node(globals, roots, &graph.nodes[node_id].path);
         let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
@@ -339,6 +356,14 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
         if semantic_has_errors || file_has_errors(&diagnostics, file_id) {
             exports[node_id] = CheckExport::HasErrors;
             continue;
+        }
+
+        if trusted_ambient {
+            builtin_methods = semantics[node_id]
+                .as_ref()
+                .expect("semantic output stored before ambient publication")
+                .builtin_methods
+                .clone();
         }
 
         export_provenance[node_id] = provenance;
@@ -408,13 +433,18 @@ pub fn eval_path_with_host_globals_and_roots(
     let mut check_exports = vec![CheckExport::HasErrors; graph.nodes.len()];
     let mut exports = vec![EvalExport::HasErrors; graph.nodes.len()];
     let mut entry_value = None;
+    let mut checked_builtin_methods = aven_check::BuiltinMethodEnvironment::default();
+    let runtime_builtin_methods = aven_eval::BuiltinMethodEnvironment::default();
 
     for node_id in graph.order.iter().copied() {
-        let check_imports = check_imports_for_node(
+        let mut check_imports = check_imports_for_node(
             &graph.nodes[node_id],
             &check_exports,
             &mut check_diagnostics,
         );
+        check_imports.set_builtin_method_environment(checked_builtin_methods.clone());
+        let trusted_ambient = is_trusted_ambient_node(roots, &graph.nodes[node_id].path);
+        check_imports.set_trusted_builtin_method_source(trusted_ambient);
         let node_check_globals = globals_for_node(check_globals, roots, &graph.nodes[node_id].path);
         let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
         let semantic = analyze_semantics_with_host_globals_and_imports_in(
@@ -445,6 +475,19 @@ pub fn eval_path_with_host_globals_and_roots(
             )
         };
 
+        if trusted_ambient && semantic.diagnostics.iter().any(Diagnostic::is_error) {
+            let file_id = graph.nodes[node_id].file.id;
+            diagnostics
+                .entry(file_id)
+                .or_default()
+                .extend(semantic.diagnostics.clone());
+            exports[node_id] = EvalExport::HasErrors;
+            continue;
+        }
+        if trusted_ambient {
+            checked_builtin_methods = semantic.builtin_methods.clone();
+        }
+
         if !failed_method_constraints.is_empty() {
             let file_id = graph.nodes[node_id].file.id;
             diagnostics
@@ -463,11 +506,13 @@ pub fn eval_path_with_host_globals_and_roots(
         }
 
         let node_globals = eval_globals_for_node(&globals, roots, &graph.nodes[node_id].path);
-        let outcome = aven_eval::eval_module_with_globals_imports_and_runtime_types(
+        let outcome = aven_eval::eval_module_with_globals_imports_runtime_types_and_builtin_methods(
             &graph.nodes[node_id].parse.module,
             node_globals,
             &imports,
             &runtime_types,
+            &runtime_builtin_methods,
+            trusted_ambient,
         );
         entry_value = (node_id == 0).then_some(outcome.value.clone()).flatten();
         diagnostics
@@ -513,6 +558,11 @@ fn globals_for_node(globals: &HostGlobals, roots: &ModuleRoots, path: &Path) -> 
         .types
         .retain(|(name, _)| !roots.library_only_global_names.contains(name));
     filtered
+}
+
+fn is_trusted_ambient_node(roots: &ModuleRoots, path: &Path) -> bool {
+    library_specifier(path)
+        .is_some_and(|specifier| roots.trusted_ambient_modules.contains(&specifier))
 }
 
 fn comptime_module_identity(path: &Path) -> ComptimeModuleIdentity {
@@ -586,6 +636,7 @@ impl ModuleGraph {
             aven_parser::parse_source(&file)
         };
         let node_id = self.nodes.len();
+        let is_entry = self.nodes.is_empty();
         self.by_path.insert(path.to_path_buf(), node_id);
         self.nodes.push(ModuleNode {
             path: path.to_path_buf(),
@@ -596,6 +647,19 @@ impl ModuleGraph {
 
         states.insert(path.to_path_buf(), VisitState::Loading);
         stack.push(path.to_path_buf());
+
+        if is_entry {
+            let mut ambient = roots
+                .trusted_ambient_modules
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            ambient.sort();
+            for specifier in ambient {
+                let virtual_path = library_virtual_path(&specifier);
+                self.load_module(&virtual_path, overlay, None, roots, states, stack)?;
+            }
+        }
 
         let import_calls = collect_import_calls(&self.nodes[node_id].parse.module);
         let imports = import_calls
@@ -785,6 +849,10 @@ fn collect_import_calls(module: &Module) -> Vec<ImportCall> {
             Item::SpreadBinding(binding) => {
                 collect_import_calls_from_expr(&binding.value, &mut calls);
             }
+            Item::MethodAttachment(attachment) => {
+                collect_import_calls_from_expr(&attachment.owner, &mut calls);
+                collect_import_calls_from_entries(&attachment.members, &mut calls);
+            }
             Item::Signature(signature) => {
                 collect_import_calls_from_expr(&signature.annotation, &mut calls);
             }
@@ -792,6 +860,46 @@ fn collect_import_calls(module: &Module) -> Vec<ImportCall> {
         }
     }
     calls
+}
+
+fn collect_import_calls_from_entries(entries: &[RecordEntry], calls: &mut Vec<ImportCall>) {
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { value, .. }
+            | RecordEntry::Method { value, .. }
+            | RecordEntry::Spread { value, .. }
+            | RecordEntry::DeleteComputed { key: value, .. }
+            | RecordEntry::Element(value) => collect_import_calls_from_expr(value, calls),
+            RecordEntry::FieldComputed { key, value, .. } => {
+                collect_import_calls_from_expr(key, calls);
+                collect_import_calls_from_expr(value, calls);
+            }
+            RecordEntry::FieldDefault {
+                annotation,
+                default,
+                ..
+            } => {
+                collect_import_calls_from_expr(annotation, calls);
+                collect_import_calls_from_expr(default, calls);
+            }
+            RecordEntry::Iteration {
+                source,
+                guard,
+                body,
+                ..
+            } => {
+                collect_import_calls_from_expr(source, calls);
+                if let Some(guard) = guard {
+                    collect_import_calls_from_expr(guard, calls);
+                }
+                collect_import_calls_from_entries(body, calls);
+            }
+            RecordEntry::Shorthand { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. } => {}
+        }
+    }
 }
 
 fn collect_import_calls_from_expr(expr: &Expr, calls: &mut Vec<ImportCall>) {
@@ -1639,6 +1747,7 @@ fn final_expr(module: &Module) -> Option<&Expr> {
         Item::Binding(_)
         | Item::PatternBinding(_)
         | Item::SpreadBinding(_)
+        | Item::MethodAttachment(_)
         | Item::Signature(_) => None,
     }
 }

@@ -409,6 +409,16 @@ fn render_item_ast(output: &mut String, item: &Item, indent: usize) {
             let _ = writeln!(output, "annotation");
             render_expr_ast(output, &signature.annotation, indent + 2);
         }
+        Item::MethodAttachment(attachment) => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "method-attachment");
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "owner");
+            render_expr_ast(output, &attachment.owner, indent + 2);
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "members");
+            render_record_entries_ast(output, &attachment.members, indent + 2);
+        }
         Item::Expr(expr) => {
             write_indent(output, indent);
             let _ = writeln!(output, "expr");

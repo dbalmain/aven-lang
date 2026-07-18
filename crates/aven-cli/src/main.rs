@@ -238,6 +238,7 @@ fn discover_roots(path: &Path) -> aven_compiler::ModuleRoots {
             aven_host::STD_LIBRARY_NAME,
             aven_host::standard_std_library(),
         )
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
         .with_library_only_global_names(aven_host::standard_library_only_global_names())
 }
 
@@ -245,6 +246,7 @@ fn discover_roots_for_host(path: &Path, host: &aven_host::Host) -> aven_compiler
     host.disabled_capability_modules().into_iter().fold(
         aven_compiler::ModuleRoots::discover(path)
             .with_library(aven_host::STD_LIBRARY_NAME, host.std_library())
+            .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
             .with_library_only_global_names(host.library_only_global_names()),
         |roots, (specifier, capability, register_method)| {
             roots.with_disabled_capability_module(specifier, capability, register_method)
@@ -551,7 +553,12 @@ fn print_json_diagnostic_reports(
     reports: &[DiagnosticReport],
     timings: Option<aven_compiler::PhaseTimings>,
 ) -> Result<()> {
-    if let [file] = source_map.files() {
+    let path_backed_files = source_map
+        .files()
+        .iter()
+        .filter(|file| file.path.is_some())
+        .collect::<Vec<_>>();
+    if let [file] = path_backed_files.as_slice() {
         let report = reports
             .iter()
             .find(|report| report.file_id == file.id)

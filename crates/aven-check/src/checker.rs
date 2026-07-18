@@ -33,7 +33,8 @@ use crate::ty::{
 };
 use crate::unify::Unifier;
 use crate::{
-    InferredType, MethodConstraint, ModuleImports, NamedFamilyType, NamedMethodType, QualifiedType,
+    BuiltinMethodEnvironment, BuiltinMethodType, InferredType, MethodConstraint, ModuleImports,
+    NamedFamilyType, NamedMethodType, QualifiedType,
 };
 
 mod annotations;
@@ -57,6 +58,9 @@ pub(crate) struct Checker<'a> {
     /// map to themselves; methodless aliases are intentionally absent.
     pub(crate) named_family_aliases: HashMap<String, String>,
     pub(crate) named_families: HashMap<String, NamedFamilyType>,
+    pub(crate) builtin_methods: BuiltinMethodEnvironment,
+    local_builtin_methods: Vec<BuiltinMethodType>,
+    trusted_builtin_method_source: bool,
     zero_argument_type_bindings: HashSet<String>,
     prelowered_type_bindings: HashMap<String, Type>,
     prelowered_type_module: comptime::ComptimeModuleIdentity,

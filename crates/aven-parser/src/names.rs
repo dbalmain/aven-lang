@@ -150,6 +150,10 @@ fn analyze_item(item: &Item, scopes: &mut ScopeStack, diagnostics: &mut Vec<Diag
             }
             analyze_expr(&binding.value, scopes, diagnostics);
         }
+        Item::MethodAttachment(attachment) => {
+            analyze_expr(&attachment.owner, scopes, diagnostics);
+            analyze_record_entries(&attachment.members, scopes, diagnostics);
+        }
         Item::Signature(signature) => analyze_expr(&signature.annotation, scopes, diagnostics),
         Item::Expr(expr) => analyze_expr(expr, scopes, diagnostics),
     }
@@ -230,6 +234,10 @@ fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<
             }
             MergedItem::SpreadBinding(binding) => {
                 analyze_expr(&binding.value, scopes, diagnostics);
+            }
+            MergedItem::MethodAttachment(attachment) => {
+                analyze_expr(&attachment.owner, scopes, diagnostics);
+                analyze_record_entries(&attachment.members, scopes, diagnostics);
             }
             MergedItem::Signature(signature) => {
                 analyze_expr(&signature.annotation, scopes, diagnostics);

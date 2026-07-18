@@ -63,6 +63,7 @@ pub fn collect_declarations(module: &Module) -> Vec<Declaration> {
                 declarations.extend(pattern_binding_declarations(binding));
             }
             MergedItem::SpreadBinding(_) => {}
+            MergedItem::MethodAttachment(_) => {}
             MergedItem::Signature(signature) => declarations.push(signature_declaration(signature)),
             MergedItem::Expr(_) => {}
         }

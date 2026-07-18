@@ -75,10 +75,158 @@ pub struct CheckOutput {
     pub top_level_qualified_types: HashMap<String, QualifiedType>,
     pub named_families: HashMap<String, NamedFamilyType>,
     pub named_family_aliases: HashMap<String, String>,
+    /// Source-defined builtin methods visible after this module was checked.
+    /// Ambient graph wiring seals and forwards this environment to user nodes.
+    pub builtin_methods: BuiltinMethodEnvironment,
     /// Completed one-level heads for parameterized recursive type references.
     /// Keeping these in a side map makes `Type::Recursive` a small atomic node
     /// while allowing checker consumers to unfold only at structural demands.
     pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuiltinMethodEnvironment {
+    methods: Vec<BuiltinMethodType>,
+}
+
+impl BuiltinMethodEnvironment {
+    pub fn methods(&self) -> &[BuiltinMethodType] {
+        &self.methods
+    }
+
+    pub fn extend(&mut self, methods: impl IntoIterator<Item = BuiltinMethodType>) {
+        self.methods.extend(methods);
+    }
+}
+
+/// Record-like method fields contributed by the sealed builtin-method
+/// environment for a concrete receiver. This is the tooling view of the same
+/// one-way owner-pattern match used by the checker: fixed pattern components
+/// never refine receiver variables.
+pub fn builtin_method_fields(
+    environment: &BuiltinMethodEnvironment,
+    receiver: &Type,
+) -> Vec<RecordField> {
+    let receiver = ty::map_type(receiver, &mut |node| {
+        let Type::Variant(row) = node else {
+            return None;
+        };
+        match ty::literal_variant_base(row) {
+            Some(ty::LiteralBase::Bool) => Some(Type::Named("Bool".to_owned())),
+            Some(ty::LiteralBase::Text) => Some(Type::Named("Text".to_owned())),
+            Some(ty::LiteralBase::Number) => {
+                let float = row.entries.iter().any(|entry| {
+                    matches!(
+                        entry,
+                        RowEntry::Literal {
+                            value: aven_parser::Literal::Number(number)
+                        } if number.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
+                    )
+                });
+                Some(Type::Named(if float { "Float" } else { "Int" }.to_owned()))
+            }
+            None => None,
+        }
+    });
+    let mut fields = Vec::new();
+    let mut seen = HashSet::new();
+
+    for method in environment.methods() {
+        if !seen.insert(method.member.clone()) {
+            continue;
+        }
+        let variables = method.owner_variables.iter().cloned().collect();
+        let Some(substitutions) =
+            builtin_owner_pattern_bindings(&method.owner, &receiver, &variables)
+        else {
+            seen.remove(&method.member);
+            continue;
+        };
+        let instantiate = |ty: &Type| {
+            ty::map_type(ty, &mut |node| match node {
+                Type::Variable(name) => substitutions.get(name).cloned(),
+                _ => None,
+            })
+        };
+        let params = method.params.iter().map(instantiate).collect::<Vec<_>>();
+        let result = instantiate(&method.result);
+        fields.push(RecordField {
+            name: method.member.clone(),
+            ty: Type::Function {
+                required: params.len(),
+                params,
+                result: Box::new(result),
+            },
+        });
+    }
+
+    fields
+}
+
+fn builtin_owner_pattern_bindings(
+    pattern: &Type,
+    receiver: &Type,
+    variables: &HashSet<String>,
+) -> Option<HashMap<String, Type>> {
+    let mut bindings = HashMap::new();
+    builtin_owner_pattern_matches(pattern, receiver, variables, &mut bindings).then_some(bindings)
+}
+
+fn builtin_owner_pattern_matches(
+    pattern: &Type,
+    receiver: &Type,
+    variables: &HashSet<String>,
+    bindings: &mut HashMap<String, Type>,
+) -> bool {
+    match pattern {
+        Type::Variable(name) if variables.contains(name) => match bindings.get(name) {
+            Some(bound) => bound == receiver,
+            None => {
+                bindings.insert(name.clone(), receiver.clone());
+                true
+            }
+        },
+        Type::Apply { callee, args } => {
+            let Type::Apply {
+                callee: receiver_callee,
+                args: receiver_args,
+            } = receiver
+            else {
+                return false;
+            };
+            args.len() == receiver_args.len()
+                && builtin_owner_pattern_matches(callee, receiver_callee, variables, bindings)
+                && args.iter().zip(receiver_args).all(|(pattern, receiver)| {
+                    builtin_owner_pattern_matches(pattern, receiver, variables, bindings)
+                })
+        }
+        Type::Optional(inner) => matches!(receiver, Type::Optional(receiver) if
+            builtin_owner_pattern_matches(inner, receiver, variables, bindings)),
+        Type::Nullable(inner) => matches!(receiver, Type::Nullable(receiver) if
+            builtin_owner_pattern_matches(inner, receiver, variables, bindings)),
+        Type::Tuple(items) => {
+            let Type::Tuple(receiver_items) = receiver else {
+                return false;
+            };
+            items.len() == receiver_items.len()
+                && items.iter().zip(receiver_items).all(|(pattern, receiver)| {
+                    builtin_owner_pattern_matches(pattern, receiver, variables, bindings)
+                })
+        }
+        _ => pattern == receiver,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinMethodType {
+    pub owner: Type,
+    pub owner_variables: Vec<String>,
+    pub member: String,
+    pub params: Vec<Type>,
+    pub result: Type,
+    pub constraints: Vec<MethodConstraint>,
+    pub owner_span: Span,
+    pub member_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +286,8 @@ pub struct ModuleImports {
     /// such as `pair(Int)` without borrowing the dependency's module.
     comptime_exports: HashMap<String, HashMap<String, ComptimeExport>>,
     recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+    builtin_methods: BuiltinMethodEnvironment,
+    trusted_builtin_method_source: bool,
 }
 
 impl ModuleImports {
@@ -152,6 +302,8 @@ impl ModuleImports {
             named_family_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
+            builtin_methods: BuiltinMethodEnvironment::default(),
+            trusted_builtin_method_source: false,
         }
     }
 
@@ -166,6 +318,8 @@ impl ModuleImports {
             named_family_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
+            builtin_methods: BuiltinMethodEnvironment::default(),
+            trusted_builtin_method_source: false,
         }
     }
 
@@ -225,6 +379,14 @@ impl ModuleImports {
         unfoldings: impl IntoIterator<Item = (RecursiveTypeId, Type)>,
     ) {
         self.recursive_type_unfoldings.extend(unfoldings);
+    }
+
+    pub fn set_builtin_method_environment(&mut self, methods: BuiltinMethodEnvironment) {
+        self.builtin_methods = methods;
+    }
+
+    pub fn set_trusted_builtin_method_source(&mut self, trusted: bool) {
+        self.trusted_builtin_method_source = trusted;
     }
 
     pub fn get(&self, specifier: &str) -> Option<Option<&Type>> {
@@ -427,6 +589,7 @@ pub fn check_module_with_host_globals_and_imports_in(
         top_level_qualified_types,
         named_families: checker.named_families.clone(),
         named_family_aliases: checker.named_family_aliases.clone(),
+        builtin_methods: checker.builtin_methods.clone(),
     }
 }
 

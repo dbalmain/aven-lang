@@ -37,6 +37,33 @@ pub struct Closure {
     env: Environment,
 }
 
+#[derive(Clone, Default)]
+pub struct BuiltinMethodEnvironment {
+    methods: Rc<RefCell<Vec<BuiltinMethodImplementation>>>,
+}
+
+#[derive(Clone)]
+struct BuiltinMethodImplementation {
+    owner: String,
+    member: String,
+    implementation: Closure,
+}
+
+impl BuiltinMethodEnvironment {
+    fn insert(&self, method: BuiltinMethodImplementation) {
+        self.methods.borrow_mut().push(method);
+    }
+
+    fn lookup(&self, receiver: &Value, member: &str) -> Option<Closure> {
+        let owner = runtime_builtin_owner(receiver)?;
+        self.methods
+            .borrow()
+            .iter()
+            .find(|method| method.owner == owner && method.member == member)
+            .map(|method| method.implementation.clone())
+    }
+}
+
 #[derive(Clone)]
 pub struct NamedFamilyDescriptor {
     owner: String,
@@ -656,6 +683,8 @@ fn escape_string(text: &str) -> String {
 pub struct Environment {
     scope: Rc<Scope>,
     imports: Rc<ModuleImports>,
+    builtin_methods: BuiltinMethodEnvironment,
+    allow_builtin_method_attachments: bool,
 }
 
 struct Scope {
@@ -692,9 +721,19 @@ impl Environment {
     }
 
     pub fn with_imports(imports: ModuleImports) -> Self {
+        Self::with_imports_and_builtin_methods(imports, BuiltinMethodEnvironment::default(), false)
+    }
+
+    fn with_imports_and_builtin_methods(
+        imports: ModuleImports,
+        builtin_methods: BuiltinMethodEnvironment,
+        allow_builtin_method_attachments: bool,
+    ) -> Self {
         Self {
             scope: Rc::new(Scope::new(None)),
             imports: Rc::new(imports),
+            builtin_methods,
+            allow_builtin_method_attachments,
         }
     }
 
@@ -702,6 +741,8 @@ impl Environment {
         Self {
             scope: Rc::new(Scope::new(Some(Rc::clone(&self.scope)))),
             imports: Rc::clone(&self.imports),
+            builtin_methods: self.builtin_methods.clone(),
+            allow_builtin_method_attachments: self.allow_builtin_method_attachments,
         }
     }
 
@@ -805,7 +846,29 @@ pub fn eval_module_with_globals_imports_and_runtime_types(
     imports: &ModuleImports,
     runtime_types: &RuntimeTypeBindings,
 ) -> EvalOutcome {
-    let env = Environment::with_imports(imports.clone());
+    eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+        module,
+        globals,
+        imports,
+        runtime_types,
+        &BuiltinMethodEnvironment::default(),
+        false,
+    )
+}
+
+pub fn eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    module: &Module,
+    globals: Vec<(String, Value)>,
+    imports: &ModuleImports,
+    runtime_types: &RuntimeTypeBindings,
+    builtin_methods: &BuiltinMethodEnvironment,
+    allow_builtin_method_attachments: bool,
+) -> EvalOutcome {
+    let env = Environment::with_imports_and_builtin_methods(
+        imports.clone(),
+        builtin_methods.clone(),
+        allow_builtin_method_attachments,
+    );
     bind_intrinsics(&env);
     for (name, value) in globals {
         env.bind(name, value);
@@ -1058,11 +1121,73 @@ fn eval_items(
                     diagnostics.append(&mut next_diagnostics);
                 }
             },
+            Item::MethodAttachment(attachment) => {
+                if env.allow_builtin_method_attachments {
+                    install_builtin_method_attachment(attachment, &env);
+                }
+                value = None;
+            }
             Item::Signature(_) => value = None,
         }
     }
 
     Ok(EvalOutcome { value, diagnostics })
+}
+
+fn install_builtin_method_attachment(
+    attachment: &aven_parser::MethodAttachment,
+    env: &Environment,
+) {
+    let Some(owner) = attachment_owner_head(&attachment.owner) else {
+        return;
+    };
+    for member in &attachment.members {
+        let RecordEntry::Method { name, value, .. } = member else {
+            continue;
+        };
+        let ExprKind::Lambda { params, body, .. } = &value.kind else {
+            continue;
+        };
+        let mut closure_params = Vec::with_capacity(params.len() + 1);
+        closure_params.push(ClosureParam {
+            name: aven_parser::METHOD_RECEIVER_NAME.to_owned(),
+            default: None,
+        });
+        closure_params.extend(params.iter().map(|param| ClosureParam {
+            name: param.name.clone(),
+            default: param.default.clone().map(Rc::new),
+        }));
+        env.builtin_methods.insert(BuiltinMethodImplementation {
+            owner: owner.to_owned(),
+            member: name.clone(),
+            implementation: Closure {
+                params: closure_params,
+                body: Rc::new((**body).clone()),
+                env: env.clone(),
+            },
+        });
+    }
+}
+
+fn attachment_owner_head(owner: &Expr) -> Option<&str> {
+    match &owner.kind {
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name),
+        ExprKind::Call { callee, .. } | ExprKind::Group(callee) => attachment_owner_head(callee),
+        _ => None,
+    }
+}
+
+fn runtime_builtin_owner(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::Array(_) => Some("Array"),
+        Value::Set(_) => Some("Set"),
+        Value::Map(_) => Some("Map"),
+        Value::Text(_) => Some("Text"),
+        Value::Int(_) => Some("Int"),
+        Value::Float(_) => Some("Float"),
+        Value::Bool(_) => Some("Bool"),
+        _ => None,
+    }
 }
 
 fn eval_named_family(owner: &str, value: &Expr, env: &Environment) -> Eval {
@@ -2288,7 +2413,7 @@ fn field_access_value(
         Value::Type(RuntimeType::Named(name)) => env
             .lookup(&format!("{name}.{field}"))
             .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
-        value => builtin_method(value, field).ok_or_else(|| {
+        value => builtin_method(value, field, env).ok_or_else(|| {
             one_diagnostic(record_type_error(
                 receiver_span,
                 "field access",
@@ -2306,11 +2431,17 @@ fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
             record_field_value(fields, field).is_some() || descriptor.methods.contains_key(field)
         }
         Value::Type(RuntimeType::Named(name)) => env.lookup(&format!("{name}.{field}")).is_some(),
-        value => builtin_method(value, field).is_some(),
+        value => builtin_method(value, field, env).is_some(),
     }
 }
 
-fn builtin_method(receiver: &Value, field: &str) -> Option<Value> {
+fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Value> {
+    if let Some(implementation) = env.builtin_methods.lookup(receiver, field) {
+        return Some(Value::NamedMethod {
+            receiver: Box::new(receiver.clone()),
+            implementation,
+        });
+    }
     match (receiver, field) {
         (receiver, "toResult") => Some(optional_to_result_method(receiver.clone())),
         (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),

@@ -13,7 +13,19 @@ pub enum Item {
     PatternBinding(PatternBinding),
     SpreadBinding(SpreadBinding),
     Signature(Signature),
+    MethodAttachment(MethodAttachment),
     Expr(Expr),
+}
+
+/// A top-level, keyword-free method attachment such as `Array(a) { ... }`.
+///
+/// The member representation is shared with named-family records so both
+/// surfaces accept the same named/operator methods and requirement syntax.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodAttachment {
+    pub owner: Expr,
+    pub members: Vec<RecordEntry>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,6 +449,10 @@ impl Parser<'_> {
             return Some(Item::SpreadBinding(self.parse_spread_binding()));
         }
 
+        if self.method_attachment_follows() {
+            return Some(Item::MethodAttachment(self.parse_method_attachment()));
+        }
+
         let binding_operator = self.find_binding_operator();
 
         if let Some((operator_index, operator)) = binding_operator {
@@ -460,6 +476,57 @@ impl Parser<'_> {
         self.consume_newline();
 
         Some(Item::Expr(expr))
+    }
+
+    fn parse_method_attachment(&mut self) -> MethodAttachment {
+        let owner = self.parse_postfix();
+        let start = owner.span.start;
+        // `method_attachment_follows` guarantees the brace at this point.
+        self.advance();
+        let members = self.parse_entry_list(EntryMode::Record);
+        let end = self.consume_close(TokenKind::CloseBrace);
+        self.report_record_legacy_separators(&members);
+        self.consume_newline();
+        MethodAttachment {
+            owner,
+            members,
+            span: Span::new(start, end),
+        }
+    }
+
+    /// Recognize only an uppercase-headed owner-pattern term followed directly
+    /// by a member brace. Lowercase value postfix braces remain reserved for
+    /// record transforms.
+    fn method_attachment_follows(&self) -> bool {
+        let Some(Token {
+            kind: TokenKind::ComptimeIdentifier(_),
+            ..
+        }) = self.current()
+        else {
+            return false;
+        };
+
+        let mut index = self.cursor + 1;
+        let mut depth = 0usize;
+        while let Some(token) = self.tokens.get(index) {
+            match token.kind {
+                TokenKind::OpenParen => depth += 1,
+                TokenKind::CloseParen if depth > 0 => depth -= 1,
+                TokenKind::OpenBrace if depth == 0 => return true,
+                TokenKind::Newline
+                | TokenKind::Indent
+                | TokenKind::Dedent
+                | TokenKind::Operator(_)
+                    if depth == 0 =>
+                {
+                    return false;
+                }
+                TokenKind::Comma if depth == 0 => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
     }
 
     fn parse_pattern_binding(&mut self, operator_index: usize) -> PatternBinding {
@@ -1377,6 +1444,15 @@ impl Parser<'_> {
         let null_safe = self.current_is_operator("?.");
         self.advance();
 
+        self.finish_field_access_after_operator(receiver, operator_span, null_safe)
+    }
+
+    fn finish_field_access_after_operator(
+        &mut self,
+        receiver: Expr,
+        operator_span: Span,
+        null_safe: bool,
+    ) -> Expr {
         if self.current_is_interpolation_start() {
             self.report_interpolated_field_name(self.current_span());
             self.skip_interpolation();
@@ -1413,6 +1489,13 @@ impl Parser<'_> {
                 null_safe,
             },
         }
+    }
+
+    fn current_is_field_access_name(&self) -> bool {
+        matches!(
+            self.current().map(|token| &token.kind),
+            Some(TokenKind::Identifier(_) | TokenKind::StringLiteral(_))
+        )
     }
 
     fn parse_atom(&mut self) -> Expr {
@@ -1481,11 +1564,16 @@ impl Parser<'_> {
                 self.parse_set()
             }
             TokenKind::Operator(operator) if operator == "." => {
+                self.advance();
                 let receiver = Expr {
                     kind: ExprKind::Name(METHOD_RECEIVER_NAME.to_owned()),
-                    span: Span::point(token.span.start),
+                    span: token.span,
                 };
-                self.finish_field_access(receiver)
+                if self.current_is_field_access_name() {
+                    self.finish_field_access_after_operator(receiver, token.span, false)
+                } else {
+                    receiver
+                }
             }
             TokenKind::OpenParen => self.parse_group_or_tuple(),
             TokenKind::OpenBracket => self.parse_array(),
@@ -3217,8 +3305,8 @@ mod tests {
     use aven_core::{FileId, SourceFile, codes};
 
     use super::{
-        ExprKind, InterpolationSegment, Item, Literal, Param, ParseOutput, PropagationMode,
-        RecordEntry, parse_module, parse_source,
+        ExprKind, InterpolationSegment, Item, Literal, METHOD_RECEIVER_NAME, Param, ParseOutput,
+        PropagationMode, RecordEntry, parse_module, parse_source,
     };
     use crate::TokenKind;
 
@@ -4441,6 +4529,54 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert!(params[0].default.is_some());
         assert!(params[1].default.is_none());
+    }
+
+    #[test]
+    fn parses_generic_specialized_and_nested_method_attachment_owners() {
+        let output = parse_module(
+            "Array(a) { generic(): a => .[0] }\n\
+             Array(Int) { specialized(): Int => .[0] }\n\
+             Array(Array(a)) { nested(): a => .[0][0] }\n",
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert_eq!(output.module.items.len(), 3);
+        assert!(
+            output
+                .module
+                .items
+                .iter()
+                .all(|item| matches!(item, Item::MethodAttachment(_)))
+        );
+    }
+
+    #[test]
+    fn uppercase_binding_record_is_not_a_method_attachment() {
+        let output = parse_module("Row = { value: Int }\nArray(a) { first(): ?a => .[0] }\n");
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert!(matches!(output.module.items[0], Item::Binding(_)));
+        assert!(matches!(output.module.items[1], Item::MethodAttachment(_)));
+    }
+
+    #[test]
+    fn bare_dot_is_the_hidden_receiver_primary() {
+        let output = parse_module("Array(a) { self(): Array(a) => . }\n");
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::MethodAttachment(attachment)) = output.module.items.first() else {
+            panic!("expected method attachment");
+        };
+        let Some(RecordEntry::Method { value, .. }) = attachment.members.first() else {
+            panic!("expected method member");
+        };
+        let ExprKind::Lambda { body, .. } = &value.kind else {
+            panic!("expected method lambda");
+        };
+        assert!(matches!(
+            body.kind,
+            ExprKind::Name(ref name) if name == METHOD_RECEIVER_NAME
+        ));
     }
 
     fn binding_value(output: &ParseOutput, index: usize) -> &ExprKind {
