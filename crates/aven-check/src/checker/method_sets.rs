@@ -1,7 +1,12 @@
 use super::Checker;
 use std::collections::{HashMap, HashSet};
 
-use crate::ty::{MethodPredicate, RowEntry, Type, map_type, named_builtin, type_variable_names};
+use aven_parser::Literal;
+
+use crate::ty::{
+    LiteralBase, MethodPredicate, RowEntry, Type, literal_variant_base, map_type, named_builtin,
+    type_variable_names,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MethodSignature {
@@ -43,11 +48,26 @@ impl BuiltinType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuiltinResult {
+    Plain(BuiltinType),
+    Optional(BuiltinType),
+}
+
+impl BuiltinResult {
+    fn to_type(self) -> Type {
+        match self {
+            Self::Plain(ty) => ty.to_type(),
+            Self::Optional(ty) => Type::Optional(Box::new(ty.to_type())),
+        }
+    }
+}
+
 struct BuiltinMethodEntry {
     owner: BuiltinType,
     member: &'static str,
     params: &'static [BuiltinType],
-    result: BuiltinType,
+    result: BuiltinResult,
 }
 
 const INT_PARAM: &[BuiltinType] = &[BuiltinType::Int];
@@ -59,127 +79,139 @@ const BUILTIN_METHODS: &[BuiltinMethodEntry] = &[
         owner: BuiltinType::Int,
         member: "+",
         params: INT_PARAM,
-        result: BuiltinType::Int,
+        result: BuiltinResult::Plain(BuiltinType::Int),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: "-",
         params: INT_PARAM,
-        result: BuiltinType::Int,
+        result: BuiltinResult::Plain(BuiltinType::Int),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: "*",
         params: INT_PARAM,
-        result: BuiltinType::Int,
+        result: BuiltinResult::Plain(BuiltinType::Int),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: "/",
         params: INT_PARAM,
-        result: BuiltinType::Int,
+        result: BuiltinResult::Plain(BuiltinType::Int),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: "%",
         params: INT_PARAM,
-        result: BuiltinType::Int,
+        result: BuiltinResult::Plain(BuiltinType::Int),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "div",
+        params: INT_PARAM,
+        result: BuiltinResult::Optional(BuiltinType::Int),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "mod",
+        params: INT_PARAM,
+        result: BuiltinResult::Optional(BuiltinType::Int),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: "^",
         params: INT_PARAM,
-        result: BuiltinType::Int,
+        result: BuiltinResult::Plain(BuiltinType::Int),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: "<",
         params: INT_PARAM,
-        result: BuiltinType::Bool,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: "<=",
         params: INT_PARAM,
-        result: BuiltinType::Bool,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: ">",
         params: INT_PARAM,
-        result: BuiltinType::Bool,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Int,
         member: ">=",
         params: INT_PARAM,
-        result: BuiltinType::Bool,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "+",
         params: FLOAT_PARAM,
-        result: BuiltinType::Float,
+        result: BuiltinResult::Plain(BuiltinType::Float),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "-",
         params: FLOAT_PARAM,
-        result: BuiltinType::Float,
+        result: BuiltinResult::Plain(BuiltinType::Float),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "*",
         params: FLOAT_PARAM,
-        result: BuiltinType::Float,
+        result: BuiltinResult::Plain(BuiltinType::Float),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "/",
         params: FLOAT_PARAM,
-        result: BuiltinType::Float,
+        result: BuiltinResult::Plain(BuiltinType::Float),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "%",
         params: FLOAT_PARAM,
-        result: BuiltinType::Float,
+        result: BuiltinResult::Plain(BuiltinType::Float),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "^",
         params: FLOAT_PARAM,
-        result: BuiltinType::Float,
+        result: BuiltinResult::Plain(BuiltinType::Float),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "<",
         params: FLOAT_PARAM,
-        result: BuiltinType::Bool,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "<=",
         params: FLOAT_PARAM,
-        result: BuiltinType::Bool,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: ">",
         params: FLOAT_PARAM,
-        result: BuiltinType::Bool,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: ">=",
         params: FLOAT_PARAM,
-        result: BuiltinType::Bool,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Text,
         member: "+",
         params: TEXT_PARAM,
-        result: BuiltinType::Text,
+        result: BuiltinResult::Plain(BuiltinType::Text),
     },
 ];
 
@@ -221,6 +253,28 @@ impl Checker<'_> {
                 result: result.as_ref().clone(),
                 predicates: Vec::new(),
             });
+        }
+        // A literal-typed receiver (`y = 7` infers the singleton `7`) carries
+        // no methods of its own; it dispatches through its base builtin owner,
+        // mirroring the widening operator resolution already performs.
+        if let Type::Variant(row) = owner
+            && let Some(base) = literal_variant_base(row)
+        {
+            let widened = match base {
+                LiteralBase::Text => named_builtin("Text"),
+                LiteralBase::Bool => named_builtin("Bool"),
+                LiteralBase::Number => {
+                    let is_float = row.entries.iter().any(|entry| {
+                        matches!(
+                            entry,
+                            RowEntry::Literal { value: Literal::Number(number) }
+                                if super::inference::is_float_literal_text(number)
+                        )
+                    });
+                    named_builtin(if is_float { "Float" } else { "Int" })
+                }
+            };
+            return self.exact_method_signature(&widened, member);
         }
         if let Type::Named(name) = owner
             && let Some(canonical) = self.named_family_aliases.get(name)
@@ -452,7 +506,9 @@ mod tests {
         }
 
         assert_signature("Text", "+", "Text", "Text");
-        assert_eq!(BUILTIN_METHODS.len(), 21);
+        assert_optional_signature("Int", "div", "Int", "Int");
+        assert_optional_signature("Int", "mod", "Int", "Int");
+        assert_eq!(BUILTIN_METHODS.len(), 23);
     }
 
     #[test]
@@ -509,6 +565,17 @@ mod tests {
             Some(MethodSignature {
                 params: vec![named_builtin(param)],
                 result: named_builtin(result),
+                predicates: Vec::new(),
+            })
+        );
+    }
+
+    fn assert_optional_signature(owner: &str, member: &str, param: &str, result: &str) {
+        assert_eq!(
+            builtin_method_signature(&named_builtin(owner), member),
+            Some(MethodSignature {
+                params: vec![named_builtin(param)],
+                result: Type::Optional(Box::new(named_builtin(result))),
                 predicates: Vec::new(),
             })
         );

@@ -785,6 +785,33 @@ fn run_reports_runtime_diagnostics() {
 }
 
 #[test]
+fn checked_integer_division_program_checks_and_runs() {
+    let file = TempFile::new(
+        "checked-int-division",
+        concat!(
+            "x : Int = 7\n",
+            "divide = x.div\n",
+            "{\n",
+            "  operator: x / 2,\n",
+            "  checked: x.div(2),\n",
+            "  zeroDiv: x.div(0),\n",
+            "  zeroMod: x.mod(0),\n",
+            "  remainder: x % 2,\n",
+            "  bound: divide(2),\n",
+            "}\n",
+        ),
+    );
+
+    assert_success(&run_aven(["check"], file.path()));
+    let output = run_aven(["run"], file.path());
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "{ operator: 3, checked: 3, zeroDiv: undefined, zeroMod: undefined, remainder: 1, bound: 3 }\n"
+    );
+}
+
+#[test]
 fn run_threads_result_with_propagation_operator() {
     let file = TempFile::new(
         "run-propagate",

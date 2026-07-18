@@ -363,6 +363,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A row transform tried to delete a record field or variant tag that is not present in the closed row accumulated so far. Spread or add that label first, or remove the delete.",
     },
     DiagnosticExplanation {
+        code: codes::ty::DIVISION_BY_ZERO,
+        text: "Integer division and remainder require a statically non-zero divisor. Replace the zero literal, use the checked Int.div or Int.mod method, or convert the operands to Float.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::DIVISOR_NOT_STATIC,
+        text: "Integer division and remainder require a non-zero integer literal as the divisor. Use the checked Int.div or Int.mod method for a divisor chosen at runtime, or convert the operands to Float.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::DUPLICATE_SPREAD_LABEL,
         text: "A disjoint row spread or add introduced a label that is already present. Use an overwrite form such as `:..source` or `field :: Type` when replacement is intended.",
     },

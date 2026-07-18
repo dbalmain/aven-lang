@@ -2884,8 +2884,9 @@ fn non_foldable_base_operations_keep_widened_types() {
     let output = parse_module(source);
     let check = check_module(&output.module);
 
-    assert!(
-        check.diagnostics.is_empty(),
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::DIVISION_BY_ZERO),
+        1,
         "unexpected diagnostics: {:?}",
         check.diagnostics
     );
@@ -5810,6 +5811,99 @@ fn builtin_operator_results_are_inferred() {
 }
 
 #[test]
+fn integer_division_and_remainder_require_non_zero_literal_divisors() {
+    let accepted = parse_module(concat!(
+        "x : Int = 7\n",
+        "plain : Int = x / 100\n",
+        "grouped : Int = x / (((2)))\n",
+        "negative : Int = x / (-3)\n",
+        "remainder : Int = x % (-2)\n",
+    ));
+    let accepted = check_module(&accepted.module);
+    assert!(
+        accepted.diagnostics.is_empty(),
+        "{:?}",
+        accepted.diagnostics
+    );
+
+    for (source, code) in [
+        ("x : Int = 7\nvalue = x / 0\n", codes::ty::DIVISION_BY_ZERO),
+        (
+            "x : Int = 7\nvalue = x % (-0)\n",
+            codes::ty::DIVISION_BY_ZERO,
+        ),
+        (
+            "x : Int = 7\nn : Int = 2\nvalue = x / n\n",
+            codes::ty::DIVISOR_NOT_STATIC,
+        ),
+        (
+            "x : Int = 7\nn : Int = 2\nvalue = x % n\n",
+            codes::ty::DIVISOR_NOT_STATIC,
+        ),
+        (
+            "x : Int = 7\ndivide = (n) => x / n\n",
+            codes::ty::DIVISOR_NOT_STATIC,
+        ),
+        ("value = 7 / (1 + 1)\n", codes::ty::DIVISOR_NOT_STATIC),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        let diagnostics = check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some(code))
+            .collect::<Vec<_>>();
+        assert_eq!(diagnostics.len(), 1, "{source}: {:?}", check.diagnostics);
+        if code == codes::ty::DIVISOR_NOT_STATIC {
+            assert_eq!(
+                diagnostics[0].message,
+                "divisor is not statically known to be non-zero"
+            );
+            let method = if source.contains(" / ") { "div" } else { "mod" };
+            assert!(
+                diagnostics[0]
+                    .notes
+                    .iter()
+                    .any(|note| note.contains(&format!(
+                        "use checked `x.{method}(n)` (`?Int`) or convert to `Float`"
+                    ))),
+                "{source}: {:?}",
+                diagnostics[0]
+            );
+        }
+    }
+}
+
+#[test]
+fn checked_integer_division_methods_and_bound_values_type_check() {
+    let output = parse_module(concat!(
+        "x : Int = 7\n",
+        "quotient : ?Int = x.div(2)\n",
+        "zeroQuotient : ?Int = x.div(0)\n",
+        "zeroRemainder : ?Int = x.mod(0)\n",
+        "divide = x.div\n",
+        "bound : ?Int = divide(2)\n",
+    ));
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn literal_typed_receivers_dispatch_builtin_methods_through_their_base() {
+    let output = parse_module(concat!(
+        "direct : ?Int = 7.div(2)\n",
+        "y = 7\n",
+        "widened : ?Int = y.mod(3)\n",
+        "derived = y + 1\n",
+        "chained : ?Int = derived.div(3)\n",
+    ));
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn builtin_method_table_preserves_every_concrete_operator_combination() {
     let arithmetic = ["+", "-", "*", "/", "%", "^"];
     let comparisons = ["<", "<=", ">", ">="];
@@ -5854,10 +5948,16 @@ fn assert_operator_type_checks(
     right_value: &str,
     result_type: &str,
 ) {
+    let right_operand =
+        if left_type == "Int" && right_type == "Int" && matches!(operator, "/" | "%") {
+            right_value
+        } else {
+            "right"
+        };
     let source = format!(
         "left: {left_type} = {left_value}\n\
          right: {right_type} = {right_value}\n\
-         result: {result_type} = left {operator} right\n"
+         result: {result_type} = left {operator} {right_operand}\n"
     );
     let output = parse_module(&source);
     assert!(

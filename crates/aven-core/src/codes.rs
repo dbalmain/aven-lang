@@ -119,6 +119,8 @@ pub mod ty {
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const DECODE_FORMAT: &str = "type.decode-format";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
+    pub const DIVISION_BY_ZERO: &str = "type.division-by-zero";
+    pub const DIVISOR_NOT_STATIC: &str = "type.divisor-not-static";
     pub const DUPLICATE_SPREAD_LABEL: &str = "type.duplicate-spread-label";
     pub const ENCODE_FORMAT: &str = "type.encode-format";
     pub const INCOMPATIBLE_MATCH_ARMS: &str = "type.incompatible-match-arms";
@@ -243,6 +245,8 @@ pub const ALL: &[&str] = &[
     ty::CYCLIC_ALIAS,
     ty::DECODE_FORMAT,
     ty::DELETE_ABSENT_FIELD,
+    ty::DIVISION_BY_ZERO,
+    ty::DIVISOR_NOT_STATIC,
     ty::DUPLICATE_SPREAD_LABEL,
     ty::ENCODE_FORMAT,
     ty::INCOMPATIBLE_MATCH_ARMS,

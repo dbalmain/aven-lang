@@ -386,6 +386,10 @@ impl<'a> Checker<'a> {
         let left_type = self.infer(env, left);
         let right_type = self.infer(env, right);
 
+        // Apply this syntactic policy before literal folding: a constant
+        // expression such as `1 + 1` is still not a literal divisor in v1.
+        self.maybe_report_integer_divisor(operator, &left_type, &right_type, right);
+
         if let Some(literal) = self.fold_binary_literal(operator, &left_type, &right_type) {
             return self.open_literal_variant(&literal);
         }
@@ -494,7 +498,57 @@ impl<'a> Checker<'a> {
             self.maybe_report_coalesce_never_empty(left, &left_resolved);
         }
 
+        // Operator resolution can constrain an initially-unresolved operand to
+        // Int. Recheck after those unifications; diagnostics are deduplicated.
+        self.maybe_report_integer_divisor(operator, &left_type, &right_type, right);
+
         result
+    }
+
+    fn maybe_report_integer_divisor(
+        &mut self,
+        operator: &str,
+        left_type: &Type,
+        right_type: &Type,
+        right: &Expr,
+    ) {
+        if !matches!(operator, "/" | "%")
+            || !self.operator_operand_resolves_to_int(left_type)
+            || !self.operator_operand_resolves_to_int(right_type)
+        {
+            return;
+        }
+
+        let checked_method = if operator == "/" { "div" } else { "mod" };
+        let diagnostic = match static_integer_literal_is_zero(right) {
+            Some(true) => Diagnostic::error("division by zero")
+                .with_code(codes::ty::DIVISION_BY_ZERO)
+                .with_label(Label::primary(right.span, "this integer literal is zero"))
+                .with_note(format!(
+                    "use checked `x.{checked_method}(n)` (`?Int`) when the divisor may be zero"
+                )),
+            Some(false) => return,
+            None => Diagnostic::error("divisor is not statically known to be non-zero")
+                .with_code(codes::ty::DIVISOR_NOT_STATIC)
+                .with_label(Label::primary(
+                    right.span,
+                    "this divisor is not a non-zero integer literal",
+                ))
+                .with_note(format!(
+                    "use checked `x.{checked_method}(n)` (`?Int`) or convert to `Float`"
+                )),
+        };
+        self.push_unique_diagnostic(diagnostic);
+    }
+
+    fn operator_operand_resolves_to_int(&self, ty: &Type) -> bool {
+        let ty = self.normalize(&self.resolve_and_default(ty));
+        matches!(&ty, Type::Named(name) if name == "Int")
+            || matches!(&ty, Type::Variant(row)
+                if literal_variant_base(row) == Some(LiteralBase::Number)
+                    && !row.entries.iter().any(|entry| matches!(entry,
+                        RowEntry::Literal { value: Literal::Number(number) }
+                            if is_float_literal_text(number))))
     }
 
     pub(super) fn infer_binary_type(
@@ -3612,6 +3666,18 @@ fn singleton_literal_type(ty: &Type) -> Option<&Literal> {
     Some(value)
 }
 
+fn static_integer_literal_is_zero(expr: &Expr) -> Option<bool> {
+    match &ungroup_expr(expr).kind {
+        ExprKind::Literal(Literal::Number(number)) if !is_float_literal_text(number) => {
+            Some(number.bytes().all(|byte| matches!(byte, b'0' | b'_')))
+        }
+        ExprKind::Unary {
+            operator, value, ..
+        } if operator == "-" => static_integer_literal_is_zero(value),
+        _ => None,
+    }
+}
+
 fn operator_operand_type(ty: &Type) -> String {
     if binary_operand_is_text(ty) {
         return "Text".to_owned();
@@ -3947,7 +4013,7 @@ fn is_float_zero(value: f64) -> bool {
     value.to_bits() << 1 == 0
 }
 
-fn is_float_literal_text(text: &str) -> bool {
+pub(super) fn is_float_literal_text(text: &str) -> bool {
     text.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
 }
 

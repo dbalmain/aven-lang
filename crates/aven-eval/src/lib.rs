@@ -2642,6 +2642,8 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (Value::Map(entries), "entries") => Some(map_entries_method(Rc::clone(entries))),
         (Value::Map(entries), "size") => Some(map_size_method(Rc::clone(entries))),
         (Value::Map(entries), "merge") => Some(map_merge_method(Rc::clone(entries))),
+        (Value::Int(value), "div") => Some(int_checked_method(*value, "div", i64::checked_div)),
+        (Value::Int(value), "mod") => Some(int_checked_method(*value, "mod", i64::checked_rem)),
         (Value::Text(text), field) => text_method(text, field),
         (
             Value::Tag { name, payload },
@@ -2664,6 +2666,30 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         }
         _ => None,
     }
+}
+
+fn int_checked_method(
+    left: i64,
+    name: &'static str,
+    operation: fn(i64, i64) -> Option<i64>,
+) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Int.{name} expects 1 argument, got {}", args.len()));
+        }
+        let Value::Int(right) = &args[0] else {
+            return Err(format!(
+                "Int.{name} expects Int, got {}",
+                args[0].type_name()
+            ));
+        };
+        if *right == 0 {
+            return Ok(Value::Undefined);
+        }
+        operation(left, *right)
+            .map(Value::Int)
+            .ok_or_else(|| format!("integer overflow in Int.{name}"))
+    })
 }
 
 fn optional_to_result_method(receiver: Value) -> Value {
@@ -3659,7 +3685,7 @@ fn float_arithmetic(
     right_span: Span,
     span: Span,
 ) -> Result<Value, Diagnostic> {
-    if matches!(operator, "/" | "%") && is_float_zero(right) {
+    if operator == "%" && is_float_zero(right) {
         return Err(division_by_zero(right_span));
     }
 

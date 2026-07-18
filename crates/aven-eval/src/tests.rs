@@ -30,6 +30,17 @@ fn evaluates_unary_minus_and_bool_not() {
 fn evaluates_integer_and_float_division() {
     assert_eval("7 / 2", Value::Int(3));
     assert_eval("7.0 / 2", Value::Float(3.5));
+    assert_eval("1.0 / 0.0", Value::Float(f64::INFINITY));
+}
+
+#[test]
+fn evaluates_checked_integer_division_remainder_and_bound_method() {
+    assert_eval("7.div(2)", Value::Int(3));
+    assert_eval("7.div(0)", Value::Undefined);
+    assert_eval("7.mod(2)", Value::Int(1));
+    assert_eval("7.mod(0)", Value::Undefined);
+    assert_eval("7 % 2", Value::Int(1));
+    assert_module_value("divide = 7.div\ndivide(2)\n", Value::Int(3));
 }
 
 #[test]
