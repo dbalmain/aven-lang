@@ -178,12 +178,9 @@ maxGo = (xs: Array(t), index: Int, best: t): t
         false => maxGo(xs, index + 1, best)
 
 Array(a) {
-  # Prefer private helpers over `.fold(local, …)` when the init is a block-local
-  # binding: method-arg checking does not yet see `infer_block` locals.
-
   length(): Int =>
     zero: Int = 0
-    foldGo(., 0, zero, (acc, _) => acc + 1)
+    .fold(zero, (acc, _) => acc + 1)
 
   isEmpty(): Bool =>
     .[0] ?>
@@ -200,15 +197,15 @@ Array(a) {
 
   count(pred: (a) -> Bool): Int =>
     zero: Int = 0
-    foldGo(., 0, zero, (acc, x) => pred(x) ?> true => acc + 1, false => acc)
+    .fold(zero, (acc, x) => pred(x) ?> true => acc + 1, false => acc)
 
   all(pred: (a) -> Bool): Bool =>
     start: Bool = true
-    foldGo(., 0, start, (acc, x) => acc && pred(x))
+    .fold(start, (acc, x) => acc && pred(x))
 
   any(pred: (a) -> Bool): Bool =>
     start: Bool = false
-    foldGo(., 0, start, (acc, x) => acc || pred(x))
+    .fold(start, (acc, x) => acc || pred(x))
 
   find(pred: (a) -> Bool): ?a => findGo(., 0, pred)
 
@@ -219,20 +216,20 @@ Array(a) {
   # Empty seed annotated so the polymorphic element type is not left open.
   map(f: (a) -> b): Array(b) =>
     seed: Array(b) = []
-    foldGo(., 0, seed, (acc, x) => acc.push(f(x)))
+    .fold(seed, (acc, x) => acc.push(f(x)))
 
   flatMap(f: (a) -> Array(b)): Array(b) =>
     seed: Array(b) = []
-    foldGo(., 0, seed, (acc, x) => [..acc, ..f(x)])
+    .fold(seed, (acc, x) => [..acc, ..f(x)])
 
   filter(pred: (a) -> Bool): Array(a) =>
     seed: Array(a) = []
-    foldGo(., 0, seed, (acc, x) => pred(x) ?> true => acc.push(x), false => acc)
+    .fold(seed, (acc, x) => pred(x) ?> true => acc.push(x), false => acc)
 
   # Fold pushing to the front.
   reverse(): Array(a) =>
     seed: Array(a) = []
-    foldGo(., 0, seed, (acc, x) => [x, ..acc])
+    .fold(seed, (acc, x) => [x, ..acc])
 
   concat(other: Array(a)): Array(a) =>
     xs = .
@@ -287,13 +284,13 @@ Array(a) {
 Array(Int) {
   sum(): Int =>
     zero: Int = 0
-    foldGo(., 0, zero, (acc, x) => acc + x)
+    .fold(zero, (acc, x) => acc + x)
 }
 
 Array(Array(a)) {
   flatten(): Array(a) =>
     seed: Array(a) = []
-    foldGo(., 0, seed, (acc, xs) => [..acc, ..xs])
+    .fold(seed, (acc, xs) => [..acc, ..xs])
 }
 
 { range }

@@ -1164,11 +1164,8 @@ impl<'a> Checker<'a> {
                     .define(&param.name, LocalValueType::Known(ty.clone()));
                 self.record_inferred_type(param.name_span, ty.clone());
             }
-            let env = self.local_types.inference_env();
             let marker = self.method_obligation_marker();
-            let actual = self.infer(&env, body);
-            let actual = self.normalize(&self.resolve_and_default(&actual));
-            self.check_type_against_type(&signature.result, &actual, body.span);
+            self.check_value_against(&signature.result, body);
             self.finish_non_generalizing_lambda_obligations(marker);
             self.local_types.pop();
             self.pop_method_assumptions();

@@ -10325,6 +10325,20 @@ fn builtin_method_attachment_signatures_cross_declaration_boundaries() {
 }
 
 #[test]
+fn builtin_method_attachment_calls_see_block_local_arguments() {
+    let check = check_trusted_builtin_methods(concat!(
+        "Array(a) {\n",
+        "  foldForTest(init: b, f: (b, a) -> b): b => init\n",
+        "  lengthForTest(): Int =>\n",
+        "    zero: Int = 0\n",
+        "    .foldForTest(zero, (acc, _) => acc + 1)\n",
+        "}\n",
+    ));
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn overlapping_builtin_method_members_are_rejected() {
     let check = check_trusted_builtin_methods(
         "Array(a) { duplicate(): Int => 1 }\n\
