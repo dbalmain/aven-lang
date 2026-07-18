@@ -5924,6 +5924,24 @@ fn checked_integer_division_methods_and_bound_values_type_check() {
 }
 
 #[test]
+fn float_predicate_and_ieee_equals_methods_type_check() {
+    let output = parse_module(concat!(
+        "x : Float = 1.5\n",
+        "finite : Bool = x.isFinite()\n",
+        "nan : Bool = x.isNaN()\n",
+        "infinite : Bool = x.isInfinite()\n",
+        "ieee : Bool = x.ieeeEquals(2.5)\n",
+        "check = x.isNaN\n",
+        "bound : Bool = check()\n",
+        "sameIeee = x.ieeeEquals\n",
+        "boundIeee : Bool = sameIeee(x)\n",
+    ));
+    let check = check_module(&output.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn literal_typed_receivers_dispatch_builtin_methods_through_their_base() {
     let output = parse_module(concat!(
         "direct : ?Int = 7.div(2)\n",

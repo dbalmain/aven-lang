@@ -48,6 +48,109 @@ fn evaluates_checked_integer_division_remainder_and_bound_method() {
 }
 
 #[test]
+fn evaluates_float_predicate_and_ieee_equals_methods() {
+    assert_eval("(0.0 / 0.0).isNaN()", Value::Bool(true));
+    assert_eval("(1.0 / 0.0).isInfinite()", Value::Bool(true));
+    assert_eval("(1.0 / 0.0).isFinite()", Value::Bool(false));
+    assert_eval("(-1.0 / 0.0).isInfinite()", Value::Bool(true));
+    assert_eval("1.5.isFinite()", Value::Bool(true));
+    assert_eval("1.5.isNaN()", Value::Bool(false));
+    assert_eval("1.5.isInfinite()", Value::Bool(false));
+    assert_eval("(0.0 / 0.0).ieeeEquals(0.0 / 0.0)", Value::Bool(false));
+    assert_eval("1.0.ieeeEquals(1.0)", Value::Bool(true));
+    assert_eval("0.0.ieeeEquals(-0.0)", Value::Bool(true));
+    assert_module_value("check = (0.0 / 0.0).isNaN\ncheck()\n", Value::Bool(true));
+    assert_module_value(
+        "sameIeee = (1.0 / 0.0).ieeeEquals\nsameIeee(1.0 / 0.0)\n",
+        Value::Bool(true),
+    );
+}
+
+#[test]
+fn float_equality_treats_nan_as_equal_and_keeps_signed_zero() {
+    assert_eval("(0.0 / 0.0) == (0.0 / 0.0)", Value::Bool(true));
+    assert_eval("(0.0 / 0.0) != (0.0 / 0.0)", Value::Bool(false));
+    assert_eval("0.0 == -0.0", Value::Bool(true));
+    assert_eval("1.0 == (0.0 / 0.0)", Value::Bool(false));
+    assert_eval("[0.0 / 0.0].has(0.0 / 0.0)", Value::Bool(true));
+}
+
+#[test]
+fn float_comparisons_use_total_order_with_nan_last() {
+    assert_eval("(0.0 / 0.0) < (0.0 / 0.0)", Value::Bool(false));
+    assert_eval("(0.0 / 0.0) <= (0.0 / 0.0)", Value::Bool(true));
+    assert_eval("(0.0 / 0.0) >= (0.0 / 0.0)", Value::Bool(true));
+    assert_eval("1.0 < (0.0 / 0.0)", Value::Bool(true));
+    assert_eval("(0.0 / 0.0) < 1.0", Value::Bool(false));
+    assert_eval("(1.0 / 0.0) < (0.0 / 0.0)", Value::Bool(true));
+    assert_eval("(-1.0 / 0.0) < 0.0", Value::Bool(true));
+    assert_eval("0.0 < (1.0 / 0.0)", Value::Bool(true));
+    assert_eval("(0.0 / 0.0) > (1.0 / 0.0)", Value::Bool(true));
+}
+
+#[test]
+fn float_non_finite_values_display_as_aven_spellings() {
+    assert_eq!(Value::Float(f64::NAN).to_string(), "NaN");
+    assert_eq!(Value::Float(f64::INFINITY).to_string(), "Infinity");
+    assert_eq!(Value::Float(f64::NEG_INFINITY).to_string(), "-Infinity");
+    assert_eval("\"${0.0 / 0.0}\"", Value::Text("NaN".to_owned()));
+    assert_eval("\"${1.0 / 0.0}\"", Value::Text("Infinity".to_owned()));
+    assert_eval("\"${-1.0 / 0.0}\"", Value::Text("-Infinity".to_owned()));
+}
+
+#[test]
+fn float_nan_sorts_last_and_minimum_ignores_nan() {
+    let array_module = parse_ok(include_str!("../../aven-host/std/array.av"));
+    let builtin_methods = BuiltinMethodEnvironment::default();
+    let _array_export = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+        &array_module,
+        Vec::new(),
+        &ModuleImports::default(),
+        &RuntimeTypeBindings::default(),
+        &builtin_methods,
+        true,
+    )
+    .value
+    .expect("std/array should export a record");
+
+    let source = concat!(
+        "xs = [1.0, 0.0 / 0.0, 2.0, 0.5]\n",
+        "{\n",
+        "  sorted: xs.sortWith((a, b) => a < b),\n",
+        "  minimum: xs.minimum(),\n",
+        "  maximum: xs.maximum(),\n",
+        "}\n",
+    );
+    let outcome = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+        &parse_ok(source),
+        Vec::new(),
+        &ModuleImports::default(),
+        &RuntimeTypeBindings::default(),
+        &builtin_methods,
+        false,
+    );
+    assert_eq!(
+        outcome,
+        EvalOutcome {
+            value: Some(record_value(vec![
+                (
+                    "sorted",
+                    array_value(vec![
+                        Value::Float(0.5),
+                        Value::Float(1.0),
+                        Value::Float(2.0),
+                        Value::Float(f64::NAN),
+                    ])
+                ),
+                ("minimum", Value::Float(0.5)),
+                ("maximum", Value::Float(f64::NAN)),
+            ])),
+            diagnostics: Vec::new()
+        }
+    );
+}
+
+#[test]
 fn reports_division_by_zero() {
     let diagnostic = eval_error("1 / 0");
 

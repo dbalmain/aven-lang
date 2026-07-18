@@ -355,12 +355,24 @@ pub enum Value {
     Null,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum PrimitivePayload {
     Int(i64),
     Float(f64),
     Text(String),
     Bool(bool),
+}
+
+impl PartialEq for PrimitivePayload {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(left), Self::Int(right)) => left == right,
+            (Self::Float(left), Self::Float(right)) => float_eq(*left, *right),
+            (Self::Text(left), Self::Text(right)) => left == right,
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            _ => false,
+        }
+    }
 }
 
 impl PrimitivePayload {
@@ -396,7 +408,7 @@ impl fmt::Display for PrimitivePayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Int(value) => write!(f, "{value}"),
-            Self::Float(value) => write!(f, "{value}"),
+            Self::Float(value) => write_float(f, *value),
             Self::Text(value) => write!(f, "{value}"),
             Self::Bool(value) => write!(f, "{value}"),
         }
@@ -515,7 +527,7 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Int(left), Self::Int(right)) => left == right,
-            (Self::Float(left), Self::Float(right)) => left == right,
+            (Self::Float(left), Self::Float(right)) => float_eq(*left, *right),
             (Self::Text(left), Self::Text(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::Array(left), Self::Array(right)) => left == right,
@@ -577,7 +589,7 @@ impl PartialEq for Value {
 fn primitive_payload_matches_value(payload: &PrimitivePayload, value: &Value) -> bool {
     match (payload, value) {
         (PrimitivePayload::Int(left), Value::Int(right)) => left == right,
-        (PrimitivePayload::Float(left), Value::Float(right)) => left == right,
+        (PrimitivePayload::Float(left), Value::Float(right)) => float_eq(*left, *right),
         (PrimitivePayload::Text(left), Value::Text(right)) => left == right,
         (PrimitivePayload::Bool(left), Value::Bool(right)) => left == right,
         _ => false,
@@ -588,7 +600,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Int(value) => write!(f, "{value}"),
-            Self::Float(value) => write!(f, "{value}"),
+            Self::Float(value) => write_float(f, *value),
             Self::Text(value) => write!(f, "{value}"),
             Self::Bool(value) => write!(f, "{value}"),
             Self::Array(values) => fmt_array(values, f),
@@ -3102,6 +3114,14 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (Value::Map(entries), "merge") => Some(map_merge_method(Rc::clone(entries))),
         (Value::Int(value), "div") => Some(int_checked_method(*value, "div", i64::checked_div)),
         (Value::Int(value), "mod") => Some(int_checked_method(*value, "mod", i64::checked_rem)),
+        (Value::Float(value), "isFinite") => {
+            Some(float_nullary_bool(*value, "isFinite", f64::is_finite))
+        }
+        (Value::Float(value), "isNaN") => Some(float_nullary_bool(*value, "isNaN", f64::is_nan)),
+        (Value::Float(value), "isInfinite") => {
+            Some(float_nullary_bool(*value, "isInfinite", f64::is_infinite))
+        }
+        (Value::Float(value), "ieeeEquals") => Some(float_ieee_equals_method(*value)),
         (Value::Text(text), field) => text_method(text, field),
         (
             Value::Tag { name, payload },
@@ -3147,6 +3167,36 @@ fn int_checked_method(
         operation(left, *right)
             .map(Value::Int)
             .ok_or_else(|| format!("integer overflow in Int.{name}"))
+    })
+}
+
+fn float_nullary_bool(value: f64, name: &'static str, predicate: fn(f64) -> bool) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Float.{name} expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(Value::Bool(predicate(value)))
+    })
+}
+
+fn float_ieee_equals_method(left: f64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Float.ieeeEquals expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let Value::Float(right) = &args[0] else {
+            return Err(format!(
+                "Float.ieeeEquals expects Float, got {}",
+                args[0].type_name()
+            ));
+        };
+        Ok(Value::Bool(left == *right))
     })
 }
 
@@ -4179,13 +4229,9 @@ fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Val
 
     let equal = match (&left, &right) {
         (Value::Int(left), Value::Int(right)) => left == right,
-        (Value::Float(left), Value::Float(right)) => {
-            numeric_ordering(*left, *right).is_some_and(|ordering| ordering == Ordering::Equal)
-        }
-        (Value::Int(left), Value::Float(right)) => numeric_ordering(*left as f64, *right)
-            .is_some_and(|ordering| ordering == Ordering::Equal),
-        (Value::Float(left), Value::Int(right)) => numeric_ordering(*left, *right as f64)
-            .is_some_and(|ordering| ordering == Ordering::Equal),
+        (Value::Float(left), Value::Float(right)) => float_eq(*left, *right),
+        (Value::Int(left), Value::Float(right)) => float_eq(*left as f64, *right),
+        (Value::Float(left), Value::Int(right)) => float_eq(*left, *right as f64),
         (Value::Text(left), Value::Text(right)) => left == right,
         (Value::Bool(left), Value::Bool(right)) => left == right,
         (Value::Array(_), Value::Array(_)) => left == right,
@@ -4242,15 +4288,44 @@ fn numeric_comparison(
 fn numeric_value_ordering(left: &Value, right: &Value) -> Option<Ordering> {
     match (left, right) {
         (Value::Int(left), Value::Int(right)) => Some(left.cmp(right)),
-        (Value::Float(left), Value::Float(right)) => numeric_ordering(*left, *right),
-        (Value::Int(left), Value::Float(right)) => numeric_ordering(*left as f64, *right),
-        (Value::Float(left), Value::Int(right)) => numeric_ordering(*left, *right as f64),
+        (Value::Float(left), Value::Float(right)) => Some(float_total_cmp(*left, *right)),
+        (Value::Int(left), Value::Float(right)) => Some(float_total_cmp(*left as f64, *right)),
+        (Value::Float(left), Value::Int(right)) => Some(float_total_cmp(*left, *right as f64)),
         _ => None,
     }
 }
 
-fn numeric_ordering(left: f64, right: f64) -> Option<Ordering> {
-    left.partial_cmp(&right)
+/// Aven Float equality: NaN equals itself; `-0.0` equals `0.0` (IEEE).
+fn float_eq(left: f64, right: f64) -> bool {
+    (left.is_nan() && right.is_nan()) || left == right
+}
+
+/// Total order for Aven Float: `-Infinity < finite < Infinity < NaN`.
+///
+/// Both NaNs compare equal. Finite and infinite values keep IEEE ordering,
+/// including `-0.0 == 0.0`. This is intentionally *not* `f64::total_cmp`, which
+/// distinguishes signed zeros and orders NaN payloads separately.
+fn float_total_cmp(left: f64, right: f64) -> Ordering {
+    match (left.is_nan(), right.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => left
+            .partial_cmp(&right)
+            .expect("non-NaN f64 values are totally ordered by partial_cmp"),
+    }
+}
+
+fn write_float(f: &mut fmt::Formatter<'_>, value: f64) -> fmt::Result {
+    if value.is_nan() {
+        write!(f, "NaN")
+    } else if value == f64::INFINITY {
+        write!(f, "Infinity")
+    } else if value == f64::NEG_INFINITY {
+        write!(f, "-Infinity")
+    } else {
+        write!(f, "{value}")
+    }
 }
 
 fn is_float_zero(value: f64) -> bool {

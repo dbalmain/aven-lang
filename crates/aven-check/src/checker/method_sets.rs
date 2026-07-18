@@ -75,6 +75,7 @@ struct BuiltinMethodEntry {
 const INT_PARAM: &[BuiltinType] = &[BuiltinType::Int];
 const FLOAT_PARAM: &[BuiltinType] = &[BuiltinType::Float];
 const TEXT_PARAM: &[BuiltinType] = &[BuiltinType::Text];
+const NO_PARAMS: &[BuiltinType] = &[];
 
 const BUILTIN_METHODS: &[BuiltinMethodEntry] = &[
     BuiltinMethodEntry {
@@ -206,6 +207,30 @@ const BUILTIN_METHODS: &[BuiltinMethodEntry] = &[
     BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: ">=",
+        params: FLOAT_PARAM,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "isFinite",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "isNaN",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "isInfinite",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Bool),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "ieeeEquals",
         params: FLOAT_PARAM,
         result: BuiltinResult::Plain(BuiltinType::Bool),
     },
@@ -680,7 +705,11 @@ mod tests {
         assert_signature("Text", "+", "Text", "Text");
         assert_optional_signature("Int", "div", "Int", "Int");
         assert_optional_signature("Int", "mod", "Int", "Int");
-        assert_eq!(BUILTIN_METHODS.len(), 23);
+        assert_nullary_signature("Float", "isFinite", "Bool");
+        assert_nullary_signature("Float", "isNaN", "Bool");
+        assert_nullary_signature("Float", "isInfinite", "Bool");
+        assert_signature("Float", "ieeeEquals", "Float", "Bool");
+        assert_eq!(BUILTIN_METHODS.len(), 27);
     }
 
     #[test]
@@ -748,6 +777,17 @@ mod tests {
             Some(MethodSignature {
                 params: vec![named_builtin(param)],
                 result: Type::Optional(Box::new(named_builtin(result))),
+                predicates: Vec::new(),
+            })
+        );
+    }
+
+    fn assert_nullary_signature(owner: &str, member: &str, result: &str) {
+        assert_eq!(
+            builtin_method_signature(&named_builtin(owner), member),
+            Some(MethodSignature {
+                params: vec![],
+                result: named_builtin(result),
                 predicates: Vec::new(),
             })
         );
