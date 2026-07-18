@@ -31,6 +31,10 @@ fn evaluates_integer_and_float_division() {
     assert_eval("7 / 2", Value::Int(3));
     assert_eval("7.0 / 2", Value::Float(3.5));
     assert_eval("1.0 / 0.0", Value::Float(f64::INFINITY));
+    // Literal-typed binding as divisor (type checker accepts via singleton type).
+    assert_module_value("n = 10 / 2\n100 / n\n", Value::Int(20));
+    assert_module_value("n = 10 / 2\n100 % n\n", Value::Int(0));
+    assert_module_value("7 / (1 + 1)\n", Value::Int(3));
 }
 
 #[test]

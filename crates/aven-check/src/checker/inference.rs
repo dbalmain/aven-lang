@@ -410,8 +410,9 @@ impl<'a> Checker<'a> {
                 .insert(right.span, PrimitiveFamilyCoercion::Widen);
         }
 
-        // Apply this syntactic policy before literal folding: a constant
-        // expression such as `1 + 1` is still not a literal divisor in v1.
+        // Integer `/` and `%` need a statically non-zero divisor. The check
+        // consults both syntax (literal tokens) and the divisor's resolved type
+        // (closed / inferred-open number literal unions).
         self.maybe_report_integer_divisor(operator, &left_type, &right_type, right);
 
         if let Some(literal) = self.fold_binary_literal(operator, &left_type, &right_type) {
@@ -544,13 +545,31 @@ impl<'a> Checker<'a> {
         }
 
         let checked_method = if operator == "/" { "div" } else { "mod" };
-        let diagnostic = match static_integer_literal_is_zero(right) {
-            Some(true) => Diagnostic::error("division by zero")
-                .with_code(codes::ty::DIVISION_BY_ZERO)
-                .with_label(Label::primary(right.span, "this integer literal is zero"))
-                .with_note(format!(
-                    "use checked `x.{checked_method}(n)` (`?Int`) when the divisor may be zero"
-                )),
+        // Prefer the syntactic path (plain / grouped / negated literal tokens)
+        // so positions that have not yet formed a literal type still accept.
+        // Fall back to the divisor's resolved type: a number literal variant
+        // whose known members are all non-zero integers is also legal.
+        let (is_zero, zero_from_syntax) = match static_integer_literal_is_zero(right) {
+            Some(is_zero) => (Some(is_zero), true),
+            None => {
+                let right_resolved = self.normalize(&self.resolve_and_default(right_type));
+                (static_integer_divisor_type_is_zero(&right_resolved), false)
+            }
+        };
+        let diagnostic = match is_zero {
+            Some(true) => {
+                let label = if zero_from_syntax {
+                    "this integer literal is zero"
+                } else {
+                    "this divisor is zero"
+                };
+                Diagnostic::error("division by zero")
+                    .with_code(codes::ty::DIVISION_BY_ZERO)
+                    .with_label(Label::primary(right.span, label))
+                    .with_note(format!(
+                        "use checked `x.{checked_method}(n)` (`?Int`) when the divisor may be zero"
+                    ))
+            }
             Some(false) => return,
             None => Diagnostic::error("divisor is not statically known to be non-zero")
                 .with_code(codes::ty::DIVISOR_NOT_STATIC)
@@ -3721,13 +3740,66 @@ fn singleton_literal_type(ty: &Type) -> Option<&Literal> {
 fn static_integer_literal_is_zero(expr: &Expr) -> Option<bool> {
     match &ungroup_expr(expr).kind {
         ExprKind::Literal(Literal::Number(number)) if !is_float_literal_text(number) => {
-            Some(number.bytes().all(|byte| matches!(byte, b'0' | b'_')))
+            Some(integer_literal_text_is_zero(number))
         }
         ExprKind::Unary {
             operator, value, ..
         } if operator == "-" => static_integer_literal_is_zero(value),
         _ => None,
     }
+}
+
+/// Type-based static non-zero divisor check.
+///
+/// Returns `Some(true)` when every known member is the integer zero (report
+/// division-by-zero), `Some(false)` when every known member is a non-zero
+/// integer (accept), and `None` when the type does not prove a non-zero
+/// divisor (plain `Int`, open rows, mixed zero/non-zero unions, floats, …).
+///
+/// Closed literal unions (`2 | 4`) are the annotated form. Inferred monomorphic
+/// literals (`n = 10 / 2` → `5 | ρ`) use a free row-var tail; those are accepted
+/// too because the known entries are the only inhabitants of the value. A truly
+/// open row (`RowTail::Open`, as in `@{2, 4, ..}`) may still grow unknown
+/// members and stays rejected.
+fn static_integer_divisor_type_is_zero(ty: &Type) -> Option<bool> {
+    let Type::Variant(row) = ty else {
+        return None;
+    };
+    if row.tail == RowTail::Open || row.entries.is_empty() {
+        return None;
+    }
+    if literal_variant_base(row) != Some(LiteralBase::Number) {
+        return None;
+    }
+
+    let mut saw_zero = false;
+    let mut saw_nonzero = false;
+    for entry in &row.entries {
+        let RowEntry::Literal {
+            value: Literal::Number(number),
+        } = entry
+        else {
+            return None;
+        };
+        if is_float_literal_text(number) {
+            return None;
+        }
+        if integer_literal_text_is_zero(number) {
+            saw_zero = true;
+        } else {
+            saw_nonzero = true;
+        }
+    }
+
+    match (saw_zero, saw_nonzero) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+fn integer_literal_text_is_zero(number: &str) -> bool {
+    number.bytes().all(|byte| matches!(byte, b'0' | b'_'))
 }
 
 fn operator_operand_type(ty: &Type) -> String {

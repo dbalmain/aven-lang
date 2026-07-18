@@ -5812,18 +5812,40 @@ fn builtin_operator_results_are_inferred() {
 
 #[test]
 fn integer_division_and_remainder_require_non_zero_literal_divisors() {
-    let accepted = parse_module(concat!(
+    let accepted_source = concat!(
         "x : Int = 7\n",
         "plain : Int = x / 100\n",
         "grouped : Int = x / (((2)))\n",
         "negative : Int = x / (-3)\n",
         "remainder : Int = x % (-2)\n",
-    ));
+        // Folded constant expressions and literal-typed bindings are legal
+        // divisors once their inferred type is a non-zero integer literal union.
+        "folded = 7 / (1 + 1)\n",
+        "n = 10 / 2\n",
+        "from_binding = 100 / n\n",
+        "rem_from_binding = 100 % n\n",
+        "even : 2 | 4 = 2\n",
+        "from_union = 100 / even\n",
+    );
+    let accepted = parse_module(accepted_source);
     let accepted = check_module(&accepted.module);
     assert!(
         accepted.diagnostics.is_empty(),
         "{:?}",
         accepted.diagnostics
+    );
+    assert_eq!(
+        accepted
+            .type_at(nth_span(accepted_source, "from_binding", 0))
+            .map(Type::render),
+        // 100 / (10 / 2) folds through the singleton divisor type `5`.
+        Some("20".to_owned())
+    );
+    assert_eq!(
+        accepted
+            .type_at(nth_span(accepted_source, "folded", 0))
+            .map(Type::render),
+        Some("3".to_owned())
     );
 
     for (source, code) in [
@@ -5832,6 +5854,7 @@ fn integer_division_and_remainder_require_non_zero_literal_divisors() {
             "x : Int = 7\nvalue = x % (-0)\n",
             codes::ty::DIVISION_BY_ZERO,
         ),
+        ("zero = 0\nvalue = 7 / zero\n", codes::ty::DIVISION_BY_ZERO),
         (
             "x : Int = 7\nn : Int = 2\nvalue = x / n\n",
             codes::ty::DIVISOR_NOT_STATIC,
@@ -5844,7 +5867,14 @@ fn integer_division_and_remainder_require_non_zero_literal_divisors() {
             "x : Int = 7\ndivide = (n) => x / n\n",
             codes::ty::DIVISOR_NOT_STATIC,
         ),
-        ("value = 7 / (1 + 1)\n", codes::ty::DIVISOR_NOT_STATIC),
+        (
+            "mixed : 2 | 0 = 2\nvalue = 7 / mixed\n",
+            codes::ty::DIVISOR_NOT_STATIC,
+        ),
+        (
+            "Open = @{2, 4, ..}\nd : Open = 2\nvalue = 7 / d\n",
+            codes::ty::DIVISOR_NOT_STATIC,
+        ),
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -5859,7 +5889,11 @@ fn integer_division_and_remainder_require_non_zero_literal_divisors() {
                 diagnostics[0].message,
                 "divisor is not statically known to be non-zero"
             );
-            let method = if source.contains(" / ") { "div" } else { "mod" };
+            let method = if source.contains('%') && !source.contains(" / ") {
+                "mod"
+            } else {
+                "div"
+            };
             assert!(
                 diagnostics[0]
                     .notes
