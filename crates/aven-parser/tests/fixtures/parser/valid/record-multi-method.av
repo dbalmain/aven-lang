@@ -1,0 +1,44 @@
+# Multiple indented method bodies must resume the record member loop after each
+# Dedent: named-then-named, operator-then-named, indented-then-inline, and a
+# data field after a method are all legal.
+
+Ticket = {
+  severity: Int
+
+  priority(): Int =>
+    .severity * 10
+
+  double(): Int =>
+    .severity * 2
+}
+
+Rank = {
+  value: Int
+
+  <(other: Rank): Bool =>
+    .value < other.value
+
+  rank(): Int =>
+    .value
+}
+
+Mixed = {
+  value: Int
+
+  doubled(): Int =>
+    .value * 2
+
+  tripled(): Int => .value * 3
+
+  label: Text
+}
+
+Calc = {
+  base: Int
+
+  identity(): Int =>
+    .base
+
+  add(n: Int): Int =>
+    .base + n
+}

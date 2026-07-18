@@ -1,0 +1,30 @@
+Ticket = {
+  severity: Int
+
+  priority(): Int =>
+    .severity * 10
+
+  double(): Int =>
+    .severity * 2
+}
+
+Rank = {
+  value: Int
+
+  <(other: Rank): Bool =>
+    .value < other.value
+
+  rank(): Int =>
+    .value
+}
+
+Mixed = {
+  value: Int
+
+  doubled(): Int =>
+    .value * 2
+
+  tripled(): Int =>.value * 3
+
+  label: Text
+}

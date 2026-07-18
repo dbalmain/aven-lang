@@ -1714,6 +1714,41 @@ fn named_family_nullary_method_satisfies_requirement_and_runs() {
 }
 
 #[test]
+fn named_family_multiple_indented_methods_check_and_run() {
+    let dir = TempDir::new("named-family-multi-method");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Ticket = {\n",
+            "  severity: Int\n",
+            "\n",
+            "  priority(): Int =>\n",
+            "    .severity * 10\n",
+            "\n",
+            "  double(): Int =>\n",
+            "    .severity * 2\n",
+            "}\n",
+            "\n",
+            "t = Ticket({ severity: 3 })\n",
+            "\"${t.priority()} ${t.double()}\"\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+
+    let checked = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("multi-method named family should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&path, vec![]).expect("multi-method named family should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("30 6".to_owned())
+    );
+}
+
+#[test]
 fn named_family_descriptor_crosses_module_boundary() {
     let dir = TempDir::new("named-family-import");
     write(

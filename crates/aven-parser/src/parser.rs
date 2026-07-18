@@ -1706,7 +1706,12 @@ impl Parser<'_> {
                 break;
             }
 
-            let had_separator = self.consume_collection_separator(allow_semicolon);
+            // Layout separators are usually newlines/commas. A block-bodied
+            // entry (method/lambda) ends by consuming its closing `Dedent`, so
+            // the next member sits immediately after with no remaining newline.
+            // Treat that boundary like top-level items do (`at_item_boundary`).
+            let had_separator = self.consume_collection_separator(allow_semicolon)
+                || self.previous_is(TokenKind::Dedent);
             if self.current_is(close.clone()) {
                 break;
             }
@@ -4196,6 +4201,136 @@ mod tests {
             })
             .collect();
         assert_eq!(names, ["+", "-", "*", "/", "%", "^", "<", "<=", ">", ">="]);
+    }
+
+    #[test]
+    fn parses_multiple_indented_named_methods_in_a_record() {
+        let output = parse_module(
+            "Ticket = {\n  severity: Int\n\n  priority(): Int =>\n    .severity * 10\n\n  double(): Int =>\n    .severity * 2\n}\n",
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected Ticket binding");
+        };
+        let ExprKind::Record(entries) = &binding.value.kind else {
+            panic!("expected Ticket record");
+        };
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(
+            &entries[0],
+            RecordEntry::Field { name, .. } if name == "severity"
+        ));
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Method { name, value, .. }
+                if name == "priority" && matches!(value.kind, ExprKind::Lambda { .. })
+        ));
+        assert!(matches!(
+            &entries[2],
+            RecordEntry::Method { name, value, .. }
+                if name == "double" && matches!(value.kind, ExprKind::Lambda { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_indented_method_then_data_field() {
+        let output = parse_module("Row = {\n  score(): Int =>\n    1\n\n  label: Text\n}\n");
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected Row binding");
+        };
+        let ExprKind::Record(entries) = &binding.value.kind else {
+            panic!("expected Row record");
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(
+            &entries[0],
+            RecordEntry::Method { name, .. } if name == "score"
+        ));
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Field { name, .. } if name == "label"
+        ));
+    }
+
+    #[test]
+    fn parses_indented_operator_method_then_named_method() {
+        let output = parse_module(
+            "Rank = {\n  value: Int\n\n  <(other: Rank): Bool =>\n    .value < other.value\n\n  rank(): Int =>\n    .value\n}\n",
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected Rank binding");
+        };
+        let ExprKind::Record(entries) = &binding.value.kind else {
+            panic!("expected Rank record");
+        };
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Method { name, value, .. }
+                if name == "<" && matches!(value.kind, ExprKind::Lambda { .. })
+        ));
+        assert!(matches!(
+            &entries[2],
+            RecordEntry::Method { name, value, .. }
+                if name == "rank" && matches!(value.kind, ExprKind::Lambda { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_indented_method_then_inline_method() {
+        let output = parse_module(
+            "Row = {\n  value: Int\n\n  doubled(): Int =>\n    .value * 2\n\n  tripled(): Int => .value * 3\n}\n",
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected Row binding");
+        };
+        let ExprKind::Record(entries) = &binding.value.kind else {
+            panic!("expected Row record");
+        };
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Method { name, .. } if name == "doubled"
+        ));
+        assert!(matches!(
+            &entries[2],
+            RecordEntry::Method { name, .. } if name == "tripled"
+        ));
+    }
+
+    #[test]
+    fn parses_second_indented_method_with_parameters() {
+        let output = parse_module(
+            "Calc = {\n  base: Int\n\n  identity(): Int =>\n    .base\n\n  add(n: Int): Int =>\n    .base + n\n}\n",
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected Calc binding");
+        };
+        let ExprKind::Record(entries) = &binding.value.kind else {
+            panic!("expected Calc record");
+        };
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(
+            &entries[2],
+            RecordEntry::Method { name, value, .. }
+                if name == "add"
+                    && matches!(
+                        value.kind,
+                        ExprKind::Lambda {
+                            ref params,
+                            ..
+                        } if params.len() == 1 && params[0].name == "n"
+                    )
+        ));
     }
 
     #[test]
