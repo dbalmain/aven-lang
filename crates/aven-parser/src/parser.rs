@@ -123,6 +123,13 @@ pub enum ExprKind {
     Array(Vec<RecordEntry>),
     Record(Vec<RecordEntry>),
     Set(Vec<RecordEntry>),
+    /// A declaration-position named primitive-base family body: `Int { ... }`.
+    /// Parsing is restricted to a binding RHS whose head is uppercase, so
+    /// lowercase value-postfix braces remain record transforms.
+    PrimitiveFamily {
+        base: Box<Expr>,
+        members: Vec<RecordEntry>,
+    },
     /// Postfix square-bracket indexing (`users[2]`) and empty collection-type
     /// sugar (`Text[]` / `Text@{}` desugar to `Array`/`Set` index forms). Type
     /// application uses ordinary [`ExprKind::Call`] nodes such as `Array(a)`.
@@ -699,9 +706,65 @@ impl Parser<'_> {
             return self.report_missing_binding_value(missing_offset);
         }
 
-        let expr = self.parse_expression();
+        let expr = if self.primitive_family_follows() {
+            self.parse_primitive_family()
+        } else {
+            self.parse_expression()
+        };
         self.report_unsupported_remainder();
         expr
+    }
+
+    fn parse_primitive_family(&mut self) -> Expr {
+        let base = self.parse_postfix();
+        let start = base.span.start;
+        // `primitive_family_follows` guarantees the brace at this point.
+        self.advance();
+        let members = self.parse_entry_list(EntryMode::Record);
+        let end = self.consume_close(TokenKind::CloseBrace);
+        self.report_record_legacy_separators(&members);
+        Expr {
+            kind: ExprKind::PrimitiveFamily {
+                base: Box::new(base),
+                members,
+            },
+            span: Span::new(start, end),
+        }
+    }
+
+    /// Recognize an uppercase-headed base term followed directly by a member
+    /// brace. This mirrors top-level attachments but runs only after a binding
+    /// operator has established declaration position.
+    fn primitive_family_follows(&self) -> bool {
+        let Some(Token {
+            kind: TokenKind::ComptimeIdentifier(_),
+            ..
+        }) = self.current()
+        else {
+            return false;
+        };
+
+        let mut index = self.cursor + 1;
+        let mut depth = 0usize;
+        while let Some(token) = self.tokens.get(index) {
+            match token.kind {
+                TokenKind::OpenParen => depth += 1,
+                TokenKind::CloseParen if depth > 0 => depth -= 1,
+                TokenKind::OpenBrace if depth == 0 => return true,
+                TokenKind::Newline
+                | TokenKind::Indent
+                | TokenKind::Dedent
+                | TokenKind::Operator(_)
+                    if depth == 0 =>
+                {
+                    return false;
+                }
+                TokenKind::Comma if depth == 0 => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
     }
 
     fn parse_expression(&mut self) -> Expr {
@@ -4557,6 +4620,31 @@ mod tests {
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
         assert!(matches!(output.module.items[0], Item::Binding(_)));
         assert!(matches!(output.module.items[1], Item::MethodAttachment(_)));
+    }
+
+    #[test]
+    fn parses_named_primitive_family_with_shared_method_members() {
+        let output = parse_module(concat!(
+            "Money = Int {\n",
+            "  toText(): Text => \"${.}\"\n",
+            "  +(other: Money): Money => . + other\n",
+            "}\n",
+        ));
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected family binding");
+        };
+        let ExprKind::PrimitiveFamily { base, members } = &binding.value.kind else {
+            panic!("expected primitive-family RHS");
+        };
+        assert!(matches!(&base.kind, ExprKind::ComptimeName(name) if name == "Int"));
+        assert_eq!(members.len(), 2);
+        assert!(
+            members
+                .iter()
+                .all(|member| matches!(member, RecordEntry::Method { .. }))
+        );
     }
 
     #[test]

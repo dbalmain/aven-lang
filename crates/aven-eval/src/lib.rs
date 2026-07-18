@@ -53,6 +53,70 @@ pub struct SlotReificationPlan {
     targets: HashMap<Span, SlotReification>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrimitiveFamilyRuntime {
+    pub owner: String,
+    pub base: String,
+    pub inherited_methods: Vec<InheritedPrimitiveMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InheritedPrimitiveMethod {
+    pub member: String,
+    pub lifted_params: Vec<bool>,
+    pub lifted_result: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrimitiveFamilyCoercion {
+    Brand { owner: String },
+    Widen,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PrimitiveFamilyPlan {
+    families: HashMap<String, PrimitiveFamilyRuntime>,
+    coercions: HashMap<Span, PrimitiveFamilyCoercion>,
+}
+
+impl PrimitiveFamilyPlan {
+    pub fn new(
+        families: impl IntoIterator<Item = (String, PrimitiveFamilyRuntime)>,
+        coercions: impl IntoIterator<Item = (Span, PrimitiveFamilyCoercion)>,
+    ) -> Self {
+        Self {
+            families: families.into_iter().collect(),
+            coercions: coercions.into_iter().collect(),
+        }
+    }
+
+    fn family(&self, name: &str) -> Option<&PrimitiveFamilyRuntime> {
+        self.families.get(name)
+    }
+
+    fn coercion(&self, span: Span) -> Option<&PrimitiveFamilyCoercion> {
+        self.coercions.get(&span)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EvalElaborationPlan {
+    slot_reifications: SlotReificationPlan,
+    primitive_families: PrimitiveFamilyPlan,
+}
+
+impl EvalElaborationPlan {
+    pub fn new(
+        slot_reifications: SlotReificationPlan,
+        primitive_families: PrimitiveFamilyPlan,
+    ) -> Self {
+        Self {
+            slot_reifications,
+            primitive_families,
+        }
+    }
+}
+
 impl SlotReificationPlan {
     pub fn new(targets: impl IntoIterator<Item = (Span, SlotReification)>) -> Self {
         Self {
@@ -90,8 +154,23 @@ impl BuiltinMethodEnvironment {
 #[derive(Clone)]
 pub struct NamedFamilyDescriptor {
     owner: String,
+    primitive_base: Option<String>,
     fields: Vec<NamedFamilyField>,
-    methods: HashMap<String, Closure>,
+    methods: HashMap<String, NamedMethodImplementation>,
+}
+
+#[derive(Clone)]
+pub enum NamedMethodImplementation {
+    Declared(Closure),
+    Inherited(Rc<InheritedMethodImplementation>),
+}
+
+#[derive(Clone)]
+pub struct InheritedMethodImplementation {
+    member: String,
+    lifted_params: Vec<bool>,
+    lifted_result: bool,
+    env: Environment,
 }
 
 #[derive(Clone)]
@@ -246,9 +325,17 @@ pub enum Value {
         descriptor: Rc<NamedFamilyDescriptor>,
         fields: Rc<Vec<(String, Value)>>,
     },
+    BrandedPrimitive {
+        descriptor: Rc<NamedFamilyDescriptor>,
+        payload: PrimitivePayload,
+    },
     NamedMethod {
         receiver: Box<Value>,
-        implementation: Closure,
+        implementation: NamedMethodImplementation,
+    },
+    UnboundNamedMethod {
+        descriptor: Rc<NamedFamilyDescriptor>,
+        implementation: NamedMethodImplementation,
     },
     Tag {
         name: String,
@@ -266,6 +353,54 @@ pub enum Value {
     Type(RuntimeType),
     Undefined,
     Null,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PrimitivePayload {
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Bool(bool),
+}
+
+impl PrimitivePayload {
+    fn into_value(self) -> Value {
+        match self {
+            Self::Int(value) => Value::Int(value),
+            Self::Float(value) => Value::Float(value),
+            Self::Text(value) => Value::Text(value),
+            Self::Bool(value) => Value::Bool(value),
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Self::Int(value) => Value::Int(*value),
+            Self::Float(value) => Value::Float(*value),
+            Self::Text(value) => Value::Text(value.clone()),
+            Self::Bool(value) => Value::Bool(*value),
+        }
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Int(_) => "Int",
+            Self::Float(_) => "Float",
+            Self::Text(_) => "Text",
+            Self::Bool(_) => "Bool",
+        }
+    }
+}
+
+impl fmt::Display for PrimitivePayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Int(value) => write!(f, "{value}"),
+            Self::Float(value) => write!(f, "{value}"),
+            Self::Text(value) => write!(f, "{value}"),
+            Self::Bool(value) => write!(f, "{value}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -351,7 +486,16 @@ impl fmt::Debug for Value {
                 .field("owner", &descriptor.owner)
                 .field("fields", fields)
                 .finish(),
+            Self::BrandedPrimitive {
+                descriptor,
+                payload,
+            } => f
+                .debug_struct("BrandedPrimitive")
+                .field("owner", &descriptor.owner)
+                .field("payload", payload)
+                .finish(),
             Self::NamedMethod { .. } => f.write_str("NamedMethod(<method>)"),
+            Self::UnboundNamedMethod { .. } => f.write_str("UnboundNamedMethod(<method>)"),
             Self::Tag { name, payload } => f
                 .debug_struct("Tag")
                 .field("name", name)
@@ -400,6 +544,14 @@ impl PartialEq for Value {
                 },
             ) => Rc::ptr_eq(left_owner, right_owner) && records_equal(left, right),
             (
+                Self::BrandedPrimitive { payload: left, .. },
+                Self::BrandedPrimitive { payload: right, .. },
+            ) => left == right,
+            (Self::BrandedPrimitive { payload, .. }, other)
+            | (other, Self::BrandedPrimitive { payload, .. }) => {
+                primitive_payload_matches_value(payload, other)
+            }
+            (
                 Self::Tag {
                     name: left_name,
                     payload: left_payload,
@@ -413,11 +565,22 @@ impl PartialEq for Value {
             (Self::ResultMethod { .. }, _) | (_, Self::ResultMethod { .. }) => false,
             (Self::NamedFamily(_), _) | (_, Self::NamedFamily(_)) => false,
             (Self::NamedMethod { .. }, _) | (_, Self::NamedMethod { .. }) => false,
+            (Self::UnboundNamedMethod { .. }, _) | (_, Self::UnboundNamedMethod { .. }) => false,
             (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
             (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
             (Self::Native(_), _) | (_, Self::Native(_)) => false,
             _ => false,
         }
+    }
+}
+
+fn primitive_payload_matches_value(payload: &PrimitivePayload, value: &Value) -> bool {
+    match (payload, value) {
+        (PrimitivePayload::Int(left), Value::Int(right)) => left == right,
+        (PrimitivePayload::Float(left), Value::Float(right)) => left == right,
+        (PrimitivePayload::Text(left), Value::Text(right)) => left == right,
+        (PrimitivePayload::Bool(left), Value::Bool(right)) => left == right,
+        _ => false,
     }
 }
 
@@ -439,8 +602,10 @@ impl fmt::Display for Value {
                 fmt_record(&members, f)
             }
             Self::NamedRecord { fields, .. } => fmt_record(fields, f),
+            Self::BrandedPrimitive { payload, .. } => write!(f, "{payload}"),
             Self::NamedFamily(descriptor) => write!(f, "{}", descriptor.owner),
             Self::NamedMethod { .. } => write!(f, "<method>"),
+            Self::UnboundNamedMethod { .. } => write!(f, "<method>"),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::ResultMethod { .. } => write!(f, "<method>"),
             Self::Closure(_) => write!(f, "<function>"),
@@ -499,7 +664,9 @@ impl Value {
             Self::SlotRecord { .. } => "Record",
             Self::NamedFamily(_) => "Type",
             Self::NamedRecord { .. } => "Record",
+            Self::BrandedPrimitive { payload, .. } => payload.type_name(),
             Self::NamedMethod { .. } => "Function",
+            Self::UnboundNamedMethod { .. } => "Function",
             Self::Tag { .. } => "Tag",
             Self::ResultMethod { .. } => "Function",
             Self::Closure(_) => "Function",
@@ -738,6 +905,8 @@ pub struct Environment {
     imports: Rc<ModuleImports>,
     builtin_methods: BuiltinMethodEnvironment,
     slot_reifications: Rc<SlotReificationPlan>,
+    primitive_families: Rc<PrimitiveFamilyPlan>,
+    family_descriptors: Rc<RefCell<HashMap<String, Rc<NamedFamilyDescriptor>>>>,
     allow_builtin_method_attachments: bool,
 }
 
@@ -780,6 +949,7 @@ impl Environment {
             BuiltinMethodEnvironment::default(),
             false,
             SlotReificationPlan::default(),
+            PrimitiveFamilyPlan::default(),
         )
     }
 
@@ -788,12 +958,15 @@ impl Environment {
         builtin_methods: BuiltinMethodEnvironment,
         allow_builtin_method_attachments: bool,
         slot_reifications: SlotReificationPlan,
+        primitive_families: PrimitiveFamilyPlan,
     ) -> Self {
         Self {
             scope: Rc::new(Scope::new(None)),
             imports: Rc::new(imports),
             builtin_methods,
             slot_reifications: Rc::new(slot_reifications),
+            primitive_families: Rc::new(primitive_families),
+            family_descriptors: Rc::new(RefCell::new(HashMap::new())),
             allow_builtin_method_attachments,
         }
     }
@@ -804,11 +977,18 @@ impl Environment {
             imports: Rc::clone(&self.imports),
             builtin_methods: self.builtin_methods.clone(),
             slot_reifications: Rc::clone(&self.slot_reifications),
+            primitive_families: Rc::clone(&self.primitive_families),
+            family_descriptors: Rc::clone(&self.family_descriptors),
             allow_builtin_method_attachments: self.allow_builtin_method_attachments,
         }
     }
 
     pub fn bind(&self, name: impl Into<String>, value: Value) {
+        if let Value::NamedFamily(descriptor) = &value {
+            self.family_descriptors
+                .borrow_mut()
+                .insert(descriptor.owner.clone(), Rc::clone(descriptor));
+        }
         self.scope.values.borrow_mut().insert(name.into(), value);
     }
 
@@ -933,7 +1113,7 @@ pub fn eval_module_with_globals_imports_runtime_types_and_builtin_methods(
         runtime_types,
         builtin_methods,
         allow_builtin_method_attachments,
-        &SlotReificationPlan::default(),
+        &EvalElaborationPlan::default(),
     )
 }
 
@@ -944,13 +1124,14 @@ pub fn eval_module_with_globals_imports_runtime_types_builtin_methods_and_reific
     runtime_types: &RuntimeTypeBindings,
     builtin_methods: &BuiltinMethodEnvironment,
     allow_builtin_method_attachments: bool,
-    slot_reifications: &SlotReificationPlan,
+    elaborations: &EvalElaborationPlan,
 ) -> EvalOutcome {
     let env = Environment::with_imports_builtin_methods_and_reifications(
         imports.clone(),
         builtin_methods.clone(),
         allow_builtin_method_attachments,
-        slot_reifications.clone(),
+        elaborations.slot_reifications.clone(),
+        elaborations.primitive_families.clone(),
     );
     bind_intrinsics(&env);
     for (name, value) in globals {
@@ -1132,7 +1313,8 @@ fn eval_items(
 
     for item in items {
         if let Item::Binding(binding) = item
-            && aven_parser::is_named_method_provider(&binding.value)
+            && (aven_parser::is_named_method_provider(&binding.value)
+                || aven_parser::is_primitive_family_provider(&binding.value))
         {
             match eval_named_family(binding.name.as_str(), &binding.value, &env) {
                 Ok(descriptor) => env.bind(binding.name.clone(), descriptor),
@@ -1274,14 +1456,42 @@ fn runtime_builtin_owner(value: &Value) -> Option<&'static str> {
 }
 
 fn eval_named_family(owner: &str, value: &Expr, env: &Environment) -> Eval {
-    let ExprKind::Record(entries) = &value.kind else {
-        return Err(one_diagnostic(unsupported_expr(
-            value.span,
-            "named-family declaration must be a record",
-        )));
-    };
+    let (entries, primitive) =
+        match &value.kind {
+            ExprKind::Record(entries) => (entries.as_slice(), None),
+            ExprKind::PrimitiveFamily { base, members } => {
+                let fallback_base = attachment_owner_head(base).unwrap_or("?").to_owned();
+                let runtime = env.primitive_families.family(owner).cloned().unwrap_or(
+                    PrimitiveFamilyRuntime {
+                        owner: owner.to_owned(),
+                        base: fallback_base,
+                        inherited_methods: Vec::new(),
+                    },
+                );
+                (members.as_slice(), Some(runtime))
+            }
+            _ => {
+                return Err(one_diagnostic(unsupported_expr(
+                    value.span,
+                    "named-family declaration must carry a record or primitive payload",
+                )));
+            }
+        };
     let mut fields = Vec::new();
     let mut methods = HashMap::new();
+    if let Some(runtime) = &primitive {
+        for method in &runtime.inherited_methods {
+            methods.insert(
+                method.member.clone(),
+                NamedMethodImplementation::Inherited(Rc::new(InheritedMethodImplementation {
+                    member: method.member.clone(),
+                    lifted_params: method.lifted_params.clone(),
+                    lifted_result: method.lifted_result,
+                    env: env.clone(),
+                })),
+            );
+        }
+    }
     for entry in entries {
         match entry {
             RecordEntry::Field { name, value, .. } => fields.push(NamedFamilyField {
@@ -1314,18 +1524,21 @@ fn eval_named_family(owner: &str, value: &Expr, env: &Environment) -> Eval {
                 }));
                 methods.insert(
                     name.clone(),
-                    Closure {
+                    NamedMethodImplementation::Declared(Closure {
                         params: closure_params,
                         body: Rc::new((**body).clone()),
                         env: env.clone(),
-                    },
+                    }),
                 );
             }
             _ => {}
         }
     }
     Ok(Value::NamedFamily(Rc::new(NamedFamilyDescriptor {
-        owner: owner.to_owned(),
+        owner: primitive
+            .as_ref()
+            .map_or_else(|| owner.to_owned(), |runtime| runtime.owner.clone()),
+        primitive_base: primitive.map(|runtime| runtime.base),
         fields,
         methods,
     })))
@@ -1336,11 +1549,71 @@ pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
 }
 
 fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
-    let value = eval_expr_unreified(expr, env)?;
+    let mut value = eval_expr_unreified(expr, env)?;
+    if let Some(coercion) = env.primitive_families.coercion(expr.span) {
+        value = apply_primitive_family_coercion(value, coercion, expr.span, env)?;
+    }
     let Some(target) = env.slot_reifications.get(expr.span) else {
         return Ok(value);
     };
     reify_slot_record(value, target, expr.span, env)
+}
+
+fn apply_primitive_family_coercion(
+    value: Value,
+    coercion: &PrimitiveFamilyCoercion,
+    span: Span,
+    env: &Environment,
+) -> Eval {
+    match coercion {
+        PrimitiveFamilyCoercion::Brand { owner } => {
+            let descriptor = env
+                .family_descriptors
+                .borrow()
+                .get(owner)
+                .cloned()
+                .ok_or_else(|| one_diagnostic(unbound_name(owner, span)))?;
+            let found = value.type_name();
+            let payload = primitive_payload_from_value(value).ok_or_else(|| {
+                one_diagnostic(record_type_error(
+                    span,
+                    "primitive-family branding",
+                    found,
+                    "Int, Float, Text, or Bool",
+                ))
+            })?;
+            if descriptor.primitive_base.as_deref() != Some(payload.type_name()) {
+                return Err(one_diagnostic(record_type_error(
+                    span,
+                    "primitive-family branding",
+                    payload.type_name(),
+                    descriptor.primitive_base.as_deref().unwrap_or("primitive"),
+                )));
+            }
+            Ok(Value::BrandedPrimitive {
+                descriptor,
+                payload,
+            })
+        }
+        PrimitiveFamilyCoercion::Widen => Ok(erase_primitive_brand(value)),
+    }
+}
+
+fn erase_primitive_brand(value: Value) -> Value {
+    match value {
+        Value::BrandedPrimitive { payload, .. } => payload.into_value(),
+        value => value,
+    }
+}
+
+fn primitive_payload_from_value(value: Value) -> Option<PrimitivePayload> {
+    match value {
+        Value::Int(value) => Some(PrimitivePayload::Int(value)),
+        Value::Float(value) => Some(PrimitivePayload::Float(value)),
+        Value::Text(value) => Some(PrimitivePayload::Text(value)),
+        Value::Bool(value) => Some(PrimitivePayload::Bool(value)),
+        _ => None,
+    }
 }
 
 fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
@@ -1469,7 +1742,7 @@ fn project_reified_members(
 
 fn reification_method(source: &Value, name: &str, env: &Environment) -> Option<Value> {
     match source {
-        Value::NamedRecord { descriptor, .. } => {
+        Value::NamedRecord { descriptor, .. } | Value::BrandedPrimitive { descriptor, .. } => {
             descriptor
                 .methods
                 .get(name)
@@ -1985,12 +2258,21 @@ fn apply_callee(
             receiver,
             implementation,
         } => {
-            let mut arg_values = Vec::with_capacity(args.len() + 1);
-            arg_values.push(*receiver);
+            let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
                 arg_values.push(eval_expr_many(arg, env)?);
             }
-            apply_closure_values(implementation, arg_values, span)
+            apply_named_method(*receiver, implementation, arg_values, span)
+        }
+        Value::UnboundNamedMethod {
+            descriptor,
+            implementation,
+        } => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_unbound_named_method(descriptor, implementation, arg_values, span)
         }
         Value::Closure(closure) => apply_closure(closure, args, span, env),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
@@ -2014,15 +2296,142 @@ fn apply_callee_values(
         Value::NamedMethod {
             receiver,
             implementation,
-        } => {
-            let mut values = Vec::with_capacity(arg_values.len() + 1);
-            values.push(*receiver);
-            values.extend(arg_values);
-            apply_closure_values(implementation, values, span)
-        }
+        } => apply_named_method(*receiver, implementation, arg_values, span),
+        Value::UnboundNamedMethod {
+            descriptor,
+            implementation,
+        } => apply_unbound_named_method(descriptor, implementation, arg_values, span),
         Value::Closure(closure) => apply_closure_values(closure, arg_values, span),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
     }
+}
+
+fn apply_unbound_named_method(
+    descriptor: Rc<NamedFamilyDescriptor>,
+    implementation: NamedMethodImplementation,
+    mut args: Vec<Value>,
+    span: Span,
+) -> Eval {
+    if args.is_empty() {
+        return Err(one_diagnostic(arity_mismatch(span, 1, 1, 0)));
+    }
+    let receiver = args.remove(0);
+    let receiver_matches = match &receiver {
+        Value::NamedRecord {
+            descriptor: actual, ..
+        }
+        | Value::BrandedPrimitive {
+            descriptor: actual, ..
+        } => Rc::ptr_eq(actual, &descriptor),
+        _ => false,
+    };
+    if !receiver_matches {
+        return Err(one_diagnostic(record_type_error(
+            span,
+            "unbound method receiver",
+            receiver.type_name(),
+            &descriptor.owner,
+        )));
+    }
+    apply_named_method(receiver, implementation, args, span)
+}
+
+fn apply_named_method(
+    receiver: Value,
+    implementation: NamedMethodImplementation,
+    args: Vec<Value>,
+    span: Span,
+) -> Eval {
+    match implementation {
+        NamedMethodImplementation::Declared(implementation) => {
+            let mut values = Vec::with_capacity(args.len() + 1);
+            values.push(receiver);
+            values.extend(args);
+            apply_closure_values(implementation, values, span)
+        }
+        NamedMethodImplementation::Inherited(implementation) => {
+            apply_inherited_primitive_method(receiver, implementation, args, span)
+        }
+    }
+}
+
+fn apply_inherited_primitive_method(
+    receiver: Value,
+    implementation: Rc<InheritedMethodImplementation>,
+    args: Vec<Value>,
+    span: Span,
+) -> Eval {
+    let descriptor = match &receiver {
+        Value::BrandedPrimitive { descriptor, .. } => Rc::clone(descriptor),
+        value => {
+            return Err(one_diagnostic(record_type_error(
+                span,
+                "inherited primitive method",
+                value.type_name(),
+                "a branded primitive receiver",
+            )));
+        }
+    };
+    let receiver = erase_primitive_brand(receiver);
+    let args = args
+        .into_iter()
+        .zip(
+            implementation
+                .lifted_params
+                .iter()
+                .copied()
+                .chain(std::iter::repeat(false)),
+        )
+        .map(|(arg, lifted)| {
+            if lifted {
+                erase_primitive_brand(arg)
+            } else {
+                arg
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let result = if is_binary_method(&implementation.member) && args.len() == 1 {
+        let mut args = args;
+        let right = args.remove(0);
+        apply_binary(
+            receiver,
+            &implementation.member,
+            Span::new(0, 0),
+            right,
+            span,
+            span,
+        )?
+    } else {
+        let method = builtin_method(&receiver, &implementation.member, &implementation.env)
+            .ok_or_else(|| one_diagnostic(missing_field(&implementation.member, span)))?;
+        apply_callee_values(method, span, args, span)?
+    };
+
+    if implementation.lifted_result {
+        let found = result.type_name();
+        let payload = primitive_payload_from_value(result).ok_or_else(|| {
+            one_diagnostic(record_type_error(
+                span,
+                "inherited primitive-family result",
+                found,
+                descriptor.primitive_base.as_deref().unwrap_or("primitive"),
+            ))
+        })?;
+        Ok(Value::BrandedPrimitive {
+            descriptor,
+            payload,
+        })
+    } else {
+        Ok(result)
+    }
+}
+
+fn is_binary_method(member: &str) -> bool {
+    matches!(
+        member,
+        "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
+    )
 }
 
 fn apply_named_family_constructor(
@@ -2033,6 +2442,29 @@ fn apply_named_family_constructor(
     let [payload] = args.as_slice() else {
         return Err(one_diagnostic(arity_mismatch(span, 1, 1, args.len())));
     };
+    if descriptor.primitive_base.is_some() {
+        let found = payload.type_name();
+        let Some(payload) = primitive_payload_from_value(payload.clone()) else {
+            return Err(one_diagnostic(record_type_error(
+                span,
+                "primitive-family construction",
+                found,
+                descriptor.primitive_base.as_deref().unwrap_or("primitive"),
+            )));
+        };
+        if descriptor.primitive_base.as_deref() != Some(payload.type_name()) {
+            return Err(one_diagnostic(record_type_error(
+                span,
+                "primitive-family construction",
+                payload.type_name(),
+                descriptor.primitive_base.as_deref().unwrap_or("primitive"),
+            )));
+        }
+        return Ok(Value::BrandedPrimitive {
+            descriptor,
+            payload,
+        });
+    }
     let payload_fields = match payload {
         Value::Record(fields) | Value::NamedRecord { fields, .. } => fields,
         value => {
@@ -2060,7 +2492,10 @@ fn apply_named_family_constructor(
         .methods
         .values()
         .next()
-        .map(|method| method.env.clone())
+        .map(|method| match method {
+            NamedMethodImplementation::Declared(method) => method.env.clone(),
+            NamedMethodImplementation::Inherited(method) => method.env.clone(),
+        })
         .unwrap_or_default();
     let mut fields = Vec::with_capacity(descriptor.fields.len());
     for field in &descriptor.fields {
@@ -2589,6 +3024,26 @@ fn field_access_value(
                 },
             )
         }
+        Value::BrandedPrimitive { descriptor, .. } => {
+            descriptor.methods.get(field).cloned().map_or_else(
+                || Ok(Value::Undefined),
+                |implementation| {
+                    Ok(Value::NamedMethod {
+                        receiver: Box::new(receiver_value),
+                        implementation,
+                    })
+                },
+            )
+        }
+        Value::NamedFamily(descriptor) => descriptor
+            .methods
+            .get(field)
+            .cloned()
+            .map(|implementation| Value::UnboundNamedMethod {
+                descriptor: Rc::clone(descriptor),
+                implementation,
+            })
+            .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
         // A type value (`Map`, `Json`, ...) carries statics: field access
         // resolves the `"Type.static"`-keyed global bound alongside the type.
         Value::Type(RuntimeType::Named(name)) => env
@@ -2615,6 +3070,9 @@ fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
         Value::NamedRecord { descriptor, fields } => {
             record_field_value(fields, field).is_some() || descriptor.methods.contains_key(field)
         }
+        Value::BrandedPrimitive { descriptor, .. } | Value::NamedFamily(descriptor) => {
+            descriptor.methods.contains_key(field)
+        }
         Value::Type(RuntimeType::Named(name)) => env.lookup(&format!("{name}.{field}")).is_some(),
         value => builtin_method(value, field, env).is_some(),
     }
@@ -2624,7 +3082,7 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
     if let Some(implementation) = env.builtin_methods.lookup(receiver, field) {
         return Some(Value::NamedMethod {
             receiver: Box::new(receiver.clone()),
-            implementation,
+            implementation: NamedMethodImplementation::Declared(implementation),
         });
     }
     match (receiver, field) {
@@ -3304,7 +3762,9 @@ fn map_key_is_comparable(key: &Value) -> bool {
         | Value::Native(_)
         | Value::ResultMethod { .. }
         | Value::NamedFamily(_)
-        | Value::NamedMethod { .. } => false,
+        | Value::NamedMethod { .. }
+        | Value::UnboundNamedMethod { .. } => false,
+        Value::BrandedPrimitive { .. } => true,
         Value::Array(values) | Value::Tuple(values) | Value::Set(values) => {
             values.iter().all(map_key_is_comparable)
         }
@@ -3569,14 +4029,15 @@ fn apply_binary(
     right_span: Span,
     span: Span,
 ) -> Eval {
-    if let Value::NamedRecord { descriptor, .. } = &left
+    if let Value::NamedRecord { descriptor, .. } | Value::BrandedPrimitive { descriptor, .. } =
+        &left
         && let Some(implementation) = descriptor.methods.get(operator).cloned()
     {
-        return apply_closure_values(implementation, vec![left, right], span);
+        return apply_named_method(left, implementation, vec![right], span);
     }
     match operator {
         "+" => add(left, right, span).map_err(one_diagnostic),
-        "-" | "*" | "/" | "%" => {
+        "-" | "*" | "/" | "%" | "^" => {
             numeric_arithmetic(left, operator, right, right_span, span).map_err(one_diagnostic)
         }
         "==" | "!=" => equality(left, operator, right, span).map_err(one_diagnostic),
@@ -3670,6 +4131,9 @@ fn int_arithmetic(
         "*" => left.checked_mul(right),
         "/" => left.checked_div(right),
         "%" => left.checked_rem(right),
+        "^" => u32::try_from(right)
+            .ok()
+            .and_then(|exponent| left.checked_pow(exponent)),
         _ => None,
     };
 
@@ -3695,6 +4159,7 @@ fn float_arithmetic(
         "*" => Ok(Value::Float(left * right)),
         "/" => Ok(Value::Float(left / right)),
         "%" => Ok(Value::Float(left % right)),
+        "^" => Ok(Value::Float(left.powf(right))),
         _ => Err(unsupported_expr(
             span,
             "this numeric operator is not supported by the current evaluator",
@@ -3703,6 +4168,8 @@ fn float_arithmetic(
 }
 
 fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Value, Diagnostic> {
+    let left = erase_primitive_brand(left);
+    let right = erase_primitive_brand(right);
     if matches!(
         (&left, &right),
         (Value::Closure(_), _) | (_, Value::Closure(_))

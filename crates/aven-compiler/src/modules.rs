@@ -517,6 +517,14 @@ pub fn eval_path_with_host_globals_and_roots(
                 )
             }),
         );
+        let primitive_families = primitive_family_plan(
+            &graph.nodes[node_id].parse.module,
+            &semantic.named_families,
+            &semantic.named_family_aliases,
+            &semantic.primitive_family_coercions,
+        );
+        let elaborations =
+            aven_eval::EvalElaborationPlan::new(slot_reifications, primitive_families);
         let outcome = aven_eval::eval_module_with_globals_imports_runtime_types_builtin_methods_and_reifications(
             &graph.nodes[node_id].parse.module,
             node_globals,
@@ -524,7 +532,7 @@ pub fn eval_path_with_host_globals_and_roots(
             &runtime_types,
             &runtime_builtin_methods,
             trusted_ambient,
-            &slot_reifications,
+            &elaborations,
         );
         entry_value = (node_id == 0).then_some(outcome.value.clone()).flatten();
         diagnostics
@@ -559,6 +567,62 @@ fn failed_method_constraint(diagnostic: &Diagnostic) -> bool {
             diagnostic.code.as_deref(),
             Some(codes::ty::INVALID_OPERATOR_OPERANDS | codes::ty::MISMATCH)
         )
+}
+
+fn primitive_family_plan(
+    module: &aven_parser::Module,
+    families: &HashMap<String, aven_check::NamedFamilyType>,
+    aliases: &HashMap<String, String>,
+    coercions: &HashMap<aven_core::Span, aven_check::PrimitiveFamilyCoercion>,
+) -> aven_eval::PrimitiveFamilyPlan {
+    let runtime_families = module.items.iter().filter_map(|item| {
+        let aven_parser::Item::Binding(binding) = item else {
+            return None;
+        };
+        aven_parser::primitive_family_parts(&binding.value)?;
+        let owner = aliases.get(&binding.name)?;
+        let family = families.get(owner)?;
+        let base = family.primitive_base.as_ref()?.render();
+        let inherited_methods = family
+            .methods
+            .iter()
+            .filter_map(|(member, method)| {
+                let aven_check::NamedMethodOrigin::Inherited {
+                    lifted_params,
+                    lifted_result,
+                    ..
+                } = &method.origin
+                else {
+                    return None;
+                };
+                Some(aven_eval::InheritedPrimitiveMethod {
+                    member: member.clone(),
+                    lifted_params: lifted_params.clone(),
+                    lifted_result: *lifted_result,
+                })
+            })
+            .collect();
+        Some((
+            binding.name.clone(),
+            aven_eval::PrimitiveFamilyRuntime {
+                owner: owner.clone(),
+                base,
+                inherited_methods,
+            },
+        ))
+    });
+    let runtime_coercions = coercions.iter().map(|(span, coercion)| {
+        let coercion = match coercion {
+            aven_check::PrimitiveFamilyCoercion::Brand { owner } => {
+                aven_eval::PrimitiveFamilyCoercion::Brand {
+                    owner: owner.clone(),
+                }
+            }
+            aven_check::PrimitiveFamilyCoercion::Widen => aven_eval::PrimitiveFamilyCoercion::Widen,
+        };
+        (*span, coercion)
+    });
+    aven_eval::PrimitiveFamilyPlan::new(runtime_families, runtime_coercions)
 }
 
 fn globals_for_node(globals: &HostGlobals, roots: &ModuleRoots, path: &Path) -> HostGlobals {
@@ -2038,8 +2102,9 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::Set(_) => "Set",
         Value::Map(_) => "Map",
         Value::Record(_) | Value::SlotRecord { .. } | Value::NamedRecord { .. } => "Record",
+        Value::BrandedPrimitive { payload, .. } => payload.type_name(),
         Value::NamedFamily(_) => "Type",
-        Value::NamedMethod { .. } => "Function",
+        Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => "Function",
         Value::Tag { .. } => "Tag",
         Value::ResultMethod { .. } => "Function",
         Value::Closure(_) => "Function",

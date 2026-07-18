@@ -10600,3 +10600,277 @@ fn unannotated_builtin_and_named_family_join_does_not_infer_reification() {
     assert!(check.diagnostics.iter().any(Diagnostic::is_error));
     assert!(check.slot_reifications.is_empty());
 }
+
+#[test]
+fn named_primitive_family_core_checks_construction_lifting_and_widening() {
+    let parsed = parse_module(concat!(
+        "Money = Int {\n",
+        "  toText(): Text => \"$${. / 100}.${. % 100}\"\n",
+        "}\n",
+        "price: Money = 2599\n",
+        "tax = Money(150)\n",
+        "total = price + tax\n",
+        "label = total.toText()\n",
+        "asInt: Int = total\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let owner = check
+        .named_family_aliases
+        .get("Money")
+        .expect("Money family owner");
+    let money = check
+        .named_families
+        .get(owner)
+        .expect("Money family descriptor");
+    assert_eq!(money.primitive_base, Some(named("Int")));
+    assert_eq!(money.methods["+"].result, named(owner));
+    assert_eq!(money.methods["<"].result, named("Bool"));
+    assert_eq!(money.methods["div"].result.render(), "?Int");
+    assert!(money.methods.contains_key("toText"));
+}
+
+#[test]
+fn named_primitive_family_accepts_each_concrete_scalar_base() {
+    let parsed = parse_module(concat!(
+        "Count = Int {}\n",
+        "Ratio = Float {}\n",
+        "Label = Text {}\n",
+        "Flag = Bool {}\n",
+        "count: Count = 1\n",
+        "ratio: Ratio = 1.5\n",
+        "label: Label = \"ok\"\n",
+        "flag: Flag = true\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn named_primitive_family_literal_branding_requires_the_exact_base_kind() {
+    let parsed = parse_module(concat!(
+        "Ratio = Float {}\n",
+        "Count = Int {}\n",
+        "badRatio: Ratio = 1\n",
+        "badCount: Count = 1.5\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert_eq!(
+        check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error())
+            .count(),
+        2,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn named_primitive_family_reports_deferred_base_forms() {
+    let parsed = parse_module(concat!(
+        "Money = Int {}\n",
+        "OtherMoney = Money {}\n",
+        "Tags = Array(Text) {}\n",
+        "Point = { x: Int }\n",
+        "NamedPoint = Point {}\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+    let messages = check
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        messages.contains(&"a primitive-base family cannot use another named family as its base")
+    );
+    assert!(messages.contains(&"container bases are not supported in this slice"));
+    assert!(
+        messages.contains(&"named primitive-base families require a concrete scalar builtin base")
+    );
+}
+
+#[test]
+fn named_primitive_family_rejects_nonliteral_branding_and_bad_override() {
+    let parsed = parse_module(concat!(
+        "Money = Int {\n",
+        "  +(other: Int): Money => Money(0)\n",
+        "}\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("collides with inherited `Int.+`")
+    }));
+}
+
+#[test]
+fn named_primitive_family_records_compatible_override_origin() {
+    let parsed = parse_module(concat!(
+        "Money = Int {\n",
+        "  +(other: Money): Money => Money(0)\n",
+        "}\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let method = check
+        .named_family_aliases
+        .get("Money")
+        .and_then(|owner| check.named_families.get(owner))
+        .and_then(|family| family.methods.get("+"))
+        .expect("compatible override");
+    assert!(matches!(
+        &method.origin,
+        NamedMethodOrigin::Override {
+            base_owner: Type::Named(owner),
+            base_member,
+        } if owner == "Int" && base_member == "+"
+    ));
+}
+
+#[test]
+fn named_primitive_family_rejects_nonliteral_base_operator_argument() {
+    let parsed = parse_module(concat!(
+        "Money = Int {}\n",
+        "money = Money(1)\n",
+        "cents: Int = 2\n",
+        "bad = money + cents\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expected `Money`, found `Int`")),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn named_primitive_family_widening_does_not_descend_through_containers() {
+    let parsed = parse_module(concat!(
+        "Money = Int {}\n",
+        "prices: Array(Money) = [Money(1)]\n",
+        "badArray: Array(Int) = prices\n",
+        "maybeMoney: ?Money = Money(1)\n",
+        "badOptional: ?Int = maybeMoney\n",
+        "pair: (Money, Text) = (Money(1), \"ok\")\n",
+        "badTuple: (Int, Text) = pair\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert_eq!(
+        check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error())
+            .count(),
+        3,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn named_primitive_family_keeps_static_integer_divisor_rule() {
+    let parsed = parse_module(concat!(
+        "Money = Int {}\n",
+        "money = Money(10)\n",
+        "divisor = Money(2)\n",
+        "bad = money / divisor\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(
+        check.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("divisor is not statically known to be non-zero")),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn named_primitive_family_snapshots_ambient_base_methods_with_root_lift() {
+    let ambient = check_trusted_builtin_methods("Int { triple(): Int => . * 3 }\n");
+    let parsed = parse_module(concat!(
+        "Money = Int {}\n",
+        "money = Money(2)\n",
+        "tripled: Money = money.triple()\n",
+    ));
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let family = check
+        .named_family_aliases
+        .get("Money")
+        .and_then(|owner| check.named_families.get(owner))
+        .expect("Money descriptor");
+    assert!(matches!(
+        family.methods["triple"].origin,
+        NamedMethodOrigin::Inherited {
+            lifted_result: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn named_primitive_family_mixed_operators_are_left_owned() {
+    let parsed = parse_module(concat!(
+        "Money = Int {}\n",
+        "money = Money(2)\n",
+        "branded: Money = money + 1\n",
+        "plain: Int = 1 + money\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn named_primitive_family_rejects_wrong_constructor_payload_and_widened_methods() {
+    let parsed = parse_module(concat!(
+        "Money = Int { toText(): Text => \"money\" }\n",
+        "wrong = Money(\"no\")\n",
+        "money = Money(2)\n",
+        "plain: Int = money\n",
+        "lost = plain.toText()\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("expected `Int`, found") }),
+        "{:?}",
+        check.diagnostics
+    );
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message == "missing field `toText`" })
+    );
+}

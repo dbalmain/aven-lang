@@ -1865,6 +1865,127 @@ fn named_family_multiple_indented_methods_check_and_run() {
 }
 
 #[test]
+fn named_primitive_family_money_checks_and_runs_end_to_end() {
+    let dir = TempDir::new("named-primitive-family-money");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Money = Int {\n",
+            "  toText(): Text =>\n",
+            "    \"$${. / 100}.${. % 100}\"\n",
+            "}\n",
+            "price: Money = 2599\n",
+            "singleton = 3\n",
+            "fromSingleton: Money = singleton\n",
+            "singletonLabel = fromSingleton.toText()\n",
+            "tax = Money(150)\n",
+            "total = price + tax\n",
+            "label = total.toText()\n",
+            "bound = total.toText\n",
+            "boundLabel = bound()\n",
+            "unbound = Money.toText\n",
+            "unboundLabel = unbound(total)\n",
+            "shown: { toText(): Text } = total\n",
+            "shownLabel = shown.toText()\n",
+            "cheap = [price, tax].minimum()\n",
+            "mixed: Int = 1 + total\n",
+            "brandedPlus: Money = total + 1\n",
+            "brandedPlusLabel = brandedPlus.toText()\n",
+            "squared: Int = Money(3) ^ Money(2)\n",
+            "asInt: Int = total\n",
+            "{ label, singletonLabel, boundLabel, unboundLabel, shownLabel, cheap, mixed, brandedPlusLabel, squared, asInt }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+    let globals = aven_host::standard_check_host_globals();
+
+    let checked = check_path_with_host_globals_and_roots(&path, &globals, &roots)
+        .expect("Money family should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_host_globals_and_roots(&path, &globals, vec![], &roots)
+        .expect("Money family should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some(
+            "{ label: \"$27.49\", singletonLabel: \"$0.3\", boundLabel: \"$27.49\", unboundLabel: \"$27.49\", shownLabel: \"$27.49\", cheap: 150, mixed: 2750, brandedPlusLabel: \"$27.50\", squared: 9, asInt: 2749 }"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn named_primitive_family_compatible_override_replaces_inherited_body() {
+    let dir = TempDir::new("named-primitive-family-override");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Money = Int {\n",
+            "  +(other: Money): Money => Money(99)\n",
+            "}\n",
+            "left = Money(1)\n",
+            "right = Money(2)\n",
+            "result: Int = left + right\n",
+            "{ result }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+
+    let checked = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("compatible primitive-family override should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&path, vec![])
+        .expect("compatible primitive-family override should replace the inherited body");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ result: 99 }".to_owned())
+    );
+}
+
+#[test]
+fn named_primitive_families_run_over_all_concrete_scalar_bases() {
+    let dir = TempDir::new("named-primitive-family-scalar-bases");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Ratio = Float {}\n",
+            "Label = Text {}\n",
+            "Flag = Bool {}\n",
+            "ratio: Ratio = 1.5\n",
+            "doubled: Float = ratio + ratio\n",
+            "label: Label = \"mixed\"\n",
+            "upper: Label = label.toUpper()\n",
+            "upperText: Text = upper\n",
+            "flag: Flag = true\n",
+            "plainFlag: Bool = flag\n",
+            "{ doubled, upperText, plainFlag }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+
+    let checked = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("all concrete scalar primitive families should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&path, vec![])
+        .expect("all concrete scalar primitive families should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ doubled: 3, upperText: \"MIXED\", plainFlag: true }".to_owned())
+    );
+}
+
+#[test]
 fn named_family_descriptor_crosses_module_boundary() {
     let dir = TempDir::new("named-family-import");
     write(
@@ -1908,6 +2029,43 @@ fn named_family_descriptor_crosses_module_boundary() {
     assert_eq!(
         ran.value.as_ref().map(ToString::to_string),
         Some("{ lowest: { value: 2 } }".to_owned())
+    );
+}
+
+#[test]
+fn named_primitive_family_descriptor_and_literal_brand_cross_module_boundary() {
+    let dir = TempDir::new("named-primitive-family-import");
+    write(
+        dir.path(),
+        "money.av",
+        concat!(
+            "Money = Int {\n",
+            "  toText(): Text => \"$${. / 100}.${. % 100}\"\n",
+            "}\n",
+            "{ Money }\n",
+        ),
+    );
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "{ Money } = import(\"./money\")\n",
+            "price: Money = 2599\n",
+            "{ label: price.toText() }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+
+    let checked = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("imported primitive family should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&path, vec![])
+        .expect("imported primitive family should retain its descriptor");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ label: \"$25.99\" }".to_owned())
     );
 }
 

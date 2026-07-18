@@ -163,6 +163,7 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
         Value::SlotRecord { fields, .. } => {
             toml_table_from_record(fields).map(::toml::Value::Table)
         }
+        Value::BrandedPrimitive { payload, .. } => toml_value(&payload.to_value(), position),
         Value::Tag { name, payload } => toml_value_from_json_constructor(name, payload),
         Value::Undefined => match position {
             EncodePosition::RecordField => Err("Toml.encode cannot encode undefined".to_owned()),
@@ -175,7 +176,9 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
         },
         Value::Null => Err("Toml.encode cannot encode Null because TOML has no null".to_owned()),
         Value::ResultMethod { .. } => Err("Toml.encode cannot encode Function".to_owned()),
-        Value::NamedMethod { .. } => Err("Toml.encode cannot encode Function".to_owned()),
+        Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => {
+            Err("Toml.encode cannot encode Function".to_owned())
+        }
         Value::Closure(_) => Err("Toml.encode cannot encode Function".to_owned()),
         Value::Native(_) => Err("Toml.encode cannot encode Native".to_owned()),
         Value::Type(_) => Err("Toml.encode cannot encode Type".to_owned()),

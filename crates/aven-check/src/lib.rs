@@ -82,6 +82,10 @@ pub struct CheckOutput {
     /// runtime. The evaluator applies these conversions after evaluating the
     /// expression at the recorded source span.
     pub slot_reifications: HashMap<Span, SlotReificationTarget>,
+    /// Checked root coercions which the evaluator applies without changing the
+    /// source AST. Primitive-family branding and widening are deliberately
+    /// boundary-directed rather than HM equations.
+    pub primitive_family_coercions: HashMap<Span, PrimitiveFamilyCoercion>,
     /// Completed one-level heads for parameterized recursive type references.
     /// Keeping these in a side map makes `Type::Recursive` a small atomic node
     /// while allowing checker consumers to unfold only at structural demands.
@@ -243,6 +247,24 @@ pub struct BuiltinMethodType {
 pub struct NamedMethodType {
     pub params: Vec<Type>,
     pub result: Type,
+    pub constraints: Vec<MethodConstraint>,
+    pub variables: Vec<String>,
+    pub origin: NamedMethodOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedMethodOrigin {
+    Declared,
+    Override {
+        base_owner: Type,
+        base_member: String,
+    },
+    Inherited {
+        base_owner: Type,
+        base_member: String,
+        lifted_params: Vec<bool>,
+        lifted_result: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,7 +272,16 @@ pub struct NamedFamilyType {
     pub owner: String,
     pub data: Row,
     pub defaulted_fields: HashSet<String>,
+    /// `Some(B)` for a named primitive-base family and `None` for an existing
+    /// named record family. The payload remains the exact normalized builtin.
+    pub primitive_base: Option<Type>,
     pub methods: HashMap<String, NamedMethodType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrimitiveFamilyCoercion {
+    Brand { owner: String },
+    Widen,
 }
 
 impl CheckOutput {
@@ -601,6 +632,7 @@ pub fn check_module_with_host_globals_and_imports_in(
         named_family_aliases: checker.named_family_aliases.clone(),
         builtin_methods: checker.builtin_methods.clone(),
         slot_reifications: checker.slot_reifications.clone(),
+        primitive_family_coercions: checker.primitive_family_coercions.clone(),
     }
 }
 

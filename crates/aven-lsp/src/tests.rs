@@ -2636,6 +2636,49 @@ fn pathless_hover_shows_ambient_array_method_signature() {
 }
 
 #[test]
+fn hover_shows_named_primitive_family_method_signature() {
+    let hover = hover_at_marker(concat!(
+        "Money = Int { toText(): Text => \"money\" }\n",
+        "money = Money(1)\n",
+        "money.to|Text\n",
+    ))
+    .expect("primitive-family method hover");
+
+    assert_hover_value(hover, "```aven\nmoney.toText : () -> Text\n```");
+}
+
+#[test]
+fn file_backed_hover_preserves_imported_primitive_family_interface() {
+    let dir = TempDir::new("lsp-import-primitive-family-hover");
+    write(
+        dir.path(),
+        "money.av",
+        concat!(
+            "Money = Int { toText(): Text => \"money\" }\n",
+            "{ Money }\n",
+        ),
+    );
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    write(dir.path(), "main.av", "");
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(
+        &mut store,
+        &main_uri,
+        concat!(
+            "{ Money } = import(\"./money\")\n",
+            "price: Money = 2599\n",
+            "label = price.toText()\n",
+        ),
+    );
+
+    let Some(hover) = hover_at_position(&document, position(2, 16)) else {
+        panic!("expected imported primitive-family method hover");
+    };
+
+    assert_hover_value(hover, "```aven\nprice.toText : () -> Text\n```");
+}
+
+#[test]
 fn hover_at_position_shows_inferred_operator_requirement() {
     let document = parsed_document_with_semantics(
         "less = (left: t, right: t): Bool => left < right\n".to_owned(),

@@ -98,6 +98,7 @@ pub(crate) fn type_definition_names(
             if crate::checker::is_import_call(&binding.value)
                 || crate::checker::is_method_requirement_row(&binding.value)
                 || aven_parser::is_named_method_provider(&binding.value)
+                || aven_parser::is_primitive_family_provider(&binding.value)
                 || (declaration
                     .name
                     .chars()

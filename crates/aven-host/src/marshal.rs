@@ -38,9 +38,11 @@ fn mismatch(expected: &str, got: &Value) -> String {
         Value::Set(_) => "Set",
         Value::Map(_) => "Map",
         Value::Record(_) | Value::SlotRecord { .. } | Value::NamedRecord { .. } => "Record",
+        Value::BrandedPrimitive { payload, .. } => payload.type_name(),
         Value::Tag { .. } => "Tag",
         Value::ResultMethod { .. }
         | Value::NamedMethod { .. }
+        | Value::UnboundNamedMethod { .. }
         | Value::Closure(_)
         | Value::Native(_) => "Function",
         Value::Type(_) | Value::NamedFamily(_) => "Type",

@@ -128,9 +128,28 @@ impl<'a> Checker<'a> {
         };
         let owner = self.named_family_aliases.get(name)?;
         let family = self.named_families.get(owner)?;
+        if family.primitive_base.is_some() {
+            return None;
+        }
         Some(Type::Record(
             self.normalize_row(&family.data, &HashSet::new()),
         ))
+    }
+
+    pub(super) fn primitive_family_base_view(&self, ty: &Type) -> Option<Type> {
+        let Type::Named(name) = ty else {
+            return None;
+        };
+        let owner = self.named_family_aliases.get(name)?;
+        self.named_families
+            .get(owner)?
+            .primitive_base
+            .as_ref()
+            .map(|base| self.normalize(base))
+    }
+
+    pub(super) fn is_named_family_owner(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Named(name) if self.named_family_aliases.contains_key(name))
     }
 
     /// Unfold exactly one recursive reference when a consumer needs its outer
@@ -488,6 +507,7 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Missing => Type::Deferred,
             ExprKind::Literal(_)
+            | ExprKind::PrimitiveFamily { .. }
             | ExprKind::Interpolation(_)
             | ExprKind::Undefined
             | ExprKind::Null

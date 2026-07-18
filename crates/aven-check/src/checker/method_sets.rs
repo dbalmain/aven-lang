@@ -1,12 +1,14 @@
 use super::Checker;
 use std::collections::{HashMap, HashSet};
 
+use aven_core::Span;
 use aven_parser::Literal;
 
 use crate::ty::{
     LiteralBase, MethodPredicate, RowEntry, Type, literal_variant_base, map_type, named_builtin,
-    type_variable_names,
+    record_fields, type_variable_names,
 };
+use crate::{MethodConstraint, NamedMethodOrigin, NamedMethodType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MethodSignature {
@@ -232,6 +234,152 @@ pub(crate) fn builtin_method_signature(owner: &Type, member: &str) -> Option<Met
     })
 }
 
+/// Enumerate the declaration-time effective method environment for one exact
+/// builtin owner. The returned schemes retain method-local variables; family
+/// lookup freshens them later from the materialized descriptor.
+pub(crate) fn effective_base_methods(
+    checker: &Checker<'_>,
+    owner: &Type,
+) -> Vec<(String, NamedMethodType)> {
+    let mut methods = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(fields) = record_fields(owner) {
+        for field in fields {
+            let Type::Function { params, result, .. } = field.ty else {
+                continue;
+            };
+            if !seen.insert(field.name.clone()) {
+                continue;
+            }
+            let result = *result;
+            let variables = method_scheme_variables(&params, &result, &[]);
+            methods.push((
+                field.name.clone(),
+                NamedMethodType {
+                    params,
+                    result,
+                    constraints: Vec::new(),
+                    variables,
+                    origin: inherited_origin(owner, &field.name, Vec::new(), false),
+                },
+            ));
+        }
+    }
+
+    if let Some(owner_kind) = BuiltinType::from_type(owner) {
+        for entry in BUILTIN_METHODS
+            .iter()
+            .filter(|entry| entry.owner == owner_kind)
+        {
+            if !seen.insert(entry.member.to_owned()) {
+                continue;
+            }
+            let params = entry.params.iter().map(|param| param.to_type()).collect();
+            let result = entry.result.to_type();
+            methods.push((
+                entry.member.to_owned(),
+                NamedMethodType {
+                    params,
+                    result,
+                    constraints: Vec::new(),
+                    variables: Vec::new(),
+                    origin: inherited_origin(owner, entry.member, Vec::new(), false),
+                },
+            ));
+        }
+    }
+
+    for entry in checker.builtin_methods.methods() {
+        if seen.contains(&entry.member) {
+            continue;
+        }
+        let owner_variables = entry
+            .owner_variables
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let Some(substitutions) = owner_pattern_bindings(&entry.owner, owner, &owner_variables)
+        else {
+            continue;
+        };
+        let instantiate_owner = |ty: &Type| {
+            map_type(ty, &mut |node| match node {
+                Type::Variable(name) => substitutions.get(name).cloned(),
+                _ => None,
+            })
+        };
+        let params = entry
+            .params
+            .iter()
+            .map(instantiate_owner)
+            .collect::<Vec<_>>();
+        let result = instantiate_owner(&entry.result);
+        let constraints = entry
+            .constraints
+            .iter()
+            .map(|constraint| MethodConstraint {
+                candidate: instantiate_owner(&constraint.candidate),
+                member: constraint.member.clone(),
+                params: constraint.params.iter().map(instantiate_owner).collect(),
+                result: instantiate_owner(&constraint.result),
+            })
+            .collect::<Vec<_>>();
+        let variables = method_scheme_variables(&params, &result, &constraints);
+        seen.insert(entry.member.clone());
+        methods.push((
+            entry.member.clone(),
+            NamedMethodType {
+                params,
+                result,
+                constraints,
+                variables,
+                origin: inherited_origin(owner, &entry.member, Vec::new(), false),
+            },
+        ));
+    }
+
+    methods
+}
+
+fn inherited_origin(
+    owner: &Type,
+    member: &str,
+    lifted_params: Vec<bool>,
+    lifted_result: bool,
+) -> NamedMethodOrigin {
+    NamedMethodOrigin::Inherited {
+        base_owner: owner.clone(),
+        base_member: member.to_owned(),
+        lifted_params,
+        lifted_result,
+    }
+}
+
+fn method_scheme_variables(
+    params: &[Type],
+    result: &Type,
+    constraints: &[MethodConstraint],
+) -> Vec<String> {
+    let mut variables = HashSet::new();
+    for ty in params.iter().chain(std::iter::once(result)) {
+        variables.extend(type_variable_names(ty));
+    }
+    for constraint in constraints {
+        variables.extend(type_variable_names(&constraint.candidate));
+        for ty in constraint
+            .params
+            .iter()
+            .chain(std::iter::once(&constraint.result))
+        {
+            variables.extend(type_variable_names(ty));
+        }
+    }
+    let mut variables = variables.into_iter().collect::<Vec<_>>();
+    variables.sort();
+    variables
+}
+
 impl Checker<'_> {
     /// Query one exact owner category. User families never fall back to a
     /// builtin or another structurally equal declaration.
@@ -280,10 +428,34 @@ impl Checker<'_> {
             && let Some(canonical) = self.named_family_aliases.get(name)
         {
             let signature = self.named_families.get(canonical)?.methods.get(member)?;
+            let substitutions = signature
+                .variables
+                .iter()
+                .map(|name| (name.clone(), self.unifier.fresh()))
+                .collect::<HashMap<_, _>>();
+            let instantiate = |ty: &Type| {
+                map_type(ty, &mut |node| match node {
+                    Type::Variable(name) => substitutions.get(name).cloned(),
+                    _ => None,
+                })
+            };
             return Some(MethodSignature {
-                params: signature.params.clone(),
-                result: signature.result.clone(),
-                predicates: Vec::new(),
+                params: signature.params.iter().map(instantiate).collect(),
+                result: instantiate(&signature.result),
+                predicates: signature
+                    .constraints
+                    .iter()
+                    .map(|constraint| MethodPredicate {
+                        candidate: instantiate(&constraint.candidate),
+                        member: constraint.member.clone(),
+                        params: constraint.params.iter().map(instantiate).collect(),
+                        result: instantiate(&constraint.result),
+                        operator_span: Span::new(0, 0),
+                        binding: Some(member.to_owned()),
+                        call_span: None,
+                        obligation_id: None,
+                    })
+                    .collect(),
             });
         }
         if let Some(signature) = self.attached_builtin_method_signature(owner, member) {

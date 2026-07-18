@@ -52,6 +52,7 @@ impl<'a> Checker<'a> {
             next_method_obligation_id: 0,
             method_assumption_scopes: Vec::new(),
             slot_reifications: HashMap::new(),
+            primitive_family_coercions: HashMap::new(),
             pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
@@ -206,23 +207,25 @@ impl<'a> Checker<'a> {
             .filter(|declaration| declaration.phase == DeclarationPhase::Comptime)
             .filter_map(|declaration| {
                 let binding = binding_for_declaration(module, &declaration)?;
-                aven_parser::is_named_method_provider(&binding.value)
+                is_named_family_provider(&binding.value)
                     .then_some((declaration.name, binding.value.clone()))
             })
             .collect::<Vec<_>>();
 
-        for (name, _) in &providers {
+        for (name, value) in &providers {
             let owner = self.named_family_owner_key(name);
             self.named_family_aliases
                 .insert(name.clone(), owner.clone());
             self.named_family_aliases.insert(owner.clone(), owner);
-            self.type_definitions.insert(
-                name.clone(),
+            let provisional = if let Some((base, _)) = aven_parser::primitive_family_parts(value) {
+                self.lower_annotation(base)
+            } else {
                 Type::Record(Row {
                     entries: Vec::new(),
                     tail: RowTail::Closed,
-                }),
-            );
+                })
+            };
+            self.type_definitions.insert(name.clone(), provisional);
         }
 
         for (name, value) in providers {
@@ -231,6 +234,63 @@ impl<'a> Checker<'a> {
                 .get(&name)
                 .cloned()
                 .expect("prepared providers have canonical owners");
+            if let Some((base_expr, _)) = aven_parser::primitive_family_parts(&value) {
+                let lowered_base = self.lower_annotation(base_expr);
+                let base = self.normalize(&lowered_base);
+                let supported = matches!(&base, Type::Named(name) if matches!(name.as_str(), "Int" | "Float" | "Text" | "Bool"));
+                if !supported {
+                    let (message, note) = if matches!(&base, Type::Named(name) if self.named_family_aliases.contains_key(name))
+                    {
+                        (
+                            "a primitive-base family cannot use another named family as its base",
+                            "family-on-family bases are deferred; use the original concrete builtin base",
+                        )
+                    } else if matches!(base, Type::Apply { .. }) {
+                        (
+                            "container bases are not supported in this slice",
+                            "use Int, Float, Text, or Bool as the concrete builtin base",
+                        )
+                    } else {
+                        (
+                            "named primitive-base families require a concrete scalar builtin base",
+                            "the supported bases in this slice are Int, Float, Text, and Bool",
+                        )
+                    };
+                    self.diagnostics.push(
+                        Diagnostic::error(message)
+                            .with_code(codes::ty::MISMATCH)
+                            .with_label(Label::primary(base_expr.span, "unsupported family base"))
+                            .with_note(note),
+                    );
+                }
+                let family_owner = Type::Named(owner.clone());
+                let methods = if supported {
+                    super::method_sets::effective_base_methods(self, &base)
+                } else {
+                    Vec::new()
+                }
+                .into_iter()
+                .map(|(member, method)| {
+                    (member, lift_inherited_method(method, &base, &family_owner))
+                })
+                .collect();
+                self.type_definitions.insert(name.clone(), base.clone());
+                self.named_families.insert(
+                    owner.clone(),
+                    NamedFamilyType {
+                        owner,
+                        data: Row {
+                            entries: Vec::new(),
+                            tail: RowTail::Closed,
+                        },
+                        defaulted_fields: HashSet::new(),
+                        primitive_base: Some(base),
+                        methods,
+                    },
+                );
+                continue;
+            }
+
             let ExprKind::Record(entries) = &ungroup_expr(&value).kind else {
                 continue;
             };
@@ -282,6 +342,7 @@ impl<'a> Checker<'a> {
                     owner,
                     data,
                     defaulted_fields,
+                    primitive_base: None,
                     methods: HashMap::new(),
                 },
             );
@@ -337,7 +398,7 @@ impl<'a> Checker<'a> {
             .filter_map(|declaration| {
                 let owner = self.named_family_aliases.get(&declaration.name)?;
                 let binding = binding_for_declaration(module, &declaration)?;
-                aven_parser::is_named_method_provider(&binding.value).then_some((
+                is_named_family_provider(&binding.value).then_some((
                     declaration.name,
                     owner.clone(),
                     binding.value.clone(),
@@ -347,7 +408,7 @@ impl<'a> Checker<'a> {
 
         for (source_name, owner, value) in providers {
             self.provider_owner_scopes.push(source_name);
-            let ExprKind::Record(entries) = &ungroup_expr(&value).kind else {
+            let Some(entries) = named_family_provider_entries(&value) else {
                 self.provider_owner_scopes.pop();
                 continue;
             };
@@ -366,7 +427,12 @@ impl<'a> Checker<'a> {
                         .collect::<HashSet<_>>()
                 })
                 .unwrap_or_default();
-            let mut methods = HashMap::new();
+            let mut methods = self
+                .named_families
+                .get(&owner)
+                .map(|family| family.methods.clone())
+                .unwrap_or_default();
+            let mut local_names = HashSet::new();
             for entry in entries {
                 let RecordEntry::Method {
                     name,
@@ -380,6 +446,7 @@ impl<'a> Checker<'a> {
                 let ExprKind::Lambda {
                     params,
                     return_annotation: Some(result),
+                    requirements,
                     ..
                 } = &ungroup_expr(value).kind
                 else {
@@ -403,6 +470,15 @@ impl<'a> Checker<'a> {
                     );
                     continue;
                 }
+                if !local_names.insert(name.clone()) {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!("duplicate method `{name}`"))
+                            .with_code(codes::ty::MISMATCH)
+                            .with_label(Label::primary(*name_span, "method already declared")),
+                    );
+                    continue;
+                }
+                self.rigid_type_var_scopes.push(HashSet::new());
                 let mut param_types = Vec::with_capacity(params.len());
                 let mut complete = true;
                 for param in params {
@@ -421,21 +497,75 @@ impl<'a> Checker<'a> {
                     param_types.push(self.normalize(&lowered));
                 }
                 if !complete {
+                    self.rigid_type_var_scopes.pop();
                     continue;
                 }
                 let lowered_result = self.lower_annotation(result);
                 let result = self.normalize(&lowered_result);
-                let signature = NamedMethodType {
+                let constraints = self
+                    .requirement_predicates(requirements)
+                    .into_iter()
+                    .map(|predicate| MethodConstraint {
+                        candidate: predicate.candidate,
+                        member: predicate.member,
+                        params: predicate.params,
+                        result: predicate.result,
+                    })
+                    .collect::<Vec<_>>();
+                let variables = named_method_variables(&param_types, &result, &constraints);
+                self.rigid_type_var_scopes.pop();
+                let mut signature = NamedMethodType {
                     params: param_types,
                     result,
+                    constraints,
+                    variables,
+                    origin: NamedMethodOrigin::Declared,
                 };
-                if methods.insert(name.clone(), signature).is_some() {
-                    self.diagnostics.push(
-                        Diagnostic::error(format!("duplicate method `{name}`"))
+                if let Some(inherited) = methods
+                    .get(name)
+                    .filter(|method| matches!(method.origin, NamedMethodOrigin::Inherited { .. }))
+                {
+                    let (base_owner, base_member) = match &inherited.origin {
+                        NamedMethodOrigin::Inherited {
+                            base_owner,
+                            base_member,
+                            ..
+                        } => (base_owner.clone(), base_member.clone()),
+                        NamedMethodOrigin::Declared | NamedMethodOrigin::Override { .. } => {
+                            unreachable!("filtered inherited method")
+                        }
+                    };
+                    if named_method_schemes_alpha_equivalent(inherited, &signature) {
+                        signature.origin = NamedMethodOrigin::Override {
+                            base_owner,
+                            base_member,
+                        };
+                    } else {
+                        self.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "`{name}` collides with inherited `{}.{base_member}`",
+                                base_owner.render(),
+                            ))
                             .with_code(codes::ty::MISMATCH)
-                            .with_label(Label::primary(*name_span, "method already declared")),
-                    );
+                            .with_label(Label::primary(
+                                *name_span,
+                                "override signature does not match",
+                            ))
+                            .with_note(format!(
+                                "the inherited family signature is `{}`",
+                                render_named_method_signature(inherited)
+                            ))
+                            .with_note(format!(
+                                "the declaration has `{}`",
+                                render_named_method_signature(&signature)
+                            ))
+                            .with_note(
+                                "an override must keep the inherited signature; rename this method or fix it",
+                            ),
+                        );
+                    }
                 }
+                methods.insert(name.clone(), signature);
             }
             self.provider_owner_scopes.pop();
             if let Some(family) = self.named_families.get_mut(&owner) {
@@ -885,7 +1015,7 @@ impl<'a> Checker<'a> {
     pub(super) fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
         let binding = binding_for_declaration(module, declaration);
         if let Some(binding) = binding
-            && aven_parser::is_named_method_provider(&binding.value)
+            && is_named_family_provider(&binding.value)
         {
             let owner = self
                 .named_family_aliases
@@ -984,10 +1114,14 @@ impl<'a> Checker<'a> {
     }
 
     fn check_named_family_declaration(&mut self, owner: &str, value: &Expr) {
-        let ExprKind::Record(entries) = &ungroup_expr(value).kind else {
+        let Some(entries) = named_family_provider_entries(value) else {
             return;
         };
         let family = self.named_families.get(owner).cloned();
+        let primitive = family
+            .as_ref()
+            .and_then(|family| family.primitive_base.as_ref())
+            .is_some();
         for entry in entries {
             match entry {
                 RecordEntry::Method {
@@ -1007,7 +1141,12 @@ impl<'a> Checker<'a> {
                         ))
                         .with_note("add `=> body` to declare a type-carried provider method"),
                     ),
-                    ExprKind::Lambda { params, body, .. } => {
+                    ExprKind::Lambda {
+                        params,
+                        requirements,
+                        body,
+                        ..
+                    } => {
                         let Some(signature) = family
                             .as_ref()
                             .and_then(|family| family.methods.get(name))
@@ -1015,20 +1154,26 @@ impl<'a> Checker<'a> {
                         else {
                             continue;
                         };
-                        let mut env = TypeEnv::new();
-                        env.insert(
-                            aven_parser::METHOD_RECEIVER_NAME.to_owned(),
+                        self.rigid_type_var_scopes
+                            .push(signature.variables.iter().cloned().collect());
+                        let assumptions = self.requirement_predicates(requirements);
+                        self.push_method_assumptions(assumptions);
+                        self.local_types.push();
+                        self.local_types.define(
+                            aven_parser::METHOD_RECEIVER_NAME,
                             LocalValueType::Known(Type::Named(owner.to_owned())),
                         );
                         for (param, ty) in params.iter().zip(&signature.params) {
-                            env.insert(param.name.clone(), LocalValueType::Known(ty.clone()));
+                            self.local_types
+                                .define(&param.name, LocalValueType::Known(ty.clone()));
                             self.record_inferred_type(param.name_span, ty.clone());
                         }
                         let marker = self.method_obligation_marker();
-                        let actual = self.infer(&env, body);
-                        let actual = self.normalize(&self.resolve_and_default(&actual));
-                        self.check_type_against_type(&signature.result, &actual, body.span);
+                        self.check_value_against(&signature.result, body);
                         self.finish_non_generalizing_lambda_obligations(marker);
+                        self.local_types.pop();
+                        self.pop_method_assumptions();
+                        self.rigid_type_var_scopes.pop();
                     }
                     _ => {}
                 },
@@ -1038,11 +1183,36 @@ impl<'a> Checker<'a> {
                     default,
                     ..
                 } => {
+                    if primitive {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                "primitive-base family declarations contain only methods",
+                            )
+                            .with_code(codes::ty::MISMATCH)
+                            .with_label(Label::primary(
+                                annotation.span,
+                                "data fields are not supported on a primitive payload",
+                            )),
+                        );
+                        continue;
+                    }
                     let lowered = self.lower_annotation(annotation);
                     let ty = self.normalize(&lowered);
                     self.check_value_against(&ty, default);
                     let _ = name;
                 }
+                RecordEntry::Field {
+                    overwrite: false,
+                    name_span,
+                    ..
+                } if primitive => self.diagnostics.push(
+                    Diagnostic::error("primitive-base family declarations contain only methods")
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            *name_span,
+                            "data fields are not supported on a primitive payload",
+                        )),
+                ),
                 RecordEntry::Field {
                     overwrite: false, ..
                 } => {}
@@ -1671,6 +1841,7 @@ impl<'a> Checker<'a> {
                 args.iter().all(Self::literal_or_tag_value_shape)
             }
             ExprKind::Missing
+            | ExprKind::PrimitiveFamily { .. }
             | ExprKind::Interpolation(_)
             | ExprKind::Name(_)
             | ExprKind::ComptimeName(_)
@@ -2099,4 +2270,305 @@ fn intrinsic_builtin_method_collides(owner: &Type, member: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_named_family_provider(value: &Expr) -> bool {
+    aven_parser::is_named_method_provider(value) || aven_parser::is_primitive_family_provider(value)
+}
+
+fn named_family_provider_entries(value: &Expr) -> Option<&[RecordEntry]> {
+    if let Some((_, members)) = aven_parser::primitive_family_parts(value) {
+        return Some(members);
+    }
+    let ExprKind::Record(entries) = &ungroup_expr(value).kind else {
+        return None;
+    };
+    aven_parser::is_named_method_provider(value).then_some(entries)
+}
+
+fn lift_inherited_method(
+    mut method: NamedMethodType,
+    base: &Type,
+    family: &Type,
+) -> NamedMethodType {
+    let lifted_params = method.params.iter().map(|param| param == base).collect();
+    let lifted_result = method.result == *base;
+    method.params = method
+        .params
+        .into_iter()
+        .map(|param| {
+            if param == *base {
+                family.clone()
+            } else {
+                param
+            }
+        })
+        .collect();
+    method.result = if method.result == *base {
+        family.clone()
+    } else {
+        method.result
+    };
+    for constraint in &mut method.constraints {
+        root_lift_type(&mut constraint.candidate, base, family);
+        for param in &mut constraint.params {
+            root_lift_type(param, base, family);
+        }
+        root_lift_type(&mut constraint.result, base, family);
+    }
+    let base_member = match method.origin {
+        NamedMethodOrigin::Inherited { base_member, .. } => base_member,
+        NamedMethodOrigin::Declared | NamedMethodOrigin::Override { .. } => {
+            unreachable!("effective base methods are inherited entries")
+        }
+    };
+    method.origin = NamedMethodOrigin::Inherited {
+        base_owner: base.clone(),
+        base_member,
+        lifted_params,
+        lifted_result,
+    };
+    method
+}
+
+fn root_lift_type(ty: &mut Type, base: &Type, family: &Type) {
+    if ty == base {
+        *ty = family.clone();
+    }
+}
+
+fn named_method_variables(
+    params: &[Type],
+    result: &Type,
+    constraints: &[MethodConstraint],
+) -> Vec<String> {
+    let mut variables = HashSet::new();
+    for ty in params.iter().chain(std::iter::once(result)) {
+        variables.extend(type_variable_names(ty));
+    }
+    for constraint in constraints {
+        variables.extend(type_variable_names(&constraint.candidate));
+        for ty in constraint
+            .params
+            .iter()
+            .chain(std::iter::once(&constraint.result))
+        {
+            variables.extend(type_variable_names(ty));
+        }
+    }
+    let mut variables = variables.into_iter().collect::<Vec<_>>();
+    variables.sort();
+    variables
+}
+
+fn named_method_schemes_alpha_equivalent(
+    inherited: &NamedMethodType,
+    declared: &NamedMethodType,
+) -> bool {
+    if inherited.params.len() != declared.params.len()
+        || inherited.variables.len() != declared.variables.len()
+        || inherited.constraints.len() != declared.constraints.len()
+    {
+        return false;
+    }
+    let mut forward = HashMap::new();
+    let mut reverse = HashMap::new();
+    if !inherited
+        .params
+        .iter()
+        .zip(&declared.params)
+        .all(|(left, right)| alpha_equivalent_type(left, right, &mut forward, &mut reverse))
+        || !alpha_equivalent_type(
+            &inherited.result,
+            &declared.result,
+            &mut forward,
+            &mut reverse,
+        )
+    {
+        return false;
+    }
+
+    let mut unmatched = declared.constraints.iter().collect::<Vec<_>>();
+    for constraint in &inherited.constraints {
+        let Some((index, next_forward, next_reverse)) =
+            unmatched.iter().enumerate().find_map(|(index, candidate)| {
+                let mut candidate_forward = forward.clone();
+                let mut candidate_reverse = reverse.clone();
+                alpha_equivalent_constraint(
+                    constraint,
+                    candidate,
+                    &mut candidate_forward,
+                    &mut candidate_reverse,
+                )
+                .then_some((index, candidate_forward, candidate_reverse))
+            })
+        else {
+            return false;
+        };
+        unmatched.remove(index);
+        forward = next_forward;
+        reverse = next_reverse;
+    }
+    true
+}
+
+fn alpha_equivalent_constraint(
+    left: &MethodConstraint,
+    right: &MethodConstraint,
+    forward: &mut HashMap<String, String>,
+    reverse: &mut HashMap<String, String>,
+) -> bool {
+    left.member == right.member
+        && left.params.len() == right.params.len()
+        && alpha_equivalent_type(&left.candidate, &right.candidate, forward, reverse)
+        && left
+            .params
+            .iter()
+            .zip(&right.params)
+            .all(|(left, right)| alpha_equivalent_type(left, right, forward, reverse))
+        && alpha_equivalent_type(&left.result, &right.result, forward, reverse)
+}
+
+fn alpha_equivalent_type(
+    left: &Type,
+    right: &Type,
+    forward: &mut HashMap<String, String>,
+    reverse: &mut HashMap<String, String>,
+) -> bool {
+    match (left, right) {
+        (Type::Variable(left), Type::Variable(right)) => {
+            if let Some(bound) = forward.get(left) {
+                return bound == right;
+            }
+            if reverse.contains_key(right) {
+                return false;
+            }
+            forward.insert(left.clone(), right.clone());
+            reverse.insert(right.clone(), left.clone());
+            true
+        }
+        (
+            Type::Apply {
+                callee: left_callee,
+                args: left_args,
+            },
+            Type::Apply {
+                callee: right_callee,
+                args: right_args,
+            },
+        ) => {
+            left_args.len() == right_args.len()
+                && alpha_equivalent_type(left_callee, right_callee, forward, reverse)
+                && left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| alpha_equivalent_type(left, right, forward, reverse))
+        }
+        (
+            Type::Function {
+                params: left_params,
+                result: left_result,
+                required: left_required,
+            },
+            Type::Function {
+                params: right_params,
+                result: right_result,
+                required: right_required,
+            },
+        ) => {
+            left_required == right_required
+                && left_params.len() == right_params.len()
+                && left_params
+                    .iter()
+                    .zip(right_params)
+                    .all(|(left, right)| alpha_equivalent_type(left, right, forward, reverse))
+                && alpha_equivalent_type(left_result, right_result, forward, reverse)
+        }
+        (Type::Optional(left), Type::Optional(right))
+        | (Type::Nullable(left), Type::Nullable(right)) => {
+            alpha_equivalent_type(left, right, forward, reverse)
+        }
+        (Type::Tuple(left), Type::Tuple(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| alpha_equivalent_type(left, right, forward, reverse))
+        }
+        (Type::Record(left), Type::Record(right)) | (Type::Variant(left), Type::Variant(right)) => {
+            alpha_equivalent_row(left, right, forward, reverse)
+        }
+        (
+            Type::SlotRecord {
+                data: left_data,
+                slots: left_slots,
+            },
+            Type::SlotRecord {
+                data: right_data,
+                slots: right_slots,
+            },
+        ) => {
+            alpha_equivalent_row(left_data, right_data, forward, reverse)
+                && alpha_equivalent_row(left_slots, right_slots, forward, reverse)
+        }
+        _ => left == right,
+    }
+}
+
+fn alpha_equivalent_row(
+    left: &Row,
+    right: &Row,
+    forward: &mut HashMap<String, String>,
+    reverse: &mut HashMap<String, String>,
+) -> bool {
+    left.tail == right.tail
+        && left.entries.len() == right.entries.len()
+        && left
+            .entries
+            .iter()
+            .zip(&right.entries)
+            .all(|(left, right)| match (left, right) {
+                (
+                    RowEntry::Field {
+                        name: left_name,
+                        ty: left,
+                    },
+                    RowEntry::Field {
+                        name: right_name,
+                        ty: right,
+                    },
+                ) => {
+                    left_name == right_name && alpha_equivalent_type(left, right, forward, reverse)
+                }
+                (
+                    RowEntry::Tag {
+                        name: left_name,
+                        payload: left,
+                    },
+                    RowEntry::Tag {
+                        name: right_name,
+                        payload: right,
+                    },
+                ) => {
+                    left_name == right_name
+                        && left.len() == right.len()
+                        && left.iter().zip(right).all(|(left, right)| {
+                            alpha_equivalent_type(left, right, forward, reverse)
+                        })
+                }
+                (RowEntry::Literal { value: left }, RowEntry::Literal { value: right }) => {
+                    left == right
+                }
+                _ => false,
+            })
+}
+
+fn render_named_method_signature(method: &NamedMethodType) -> String {
+    let params = method
+        .params
+        .iter()
+        .map(Type::render)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({params}): {}", method.result.render())
 }

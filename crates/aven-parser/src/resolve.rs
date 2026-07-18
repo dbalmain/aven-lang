@@ -124,6 +124,23 @@ pub fn is_named_method_provider(expr: &Expr) -> bool {
         && !is_method_requirement_row(expr)
 }
 
+/// The declaration-position primitive-base family parts, looking through
+/// grouping parentheses for consistency with other declaration predicates.
+pub fn primitive_family_parts(expr: &Expr) -> Option<(&Expr, &[RecordEntry])> {
+    let mut expr = expr;
+    while let ExprKind::Group(inner) = &expr.kind {
+        expr = inner;
+    }
+    let ExprKind::PrimitiveFamily { base, members } = &expr.kind else {
+        return None;
+    };
+    Some((base, members))
+}
+
+pub fn is_primitive_family_provider(expr: &Expr) -> bool {
+    primitive_family_parts(expr).is_some()
+}
+
 pub fn render_annotation(source: &str, annotation: &Expr) -> String {
     source
         .get(annotation.span.start..annotation.span.end)
@@ -389,6 +406,9 @@ fn scope_at_expr<'a>(expr: &'a Expr, at: Span, outer: &[BindingSite<'a>]) -> Opt
             scope_at_record_entries(entries, at, outer)
                 .or_else(|| Some(ScopeAt::from_visible(outer.to_vec())))
         }
+        ExprKind::PrimitiveFamily { base, members } => scope_at_expr(base, at, outer)
+            .or_else(|| scope_at_record_entries(members, at, outer))
+            .or_else(|| Some(ScopeAt::from_visible(outer.to_vec()))),
         _ => find_map_expr_children(expr, |child| scope_at_expr(child, at, outer))
             .or_else(|| Some(ScopeAt::from_visible(outer.to_vec()))),
     }

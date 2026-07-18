@@ -517,6 +517,10 @@ fn needs_space(
         return false;
     }
 
+    if is_tight_access_operator(previous) && is_binary_operator(current) {
+        return true;
+    }
+
     if is_tight_access_operator(previous)
         || is_tight_prefix_operator(previous, previous_previous, Some(current))
         || is_at_set_marker(previous, Some(current))

@@ -238,6 +238,9 @@ fn encode_value(
             encode_record(fields, output)?;
         }
         Value::SlotRecord { fields, .. } => encode_record(fields, output)?,
+        Value::BrandedPrimitive { payload, .. } => {
+            return encode_value(&payload.to_value(), position, output);
+        }
         Value::Undefined => match position {
             EncodePosition::RecordField => {}
             EncodePosition::TopLevel => {
@@ -261,7 +264,9 @@ fn encode_value(
             ));
         }
         Value::ResultMethod { .. } => return Err("Json.encode cannot encode Function".to_owned()),
-        Value::NamedMethod { .. } => return Err("Json.encode cannot encode Function".to_owned()),
+        Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => {
+            return Err("Json.encode cannot encode Function".to_owned());
+        }
         Value::Closure(_) => return Err("Json.encode cannot encode Function".to_owned()),
         Value::Native(_) => return Err("Json.encode cannot encode Native".to_owned()),
         Value::Type(_) => return Err("Json.encode cannot encode Type".to_owned()),

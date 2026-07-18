@@ -653,6 +653,7 @@ pub(crate) fn evaluate_runtime_value(
         ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
         ExprKind::Missing
         | ExprKind::Literal(_)
+        | ExprKind::PrimitiveFamily { .. }
         | ExprKind::Interpolation(_)
         | ExprKind::Undefined
         | ExprKind::Null
@@ -807,6 +808,7 @@ where
             ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
             ExprKind::Missing
             | ExprKind::Literal(_)
+            | ExprKind::PrimitiveFamily { .. }
             | ExprKind::Interpolation(_)
             | ExprKind::Undefined
             | ExprKind::Null

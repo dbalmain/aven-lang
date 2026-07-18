@@ -26,7 +26,8 @@ pub use parser::{
 };
 pub use resolve::{
     BindingSite, annotation_for_definition, is_method_requirement_row, is_named_method_provider,
-    lambda_parts, pattern_bindings, render_annotation, static_import_specifier,
+    is_primitive_family_provider, lambda_parts, pattern_bindings, primitive_family_parts,
+    render_annotation, static_import_specifier,
 };
 pub use resolve::{resolve_local_definition, resolve_local_references, visible_local_bindings};
 pub(crate) use strings::decode_string_fragment;

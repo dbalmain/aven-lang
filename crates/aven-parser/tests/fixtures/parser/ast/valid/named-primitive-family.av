@@ -1,0 +1,3 @@
+Money = Int {
+  copy(): Money => Money(1)
+}

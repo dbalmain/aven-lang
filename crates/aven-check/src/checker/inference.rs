@@ -309,6 +309,7 @@ impl<'a> Checker<'a> {
             } => self.infer_propagate(env, value, *operator_span, *mode),
             ExprKind::Missing
             | ExprKind::Literal(_)
+            | ExprKind::PrimitiveFamily { .. }
             | ExprKind::Optional(_)
             | ExprKind::Nullable(_)
             | ExprKind::NonNull(_)
@@ -385,6 +386,29 @@ impl<'a> Checker<'a> {
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let left_type = self.infer(env, left);
         let right_type = self.infer(env, right);
+        let left_owner = self.normalize(&self.resolve_and_default(&left_type));
+
+        if is_method_operator(operator)
+            && self.is_named_family_owner(&left_owner)
+            && let Some(signature) = self.exact_method_signature(&left_owner, operator)
+        {
+            self.push_method_obligations_at(signature.predicates, operator_span);
+            if let [param] = signature.params.as_slice() {
+                self.check_call_arg_against_param(param, right);
+            }
+            self.simplify_method_obligations(false);
+            self.maybe_report_integer_divisor(operator, &left_type, &right_type, right);
+            return self.resolve_and_default(&signature.result);
+        }
+
+        let right_owner = self.normalize(&self.resolve_and_default(&right_type));
+        if !self.is_named_family_owner(&left_owner)
+            && self.primitive_family_base_view(&right_owner).is_some()
+            && !right.span.is_empty()
+        {
+            self.primitive_family_coercions
+                .insert(right.span, PrimitiveFamilyCoercion::Widen);
+        }
 
         // Apply this syntactic policy before literal folding: a constant
         // expression such as `1 + 1` is still not a literal divisor in v1.
@@ -544,6 +568,9 @@ impl<'a> Checker<'a> {
     fn operator_operand_resolves_to_int(&self, ty: &Type) -> bool {
         let ty = self.normalize(&self.resolve_and_default(ty));
         matches!(&ty, Type::Named(name) if name == "Int")
+            || self
+                .primitive_family_base_view(&ty)
+                .is_some_and(|base| matches!(base, Type::Named(name) if name == "Int"))
             || matches!(&ty, Type::Variant(row)
                 if literal_variant_base(row) == Some(LiteralBase::Number)
                     && !row.entries.iter().any(|entry| matches!(entry,
@@ -558,7 +585,7 @@ impl<'a> Checker<'a> {
         right: &Type,
     ) -> Option<Type> {
         let owner = self.normalize(&self.unifier.resolve(left));
-        if self.named_family_data_view(&owner).is_some()
+        if self.is_named_family_owner(&owner)
             && let Some(signature) = self.exact_method_signature(&owner, operator)
             && let [param] = signature.params.as_slice()
             && self.unifier.unify(param, right).is_ok()
@@ -788,6 +815,9 @@ impl<'a> Checker<'a> {
 
     pub(super) fn widen_numeric_operand(&mut self, ty: &Type) -> Type {
         let resolved = self.unifier.resolve(ty);
+        if let Some(base) = self.primitive_family_base_view(&resolved) {
+            return base;
+        }
         if let Type::Variant(row) = &resolved
             && literal_variant_base(row) == Some(LiteralBase::Number)
         {
@@ -804,6 +834,9 @@ impl<'a> Checker<'a> {
 
     pub(super) fn widen_same_named_operand(&mut self, ty: &Type, name: &'static str) -> Type {
         let resolved = self.unifier.resolve(ty);
+        if let Some(base) = self.primitive_family_base_view(&resolved) {
+            return base;
+        }
         if name == "Text"
             && let Type::Variant(row) = &resolved
             && literal_variant_base(row) == Some(LiteralBase::Text)
@@ -1427,6 +1460,21 @@ impl<'a> Checker<'a> {
         null_safe: bool,
         field_span: Span,
     ) -> Type {
+        if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
+            && let Some(owner) = self.named_family_aliases.get(name).cloned()
+            && let Some(signature) = self.exact_method_signature(&Type::Named(owner.clone()), field)
+        {
+            self.push_method_obligations_at(signature.predicates, field_span);
+            let mut params = Vec::with_capacity(signature.params.len() + 1);
+            params.push(Type::Named(owner));
+            params.extend(signature.params);
+            return Type::Function {
+                required: params.len(),
+                params,
+                result: Box::new(signature.result),
+            };
+        }
+
         // A static-carrying type name (`Map`, `Json`, ...) resolves the field
         // through the statics table rather than a namespace record.
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
@@ -1729,6 +1777,10 @@ impl<'a> Checker<'a> {
             .get(owner)
             .cloned()
             .expect("named-family constructor owners have descriptors");
+        if let Some(base) = family.primitive_base {
+            self.check_value_against(&base, &args[0]);
+            return Type::Named(owner.to_owned());
+        }
         let data = family.data;
         let constructor_data = constructor_data_row(&data, &family.defaulted_fields);
         let payload = &args[0];

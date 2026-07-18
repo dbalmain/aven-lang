@@ -496,6 +496,16 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             let _ = writeln!(output, "set");
             render_record_entries_ast(output, entries, indent + 1);
         }
+        ExprKind::PrimitiveFamily { base, members } => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "primitive-family");
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "base");
+            render_expr_ast(output, base, indent + 2);
+            write_indent(output, indent + 1);
+            let _ = writeln!(output, "members");
+            render_record_entries_ast(output, members, indent + 2);
+        }
         ExprKind::Index { callee, args } => {
             write_indent(output, indent);
             let _ = writeln!(output, "index");

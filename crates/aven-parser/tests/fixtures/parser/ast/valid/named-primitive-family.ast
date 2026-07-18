@@ -1,0 +1,18 @@
+module
+  binding Money
+    value
+      primitive-family
+        base
+          comptime Int
+        members
+          method copy
+            lambda
+              params
+              return
+                comptime Money
+              body
+                call
+                  callee
+                    comptime Money
+                  args
+                    number 1

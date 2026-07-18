@@ -484,12 +484,15 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
             }
             JsonValue::Object(output)
         }
+        aven_eval::Value::BrandedPrimitive { payload, .. } => aven_value_json(&payload.to_value()),
         aven_eval::Value::Tag { name, payload } => json!({
             "tag": name,
             "payload": payload.iter().map(aven_value_json).collect::<Vec<_>>(),
         }),
         aven_eval::Value::ResultMethod { .. } => JsonValue::String("<method>".to_owned()),
-        aven_eval::Value::NamedMethod { .. } => JsonValue::String("<method>".to_owned()),
+        aven_eval::Value::NamedMethod { .. } | aven_eval::Value::UnboundNamedMethod { .. } => {
+            JsonValue::String("<method>".to_owned())
+        }
         aven_eval::Value::Closure(_) => JsonValue::String("<function>".to_owned()),
         aven_eval::Value::Native(_) => JsonValue::String("<native>".to_owned()),
         aven_eval::Value::Type(ty) => JsonValue::String(ty.to_string()),

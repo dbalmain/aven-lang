@@ -106,6 +106,10 @@ impl<'a> Checker<'a> {
             self.recursive_type_comparisons.remove(id);
         }
 
+        if self.check_primitive_family_literal_branding(expected, value) {
+            return;
+        }
+
         match (&value.kind, expected) {
             (ExprKind::Group(inner), _) => self.check_value_against(expected, inner),
             (ExprKind::Block(items), _) => self.check_block_against(expected, items),
@@ -582,6 +586,22 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        if self
+            .primitive_family_base_view(actual)
+            .is_some_and(|base| base == *expected)
+        {
+            if !span.is_empty() {
+                self.primitive_family_coercions
+                    .insert(span, PrimitiveFamilyCoercion::Widen);
+            }
+            return;
+        }
+
+        if self.contains_nested_primitive_family_widening(expected, actual) {
+            self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
+            return;
+        }
+
         if matches!(expected, Type::Record(_))
             && let Some(data) = self.named_family_data_view(actual)
         {
@@ -676,10 +696,14 @@ impl<'a> Checker<'a> {
             (Type::Nullable(inner), _) => self.check_type_against_type(inner, actual, span),
             (Type::Named(expected), Type::Named(actual))
                 if named_type_mismatch(expected, actual)
-                    && self.known_types.contains(expected)
-                    && self.known_types.contains(actual) =>
+                    && self.is_known_named_type(expected)
+                    && self.is_known_named_type(actual) =>
             {
-                self.report_type_mismatch_between_types(expected, actual, span);
+                self.report_type_mismatch_between_types(
+                    &Type::Named(expected.clone()).render(),
+                    &Type::Named(actual.clone()).render(),
+                    span,
+                );
             }
             // A bare named type is never Optional/Nullable; wrappers peel on the
             // expected side above, so an actual wrapper against a named expected
@@ -898,6 +922,151 @@ impl<'a> Checker<'a> {
                 self.report_type_mismatch_between_types(&expected.render(), actual, span);
             }
             _ => {}
+        }
+    }
+
+    fn check_primitive_family_literal_branding(&mut self, expected: &Type, value: &Expr) -> bool {
+        let Type::Named(name) = expected else {
+            return false;
+        };
+        let Some(owner) = self.named_family_aliases.get(name).cloned() else {
+            return false;
+        };
+        let Some(base) = self
+            .named_families
+            .get(&owner)
+            .and_then(|family| family.primitive_base.clone())
+        else {
+            return false;
+        };
+
+        if let ExprKind::Literal(literal) = &ungroup_expr(value).kind {
+            if primitive_literal_matches_base(literal, &base) {
+                self.primitive_family_coercions
+                    .insert(value.span, PrimitiveFamilyCoercion::Brand { owner });
+            } else if let Some(found) = primitive_literal_base_name(literal) {
+                self.report_type_mismatch_between_types(
+                    &Type::Named(name.clone()).render(),
+                    found,
+                    value.span,
+                );
+            } else {
+                self.check_value_against(&base, value);
+            }
+            return true;
+        }
+
+        if !matches!(
+            ungroup_expr(value).kind,
+            ExprKind::Name(_) | ExprKind::ComptimeName(_)
+        ) {
+            return false;
+        }
+        let env = self.local_types.inference_env();
+        let actual = self.infer(&env, value);
+        let actual = self.normalize(&self.resolve_and_default(&actual));
+        let Type::Variant(row) = &actual else {
+            return false;
+        };
+        let [RowEntry::Literal { value: literal }] = row.entries.as_slice() else {
+            return false;
+        };
+        if primitive_literal_matches_base(literal, &base) {
+            self.primitive_family_coercions
+                .insert(value.span, PrimitiveFamilyCoercion::Brand { owner });
+        } else if let Some(found) = primitive_literal_base_name(literal) {
+            self.report_type_mismatch_between_types(
+                &Type::Named(name.clone()).render(),
+                found,
+                value.span,
+            );
+        } else {
+            self.check_type_against_type(&base, &actual, value.span);
+        }
+        true
+    }
+
+    fn is_known_named_type(&self, name: &str) -> bool {
+        self.known_types.contains(name) || self.named_families.contains_key(name)
+    }
+
+    fn contains_nested_primitive_family_widening(&self, expected: &Type, actual: &Type) -> bool {
+        if self
+            .primitive_family_base_view(actual)
+            .is_some_and(|base| base == *expected)
+        {
+            return true;
+        }
+        match (expected, actual) {
+            (
+                Type::Apply {
+                    callee: expected_callee,
+                    args: expected_args,
+                },
+                Type::Apply {
+                    callee: actual_callee,
+                    args: actual_args,
+                },
+            ) => {
+                self.contains_nested_primitive_family_widening(expected_callee, actual_callee)
+                    || expected_args
+                        .iter()
+                        .zip(actual_args)
+                        .any(|(expected, actual)| {
+                            self.contains_nested_primitive_family_widening(expected, actual)
+                        })
+            }
+            (Type::Optional(expected), Type::Optional(actual))
+            | (Type::Nullable(expected), Type::Nullable(actual)) => {
+                self.contains_nested_primitive_family_widening(expected, actual)
+            }
+            (Type::Tuple(expected), Type::Tuple(actual)) => {
+                expected.iter().zip(actual).any(|(expected, actual)| {
+                    self.contains_nested_primitive_family_widening(expected, actual)
+                })
+            }
+            (
+                Type::Function {
+                    params: expected_params,
+                    result: expected_result,
+                    ..
+                },
+                Type::Function {
+                    params: actual_params,
+                    result: actual_result,
+                    ..
+                },
+            ) => {
+                expected_params
+                    .iter()
+                    .zip(actual_params)
+                    .any(|(expected, actual)| {
+                        self.contains_nested_primitive_family_widening(expected, actual)
+                    })
+                    || self
+                        .contains_nested_primitive_family_widening(expected_result, actual_result)
+            }
+            (Type::Record(expected), Type::Record(actual)) => {
+                expected.entries.iter().any(|expected| {
+                    let RowEntry::Field {
+                        name: expected_name,
+                        ty: expected_type,
+                    } = expected
+                    else {
+                        return false;
+                    };
+                    actual.entries.iter().any(|actual| {
+                        matches!(actual,
+                        RowEntry::Field { name, ty }
+                            if name == expected_name
+                                && self.contains_nested_primitive_family_widening(
+                                    expected_type,
+                                    ty,
+                                ))
+                    })
+                })
+            }
+            _ => false,
         }
     }
 
@@ -1303,6 +1472,20 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+}
+
+fn primitive_literal_matches_base(literal: &Literal, base: &Type) -> bool {
+    matches!(base, Type::Named(name) if primitive_literal_base_name(literal) == Some(name))
+}
+
+fn primitive_literal_base_name(literal: &Literal) -> Option<&'static str> {
+    match literal {
+        Literal::Bool(_) => Some("Bool"),
+        Literal::String(_) => Some("Text"),
+        Literal::Number(number) if super::inference::is_float_literal_text(number) => Some("Float"),
+        Literal::Number(_) => Some("Int"),
+        Literal::Regex(_) => None,
     }
 }
 
