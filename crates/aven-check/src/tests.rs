@@ -10381,9 +10381,15 @@ fn bare_receiver_focus_is_scoped_to_method_bodies() {
 }
 
 #[test]
-fn annotated_builtin_method_slot_conversion_reports_sol_b_boundary() {
+fn annotated_builtin_method_slot_conversion_reifies_and_preserves_bare_access_type() {
     let ambient = check_trusted_builtin_methods("Array(a) { count(): Int => 0 }\n");
-    let parsed = parse_module("slots: { count(): Int } = [1]\n");
+    let source = concat!(
+        "array = [1]\n",
+        "sourceBound = array.count\n",
+        "slots: { count(): Int } = array\n",
+        "slotBound = slots.count\n",
+    );
+    let parsed = parse_module(source);
     let mut imports = ModuleImports::default();
     imports.set_builtin_method_environment(ambient.builtin_methods);
     let check = check_module_with_host_globals_and_imports(
@@ -10392,8 +10398,105 @@ fn annotated_builtin_method_slot_conversion_reports_sol_b_boundary() {
         &imports,
     );
 
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "sourceBound", 0))
+            .map(Type::render),
+        Some("() -> Int".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "slotBound", 0))
+            .map(Type::render),
+        Some("() -> Int".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "slots", 0))
+            .map(Type::render),
+        Some("{ count(): Int }".to_owned())
+    );
+    assert_eq!(check.slot_reifications.len(), 1);
+    assert_eq!(
+        check
+            .slot_reifications
+            .get(&binding_value_named(&parsed.module, "slots").span)
+            .map(|target| target.slots.as_slice()),
+        Some(["count".to_owned()].as_slice())
+    );
+}
+
+#[test]
+fn builtin_slot_reification_rejects_data_fields_and_function_field_member_kind() {
+    let ambient = check_trusted_builtin_methods("Array(a) { count(): Int => 0 }\n");
+    let source = concat!(
+        "withData: { length: Int, count(): Int } = [1]\n",
+        "stored = { count: () => 0 }\n",
+        "asSlot: { count(): Int } = stored\n",
+        "asField: { count: () -> Int } = [1]\n",
+    );
+    let parsed = parse_module(source);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(check.diagnostics.iter().any(
+        |diagnostic| diagnostic.message == "builtin values reify only to pure-behavior targets"
+    ));
+    assert!(check.diagnostics.iter().any(|diagnostic| diagnostic.message
+        == "stored function field `count` cannot fill a method slot"));
     assert!(
         check.diagnostics.iter().any(|diagnostic| diagnostic.message
-            == "builtin method-slot reification is not available yet")
+            == "expected `{ count: () -> Int }`, found `Array(1 | ..)`")
     );
+}
+
+#[test]
+fn builtin_slot_reification_is_available_at_contextual_value_boundaries_only() {
+    let ambient = check_trusted_builtin_methods("Array(a) { count(): Int => 0 }\n");
+    let source = concat!(
+        "consume = (value: { count(): Int }): Int => value.count()\n",
+        "fromArgument = consume([1])\n",
+        "produce = (): { count(): Int } => [1]\n",
+        "holder: { value: { count(): Int } } = { value: [1] }\n",
+        "explicit = [1].to({ count(): Int })\n",
+    );
+    let parsed = parse_module(source);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(check.slot_reifications.len(), 4);
+}
+
+#[test]
+fn unannotated_builtin_and_named_family_join_does_not_infer_reification() {
+    let ambient = check_trusted_builtin_methods("Array(a) { count(): Int => 0 }\n");
+    let source = concat!(
+        "Counter = { value: Int, count(): Int => .value }\n",
+        "array = [1]\n",
+        "counter = Counter({ value: 2 })\n",
+        "bad = [array, counter]\n",
+    );
+    let parsed = parse_module(source);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(check.diagnostics.iter().any(Diagnostic::is_error));
+    assert!(check.slot_reifications.is_empty());
 }

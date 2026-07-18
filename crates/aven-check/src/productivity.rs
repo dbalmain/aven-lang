@@ -29,6 +29,13 @@ pub(crate) fn is_productive(
                     RowEntry::Literal { .. } | RowEntry::Tag { .. } => true,
                 })
         }
+        Type::SlotRecord { data, slots } => [data, slots].into_iter().all(|row| {
+            row.tail != RowTail::Closed
+                || row.entries.iter().all(|entry| match entry {
+                    RowEntry::Field { ty, .. } => is_productive(ty, recursive_status),
+                    RowEntry::Literal { .. } | RowEntry::Tag { .. } => true,
+                })
+        }),
         Type::Variant(row) => {
             row.tail != RowTail::Closed
                 || row.entries.iter().any(|entry| match entry {

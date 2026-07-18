@@ -37,7 +37,7 @@ fn mismatch(expected: &str, got: &Value) -> String {
         Value::Tuple(_) => "Tuple",
         Value::Set(_) => "Set",
         Value::Map(_) => "Map",
-        Value::Record(_) | Value::NamedRecord { .. } => "Record",
+        Value::Record(_) | Value::SlotRecord { .. } | Value::NamedRecord { .. } => "Record",
         Value::Tag { .. } => "Tag",
         Value::ResultMethod { .. }
         | Value::NamedMethod { .. }

@@ -1,7 +1,23 @@
 use super::*;
 
+fn is_slot_annotation_entry(entry: &RecordEntry) -> bool {
+    matches!(
+        entry,
+        RecordEntry::Method {
+            value: Expr {
+                kind: ExprKind::Arrow { .. },
+                ..
+            },
+            ..
+        }
+    )
+}
+
 impl<'a> Checker<'a> {
     pub(super) fn lower_row_entries(&mut self, entries: &[RecordEntry], kind: RowKind) -> Type {
+        if kind == RowKind::Record && entries.iter().any(is_slot_annotation_entry) {
+            return self.lower_slot_record(entries);
+        }
         let row = match self.fold_row_entries(entries, kind, RowFoldMode::Annotation) {
             Ok(row) => row,
             Err(()) => return Type::Deferred,
@@ -10,6 +26,78 @@ impl<'a> Checker<'a> {
         match kind {
             RowKind::Record => Type::Record(row),
             RowKind::Variant => Type::Variant(row),
+        }
+    }
+
+    fn lower_slot_record(&mut self, entries: &[RecordEntry]) -> Type {
+        let mut data = Row {
+            entries: Vec::new(),
+            tail: RowTail::Closed,
+        };
+        let mut slots = Row {
+            entries: Vec::new(),
+            tail: RowTail::Closed,
+        };
+        for entry in entries {
+            match entry {
+                RecordEntry::Field {
+                    name, value, span, ..
+                } => {
+                    if row_entry_index(&data.entries, name).is_some()
+                        || row_entry_index(&slots.entries, name).is_some()
+                    {
+                        self.report_duplicate_row_label(
+                            name,
+                            *span,
+                            DuplicateRowLabelContext::RecordAdd,
+                        );
+                        return Type::Deferred;
+                    }
+                    data.entries.push(RowEntry::Field {
+                        name: name.clone(),
+                        ty: self.lower_annotation(value),
+                    });
+                }
+                RecordEntry::Method {
+                    name, value, span, ..
+                } => {
+                    let ExprKind::Arrow { params, result } = &ungroup_expr(value).kind else {
+                        self.fold_expression(value, RowFoldMode::Annotation);
+                        return Type::Deferred;
+                    };
+                    if row_entry_index(&data.entries, name).is_some()
+                        || row_entry_index(&slots.entries, name).is_some()
+                    {
+                        self.report_duplicate_row_label(
+                            name,
+                            *span,
+                            DuplicateRowLabelContext::RecordAdd,
+                        );
+                        return Type::Deferred;
+                    }
+                    let params = self.lower_annotations(params);
+                    let required = params.len();
+                    slots.entries.push(RowEntry::Field {
+                        name: name.clone(),
+                        ty: Type::Function {
+                            params,
+                            result: Box::new(self.lower_annotation(result)),
+                            required,
+                        },
+                    });
+                }
+                RecordEntry::Open { .. } => {
+                    slots.tail = RowTail::Open;
+                }
+                entry => {
+                    self.fold_deferred_row_entry(entry, RowKind::Record, RowFoldMode::Annotation);
+                    return Type::Deferred;
+                }
+            }
+        }
+        Type::SlotRecord {
+            data: Box::new(data),
+            slots: Box::new(slots),
         }
     }
 
@@ -584,6 +672,7 @@ impl<'a> Checker<'a> {
             | Type::Optional(_)
             | Type::Nullable(_)
             | Type::Tuple(_)
+            | Type::SlotRecord { .. }
             | Type::Variant(_) => None,
         }
     }

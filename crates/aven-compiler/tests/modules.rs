@@ -1516,6 +1516,141 @@ fn std_array_ordered_constraints_cross_module_boundaries_and_run() {
 }
 
 #[test]
+fn builtin_and_named_values_reify_into_pure_method_slot_targets() {
+    let dir = TempDir::new("builtin-method-slot-reification");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "IntList = {\n",
+            "  items: Array(Int)\n",
+            "  minimum(): ?Int => .items.minimum()\n",
+            "}\n",
+            "Ordered = {\n",
+            "  <(Self): Bool\n",
+            "  ..\n",
+            "}\n",
+            "forgetArray = (values: Array(t)): { minimum(): ?t }\n",
+            "  t: Ordered\n",
+            "=> values\n",
+            "array = [3, 1]\n",
+            "list = IntList({ items: [4, 2] })\n",
+            "containers: Array({ minimum(): ?Int }) = [array, list]\n",
+            "minimums: Array(?Int) = containers.map((container) => container.minimum())\n",
+            "sourceMinimum = array.minimum\n",
+            "slotMinimums = containers.map((container) => container.minimum)\n",
+            "viaSourceAccess = sourceMinimum()\n",
+            "viaSlotAccess = slotMinimums.map((minimum) => minimum())\n",
+            "explicit = [8, 6].to({ minimum(): ?Int })\n",
+            "viaExplicit = explicit.minimum()\n",
+            "readMinimum = (value: { minimum(): ?Int }): ?Int => value.minimum()\n",
+            "viaArgument = readMinimum([9, 7])\n",
+            "produce = (): { minimum(): ?Int } => [12, 10]\n",
+            "viaReturn = produce().minimum()\n",
+            "holder: { value: { minimum(): ?Int } } = { value: [14, 13] }\n",
+            "viaField = holder.value.minimum()\n",
+            "viaKnownGeneric: ?Int = forgetArray([16, 15]).minimum()\n",
+            "{ minimums, viaSourceAccess, viaSlotAccess, viaExplicit, viaArgument, viaReturn, viaField, viaKnownGeneric }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+
+    let checked = check_path_with_host_globals_and_roots(
+        &path,
+        &aven_host::standard_check_host_globals(),
+        &roots,
+    )
+    .expect("builtin and named slot sources should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_host_globals_and_roots(
+        &path,
+        &aven_host::standard_check_host_globals(),
+        vec![],
+        &roots,
+    )
+    .expect("builtin and named slot sources should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some(
+            concat!(
+                "{ minimums: [1, 2], viaSourceAccess: 1, viaSlotAccess: [1, 2], ",
+                "viaExplicit: 6, viaArgument: 7, viaReturn: 10, viaField: 13, ",
+                "viaKnownGeneric: 15 }",
+            )
+            .to_owned()
+        )
+    );
+}
+
+#[test]
+fn builtin_slot_reification_reports_unsatisfied_provider_predicate_at_boundary() {
+    let dir = TempDir::new("builtin-slot-provider-predicate");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Unordered = {\n",
+            "  value: Int\n",
+            "  inspect(): Int => .value\n",
+            "}\n",
+            "items = [Unordered({ value: 1 })]\n",
+            "forgotten: { minimum(): ?Unordered } = items\n",
+            "{ forgotten }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+    let checked = check_path_with_host_globals_and_roots(
+        &path,
+        &aven_host::standard_check_host_globals(),
+        &roots,
+    )
+    .expect("provider predicate failure should be a checked diagnostic");
+    let diagnostics = checked
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .collect::<Vec<_>>();
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("method `<` is missing")
+                && diagnostic.labels.iter().any(|label| {
+                    label.span
+                        == aven_core::Span::new(
+                            concat!(
+                                "Unordered = {\n",
+                                "  value: Int\n",
+                                "  inspect(): Int => .value\n",
+                                "}\n",
+                                "items = [Unordered({ value: 1 })]\n",
+                                "forgotten: { minimum(): ?Unordered } = "
+                            )
+                            .len(),
+                            concat!(
+                                "Unordered = {\n",
+                                "  value: Int\n",
+                                "  inspect(): Int => .value\n",
+                                "}\n",
+                                "items = [Unordered({ value: 1 })]\n",
+                                "forgotten: { minimum(): ?Unordered } = items"
+                            )
+                            .len(),
+                        )
+                })
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn imported_constrained_projection_from_named_family_field_checks_and_runs() {
     let dir = TempDir::new("named-family-imported-projection");
     write(

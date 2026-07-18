@@ -68,6 +68,17 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
+        if let Type::SlotRecord { data, slots } = expected {
+            match &value.kind {
+                ExprKind::Group(inner) => self.check_value_against(expected, inner),
+                ExprKind::Block(items) => self.check_block_against(expected, items),
+                ExprKind::Match { subject, arms, .. } => {
+                    self.check_match_arms(subject, arms, Some(expected));
+                }
+                _ => self.check_value_against_slot_record(data, slots, value),
+            }
+            return;
+        }
         if matches!(expected, Type::Recursive(_))
             && let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &value.kind
         {
@@ -247,6 +258,157 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    fn check_value_against_slot_record(&mut self, data: &Row, slots: &Row, value: &Expr) {
+        let diagnostics_start = self.diagnostics.len();
+        let env = self.local_types.inference_env();
+        let actual = self.infer(&env, value);
+        let actual = self.normalize(&self.resolve_and_default(&actual));
+        let expected = Type::SlotRecord {
+            data: Box::new(data.clone()),
+            slots: Box::new(slots.clone()),
+        };
+
+        if matches!(actual, Type::SlotRecord { .. }) {
+            self.check_type_against_type(&expected, &actual, value.span);
+            if self.diagnostics.len() == diagnostics_start && actual != expected {
+                self.record_slot_reification(value.span, data, slots);
+            }
+            return;
+        }
+
+        if data.tail != RowTail::Closed || slots.tail != RowTail::Closed {
+            self.diagnostics.push(
+                Diagnostic::error("method-slot reification requires a closed target")
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(
+                        value.span,
+                        "the target still has an open row",
+                    ))
+                    .with_note("use a closed slot record at a deliberate forgetting boundary"),
+            );
+            return;
+        }
+        if matches!(actual, Type::Deferred | Type::Variable(_) | Type::Meta(_)) {
+            self.diagnostics.push(
+                Diagnostic::error("generic-source method-slot reification is not available")
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(
+                        value.span,
+                        "the source owner is not statically known here",
+                    ))
+                    .with_note(
+                        "this boundary needs generic-source thunk materialization, which the current runtime does not provide",
+                    ),
+            );
+            return;
+        }
+
+        let requested_slots = slots
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                RowEntry::Field { name, ty } => Some((name.clone(), ty.clone())),
+                RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let source_provides_slot = requested_slots
+            .iter()
+            .any(|(name, _)| self.exact_method_signature(&actual, name).is_some());
+
+        if !data.entries.is_empty() {
+            if let Some(Type::Record(source_data)) = self.named_family_data_view(&actual) {
+                self.check_type_against_type(
+                    &Type::Record(data.clone()),
+                    &Type::Record(source_data),
+                    value.span,
+                );
+            } else if source_provides_slot {
+                let fields = data
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        RowEntry::Field { name, .. } => Some(format!("`{name}`")),
+                        RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.diagnostics.push(
+                    Diagnostic::error("builtin values reify only to pure-behavior targets")
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            value.span,
+                            format!("target requires structural data field {fields}"),
+                        ))
+                        .with_note(
+                            "builtin methods do not create structural data fields during reification",
+                        ),
+                );
+                return;
+            }
+        }
+
+        let marker = self.method_obligation_marker();
+        for (name, requested) in &requested_slots {
+            let Type::Function { params, result, .. } = requested else {
+                continue;
+            };
+            if let Type::Record(row) = &actual
+                && row.entries.iter().any(
+                    |entry| matches!(entry, RowEntry::Field { name: field, .. } if field == name),
+                )
+            {
+                self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "stored function field `{name}` cannot fill a method slot"
+                    ))
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(value.span, "member kinds differ at this boundary"))
+                    .with_note(format!(
+                        "construct `{{ {name}: value.{name} }}` explicitly to store a function field"
+                    )),
+                );
+                continue;
+            }
+            self.push_method_obligations_at(
+                [MethodPredicate {
+                    candidate: actual.clone(),
+                    member: name.clone(),
+                    params: params.clone(),
+                    result: result.as_ref().clone(),
+                    operator_span: value.span,
+                    binding: None,
+                    call_span: Some(value.span),
+                    obligation_id: None,
+                }],
+                value.span,
+            );
+        }
+        self.finish_non_generalizing_lambda_obligations(marker);
+
+        if self.diagnostics.len() == diagnostics_start {
+            self.record_slot_reification(value.span, data, slots);
+        }
+    }
+
+    fn record_slot_reification(&mut self, span: Span, data: &Row, slots: &Row) {
+        let names = |row: &Row| {
+            row.entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    RowEntry::Field { name, .. } => Some(name.clone()),
+                    RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+                })
+                .collect()
+        };
+        self.slot_reifications.insert(
+            span,
+            SlotReificationTarget {
+                fields: names(data),
+                slots: names(slots),
+            },
+        );
     }
 
     pub(super) fn check_block_against(&mut self, expected: &Type, items: &[Item]) {
@@ -480,6 +642,30 @@ impl<'a> Checker<'a> {
         }
 
         match (expected, actual) {
+            (
+                Type::SlotRecord {
+                    data: expected_data,
+                    slots: expected_slots,
+                },
+                Type::SlotRecord {
+                    data: actual_data,
+                    slots: actual_slots,
+                },
+            ) => {
+                self.check_type_against_type(
+                    &Type::Record(expected_data.as_ref().clone()),
+                    &Type::Record(actual_data.as_ref().clone()),
+                    span,
+                );
+                self.check_type_against_type(
+                    &Type::Record(expected_slots.as_ref().clone()),
+                    &Type::Record(actual_slots.as_ref().clone()),
+                    span,
+                );
+            }
+            (Type::SlotRecord { .. }, _) | (_, Type::SlotRecord { .. }) => {
+                self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
+            }
             (Type::Optional(expected_inner), Type::Optional(actual_inner))
             | (Type::Nullable(expected_inner), Type::Nullable(actual_inner)) => {
                 self.check_type_against_type(expected_inner, actual_inner, span);

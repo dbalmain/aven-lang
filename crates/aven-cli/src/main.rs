@@ -477,6 +477,13 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
             }
             JsonValue::Object(output)
         }
+        aven_eval::Value::SlotRecord { fields, .. } => {
+            let mut output = JsonMap::new();
+            for (name, value) in fields.iter() {
+                output.insert(name.clone(), aven_value_json(value));
+            }
+            JsonValue::Object(output)
+        }
         aven_eval::Value::Tag { name, payload } => json!({
             "tag": name,
             "payload": payload.iter().map(aven_value_json).collect::<Vec<_>>(),

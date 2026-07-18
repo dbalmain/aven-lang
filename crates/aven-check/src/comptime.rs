@@ -64,6 +64,10 @@ enum CanonicalType {
     Nullable(Box<Self>),
     Tuple(Vec<Self>),
     Record(CanonicalRow),
+    SlotRecord {
+        data: CanonicalRow,
+        slots: CanonicalRow,
+    },
     Variant(CanonicalRow),
 }
 
@@ -92,6 +96,10 @@ impl From<&Type> for CanonicalType {
             Type::Nullable(inner) => Self::Nullable(Box::new(Self::from(inner.as_ref()))),
             Type::Tuple(items) => Self::Tuple(items.iter().map(Self::from).collect()),
             Type::Record(row) => Self::Record(CanonicalRow::from(row)),
+            Type::SlotRecord { data, slots } => Self::SlotRecord {
+                data: CanonicalRow::from(data.as_ref()),
+                slots: CanonicalRow::from(slots.as_ref()),
+            },
             Type::Variant(row) => Self::Variant(CanonicalRow::from(row)),
         }
     }

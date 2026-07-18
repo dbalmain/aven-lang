@@ -34,7 +34,7 @@ use crate::ty::{
 use crate::unify::Unifier;
 use crate::{
     BuiltinMethodEnvironment, BuiltinMethodType, InferredType, MethodConstraint, ModuleImports,
-    NamedFamilyType, NamedMethodType, QualifiedType,
+    NamedFamilyType, NamedMethodType, QualifiedType, SlotReificationTarget,
 };
 
 mod annotations;
@@ -111,6 +111,7 @@ pub(crate) struct Checker<'a> {
     method_obligations: Vec<MethodPredicate>,
     next_method_obligation_id: usize,
     method_assumption_scopes: Vec<Vec<MethodPredicate>>,
+    pub(crate) slot_reifications: HashMap<Span, SlotReificationTarget>,
     pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,

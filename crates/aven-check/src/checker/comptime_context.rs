@@ -362,45 +362,25 @@ impl Checker<'_> {
                 }
                 (Type::Tuple(resolved), diagnostics)
             }
-            Type::Record(row) | Type::Variant(row) => {
-                let mut diagnostics = Vec::new();
-                let mut entries = Vec::with_capacity(row.entries.len());
-                for entry in &row.entries {
-                    entries.push(match entry {
-                        RowEntry::Field { name, ty } => {
-                            let (ty, nested) = self.resolve_prelowered_type_head(ty, span);
-                            diagnostics.extend(nested);
-                            RowEntry::Field {
-                                name: name.clone(),
-                                ty,
-                            }
-                        }
-                        RowEntry::Tag { name, payload } => {
-                            let mut resolved = Vec::with_capacity(payload.len());
-                            for ty in payload {
-                                let (ty, nested) = self.resolve_prelowered_type_head(ty, span);
-                                resolved.push(ty);
-                                diagnostics.extend(nested);
-                            }
-                            RowEntry::Tag {
-                                name: name.clone(),
-                                payload: resolved,
-                            }
-                        }
-                        RowEntry::Literal { value } => RowEntry::Literal {
-                            value: value.clone(),
-                        },
-                    });
-                }
-                let resolved = Row {
-                    entries,
-                    tail: row.tail,
-                };
-                if matches!(ty, Type::Record(_)) {
-                    (Type::Record(resolved), diagnostics)
-                } else {
-                    (Type::Variant(resolved), diagnostics)
-                }
+            Type::Record(row) => {
+                let (row, diagnostics) = self.resolve_prelowered_row(row, span);
+                (Type::Record(row), diagnostics)
+            }
+            Type::Variant(row) => {
+                let (row, diagnostics) = self.resolve_prelowered_row(row, span);
+                (Type::Variant(row), diagnostics)
+            }
+            Type::SlotRecord { data, slots } => {
+                let (data, mut diagnostics) = self.resolve_prelowered_row(data, span);
+                let (slots, nested) = self.resolve_prelowered_row(slots, span);
+                diagnostics.extend(nested);
+                (
+                    Type::SlotRecord {
+                        data: Box::new(data),
+                        slots: Box::new(slots),
+                    },
+                    diagnostics,
+                )
             }
             Type::Deferred
             | Type::Named(_)
@@ -408,6 +388,45 @@ impl Checker<'_> {
             | Type::Meta(_)
             | Type::Recursive(_) => (ty.clone(), Vec::new()),
         }
+    }
+
+    fn resolve_prelowered_row(&mut self, row: &Row, span: Span) -> (Row, Vec<Diagnostic>) {
+        let mut diagnostics = Vec::new();
+        let entries = row
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                RowEntry::Field { name, ty } => {
+                    let (ty, nested) = self.resolve_prelowered_type_head(ty, span);
+                    diagnostics.extend(nested);
+                    RowEntry::Field {
+                        name: name.clone(),
+                        ty,
+                    }
+                }
+                RowEntry::Tag { name, payload } => RowEntry::Tag {
+                    name: name.clone(),
+                    payload: payload
+                        .iter()
+                        .map(|ty| {
+                            let (ty, nested) = self.resolve_prelowered_type_head(ty, span);
+                            diagnostics.extend(nested);
+                            ty
+                        })
+                        .collect(),
+                },
+                RowEntry::Literal { value } => RowEntry::Literal {
+                    value: value.clone(),
+                },
+            })
+            .collect();
+        (
+            Row {
+                entries,
+                tail: row.tail,
+            },
+            diagnostics,
+        )
     }
 
     pub(super) fn extend_unique_diagnostics(&mut self, diagnostics: Vec<Diagnostic>) {

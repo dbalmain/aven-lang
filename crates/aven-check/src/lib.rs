@@ -78,10 +78,20 @@ pub struct CheckOutput {
     /// Source-defined builtin methods visible after this module was checked.
     /// Ambient graph wiring seals and forwards this environment to user nodes.
     pub builtin_methods: BuiltinMethodEnvironment,
+    /// Known-target value expressions that must materialize a slot-record at
+    /// runtime. The evaluator applies these conversions after evaluating the
+    /// expression at the recorded source span.
+    pub slot_reifications: HashMap<Span, SlotReificationTarget>,
     /// Completed one-level heads for parameterized recursive type references.
     /// Keeping these in a side map makes `Type::Recursive` a small atomic node
     /// while allowing checker consumers to unfold only at structural demands.
     pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlotReificationTarget {
+    pub fields: Vec<String>,
+    pub slots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -590,6 +600,7 @@ pub fn check_module_with_host_globals_and_imports_in(
         named_families: checker.named_families.clone(),
         named_family_aliases: checker.named_family_aliases.clone(),
         builtin_methods: checker.builtin_methods.clone(),
+        slot_reifications: checker.slot_reifications.clone(),
     }
 }
 

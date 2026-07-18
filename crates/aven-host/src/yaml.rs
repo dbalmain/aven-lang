@@ -284,6 +284,9 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
             yaml_mapping_from_record(fields).map(serde_norway::Value::Mapping)
         }
+        Value::SlotRecord { fields, .. } => {
+            yaml_mapping_from_record(fields).map(serde_norway::Value::Mapping)
+        }
         Value::Tag { name, payload } => yaml_value_from_json_constructor(name, payload),
         Value::Undefined => match position {
             EncodePosition::RecordField => Err("Yaml.encode cannot encode undefined".to_owned()),

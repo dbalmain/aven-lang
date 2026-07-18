@@ -42,6 +42,29 @@ pub struct BuiltinMethodEnvironment {
     methods: Rc<RefCell<Vec<BuiltinMethodImplementation>>>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlotReification {
+    pub fields: Vec<String>,
+    pub slots: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SlotReificationPlan {
+    targets: HashMap<Span, SlotReification>,
+}
+
+impl SlotReificationPlan {
+    pub fn new(targets: impl IntoIterator<Item = (Span, SlotReification)>) -> Self {
+        Self {
+            targets: targets.into_iter().collect(),
+        }
+    }
+
+    fn get(&self, span: Span) -> Option<&SlotReification> {
+        self.targets.get(&span)
+    }
+}
+
 #[derive(Clone)]
 struct BuiltinMethodImplementation {
     owner: String,
@@ -214,6 +237,10 @@ pub enum Value {
     Set(Rc<Vec<Value>>),
     Map(Rc<Vec<(Value, Value)>>),
     Record(Rc<Vec<(String, Value)>>),
+    SlotRecord {
+        fields: Rc<Vec<(String, Value)>>,
+        slots: Rc<Vec<(String, Value)>>,
+    },
     NamedFamily(Rc<NamedFamilyDescriptor>),
     NamedRecord {
         descriptor: Rc<NamedFamilyDescriptor>,
@@ -310,6 +337,11 @@ impl fmt::Debug for Value {
             Self::Set(values) => f.debug_tuple("Set").field(values).finish(),
             Self::Map(entries) => f.debug_tuple("Map").field(entries).finish(),
             Self::Record(fields) => f.debug_tuple("Record").field(fields).finish(),
+            Self::SlotRecord { fields, slots } => f
+                .debug_struct("SlotRecord")
+                .field("fields", fields)
+                .field("slots", slots)
+                .finish(),
             Self::NamedFamily(descriptor) => f
                 .debug_tuple("NamedFamily")
                 .field(&descriptor.owner)
@@ -347,6 +379,16 @@ impl PartialEq for Value {
             (Self::Set(left), Self::Set(right)) => sets_equal(left, right),
             (Self::Map(left), Self::Map(right)) => maps_equal(left, right),
             (Self::Record(left), Self::Record(right)) => records_equal(left, right),
+            (
+                Self::SlotRecord {
+                    fields: left_fields,
+                    slots: left_slots,
+                },
+                Self::SlotRecord {
+                    fields: right_fields,
+                    slots: right_slots,
+                },
+            ) => records_equal(left_fields, right_fields) && records_equal(left_slots, right_slots),
             (
                 Self::NamedRecord {
                     descriptor: left_owner,
@@ -391,6 +433,11 @@ impl fmt::Display for Value {
             Self::Set(values) => fmt_set(values, f),
             Self::Map(entries) => fmt_map(entries, f),
             Self::Record(fields) => fmt_record(fields, f),
+            Self::SlotRecord { fields, slots } => {
+                let mut members = fields.as_ref().clone();
+                members.extend(slots.iter().cloned());
+                fmt_record(&members, f)
+            }
             Self::NamedRecord { fields, .. } => fmt_record(fields, f),
             Self::NamedFamily(descriptor) => write!(f, "{}", descriptor.owner),
             Self::NamedMethod { .. } => write!(f, "<method>"),
@@ -449,6 +496,7 @@ impl Value {
             Self::Set(_) => "Set",
             Self::Map(_) => "Map",
             Self::Record(_) => "Record",
+            Self::SlotRecord { .. } => "Record",
             Self::NamedFamily(_) => "Type",
             Self::NamedRecord { .. } => "Record",
             Self::NamedMethod { .. } => "Function",
@@ -658,6 +706,11 @@ fn fmt_nested_value(value: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Value::Set(values) => fmt_set(values, f),
         Value::Map(entries) => fmt_map(entries, f),
         Value::Record(fields) => fmt_record(fields, f),
+        Value::SlotRecord { fields, slots } => {
+            let mut members = fields.as_ref().clone();
+            members.extend(slots.iter().cloned());
+            fmt_record(&members, f)
+        }
         Value::NamedRecord { fields, .. } => fmt_record(fields, f),
         Value::Tag { name, payload } => fmt_tag(name, payload, f),
         value => write!(f, "{value}"),
@@ -684,6 +737,7 @@ pub struct Environment {
     scope: Rc<Scope>,
     imports: Rc<ModuleImports>,
     builtin_methods: BuiltinMethodEnvironment,
+    slot_reifications: Rc<SlotReificationPlan>,
     allow_builtin_method_attachments: bool,
 }
 
@@ -721,18 +775,25 @@ impl Environment {
     }
 
     pub fn with_imports(imports: ModuleImports) -> Self {
-        Self::with_imports_and_builtin_methods(imports, BuiltinMethodEnvironment::default(), false)
+        Self::with_imports_builtin_methods_and_reifications(
+            imports,
+            BuiltinMethodEnvironment::default(),
+            false,
+            SlotReificationPlan::default(),
+        )
     }
 
-    fn with_imports_and_builtin_methods(
+    fn with_imports_builtin_methods_and_reifications(
         imports: ModuleImports,
         builtin_methods: BuiltinMethodEnvironment,
         allow_builtin_method_attachments: bool,
+        slot_reifications: SlotReificationPlan,
     ) -> Self {
         Self {
             scope: Rc::new(Scope::new(None)),
             imports: Rc::new(imports),
             builtin_methods,
+            slot_reifications: Rc::new(slot_reifications),
             allow_builtin_method_attachments,
         }
     }
@@ -742,6 +803,7 @@ impl Environment {
             scope: Rc::new(Scope::new(Some(Rc::clone(&self.scope)))),
             imports: Rc::clone(&self.imports),
             builtin_methods: self.builtin_methods.clone(),
+            slot_reifications: Rc::clone(&self.slot_reifications),
             allow_builtin_method_attachments: self.allow_builtin_method_attachments,
         }
     }
@@ -864,10 +926,31 @@ pub fn eval_module_with_globals_imports_runtime_types_and_builtin_methods(
     builtin_methods: &BuiltinMethodEnvironment,
     allow_builtin_method_attachments: bool,
 ) -> EvalOutcome {
-    let env = Environment::with_imports_and_builtin_methods(
+    eval_module_with_globals_imports_runtime_types_builtin_methods_and_reifications(
+        module,
+        globals,
+        imports,
+        runtime_types,
+        builtin_methods,
+        allow_builtin_method_attachments,
+        &SlotReificationPlan::default(),
+    )
+}
+
+pub fn eval_module_with_globals_imports_runtime_types_builtin_methods_and_reifications(
+    module: &Module,
+    globals: Vec<(String, Value)>,
+    imports: &ModuleImports,
+    runtime_types: &RuntimeTypeBindings,
+    builtin_methods: &BuiltinMethodEnvironment,
+    allow_builtin_method_attachments: bool,
+    slot_reifications: &SlotReificationPlan,
+) -> EvalOutcome {
+    let env = Environment::with_imports_builtin_methods_and_reifications(
         imports.clone(),
         builtin_methods.clone(),
         allow_builtin_method_attachments,
+        slot_reifications.clone(),
     );
     bind_intrinsics(&env);
     for (name, value) in globals {
@@ -1253,6 +1336,14 @@ pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
 }
 
 fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
+    let value = eval_expr_unreified(expr, env)?;
+    let Some(target) = env.slot_reifications.get(expr.span) else {
+        return Ok(value);
+    };
+    reify_slot_record(value, target, expr.span, env)
+}
+
+fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
     match &expr.kind {
         ExprKind::Literal(literal) => eval_literal(literal, expr.span).map_err(one_diagnostic),
         ExprKind::Interpolation(segments) => eval_interpolation(segments, env),
@@ -1316,6 +1407,79 @@ fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
             expr.span,
             "this expression is not supported by the current evaluator",
         ))),
+    }
+}
+
+fn reify_slot_record(
+    source: Value,
+    target: &SlotReification,
+    span: Span,
+    env: &Environment,
+) -> Eval {
+    if let Value::SlotRecord { fields, slots } = &source {
+        let fields = project_reified_members(fields, &target.fields, span)?;
+        let slots = project_reified_members(slots, &target.slots, span)?;
+        return Ok(Value::SlotRecord {
+            fields: Rc::new(fields),
+            slots: Rc::new(slots),
+        });
+    }
+
+    let fields = match &source {
+        Value::Record(fields) | Value::NamedRecord { fields, .. } => {
+            project_reified_members(fields, &target.fields, span)?
+        }
+        _ if target.fields.is_empty() => Vec::new(),
+        value => {
+            return Err(one_diagnostic(record_type_error(
+                span,
+                "method-slot reification",
+                value.type_name(),
+                "a source with the target data fields",
+            )));
+        }
+    };
+    let mut slots = Vec::with_capacity(target.slots.len());
+    for name in &target.slots {
+        let implementation = reification_method(&source, name, env)
+            .ok_or_else(|| one_diagnostic(missing_field(name, span)))?;
+        slots.push((name.clone(), implementation));
+    }
+    Ok(Value::SlotRecord {
+        fields: Rc::new(fields),
+        slots: Rc::new(slots),
+    })
+}
+
+fn project_reified_members(
+    source: &[(String, Value)],
+    requested: &[String],
+    span: Span,
+) -> Eval<Vec<(String, Value)>> {
+    requested
+        .iter()
+        .map(|name| {
+            record_field_value(source, name)
+                .cloned()
+                .map(|value| (name.clone(), value))
+                .ok_or_else(|| one_diagnostic(missing_field(name, span)))
+        })
+        .collect()
+}
+
+fn reification_method(source: &Value, name: &str, env: &Environment) -> Option<Value> {
+    match source {
+        Value::NamedRecord { descriptor, .. } => {
+            descriptor
+                .methods
+                .get(name)
+                .cloned()
+                .map(|implementation| Value::NamedMethod {
+                    receiver: Box::new(source.clone()),
+                    implementation,
+                })
+        }
+        value => builtin_method(value, name, env),
     }
 }
 
@@ -1658,6 +1822,19 @@ fn eval_block(items: &[Item], env: &Environment) -> Eval {
 fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eval {
     if let Some(value) = eval_import_call(callee, args, env) {
         return value;
+    }
+
+    if let ExprKind::FieldAccess {
+        receiver,
+        field,
+        null_safe: false,
+        ..
+    } = &callee.kind
+        && field == "to"
+        && args.len() == 1
+        && env.slot_reifications.get(receiver.span).is_some()
+    {
+        return eval_expr_many(receiver, env);
     }
 
     if let ExprKind::Tag(name) = &callee.kind {
@@ -2394,6 +2571,10 @@ fn field_access_value(
         Value::Record(fields) => Ok(record_field_value(fields, field)
             .cloned()
             .unwrap_or(Value::Undefined)),
+        Value::SlotRecord { fields, slots } => Ok(record_field_value(fields, field)
+            .or_else(|| record_field_value(slots, field))
+            .cloned()
+            .unwrap_or(Value::Undefined)),
         Value::NamedRecord { descriptor, fields } => {
             if let Some(value) = record_field_value(fields, field) {
                 return Ok(value.clone());
@@ -2427,6 +2608,10 @@ fn field_access_value(
 fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
     match value {
         Value::Record(fields) => record_field_value(fields, field).is_some(),
+        Value::SlotRecord { fields, slots } => {
+            record_field_value(fields, field).is_some()
+                || record_field_value(slots, field).is_some()
+        }
         Value::NamedRecord { descriptor, fields } => {
             record_field_value(fields, field).is_some() || descriptor.methods.contains_key(field)
         }
@@ -3103,6 +3288,10 @@ fn map_key_is_comparable(key: &Value) -> bool {
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
             fields.iter().all(|(_, value)| map_key_is_comparable(value))
         }
+        Value::SlotRecord { fields, slots } => fields
+            .iter()
+            .chain(slots.iter())
+            .all(|(_, value)| map_key_is_comparable(value)),
         Value::Tag { payload, .. } => payload.iter().all(map_key_is_comparable),
         Value::Int(_)
         | Value::Float(_)

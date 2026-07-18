@@ -506,13 +506,25 @@ pub fn eval_path_with_host_globals_and_roots(
         }
 
         let node_globals = eval_globals_for_node(&globals, roots, &graph.nodes[node_id].path);
-        let outcome = aven_eval::eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+        let slot_reifications = aven_eval::SlotReificationPlan::new(
+            semantic.slot_reifications.iter().map(|(span, target)| {
+                (
+                    *span,
+                    aven_eval::SlotReification {
+                        fields: target.fields.clone(),
+                        slots: target.slots.clone(),
+                    },
+                )
+            }),
+        );
+        let outcome = aven_eval::eval_module_with_globals_imports_runtime_types_builtin_methods_and_reifications(
             &graph.nodes[node_id].parse.module,
             node_globals,
             &imports,
             &runtime_types,
             &runtime_builtin_methods,
             trusted_ambient,
+            &slot_reifications,
         );
         entry_value = (node_id == 0).then_some(outcome.value.clone()).flatten();
         diagnostics
@@ -2025,7 +2037,7 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::Tuple(_) => "Tuple",
         Value::Set(_) => "Set",
         Value::Map(_) => "Map",
-        Value::Record(_) | Value::NamedRecord { .. } => "Record",
+        Value::Record(_) | Value::SlotRecord { .. } | Value::NamedRecord { .. } => "Record",
         Value::NamedFamily(_) => "Type",
         Value::NamedMethod { .. } => "Function",
         Value::Tag { .. } => "Tag",

@@ -263,7 +263,7 @@ pub(crate) fn aven_value_type_name(value: &Value) -> &'static str {
         Value::Tuple(_) => "Tuple",
         Value::Set(_) => "Set",
         Value::Map(_) => "Map",
-        Value::Record(_) | Value::NamedRecord { .. } => "Record",
+        Value::Record(_) | Value::SlotRecord { .. } | Value::NamedRecord { .. } => "Record",
         Value::NamedFamily(_) => "Type",
         Value::NamedMethod { .. } => "Function",
         Value::Tag { .. } => "Tag",

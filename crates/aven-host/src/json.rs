@@ -237,6 +237,7 @@ fn encode_value(
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
             encode_record(fields, output)?;
         }
+        Value::SlotRecord { fields, .. } => encode_record(fields, output)?,
         Value::Undefined => match position {
             EncodePosition::RecordField => {}
             EncodePosition::TopLevel => {

@@ -51,6 +51,7 @@ impl<'a> Checker<'a> {
             method_obligations: Vec::new(),
             next_method_obligation_id: 0,
             method_assumption_scopes: Vec::new(),
+            slot_reifications: HashMap::new(),
             pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
@@ -935,12 +936,6 @@ impl<'a> Checker<'a> {
         }
 
         if let Some(source) = declared_annotation {
-            if let Some(binding) = binding
-                && self
-                    .report_unavailable_builtin_slot_reification(source.annotation, &binding.value)
-            {
-                return;
-            }
             let declared_type = self.lower_annotation(source.annotation);
             let expected_type = self.normalize(&declared_type);
             self.record_inferred_type(declaration.name_span, declared_type);
@@ -1171,53 +1166,6 @@ impl<'a> Checker<'a> {
             self.pop_method_assumptions();
             self.rigid_type_var_scopes.pop();
         }
-    }
-
-    fn report_unavailable_builtin_slot_reification(
-        &mut self,
-        annotation: &Expr,
-        value: &Expr,
-    ) -> bool {
-        let ExprKind::Record(entries) = &ungroup_expr(annotation).kind else {
-            return false;
-        };
-        let requested = entries
-            .iter()
-            .map(|entry| match entry {
-                RecordEntry::Method {
-                    name,
-                    value:
-                        Expr {
-                            kind: ExprKind::Arrow { .. },
-                            ..
-                        },
-                    ..
-                } => Some(name.as_str()),
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>();
-        let Some(requested) = requested.filter(|requested| !requested.is_empty()) else {
-            return false;
-        };
-        let env = self.local_types.inference_env();
-        let actual = self.infer(&env, value);
-        let actual = self.normalize(&self.resolve_and_default(&actual));
-        if requested
-            .iter()
-            .any(|member| self.exact_method_signature(&actual, member).is_none())
-        {
-            return false;
-        }
-        self.diagnostics.push(
-            Diagnostic::error("builtin method-slot reification is not available yet")
-                .with_code(codes::ty::MISMATCH)
-                .with_label(Label::primary(
-                    value.span,
-                    format!("cannot reify `{}` into method slots", actual.render()),
-                ))
-                .with_note("keep the builtin value at its concrete type until the Sol B reification slice lands"),
-        );
-        true
     }
 
     pub(super) fn is_uppercase_comptime_function(&self, name: &str, value: &Expr) -> bool {

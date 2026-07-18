@@ -73,8 +73,14 @@ impl<'a> Checker<'a> {
     /// rather than letting inference silently defer them. A non-concrete callee
     /// (unknown/free name) keeps today's permissive behaviour.
     pub(super) fn check_value_call(&mut self, call: &Expr, callee: &Expr, args: &[Expr]) {
-        let env = self.local_types.inference_env();
         if self.infer_import_call(callee, args).is_some() {
+            return;
+        }
+        let env = self.local_types.inference_env();
+        if self
+            .infer_slot_conversion_call(&env, callee, args)
+            .is_some()
+        {
             return;
         }
         if self.named_family_constructor_owner(callee).is_some() {

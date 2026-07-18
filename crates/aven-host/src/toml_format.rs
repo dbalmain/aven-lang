@@ -160,6 +160,9 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
             toml_table_from_record(fields).map(::toml::Value::Table)
         }
+        Value::SlotRecord { fields, .. } => {
+            toml_table_from_record(fields).map(::toml::Value::Table)
+        }
         Value::Tag { name, payload } => toml_value_from_json_constructor(name, payload),
         Value::Undefined => match position {
             EncodePosition::RecordField => Err("Toml.encode cannot encode undefined".to_owned()),

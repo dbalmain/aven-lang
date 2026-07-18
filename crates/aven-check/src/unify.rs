@@ -211,6 +211,19 @@ impl Unifier {
                 self.unify_many(left, right, unfolding)
             }
             (Type::Record(left), Type::Record(right)) => self.unify_rows(left, right, unfolding),
+            (
+                Type::SlotRecord {
+                    data: left_data,
+                    slots: left_slots,
+                },
+                Type::SlotRecord {
+                    data: right_data,
+                    slots: right_slots,
+                },
+            ) => {
+                self.unify_rows(left_data, right_data, unfolding)?;
+                self.unify_rows(left_slots, right_slots, unfolding)
+            }
             (Type::Variant(left), Type::Variant(right)) => self.unify_rows(left, right, unfolding),
             _ => Err(()),
         }
@@ -727,6 +740,10 @@ fn visit_type_row_tails(ty: &Type, visit: &mut impl FnMut(RowTail)) {
             .iter()
             .for_each(|item| visit_type_row_tails(item, visit)),
         Type::Record(row) | Type::Variant(row) => visit_row_tails(row, visit),
+        Type::SlotRecord { data, slots } => {
+            visit_row_tails(data, visit);
+            visit_row_tails(slots, visit);
+        }
         Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)

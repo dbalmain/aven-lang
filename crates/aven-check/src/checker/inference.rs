@@ -942,6 +942,10 @@ impl<'a> Checker<'a> {
                 self.record_equality_compatibility(left, right)
             }
             (Type::Record(_), _) | (_, Type::Record(_)) => EqualityCompatibility::Mismatched,
+            (Type::SlotRecord { .. }, Type::SlotRecord { .. }) => EqualityCompatibility::Unknown,
+            (Type::SlotRecord { .. }, _) | (_, Type::SlotRecord { .. }) => {
+                EqualityCompatibility::Mismatched
+            }
             (Type::Tuple(left), Type::Tuple(right)) => {
                 equality_sequence_compatibility(left, right, |left, right| {
                     self.equality_compatibility(left, right)
@@ -1529,6 +1533,10 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        if let Some(result) = self.infer_slot_conversion_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_text_decode_call(env, callee, args) {
             return result;
         }
@@ -1617,6 +1625,35 @@ impl<'a> Checker<'a> {
             return None;
         };
         self.named_family_aliases.get(name).cloned()
+    }
+
+    pub(super) fn infer_slot_conversion_call(
+        &mut self,
+        _env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let ExprKind::FieldAccess {
+            receiver,
+            field,
+            null_safe: false,
+            ..
+        } = &ungroup_expr(callee).kind
+        else {
+            return None;
+        };
+        let [target] = args else {
+            return None;
+        };
+        if field != "to" {
+            return None;
+        }
+        let target = self.lower_normalized_annotation(target);
+        if !matches!(target, Type::SlotRecord { .. }) {
+            return None;
+        }
+        self.check_value_against(&target, receiver);
+        Some(target)
     }
 
     fn infer_named_family_constructor(
@@ -3493,6 +3530,13 @@ fn host_comptime_reifiable_type(ty: &Type) -> bool {
             RowEntry::Tag { payload, .. } => payload.iter().all(host_comptime_reifiable_type),
             RowEntry::Literal { .. } => true,
         }),
+        Type::SlotRecord { data, slots } => [data, slots].into_iter().all(|row| {
+            row.entries.iter().all(|entry| match entry {
+                RowEntry::Field { ty, .. } => host_comptime_reifiable_type(ty),
+                RowEntry::Tag { payload, .. } => payload.iter().all(host_comptime_reifiable_type),
+                RowEntry::Literal { .. } => true,
+            })
+        }),
     }
 }
 
@@ -3630,7 +3674,8 @@ fn equality_base_kind(ty: &Type) -> Option<EqualityBaseKind> {
         | Type::Optional(_)
         | Type::Nullable(_)
         | Type::Tuple(_)
-        | Type::Record(_) => None,
+        | Type::Record(_)
+        | Type::SlotRecord { .. } => None,
     }
 }
 
@@ -3698,6 +3743,14 @@ fn type_has_open_row(ty: &Type) -> bool {
                     RowEntry::Literal { .. } => false,
                 })
         }
+        Type::SlotRecord { data, slots } => [data, slots].into_iter().any(|row| {
+            row.tail == RowTail::Open
+                || row.entries.iter().any(|entry| match entry {
+                    RowEntry::Field { ty, .. } => type_has_open_row(ty),
+                    RowEntry::Tag { payload, .. } => payload.iter().any(type_has_open_row),
+                    RowEntry::Literal { .. } => false,
+                })
+        }),
         Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)

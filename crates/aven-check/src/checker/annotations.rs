@@ -74,6 +74,16 @@ impl<'a> Checker<'a> {
                 .iter()
                 .any(|item| self.reflection_subject_is_unresolved(item)),
             Type::Record(row) => row.tail != RowTail::Closed,
+            Type::SlotRecord { data, slots } => [data, slots].into_iter().any(|row| {
+                row.tail != RowTail::Closed
+                    || row.entries.iter().any(|entry| match entry {
+                        RowEntry::Field { ty, .. } => self.reflection_subject_is_unresolved(ty),
+                        RowEntry::Tag { payload, .. } => payload
+                            .iter()
+                            .any(|ty| self.reflection_subject_is_unresolved(ty)),
+                        RowEntry::Literal { .. } => false,
+                    })
+            }),
             Type::Variant(row) => {
                 row.tail != RowTail::Closed
                     || row.entries.iter().any(|entry| match entry {
@@ -185,6 +195,10 @@ impl<'a> Checker<'a> {
                     .collect(),
             ),
             Type::Record(row) => Type::Record(self.unfold_recursive_row_for_demand(row, visited)),
+            Type::SlotRecord { data, slots } => Type::SlotRecord {
+                data: Box::new(self.unfold_recursive_row_for_demand(data, visited)),
+                slots: Box::new(self.unfold_recursive_row_for_demand(slots, visited)),
+            },
             Type::Variant(row) => Type::Variant(self.unfold_recursive_row_for_demand(row, visited)),
             Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => ty.clone(),
         }
@@ -259,6 +273,10 @@ impl<'a> Checker<'a> {
             Type::Nullable(inner) => self.normalize_nullable(inner, visited),
             Type::Tuple(items) => Type::Tuple(self.normalize_types(items, &visited)),
             Type::Record(row) => Type::Record(self.normalize_row(row, &visited)),
+            Type::SlotRecord { data, slots } => Type::SlotRecord {
+                data: Box::new(self.normalize_row(data, &visited)),
+                slots: Box::new(self.normalize_row(slots, &visited)),
+            },
             Type::Variant(row) => Type::Variant(self.normalize_row(row, &visited)),
         }
     }

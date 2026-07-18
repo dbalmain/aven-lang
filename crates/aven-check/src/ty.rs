@@ -42,6 +42,13 @@ pub enum Type {
     Nullable(Box<Type>),
     Tuple(Vec<Type>),
     Record(Row),
+    /// A structural value whose data fields and instance-carried method slots
+    /// remain distinct at a known reification boundary. Slot entries store the
+    /// bound-method function type exposed by bare member access.
+    SlotRecord {
+        data: Box<Row>,
+        slots: Box<Row>,
+    },
     Variant(Row),
 }
 
@@ -105,6 +112,19 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
         Type::Record(row) => Some(
             row.entries
                 .iter()
+                .filter_map(|entry| match entry {
+                    RowEntry::Field { name, ty } => Some(RecordField {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                    }),
+                    RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+                })
+                .collect(),
+        ),
+        Type::SlotRecord { data, slots } => Some(
+            data.entries
+                .iter()
+                .chain(&slots.entries)
                 .filter_map(|entry| match entry {
                     RowEntry::Field { name, ty } => Some(RecordField {
                         name: name.clone(),
@@ -786,6 +806,7 @@ impl TypeRenderer {
                     .join(", ")
             ),
             Type::Record(row) => self.render_record_row(row),
+            Type::SlotRecord { data, slots } => self.render_slot_record(data, slots),
             Type::Variant(row) => {
                 let (rendered, is_multi_part_union) = self.render_variant_row(row);
                 if is_multi_part_union && parent > TypePrecedence::Arrow {
@@ -820,6 +841,38 @@ impl TypeRenderer {
         } else {
             format!("{{ {} }}", parts.join(", "))
         }
+    }
+
+    fn render_slot_record(&mut self, data: &Row, slots: &Row) -> String {
+        let mut parts = data
+            .entries
+            .iter()
+            .map(|entry| self.render_row_entry(entry))
+            .collect::<Vec<_>>();
+        parts.extend(slots.entries.iter().map(|entry| match entry {
+            RowEntry::Field {
+                name,
+                ty:
+                    Type::Function {
+                        params,
+                        result,
+                        required: _,
+                    },
+            } => format!(
+                "{name}({}): {}",
+                params
+                    .iter()
+                    .map(|param| self.render_type(param))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                self.render_type(result)
+            ),
+            entry => self.render_row_entry(entry),
+        }));
+        if data.tail != RowTail::Closed || slots.tail != RowTail::Closed {
+            parts.push("..".to_owned());
+        }
+        format!("{{ {} }}", parts.join(", "))
     }
 
     fn render_variant_row(&mut self, row: &Row) -> (String, bool) {
@@ -924,6 +977,10 @@ pub(crate) fn map_type_with_rows(
                 .collect(),
         ),
         Type::Record(row) => Type::Record(map_row(row, leaf, tail)),
+        Type::SlotRecord { data, slots } => Type::SlotRecord {
+            data: Box::new(map_row(data, leaf, tail)),
+            slots: Box::new(map_row(slots, leaf, tail)),
+        },
         Type::Variant(row) => Type::Variant(map_row(row, leaf, tail)),
         Type::Deferred
         | Type::Named(_)
@@ -1010,6 +1067,14 @@ fn visit_type_with_rows(
                 .iter()
                 .for_each(|entry| visit_row_entry(entry, visit, visit_tail));
             visit_tail(row.tail);
+        }
+        Type::SlotRecord { data, slots } => {
+            for row in [data, slots] {
+                row.entries
+                    .iter()
+                    .for_each(|entry| visit_row_entry(entry, visit, visit_tail));
+                visit_tail(row.tail);
+            }
         }
         Type::Deferred
         | Type::Named(_)
@@ -1198,6 +1263,13 @@ pub(crate) fn is_resolved_value_type(ty: &Type) -> bool {
                     RowEntry::Tag { .. } | RowEntry::Literal { .. } => false,
                 })
         }
+        Type::SlotRecord { data, slots } => [data, slots].into_iter().all(|row| {
+            !matches!(row.tail, RowTail::Var(_))
+                && row.entries.iter().all(|entry| match entry {
+                    RowEntry::Field { ty, .. } => is_resolved_value_type(ty),
+                    RowEntry::Tag { .. } | RowEntry::Literal { .. } => false,
+                })
+        }),
         Type::Variant(row) if literal_variant_base(row).is_some() => true,
         Type::Variant(row) => {
             !matches!(row.tail, RowTail::Var(_))
@@ -1408,6 +1480,7 @@ pub(crate) fn named_type_name(ty: &Type) -> Option<&str> {
         | Type::Nullable(_)
         | Type::Tuple(_)
         | Type::Record(_)
+        | Type::SlotRecord { .. }
         | Type::Variant(_) => None,
     }
 }

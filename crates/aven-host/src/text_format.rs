@@ -385,6 +385,15 @@ fn deprecated_dynamic_target_name(ty: &Type) -> Option<&str> {
                 RowEntry::Literal { .. } => None,
             })
         }
+        Type::SlotRecord { data, slots } => [data, slots].into_iter().find_map(|row| {
+            row.entries.iter().find_map(|entry| match entry {
+                RowEntry::Field { ty, .. } => deprecated_dynamic_target_name(ty),
+                RowEntry::Tag { payload, .. } => {
+                    payload.iter().find_map(deprecated_dynamic_target_name)
+                }
+                RowEntry::Literal { .. } => None,
+            })
+        }),
         Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)

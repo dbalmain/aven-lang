@@ -137,6 +137,7 @@ fn value_from_type(
         | Type::Function { .. }
         | Type::Tuple(_)
         | Type::Record(_)
+        | Type::SlotRecord { .. }
         | Type::Variant(_) => Value::named_type(ty.render()),
     }
 }
@@ -222,6 +223,7 @@ fn descriptor_from_type(
         | Type::Apply { .. }
         | Type::Function { .. }
         | Type::Record(_)
+        | Type::SlotRecord { .. }
         | Type::Variant(_) => RuntimeTypeDescriptor::Unsupported(ty.render()),
     }
 }
@@ -241,6 +243,13 @@ fn type_contains_recursive(ty: &Type) -> bool {
             RowEntry::Field { ty, .. } => type_contains_recursive(ty),
             RowEntry::Tag { payload, .. } => payload.iter().any(type_contains_recursive),
             RowEntry::Literal { .. } => false,
+        }),
+        Type::SlotRecord { data, slots } => [data, slots].into_iter().any(|row| {
+            row.entries.iter().any(|entry| match entry {
+                RowEntry::Field { ty, .. } => type_contains_recursive(ty),
+                RowEntry::Tag { payload, .. } => payload.iter().any(type_contains_recursive),
+                RowEntry::Literal { .. } => false,
+            })
         }),
         Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => false,
     }

@@ -1,7 +1,7 @@
 use super::Checker;
 use std::collections::{HashMap, HashSet};
 
-use crate::ty::{MethodPredicate, Type, map_type, named_builtin, type_variable_names};
+use crate::ty::{MethodPredicate, RowEntry, Type, map_type, named_builtin, type_variable_names};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MethodSignature {
@@ -208,6 +208,20 @@ impl Checker<'_> {
         owner: &Type,
         member: &str,
     ) -> Option<MethodSignature> {
+        if let Type::SlotRecord { slots, .. } = owner {
+            let ty = slots.entries.iter().find_map(|entry| match entry {
+                RowEntry::Field { name, ty } if name == member => Some(ty),
+                RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+            })?;
+            let Type::Function { params, result, .. } = ty else {
+                return None;
+            };
+            return Some(MethodSignature {
+                params: params.clone(),
+                result: result.as_ref().clone(),
+                predicates: Vec::new(),
+            });
+        }
         if let Type::Named(name) = owner
             && let Some(canonical) = self.named_family_aliases.get(name)
         {

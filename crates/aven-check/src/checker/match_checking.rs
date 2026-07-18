@@ -354,7 +354,11 @@ impl<'a> Checker<'a> {
             Type::Optional(inner) | Type::Nullable(inner) => {
                 self.match_subject_literal_kind_name(inner)
             }
-            Type::Apply { .. } | Type::Function { .. } | Type::Tuple(_) | Type::Record(_) => None,
+            Type::Apply { .. }
+            | Type::Function { .. }
+            | Type::Tuple(_)
+            | Type::Record(_)
+            | Type::SlotRecord { .. } => None,
         }
     }
 
