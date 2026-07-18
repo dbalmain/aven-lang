@@ -1,7 +1,7 @@
 # Array combinators and ambient Array methods. Pure Aven — no host natives.
-# Import this module for the remaining free combinators; ambient methods load
-# through the trusted standard-library root without entering user scope.
-# Iterate by index recursion terminating on out-of-bounds `undefined`.
+# Ambient methods load through the trusted standard-library root without
+# entering user scope. Import this module only for the residual producer
+# `range`. Iterate by index recursion terminating on out-of-bounds `undefined`.
 # Array building uses language primitives: spread `[..xs, x]` and `.push(x)`.
 # Helpers are module-private (local recursion is not bound in the checker).
 
@@ -11,38 +11,6 @@ foldGo = (xs, index, acc, f) =>
   next ?>
     undefined => acc
     element => foldGo(xs, index + 1, f(acc, element), f)
-
-fold : (Array(a), b, (b, a) -> b) -> b
-fold = (xs, init, f) => foldGo(xs, 0, init, f)
-
-isEmpty : (Array(a)) -> Bool
-isEmpty = (xs) =>
-  xs[0] ?>
-    undefined => true
-    _ => false
-
-first : (Array(a)) -> ?a
-first = (xs) => xs[0]
-
-# Empty: `xs[-1]` wraps to -1 → still out-of-bounds `undefined`.
-# Non-empty: negative index wraps from the end (`-1` is last).
-last : (Array(a)) -> ?a
-last = (xs) => xs[-1]
-
-count : (Array(a), (a) -> Bool) -> Int
-count = (xs, pred) =>
-  zero: Int = 0
-  fold(xs, zero, (acc, x) => pred(x) ?> true => acc + 1, false => acc)
-
-all : (Array(a), (a) -> Bool) -> Bool
-all = (xs, pred) =>
-  start: Bool = true
-  fold(xs, start, (acc, x) => acc && pred(x))
-
-any : (Array(a), (a) -> Bool) -> Bool
-any = (xs, pred) =>
-  start: Bool = false
-  fold(xs, start, (acc, x) => acc || pred(x))
 
 # Own recursive helper so a hit returns without scanning the rest.
 findGo : (Array(a), Int, (a) -> Bool) -> ?a
@@ -55,9 +23,6 @@ findGo = (xs, index, pred) =>
         true => element
         false => findGo(xs, index + 1, pred)
 
-find : (Array(a), (a) -> Bool) -> ?a
-find = (xs, pred) => findGo(xs, 0, pred)
-
 # Own recursive helper so a hit returns without scanning the rest.
 indexOfGo : (Array(a), Int, a) -> ?Int
 indexOfGo = (xs, index, target) =>
@@ -69,30 +34,6 @@ indexOfGo = (xs, index, target) =>
         true => index
         false => indexOfGo(xs, index + 1, target)
 
-indexOf : (Array(a), a) -> ?Int
-indexOf = (xs, target) =>
-  zero: Int = 0
-  indexOfGo(xs, zero, target)
-
-flatMap : (Array(a), (a) -> Array(b)) -> Array(b)
-flatMap = (xs, f) =>
-  seed: Array(b) = []
-  fold(xs, seed, (acc, x) => [..acc, ..f(x)])
-
-filter : (Array(a), (a) -> Bool) -> Array(a)
-filter = (xs, pred) =>
-  seed: Array(a) = []
-  fold(xs, seed, (acc, x) => pred(x) ?> true => acc.push(x), false => acc)
-
-# Fold pushing to the front.
-reverse : (Array(a)) -> Array(a)
-reverse = (xs) =>
-  seed: Array(a) = []
-  fold(xs, seed, (acc, x) => [x, ..acc])
-
-concat : (Array(a), Array(a)) -> Array(a)
-concat = (xs, ys) => [..xs, ..ys]
-
 # First `n` elements. `n <= 0` → []; `n >= length` → whole array (via OOB stop).
 takeGo : (Array(a), Int, Int, Array(a)) -> Array(a)
 takeGo = (xs, index, remaining, acc) =>
@@ -103,11 +44,6 @@ takeGo = (xs, index, remaining, acc) =>
         undefined => acc
         element => takeGo(xs, index + 1, remaining - 1, acc.push(element))
     false => acc
-
-take : (Array(a), Int) -> Array(a)
-take = (xs, n) =>
-  seed: Array(a) = []
-  takeGo(xs, 0, n, seed)
 
 # All but the first `n`. `n <= 0` → whole array; `n >= length` → [].
 # Negative `toSkip` never satisfies `toSkip > 0`, so nothing is skipped.
@@ -121,16 +57,11 @@ dropGo = (xs, index, toSkip, acc) =>
         true => dropGo(xs, index + 1, toSkip - 1, acc)
         false => dropGo(xs, index + 1, 0, acc.push(element))
 
-drop : (Array(a), Int) -> Array(a)
-drop = (xs, n) =>
-  seed: Array(a) = []
-  dropGo(xs, 0, n, seed)
-
 # Half-open `[start, end)`. Negative indexes wrap from the end first
 # (`length + v`), then both ends clamp to `[0, length]`. After wrap+clamp,
 # `start >= end` → `[]`. Partially/fully out of range → only what is in range.
-# Examples (xs length 3): `slice(xs, 0, -1)` → all but last; `slice(xs, -2, 99)`
-# → last two; `slice(xs, 3, 2)` → `[]`.
+# Examples (xs length 3): `xs.slice(0, -1)` → all but last; `xs.slice(-2, 99)`
+# → last two; `xs.slice(3, 2)` → `[]`.
 clampIndex : (Int, Int) -> Int
 clampIndex = (i, n) =>
   zero: Int = 0
@@ -161,14 +92,6 @@ sliceGo = (xs, index, end, acc) =>
         element => sliceGo(xs, index + 1, end, acc.push(element))
     false => acc
 
-slice : (Array(a), Int, Int) -> Array(a)
-slice = (xs, start, end) =>
-  n = xs.length()
-  s = normalizeSliceIndex(start, n)
-  e = normalizeSliceIndex(end, n)
-  seed: Array(a) = []
-  sliceGo(xs, s, e, seed)
-
 # Pairs up to the shorter length.
 zipGo : (Array(a), Array(b), Int, Array((a, b))) -> Array((a, b))
 zipGo = (xs, ys, index, acc) =>
@@ -180,17 +103,6 @@ zipGo = (xs, ys, index, acc) =>
       y ?>
         undefined => acc
         yv => zipGo(xs, ys, index + 1, acc.push((xv, yv)))
-
-zip : (Array(a), Array(b)) -> Array((a, b))
-zip = (xs, ys) =>
-  seed: Array((a, b)) = []
-  zipGo(xs, ys, 0, seed)
-
-# One level of nesting.
-flatten : (Array(Array(a))) -> Array(a)
-flatten = (xss) =>
-  seed: Array(a) = []
-  fold(xss, seed, (acc, xs) => [..acc, ..xs])
 
 # Half-open `[start, end)`. Step is always 1. `start >= end` → [].
 rangeGo : (Int, Int, Array(Int)) -> Array(Int)
@@ -234,11 +146,6 @@ sortWithGo = (xs, index, sorted, isLess) =>
       inserted = insertGo(sorted, 0, element, isLess, seed)
       sortWithGo(xs, index + 1, inserted, isLess)
 
-sortWith : (Array(a), (a, a) -> Bool) -> Array(a)
-sortWith = (xs, isLess) =>
-  seed: Array(a) = []
-  sortWithGo(xs, 0, seed, isLess)
-
 Ordered = {
   <(Self): Bool
   ..
@@ -270,30 +177,95 @@ maxGo = (xs: Array(t), index: Int, best: t): t
         true => maxGo(xs, index + 1, current)
         false => maxGo(xs, index + 1, best)
 
-maximum : (Array(t)) -> ?t
-maximum = (xs: Array(t)): ?t
-  t: Ordered
-=>
-  head = xs[0]
-  head ?>
-    undefined => undefined
-    first => maxGo(xs, 1, first)
-
 Array(a) {
+  # Prefer private helpers over `.fold(local, …)` when the init is a block-local
+  # binding: method-arg checking does not yet see `infer_block` locals.
+
   length(): Int =>
     zero: Int = 0
-    fold(., zero, (acc, _) => acc + 1)
+    foldGo(., 0, zero, (acc, _) => acc + 1)
+
+  isEmpty(): Bool =>
+    .[0] ?>
+      undefined => true
+      _ => false
+
+  first(): ?a => .[0]
+
+  # Empty: `.[-1]` wraps to -1 → still out-of-bounds `undefined`.
+  # Non-empty: negative index wraps from the end (`-1` is last).
+  last(): ?a => .[-1]
+
+  fold(init: b, f: (b, a) -> b): b => foldGo(., 0, init, f)
+
+  count(pred: (a) -> Bool): Int =>
+    zero: Int = 0
+    foldGo(., 0, zero, (acc, x) => pred(x) ?> true => acc + 1, false => acc)
+
+  all(pred: (a) -> Bool): Bool =>
+    start: Bool = true
+    foldGo(., 0, start, (acc, x) => acc && pred(x))
+
+  any(pred: (a) -> Bool): Bool =>
+    start: Bool = false
+    foldGo(., 0, start, (acc, x) => acc || pred(x))
+
+  find(pred: (a) -> Bool): ?a => findGo(., 0, pred)
+
+  indexOf(target: a): ?Int =>
+    zero: Int = 0
+    indexOfGo(., zero, target)
 
   # Empty seed annotated so the polymorphic element type is not left open.
   map(f: (a) -> b): Array(b) =>
     seed: Array(b) = []
-    fold(., seed, (acc, x) => acc.push(f(x)))
+    foldGo(., 0, seed, (acc, x) => acc.push(f(x)))
+
+  flatMap(f: (a) -> Array(b)): Array(b) =>
+    seed: Array(b) = []
+    foldGo(., 0, seed, (acc, x) => [..acc, ..f(x)])
+
+  filter(pred: (a) -> Bool): Array(a) =>
+    seed: Array(a) = []
+    foldGo(., 0, seed, (acc, x) => pred(x) ?> true => acc.push(x), false => acc)
+
+  # Fold pushing to the front.
+  reverse(): Array(a) =>
+    seed: Array(a) = []
+    foldGo(., 0, seed, (acc, x) => [x, ..acc])
+
+  concat(other: Array(a)): Array(a) =>
+    xs = .
+    [..xs, ..other]
+
+  take(n: Int): Array(a) =>
+    seed: Array(a) = []
+    takeGo(., 0, n, seed)
+
+  drop(n: Int): Array(a) =>
+    seed: Array(a) = []
+    dropGo(., 0, n, seed)
+
+  slice(start: Int, end: Int): Array(a) =>
+    n = .length()
+    s = normalizeSliceIndex(start, n)
+    e = normalizeSliceIndex(end, n)
+    seed: Array(a) = []
+    sliceGo(., s, e, seed)
+
+  zip(other: Array(b)): Array((a, b)) =>
+    seed: Array((a, b)) = []
+    zipGo(., other, 0, seed)
+
+  sortWith(isLess: (a, a) -> Bool): Array(a) =>
+    seed: Array(a) = []
+    sortWithGo(., 0, seed, isLess)
 
   # Ascending by projected key. Stable via `sortWith` (equal keys keep input order).
   sortBy(key: (a) -> k): Array(a)
     k: Ordered
   =>
-    sortWith(., (left, right) => key(left) < key(right))
+    .sortWith((left, right) => key(left) < key(right))
 
   minimum(): ?a
     a: Ordered
@@ -302,12 +274,26 @@ Array(a) {
     head ?>
       undefined => undefined
       first => minGo(., 1, first)
+
+  maximum(): ?a
+    a: Ordered
+  =>
+    head = .[0]
+    head ?>
+      undefined => undefined
+      first => maxGo(., 1, first)
 }
 
 Array(Int) {
   sum(): Int =>
     zero: Int = 0
-    fold(., zero, (acc, x) => acc + x)
+    foldGo(., 0, zero, (acc, x) => acc + x)
 }
 
-{ isEmpty, first, last, fold, count, all, any, find, indexOf, flatMap, filter, reverse, concat, take, drop, slice, zip, flatten, range, sortWith, maximum }
+Array(Array(a)) {
+  flatten(): Array(a) =>
+    seed: Array(a) = []
+    foldGo(., 0, seed, (acc, xs) => [..acc, ..xs])
+}
+
+{ range }

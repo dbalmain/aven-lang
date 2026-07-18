@@ -1490,8 +1490,7 @@ fn std_array_ordered_constraints_cross_module_boundaries_and_run() {
             "ints = [{ key: 3 }, { key: 1 }, { key: 2 }].sortBy((item) => item.key)\n",
             "floats = [{ key: 2.5 }, { key: 1.5 }].sortBy((item) => item.key)\n",
             "smallest: ?Float = [3.5, 1.5, 2.5].minimum()\n",
-            "{ maximum } = import(\"std/array\")\n",
-            "largest: ?Float = maximum([3.5, 1.5, 2.5])\n",
+            "largest: ?Float = [3.5, 1.5, 2.5].maximum()\n",
             "{ ints, floats, smallest, largest }\n",
         ),
     );

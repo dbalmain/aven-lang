@@ -2005,12 +2005,8 @@ fn library_interface_renders_std_array_signatures() {
         "# std/array — generated interface (shape view); not the implementation."
     );
     assert_eq!(lines[1], "");
-    // The five converted names are ambient methods, not module exports.
-    let exported = [
-        "isEmpty", "first", "last", "fold", "count", "all", "any", "find", "indexOf", "flatMap",
-        "filter", "reverse", "concat", "take", "drop", "slice", "zip", "flatten", "range",
-        "sortWith", "maximum",
-    ];
+    // Residual producer only; all transformers are ambient methods.
+    let exported = ["range"];
     for (index, name) in exported.iter().enumerate() {
         assert!(
             lines[index + 2].starts_with(&format!("{name} : ")),
@@ -2022,7 +2018,12 @@ fn library_interface_renders_std_array_signatures() {
         let span = interface.export_spans[name];
         assert_eq!(&interface.text[span.start..span.end], name);
     }
-    for method in ["length", "map", "sortBy", "minimum", "sum"] {
+    assert_eq!(interface.export_spans.len(), 1);
+    for method in [
+        "length", "isEmpty", "first", "last", "fold", "sum", "count", "all", "any", "find",
+        "indexOf", "map", "flatMap", "filter", "reverse", "concat", "take", "drop", "slice", "zip",
+        "flatten", "sortWith", "sortBy", "minimum", "maximum",
+    ] {
         assert!(!interface.export_spans.contains_key(method));
     }
 }

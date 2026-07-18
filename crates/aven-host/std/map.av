@@ -1,8 +1,6 @@
 # Map helpers: `import("std/map")`. Pure Aven — no host natives.
 # Builds on the Map builtin methods (`get`, `set`, `entries`, `size`) and
-# `Map.empty()`; rebuild helpers fold over `.entries()` with `std/array`'s fold.
-
-{ fold } = import("std/array")
+# `Map.empty()`; rebuild helpers fold over `.entries()` with ambient Array.fold.
 
 isEmpty : (Map(k, v)) -> Bool
 isEmpty = (m) => m.size() == 0
@@ -22,7 +20,7 @@ update = (m, key, f) =>
 fromEntries : (Array((k, v))) -> Map(k, v)
 fromEntries = (entries) =>
   seed: Map(k, v) = Map.empty()
-  fold(entries, seed, (acc, entry) => entry ?> (key, value) => acc.set(key, value))
+  entries.fold(seed, (acc, entry) => entry ?> (key, value) => acc.set(key, value))
 
 toEntries : (Map(k, v)) -> Array((k, v))
 toEntries = (m) => m.entries()
@@ -46,6 +44,6 @@ filter : (Map(k, v), (k, v) -> Bool) -> Map(k, v)
 filter = (m, pred) =>
   seed: Map(k, v) = Map.empty()
   keep = (acc, entry) => entry ?> (key, value) => (pred(key, value) ?> true => acc.set(key, value), false => acc)
-  fold(m.entries(), seed, keep)
+  m.entries().fold(seed, keep)
 
 { isEmpty, getOr, update, fromEntries, toEntries, mapValues, filter }

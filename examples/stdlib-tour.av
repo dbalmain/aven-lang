@@ -1,18 +1,18 @@
 # A tour of the std modules landed in the 2026-07 stdlib sprint.
 
-array = import("std/array")
+{ range } = import("std/array")
 map = import("std/map")
 result = import("std/result")
 
 # --- std/array ---------------------------------------------------------
-xs = array.range(1, 8)
+xs = range(1, 8)
 writeLine("range(1, 8)        = ${xs}")
-writeLine("take/drop           = ${array.take(xs, 3)} ${array.drop(xs, 5)}")
-writeLine("slice(xs, 2, 5)     = ${array.slice(xs, 2, 5)}")
-writeLine("zip with letters    = ${array.zip(array.take(xs, 3), ["a", "b", "c"])}")
-writeLine("flatMap double      = ${array.flatMap(array.take(xs, 3), (x) => [x, x * 10])}")
-writeLine("sortWith descending = ${array.sortWith(xs, (a, b) => a > b)}")
-writeLine("minimum/maximum     = ${xs.minimum()} ${array.maximum(xs)}")
+writeLine("take/drop           = ${xs.take(3)} ${xs.drop(5)}")
+writeLine("slice(xs, 2, 5)     = ${xs.slice(2, 5)}")
+writeLine("zip with letters    = ${xs.take(3).zip(["a", "b", "c"])}")
+writeLine("flatMap double      = ${xs.take(3).flatMap((x) => [x, x * 10])}")
+writeLine("sortWith descending = ${xs.sortWith((a, b) => a > b)}")
+writeLine("minimum/maximum     = ${xs.minimum()} ${xs.maximum()}")
 
 # --- std/map -----------------------------------------------------------
 ages = map.fromEntries([("ada", 36), ("gus", 41), ("ada", 37)])
