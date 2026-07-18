@@ -2648,6 +2648,27 @@ fn hover_shows_named_primitive_family_method_signature() {
 }
 
 #[test]
+fn hover_shows_container_primitive_family_method_signatures() {
+    // `joinWith` is an inherited Array(Text) intrinsic; `csv` is a local method.
+    // Neither needs the ambient std registry, so the bare document suffices.
+    let inherited = hover_at_marker(concat!(
+        "Tags = Array(Text) { csv(): Text => .joinWith(\",\") }\n",
+        "tags = Tags([\"a\"])\n",
+        "joined = tags.join|With(\",\")\n",
+    ))
+    .expect("inherited container-family method hover");
+    assert_hover_value(inherited, "```aven\ntags.joinWith : Text -> Text\n```");
+
+    let local = hover_at_marker(concat!(
+        "Tags = Array(Text) { csv(): Text => .joinWith(\",\") }\n",
+        "tags = Tags([\"a\"])\n",
+        "rendered = tags.cs|v()\n",
+    ))
+    .expect("local container-family method hover");
+    assert_hover_value(local, "```aven\ntags.csv : () -> Text\n```");
+}
+
+#[test]
 fn file_backed_hover_preserves_imported_primitive_family_interface() {
     let dir = TempDir::new("lsp-import-primitive-family-hover");
     write(

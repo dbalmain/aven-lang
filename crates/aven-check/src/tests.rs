@@ -10728,7 +10728,7 @@ fn named_primitive_family_reports_deferred_base_forms() {
     let parsed = parse_module(concat!(
         "Money = Int {}\n",
         "OtherMoney = Money {}\n",
-        "Tags = Array(Text) {}\n",
+        "OpenTags = Array(a) {}\n",
         "Point = { x: Int }\n",
         "NamedPoint = Point {}\n",
     ));
@@ -10743,9 +10743,142 @@ fn named_primitive_family_reports_deferred_base_forms() {
     assert!(
         messages.contains(&"a primitive-base family cannot use another named family as its base")
     );
-    assert!(messages.contains(&"container bases are not supported in this slice"));
+    // A concrete container base (`Array(Text)`) is now supported; only an open
+    // application (`Array(a)`) stays deferred.
+    assert!(
+        messages
+            .contains(&"named primitive-base families require a concrete builtin container base")
+    );
     assert!(
         messages.contains(&"named primitive-base families require a concrete scalar builtin base")
+    );
+}
+
+#[test]
+fn named_primitive_family_container_base_snapshots_intrinsics_and_ambient_std() {
+    let ambient = check_trusted_builtin_methods(concat!(
+        "Array(a) {\n",
+        "  filter(pred: (a) -> Bool): Array(a) => .\n",
+        "  map(f: (a) -> b): Array(b) => []\n",
+        "  length(): Int => 0\n",
+        "  first(): ?a => .[0]\n",
+        "}\n",
+        "Array(Int) {\n",
+        "  sum(): Int => 0\n",
+        "}\n",
+    ));
+    let parsed = parse_module(concat!(
+        "Tags = Array(Text) {\n",
+        "  normalized(): Tags => Tags(.filter((t) => t != \"\"))\n",
+        "}\n",
+        "tags = Tags([\"a\", \"\"])\n",
+        "kept: Tags = tags.filter((t) => t != \"\")\n",
+        "joined: Text = tags.joinWith(\",\")\n",
+        "mapped: Array(Text) = tags.map((t) => t)\n",
+        "count: Int = tags.length()\n",
+        "widened: Array(Text) = tags\n",
+    ));
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let family = check
+        .named_family_aliases
+        .get("Tags")
+        .and_then(|owner| check.named_families.get(owner))
+        .expect("Tags descriptor");
+    assert_eq!(
+        family.primitive_base,
+        Some(apply(named("Array"), vec![named("Text")]))
+    );
+    // Owner-root lift: `filter` returns `Tags`; `map` keeps `Array(b)`; the
+    // intrinsic `joinWith`/`length` are inherited unchanged.
+    assert!(matches!(
+        family.methods["filter"].origin,
+        NamedMethodOrigin::Inherited {
+            lifted_result: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        family.methods["map"].origin,
+        NamedMethodOrigin::Inherited {
+            lifted_result: false,
+            ..
+        }
+    ));
+    assert!(family.methods.contains_key("joinWith"));
+    assert!(family.methods.contains_key("length"));
+    // `Array(Int)`-only entries do not match an `Array(Text)` base.
+    assert!(!family.methods.contains_key("sum"));
+}
+
+#[test]
+fn named_primitive_family_container_base_rejects_wrong_payload_and_widening() {
+    let parsed = parse_module(concat!(
+        "Tags = Array(Text) {}\n",
+        "badPayload = Tags(5)\n",
+        "plain: Array(Text) = [\"x\"]\n",
+        "needsTags: Tags = plain\n",
+        "literalBad: Tags = [\"a\", \"b\"]\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    // Wrong constructor payload.
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expected `Array(Text)`, found")),
+        "{:?}",
+        check.diagnostics
+    );
+    // A non-literal `Array(Text)` value does not brand.
+    // An array literal does not brand at a container-base family boundary.
+    assert_eq!(
+        check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error()
+                && diagnostic.message.contains("expected `Tags`"))
+            .count(),
+        2,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn named_primitive_family_container_base_rejects_non_alpha_override() {
+    let ambient = check_trusted_builtin_methods(concat!(
+        "Array(a) {\n",
+        "  filter(pred: (a) -> Bool): Array(a) => .\n",
+        "}\n",
+    ));
+    let parsed = parse_module(concat!(
+        "Tags = Array(Text) {\n",
+        "  filter(pred: (Text) -> Bool): Array(Int) => []\n",
+        "}\n",
+    ));
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(
+        check.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("collides with inherited `Array(Text).filter`")),
+        "{:?}",
+        check.diagnostics
     );
 }
 

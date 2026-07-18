@@ -237,7 +237,7 @@ impl<'a> Checker<'a> {
             if let Some((base_expr, _)) = aven_parser::primitive_family_parts(&value) {
                 let lowered_base = self.lower_annotation(base_expr);
                 let base = self.normalize(&lowered_base);
-                let supported = matches!(&base, Type::Named(name) if matches!(name.as_str(), "Int" | "Float" | "Text" | "Bool"));
+                let supported = primitive_family_base_is_supported(&base);
                 if !supported {
                     let (message, note) = if matches!(&base, Type::Named(name) if self.named_family_aliases.contains_key(name))
                     {
@@ -247,8 +247,8 @@ impl<'a> Checker<'a> {
                         )
                     } else if matches!(base, Type::Apply { .. }) {
                         (
-                            "container bases are not supported in this slice",
-                            "use Int, Float, Text, or Bool as the concrete builtin base",
+                            "named primitive-base families require a concrete builtin container base",
+                            "use a fully applied Array, Map, or Set type with no open type variables",
                         )
                     } else {
                         (
@@ -2274,6 +2274,24 @@ fn intrinsic_builtin_method_collides(owner: &Type, member: &str) -> bool {
 
 fn is_named_family_provider(value: &Expr) -> bool {
     aven_parser::is_named_method_provider(value) || aven_parser::is_primitive_family_provider(value)
+}
+
+fn primitive_family_base_is_supported(base: &Type) -> bool {
+    match base {
+        Type::Named(name) => matches!(name.as_str(), "Int" | "Float" | "Text" | "Bool"),
+        Type::Apply { callee, args } => {
+            let Type::Named(name) = callee.as_ref() else {
+                return false;
+            };
+            let expected_arity = match name.as_str() {
+                "Array" | "Set" => 1,
+                "Map" => 2,
+                _ => return false,
+            };
+            args.len() == expected_arity && is_concrete_type(base)
+        }
+        _ => false,
+    }
 }
 
 fn named_family_provider_entries(value: &Expr) -> Option<&[RecordEntry]> {

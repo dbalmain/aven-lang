@@ -1986,6 +1986,46 @@ fn named_primitive_families_run_over_all_concrete_scalar_bases() {
 }
 
 #[test]
+fn named_primitive_family_container_base_checks_and_runs_end_to_end() {
+    let dir = TempDir::new("named-primitive-family-tags");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Tags = Array(Text) {\n",
+            "  normalized(): Tags =>\n",
+            "    Tags(.map((t) => t.trim()).filter((t) => t != \"\"))\n",
+            "}\n",
+            "tags = Tags([\" go \", \"\", \"rust\"])\n",
+            "clean = tags.normalized()\n",
+            "joined = clean.joinWith(\",\")\n",
+            "kept: Tags = tags.filter((t) => t != \"\")\n",
+            "keptJoined = kept.joinWith(\",\")\n",
+            "widened: Array(Text) = clean\n",
+            "count = clean.length()\n",
+            "{ joined, keptJoined, count }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+    let globals = aven_host::standard_check_host_globals();
+
+    let checked = check_path_with_host_globals_and_roots(&path, &globals, &roots)
+        .expect("Tags family should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_host_globals_and_roots(&path, &globals, vec![], &roots)
+        .expect("Tags family should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ joined: \"go,rust\", keptJoined: \" go ,rust\", count: 2 }".to_owned())
+    );
+}
+
+#[test]
 fn named_family_descriptor_crosses_module_boundary() {
     let dir = TempDir::new("named-family-import");
     write(

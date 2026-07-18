@@ -361,6 +361,9 @@ pub enum PrimitivePayload {
     Float(f64),
     Text(String),
     Bool(bool),
+    Array(Rc<Vec<Value>>),
+    Set(Rc<Vec<Value>>),
+    Map(Rc<Vec<(Value, Value)>>),
 }
 
 impl PartialEq for PrimitivePayload {
@@ -370,6 +373,9 @@ impl PartialEq for PrimitivePayload {
             (Self::Float(left), Self::Float(right)) => float_eq(*left, *right),
             (Self::Text(left), Self::Text(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Array(left), Self::Array(right)) => left == right,
+            (Self::Set(left), Self::Set(right)) => sets_equal(left, right),
+            (Self::Map(left), Self::Map(right)) => maps_equal(left, right),
             _ => false,
         }
     }
@@ -382,6 +388,9 @@ impl PrimitivePayload {
             Self::Float(value) => Value::Float(value),
             Self::Text(value) => Value::Text(value),
             Self::Bool(value) => Value::Bool(value),
+            Self::Array(value) => Value::Array(value),
+            Self::Set(value) => Value::Set(value),
+            Self::Map(value) => Value::Map(value),
         }
     }
 
@@ -391,6 +400,9 @@ impl PrimitivePayload {
             Self::Float(value) => Value::Float(*value),
             Self::Text(value) => Value::Text(value.clone()),
             Self::Bool(value) => Value::Bool(*value),
+            Self::Array(value) => Value::Array(Rc::clone(value)),
+            Self::Set(value) => Value::Set(Rc::clone(value)),
+            Self::Map(value) => Value::Map(Rc::clone(value)),
         }
     }
 
@@ -400,6 +412,9 @@ impl PrimitivePayload {
             Self::Float(_) => "Float",
             Self::Text(_) => "Text",
             Self::Bool(_) => "Bool",
+            Self::Array(_) => "Array",
+            Self::Set(_) => "Set",
+            Self::Map(_) => "Map",
         }
     }
 }
@@ -411,6 +426,9 @@ impl fmt::Display for PrimitivePayload {
             Self::Float(value) => write_float(f, *value),
             Self::Text(value) => write!(f, "{value}"),
             Self::Bool(value) => write!(f, "{value}"),
+            Self::Array(values) => fmt_array(values, f),
+            Self::Set(values) => fmt_set(values, f),
+            Self::Map(entries) => fmt_map(entries, f),
         }
     }
 }
@@ -592,6 +610,9 @@ fn primitive_payload_matches_value(payload: &PrimitivePayload, value: &Value) ->
         (PrimitivePayload::Float(left), Value::Float(right)) => float_eq(*left, *right),
         (PrimitivePayload::Text(left), Value::Text(right)) => left == right,
         (PrimitivePayload::Bool(left), Value::Bool(right)) => left == right,
+        (PrimitivePayload::Array(left), Value::Array(right)) => left == right,
+        (PrimitivePayload::Set(left), Value::Set(right)) => sets_equal(left, right),
+        (PrimitivePayload::Map(left), Value::Map(right)) => maps_equal(left, right),
         _ => false,
     }
 }
@@ -1594,7 +1615,10 @@ fn apply_primitive_family_coercion(
                     "Int, Float, Text, or Bool",
                 ))
             })?;
-            if descriptor.primitive_base.as_deref() != Some(payload.type_name()) {
+            if !primitive_base_accepts_payload(
+                descriptor.primitive_base.as_deref(),
+                payload.type_name(),
+            ) {
                 return Err(one_diagnostic(record_type_error(
                     span,
                     "primitive-family branding",
@@ -1624,8 +1648,15 @@ fn primitive_payload_from_value(value: Value) -> Option<PrimitivePayload> {
         Value::Float(value) => Some(PrimitivePayload::Float(value)),
         Value::Text(value) => Some(PrimitivePayload::Text(value)),
         Value::Bool(value) => Some(PrimitivePayload::Bool(value)),
+        Value::Array(value) => Some(PrimitivePayload::Array(value)),
+        Value::Set(value) => Some(PrimitivePayload::Set(value)),
+        Value::Map(value) => Some(PrimitivePayload::Map(value)),
         _ => None,
     }
+}
+
+fn primitive_base_accepts_payload(base: Option<&str>, payload: &str) -> bool {
+    base.is_some_and(|base| base.split_once('(').map_or(base, |(head, _)| head) == payload)
 }
 
 fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
@@ -2464,7 +2495,10 @@ fn apply_named_family_constructor(
                 descriptor.primitive_base.as_deref().unwrap_or("primitive"),
             )));
         };
-        if descriptor.primitive_base.as_deref() != Some(payload.type_name()) {
+        if !primitive_base_accepts_payload(
+            descriptor.primitive_base.as_deref(),
+            payload.type_name(),
+        ) {
             return Err(one_diagnostic(record_type_error(
                 span,
                 "primitive-family construction",
