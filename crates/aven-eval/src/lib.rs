@@ -1295,11 +1295,16 @@ fn map_from_intrinsic(args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
         return Err(format!("Map.from expects 1 argument, got {}", args.len()));
     }
+    map_from_pair_array(&args[0], "Map.from")
+}
 
-    let Value::Array(items) = &args[0] else {
+/// Build a map from an array of `(key, value)` tuples. Shared by `Map.from` and
+/// value-position `Map(pairs)` construction (ruling 5: no map literal syntax).
+fn map_from_pair_array(arg: &Value, context: &str) -> Result<Value, String> {
+    let Value::Array(items) = arg else {
         return Err(format!(
-            "Map.from expects an Array of key/value tuples, got {}",
-            args[0].type_name()
+            "{context} expects an Array of key/value tuples, got {}",
+            arg.type_name()
         ));
     };
 
@@ -1307,17 +1312,17 @@ fn map_from_intrinsic(args: &[Value]) -> Result<Value, String> {
     for item in items.iter() {
         let Value::Tuple(values) = item else {
             return Err(format!(
-                "Map.from expects (key, value) tuple entries, got {}",
+                "{context} expects (key, value) tuple entries, got {}",
                 item.type_name()
             ));
         };
         let [key, value] = values.as_slice() else {
             return Err(format!(
-                "Map.from expects 2-item tuples, got tuple with {} items",
+                "{context} expects 2-item tuples, got tuple with {} items",
                 values.len()
             ));
         };
-        ensure_map_key(key, "Map.from")?;
+        ensure_map_key(key, context)?;
         insert_or_replace_map_entry(&mut entries, key.clone(), value.clone());
     }
 
@@ -4016,39 +4021,54 @@ fn eval_type_application(
         Err(diagnostics) => return Some(Err(diagnostics)),
     };
 
-    // `Map(K, V)` type application in value position: build a composite type
-    // value rather than record-index the (now type-valued) `Map`.
+    // `Map` is overloaded by arity in value position:
+    // - `Map(K, V)` — type application (two type arguments) → composite type
+    // - `Map(pairs)` — construction from `Array((k, v))` (same as `Map.from`)
     if let Value::Type(RuntimeType::Named(name)) = &callee_value
         && name == "Map"
     {
-        let [key_expr, value_expr] = args else {
-            return Some(Err(one_diagnostic(unsupported_expr(
-                span,
-                "Map type application takes two type arguments (Map(key, value))",
-            ))));
-        };
-        let key = match eval_expr_many(key_expr, env) {
-            Ok(value) => value,
-            Err(diagnostics) => return Some(Err(diagnostics)),
-        };
-        let value = match eval_expr_many(value_expr, env) {
-            Ok(value) => value,
-            Err(diagnostics) => return Some(Err(diagnostics)),
-        };
-        for (arg_value, arg) in [(&key, key_expr), (&value, value_expr)] {
-            if !runtime_type_target(arg_value) {
-                return Some(Err(one_diagnostic(record_type_error(
-                    arg.span,
-                    "map type construction",
-                    arg_value.type_name(),
-                    "Type",
+        match args {
+            [key_expr, value_expr] => {
+                let key = match eval_expr_many(key_expr, env) {
+                    Ok(value) => value,
+                    Err(diagnostics) => return Some(Err(diagnostics)),
+                };
+                let value = match eval_expr_many(value_expr, env) {
+                    Ok(value) => value,
+                    Err(diagnostics) => return Some(Err(diagnostics)),
+                };
+                for (arg_value, arg) in [(&key, key_expr), (&value, value_expr)] {
+                    if !runtime_type_target(arg_value) {
+                        return Some(Err(one_diagnostic(record_type_error(
+                            arg.span,
+                            "map type construction",
+                            arg_value.type_name(),
+                            "Type",
+                        ))));
+                    }
+                }
+                return Some(Ok(Value::Type(RuntimeType::Map(
+                    Box::new(key),
+                    Box::new(value),
+                ))));
+            }
+            [pairs_expr] => {
+                let pairs = match eval_expr_many(pairs_expr, env) {
+                    Ok(value) => value,
+                    Err(diagnostics) => return Some(Err(diagnostics)),
+                };
+                return Some(
+                    map_from_pair_array(&pairs, "Map")
+                        .map_err(|message| one_diagnostic(platform_error(span, message))),
+                );
+            }
+            _ => {
+                return Some(Err(one_diagnostic(unsupported_expr(
+                    span,
+                    "Map expects Map(key, value) type application or Map(pairs) construction",
                 ))));
             }
         }
-        return Some(Ok(Value::Type(RuntimeType::Map(
-            Box::new(key),
-            Box::new(value),
-        ))));
     }
 
     if let Value::Type(RuntimeType::Named(name)) = &callee_value

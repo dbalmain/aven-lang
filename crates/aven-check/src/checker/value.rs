@@ -87,6 +87,14 @@ impl<'a> Checker<'a> {
             let _ = self.infer_call(&env, callee, args);
             return;
         }
+        // Value-position `Map(pairs)`: type-check through the Map.from scheme
+        // so wrong-shaped arguments surface the same mismatch diagnostics.
+        if self
+            .infer_map_constructor_call(&env, callee, args)
+            .is_some()
+        {
+            return;
+        }
 
         // Uppercase comptime functions validate their arguments while they
         // specialize. Their parameters describe comptime bounds (including

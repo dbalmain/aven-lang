@@ -1003,6 +1003,64 @@ fn map_constructs_empty_and_from_entries() {
 }
 
 #[test]
+fn map_constructor_builds_from_pair_array() {
+    assert_module_value(
+        "Map([(\"a\", 1), (\"b\", 2)])\n",
+        map_value(vec![
+            (Value::Text("a".to_owned()), Value::Int(1)),
+            (Value::Text("b".to_owned()), Value::Int(2)),
+        ]),
+    );
+    assert_module_value("Map([])\n", map_value(vec![]));
+}
+
+#[test]
+fn map_constructor_preserves_insertion_order_and_overwrites_duplicates() {
+    assert_module_value(
+        "Map([(\"a\", 1), (\"b\", 2), (\"a\", 3)]).entries()\n",
+        array_value(vec![
+            tuple_value(vec![Value::Text("a".to_owned()), Value::Int(3)]),
+            tuple_value(vec![Value::Text("b".to_owned()), Value::Int(2)]),
+        ]),
+    );
+}
+
+#[test]
+fn map_constructor_accepts_non_text_keys() {
+    assert_module_value(
+        "Map([(1, \"x\"), (2, \"y\")])\n",
+        map_value(vec![
+            (Value::Int(1), Value::Text("x".to_owned())),
+            (Value::Int(2), Value::Text("y".to_owned())),
+        ]),
+    );
+}
+
+#[test]
+fn map_constructor_display_uses_insertion_order() {
+    assert_module_value(
+        "\"${Map([(\"a\", 1)])}\"\n",
+        Value::Text("Map{ a: 1 }".to_owned()),
+    );
+    assert_module_value(
+        "\"${Map([(\"a\", 1), (\"b\", 2)])}\"\n",
+        Value::Text("Map{ a: 1, b: 2 }".to_owned()),
+    );
+}
+
+#[test]
+fn map_constructor_bad_shape_reports_platform_error() {
+    for source in ["Map(\"no\")\n", "Map([1])\n", "Map([(\"a\", 1, 2)])\n"] {
+        let diagnostic = module_error(source);
+
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+    }
+}
+
+#[test]
 fn map_type_application_yields_composite_type_value() {
     // `Map(K, V)` in value position builds a composite type value, not a
     // record index of the (type-valued) `Map`.

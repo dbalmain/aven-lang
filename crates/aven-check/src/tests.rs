@@ -5085,6 +5085,80 @@ fn map_from_infers_map_key_and_value_types() {
 }
 
 #[test]
+fn map_constructor_infers_map_key_and_value_types() {
+    // Value-position `Map(pairs)` is the construction form (ruling 5); same
+    // inference as `Map.from`.
+    let output = parse_module("m = Map([(\"a\", 1)])\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "m"),
+        Some("Map(\"a\", 1)".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn map_constructor_accepts_non_text_keys() {
+    let output = parse_module("m = Map([(1, \"x\")])\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "m"),
+        Some("Map(1, \"x\")".to_owned())
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn map_constructor_with_annotation_checks_as_map() {
+    let output = parse_module("m : Map(Text, Int) = Map([(\"a\", 1)])\n");
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .type_at(nth_span("m : Map(Text, Int) = Map([(\"a\", 1)])\n", "m", 0))
+            .map(Type::render),
+        Some("Map(Text, Int)".to_owned())
+    );
+}
+
+#[test]
+fn map_constructor_rejects_wrong_shaped_argument() {
+    let not_array = parse_module("m = Map(1)\n");
+    let not_array_check = check_module(&not_array.module);
+    assert_eq!(
+        matching_codes(&not_array_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "{:?}",
+        not_array_check.diagnostics
+    );
+
+    let mixed = parse_module("m = Map([(\"a\", 1), 2])\n");
+    let mixed_check = check_module(&mixed.module);
+    assert_eq!(
+        matching_codes(&mixed_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "{:?}",
+        mixed_check.diagnostics
+    );
+}
+
+#[test]
+fn map_type_position_two_arg_application_still_checks() {
+    let output = parse_module("m : Map(Text, Int) = Map.empty()\n");
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let lowering = lower_annotation(&output.module, annotation(&output.module, "m"));
+    assert_eq!(lowering.ty.render(), "Map(Text, Int)");
+    assert!(lowering.diagnostics.is_empty());
+}
+
+#[test]
 fn map_name_in_value_position_is_a_type_value() {
     // `Map` is a type artifact: used as a bare value it is a type value
     // (`Deferred`), exactly like `Array`, not a `{ empty, from }` record.

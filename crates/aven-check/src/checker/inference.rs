@@ -1678,6 +1678,10 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        if let Some(result) = self.infer_map_constructor_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_host_comptime_call(env, callee, args) {
             return result;
         }
@@ -2549,6 +2553,51 @@ impl<'a> Checker<'a> {
         }
 
         self.statics.get(receiver_name)?.get(field).cloned()
+    }
+
+    /// Value-position `Map(pairs)` construction: a single argument of type
+    /// `Array((k, v))` yields `Map(k, v)`. Shares the scheme of `Map.from` so
+    /// the two stay in lockstep. Two-argument `Map(k, v)` is type application
+    /// (type position via annotation lowering; value-position type values via
+    /// the evaluator) and is intentionally not handled here.
+    pub(super) fn infer_map_constructor_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let name = call_callee_name(callee)?;
+        if name != "Map" {
+            return None;
+        }
+        // Same shadowing rule as statics / host comptime: a user binding of
+        // `Map` takes precedence over the builtin constructor.
+        if env.get("Map").is_some() || self.bindings.contains_key("Map") {
+            return None;
+        }
+        if args.len() != 1 {
+            return None;
+        }
+
+        let scheme = self.statics.get("Map")?.get("from")?.clone();
+        let from_type = self.instantiate_scheme_at(&scheme, callee.span);
+        let resolved = self.unifier.resolve(&from_type);
+        let Type::Function {
+            params,
+            result,
+            required,
+        } = resolved
+        else {
+            return None;
+        };
+        if required > args.len() || args.len() > params.len() {
+            return None;
+        }
+
+        let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+        self.check_call_arg_types_against_params(args, &arg_types, &params);
+        self.simplify_method_obligations(false);
+        Some(self.resolve_row_merge_call_result(&result))
     }
 
     pub(super) fn host_comptime_fn(&self, env: &TypeEnv, name: &str) -> Option<HostComptimeFnSpec> {
