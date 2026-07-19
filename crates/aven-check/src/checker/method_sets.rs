@@ -250,9 +250,21 @@ const BUILTIN_METHODS: &[BuiltinMethodEntry] = &[
         result: BuiltinResult::Plain(BuiltinType::Text),
     },
     BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "toGrouped",
+        params: TEXT_PARAM,
+        result: BuiltinResult::Plain(BuiltinType::Text),
+    },
+    BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "toText",
         params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Text),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "toFixed",
+        params: INT_PARAM,
         result: BuiltinResult::Plain(BuiltinType::Text),
     },
     BuiltinMethodEntry {
@@ -750,7 +762,9 @@ mod tests {
         for owner in ["Int", "Float", "Bool", "Text"] {
             assert_nullary_signature(owner, "toText", "Text");
         }
-        assert_eq!(BUILTIN_METHODS.len(), 31);
+        assert_signature("Int", "toGrouped", "Text", "Text");
+        assert_signature("Float", "toFixed", "Int", "Text");
+        assert_eq!(BUILTIN_METHODS.len(), 33);
     }
 
     #[test]

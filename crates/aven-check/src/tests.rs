@@ -5490,6 +5490,14 @@ fn text_method_field_query_returns_typed_methods() {
         .iter()
         .find(|field| field.name == "replaceEach")
         .expect("replaceEach method");
+    let pad_left = fields
+        .iter()
+        .find(|field| field.name == "padLeft")
+        .expect("padLeft method");
+    let pad_right = fields
+        .iter()
+        .find(|field| field.name == "padRight")
+        .expect("padRight method");
     let to_int = fields
         .iter()
         .find(|field| field.name == "toInt")
@@ -5504,6 +5512,8 @@ fn text_method_field_query_returns_typed_methods() {
     assert_eq!(repeat.ty.render(), "Int -> Text");
     assert_eq!(split_on.ty.render(), "Text -> Array(Text)");
     assert_eq!(replace_each.ty.render(), "(Text, Text) -> Text");
+    assert_eq!(pad_left.ty.render(), "(Int, Text) -> Text");
+    assert_eq!(pad_right.ty.render(), "(Int, Text) -> Text");
     assert_eq!(to_int.ty.render(), "() -> ?Int");
     assert_eq!(to_float.ty.render(), "() -> ?Float");
     let literal_fields = record_fields(&build::text_literals(&["42"]))
@@ -5542,6 +5552,8 @@ fn text_methods_type_check_and_reject_mismatches() {
         "p = [\"a\", \"b\"].joinWith(\", \")\n",
         "q : Int = t.toInt() ?? 0\n",
         "r : Float = t.toFloat() ?? 0.0\n",
+        "s = t.padLeft(4, \"0\")\n",
+        "u = t.padRight(4, \" \")\n",
     ));
     let ok_check = check_module(&ok.module);
     assert!(
@@ -5557,6 +5569,15 @@ fn text_methods_type_check_and_reject_mismatches() {
         1,
         "t.repeat(\"x\") should be a type mismatch: {:?}",
         mismatch_check.diagnostics
+    );
+
+    let pad_mismatch = parse_module("t : Text = \"hi\"\nvalue = t.padLeft(\"2\", \"0\")\n");
+    let pad_mismatch_check = check_module(&pad_mismatch.module);
+    assert_eq!(
+        matching_codes(&pad_mismatch_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "t.padLeft(\"2\", \"0\") should be a type mismatch: {:?}",
+        pad_mismatch_check.diagnostics
     );
 
     let numeric_mismatch = parse_module("t : Text = \"hi\"\nvalue = t.toInt(1)\n");
@@ -11018,6 +11039,8 @@ fn named_primitive_family_core_checks_construction_lifting_and_widening() {
     assert_eq!(money.methods["<"].result, named("Bool"));
     assert_eq!(money.methods["div"].result.render(), "?Int");
     assert!(money.methods.contains_key("toText"));
+    assert_eq!(money.methods["toGrouped"].result.render(), "Text");
+    assert_eq!(money.methods["toGrouped"].params, vec![named("Text")]);
 }
 
 #[test]
@@ -11035,6 +11058,57 @@ fn named_primitive_family_accepts_each_concrete_scalar_base() {
     let check = check_module(&parsed.module);
 
     assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn number_format_helpers_typecheck_and_reject_mismatches() {
+    let ok = parse_module(concat!(
+        "grouped = 1000000.toGrouped(\",\")\n",
+        "fixed = 3.14159.toFixed(2)\n",
+        "padded = \"7\".padLeft(2, \"0\")\n",
+        "Money = Int {}\n",
+        "amount: Money = 100000\n",
+        "moneyGrouped = amount.toGrouped(\",\")\n",
+        "Ratio = Float {}\n",
+        "ratio: Ratio = 1.5\n",
+        "ratioFixed = ratio.toFixed(2)\n",
+        "Label = Text {}\n",
+        "label: Label = \"x\"\n",
+        "labelPadded = label.padLeft(3, \"0\")\n",
+    ));
+    let ok_check = check_module(&ok.module);
+    assert!(
+        ok_check.diagnostics.is_empty(),
+        "number format helpers should type-check: {:?}",
+        ok_check.diagnostics
+    );
+
+    let grouped_mismatch = parse_module("value = 1.toGrouped(2)\n");
+    let grouped_check = check_module(&grouped_mismatch.module);
+    assert_eq!(
+        matching_codes(&grouped_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "1.toGrouped(2) should mismatch: {:?}",
+        grouped_check.diagnostics
+    );
+
+    let fixed_mismatch = parse_module("value = 1.5.toFixed(\"2\")\n");
+    let fixed_check = check_module(&fixed_mismatch.module);
+    assert_eq!(
+        matching_codes(&fixed_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "1.5.toFixed(\"2\") should mismatch: {:?}",
+        fixed_check.diagnostics
+    );
+
+    let wrong_receiver = parse_module("value = \"1\".toGrouped(\",\")\n");
+    let wrong_check = check_module(&wrong_receiver.module);
+    assert!(
+        matching_codes(&wrong_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
+            || !wrong_check.diagnostics.is_empty(),
+        "Text.toGrouped should error: {:?}",
+        wrong_check.diagnostics
+    );
 }
 
 #[test]

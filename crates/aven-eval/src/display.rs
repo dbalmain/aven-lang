@@ -45,7 +45,7 @@ pub(crate) fn with_active_to_text_owner<T>(
     result
 }
 
-fn to_text_owner_is_active(owner: &str) -> bool {
+pub(crate) fn to_text_owner_is_active(owner: &str) -> bool {
     ACTIVE_TO_TEXT_OWNERS.with(|owners| owners.borrow().iter().any(|active| active == owner))
 }
 

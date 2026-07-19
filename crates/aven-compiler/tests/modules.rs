@@ -2182,6 +2182,41 @@ fn named_primitive_family_money_checks_and_runs_end_to_end() {
 }
 
 #[test]
+fn money_to_text_uses_grouped_pad_and_inherited_int_methods() {
+    let dir = TempDir::new("money-format-helpers");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Money = Int {\n",
+            "  toText(): Text =>\n",
+            "    \"$${(. / 100).toGrouped(\",\")}.${(. % 100).toText().padLeft(2, \"0\")}\"\n",
+            "}\n",
+            "total: Money = 100000\n",
+            "grouped = total.toGrouped(\",\")\n",
+            "{ label: total.toText(), rendered: \"${total}\", grouped }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+    let globals = aven_host::standard_check_host_globals();
+
+    let checked = check_path_with_host_globals_and_roots(&path, &globals, &roots)
+        .expect("Money format helpers should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_host_globals_and_roots(&path, &globals, vec![], &roots)
+        .expect("Money format helpers should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ label: \"$1,000.00\", rendered: \"$1,000.00\", grouped: \"100,000\" }".to_owned())
+    );
+}
+
+#[test]
 fn named_primitive_family_compatible_override_replaces_inherited_body() {
     let dir = TempDir::new("named-primitive-family-override");
     write(

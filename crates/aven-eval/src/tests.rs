@@ -1818,6 +1818,87 @@ fn text_methods_repeat_split_and_join() {
 }
 
 #[test]
+fn text_pad_left_and_right() {
+    // short / exact / long text; multi-char pad truncation; empty pad unchanged.
+    assert_module_value(
+        "[\
+           \"7\".padLeft(3, \"0\"), \"hi\".padLeft(2, \"0\"), \"hello\".padLeft(3, \"0\"), \
+           \"7\".padRight(3, \"0\"), \"xy\".padLeft(5, \"ab\"), \"xy\".padRight(5, \"ab\"), \
+           \"x\".padLeft(3, \"\"), \"x\".padRight(3, \"\")\
+         ]\n",
+        array_value(vec![
+            Value::Text("007".to_owned()),
+            Value::Text("hi".to_owned()),
+            Value::Text("hello".to_owned()),
+            Value::Text("700".to_owned()),
+            Value::Text("abaxy".to_owned()),
+            Value::Text("xyaba".to_owned()),
+            Value::Text("x".to_owned()),
+            Value::Text("x".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn int_to_grouped_digits() {
+    assert_module_value(
+        "[\
+           0.toGrouped(\",\"), 999.toGrouped(\",\"), 1000.toGrouped(\",\"), \
+           (-1234).toGrouped(\",\"), 1000000.toGrouped(\",\"), 1000000.toGrouped(\"\"), \
+           1000000.toGrouped(\" \")\
+         ]\n",
+        array_value(vec![
+            Value::Text("0".to_owned()),
+            Value::Text("999".to_owned()),
+            Value::Text("1,000".to_owned()),
+            Value::Text("-1,234".to_owned()),
+            Value::Text("1,000,000".to_owned()),
+            Value::Text("1000000".to_owned()),
+            Value::Text("1 000 000".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn float_to_fixed_rounding_and_non_finite() {
+    // Half away from zero on the shortest decimal; decimals 0; NaN/Infinity words.
+    assert_module_value(
+        "[\
+           3.14159.toFixed(2), 2.0.toFixed(2), 2.675.toFixed(2), \
+           (-1.005).toFixed(2), 3.14159.toFixed(0), 2.5.toFixed(0), \
+           (0.0 / 0.0).toFixed(2), (1.0 / 0.0).toFixed(2), (-1.0 / 0.0).toFixed(2), \
+           1.234.toFixed(-1)\
+         ]\n",
+        array_value(vec![
+            Value::Text("3.14".to_owned()),
+            Value::Text("2.00".to_owned()),
+            Value::Text("2.68".to_owned()),
+            Value::Text("-1.01".to_owned()),
+            Value::Text("3".to_owned()),
+            Value::Text("3".to_owned()),
+            Value::Text("NaN".to_owned()),
+            Value::Text("Infinity".to_owned()),
+            Value::Text("-Infinity".to_owned()),
+            Value::Text("1".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn money_style_composition_via_int_helpers() {
+    // Building-block composition without named-family branding (branding +
+    // inherited methods need the checker plan; full Money e2e lives in
+    // aven-compiler). Cents → dollars/remainder with grouping and pad.
+    assert_module_value(
+        concat!(
+            "cents = 100000\n",
+            "\"$${(cents / 100).toGrouped(\",\")}.${(cents % 100).toText().padLeft(2, \"0\")}\"\n",
+        ),
+        Value::Text("$1,000.00".to_owned()),
+    );
+}
+
+#[test]
 fn text_methods_parse_numbers() {
     assert_module_value(
         concat!(

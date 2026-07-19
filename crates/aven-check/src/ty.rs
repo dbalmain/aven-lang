@@ -90,6 +90,8 @@ pub const TEXT_METHOD_NAMES: &[&str] = &[
     "dropSuffix",
     "repeat",
     "splitOn",
+    "padLeft",
+    "padRight",
     "toInt",
     "toFloat",
 ];
@@ -311,7 +313,11 @@ fn text_method_type(name: &str) -> Option<Type> {
         "replaceEach" | "replaceFirst" => Some(function(vec![text.clone(), text.clone()], text)),
         "dropPrefix" | "dropSuffix" => Some(function(vec![text.clone()], text)),
         "repeat" => Some(function(vec![named_builtin("Int")], text)),
-        "splitOn" => Some(function(vec![text], array_apply(named_builtin("Text")))),
+        "splitOn" => Some(function(
+            vec![text.clone()],
+            array_apply(named_builtin("Text")),
+        )),
+        "padLeft" | "padRight" => Some(function(vec![named_builtin("Int"), text.clone()], text)),
         "toInt" => Some(function(
             Vec::new(),
             Type::Optional(Box::new(named_builtin("Int"))),

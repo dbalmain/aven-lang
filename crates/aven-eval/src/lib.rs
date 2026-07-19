@@ -514,6 +514,8 @@ pub const TEXT_METHOD_NAMES: &[&str] = &[
     "dropSuffix",
     "repeat",
     "splitOn",
+    "padLeft",
+    "padRight",
     "toInt",
     "toFloat",
 ];
@@ -2464,6 +2466,16 @@ fn apply_named_method_for_member(
     if member != "toText" {
         return apply_named_method(receiver, implementation, args, span);
     }
+    // Same re-entry rule as the display-protocol path: a family `toText` body
+    // that calls `.toText()` on a derived branded value (e.g. `. % 100`) must
+    // see the base Int/Float rendering, not recurse into the override.
+    if display::to_text_owner_is_active(&descriptor.owner) {
+        let base = erase_primitive_brand(receiver);
+        return match display::to_text(&base, None, span) {
+            Ok(text) => Ok(Value::Text(text)),
+            Err(flow) => Err(flow),
+        };
+    }
     let owner = descriptor.owner.clone();
     display::with_active_to_text_owner(&owner, || {
         apply_named_method(receiver, implementation, args, span)
@@ -3347,6 +3359,7 @@ fn unbound_builtin_type_method(owner: &str, field: &str) -> Option<Value> {
         ("Int", ">=") => Some(unbound_binary_operator(">=")),
         ("Int", "div") => Some(unbound_int_checked_method("div", i64::checked_div)),
         ("Int", "mod") => Some(unbound_int_checked_method("mod", i64::checked_rem)),
+        ("Int", "toGrouped") => Some(unbound_int_to_grouped_method()),
         ("Float", "+") => Some(unbound_binary_operator("+")),
         ("Float", "-") => Some(unbound_binary_operator("-")),
         ("Float", "*") => Some(unbound_binary_operator("*")),
@@ -3363,6 +3376,7 @@ fn unbound_builtin_type_method(owner: &str, field: &str) -> Option<Value> {
             Some(unbound_float_nullary_method("isInfinite", f64::is_infinite))
         }
         ("Float", "ieeeEquals") => Some(unbound_float_ieee_equals_method()),
+        ("Float", "toFixed") => Some(unbound_float_to_fixed_method()),
         ("Text", "+") => Some(unbound_binary_operator("+")),
         _ => None,
     }
@@ -3514,6 +3528,7 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (Value::Map(entries), "merge") => Some(map_merge_method(Rc::clone(entries))),
         (Value::Int(value), "div") => Some(int_checked_method(*value, "div", i64::checked_div)),
         (Value::Int(value), "mod") => Some(int_checked_method(*value, "mod", i64::checked_rem)),
+        (Value::Int(value), "toGrouped") => Some(int_to_grouped_method(*value)),
         (Value::Float(value), "isFinite") => {
             Some(float_nullary_bool(*value, "isFinite", f64::is_finite))
         }
@@ -3522,6 +3537,7 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
             Some(float_nullary_bool(*value, "isInfinite", f64::is_infinite))
         }
         (Value::Float(value), "ieeeEquals") => Some(float_ieee_equals_method(*value)),
+        (Value::Float(value), "toFixed") => Some(float_to_fixed_method(*value)),
         (Value::Text(text), field) => text_method(text, field),
         (
             Value::Tag { name, payload },
@@ -3661,6 +3677,8 @@ fn text_method(text: &str, field: &str) -> Option<Value> {
         "dropSuffix" => Some(text_drop_affix_method(text, "dropSuffix", false)),
         "repeat" => Some(text_repeat_method(text)),
         "splitOn" => Some(text_split_on_method(text)),
+        "padLeft" => Some(text_pad_method(text, true)),
+        "padRight" => Some(text_pad_method(text, false)),
         "toInt" => Some(text_nullary_optional(text, "toInt", |s| {
             s.parse::<i64>().ok().map(Value::Int)
         })),
@@ -3821,6 +3839,249 @@ fn text_split_on_method(text: String) -> Value {
             .collect::<Vec<_>>();
         Ok(Value::Array(Rc::new(parts)))
     })
+}
+
+fn text_pad_method(text: String, left: bool) -> Value {
+    let name = if left { "padLeft" } else { "padRight" };
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "Text.{name} expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let Value::Int(width) = &args[0] else {
+            return Err(format!(
+                "Text.{name} expects Int width, got {}",
+                args[0].type_name()
+            ));
+        };
+        let pad = expect_text_arg(&args[1], &format!("Text.{name}"))?;
+        Ok(Value::Text(text_pad(&text, *width, pad, left)))
+    })
+}
+
+/// Pad `text` to `width` Unicode scalar values (`chars().count()`), matching
+/// the unit other Text helpers implicitly use (no grapheme segmentation).
+/// Empty `pad` or already-wide text leaves the input unchanged. Multi-char
+/// `pad` is repeated from the start and truncated to the needed length.
+fn text_pad(text: &str, width: i64, pad: &str, left: bool) -> String {
+    if pad.is_empty() {
+        return text.to_owned();
+    }
+    let Ok(width) = usize::try_from(width) else {
+        // Negative width: no padding needed → unchanged.
+        return text.to_owned();
+    };
+    let text_len = text.chars().count();
+    if text_len >= width {
+        return text.to_owned();
+    }
+    let need = width - text_len;
+    let pad_chars: Vec<char> = pad.chars().collect();
+    let mut padding = String::new();
+    for index in 0..need {
+        padding.push(pad_chars[index % pad_chars.len()]);
+    }
+    if left {
+        format!("{padding}{text}")
+    } else {
+        format!("{text}{padding}")
+    }
+}
+
+fn int_to_grouped_method(value: i64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Int.toGrouped expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let separator = expect_text_arg(&args[0], "Int.toGrouped")?;
+        Ok(Value::Text(int_to_grouped(value, separator)))
+    })
+}
+
+fn unbound_int_to_grouped_method() -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "unbound Int.toGrouped expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Int(value) = receiver else {
+            return Err(format!(
+                "unbound Int.toGrouped expects Int receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        let separator = expect_text_arg(&args[1], "unbound Int.toGrouped")?;
+        Ok(Value::Text(int_to_grouped(value, separator)))
+    })
+}
+
+/// Group digits in threes from the right with `separator`. Sign is preserved;
+/// values under 1000 (absolute) insert no separator. Empty separator is plain
+/// `to_string`.
+fn int_to_grouped(value: i64, separator: &str) -> String {
+    let text = value.to_string();
+    if separator.is_empty() {
+        return text;
+    }
+    let (sign, digits) = match text.strip_prefix('-') {
+        Some(digits) => ("-", digits),
+        None => ("", text.as_str()),
+    };
+    let chars: Vec<char> = digits.chars().collect();
+    let mut groups = Vec::new();
+    let mut end = chars.len();
+    while end > 0 {
+        let start = end.saturating_sub(3);
+        groups.push(chars[start..end].iter().collect::<String>());
+        end = start;
+    }
+    groups.reverse();
+    format!("{sign}{}", groups.join(separator))
+}
+
+fn float_to_fixed_method(value: f64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Float.toFixed expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let Value::Int(decimals) = &args[0] else {
+            return Err(format!(
+                "Float.toFixed expects Int, got {}",
+                args[0].type_name()
+            ));
+        };
+        Ok(Value::Text(float_to_fixed(value, *decimals)))
+    })
+}
+
+fn unbound_float_to_fixed_method() -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "unbound Float.toFixed expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Float(value) = receiver else {
+            return Err(format!(
+                "unbound Float.toFixed expects Float receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        let Value::Int(decimals) = &args[1] else {
+            return Err(format!(
+                "unbound Float.toFixed expects Int, got {}",
+                args[1].type_name()
+            ));
+        };
+        Ok(Value::Text(float_to_fixed(value, *decimals)))
+    })
+}
+
+/// Fixed-decimal rendering with half-away-from-zero rounding on the shortest
+/// round-trip decimal of the IEEE value (Rust `f64::to_string` / ryu). Negative
+/// `decimals` clamps to 0. Non-finite values use display words regardless of
+/// `decimals`.
+fn float_to_fixed(value: f64, decimals: i64) -> String {
+    if value.is_nan() {
+        return "NaN".to_owned();
+    }
+    if value == f64::INFINITY {
+        return "Infinity".to_owned();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-Infinity".to_owned();
+    }
+
+    let decimals = usize::try_from(decimals.max(0)).unwrap_or(0);
+    // `-0.0 == 0.0`, so signed zero displays without a minus.
+    let negative = value.is_sign_negative() && value != 0.0;
+    let raw = value.abs().to_string();
+    let (int_str, frac_str) = match raw.split_once('.') {
+        Some((int_part, frac_part)) => (int_part, frac_part),
+        None => (raw.as_str(), ""),
+    };
+
+    let mut int_digits: Vec<u8> = int_str.bytes().map(|b| b - b'0').collect();
+    if int_digits.is_empty() {
+        int_digits.push(0);
+    }
+    let frac_bytes: Vec<u8> = frac_str.bytes().map(|b| b - b'0').collect();
+    let round_up = frac_bytes.get(decimals).is_some_and(|digit| *digit >= 5);
+
+    let mut frac_digits: Vec<u8> = frac_bytes.into_iter().take(decimals).collect();
+    while frac_digits.len() < decimals {
+        frac_digits.push(0);
+    }
+
+    if round_up {
+        if decimals == 0 {
+            add_one_digits(&mut int_digits);
+        } else {
+            round_up_fractional(&mut frac_digits, &mut int_digits);
+        }
+    }
+
+    let int_out: String = int_digits
+        .into_iter()
+        .map(|digit| char::from(b'0' + digit))
+        .collect();
+    let mut result = if negative {
+        format!("-{int_out}")
+    } else {
+        int_out
+    };
+    if decimals > 0 {
+        result.push('.');
+        result.extend(
+            frac_digits
+                .into_iter()
+                .map(|digit| char::from(b'0' + digit)),
+        );
+    }
+    result
+}
+
+/// Add one at the least-significant digit, carrying left and prepending `1`
+/// when the whole digit vector overflows (e.g. `999` → `1000`).
+fn add_one_digits(digits: &mut Vec<u8>) {
+    let mut i = digits.len();
+    while i > 0 {
+        i -= 1;
+        if digits[i] < 9 {
+            digits[i] += 1;
+            return;
+        }
+        digits[i] = 0;
+    }
+    digits.insert(0, 1);
+}
+
+/// Round fractional digits up by one ulp; full overflow carries into
+/// `int_digits` and leaves the fractional digits zeroed (width preserved).
+fn round_up_fractional(frac_digits: &mut [u8], int_digits: &mut Vec<u8>) {
+    let mut i = frac_digits.len();
+    while i > 0 {
+        i -= 1;
+        if frac_digits[i] < 9 {
+            frac_digits[i] += 1;
+            return;
+        }
+        frac_digits[i] = 0;
+    }
+    add_one_digits(int_digits);
 }
 
 fn expect_text_arg<'a>(value: &'a Value, context: &str) -> Result<&'a str, String> {
