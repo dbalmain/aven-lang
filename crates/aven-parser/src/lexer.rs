@@ -751,14 +751,16 @@ impl Lexer<'_> {
             .iter()
             .rev()
             .find(|token| !token.kind.is_trivia())
-            .is_none_or(|token| {
-                matches!(
-                    token.kind,
-                    TokenKind::Operator(_)
-                        | TokenKind::OpenParen
-                        | TokenKind::OpenBrace
-                        | TokenKind::OpenBracket
-                )
+            .is_none_or(|token| match &token.kind {
+                // Field access never starts a regex: after `.` / `?.` the next
+                // token is a member name (identifier or operator member), and
+                // bare `/` must stay the division operator (`./lib` paths).
+                TokenKind::Operator(operator) if operator == "." || operator == "?." => false,
+                TokenKind::Operator(_)
+                | TokenKind::OpenParen
+                | TokenKind::OpenBrace
+                | TokenKind::OpenBracket => true,
+                _ => false,
             })
     }
 
@@ -784,13 +786,16 @@ impl Lexer<'_> {
             .unwrap_or(prefix);
         self.offset += operator.len();
 
+        // Continuations are keyed by the matched token, not only the reserved
+        // prefix: bare `.` must not absorb operator members (`Int.+`), while
+        // multi-character reserved forms like `..` still reject `..<`.
         if self
             .current_byte()
-            .is_some_and(|byte| reserved_operator_continues(prefix, byte))
+            .is_some_and(|byte| reserved_operator_continues(operator, byte))
         {
             while self
                 .current_byte()
-                .is_some_and(|byte| reserved_operator_continues(prefix, byte))
+                .is_some_and(|byte| reserved_operator_continues(operator, byte))
             {
                 self.offset += self.current_char_len();
             }
@@ -986,14 +991,20 @@ fn is_operator_run_byte(byte: u8) -> bool {
     is_custom_operator_continue_byte(byte) || matches!(byte, b':' | b'?' | b'.' | b'@')
 }
 
-fn reserved_operator_continues(prefix: &str, byte: u8) -> bool {
-    match prefix {
+fn reserved_operator_continues(matched: &str, byte: u8) -> bool {
+    match matched {
         "?" => byte != b':' && is_operator_run_byte(byte),
         "@" => is_operator_run_byte(byte),
-        "=" => byte == b'=',
-        ":" => matches!(byte, b':' | b'.' | b'?' | b'='),
-        "." => is_custom_operator_continue_byte(byte) || matches!(byte, b'.' | b'?'),
-        "|" => is_operator_run_byte(byte),
+        "=" | "==" | "=>" => byte == b'=',
+        ":" | "::" | ":=" | ":.." => matches!(byte, b':' | b'.' | b'?' | b'='),
+        // Bare `.` is field access: do not absorb following operator members
+        // (`+`, `-`, `*`, …). Only multi-dot / `?` runs stay reserved
+        // continuations (`...`, `.?`).
+        "." => matches!(byte, b'.' | b'?'),
+        // `..` and longer reserved `.` forms still reject custom continuations
+        // (`..<`, `...`).
+        ".." => is_custom_operator_continue_byte(byte) || matches!(byte, b'.' | b'?'),
+        "|" | "||" | "|>" => is_operator_run_byte(byte),
         _ => false,
     }
 }
@@ -1110,24 +1121,60 @@ mod tests {
         let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
 
         // `PathLiteral` is gone: a bare `./lib/Text` is no longer a single
-        // token. The leading `.` is a reserved operator (field access), so
-        // this now reports `lex.reserved-operator` rather than lexing as a
-        // path.
+        // token. Bare `.` no longer absorbs following operator characters, so
+        // this splits into field-access `.`, division `/`, then the rest.
+        assert!(output.diagnostics.is_empty());
         assert_eq!(
             tokens,
             vec![
                 TokenKind::Operator(".".to_owned()),
+                TokenKind::Operator("/".to_owned()),
                 TokenKind::Identifier("lib".to_owned()),
                 TokenKind::Operator("/".to_owned()),
                 TokenKind::ComptimeIdentifier("Text".to_owned()),
             ]
         );
-        let codes: Vec<_> = output
-            .diagnostics
-            .iter()
-            .filter_map(|diagnostic| diagnostic.code.as_deref())
-            .collect();
-        assert_eq!(codes, vec!["lex.reserved-operator"]);
+    }
+
+    #[test]
+    fn lexes_unbound_operator_member_access_as_dot_then_operator() {
+        let output = lex_source("Int.+(1, 2)");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::ComptimeIdentifier("Int".to_owned()),
+                TokenKind::Operator(".".to_owned()),
+                TokenKind::Operator("+".to_owned()),
+                TokenKind::OpenParen,
+                TokenKind::Number("1".to_owned()),
+                TokenKind::Comma,
+                TokenKind::Number("2".to_owned()),
+                TokenKind::CloseParen,
+            ]
+        );
+    }
+
+    #[test]
+    fn spaced_dot_plus_still_splits_without_reserved_diagnostic() {
+        // Was previously `lex.reserved-operator` (`.` absorbed `+`). Now it is
+        // `.` then `+`; the parser/checker must reject misuse in expression
+        // position rather than inventing a binary meaning for `a .+ b`.
+        let output = lex_source("a .+ b");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::Identifier("a".to_owned()),
+                TokenKind::Operator(".".to_owned()),
+                TokenKind::Operator("+".to_owned()),
+                TokenKind::Identifier("b".to_owned()),
+            ]
+        );
     }
 
     #[test]

@@ -3220,8 +3220,11 @@ fn field_access_value(
             .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
         // A type value (`Map`, `Json`, ...) carries statics: field access
         // resolves the `"Type.static"`-keyed global bound alongside the type.
+        // Concrete scalar builtins also publish unbound methods (`Int.+`,
+        // `Int.div`) as first-class values for base delegation.
         Value::Type(RuntimeType::Named(name)) => env
             .lookup(&format!("{name}.{field}"))
+            .or_else(|| unbound_builtin_type_method(name, field))
             .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
         value => builtin_method(value, field, env).ok_or_else(|| {
             one_diagnostic(record_type_error(
@@ -3247,9 +3250,148 @@ fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
         Value::BrandedPrimitive { descriptor, .. } | Value::NamedFamily(descriptor) => {
             descriptor.methods.contains_key(field)
         }
-        Value::Type(RuntimeType::Named(name)) => env.lookup(&format!("{name}.{field}")).is_some(),
+        Value::Type(RuntimeType::Named(name)) => {
+            env.lookup(&format!("{name}.{field}")).is_some()
+                || unbound_builtin_type_method(name, field).is_some()
+        }
         value => builtin_method(value, field, env).is_some(),
     }
+}
+
+/// Unbound method value for a concrete scalar builtin owner (`Int.+`,
+/// `Float.isFinite`). Takes the explicit receiver as the first argument.
+fn unbound_builtin_type_method(owner: &str, field: &str) -> Option<Value> {
+    match (owner, field) {
+        ("Int", "+") => Some(unbound_binary_operator("+")),
+        ("Int", "-") => Some(unbound_binary_operator("-")),
+        ("Int", "*") => Some(unbound_binary_operator("*")),
+        ("Int", "/") => Some(unbound_binary_operator("/")),
+        ("Int", "%") => Some(unbound_binary_operator("%")),
+        ("Int", "^") => Some(unbound_binary_operator("^")),
+        ("Int", "<") => Some(unbound_binary_operator("<")),
+        ("Int", "<=") => Some(unbound_binary_operator("<=")),
+        ("Int", ">") => Some(unbound_binary_operator(">")),
+        ("Int", ">=") => Some(unbound_binary_operator(">=")),
+        ("Int", "div") => Some(unbound_int_checked_method("div", i64::checked_div)),
+        ("Int", "mod") => Some(unbound_int_checked_method("mod", i64::checked_rem)),
+        ("Float", "+") => Some(unbound_binary_operator("+")),
+        ("Float", "-") => Some(unbound_binary_operator("-")),
+        ("Float", "*") => Some(unbound_binary_operator("*")),
+        ("Float", "/") => Some(unbound_binary_operator("/")),
+        ("Float", "%") => Some(unbound_binary_operator("%")),
+        ("Float", "^") => Some(unbound_binary_operator("^")),
+        ("Float", "<") => Some(unbound_binary_operator("<")),
+        ("Float", "<=") => Some(unbound_binary_operator("<=")),
+        ("Float", ">") => Some(unbound_binary_operator(">")),
+        ("Float", ">=") => Some(unbound_binary_operator(">=")),
+        ("Float", "isFinite") => Some(unbound_float_nullary_method("isFinite", f64::is_finite)),
+        ("Float", "isNaN") => Some(unbound_float_nullary_method("isNaN", f64::is_nan)),
+        ("Float", "isInfinite") => {
+            Some(unbound_float_nullary_method("isInfinite", f64::is_infinite))
+        }
+        ("Float", "ieeeEquals") => Some(unbound_float_ieee_equals_method()),
+        ("Text", "+") => Some(unbound_binary_operator("+")),
+        _ => None,
+    }
+}
+
+fn unbound_binary_operator(operator: &'static str) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "unbound `{operator}` expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let left = erase_primitive_brand(args[0].clone());
+        let right = erase_primitive_brand(args[1].clone());
+        let span = Span::new(0, 0);
+        match apply_binary(left, operator, span, right, span, span) {
+            Ok(value) => Ok(value),
+            Err(Flow::Fail(diagnostics)) => Err(diagnostics
+                .into_iter()
+                .next()
+                .map(|diagnostic| diagnostic.message)
+                .unwrap_or_else(|| format!("unbound `{operator}` failed"))),
+            Err(Flow::Propagate(value)) => Ok(value),
+        }
+    })
+}
+
+fn unbound_int_checked_method(name: &'static str, operation: fn(i64, i64) -> Option<i64>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "unbound Int.{name} expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let left = erase_primitive_brand(args[0].clone());
+        let right = erase_primitive_brand(args[1].clone());
+        let Value::Int(left) = left else {
+            return Err(format!(
+                "unbound Int.{name} expects Int receiver, got {}",
+                left.type_name()
+            ));
+        };
+        let Value::Int(right) = right else {
+            return Err(format!(
+                "unbound Int.{name} expects Int, got {}",
+                right.type_name()
+            ));
+        };
+        if right == 0 {
+            return Ok(Value::Undefined);
+        }
+        operation(left, right)
+            .map(Value::Int)
+            .ok_or_else(|| format!("integer overflow in unbound Int.{name}"))
+    })
+}
+
+fn unbound_float_nullary_method(name: &'static str, predicate: fn(f64) -> bool) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "unbound Float.{name} expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Float(value) = receiver else {
+            return Err(format!(
+                "unbound Float.{name} expects Float receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        Ok(Value::Bool(predicate(value)))
+    })
+}
+
+fn unbound_float_ieee_equals_method() -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "unbound Float.ieeeEquals expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let left = erase_primitive_brand(args[0].clone());
+        let right = erase_primitive_brand(args[1].clone());
+        let Value::Float(left) = left else {
+            return Err(format!(
+                "unbound Float.ieeeEquals expects Float receiver, got {}",
+                left.type_name()
+            ));
+        };
+        let Value::Float(right) = right else {
+            return Err(format!(
+                "unbound Float.ieeeEquals expects Float, got {}",
+                right.type_name()
+            ));
+        };
+        Ok(Value::Bool(left == right))
+    })
 }
 
 fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Value> {

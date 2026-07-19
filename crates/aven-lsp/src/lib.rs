@@ -82,6 +82,7 @@ struct DocumentSemanticAnalysis {
     type_definitions: HashMap<String, aven_compiler::Type>,
     recursive_type_unfoldings: HashMap<aven_compiler::RecursiveTypeId, aven_compiler::Type>,
     builtin_methods: aven_compiler::BuiltinMethodEnvironment,
+    named_families: HashMap<String, aven_compiler::NamedFamilyType>,
     module_graph: Option<DocumentModuleGraph>,
 }
 
@@ -146,6 +147,7 @@ impl DocumentStore {
                 type_definitions: analysis.type_definitions,
                 recursive_type_unfoldings: analysis.recursive_type_unfoldings,
                 builtin_methods: analysis.builtin_methods,
+                named_families: analysis.named_families,
             },
         ) else {
             return false;
@@ -546,6 +548,7 @@ fn analyze_document_semantics_for_uri(
         type_definitions: semantic.type_definitions,
         recursive_type_unfoldings: semantic.recursive_type_unfoldings,
         builtin_methods: semantic.builtin_methods,
+        named_families: semantic.named_families,
         module_graph: None,
     }
 }
@@ -626,6 +629,7 @@ fn module_semantics_for_document(
     let type_definitions = entry_node.semantic.type_definitions.clone();
     let recursive_type_unfoldings = entry_node.semantic.recursive_type_unfoldings.clone();
     let builtin_methods = entry_node.semantic.builtin_methods.clone();
+    let named_families = entry_node.semantic.named_families.clone();
     let module_graph = module_graph_cache(document.revision(), entry_path, output.nodes);
 
     Some(DocumentSemanticAnalysis {
@@ -634,6 +638,7 @@ fn module_semantics_for_document(
         type_definitions,
         recursive_type_unfoldings,
         builtin_methods,
+        named_families,
         module_graph: Some(module_graph),
     })
 }
@@ -2185,6 +2190,10 @@ fn definition_location(
         }
     }
 
+    if let Some(span) = named_method_definition_span(document, position) {
+        return Some(Location::new(uri, span_to_range(document, span)));
+    }
+
     let identifier = identifier_at_position(document, position)?;
 
     if let Some(span) = local_definition_span(document, &identifier) {
@@ -2514,6 +2523,10 @@ fn rename_workspace_edit(
 }
 
 fn hover_at_position(document: &ParsedDocument, position: Position) -> Option<Hover> {
+    if let Some(hover) = named_method_declaration_hover(document, position) {
+        return Some(hover);
+    }
+
     let expression_hover = expression_hover_at_position(document, position);
     let identifier_hover = identifier_hover_at_position(document, position);
 
@@ -2985,8 +2998,184 @@ fn identifier_from_token(token: &aven_parser::Token) -> Option<IdentifierAtPosit
             name: name.clone(),
             span: token.span,
         }),
+        aven_parser::TokenKind::Operator(name)
+            if matches!(
+                name.as_str(),
+                "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
+            ) =>
+        {
+            Some(IdentifierAtPosition {
+                name: name.clone(),
+                span: token.span,
+            })
+        }
         _ => None,
     }
+}
+
+/// Source-declared named-family method (record or primitive-base family).
+#[derive(Debug, Clone)]
+struct NamedMethodSymbol {
+    owner: String,
+    member: String,
+    name_span: Span,
+    origin: aven_compiler::NamedMethodOrigin,
+    /// Bound signature text for hover (`() -> Text`, `(Money) -> Money`, …).
+    signature: String,
+}
+
+fn named_method_symbols(document: &ParsedDocument) -> Vec<NamedMethodSymbol> {
+    let mut symbols = Vec::new();
+    for item in &document.parse_output().module.items {
+        let aven_parser::Item::Binding(binding) = item else {
+            continue;
+        };
+        let owner = binding.name.clone();
+        let members = match &binding.value.kind {
+            aven_parser::ExprKind::PrimitiveFamily { members, .. } => members.as_slice(),
+            aven_parser::ExprKind::Record(entries)
+                if aven_parser::is_named_method_provider(&binding.value) =>
+            {
+                entries.as_slice()
+            }
+            _ => continue,
+        };
+        let family = family_for_surface_name(document.named_families(), &owner);
+        for entry in members {
+            let aven_parser::RecordEntry::Method {
+                name,
+                name_span,
+                value,
+                ..
+            } = entry
+            else {
+                continue;
+            };
+            let origin = family
+                .and_then(|family| family.methods.get(name))
+                .map(|method| method.origin.clone())
+                .unwrap_or(aven_compiler::NamedMethodOrigin::Declared);
+            let signature = family
+                .and_then(|family| family.methods.get(name))
+                .map(render_named_method_signature)
+                .unwrap_or_else(|| render_method_value_signature(document, value));
+            symbols.push(NamedMethodSymbol {
+                owner: owner.clone(),
+                member: name.clone(),
+                name_span: *name_span,
+                origin,
+                signature,
+            });
+        }
+    }
+    symbols
+}
+
+/// Resolve a surface family name (`Money`) against the checker's canonical
+/// owner keys (`\0aven.named-family:…\0Money`).
+fn family_for_surface_name<'a>(
+    families: &'a HashMap<String, aven_compiler::NamedFamilyType>,
+    name: &str,
+) -> Option<&'a aven_compiler::NamedFamilyType> {
+    let suffix = format!("\0{name}");
+    families
+        .values()
+        .find(|family| family.owner.ends_with(&suffix) || family.owner == name)
+}
+
+fn render_named_method_signature(method: &aven_compiler::NamedMethodType) -> String {
+    let params = method
+        .params
+        .iter()
+        .map(aven_compiler::Type::render)
+        .collect::<Vec<_>>();
+    let result = method.result.render();
+    if params.is_empty() {
+        format!("() -> {result}")
+    } else if params.len() == 1 {
+        format!("({}) -> {result}", params[0])
+    } else {
+        format!("({}) -> {result}", params.join(", "))
+    }
+}
+
+fn render_method_value_signature(document: &ParsedDocument, value: &aven_parser::Expr) -> String {
+    document
+        .inferred_type_at(value.span)
+        .map(aven_compiler::InferredType::render)
+        .unwrap_or_else(|| "Function".to_owned())
+}
+
+fn named_method_at_span(document: &ParsedDocument, span: Span) -> Option<NamedMethodSymbol> {
+    named_method_symbols(document)
+        .into_iter()
+        .find(|symbol| symbol.name_span == span)
+}
+
+fn named_method_declaration_hover(document: &ParsedDocument, position: Position) -> Option<Hover> {
+    let identifier = identifier_at_position(document, position)?;
+    let symbol = named_method_at_span(document, identifier.span)?;
+    let mut value = format!(
+        "```aven\n{}.{} : {}\n```",
+        symbol.owner, symbol.member, symbol.signature
+    );
+    if let aven_compiler::NamedMethodOrigin::Override {
+        base_owner,
+        base_member,
+    } = &symbol.origin
+    {
+        value.push_str(&format!(
+            "\noverrides {}.{} (base)",
+            base_owner.render(),
+            base_member
+        ));
+    }
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range: Some(span_to_range(document, symbol.name_span)),
+    })
+}
+
+fn named_method_definition_span(document: &ParsedDocument, position: Position) -> Option<Span> {
+    // Call / field-access site: `money.toText` / `money.toText()` → method decl.
+    if let Some(access) = field_access_identifier_at_position(document, position)
+        && let Some(owner) = receiver_family_owner(document, &access.receiver)
+    {
+        let symbols = named_method_symbols(document);
+        if let Some(symbol) = symbols
+            .iter()
+            .find(|symbol| symbol.owner == owner && symbol.member == access.field.name)
+        {
+            return Some(symbol.name_span);
+        }
+    }
+
+    // Declaration site of an override: stay on the override (base is intrinsic).
+    let identifier = identifier_at_position(document, position)?;
+    let symbol = named_method_at_span(document, identifier.span)?;
+    Some(symbol.name_span)
+}
+
+fn receiver_family_owner(
+    document: &ParsedDocument,
+    receiver: &IdentifierAtPosition,
+) -> Option<String> {
+    if family_for_surface_name(document.named_families(), &receiver.name).is_some() {
+        return Some(receiver.name.clone());
+    }
+    let definition = definition_span_for_identifier(document, receiver)?;
+    let ty = document
+        .inferred_type_at(definition)
+        .map(aven_compiler::InferredType::render)
+        .or_else(|| {
+            aven_parser::annotation_for_definition(&document.parse_output().module, definition)
+                .map(|annotation| aven_parser::render_annotation(document.source(), annotation))
+        })?;
+    let ty = ty.trim();
+    family_for_surface_name(document.named_families(), ty).map(|_| ty.to_owned())
 }
 
 fn is_field_access_operator(token: &aven_parser::Token) -> bool {

@@ -65,6 +65,7 @@ fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
         semantic.type_definitions,
         semantic.recursive_type_unfoldings,
         semantic.builtin_methods,
+        semantic.named_families,
     )
 }
 
@@ -1561,6 +1562,7 @@ fn parsed_document_diagnostic_report_uses_file_id() {
         semantic.type_definitions,
         semantic.recursive_type_unfoldings,
         semantic.builtin_methods,
+        semantic.named_families,
     );
     let report = document.diagnostic_report();
 
@@ -2424,6 +2426,7 @@ fn document_store_accepts_current_semantic_diagnostics() {
             type_definitions: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
             builtin_methods: aven_compiler::BuiltinMethodEnvironment::default(),
+            named_families: HashMap::new(),
             module_graph: None,
         },
     ));
@@ -2454,6 +2457,7 @@ fn document_store_rejects_stale_semantic_diagnostics() {
             type_definitions: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
             builtin_methods: aven_compiler::BuiltinMethodEnvironment::default(),
+            named_families: HashMap::new(),
             module_graph: None,
         },
     ));
@@ -2645,6 +2649,68 @@ fn hover_shows_named_primitive_family_method_signature() {
     .expect("primitive-family method hover");
 
     assert_hover_value(hover, "```aven\nmoney.toText : () -> Text\n```");
+}
+
+#[test]
+fn hover_shows_override_origin_on_family_method_declaration() {
+    let hover = hover_at_marker(concat!(
+        "Money = Int {\n",
+        "  |+(other: Money): Money => Money(0)\n",
+        "}\n",
+    ))
+    .expect("override declaration hover");
+
+    let HoverContents::Markup(markup) = hover.contents else {
+        panic!("expected markup hover");
+    };
+    assert!(
+        markup.value.contains("Money.+") && markup.value.contains("(Money) -> Money"),
+        "signature missing: {}",
+        markup.value
+    );
+    assert!(
+        markup.value.contains("overrides Int.+ (base)"),
+        "override origin missing: {}",
+        markup.value
+    );
+}
+
+#[test]
+fn definition_from_override_call_lands_on_declaration() {
+    let source = concat!(
+        "Money = Int {\n",
+        "  toText(): Text => \"money\"\n",
+        "}\n",
+        "money = Money(1)\n",
+        "label = money.to|Text()\n",
+    );
+    let marker = source
+        .find('|')
+        .unwrap_or_else(|| panic!("expected cursor marker"));
+    let mut cleaned = source.to_owned();
+    cleaned.remove(marker);
+    let document = parsed_document_with_semantics(cleaned);
+    let position = to_lsp_position(
+        document
+            .file()
+            .line_index()
+            .offset_to_position(document.source(), marker),
+    );
+    let location = definition_location(
+        &document,
+        Url::parse("file:///override-def.av").expect("uri"),
+        position,
+        None,
+    )
+    .expect("definition for override/local method call");
+
+    // `toText` name starts after "Money = Int {\n  ".
+    let expected_start = document.source().find("toText").expect("toText decl");
+    let expected = span_to_range(
+        &document,
+        Span::new(expected_start, expected_start + "toText".len()),
+    );
+    assert_eq!(location.range, expected);
 }
 
 #[test]

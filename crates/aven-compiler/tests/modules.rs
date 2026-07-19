@@ -2211,6 +2211,38 @@ fn named_primitive_family_compatible_override_replaces_inherited_body() {
 }
 
 #[test]
+fn named_primitive_family_override_delegates_through_int_plus() {
+    let dir = TempDir::new("named-primitive-family-delegate");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Money = Int {\n",
+            "  +(other: Money): Money =>\n",
+            "    Money(Int.+(., other))\n",
+            "}\n",
+            "result = Money(2599) + Money(401)\n",
+            "asInt: Int = result\n",
+            "unbound = Int.+(3, 4)\n",
+            "{ asInt, unbound }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+
+    let checked = check_path_with_host_globals(&path, &HostGlobals::default())
+        .expect("base-operator delegation should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&path, vec![])
+        .expect("base-operator delegation should sum payloads");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ asInt: 3000, unbound: 7 }".to_owned())
+    );
+}
+
+#[test]
 fn named_primitive_families_run_over_all_concrete_scalar_bases() {
     let dir = TempDir::new("named-primitive-family-scalar-bases");
     write(

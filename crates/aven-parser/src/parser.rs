@@ -1530,7 +1530,7 @@ impl Parser<'_> {
             };
         }
 
-        let Some((field, field_span)) = self.parse_field_name() else {
+        let Some((field, field_span)) = self.parse_field_access_member(operator_span) else {
             self.report_expected_field_name(self.current_span());
             return Expr {
                 span: receiver.span.merge(operator_span),
@@ -1557,8 +1557,40 @@ impl Parser<'_> {
     fn current_is_field_access_name(&self) -> bool {
         matches!(
             self.current().map(|token| &token.kind),
-            Some(TokenKind::Identifier(_) | TokenKind::StringLiteral(_))
+            Some(
+                TokenKind::Identifier(_)
+                    | TokenKind::ComptimeIdentifier(_)
+                    | TokenKind::StringLiteral(_)
+            )
         )
+    }
+
+    /// Operator members as field names require adjacency (`Int.+`, `.+(x)`).
+    /// Spaced `. + x` remains binary addition on the bare receiver.
+    fn current_is_adjacent_operator_member(&self, after: Span) -> bool {
+        let Some(token) = self.current() else {
+            return false;
+        };
+        token.span.start == after.end
+            && matches!(
+                &token.kind,
+                TokenKind::Operator(operator) if operator_member_name(operator).is_some()
+            )
+    }
+
+    fn parse_field_access_member(&mut self, operator_span: Span) -> Option<(String, Span)> {
+        if self.current_is_field_access_name() {
+            return self.parse_field_name();
+        }
+        if !self.current_is_adjacent_operator_member(operator_span) {
+            return None;
+        }
+        let token = self.current()?.clone();
+        let TokenKind::Operator(name) = token.kind else {
+            return None;
+        };
+        self.advance();
+        Some((name, token.span))
     }
 
     fn parse_atom(&mut self) -> Expr {
@@ -1632,7 +1664,9 @@ impl Parser<'_> {
                     kind: ExprKind::Name(METHOD_RECEIVER_NAME.to_owned()),
                     span: token.span,
                 };
-                if self.current_is_field_access_name() {
+                if self.current_is_field_access_name()
+                    || self.current_is_adjacent_operator_member(token.span)
+                {
                     self.finish_field_access_after_operator(receiver, token.span, false)
                 } else {
                     receiver
@@ -2251,10 +2285,7 @@ impl Parser<'_> {
     fn current_is_operator_member_name(&self) -> bool {
         matches!(
             self.current().map(|token| &token.kind),
-            Some(TokenKind::Operator(operator)) if matches!(
-                operator.as_str(),
-                "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
-            )
+            Some(TokenKind::Operator(operator)) if operator_member_name(operator).is_some()
         )
     }
 
@@ -3287,6 +3318,16 @@ fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
     Some((precedence, precedence + 1))
 }
 
+/// Operator tokens that can appear as type-carried method members (`Int.+`,
+/// declaration `+(Self): Self`, unbound `Int.+(., other)`).
+fn operator_member_name(operator: &str) -> Option<&str> {
+    matches!(
+        operator,
+        "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
+    )
+    .then_some(operator)
+}
+
 fn scan_delimiters(tokens: &[Token]) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut stack = Vec::new();
@@ -3835,6 +3876,57 @@ mod tests {
             } if field == "active"
         ));
         assert!(matches!(&right.kind, ExprKind::Call { .. }));
+    }
+
+    #[test]
+    fn parses_unbound_operator_member_access() {
+        let output = parse_module("sum = Int.+(left, right)\n");
+
+        assert!(output.diagnostics.is_empty());
+        let ExprKind::Call { callee, args } = binding_value(&output, 0) else {
+            panic!("expected call expression");
+        };
+        assert!(matches!(
+            &callee.kind,
+            ExprKind::FieldAccess {
+                field,
+                null_safe: false,
+                ..
+            } if field == "+"
+        ));
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn spaced_dot_plus_stays_binary_on_bare_receiver() {
+        // `. + other` must not become field-access of `+` then a trailing name.
+        let output = parse_module(concat!(
+            "Money = Int {\n",
+            "  +(other: Money): Money => . + other\n",
+            "}\n",
+        ));
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected family binding");
+        };
+        let ExprKind::PrimitiveFamily { members, .. } = &binding.value.kind else {
+            panic!("expected primitive-family RHS");
+        };
+        let RecordEntry::Method { value, .. } = &members[0] else {
+            panic!("expected + method");
+        };
+        let ExprKind::Lambda { body, .. } = &value.kind else {
+            panic!("expected method body lambda");
+        };
+        assert!(
+            matches!(
+                &body.kind,
+                ExprKind::Binary { operator, .. } if operator == "+"
+            ),
+            "expected binary +, got {:?}",
+            body.kind
+        );
     }
 
     #[test]

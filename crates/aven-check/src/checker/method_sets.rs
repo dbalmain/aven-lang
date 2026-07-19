@@ -406,6 +406,17 @@ fn method_scheme_variables(
 }
 
 impl Checker<'_> {
+    /// Owner name for the unbound method form `Owner.member` when the receiver
+    /// is a type-static name: a named family alias, or a concrete scalar
+    /// builtin (`Int` / `Float` / `Text` / `Bool`). Parameterized owners such
+    /// as `Array(Text)` stay staged elsewhere and are intentionally omitted.
+    pub(crate) fn unbound_method_owner_name(&self, name: &str) -> Option<String> {
+        if let Some(owner) = self.named_family_aliases.get(name) {
+            return Some(owner.clone());
+        }
+        matches!(name, "Int" | "Float" | "Text" | "Bool").then(|| name.to_owned())
+    }
+
     /// Query one exact owner category. User families never fall back to a
     /// builtin or another structurally equal declaration.
     pub(crate) fn exact_method_signature(

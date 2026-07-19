@@ -11161,6 +11161,48 @@ fn named_primitive_family_records_compatible_override_origin() {
 }
 
 #[test]
+fn named_primitive_family_override_delegates_through_unbound_base_operator() {
+    let parsed = parse_module(concat!(
+        "Money = Int {\n",
+        "  +(other: Money): Money =>\n",
+        "    Money(Int.+(., other))\n",
+        "}\n",
+        "total = Money(2599) + Money(401)\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn named_primitive_family_override_self_call_still_selects_override() {
+    // `.+(other)` is bound field access of `+` on the family receiver and
+    // must typecheck as selecting the override (exact owner stays Money).
+    let parsed = parse_module(concat!(
+        "Money = Int {\n",
+        "  +(other: Money): Money => .+(other)\n",
+        "}\n",
+        "total = Money(1) + Money(2)\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn unbound_builtin_operator_and_named_methods_typecheck() {
+    let parsed = parse_module(concat!(
+        "sum = Int.+(10, 20)\n",
+        "add = Int.+\n",
+        "also = add(1, 2)\n",
+        "quotient = Int.div(10, 2)\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn named_primitive_family_rejects_nonliteral_base_operator_argument() {
     let parsed = parse_module(concat!(
         "Money = Int {}\n",

@@ -176,7 +176,7 @@ impl<'a> Checker<'a> {
     /// unknown/open receiver stays deferred as before.
     pub(super) fn check_value_field_access(&mut self, receiver: &Expr, field: &str, span: Span) {
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
-            && let Some(owner) = self.named_family_aliases.get(name).cloned()
+            && let Some(owner) = self.unbound_method_owner_name(name)
             && self
                 .exact_method_signature(&Type::Named(owner), field)
                 .is_some()

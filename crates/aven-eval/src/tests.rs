@@ -48,6 +48,15 @@ fn evaluates_checked_integer_division_remainder_and_bound_method() {
 }
 
 #[test]
+fn evaluates_unbound_builtin_operator_and_div_methods() {
+    assert_module_value("Int.+(10, 20)\n", Value::Int(30));
+    assert_module_value("add = Int.+\nadd(3, 4)\n", Value::Int(7));
+    assert_module_value("Int.div(10, 2)\n", Value::Int(5));
+    assert_module_value("divide = Int.div\ndivide(10, 2)\n", Value::Int(5));
+    assert_module_value("Int.<(1, 2)\n", Value::Bool(true));
+}
+
+#[test]
 fn evaluates_float_predicate_and_ieee_equals_methods() {
     assert_eval("(0.0 / 0.0).isNaN()", Value::Bool(true));
     assert_eval("(1.0 / 0.0).isInfinite()", Value::Bool(true));

@@ -1488,7 +1488,7 @@ impl<'a> Checker<'a> {
         field_span: Span,
     ) -> Type {
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
-            && let Some(owner) = self.named_family_aliases.get(name).cloned()
+            && let Some(owner) = self.unbound_method_owner_name(name)
             && let Some(signature) = self.exact_method_signature(&Type::Named(owner.clone()), field)
         {
             self.push_method_obligations_at(signature.predicates, field_span);

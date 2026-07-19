@@ -14,9 +14,10 @@ use aven_parser::{
 
 pub use aven_check::{
     BuiltinMethodEnvironment, COMPTIME_BUILTIN_FUNCTIONS, HostGlobals, InferredType,
-    ModuleImports as CheckModuleImports, RecordField, RecursiveTypeId, Type, builtin_method_fields,
-    function_signature, is_text_type, literal_union_members, record_fields, type_contains_deferred,
-    type_statics, unfold_recursive_type_once, variant_tags,
+    ModuleImports as CheckModuleImports, NamedFamilyType, NamedMethodOrigin, NamedMethodType,
+    RecordField, RecursiveTypeId, Type, builtin_method_fields, function_signature, is_text_type,
+    literal_union_members, record_fields, type_contains_deferred, type_statics,
+    unfold_recursive_type_once, variant_tags,
 };
 
 mod modules;
@@ -105,6 +106,7 @@ pub struct DocumentSnapshot {
     type_definitions: HashMap<String, Type>,
     recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     builtin_methods: BuiltinMethodEnvironment,
+    named_families: HashMap<String, aven_check::NamedFamilyType>,
     has_semantic: bool,
 }
 
@@ -115,6 +117,7 @@ pub struct DocumentSemantics {
     pub type_definitions: HashMap<String, Type>,
     pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     pub builtin_methods: BuiltinMethodEnvironment,
+    pub named_families: HashMap<String, aven_check::NamedFamilyType>,
 }
 
 impl DocumentSnapshot {
@@ -149,6 +152,7 @@ impl DocumentSnapshot {
             type_definitions: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
             builtin_methods: BuiltinMethodEnvironment::default(),
+            named_families: HashMap::new(),
             has_semantic: false,
         }
     }
@@ -160,6 +164,7 @@ impl DocumentSnapshot {
         type_definitions: HashMap<String, Type>,
         recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
         builtin_methods: BuiltinMethodEnvironment,
+        named_families: HashMap<String, aven_check::NamedFamilyType>,
     ) -> Self {
         Self {
             revision: self.revision,
@@ -173,6 +178,7 @@ impl DocumentSnapshot {
             type_definitions,
             recursive_type_unfoldings,
             builtin_methods,
+            named_families,
             has_semantic: true,
         }
     }
@@ -241,6 +247,10 @@ impl DocumentSnapshot {
 
     pub fn builtin_methods(&self) -> &BuiltinMethodEnvironment {
         &self.builtin_methods
+    }
+
+    pub fn named_families(&self) -> &HashMap<String, aven_check::NamedFamilyType> {
+        &self.named_families
     }
 
     pub fn has_semantic(&self) -> bool {
@@ -852,6 +862,7 @@ fn check_source_file_at(
         semantic.type_definitions,
         semantic.recursive_type_unfoldings,
         semantic.builtin_methods,
+        semantic.named_families,
     );
 
     CheckedDocument {
@@ -938,6 +949,7 @@ where
             type_definitions,
             recursive_type_unfoldings,
             builtin_methods,
+            named_families,
         } = semantics;
         let document = Arc::new(document.with_semantic(
             diagnostics,
@@ -945,6 +957,7 @@ where
             type_definitions,
             recursive_type_unfoldings,
             builtin_methods,
+            named_families,
         ));
         self.documents.insert(key.clone(), Arc::clone(&document));
         Some(document)
