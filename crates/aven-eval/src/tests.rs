@@ -194,6 +194,39 @@ fn evaluates_string_interpolation_with_stringified_values() {
 }
 
 #[test]
+fn display_protocol_interpolation_and_debug_text_use_distinct_homogeneous_rendering() {
+    assert_eval("\"${1.0}\"", Value::Text("1.0".to_owned()));
+    assert_eval("\"${[1.0, 2.5]}\"", Value::Text("[1.0, 2.5]".to_owned()));
+    assert_eval("\"${[\"a\", \"b\"]}\"", Value::Text("[a, b]".to_owned()));
+    assert_module_value(
+        "debugText([\"a\", \"b\"])\n",
+        Value::Text("[\"a\", \"b\"]".to_owned()),
+    );
+    assert_eval("\"${[[\"a\"]]}\"", Value::Text("[[a]]".to_owned()));
+    assert_eval("undefined.toText()", Value::Text("undefined".to_owned()));
+    assert_eval("null.toText()", Value::Text("null".to_owned()));
+}
+
+#[test]
+fn interpolation_falls_back_to_debug_text_for_closures() {
+    assert_module_value(
+        "f = (x) => x\n\"${f}\"\n",
+        Value::Text("<function>".to_owned()),
+    );
+}
+
+#[test]
+fn debug_text_marks_slot_records_as_opaque() {
+    assert_eq!(
+        super::debug_text(&Value::SlotRecord {
+            fields: Rc::new(Vec::new()),
+            slots: Rc::new(Vec::new()),
+        }),
+        "<slot-record>"
+    );
+}
+
+#[test]
 fn evaluates_string_interpolation_text_escapes() {
     assert_eval(r#""a\n${1 + 2}b\t""#, Value::Text("a\n3b\t".to_owned()));
 }
@@ -991,7 +1024,7 @@ fn map_name_is_a_type_value() {
 fn map_display_uses_insertion_order() {
     assert_module_value(
         "\"${Map.from([(\"a\", 1), (\"b\", 2)])}\"\n",
-        Value::Text("Map{ \"a\": 1, \"b\": 2 }".to_owned()),
+        Value::Text("Map{ a: 1, b: 2 }".to_owned()),
     );
 }
 

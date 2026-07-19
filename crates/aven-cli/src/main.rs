@@ -220,11 +220,23 @@ fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
     }
 
     if let Some(value) = output.value.filter(|value| !is_trivial_value(value)) {
+        // Final-value printing uses the same rendering as interpolation: the
+        // toText protocol with the debugText fallback. It fails only when a
+        // user `toText` override itself fails.
+        let rendered = match aven_eval::display_text(&value) {
+            Ok(rendered) => rendered,
+            Err(diagnostics) => {
+                for diagnostic in diagnostics {
+                    eprintln!("{}", diagnostic.message);
+                }
+                bail!("run failed");
+            }
+        };
         if is_err_value(&value) {
-            eprintln!("{value}");
+            eprintln!("{rendered}");
             std::process::exit(1);
         }
-        println!("{value}");
+        println!("{rendered}");
     }
 
     Ok(())

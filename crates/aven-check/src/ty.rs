@@ -157,6 +157,10 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
 }
 
 pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Type> {
+    if name == "toText" && carries_ambient_to_text(receiver) {
+        return Some(function(Vec::new(), named_builtin("Text")));
+    }
+
     if name == "toResult"
         && let Type::Optional(payload) | Type::Nullable(payload) = receiver
     {
@@ -256,6 +260,42 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
         "unwrapOr" => Some(function(vec![ok.clone()], ok)),
         "isOk" | "isErr" => Some(function(Vec::new(), named_builtin("Bool"))),
         _ => None,
+    }
+}
+
+/// Whether a type carries the ambient `toText(): Text` of the display
+/// protocol. Scalars are answered by the builtin method table; this covers the
+/// non-scalar shapes with a builtin rendering. A record that declares its own
+/// `toText` field keeps it; slot records require a declared `toText` slot;
+/// `?T`/`T?` receivers peel through the empty-value path so `?.` stays
+/// required.
+fn carries_ambient_to_text(ty: &Type) -> bool {
+    match ty {
+        Type::Optional(_) | Type::Nullable(_) | Type::Tuple(_) | Type::Variant(_) => true,
+        Type::Record(row) => !row
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == "toText")),
+        Type::Named(name) => matches!(
+            name.as_str(),
+            "Int"
+                | "Float"
+                | "Bool"
+                | "Text"
+                | "Null"
+                | "Undefined"
+                | "Instant"
+                | "Duration"
+                | "Date"
+                | "Time"
+                | "DateTime"
+        ),
+        _ => {
+            map_type_args(ty).is_some()
+                || array_type_arg(ty).is_some()
+                || set_type_arg(ty).is_some()
+                || result_type_args(ty).is_some()
+        }
     }
 }
 

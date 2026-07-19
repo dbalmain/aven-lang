@@ -240,6 +240,33 @@ const BUILTIN_METHODS: &[BuiltinMethodEntry] = &[
         params: TEXT_PARAM,
         result: BuiltinResult::Plain(BuiltinType::Text),
     },
+    // The ambient display protocol: every scalar builtin renders itself.
+    // Non-scalar shapes (collections, records, variants) answer `toText`
+    // through `builtin_collection_method_type` instead.
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "toText",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Text),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "toText",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Text),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Bool,
+        member: "toText",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Text),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Text,
+        member: "toText",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Text),
+    },
 ];
 
 /// Look up a method declared directly by an exact concrete builtin owner.
@@ -720,7 +747,10 @@ mod tests {
         assert_nullary_signature("Float", "isNaN", "Bool");
         assert_nullary_signature("Float", "isInfinite", "Bool");
         assert_signature("Float", "ieeeEquals", "Float", "Bool");
-        assert_eq!(BUILTIN_METHODS.len(), 27);
+        for owner in ["Int", "Float", "Bool", "Text"] {
+            assert_nullary_signature(owner, "toText", "Text");
+        }
+        assert_eq!(BUILTIN_METHODS.len(), 31);
     }
 
     #[test]

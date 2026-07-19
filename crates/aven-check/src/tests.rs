@@ -10938,6 +10938,32 @@ fn named_primitive_family_accepts_each_concrete_scalar_base() {
 }
 
 #[test]
+fn ambient_to_text_and_debug_text_typecheck() {
+    let parsed = parse_module(concat!(
+        "int = 1.toText()\n",
+        "float = 1.0.toText()\n",
+        "bool = true.toText()\n",
+        "text = \"x\".toText()\n",
+        "array = [1].toText()\n",
+        "tuple = (1, 2).toText()\n",
+        "set = @{1}.toText()\n",
+        "map = Map.from([(\"x\", 1)]).toText()\n",
+        "record = { x: 1 }.toText()\n",
+        "variant = @Ok(1).toText()\n",
+        "missing = undefined.toText()\n",
+        "empty = null.toText()\n",
+        "Shown = { toText(): Text }\n",
+        "shownSlot: Shown = { toText(): Text => \"shown\" }\n",
+        "slotText = shownSlot.toText()\n",
+        "shown: Text = debugText((x) => x)\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn named_primitive_family_literal_branding_requires_the_exact_base_kind() {
     let parsed = parse_module(concat!(
         "Ratio = Float {}\n",
@@ -11334,6 +11360,6 @@ fn named_primitive_family_rejects_wrong_constructor_payload_and_widened_methods(
         check
             .diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.message == "missing field `toText`" })
+            .all(|diagnostic| { diagnostic.message != "missing field `toText`" })
     );
 }

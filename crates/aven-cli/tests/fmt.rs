@@ -495,7 +495,7 @@ fn run_prints_pick_record_comprehension_value() {
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
-    assert_eq!(stdout(&output), "{ name: \"Ada\", email: \"ada@x.dev\" }\n");
+    assert_eq!(stdout(&output), "{ name: Ada, email: ada@x.dev }\n");
 }
 
 #[test]
@@ -512,7 +512,7 @@ fn run_prints_omit_record_comprehension_value() {
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
-    assert_eq!(stdout(&output), "{ email: \"ada@x.dev\" }\n");
+    assert_eq!(stdout(&output), "{ email: ada@x.dev }\n");
 }
 
 #[test]
@@ -526,7 +526,7 @@ fn run_uses_predefined_pick_and_omit_builtins() {
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
-    assert_eq!(stdout(&output), "{ name: \"Ada\", email: \"ada@x.dev\" }\n");
+    assert_eq!(stdout(&output), "{ name: Ada, email: ada@x.dev }\n");
 }
 
 #[test]
@@ -758,6 +758,16 @@ fn run_prints_string_interpolation_value() {
 }
 
 #[test]
+fn run_final_value_uses_display_protocol() {
+    let file = TempFile::new("run-display-protocol", "[\"a\", \"b\"]\n");
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "[a, b]\n");
+}
+
+#[test]
 fn run_prints_collection_and_nullable_program_value() {
     let file = TempFile::new(
         "run-collections",
@@ -849,7 +859,7 @@ fn run_loads_user_json_file_with_typed_decode_and_propagation() {
     assert_success(&output);
     assert_eq!(
         stdout(&output),
-        "@Ok({ name: \"Ada\", email: undefined, nick: null })\n"
+        "@Ok({ name: Ada, email: undefined, nick: null })\n"
     );
 }
 
@@ -861,7 +871,7 @@ fn run_final_err_value_exits_non_zero_and_writes_stderr() {
 
     assert_failure(&output);
     assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "@Err(\"boom\")\n");
+    assert_eq!(stderr(&output), "@Err(boom)\n");
 }
 
 #[test]
@@ -871,7 +881,7 @@ fn run_final_ok_value_exits_zero() {
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
-    assert_eq!(stdout(&output), "@Ok(\"fine\")\n");
+    assert_eq!(stdout(&output), "@Ok(fine)\n");
     assert_eq!(stderr(&output), "");
 }
 
@@ -929,7 +939,7 @@ fn run_stdin_read_line_handle_returns_ok_line() {
     let output = run_aven_with_stdin(["run"], file.path(), "line\nrest\n");
 
     assert_success(&output);
-    assert_eq!(stdout(&output), "@Ok(\"line\")\n");
+    assert_eq!(stdout(&output), "@Ok(line)\n");
 }
 
 #[test]

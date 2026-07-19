@@ -246,7 +246,7 @@ writeLine("${empty.maximum()}")
     // sortBy: by age; already sorted; empty; equal keys keep input order (stable).
     assert_eq!(
         stdout(&output),
-        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[10, 20]\n[20, 30]\n[10, 20]\n[]\n[]\n[]\n[]\n30\n10\nundefined\nundefined\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n[{ name: \"alice\", age: 25 }, { name: \"bob\", age: 30 }, { name: \"carol\", age: 30 }]\n[{ age: 1 }, { age: 2 }]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
+        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[10, 20]\n[20, 30]\n[10, 20]\n[]\n[]\n[]\n[]\n30\n10\nundefined\nundefined\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n[{ name: alice, age: 25 }, { name: bob, age: 30 }, { name: carol, age: 30 }]\n[{ age: 1 }, { age: 2 }]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
     );
 }
 
@@ -382,7 +382,7 @@ writeLine("${toEntries(filtered)}")
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "true 99 3\n[(\"one\", 3), (\"two\", 12)]\n[(\"one\", 3), (\"two\", 2)]\n[(\"one\", \"#3\"), (\"two\", \"#2\")]\n[(\"two\", 12)]\n"
+        "true 99 3\n[(one, 3), (two, 12)]\n[(one, 3), (two, 2)]\n[(one, #3), (two, #2)]\n[(two, 12)]\n"
     );
 }
 

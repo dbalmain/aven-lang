@@ -112,6 +112,18 @@ impl<'a> Checker<'a> {
         let mut checker = Self::with_module_environment(known_types, type_definitions, module);
         checker.module_identity = module_identity;
         checker.globals = globals.types.clone();
+        // `debugText` is a language-level builtin, not host-registered: seed it
+        // unless the host claims the name. User top-level declarations still
+        // shadow it through the ordinary `build_value_types` scoping.
+        if !checker.globals.iter().any(|(name, _)| name == "debugText") {
+            checker.globals.push((
+                "debugText".to_owned(),
+                crate::ty::build::function(
+                    vec![crate::ty::build::var("a")],
+                    crate::ty::build::text(),
+                ),
+            ));
+        }
         checker.imports = imports.clone();
         checker.builtin_methods = imports.builtin_methods.clone();
         checker.trusted_builtin_method_source = imports.trusted_builtin_method_source;

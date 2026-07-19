@@ -163,20 +163,20 @@ fn run_with_expected_output(example: &Path, extra_args: &[&str]) {
             "partialEmail:\n\
             none\n\
             picked:\n\
-            { name: \"Ada\", email: \"ada@x.dev\" }\n\
+            { name: Ada, email: ada@x.dev }\n\
             omitted:\n\
-            { name: \"Ada\", age: 36 }\n\
+            { name: Ada, age: 36 }\n\
             deleted:\n\
-            { name: \"Ada\", age: 36 }\n\
+            { name: Ada, age: 36 }\n\
             renamed:\n\
-            { fullName: \"Ada\", email: \"ada@x.dev\", age: 36 }\n\
+            { fullName: Ada, email: ada@x.dev, age: 36 }\n\
             replaced:\n\
-            { name: \"Ada\", email: \"ada@x.dev\", age: 38 }\n\
+            { name: Ada, email: ada@x.dev, age: 38 }\n\
             members:\n\
-            @{ \"ada\", \"bea\", \"cai\" }\n"
+            @{ ada, bea, cai }\n"
         }
         "json.av" => {
-            "parsed: { name: \"Ada\", email: undefined, nick: null }\n\
+            "parsed: { name: Ada, email: undefined, nick: null }\n\
             encoded: {\"name\":\"Ada\",\"nick\":null}\n"
         }
         "toml.av" => {

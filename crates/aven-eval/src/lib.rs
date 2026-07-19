@@ -12,7 +12,10 @@ use aven_parser::{
     RecordEntry, decode_string_literal, is_method_requirement_row,
 };
 
+mod display;
 pub mod logging;
+
+pub use display::{debug_text, display_text};
 
 /// The evaluator's control-flow channel. Most failures are ordinary runtime
 /// errors ([`Flow::Fail`]); [`Flow::Propagate`] carries an `@Err` value that is
@@ -22,7 +25,7 @@ enum Flow {
     /// A real runtime error: one or more diagnostics.
     Fail(Vec<Diagnostic>),
     /// An `@Err` value early-returning from the enclosing function (`?^`).
-    Propagate(Value),
+    Propagate(Box<Value>),
 }
 
 /// Internal evaluator result. `Ok` is the produced value; `Err` is a [`Flow`].
@@ -354,10 +357,12 @@ pub enum Value {
     },
     NamedMethod {
         receiver: Box<Value>,
+        member: String,
         implementation: NamedMethodImplementation,
     },
     UnboundNamedMethod {
         descriptor: Rc<NamedFamilyDescriptor>,
+        member: String,
         implementation: NamedMethodImplementation,
     },
     Tag {
@@ -1204,7 +1209,7 @@ pub fn eval_module_with_globals_imports_runtime_types_builtin_methods_and_reific
     match eval_items(&module.items, &env, Some(runtime_types)) {
         Ok(outcome) => outcome,
         Err(Flow::Propagate(value)) => EvalOutcome {
-            value: Some(value),
+            value: Some(*value),
             diagnostics: Vec::new(),
         },
         Err(Flow::Fail(diagnostics)) => EvalOutcome {
@@ -1254,6 +1259,16 @@ fn intrinsics() -> Vec<(String, Value)> {
     // access.
     intrinsics.push(("Map.empty".to_owned(), Value::native(map_empty_intrinsic)));
     intrinsics.push(("Map.from".to_owned(), Value::native(map_from_intrinsic)));
+
+    intrinsics.push((
+        "debugText".to_owned(),
+        Value::native(|args| {
+            let [value] = args else {
+                return Err(format!("debugText expects 1 argument, got {}", args.len()));
+            };
+            Ok(Value::Text(display::debug_text(value)))
+        }),
+    ));
 
     intrinsics.push((
         "pick".to_owned(),
@@ -1838,6 +1853,7 @@ fn reification_method(source: &Value, name: &str, env: &Environment) -> Option<V
                 .cloned()
                 .map(|implementation| Value::NamedMethod {
                     receiver: Box::new(source.clone()),
+                    member: name.to_owned(),
                     implementation,
                 })
         }
@@ -2345,23 +2361,25 @@ fn apply_callee(
         }
         Value::NamedMethod {
             receiver,
+            member,
             implementation,
         } => {
             let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
                 arg_values.push(eval_expr_many(arg, env)?);
             }
-            apply_named_method(*receiver, implementation, arg_values, span)
+            apply_named_method_for_member(*receiver, &member, implementation, arg_values, span)
         }
         Value::UnboundNamedMethod {
             descriptor,
+            member,
             implementation,
         } => {
             let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
                 arg_values.push(eval_expr_many(arg, env)?);
             }
-            apply_unbound_named_method(descriptor, implementation, arg_values, span)
+            apply_unbound_named_method(descriptor, &member, implementation, arg_values, span)
         }
         Value::Closure(closure) => apply_closure(closure, args, span, env),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
@@ -2384,12 +2402,14 @@ fn apply_callee_values(
         }
         Value::NamedMethod {
             receiver,
+            member,
             implementation,
-        } => apply_named_method(*receiver, implementation, arg_values, span),
+        } => apply_named_method_for_member(*receiver, &member, implementation, arg_values, span),
         Value::UnboundNamedMethod {
             descriptor,
+            member,
             implementation,
-        } => apply_unbound_named_method(descriptor, implementation, arg_values, span),
+        } => apply_unbound_named_method(descriptor, &member, implementation, arg_values, span),
         Value::Closure(closure) => apply_closure_values(closure, arg_values, span),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
     }
@@ -2397,6 +2417,7 @@ fn apply_callee_values(
 
 fn apply_unbound_named_method(
     descriptor: Rc<NamedFamilyDescriptor>,
+    member: &str,
     implementation: NamedMethodImplementation,
     mut args: Vec<Value>,
     span: Span,
@@ -2422,7 +2443,26 @@ fn apply_unbound_named_method(
             &descriptor.owner,
         )));
     }
-    apply_named_method(receiver, implementation, args, span)
+    apply_named_method_for_member(receiver, member, implementation, args, span)
+}
+
+fn apply_named_method_for_member(
+    receiver: Value,
+    member: &str,
+    implementation: NamedMethodImplementation,
+    args: Vec<Value>,
+    span: Span,
+) -> Eval {
+    let Value::BrandedPrimitive { descriptor, .. } = &receiver else {
+        return apply_named_method(receiver, implementation, args, span);
+    };
+    if member != "toText" {
+        return apply_named_method(receiver, implementation, args, span);
+    }
+    let owner = descriptor.owner.clone();
+    display::with_active_to_text_owner(&owner, || {
+        apply_named_method(receiver, implementation, args, span)
+    })
 }
 
 fn apply_named_method(
@@ -2773,7 +2813,7 @@ fn bind_and_eval_closure(closure: Closure, arg_values: Vec<Value>, provided: usi
     // The closure body is a propagation boundary: a `?^` `@Err` early-returns the
     // function, so its `@Err` becomes the call's value. `Flow::Fail` still bubbles.
     match eval_expr_many(closure.body.as_ref(), &call_env) {
-        Err(Flow::Propagate(value)) => Ok(value),
+        Err(Flow::Propagate(value)) => Ok(*value),
         other => other,
     }
 }
@@ -2796,7 +2836,7 @@ fn eval_propagate(
         ("Ok", [inner]) => Ok(inner.clone()),
         ("Err", [_]) => match mode {
             // `?^` early-returns the enclosing function with the whole `@Err`.
-            PropagationMode::ReturnError => Err(Flow::Propagate(result)),
+            PropagationMode::ReturnError => Err(Flow::Propagate(Box::new(result))),
             // `?!` panics, embedding the `@Err` payload in the diagnostic.
             PropagationMode::Panic => Err(one_diagnostic(panic(operator_span, &payload[0]))),
         },
@@ -2972,6 +3012,7 @@ fn eval_direct_slot_init(entries: &[RecordEntry], env: &Environment) -> Eval {
             name.clone(),
             Value::NamedMethod {
                 receiver: Box::new(receiver.clone()),
+                member: name.clone(),
                 implementation,
             },
         ));
@@ -3179,6 +3220,7 @@ fn field_access_value(
         // stricter, separate missing-field checks.
         Value::Record(fields) => Ok(record_field_value(fields, field)
             .cloned()
+            .or_else(|| ambient_record_method(&receiver_value, field, env))
             .unwrap_or(Value::Undefined)),
         Value::SlotRecord { fields, slots } => Ok(record_field_value(fields, field)
             .or_else(|| record_field_value(slots, field))
@@ -3189,10 +3231,14 @@ fn field_access_value(
                 return Ok(value.clone());
             }
             descriptor.methods.get(field).cloned().map_or_else(
-                || Ok(Value::Undefined),
+                || {
+                    Ok(ambient_record_method(&receiver_value, field, env)
+                        .unwrap_or(Value::Undefined))
+                },
                 |implementation| {
                     Ok(Value::NamedMethod {
-                        receiver: Box::new(receiver_value),
+                        receiver: Box::new(receiver_value.clone()),
+                        member: field.to_owned(),
                         implementation,
                     })
                 },
@@ -3200,10 +3246,14 @@ fn field_access_value(
         }
         Value::BrandedPrimitive { descriptor, .. } => {
             descriptor.methods.get(field).cloned().map_or_else(
-                || Ok(Value::Undefined),
+                || {
+                    Ok(ambient_record_method(&receiver_value, field, env)
+                        .unwrap_or(Value::Undefined))
+                },
                 |implementation| {
                     Ok(Value::NamedMethod {
-                        receiver: Box::new(receiver_value),
+                        receiver: Box::new(receiver_value.clone()),
+                        member: field.to_owned(),
                         implementation,
                     })
                 },
@@ -3215,6 +3265,7 @@ fn field_access_value(
             .cloned()
             .map(|implementation| Value::UnboundNamedMethod {
                 descriptor: Rc::clone(descriptor),
+                member: field.to_owned(),
                 implementation,
             })
             .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
@@ -3239,17 +3290,24 @@ fn field_access_value(
 
 fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
     match value {
-        Value::Record(fields) => record_field_value(fields, field).is_some(),
+        Value::Record(fields) => {
+            record_field_value(fields, field).is_some()
+                || ambient_record_method(value, field, env).is_some()
+        }
         Value::SlotRecord { fields, slots } => {
             record_field_value(fields, field).is_some()
                 || record_field_value(slots, field).is_some()
         }
         Value::NamedRecord { descriptor, fields } => {
-            record_field_value(fields, field).is_some() || descriptor.methods.contains_key(field)
+            record_field_value(fields, field).is_some()
+                || descriptor.methods.contains_key(field)
+                || ambient_record_method(value, field, env).is_some()
         }
-        Value::BrandedPrimitive { descriptor, .. } | Value::NamedFamily(descriptor) => {
+        Value::BrandedPrimitive { descriptor, .. } => {
             descriptor.methods.contains_key(field)
+                || ambient_record_method(value, field, env).is_some()
         }
+        Value::NamedFamily(descriptor) => descriptor.methods.contains_key(field),
         Value::Type(RuntimeType::Named(name)) => {
             env.lookup(&format!("{name}.{field}")).is_some()
                 || unbound_builtin_type_method(name, field).is_some()
@@ -3258,10 +3316,20 @@ fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
     }
 }
 
+/// Ambient methods readable off record-shaped receivers whose declared-member
+/// lookup missed. Only `toText`: plain `.` reads of other absent fields keep
+/// their `undefined` semantics.
+fn ambient_record_method(receiver: &Value, field: &str, env: &Environment) -> Option<Value> {
+    (field == "toText")
+        .then(|| builtin_method(receiver, field, env))
+        .flatten()
+}
+
 /// Unbound method value for a concrete scalar builtin owner (`Int.+`,
 /// `Float.isFinite`). Takes the explicit receiver as the first argument.
 fn unbound_builtin_type_method(owner: &str, field: &str) -> Option<Value> {
     match (owner, field) {
+        ("Int" | "Float" | "Text" | "Bool", "toText") => Some(unbound_to_text_method()),
         ("Int", "+") => Some(unbound_binary_operator("+")),
         ("Int", "-") => Some(unbound_binary_operator("-")),
         ("Int", "*") => Some(unbound_binary_operator("*")),
@@ -3295,6 +3363,25 @@ fn unbound_builtin_type_method(owner: &str, field: &str) -> Option<Value> {
     }
 }
 
+/// Unbound `Owner.toText` for scalar builtins: base-view rendering, so a
+/// family method can delegate (`Int.toText(.)`) without re-entering its own
+/// override.
+fn unbound_to_text_method() -> Value {
+    Value::native(|args| {
+        let [receiver] = args else {
+            return Err(format!(
+                "unbound toText expects 1 argument, got {}",
+                args.len()
+            ));
+        };
+        let receiver = erase_primitive_brand(receiver.clone());
+        match display::to_text(&receiver, None, Span::new(0, 0)) {
+            Ok(text) => Ok(Value::Text(text)),
+            Err(flow) => Err(first_diagnostic(flow).message),
+        }
+    })
+}
+
 fn unbound_binary_operator(operator: &'static str) -> Value {
     Value::native(move |args| {
         if args.len() != 2 {
@@ -3313,7 +3400,7 @@ fn unbound_binary_operator(operator: &'static str) -> Value {
                 .next()
                 .map(|diagnostic| diagnostic.message)
                 .unwrap_or_else(|| format!("unbound `{operator}` failed"))),
-            Err(Flow::Propagate(value)) => Ok(value),
+            Err(Flow::Propagate(value)) => Ok(*value),
         }
     })
 }
@@ -3398,11 +3485,15 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
     if let Some(implementation) = env.builtin_methods.lookup(receiver, field) {
         return Some(Value::NamedMethod {
             receiver: Box::new(receiver.clone()),
+            member: field.to_owned(),
             implementation: NamedMethodImplementation::Declared(implementation),
         });
     }
     match (receiver, field) {
         (receiver, "toResult") => Some(optional_to_result_method(receiver.clone())),
+        (receiver, "toText") if display::carries_ambient_to_text(receiver) => Some(
+            ambient_to_text_method(receiver.clone(), env.builtin_methods.clone()),
+        ),
         (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),
         (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
@@ -3501,6 +3592,20 @@ fn float_ieee_equals_method(left: f64) -> Value {
             ));
         };
         Ok(Value::Bool(left == *right))
+    })
+}
+
+/// The ambient `toText` method: renders the receiver with the display
+/// protocol, so container elements observe family overrides and attachments.
+fn ambient_to_text_method(receiver: Value, attachments: BuiltinMethodEnvironment) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!("toText expects 0 arguments, got {}", args.len()));
+        }
+        match display::to_text(&receiver, Some(&attachments), Span::new(0, 0)) {
+            Ok(text) => Ok(Value::Text(text)),
+            Err(flow) => Err(first_diagnostic(flow).message),
+        }
     })
 }
 
@@ -4232,7 +4337,12 @@ fn eval_interpolation(segments: &[InterpolationSegment], env: &Environment) -> E
         match segment {
             InterpolationSegment::Text(raw) => text.push_str(raw),
             InterpolationSegment::Expr(expr) => {
-                text.push_str(&eval_expr_many(expr, env)?.to_string());
+                let value = eval_expr_many(expr, env)?;
+                text.push_str(&display::to_text(
+                    &value,
+                    Some(&env.builtin_methods),
+                    expr.span,
+                )?);
             }
         }
     }
@@ -4621,15 +4731,7 @@ fn float_total_cmp(left: f64, right: f64) -> Ordering {
 }
 
 fn write_float(f: &mut fmt::Formatter<'_>, value: f64) -> fmt::Result {
-    if value.is_nan() {
-        write!(f, "NaN")
-    } else if value == f64::INFINITY {
-        write!(f, "Infinity")
-    } else if value == f64::NEG_INFINITY {
-        write!(f, "-Infinity")
-    } else {
-        write!(f, "{value}")
-    }
+    write!(f, "{}", display::float_text(value))
 }
 
 fn is_float_zero(value: f64) -> bool {
