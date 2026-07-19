@@ -960,4 +960,24 @@ mod tests {
         );
         assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
     }
+
+    #[test]
+    fn formats_annotationless_method_entry_without_inventing_return_type() {
+        let formatted = "Csv = { csv(): Text }\nannotated: Csv = { csv() => \"a\" }\n";
+
+        assert_eq!(
+            format_source("Csv={csv():Text}\nannotated:Csv={csv()=>\"a\"}\n"),
+            Ok(formatted.to_owned())
+        );
+        // Must not invent a `: Text` (or any) return annotation on reformat.
+        assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
+        assert!(
+            formatted.contains("csv() =>"),
+            "formatter must leave the slot body annotationless: {formatted}"
+        );
+        assert!(
+            !formatted.contains("csv(): Text =>"),
+            "formatter must not invent a return annotation: {formatted}"
+        );
+    }
 }

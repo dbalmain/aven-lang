@@ -10813,6 +10813,83 @@ fn direct_slot_initializer_supports_lexical_capture() {
 }
 
 #[test]
+fn direct_slot_initializer_infers_omitted_slot_return_annotation() {
+    let parsed = parse_module(concat!(
+        "Csv = { csv(): Text }\n",
+        "annotated: Csv = { csv() => \"a\" }\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(check.direct_slot_inits.len(), 1);
+    assert!(check.slot_reifications.is_empty());
+}
+
+#[test]
+fn slot_record_call_result_passes_through_at_annotation_boundary() {
+    // `wrap("hi")` already has type `Csv`. Re-annotating the call result must
+    // not trip the generic-source rejection: the published return type is the
+    // resolved slot record, not an unsolved meta/Deferred.
+    let parsed = parse_module(concat!(
+        "Csv = { csv(): Text }\n",
+        "wrap = (text: Text): Csv =>\n",
+        "  { csv(): Text => text }\n",
+        "result: Csv = wrap(\"hi\")\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert!(check.diagnostics.iter().all(|diagnostic| {
+        diagnostic.message != "generic-source method-slot reification is not supported"
+    }));
+}
+
+#[test]
+fn reified_value_returning_call_passes_through_at_annotation_boundary() {
+    let parsed = parse_module(concat!(
+        "Tags = Array(Text) {\n",
+        "  csv(): Text => .joinWith(\",\")\n",
+        "}\n",
+        "Csv = { csv(): Text }\n",
+        "make = (t: Tags): Csv => t\n",
+        "result: Csv = make(Tags([\"a\", \"b\"]))\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn provider_method_without_return_annotation_reports_clear_diagnostic() {
+    // Annotationless method bodies are legal at slot boundaries, but named
+    // family providers need declared signatures for the method table.
+    let parsed = parse_module(concat!(
+        "Tags = Array(Text) {\n",
+        "  csv() => .joinWith(\",\")\n",
+        "}\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "provider method `csv` needs a return type annotation"
+        })
+        .expect("provider path must demand a declared return type");
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("family methods declare their signature")),
+        "{:?}",
+        diagnostic.notes
+    );
+}
+
+#[test]
 fn named_primitive_family_core_checks_construction_lifting_and_widening() {
     let parsed = parse_module(concat!(
         "Money = Int {\n",

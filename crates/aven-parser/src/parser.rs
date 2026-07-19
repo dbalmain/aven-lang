@@ -2258,6 +2258,12 @@ impl Parser<'_> {
         )
     }
 
+    /// True when `name(` starts a method entry: either a typed signature
+    /// `name(...): Ret` (optionally with `=> body`) or an annotationless
+    /// implementation `name(...) => body`. The return annotation is optional
+    /// on implementations (spec §Filling slots); signature-only forms still
+    /// require `: Ret` and take the non-lambda branch in
+    /// [`Self::parse_method_after_name`].
     fn named_method_signature_follows(&self) -> bool {
         if !self.next_is(TokenKind::OpenParen) {
             return false;
@@ -2279,7 +2285,8 @@ impl Parser<'_> {
                         let after = self.skip_collection_trivia_from(index + 1);
                         return matches!(
                             self.tokens.get(after).map(|token| &token.kind),
-                            Some(TokenKind::Operator(operator)) if operator == ":"
+                            Some(TokenKind::Operator(operator))
+                                if operator == ":" || operator == "=>"
                         );
                     }
                 }
@@ -4352,6 +4359,31 @@ mod tests {
             })
             .collect();
         assert_eq!(names, ["+", "-", "*", "/", "%", "^", "<", "<=", ">", ">="]);
+    }
+
+    #[test]
+    fn parses_method_entry_with_omitted_return_annotation() {
+        let output = parse_module("value = { csv() => \"a\" }\n");
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected binding");
+        };
+        let ExprKind::Record(entries) = &binding.value.kind else {
+            panic!("expected record");
+        };
+        assert!(matches!(
+            &entries[0],
+            RecordEntry::Method { name, value, .. }
+                if name == "csv"
+                    && matches!(
+                        &value.kind,
+                        ExprKind::Lambda {
+                            return_annotation: None,
+                            ..
+                        }
+                    )
+        ));
     }
 
     #[test]

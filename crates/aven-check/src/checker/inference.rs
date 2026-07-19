@@ -1239,7 +1239,15 @@ impl<'a> Checker<'a> {
                 expected
             } else {
                 let resolved_body = self.normalize(&self.resolve_and_default(&body_type));
-                if is_resolved_value_type(&resolved_body) {
+                let resolved_expected = self.normalize(&self.resolve_and_default(&expected));
+                // A fully resolved return annotation is authoritative for the
+                // published function type: value-check validates the body. This
+                // matters for bodies that only typecheck under an expected type
+                // (e.g. direct slot-record initializers), which inference alone
+                // cannot shape.
+                if is_resolved_value_type(&resolved_body)
+                    || is_resolved_value_type(&resolved_expected)
+                {
                     expected
                 } else {
                     Type::Deferred

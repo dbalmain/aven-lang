@@ -266,9 +266,10 @@ impl<'a> Checker<'a> {
 
     fn check_value_against_slot_record(&mut self, data: &Row, slots: &Row, value: &Expr) {
         // A record literal carrying method entries directly initializes the
-        // slot-record target: data fields fill the data row, `name(args): Ret
-        // => body` methods fill the slots. This is the second, spec'd way to
-        // fill slots (alongside reification of an existing source value).
+        // slot-record target: data fields fill the data row, `name(args) =>
+        // body` methods fill the slots (`: Ret` is optional and inferred from
+        // the target). This is the second, spec'd way to fill slots (alongside
+        // reification of an existing source value).
         if let ExprKind::Record(entries) = &ungroup_expr(value).kind
             && entries
                 .iter()

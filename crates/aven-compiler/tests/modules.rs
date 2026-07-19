@@ -1642,6 +1642,90 @@ fn direct_slot_initializer_captures_lexical_environment() {
 }
 
 #[test]
+fn direct_slot_initializer_omitted_return_annotation_runs_end_to_end() {
+    let dir = TempDir::new("direct-slot-omit-ret");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Csv = { csv(): Text }\n",
+            "annotated: Csv = { csv() => \"a\" }\n",
+            "annotated.csv()\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("annotationless slot body should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![])
+        .expect("annotationless slot body should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("a".to_owned())
+    );
+}
+
+#[test]
+fn slot_record_returning_call_reannotation_runs_end_to_end() {
+    let dir = TempDir::new("slot-call-reannot");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Csv = { csv(): Text }\n",
+            "wrap = (text: Text): Csv =>\n",
+            "  { csv(): Text => text }\n",
+            "result: Csv = wrap(\"hi\")\n",
+            "result.csv()\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("slot-returning call re-annotation should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![])
+        .expect("slot-returning call re-annotation should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("hi".to_owned())
+    );
+}
+
+#[test]
+fn reified_value_returning_call_reannotation_runs_end_to_end() {
+    let dir = TempDir::new("reified-call-reannot");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Tags = Array(Text) {\n",
+            "  csv(): Text => .joinWith(\",\")\n",
+            "}\n",
+            "Csv = { csv(): Text }\n",
+            "make = (t: Tags): Csv => t\n",
+            "result: Csv = make(Tags([\"a\", \"b\"]))\n",
+            "result.csv()\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("reified-returning call re-annotation should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![])
+        .expect("reified-returning call re-annotation should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("a,b".to_owned())
+    );
+}
+
+#[test]
 fn direct_slot_initializer_reads_data_field_through_receiver() {
     let dir = TempDir::new("direct-slot-data");
     write(

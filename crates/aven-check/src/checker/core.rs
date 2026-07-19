@@ -446,11 +446,31 @@ impl<'a> Checker<'a> {
                 };
                 let ExprKind::Lambda {
                     params,
-                    return_annotation: Some(result),
+                    return_annotation,
                     requirements,
                     ..
                 } = &ungroup_expr(value).kind
                 else {
+                    continue;
+                };
+                // Named-family provider members populate a method table keyed by
+                // declared signatures. A body without `: Ret` is legal at slot
+                // boundaries (return inferred from the target), but the family
+                // table has no target to infer from — require the annotation.
+                let Some(result) = return_annotation else {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "provider method `{name}` needs a return type annotation"
+                        ))
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            *name_span,
+                            "add `: Ret` before `=>`",
+                        ))
+                        .with_note(format!(
+                            "write `{name}(...): Ret => body`; family methods declare their signature in the method table"
+                        )),
+                    );
                     continue;
                 };
                 if name.chars().next().is_some_and(char::is_uppercase) {
@@ -616,11 +636,27 @@ impl<'a> Checker<'a> {
                 };
                 let ExprKind::Lambda {
                     params,
-                    return_annotation: Some(result),
+                    return_annotation,
                     requirements,
                     ..
                 } = &ungroup_expr(value).kind
                 else {
+                    continue;
+                };
+                let Some(result) = return_annotation else {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "builtin method `{name}` needs a return type annotation"
+                        ))
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            *name_span,
+                            "add `: Ret` before `=>`",
+                        ))
+                        .with_note(format!(
+                            "write `{name}(...): Ret => body`; ambient method attachments declare their signature"
+                        )),
+                    );
                     continue;
                 };
 
