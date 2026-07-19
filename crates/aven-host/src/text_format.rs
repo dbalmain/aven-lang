@@ -646,6 +646,16 @@ pub(crate) fn parse_error_value(message: impl Into<String>) -> Value {
     }
 }
 
+pub(crate) fn encode_error_value(message: impl Into<String>) -> Value {
+    Value::Tag {
+        name: "Encode".to_owned(),
+        payload: vec![Value::record(vec![(
+            "message".to_owned(),
+            Value::Text(message.into()),
+        )])],
+    }
+}
+
 pub(crate) fn shape_error_value(error: ShapeError) -> Value {
     Value::Tag {
         name: "Shape".to_owned(),

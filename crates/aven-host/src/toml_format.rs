@@ -7,7 +7,8 @@ use crate::temporal::{
     toml_datetime_from_format_temporal,
 };
 use crate::text_format::{
-    DecodeError, FormatNumber, FormatValue, decode_value, parse_error_value, shape_error_value,
+    DecodeError, FormatNumber, FormatValue, decode_value, encode_error_value, parse_error_value,
+    shape_error_value,
 };
 
 impl Host {
@@ -30,6 +31,7 @@ impl Host {
             ],
         );
         self.register_type_definition("TomlError", crate::toml_error_type());
+        self.register_type_definition("TomlEncodeError", crate::toml_encode_error_type());
         self.register_comptime_resolver("Toml.decode", vec![1], decode_comptime_resolver());
     }
 }
@@ -113,7 +115,10 @@ fn encode_native() -> Value {
             ));
         };
 
-        encode_to_text(value).map(Value::Text)
+        Ok(match encode_to_text(value) {
+            Ok(text) => ok_value(Value::Text(text)),
+            Err(error) => err_value(encode_error_value(error)),
+        })
     })
 }
 
@@ -147,8 +152,7 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
 
     match value {
         Value::Int(value) => Ok(::toml::Value::Integer(*value)),
-        Value::Float(value) if value.is_finite() => Ok(::toml::Value::Float(*value)),
-        Value::Float(_) => Err("Toml.encode cannot encode NaN or infinite Float".to_owned()),
+        Value::Float(value) => Ok(::toml::Value::Float(*value)),
         Value::Text(value) => Ok(::toml::Value::String(value.clone())),
         Value::Bool(value) => Ok(::toml::Value::Boolean(*value)),
         Value::Array(values) | Value::Tuple(values) | Value::Set(values) => values
@@ -213,9 +217,6 @@ fn toml_value_from_json_constructor(
             let [Value::Float(value)] = payload else {
                 return Err(json_constructor_shape_error(name, "Float"));
             };
-            if !value.is_finite() {
-                return Err("Toml.encode cannot encode NaN or infinite Float".to_owned());
-            }
             Ok(::toml::Value::Float(*value))
         }
         "Text" => {
@@ -283,7 +284,7 @@ fn json_constructor_shape_error(name: &str, expected: &str) -> String {
 mod tests {
     use super::*;
 
-    use aven_core::{Span, codes};
+    use aven_core::Span;
     use aven_parser::parse_module;
 
     fn toml_host() -> Host {
@@ -312,16 +313,6 @@ mod tests {
         outcome
             .value
             .unwrap_or_else(|| panic!("program yields a value"))
-    }
-
-    fn run_diagnostics(source: &str) -> Vec<aven_core::Diagnostic> {
-        let parsed = parse_module(source);
-        assert!(
-            parsed.diagnostics.is_empty(),
-            "program parses: {:?}",
-            parsed.diagnostics
-        );
-        aven_eval::eval_module_with_globals(&parsed.module, toml_host().eval_globals()).diagnostics
     }
 
     fn check(source: &str) -> aven_check::CheckOutput {
@@ -395,19 +386,6 @@ mod tests {
             .unwrap_or_else(|| panic!("map has key `{key}`"))
     }
 
-    fn assert_platform_error_contains(diagnostics: &[aven_core::Diagnostic], message: &str) {
-        assert!(
-            diagnostics.iter().any(|diagnostic| {
-                diagnostic.code.as_deref() == Some(codes::runtime::PLATFORM_ERROR)
-                    && diagnostic
-                        .labels
-                        .iter()
-                        .any(|label| label.message.contains(message))
-            }),
-            "expected runtime platform diagnostic containing {message:?}: {diagnostics:?}"
-        );
-    }
-
     #[test]
     fn typed_decode_builds_record() {
         let value = run("Config = { name: Text, count: Int, enabled: Bool }\n\
@@ -441,7 +419,7 @@ mod tests {
     #[test]
     fn encode_round_trip_preserves_typed_record() {
         let value = run("Config = { name: Text, count: Int }\n\
-             encoded = Toml.encode({ name: \"Ada\", count: 3 })\n\
+             encoded = Toml.encode({ name: \"Ada\", count: 3 })?!\n\
              decoded = Toml.decode(encoded, Config)?!\n\
              { encoded: encoded, decoded: decoded }\n");
 
@@ -469,10 +447,32 @@ mod tests {
     }
 
     #[test]
-    fn encode_rejects_null() {
-        let diagnostics = run_diagnostics("Toml.encode({ name: null })\n");
+    fn encode_returns_structured_error_for_null() {
+        let value = run("Toml.encode({ name: null })\n");
+        let (kind, payload) = err_payload(&value);
 
-        assert_platform_error_contains(&diagnostics, "Toml.encode cannot encode Null");
+        assert_eq!(kind, "Encode");
+        assert_eq!(
+            text(field(payload, "message")),
+            "Toml.encode cannot encode Null because TOML has no null"
+        );
+    }
+
+    #[test]
+    fn encode_non_finite_floats_natively() {
+        let value =
+            run("Toml.encode({ nan: 0.0 / 0.0, positive: 1.0 / 0.0, negative: -1.0 / 0.0 })?!\n");
+        let encoded = text(&value);
+
+        assert!(encoded.contains("nan = nan"), "expected nan: {encoded}");
+        assert!(
+            encoded.contains("positive = inf"),
+            "expected inf: {encoded}"
+        );
+        assert!(
+            encoded.contains("negative = -inf"),
+            "expected -inf: {encoded}"
+        );
     }
 
     #[test]
@@ -560,7 +560,7 @@ clock = 07:32:00\\n\", Cfg)?!\n");
              t = Time.parse(\"07:32:00\")?!\n\
              dt = DateTime.of(d, t)\n\
              i = Instant.parse(\"1979-05-27T07:32:00Z\")?!\n\
-             Toml.encode({ day: d, clock: t, local: dt, when: i })\n");
+             Toml.encode({ day: d, clock: t, local: dt, when: i })?!\n");
         let encoded = text(&value);
         assert!(
             encoded.contains("day = 1979-05-27"),
@@ -590,8 +590,8 @@ clock = 07:32:00\\n\", Cfg)?!\n");
     fn json_and_yaml_encode_emit_iso_scalars() {
         let value = run("d = Date.parse(\"1979-05-27\")?!\n\
              {\n\
-               json: Json.encode({ day: d }),\n\
-               yaml: Yaml.encode({ day: d })\n\
+               json: Json.encode({ day: d })?!,\n\
+               yaml: Yaml.encode({ day: d })?!\n\
              }\n");
         let json = text(field(&value, "json"));
         let yaml = text(field(&value, "yaml"));
@@ -612,7 +612,7 @@ clock = 07:32:00\\n\", Cfg)?!\n");
                day: Date.parse(\"1979-05-27\")?!,\n\
                when: Instant.parse(\"1979-05-27T07:32:00Z\")?!\n\
              }\n\
-             encoded = Toml.encode(original)\n\
+             encoded = Toml.encode(original)?!\n\
              decoded = Toml.decode(encoded, Cfg)?!\n\
              {\n\
                day: decoded.day.format(),\n\

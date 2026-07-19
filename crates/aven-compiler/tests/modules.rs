@@ -1303,20 +1303,20 @@ fn recursive_runtime_targets_decode_encode_and_preserve_shape_errors() {
     let source = r#"Tree = { value: Int, children: Array(Tree) }
 treeInput = "{\"value\":1,\"children\":[{\"value\":2,\"children\":[{\"value\":3,\"children\":[]}]}]}"
 tree = Json.decode(treeInput, Tree)?!
-treeEncoded = Json.encode(tree)
+treeEncoded = Json.encode(tree)?!
 treeAgain = Json.decode(treeEncoded, Tree)?!
 
 Chain = (t: Type) => { value: t, next: ?Chain(t) }
 IntChain = Chain(Int)
 chainInput = "{\"value\":1,\"next\":{\"value\":2,\"next\":{\"value\":3}}}"
 chain = Json.decode(chainInput, IntChain)?!
-chainAgain = Json.decode(Json.encode(chain), IntChain)?!
+chainAgain = Json.decode(Json.encode(chain)?!, IntChain)?!
 
 A = { value: Int, b: ?B }
 B = { label: Text, a: ?A }
 mutualInput = "{\"value\":1,\"b\":{\"label\":\"x\",\"a\":{\"value\":2}}}"
 mutual = Json.decode(mutualInput, A)?!
-mutualAgain = Json.decode(Json.encode(mutual), A)?!
+mutualAgain = Json.decode(Json.encode(mutual)?!, A)?!
 
 malformed = Json.decode("{\"value\":1,\"children\":[{\"value\":2,\"children\":[{\"value\":\"bad\",\"children\":[]}]}]}", Tree)
 
@@ -1373,7 +1373,7 @@ fn recursive_runtime_target_handles_fifty_json_levels() {
         "Tree = {{ value: Int, children: Array(Tree) }}\n\
          input = {input:?}\n\
          tree = Json.decode(input, Tree)?!\n\
-         Json.encode(tree) == input\n"
+         Json.encode(tree)?! == input\n"
     );
     write(dir.path(), "main.av", &source);
 
@@ -1390,11 +1390,11 @@ fn recursive_runtime_targets_share_yaml_and_toml_decode_paths() {
     let source = r#"Tree = { value: Int, children: Array(Tree) }
 yamlInput = "value: 1\nchildren:\n  - value: 2\n    children: []\n"
 yamlTree = Yaml.decode(yamlInput, Tree)?!
-yamlAgain = Yaml.decode(Yaml.encode(yamlTree), Tree)?!
+yamlAgain = Yaml.decode(Yaml.encode(yamlTree)?!, Tree)?!
 
 tomlInput = "value = 1\nchildren = []\n"
 tomlTree = Toml.decode(tomlInput, Tree)?!
-tomlAgain = Toml.decode(Toml.encode(tomlTree), Tree)?!
+tomlAgain = Toml.decode(Toml.encode(tomlTree)?!, Tree)?!
 
 {
   yamlDepth: yamlTree.children[0].value,

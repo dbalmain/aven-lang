@@ -3,4 +3,4 @@ Y = { y: Int }
 
 y: Y = { y: 2 }
 
-y.encode(Yaml)
+y.encode(Yaml)?!

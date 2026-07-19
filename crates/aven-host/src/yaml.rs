@@ -8,7 +8,8 @@ use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
 use crate::temporal::temporal_iso_text;
 use crate::text_format::{
-    DecodeError, FormatNumber, FormatValue, decode_value, parse_error_value, shape_error_value,
+    DecodeError, FormatNumber, FormatValue, decode_value, encode_error_value, parse_error_value,
+    shape_error_value,
 };
 
 impl Host {
@@ -31,6 +32,7 @@ impl Host {
             ],
         );
         self.register_type_definition("YamlError", crate::yaml_error_type());
+        self.register_type_definition("YamlEncodeError", crate::yaml_encode_error_type());
         self.register_comptime_resolver("Yaml.decode", vec![1], decode_comptime_resolver());
     }
 }
@@ -244,7 +246,10 @@ fn encode_native() -> Value {
             ));
         };
 
-        encode_to_text(value).map(Value::Text)
+        Ok(match encode_to_text(value) {
+            Ok(text) => ok_value(Value::Text(text)),
+            Err(error) => err_value(encode_error_value(error)),
+        })
     })
 }
 
@@ -268,10 +273,7 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
 
     match value {
         Value::Int(value) => Ok(serde_norway::Value::Number((*value).into())),
-        Value::Float(value) if value.is_finite() => {
-            Ok(serde_norway::Value::Number((*value).into()))
-        }
-        Value::Float(_) => Err("Yaml.encode cannot encode NaN or infinite Float".to_owned()),
+        Value::Float(value) => Ok(serde_norway::Value::Number((*value).into())),
         Value::Text(value) => Ok(serde_norway::Value::String(value.clone())),
         Value::Bool(value) => Ok(serde_norway::Value::Bool(*value)),
         Value::Null => Ok(serde_norway::Value::Null),
@@ -336,9 +338,6 @@ fn yaml_value_from_json_constructor(
             let [Value::Float(value)] = payload else {
                 return Err(json_constructor_shape_error(name, "Float"));
             };
-            if !value.is_finite() {
-                return Err("Yaml.encode cannot encode NaN or infinite Float".to_owned());
-            }
             Ok(serde_norway::Value::Number((*value).into()))
         }
         "Text" => {
@@ -413,7 +412,7 @@ fn json_constructor_shape_error(name: &str, expected: &str) -> String {
 mod tests {
     use super::*;
 
-    use aven_core::{Span, codes};
+    use aven_core::Span;
     use aven_parser::parse_module;
 
     fn yaml_host() -> Host {
@@ -441,16 +440,6 @@ mod tests {
         outcome
             .value
             .unwrap_or_else(|| panic!("program yields a value"))
-    }
-
-    fn run_diagnostics(source: &str) -> Vec<aven_core::Diagnostic> {
-        let parsed = parse_module(source);
-        assert!(
-            parsed.diagnostics.is_empty(),
-            "program parses: {:?}",
-            parsed.diagnostics
-        );
-        aven_eval::eval_module_with_globals(&parsed.module, yaml_host().eval_globals()).diagnostics
     }
 
     fn check(source: &str) -> aven_check::CheckOutput {
@@ -515,19 +504,6 @@ mod tests {
         values.as_ref()
     }
 
-    fn assert_platform_error_contains(diagnostics: &[aven_core::Diagnostic], message: &str) {
-        assert!(
-            diagnostics.iter().any(|diagnostic| {
-                diagnostic.code.as_deref() == Some(codes::runtime::PLATFORM_ERROR)
-                    && diagnostic
-                        .labels
-                        .iter()
-                        .any(|label| label.message.contains(message))
-            }),
-            "expected runtime platform diagnostic containing {message:?}: {diagnostics:?}"
-        );
-    }
-
     #[test]
     fn typed_decode_builds_record() {
         let value = run("Config = { name: Text, count: Int, enabled: Bool }\n\
@@ -558,7 +534,7 @@ mod tests {
     #[test]
     fn encode_round_trip_preserves_typed_record() {
         let value = run("Config = { name: Text, count: Int }\n\
-             encoded = Yaml.encode({ name: \"Ada\", count: 3 })\n\
+             encoded = Yaml.encode({ name: \"Ada\", count: 3 })?!\n\
              decoded = Yaml.decode(encoded, Config)?!\n\
              { encoded: encoded, decoded: decoded }\n");
 
@@ -601,10 +577,32 @@ mod tests {
     }
 
     #[test]
-    fn encode_rejects_unknown_tags() {
-        let diagnostics = run_diagnostics("Yaml.encode(@Red)\n");
+    fn encode_returns_structured_error_for_unknown_tags() {
+        let value = run("Yaml.encode(@Red)\n");
+        let (kind, payload) = err_payload(&value);
 
-        assert_platform_error_contains(&diagnostics, "Yaml.encode cannot encode nullary tag @Red");
+        assert_eq!(kind, "Encode");
+        assert!(
+            text(field(payload, "message")).contains("Yaml.encode cannot encode nullary tag @Red"),
+            "{payload:?}"
+        );
+    }
+
+    #[test]
+    fn encode_non_finite_floats_natively() {
+        let value =
+            run("Yaml.encode({ nan: 0.0 / 0.0, positive: 1.0 / 0.0, negative: -1.0 / 0.0 })?!\n");
+        let encoded = text(&value);
+
+        assert!(encoded.contains("nan: .nan"), "expected .nan: {encoded}");
+        assert!(
+            encoded.contains("positive: .inf"),
+            "expected .inf: {encoded}"
+        );
+        assert!(
+            encoded.contains("negative: -.inf"),
+            "expected -.inf: {encoded}"
+        );
     }
 
     #[test]
@@ -664,8 +662,8 @@ mod tests {
     fn eval_encode_method_accepts_named_annotation_receiver() {
         let value = run("Y = { y: Int }\n\
              y: Y = { y: 2 }\n\
-             method = y.encode(Yaml)\n\
-             direct = Yaml.encode(y)\n\
+             method = y.encode(Yaml)?!\n\
+             direct = Yaml.encode(y)?!\n\
              { method: method, direct: direct }\n");
 
         assert_eq!(text(field(&value, "method")), "y: 2\n");
@@ -726,7 +724,7 @@ mod tests {
                day: Date.parse(\"1979-05-27\")?!,\n\
                when: Instant.parse(\"1979-05-27T07:32:00Z\")?!\n\
              }\n\
-             encoded = Yaml.encode(original)\n\
+             encoded = Yaml.encode(original)?!\n\
              decoded = Yaml.decode(encoded, Cfg)?!\n\
              {\n\
                day: decoded.day.format(),\n\

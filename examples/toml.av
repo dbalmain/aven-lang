@@ -13,7 +13,7 @@ summary = dynamic ?>
       _ => "object"
   _ => "other"
 
-encoded = Toml.encode(config)
+encoded = Toml.encode(config)?!
 
 writeLine("name: ${config.name}")
 writeLine("summary: ${summary}")

@@ -1,8 +1,8 @@
 //! JSON codec host namespace.
 //!
-//! `Json.encode` is an ordinary native returning `Text`. `Json.decode` returns
-//! an Aven `Result`, using the checker's host-comptime resolver to refine the
-//! result type from the optional trailing target type argument.
+//! Both JSON codec natives return Aven `Result` values. `Json.decode` uses the
+//! checker's host-comptime resolver to refine its result type from the optional
+//! trailing target type argument.
 
 use std::fmt;
 
@@ -14,7 +14,8 @@ use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
 use crate::temporal::temporal_iso_text;
 use crate::text_format::{
-    DecodeError, FormatNumber, FormatValue, decode_value, parse_error_value, shape_error_value,
+    DecodeError, FormatNumber, FormatValue, decode_value, encode_error_value, parse_error_value,
+    shape_error_value,
 };
 
 type JsonValue = FormatValue;
@@ -41,6 +42,7 @@ impl Host {
             ],
         );
         self.register_type_definition("JsonError", crate::json_error_type());
+        self.register_type_definition("JsonEncodeError", crate::json_encode_error_type());
         self.register_comptime_resolver("Json.decode", vec![1], decode_comptime_resolver());
     }
 }
@@ -158,7 +160,10 @@ fn encode_native() -> Value {
             ));
         };
 
-        encode_to_text(value).map(Value::Text)
+        Ok(match encode_to_text(value) {
+            Ok(text) => ok_value(Value::Text(text)),
+            Err(error) => err_value(encode_error_value(error)),
+        })
     })
 }
 
@@ -225,7 +230,7 @@ fn encode_value(
     match value {
         Value::Int(value) => output.push_str(&value.to_string()),
         Value::Float(value) if value.is_finite() => output.push_str(&value.to_string()),
-        Value::Float(_) => return Err("Json.encode cannot encode NaN or infinite Float".to_owned()),
+        Value::Float(value) => return Err(json_non_finite_float_error(*value)),
         Value::Text(value) => encode_string(value, output),
         Value::Bool(true) => output.push_str("true"),
         Value::Bool(false) => output.push_str("false"),
@@ -305,7 +310,7 @@ fn encode_json_constructor(
                 return Err(json_constructor_shape_error(name, "Float"));
             };
             if !value.is_finite() {
-                return Err("Json.encode cannot encode NaN or infinite Float".to_owned());
+                return Err(json_non_finite_float_error(*value));
             }
             output.push_str(&value.to_string());
         }
@@ -380,6 +385,17 @@ fn encode_json_value(value: &Value, output: &mut String) -> Result<(), String> {
 
 fn json_constructor_shape_error(name: &str, expected: &str) -> String {
     format!("Json.encode expected @{name} payload shape {expected}")
+}
+
+fn json_non_finite_float_error(value: f64) -> String {
+    let kind = if value.is_nan() {
+        "NaN"
+    } else if value.is_sign_positive() {
+        "Infinity"
+    } else {
+        "-Infinity"
+    };
+    format!("Json.encode cannot encode non-finite Float {kind}")
 }
 
 fn encode_record(fields: &[(String, Value)], output: &mut String) -> Result<(), String> {
@@ -573,7 +589,7 @@ mod tests {
     #[test]
     fn encode_decode_round_trip_preserves_omitted_and_null_fields() {
         let value = run("User = { name: Text, phone: ?Text, nick: Text? }\n\
-             text = Json.encode({ name: \"Ada\", phone: undefined, nick: null })\n\
+             text = Json.encode({ name: \"Ada\", phone: undefined, nick: null })?!\n\
              decoded = Json.decode(text, User)?!\n\
              { text: text, decoded: decoded }\n");
 
@@ -600,7 +616,7 @@ mod tests {
     fn dynamic_decode_explicit_data_target_preserves_order() {
         let value = run(
             "parsed = Json.decode(\"{\\\"b\\\":1,\\\"a\\\":2}\", Data)?!\n\
-             Json.encode(parsed)\n",
+             Json.encode(parsed)?!\n",
         );
 
         assert_eq!(text(&value), r#"{"b":1,"a":2}"#);
@@ -628,7 +644,7 @@ mod tests {
     #[test]
     fn encode_accepts_structural_json_constructor_tags() {
         let value = run(
-            "Json.encode(@Object(Map.from([(\"b\", @Int(1)), (\"a\", @Array([@Bool(true), @Null]))])))\n",
+            "Json.encode(@Object(Map.from([(\"b\", @Int(1)), (\"a\", @Array([@Bool(true), @Null]))])))?!\n",
         );
 
         assert_eq!(text(&value), r#"{"b":1,"a":[true,null]}"#);
@@ -637,8 +653,8 @@ mod tests {
     #[test]
     fn eval_encode_method_matches_static_form_for_record() {
         let value = run("user = { name: \"Ada\", count: 3 }\n\
-             method = user.encode(Json)\n\
-             direct = Json.encode(user)\n\
+             method = user.encode(Json)?!\n\
+             direct = Json.encode(user)?!\n\
              { method: method, direct: direct }\n");
 
         assert_eq!(text(field(&value, "method")), r#"{"name":"Ada","count":3}"#);
@@ -649,8 +665,8 @@ mod tests {
     fn eval_encode_method_matches_static_form_for_dynamic_data() {
         let value = run(
             "parsed = Json.decode(\"{\\\"name\\\":\\\"Ada\\\",\\\"ok\\\":true}\")?!\n\
-             method = parsed.encode(Json)\n\
-             direct = Json.encode(parsed)\n\
+             method = parsed.encode(Json)?!\n\
+             direct = Json.encode(parsed)?!\n\
              { method: method, direct: direct }\n",
         );
 
@@ -667,55 +683,63 @@ mod tests {
     }
 
     #[test]
-    fn encode_rejects_json_constructor_with_wrong_payload_shape() {
-        let diagnostics = run_diagnostics("Json.encode(@Int(\"no\"))\n");
+    fn encode_returns_structured_error_for_wrong_constructor_payload_shape() {
+        let value = run("Json.encode(@Int(\"no\"))\n");
+        let (kind, payload) = err_payload(&value);
 
-        assert_platform_error_contains(&diagnostics, "Json.encode expected @Int payload shape Int");
+        assert_eq!(kind, "Encode");
+        assert_eq!(
+            text(field(payload, "message")),
+            "Json.encode expected @Int payload shape Int"
+        );
     }
 
     #[test]
     fn encode_rejects_undefined_outside_record_fields() {
-        let parsed = parse_module("Json.encode([undefined])\n");
-        assert!(parsed.diagnostics.is_empty(), "program parses");
-        let outcome =
-            aven_eval::eval_module_with_globals(&parsed.module, json_host().eval_globals());
-        assert!(
-            outcome.diagnostics.iter().any(
-                |diagnostic| diagnostic.code.as_deref() == Some(codes::runtime::PLATFORM_ERROR)
-            ),
-            "undefined array element is a platform error: {:?}",
-            outcome.diagnostics
+        let value = run("Json.encode([undefined])\n");
+        let (kind, payload) = err_payload(&value);
+
+        assert_eq!(kind, "Encode");
+        assert_eq!(
+            text(field(payload, "message")),
+            "Json.encode cannot encode undefined array elements"
         );
     }
 
     #[test]
     fn encode_rejects_tags_until_a_wire_form_is_decided() {
-        let parsed = parse_module("Json.encode(@Red)\n");
-        assert!(parsed.diagnostics.is_empty(), "program parses");
-        let outcome =
-            aven_eval::eval_module_with_globals(&parsed.module, json_host().eval_globals());
+        let value = run("Json.encode(@Red)\n");
+        let (kind, payload) = err_payload(&value);
+
+        assert_eq!(kind, "Encode");
         assert!(
-            outcome.diagnostics.iter().any(
-                |diagnostic| diagnostic.code.as_deref() == Some(codes::runtime::PLATFORM_ERROR)
-            ),
-            "nullary tags are a platform error: {:?}",
-            outcome.diagnostics
+            text(field(payload, "message")).contains("Json.encode cannot encode nullary tag @Red"),
+            "{payload:?}"
         );
     }
 
     #[test]
     fn encode_rejects_closures_without_invoking_them() {
-        let diagnostics = run_diagnostics(
-            "fail = () => Json.decode(\"not json\")?!\n\
-             Json.encode({ child: fail })\n",
-        );
+        let value = run("fail = () => Json.decode(\"not json\")?!\n\
+             Json.encode({ child: fail })\n");
+        let (kind, payload) = err_payload(&value);
 
-        assert_platform_error_contains(&diagnostics, "Json.encode cannot encode Function");
-        assert!(
-            diagnostics
-                .iter()
-                .all(|diagnostic| diagnostic.code.as_deref() != Some(codes::runtime::PANIC)),
-            "encode must not invoke the closure: {diagnostics:?}"
+        assert_eq!(kind, "Encode");
+        assert_eq!(
+            text(field(payload, "message")),
+            "Json.encode cannot encode Function"
+        );
+    }
+
+    #[test]
+    fn encode_returns_non_finite_float_kind_error() {
+        let value = run("Json.encode({ value: 0.0 / 0.0 })\n");
+        let (kind, payload) = err_payload(&value);
+
+        assert_eq!(kind, "Encode");
+        assert_eq!(
+            text(field(payload, "message")),
+            "Json.encode cannot encode non-finite Float NaN"
         );
     }
 
@@ -1078,7 +1102,7 @@ mod tests {
                day: Date.parse(\"1979-05-27\")?!,\n\
                when: Instant.parse(\"1979-05-27T07:32:00Z\")?!\n\
              }\n\
-             encoded = Json.encode(original)\n\
+             encoded = Json.encode(original)?!\n\
              decoded = Json.decode(encoded, Cfg)?!\n\
              {\n\
                day: decoded.day.format(),\n\

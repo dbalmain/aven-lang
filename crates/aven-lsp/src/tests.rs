@@ -1793,7 +1793,10 @@ fn file_backed_hover_on_import_member_encode_shows_method_signature() {
         panic!("expected hover on encode");
     };
 
-    assert_hover_value(hover, "```aven\nsomeRecord.encode : Json -> Text\n```");
+    assert_hover_value(
+        hover,
+        "```aven\nsomeRecord.encode : Json -> Result(Text, @Encode({ message: Text }))\n```",
+    );
 }
 
 #[test]
@@ -2812,7 +2815,10 @@ fn hover_at_encode_method_member_shows_method_signature() {
     )
     .expect("expected hover on encode member");
 
-    assert_hover_value(hover, "```aven\ny.encode : Yaml -> Text\n```");
+    assert_hover_value(
+        hover,
+        "```aven\ny.encode : Yaml -> Result(Text, @Encode({ message: Text }))\n```",
+    );
 }
 
 #[test]

@@ -8,7 +8,7 @@ parseUser = (text: Text) =>
 
 onParsed = (user) =>
   writeLine("parsed: ${user}")
-  encoded = user.encode(Json)
+  encoded = user.encode(Json)?!
   writeLine("encoded: ${encoded}")
 
 onError = (err) => writeLine("error: ${err}")

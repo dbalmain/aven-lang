@@ -185,13 +185,30 @@ fn format_encode_host_globals() -> HostGlobals {
                 "YamlError".to_owned(),
                 build::variant(vec![("Decode", vec![build::text()])]),
             ),
+            (
+                "YamlEncodeError".to_owned(),
+                build::variant(vec![(
+                    "Encode",
+                    vec![build::record(vec![("message", build::text())])],
+                )]),
+            ),
+            (
+                "JsonEncodeError".to_owned(),
+                build::variant(vec![(
+                    "Encode",
+                    vec![build::record(vec![("message", build::text())])],
+                )]),
+            ),
         ])
         .with_statics(vec![
             (
                 "Json".to_owned(),
                 vec![(
                     "encode".to_owned(),
-                    function(vec![variable("a")], named("Text")),
+                    function(
+                        vec![variable("a")],
+                        build::result(named("Text"), named("JsonEncodeError")),
+                    ),
                 )],
             ),
             (
@@ -206,7 +223,10 @@ fn format_encode_host_globals() -> HostGlobals {
                     ),
                     (
                         "encode".to_owned(),
-                        function(vec![variable("a")], named("Text")),
+                        function(
+                            vec![variable("a")],
+                            build::result(named("Text"), named("YamlEncodeError")),
+                        ),
                     ),
                 ],
             ),
@@ -5094,13 +5114,16 @@ fn json_name_in_value_position_is_a_type_value() {
 #[test]
 fn json_encode_types_through_statics() {
     // `Json.encode` resolves through the statics table (not a namespace record):
-    // `(a) -> Text`.
+    // `(a) -> Result(Text, JsonEncodeError)`.
     let output = parse_module("t = Json.encode(1)\n");
     let host = crate::HostGlobals::default().with_statics(vec![(
         "Json".to_owned(),
         vec![(
             "encode".to_owned(),
-            function(vec![variable("a")], named("Text")),
+            function(
+                vec![variable("a")],
+                build::result(named("Text"), named("JsonEncodeError")),
+            ),
         )],
     )]);
     let known_types = known_type_names(&output.module);
@@ -5110,7 +5133,7 @@ fn json_encode_types_through_statics() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "t"),
-        Some("Text".to_owned())
+        Some("Result(Text, JsonEncodeError)".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -5124,7 +5147,7 @@ fn encode_method_types_like_format_static_form() {
     let method_ty = checked_binding_type(method, "encoded", &host);
     let static_ty = checked_binding_type(static_form, "encoded", &host);
 
-    assert_eq!(method_ty.render(), "Text");
+    assert_eq!(method_ty.render(), "Result(Text, JsonEncodeError)");
     assert_eq!(method_ty, static_ty);
 }
 
@@ -5145,7 +5168,10 @@ fn encode_method_records_member_span_type() {
         .type_at(nth_span(source, "encode", 1))
         .expect("encode member has an inferred type");
 
-    assert_eq!(ty.render(), "Yaml -> Text");
+    assert_eq!(
+        ty.render(),
+        "Yaml -> Result(Text, @Encode({ message: Text }))"
+    );
 }
 
 #[test]
@@ -5195,7 +5221,7 @@ fn encode_method_accepts_named_annotation_receiver() {
     let method_ty = checked_binding_type(method, "encoded", &host);
     let static_ty = checked_binding_type(static_form, "encoded", &host);
 
-    assert_eq!(method_ty.render(), "Text");
+    assert_eq!(method_ty.render(), "Result(Text, YamlEncodeError)");
     assert_eq!(method_ty, static_ty);
 }
 
@@ -5225,7 +5251,7 @@ fn encode_method_accepts_data_receiver_from_decode_propagation() {
                   encoded = data.encode(Yaml)\n";
     let ty = checked_binding_type(source, "encoded", &format_encode_host_globals());
 
-    assert_eq!(ty.render(), "Text");
+    assert_eq!(ty.render(), "Result(Text, YamlEncodeError)");
 }
 
 #[test]
@@ -5267,7 +5293,7 @@ fn encode_method_accepts_non_json_format() {
     let source = "value = { name: \"Ada\" }\nencoded = value.encode(Yaml)\n";
     let ty = checked_binding_type(source, "encoded", &format_encode_host_globals());
 
-    assert_eq!(ty.render(), "Text");
+    assert_eq!(ty.render(), "Result(Text, YamlEncodeError)");
 }
 
 #[test]

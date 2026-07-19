@@ -548,9 +548,21 @@ fn format_error_type() -> Type {
     ])
 }
 
+fn format_encode_error_type() -> Type {
+    build::variant(vec![(
+        "Encode",
+        vec![build::record(vec![("message", build::text())])],
+    )])
+}
+
 /// The closed `JsonError` variant returned by `Json.decode`.
 pub fn json_error_type() -> Type {
     format_error_type()
+}
+
+/// The closed `JsonEncodeError` variant returned by `Json.encode`.
+pub fn json_encode_error_type() -> Type {
+    format_encode_error_type()
 }
 
 /// The closed `YamlError` variant returned by `Yaml.decode`.
@@ -558,9 +570,19 @@ pub fn yaml_error_type() -> Type {
     format_error_type()
 }
 
+/// The closed `YamlEncodeError` variant returned by `Yaml.encode`.
+pub fn yaml_encode_error_type() -> Type {
+    format_encode_error_type()
+}
+
 /// The closed `TomlError` variant returned by `Toml.decode`.
 pub fn toml_error_type() -> Type {
     format_error_type()
+}
+
+/// The closed `TomlEncodeError` variant returned by `Toml.encode`.
+pub fn toml_encode_error_type() -> Type {
+    format_encode_error_type()
 }
 
 /// The recursive dynamic data value shape returned by one-argument format
@@ -580,18 +602,17 @@ pub fn data_type() -> Type {
     ])
 }
 
-fn format_encode_type() -> Type {
-    build::function(vec![build::var("a")], build::text())
-}
-
 fn format_decode_base_type() -> Type {
     build::function_opt(vec![build::text()], vec![Type::Deferred], Type::Deferred)
 }
 
-/// `(a) -> Text` — `Json.encode` accepts any checked value and validates JSON
-/// encodability at runtime.
+/// `(a) -> Result(Text, JsonEncodeError)` — `Json.encode` accepts any checked
+/// value and validates JSON encodability at runtime.
 pub fn json_encode_type() -> Type {
-    format_encode_type()
+    build::function(
+        vec![build::var("a")],
+        build::result(build::text(), build::named("JsonEncodeError")),
+    )
 }
 
 /// The base `Json.decode` type: `(Text, ? = _) -> ?`. The checker uses it for
@@ -601,9 +622,13 @@ pub fn json_decode_base_type() -> Type {
     format_decode_base_type()
 }
 
-/// `(a) -> Text` — `Yaml.encode` mirrors `Json.encode`'s type shape.
+/// `(a) -> Result(Text, YamlEncodeError)` — `Yaml.encode` mirrors
+/// `Json.encode`'s type shape.
 pub fn yaml_encode_type() -> Type {
-    format_encode_type()
+    build::function(
+        vec![build::var("a")],
+        build::result(build::text(), build::named("YamlEncodeError")),
+    )
 }
 
 /// The base `Yaml.decode` type: `(Text, ? = _) -> ?`.
@@ -611,9 +636,13 @@ pub fn yaml_decode_base_type() -> Type {
     format_decode_base_type()
 }
 
-/// `(a) -> Text` — `Toml.encode` mirrors `Json.encode`'s type shape.
+/// `(a) -> Result(Text, TomlEncodeError)` — `Toml.encode` mirrors
+/// `Json.encode`'s type shape.
 pub fn toml_encode_type() -> Type {
-    format_encode_type()
+    build::function(
+        vec![build::var("a")],
+        build::result(build::text(), build::named("TomlEncodeError")),
+    )
 }
 
 /// The base `Toml.decode` type: `(Text, ? = _) -> ?`.
@@ -837,8 +866,11 @@ pub fn standard_check_host_globals() -> HostGlobals {
         std::iter::once(("Data".to_owned(), data_type()))
             .chain([
                 ("JsonError".to_owned(), json_error_type()),
+                ("JsonEncodeError".to_owned(), json_encode_error_type()),
                 ("YamlError".to_owned(), yaml_error_type()),
+                ("YamlEncodeError".to_owned(), yaml_encode_error_type()),
                 ("TomlError".to_owned(), toml_error_type()),
+                ("TomlEncodeError".to_owned(), toml_encode_error_type()),
             ])
             .chain(temporal::temporal_type_definitions())
             .collect(),
@@ -1218,7 +1250,11 @@ mod tests {
             ])
         );
 
-        for format in ["Json", "Yaml", "Toml"] {
+        for (format, error) in [
+            ("Json", "JsonEncodeError"),
+            ("Yaml", "YamlEncodeError"),
+            ("Toml", "TomlEncodeError"),
+        ] {
             assert!(global_type_opt(&globals, format).is_none());
 
             let statics = aven_check::type_statics(&host_globals, format)
@@ -1234,7 +1270,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{format}.encode is a function"));
             assert_eq!(function_required_arity(&encode), Some(1));
             assert_eq!(encode_params, vec![build::var("a")]);
-            assert_eq!(encode_result, build::text());
+            assert_eq!(
+                encode_result,
+                build::result(build::text(), build::named(error))
+            );
 
             let decode = static_type(&statics, "decode");
             let (decode_params, decode_result) = function_signature(&decode)
@@ -1323,6 +1362,13 @@ mod tests {
                 variant_tags(&error_type),
                 Some(vec!["Parse".to_owned(), "Shape".to_owned()])
             );
+        }
+        for error_type in [
+            json_encode_error_type(),
+            yaml_encode_error_type(),
+            toml_encode_error_type(),
+        ] {
+            assert_eq!(variant_tags(&error_type), Some(vec!["Encode".to_owned()]));
         }
         assert_eq!(
             variant_tags(&data_type()),

@@ -17,7 +17,7 @@ summary = parsed ?>
       @Text(value) => "object:${value}"
       _ => "object"
 
-encoded = Json.encode(parsed)
+encoded = Json.encode(parsed)?!
 
 writeLine("summary: ${summary}")
 writeLine("encoded: ${encoded}")
