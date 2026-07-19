@@ -711,6 +711,7 @@ pub struct SemanticOutput {
     pub named_family_aliases: HashMap<String, String>,
     pub builtin_methods: aven_check::BuiltinMethodEnvironment,
     pub slot_reifications: HashMap<aven_core::Span, aven_check::SlotReificationTarget>,
+    pub direct_slot_inits: HashMap<aven_core::Span, aven_check::SlotReificationTarget>,
     pub primitive_family_coercions: HashMap<aven_core::Span, aven_check::PrimitiveFamilyCoercion>,
     pub name_duration: Option<Duration>,
     pub check_duration: Option<Duration>,
@@ -778,6 +779,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         named_family_aliases,
         builtin_methods,
         slot_reifications,
+        direct_slot_inits,
         primitive_family_coercions,
     } = check_output;
     let diagnostics = if parse_has_errors {
@@ -801,6 +803,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
         named_family_aliases,
         builtin_methods,
         slot_reifications,
+        direct_slot_inits,
         primitive_family_coercions,
         name_duration: Some(name_duration),
         check_duration: Some(check_duration),

@@ -265,6 +265,19 @@ impl<'a> Checker<'a> {
     }
 
     fn check_value_against_slot_record(&mut self, data: &Row, slots: &Row, value: &Expr) {
+        // A record literal carrying method entries directly initializes the
+        // slot-record target: data fields fill the data row, `name(args): Ret
+        // => body` methods fill the slots. This is the second, spec'd way to
+        // fill slots (alongside reification of an existing source value).
+        if let ExprKind::Record(entries) = &ungroup_expr(value).kind
+            && entries
+                .iter()
+                .any(|entry| matches!(entry, RecordEntry::Method { .. }))
+        {
+            self.check_slot_record_initializer(data, slots, entries, value.span);
+            return;
+        }
+
         let diagnostics_start = self.diagnostics.len();
         let env = self.local_types.inference_env();
         let actual = self.infer(&env, value);
@@ -295,17 +308,59 @@ impl<'a> Checker<'a> {
             return;
         }
         if matches!(actual, Type::Deferred | Type::Variable(_) | Type::Meta(_)) {
-            self.diagnostics.push(
-                Diagnostic::error("generic-source method-slot reification is not available")
-                    .with_code(codes::ty::MISMATCH)
-                    .with_label(Label::primary(
-                        value.span,
-                        "the source owner is not statically known here",
-                    ))
-                    .with_note(
-                        "this boundary needs generic-source thunk materialization, which the current runtime does not provide",
-                    ),
-            );
+            let source_name = self
+                .slot_source_variable_name(&actual)
+                .or_else(|| self.slot_source_variable_from_expr(value))
+                .unwrap_or_else(|| "the source".to_owned());
+            let slot_shape = Type::SlotRecord {
+                data: Box::new(Row {
+                    entries: Vec::new(),
+                    tail: RowTail::Closed,
+                }),
+                slots: Box::new(slots.clone()),
+            }
+            .render();
+            let mut diagnostic = Diagnostic::error(
+                "generic-source method-slot reification is not supported",
+            )
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(
+                value.span,
+                format!("the source owner `{source_name}` is not statically known at this boundary"),
+            ))
+            .with_note(format!(
+                "method requirements authorize calls on `{source_name}`; they are not stored slot implementations"
+            ))
+            .with_note(format!(
+                "take `{slot_shape}` as the parameter type, construct the target slots explicitly, or reify at a caller where the exact source owner is known"
+            ));
+            // Stretch: when an in-scope method requirement on the source
+            // variable exactly matches a requested slot, teach the
+            // explicit-construction rewrite for it. This does NOT suggest
+            // adding a requirement.
+            if let Some((slot_name, signature)) = slots.entries.iter().find_map(|entry| {
+                let RowEntry::Field {
+                    name,
+                    ty: Type::Function { params, result, .. },
+                } = entry
+                else {
+                    return None;
+                };
+                self.method_assumption_provides(name, params, result)
+                    .then(|| (name.clone(), render_slot_signature(name, params, result)))
+            }) {
+                // The forwarding body names the runtime value, not the type
+                // variable; fall back to the type-variable name only when the
+                // boundary expression is not a bare binding.
+                let value_name = match &ungroup_expr(value).kind {
+                    ExprKind::Name(name) => name.clone(),
+                    _ => source_name.clone(),
+                };
+                diagnostic = diagnostic.with_note(format!(
+                    "`{source_name}` provides `{signature}` through its requirements; return `{{ {signature} => {value_name}.{slot_name}() }}` to store that behavior explicitly"
+                ));
+            }
+            self.diagnostics.push(diagnostic);
             return;
         }
 
@@ -394,6 +449,282 @@ impl<'a> Checker<'a> {
         if self.diagnostics.len() == diagnostics_start {
             self.record_slot_reification(value.span, data, slots);
         }
+    }
+
+    /// Check a record literal that directly fills a slot-record target. Every
+    /// data field and every slot the target declares must be supplied exactly
+    /// once, with no extra members and matching member kinds. Slot bodies are
+    /// checked with their parameters bound to the target signature and the
+    /// hidden receiver typed at the target's data row.
+    fn check_slot_record_initializer(
+        &mut self,
+        data: &Row,
+        slots: &Row,
+        entries: &[RecordEntry],
+        span: Span,
+    ) {
+        let diagnostics_start = self.diagnostics.len();
+
+        let data_type = Type::Record(Row {
+            entries: data.entries.clone(),
+            tail: RowTail::Closed,
+        });
+
+        let mut seen_data: Vec<&str> = Vec::new();
+        let mut seen_slots: Vec<&str> = Vec::new();
+
+        for entry in entries {
+            match entry {
+                RecordEntry::Field {
+                    name,
+                    name_span,
+                    value,
+                    ..
+                } => {
+                    seen_data.push(name);
+                    match row_field_type(data, name) {
+                        Some(field_type) => self.check_value_against(field_type, value),
+                        None if row_field_type(slots, name).is_some() => self.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "data field `{name}` cannot fill method slot `{name}`"
+                            ))
+                            .with_code(codes::ty::MISMATCH)
+                            .with_label(Label::primary(*name_span, "member kinds differ here"))
+                            .with_note(format!(
+                                "write `{name}(...): Ret => body` to implement the slot"
+                            )),
+                        ),
+                        None => self.push_unexpected_slot_member(name, *name_span),
+                    }
+                }
+                RecordEntry::Method {
+                    name,
+                    name_span,
+                    value,
+                    ..
+                } => {
+                    seen_slots.push(name);
+                    let Some(slot_type) = row_field_type(slots, name) else {
+                        if row_field_type(data, name).is_some() {
+                            self.diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "method slot `{name}` cannot fill data field `{name}`"
+                                ))
+                                .with_code(codes::ty::MISMATCH)
+                                .with_label(Label::primary(*name_span, "member kinds differ here"))
+                                .with_note(format!("write `{name}: value` to fill the data field")),
+                            );
+                        } else {
+                            self.push_unexpected_slot_member(name, *name_span);
+                        }
+                        continue;
+                    };
+                    self.check_slot_body(name, slot_type, &data_type, value);
+                }
+                other => self.diagnostics.push(
+                    Diagnostic::error(
+                        "slot-record initializers contain only data fields and method slots",
+                    )
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(
+                        record_entry_span(other),
+                        "unsupported initializer member",
+                    ))
+                    .with_note(
+                        "write a closed list of `field: value` and `name(...): Ret => body`",
+                    ),
+                ),
+            }
+        }
+
+        self.report_missing_slot_members(data, slots, &seen_data, &seen_slots, span);
+
+        if self.diagnostics.len() == diagnostics_start {
+            self.direct_slot_inits.insert(
+                span,
+                SlotReificationTarget {
+                    fields: row_field_names(data),
+                    slots: row_field_names(slots),
+                },
+            );
+        }
+    }
+
+    fn push_unexpected_slot_member(&mut self, name: &str, name_span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "`{name}` is not declared by the target slot record"
+            ))
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(name_span, "extra member"))
+            .with_note("a slot-record initializer supplies exactly the target's members"),
+        );
+    }
+
+    fn report_missing_slot_members(
+        &mut self,
+        data: &Row,
+        slots: &Row,
+        seen_data: &[&str],
+        seen_slots: &[&str],
+        span: Span,
+    ) {
+        for name in row_field_names(data) {
+            if !seen_data.contains(&name.as_str()) {
+                self.diagnostics.push(
+                    Diagnostic::error(format!("data field `{name}` is missing"))
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(
+                            span,
+                            "initializer omits a declared data field",
+                        ))
+                        .with_note(format!("add `{name}: value`")),
+                );
+            }
+        }
+        for name in row_field_names(slots) {
+            if !seen_slots.contains(&name.as_str()) {
+                self.diagnostics.push(
+                    Diagnostic::error(format!("method slot `{name}` is missing"))
+                        .with_code(codes::ty::MISMATCH)
+                        .with_label(Label::primary(span, "initializer omits a declared slot"))
+                        .with_note(format!("add `{name}(...): Ret => body`")),
+                );
+            }
+        }
+    }
+
+    /// Check a single slot body against the target slot signature. The body's
+    /// parameters are bound to the declared parameter types and the hidden
+    /// receiver is bound at the target data row so bare `.field` reads resolve.
+    fn check_slot_body(&mut self, name: &str, slot_type: &Type, data_type: &Type, value: &Expr) {
+        let Type::Function {
+            params: expected_params,
+            result: expected_result,
+            ..
+        } = slot_type
+        else {
+            return;
+        };
+        let ExprKind::Lambda {
+            params,
+            return_annotation,
+            requirements,
+            body,
+        } = &ungroup_expr(value).kind
+        else {
+            self.diagnostics.push(
+                Diagnostic::error(format!("method slot `{name}` needs an implementation body"))
+                    .with_code(codes::ty::MISMATCH)
+                    .with_label(Label::primary(
+                        value.span,
+                        "slot signature has no `=> body`",
+                    ))
+                    .with_note(format!("write `{name}(...): Ret => body`")),
+            );
+            return;
+        };
+        if params.len() != expected_params.len() {
+            self.report_function_arity_mismatch(
+                expected_params.len(),
+                expected_params.len(),
+                params.len(),
+                value.span,
+            );
+            return;
+        }
+
+        if let Some(annotation) = return_annotation {
+            let actual = self.lower_normalized_annotation(annotation);
+            self.check_type_against_type(expected_result, &actual, annotation.span);
+        }
+
+        self.local_types.push();
+        self.local_types.define(
+            aven_parser::METHOD_RECEIVER_NAME,
+            LocalValueType::Known(data_type.clone()),
+        );
+        for (param, expected) in params.iter().zip(expected_params) {
+            if let Some(annotation) = &param.annotation {
+                let actual = self.lower_normalized_annotation(annotation);
+                self.check_type_against_type(&actual, expected, annotation.span);
+            }
+            self.record_inferred_type(param.name_span, expected.clone());
+            self.local_types
+                .define(&param.name, LocalValueType::Known(expected.clone()));
+        }
+        let assumptions = self.requirement_predicates(requirements);
+        let marker = self.method_obligation_marker();
+        self.push_method_assumptions(assumptions);
+        self.check_value_against(expected_result, body);
+        self.finish_non_generalizing_lambda_obligations(marker);
+        self.pop_method_assumptions();
+        self.local_types.pop();
+    }
+
+    /// Recover the source type-variable name at a generic-source reification
+    /// boundary. The inferred source is usually an unresolved meta standing in
+    /// for a rigid parameter variable (`t`); its requirements carry the
+    /// original variable as their candidate, so match against those.
+    fn slot_source_variable_name(&self, actual: &Type) -> Option<String> {
+        if let Type::Variable(name) = actual {
+            return Some(name.clone());
+        }
+        // A rigid parameter variable (`t`) is instantiated to a meta whose name
+        // is recorded in the inline-lambda scope; recover it by matching metas.
+        if let Type::Meta(_) = actual
+            && let Some(name) = self
+                .inline_lambda_type_var_scopes
+                .iter()
+                .rev()
+                .flatten()
+                .find_map(|(name, ty)| (ty == actual).then(|| name.clone()))
+        {
+            return Some(name);
+        }
+        self.method_assumption_scopes
+            .iter()
+            .flatten()
+            .find_map(|assumption| match &assumption.candidate {
+                Type::Variable(name) => Some(name.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                self.rigid_type_var_scopes
+                    .iter()
+                    .rev()
+                    .flatten()
+                    .next()
+                    .cloned()
+            })
+    }
+
+    /// Recover the source variable name from the boundary expression when it is
+    /// a bare name whose declared local type is a type variable (the common
+    /// `value: t` case). Metas erase the variable, so read it from the binding.
+    fn slot_source_variable_from_expr(&self, value: &Expr) -> Option<String> {
+        let ExprKind::Name(name) = &ungroup_expr(value).kind else {
+            return None;
+        };
+        let env = self.local_types.inference_env();
+        match env.get(name)?.clone() {
+            LocalValueType::Known(Type::Variable(var)) => Some(var),
+            _ => None,
+        }
+    }
+
+    /// Whether an in-scope method requirement exactly provides a member with
+    /// the given parameter and result types. Used only to teach the
+    /// explicit-construction rewrite; it never authorizes a conversion.
+    fn method_assumption_provides(&self, member: &str, params: &[Type], result: &Type) -> bool {
+        self.method_assumption_scopes
+            .iter()
+            .flatten()
+            .any(|assumption| {
+                assumption.member == member
+                    && assumption.params.as_slice() == params
+                    && &assumption.result == result
+            })
     }
 
     fn record_slot_reification(&mut self, span: Span, data: &Row, slots: &Row) {
@@ -1502,4 +1833,15 @@ fn peels_optional_or_nullable_expected(value: &Expr) -> bool {
             | ExprKind::Array(_)
             | ExprKind::Set(_)
     )
+}
+
+/// Render a slot signature as it appears in a slot-record initializer, e.g.
+/// `csv(): Text` or `filter(Text): Bool`.
+fn render_slot_signature(name: &str, params: &[Type], result: &Type) -> String {
+    let params = params
+        .iter()
+        .map(Type::render)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{name}({params}): {}", result.render())
 }

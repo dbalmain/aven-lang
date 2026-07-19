@@ -10654,6 +10654,165 @@ fn unannotated_builtin_and_named_family_join_does_not_infer_reification() {
 }
 
 #[test]
+fn direct_slot_initializer_checks_at_annotation_return_argument_and_field() {
+    let source = concat!(
+        "Csv = { csv(): Text }\n",
+        "annotated: Csv = { csv(): Text => \"a\" }\n",
+        "produce = (): Csv => { csv(): Text => \"b\" }\n",
+        "consume = (value: Csv): Text => value.csv()\n",
+        "fromArgument = consume({ csv(): Text => \"c\" })\n",
+        "holder: { value: Csv } = { value: { csv(): Text => \"d\" } }\n",
+    );
+    let parsed = parse_module(source);
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    // Every boundary records a direct-slot-init plan (never a reification).
+    assert_eq!(check.direct_slot_inits.len(), 4);
+    assert!(check.slot_reifications.is_empty());
+}
+
+#[test]
+fn direct_slot_initializer_fills_data_bearing_target_with_live_receiver() {
+    let parsed = parse_module(concat!(
+        "Queue = { limit: Int, display(): Text }\n",
+        "queue: Queue = { limit: 2, display(): Text => \"queue of ${.limit}\" }\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(check.direct_slot_inits.len(), 1);
+}
+
+#[test]
+fn direct_slot_initializer_reports_missing_slot() {
+    let parsed = parse_module(concat!(
+        "Pair = { a(): Text, b(): Text }\n",
+        "value: Pair = { a(): Text => \"a\" }\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "method slot `b` is missing")
+    );
+    assert!(check.direct_slot_inits.is_empty());
+}
+
+#[test]
+fn direct_slot_initializer_reports_extra_member() {
+    let parsed = parse_module(concat!(
+        "Csv = { csv(): Text }\n",
+        "value: Csv = { csv(): Text => \"a\", extra(): Text => \"b\" }\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.iter().any(
+        |diagnostic| diagnostic.message == "`extra` is not declared by the target slot record"
+    ));
+    assert!(check.direct_slot_inits.is_empty());
+}
+
+#[test]
+fn direct_slot_initializer_reports_function_field_vs_slot_kind_mismatch() {
+    // A method-bearing initializer that fills a slot with a data field instead
+    // of a method body is a kind mismatch caught on the direct-init path.
+    let parsed = parse_module(concat!(
+        "Pair = { a(): Text, b(): Text }\n",
+        "value: Pair = { a(): Text => \"a\", b: \"oops\" }\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "data field `b` cannot fill method slot `b`")
+    );
+    assert!(check.direct_slot_inits.is_empty());
+}
+
+#[test]
+fn direct_slot_initializer_reports_slot_signature_mismatch() {
+    let parsed = parse_module(concat!(
+        "Csv = { csv(): Text }\n",
+        "value: Csv = { csv(): Int => 1 }\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.iter().any(Diagnostic::is_error));
+    assert!(check.direct_slot_inits.is_empty());
+}
+
+#[test]
+fn method_entry_literal_without_expected_slot_record_is_rejected() {
+    let parsed = parse_module("value = { csv(): Text => \"a\" }\n");
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.iter().any(Diagnostic::is_error));
+    assert!(check.direct_slot_inits.is_empty());
+}
+
+#[test]
+fn generic_source_slot_reification_rejection_is_permanent_and_teaches_rewrites() {
+    let parsed = parse_module(concat!(
+        "Csv = { csv(): Text }\n",
+        "forget = (value: t): Csv\n",
+        "  t: { csv(): Text, .. }\n",
+        "=> value\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "generic-source method-slot reification is not supported"
+        })
+        .expect("the permanent generic-source rejection fires");
+    let labels = diagnostic
+        .labels
+        .iter()
+        .map(|label| label.message.clone())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        labels.contains("`t` is not statically known at this boundary"),
+        "{labels}"
+    );
+    let notes = diagnostic.notes.join(" ");
+    assert!(
+        notes.contains("they are not stored slot implementations"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("take `{ csv(): Text }` as the parameter type"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("return `{ csv(): Text => value.csv() }`"),
+        "the rewrite hint forwards through the value binding, not the type variable: {notes}"
+    );
+    assert!(check.direct_slot_inits.is_empty());
+}
+
+#[test]
+fn direct_slot_initializer_supports_lexical_capture() {
+    let parsed = parse_module(concat!(
+        "Csv = { csv(): Text }\n",
+        "wrap = (parts: Array(Text)): Csv =>\n",
+        "  joined = parts.joinWith(\",\")\n",
+        "  { csv(): Text => joined }\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(check.direct_slot_inits.len(), 1);
+}
+
+#[test]
 fn named_primitive_family_core_checks_construction_lifting_and_widening() {
     let parsed = parse_module(concat!(
         "Money = Int {\n",

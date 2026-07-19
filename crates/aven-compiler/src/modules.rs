@@ -517,14 +517,19 @@ pub fn eval_path_with_host_globals_and_roots(
                 )
             }),
         );
+        let direct_slot_inits =
+            aven_eval::DirectSlotInitPlan::new(semantic.direct_slot_inits.keys().copied());
         let primitive_families = primitive_family_plan(
             &graph.nodes[node_id].parse.module,
             &semantic.named_families,
             &semantic.named_family_aliases,
             &semantic.primitive_family_coercions,
         );
-        let elaborations =
-            aven_eval::EvalElaborationPlan::new(slot_reifications, primitive_families);
+        let elaborations = aven_eval::EvalElaborationPlan::new(
+            slot_reifications,
+            direct_slot_inits,
+            primitive_families,
+        );
         let outcome = aven_eval::eval_module_with_globals_imports_runtime_types_builtin_methods_and_reifications(
             &graph.nodes[node_id].parse.module,
             node_globals,

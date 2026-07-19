@@ -99,19 +99,42 @@ impl PrimitiveFamilyPlan {
     }
 }
 
+/// Record-literal spans that directly initialize a slot-record target. The
+/// evaluator materializes a `SlotRecord` from the literal's own entries at
+/// these spans instead of reifying an evaluated source value.
+#[derive(Debug, Clone, Default)]
+pub struct DirectSlotInitPlan {
+    targets: HashSet<Span>,
+}
+
+impl DirectSlotInitPlan {
+    pub fn new(targets: impl IntoIterator<Item = Span>) -> Self {
+        Self {
+            targets: targets.into_iter().collect(),
+        }
+    }
+
+    fn contains(&self, span: Span) -> bool {
+        self.targets.contains(&span)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EvalElaborationPlan {
     slot_reifications: SlotReificationPlan,
+    direct_slot_inits: DirectSlotInitPlan,
     primitive_families: PrimitiveFamilyPlan,
 }
 
 impl EvalElaborationPlan {
     pub fn new(
         slot_reifications: SlotReificationPlan,
+        direct_slot_inits: DirectSlotInitPlan,
         primitive_families: PrimitiveFamilyPlan,
     ) -> Self {
         Self {
             slot_reifications,
+            direct_slot_inits,
             primitive_families,
         }
     }
@@ -938,6 +961,7 @@ pub struct Environment {
     imports: Rc<ModuleImports>,
     builtin_methods: BuiltinMethodEnvironment,
     slot_reifications: Rc<SlotReificationPlan>,
+    direct_slot_inits: Rc<DirectSlotInitPlan>,
     primitive_families: Rc<PrimitiveFamilyPlan>,
     family_descriptors: Rc<RefCell<HashMap<String, Rc<NamedFamilyDescriptor>>>>,
     allow_builtin_method_attachments: bool,
@@ -982,6 +1006,7 @@ impl Environment {
             BuiltinMethodEnvironment::default(),
             false,
             SlotReificationPlan::default(),
+            DirectSlotInitPlan::default(),
             PrimitiveFamilyPlan::default(),
         )
     }
@@ -991,6 +1016,7 @@ impl Environment {
         builtin_methods: BuiltinMethodEnvironment,
         allow_builtin_method_attachments: bool,
         slot_reifications: SlotReificationPlan,
+        direct_slot_inits: DirectSlotInitPlan,
         primitive_families: PrimitiveFamilyPlan,
     ) -> Self {
         Self {
@@ -998,6 +1024,7 @@ impl Environment {
             imports: Rc::new(imports),
             builtin_methods,
             slot_reifications: Rc::new(slot_reifications),
+            direct_slot_inits: Rc::new(direct_slot_inits),
             primitive_families: Rc::new(primitive_families),
             family_descriptors: Rc::new(RefCell::new(HashMap::new())),
             allow_builtin_method_attachments,
@@ -1010,6 +1037,7 @@ impl Environment {
             imports: Rc::clone(&self.imports),
             builtin_methods: self.builtin_methods.clone(),
             slot_reifications: Rc::clone(&self.slot_reifications),
+            direct_slot_inits: Rc::clone(&self.direct_slot_inits),
             primitive_families: Rc::clone(&self.primitive_families),
             family_descriptors: Rc::clone(&self.family_descriptors),
             allow_builtin_method_attachments: self.allow_builtin_method_attachments,
@@ -1164,6 +1192,7 @@ pub fn eval_module_with_globals_imports_runtime_types_builtin_methods_and_reific
         builtin_methods.clone(),
         allow_builtin_method_attachments,
         elaborations.slot_reifications.clone(),
+        elaborations.direct_slot_inits.clone(),
         elaborations.primitive_families.clone(),
     );
     bind_intrinsics(&env);
@@ -1345,7 +1374,11 @@ fn eval_items(
     let mut diagnostics = Vec::new();
 
     for item in items {
+        // A body-bearing method record defines a named-family provider only for
+        // an uppercase (type) name. A lowercase binding with method bodies is a
+        // direct slot-record initializer, materialized through the plan path.
         if let Item::Binding(binding) = item
+            && binding.name.chars().next().is_some_and(char::is_uppercase)
             && (aven_parser::is_named_method_provider(&binding.value)
                 || aven_parser::is_primitive_family_provider(&binding.value))
         {
@@ -1360,6 +1393,16 @@ fn eval_items(
 
         if let Item::Binding(binding) = item
             && is_method_requirement_row(&binding.value)
+        {
+            value = None;
+            continue;
+        }
+
+        // A closed slot-record *type* alias (`Csv = { csv(): Text }`) carries
+        // bodyless arrow methods; it defines a type, not a runtime value, so it
+        // is never evaluated.
+        if let Item::Binding(binding) = item
+            && is_slot_record_type_alias(&binding.value)
         {
             value = None;
             continue;
@@ -1703,6 +1746,9 @@ fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
         ExprKind::Array(items) => eval_array(items, env),
         ExprKind::Tuple(items) => eval_tuple(items, env),
         ExprKind::Set(entries) => eval_set(entries, env),
+        ExprKind::Record(entries) if env.direct_slot_inits.contains(expr.span) => {
+            eval_direct_slot_init(entries, env)
+        }
         ExprKind::Record(entries) => eval_record(entries, env),
         ExprKind::Match { subject, arms, .. } => eval_match(subject, arms, expr.span, env),
         ExprKind::FieldAccess {
@@ -2853,6 +2899,88 @@ fn eval_record(entries: &[RecordEntry], env: &Environment) -> Eval {
     }
 
     Ok(Value::Record(Rc::new(fields)))
+}
+
+/// Whether a binding value is a closed slot-record type alias: a record with
+/// at least one bodyless arrow method (`name(): T`) and no method bodies. Such
+/// a declaration defines a structural slot-record type and is not evaluated.
+fn is_slot_record_type_alias(value: &Expr) -> bool {
+    let mut value = value;
+    while let ExprKind::Group(inner) = &value.kind {
+        value = inner;
+    }
+    let ExprKind::Record(entries) = &value.kind else {
+        return false;
+    };
+    let mut has_arrow_slot = false;
+    for entry in entries {
+        match entry {
+            RecordEntry::Method { value, .. } => match &value.kind {
+                ExprKind::Arrow { .. } => has_arrow_slot = true,
+                _ => return false,
+            },
+            RecordEntry::Field { .. } | RecordEntry::Open { .. } => {}
+            _ => return false,
+        }
+    }
+    has_arrow_slot
+}
+
+/// Build a `SlotRecord` directly from an initializer literal. Data fields are
+/// evaluated to stored data; each method slot becomes a bound method closure
+/// whose hidden receiver is the constructed data record (matching the shape a
+/// reified `NamedRecord` produces) and which captures the lexical environment.
+fn eval_direct_slot_init(entries: &[RecordEntry], env: &Environment) -> Eval {
+    let mut fields = Vec::new();
+    for entry in entries {
+        if let RecordEntry::Field { name, value, .. } = entry {
+            let value = eval_expr_many(value, env)?;
+            insert_or_replace_field(&mut fields, name.clone(), value);
+        }
+    }
+    // The hidden receiver is the record's data fields: bare `.field` reads in a
+    // slot body resolve against this snapshot, exactly as target-declared data
+    // fields do for a reified value.
+    let receiver = Value::Record(Rc::new(fields.clone()));
+
+    let mut slots = Vec::new();
+    for entry in entries {
+        let RecordEntry::Method { name, value, .. } = entry else {
+            continue;
+        };
+        let ExprKind::Lambda { params, body, .. } = &value.kind else {
+            return Err(one_diagnostic(unsupported_expr(
+                value.span,
+                "a slot initializer method requires an implementation body",
+            )));
+        };
+        let mut closure_params = Vec::with_capacity(params.len() + 1);
+        closure_params.push(ClosureParam {
+            name: aven_parser::METHOD_RECEIVER_NAME.to_owned(),
+            default: None,
+        });
+        closure_params.extend(params.iter().map(|param| ClosureParam {
+            name: param.name.clone(),
+            default: param.default.clone().map(Rc::new),
+        }));
+        let implementation = NamedMethodImplementation::Declared(Closure {
+            params: closure_params,
+            body: Rc::new((**body).clone()),
+            env: env.clone(),
+        });
+        slots.push((
+            name.clone(),
+            Value::NamedMethod {
+                receiver: Box::new(receiver.clone()),
+                implementation,
+            },
+        ));
+    }
+
+    Ok(Value::SlotRecord {
+        fields: Rc::new(fields),
+        slots: Rc::new(slots),
+    })
 }
 
 fn fold_record_entry(

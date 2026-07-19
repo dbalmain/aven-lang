@@ -82,6 +82,10 @@ pub struct CheckOutput {
     /// runtime. The evaluator applies these conversions after evaluating the
     /// expression at the recorded source span.
     pub slot_reifications: HashMap<Span, SlotReificationTarget>,
+    /// Record-literal spans that directly initialize a slot-record target. The
+    /// evaluator materializes a slot-record from the literal's own entries
+    /// (data fields plus method bodies) at each recorded span.
+    pub direct_slot_inits: HashMap<Span, SlotReificationTarget>,
     /// Checked root coercions which the evaluator applies without changing the
     /// source AST. Primitive-family branding and widening are deliberately
     /// boundary-directed rather than HM equations.
@@ -632,6 +636,7 @@ pub fn check_module_with_host_globals_and_imports_in(
         named_family_aliases: checker.named_family_aliases.clone(),
         builtin_methods: checker.builtin_methods.clone(),
         slot_reifications: checker.slot_reifications.clone(),
+        direct_slot_inits: checker.direct_slot_inits.clone(),
         primitive_family_coercions: checker.primitive_family_coercions.clone(),
     }
 }

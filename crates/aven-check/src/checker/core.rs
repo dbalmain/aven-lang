@@ -52,6 +52,7 @@ impl<'a> Checker<'a> {
             next_method_obligation_id: 0,
             method_assumption_scopes: Vec::new(),
             slot_reifications: HashMap::new(),
+            direct_slot_inits: HashMap::new(),
             primitive_family_coercions: HashMap::new(),
             pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),
@@ -1014,14 +1015,14 @@ impl<'a> Checker<'a> {
 
     pub(super) fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
         let binding = binding_for_declaration(module, declaration);
+        // A body-bearing method record defines a named-family *provider* only
+        // when it declares a type (uppercase name with a canonical owner). A
+        // lowercase binding with method bodies is a direct slot-record
+        // initializer, checked against its declared slot-record annotation.
         if let Some(binding) = binding
             && is_named_family_provider(&binding.value)
+            && let Some(owner) = self.named_family_aliases.get(&declaration.name).cloned()
         {
-            let owner = self
-                .named_family_aliases
-                .get(&declaration.name)
-                .cloned()
-                .expect("named providers have canonical owners");
             self.check_named_family_declaration(&owner, &binding.value);
             return;
         }

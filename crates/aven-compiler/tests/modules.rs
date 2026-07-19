@@ -1588,6 +1588,182 @@ fn builtin_and_named_values_reify_into_pure_method_slot_targets() {
 }
 
 #[test]
+fn direct_slot_initializer_constructs_and_calls_pure_behavior_target() {
+    let dir = TempDir::new("direct-slot-pure");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Csv = { csv(): Text }\n",
+            "value: Csv = { csv(): Text => \"a,b\" }\n",
+            "value.csv()\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("pure-behavior slot initializer should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![])
+        .expect("pure-behavior slot initializer should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("a,b".to_owned())
+    );
+}
+
+#[test]
+fn direct_slot_initializer_captures_lexical_environment() {
+    let dir = TempDir::new("direct-slot-capture");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Csv = { csv(): Text }\n",
+            "wrap = (parts: Array(Text)): Csv =>\n",
+            "  joined = parts.joinWith(\",\")\n",
+            "  { csv(): Text => joined }\n",
+            "wrap([\"a\", \"b\"]).csv()\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("lexical-capture slot initializer should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![])
+        .expect("lexical-capture slot initializer should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("a,b".to_owned())
+    );
+}
+
+#[test]
+fn direct_slot_initializer_reads_data_field_through_receiver() {
+    let dir = TempDir::new("direct-slot-data");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Queue = { limit: Int, display(): Text }\n",
+            "queue: Queue = { limit: 2, display(): Text => \"queue of ${.limit}\" }\n",
+            "queue.display()\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("data-bearing slot initializer should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![])
+        .expect("data-bearing slot initializer should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("queue of 2".to_owned())
+    );
+}
+
+#[test]
+fn direct_slot_initializer_transform_then_erase_runs_end_to_end() {
+    // The load-bearing case: a generic transform that filters a container
+    // family and returns a freshly-constructed slot record capturing the
+    // filtered value.
+    let dir = TempDir::new("direct-slot-transform");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Tags = Array(Text) {\n",
+            "  csv(): Text => .joinWith(\",\")\n",
+            "}\n",
+            "Csv = { csv(): Text }\n",
+            "nonEmptyCsv = (values: t): Csv\n",
+            "  t: {\n",
+            "    filter(pred: (Text) -> Bool): t\n",
+            "    csv(): Text\n",
+            "    ..\n",
+            "  }\n",
+            "=>\n",
+            "  nonEmpty = values.filter((value) => value != \"\")\n",
+            "  {\n",
+            "    csv(): Text => nonEmpty.csv()\n",
+            "  }\n",
+            "nonEmptyCsv(Tags([\"a\", \"\", \"b\"])).csv()\n",
+        ),
+    );
+    let roots = ModuleRoots::discover(&dir.path().join("main.av"))
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+    let checked = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &aven_host::standard_check_host_globals(),
+        &roots,
+    )
+    .expect("transform-then-erase program should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &aven_host::standard_check_host_globals(),
+        vec![],
+        &roots,
+    )
+    .expect("transform-then-erase program should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("a,b".to_owned())
+    );
+}
+
+#[test]
+fn direct_slot_initializer_matches_reified_value_for_same_target() {
+    // A pure-behavior target reached via direct initialization and via builtin
+    // reification answers the same call identically.
+    let dir = TempDir::new("direct-slot-parity");
+    let roots = ModuleRoots::discover(&dir.path().join("main.av"))
+        .with_library(aven_host::STD_LIBRARY_NAME, aven_host::std_library())
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied());
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Joined = Array(Text) {\n",
+            "  csv(): Text => .joinWith(\",\")\n",
+            "}\n",
+            "Csv = { csv(): Text }\n",
+            "viaDirect: Csv = { csv(): Text => \"a,b\" }\n",
+            "viaReified: Csv = Joined([\"a\", \"b\"])\n",
+            "{ direct: viaDirect.csv(), reified: viaReified.csv() }\n",
+        ),
+    );
+    let checked = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &aven_host::standard_check_host_globals(),
+        &roots,
+    )
+    .expect("both slot-fill paths should check");
+    assert_no_errors(&checked.reports);
+
+    let ran = eval_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &aven_host::standard_check_host_globals(),
+        vec![],
+        &roots,
+    )
+    .expect("both slot-fill paths should run");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ direct: \"a,b\", reified: \"a,b\" }".to_owned())
+    );
+}
+
+#[test]
 fn builtin_slot_reification_reports_unsatisfied_provider_predicate_at_boundary() {
     let dir = TempDir::new("builtin-slot-provider-predicate");
     write(

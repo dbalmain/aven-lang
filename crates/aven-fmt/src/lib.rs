@@ -944,4 +944,20 @@ mod tests {
         );
         assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
     }
+
+    #[test]
+    fn formats_slot_record_initializer_idempotently() {
+        let formatted = concat!(
+            "Queue = { limit: Int, display(): Text }\n",
+            "queue: Queue = { limit: 2, display(): Text => \"queue of ${.limit}\" }\n",
+        );
+
+        assert_eq!(
+            format_source(
+                "Queue = { limit: Int, display(): Text }\nqueue:Queue={limit:2,display():Text=>\"queue of ${.limit}\"}\n"
+            ),
+            Ok(formatted.to_owned())
+        );
+        assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
+    }
 }

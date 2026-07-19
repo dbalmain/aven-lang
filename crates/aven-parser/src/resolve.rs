@@ -110,6 +110,11 @@ pub fn is_method_requirement_row(expr: &Expr) -> bool {
 
 /// Whether a record is a closed named-family declaration candidate. Contextual
 /// checking validates unsupported slots/transforms after this structural test.
+///
+/// A provider must carry at least one *body-bearing* method (`name(): T =>
+/// body`). A record whose only method members are bodyless arrows (`name():
+/// T`) is a structural slot-record type, not a named family, and lowers through
+/// the ordinary annotation path instead.
 pub fn is_named_method_provider(expr: &Expr) -> bool {
     let mut expr = expr;
     while let ExprKind::Group(inner) = &expr.kind {
@@ -118,10 +123,18 @@ pub fn is_named_method_provider(expr: &Expr) -> bool {
     let ExprKind::Record(entries) = &expr.kind else {
         return false;
     };
-    entries
-        .iter()
-        .any(|entry| matches!(entry, RecordEntry::Method { .. }))
-        && !is_method_requirement_row(expr)
+    entries.iter().any(|entry| {
+        matches!(
+            entry,
+            RecordEntry::Method {
+                value: Expr {
+                    kind: ExprKind::Lambda { .. },
+                    ..
+                },
+                ..
+            }
+        )
+    }) && !is_method_requirement_row(expr)
 }
 
 /// The declaration-position primitive-base family parts, looking through

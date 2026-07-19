@@ -113,6 +113,10 @@ pub(crate) struct Checker<'a> {
     next_method_obligation_id: usize,
     method_assumption_scopes: Vec<Vec<MethodPredicate>>,
     pub(crate) slot_reifications: HashMap<Span, SlotReificationTarget>,
+    /// Record-literal spans that directly initialize a slot-record target. The
+    /// evaluator builds a `SlotRecord` straight from these literals' entries
+    /// instead of reifying an evaluated source value.
+    pub(crate) direct_slot_inits: HashMap<Span, SlotReificationTarget>,
     pub(crate) primitive_family_coercions: HashMap<Span, PrimitiveFamilyCoercion>,
     pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -973,6 +977,33 @@ fn row_field_type<'a>(row: &'a Row, label: &str) -> Option<&'a Type> {
     match &row.entries[index] {
         RowEntry::Field { ty, .. } => Some(ty),
         RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+    }
+}
+
+fn row_field_names(row: &Row) -> Vec<String> {
+    row.entries
+        .iter()
+        .filter_map(|entry| match entry {
+            RowEntry::Field { name, .. } => Some(name.clone()),
+            RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+        })
+        .collect()
+}
+
+fn record_entry_span(entry: &RecordEntry) -> Span {
+    match entry {
+        RecordEntry::Field { span, .. }
+        | RecordEntry::Method { span, .. }
+        | RecordEntry::FieldDefault { span, .. }
+        | RecordEntry::FieldComputed { span, .. }
+        | RecordEntry::Shorthand { span, .. }
+        | RecordEntry::Spread { span, .. }
+        | RecordEntry::Delete { span, .. }
+        | RecordEntry::DeleteComputed { span, .. }
+        | RecordEntry::Rename { span, .. }
+        | RecordEntry::Iteration { span, .. }
+        | RecordEntry::Open { span } => *span,
+        RecordEntry::Element(value) => value.span,
     }
 }
 

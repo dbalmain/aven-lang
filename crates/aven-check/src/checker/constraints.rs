@@ -701,23 +701,6 @@ fn predicate_contains_meta(predicate: &MethodPredicate, id: u32) -> bool {
     predicate_free_metas(predicate).any(|candidate| candidate == id)
 }
 
-fn record_entry_span(entry: &RecordEntry) -> Span {
-    match entry {
-        RecordEntry::Field { span, .. }
-        | RecordEntry::Method { span, .. }
-        | RecordEntry::FieldDefault { span, .. }
-        | RecordEntry::FieldComputed { span, .. }
-        | RecordEntry::Shorthand { span, .. }
-        | RecordEntry::Spread { span, .. }
-        | RecordEntry::Delete { span, .. }
-        | RecordEntry::DeleteComputed { span, .. }
-        | RecordEntry::Rename { span, .. }
-        | RecordEntry::Iteration { span, .. }
-        | RecordEntry::Open { span } => *span,
-        RecordEntry::Element(value) => value.span,
-    }
-}
-
 fn render_predicate_requirement(predicate: &MethodPredicate) -> String {
     let params = predicate
         .params
