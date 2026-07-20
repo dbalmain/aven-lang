@@ -1,6 +1,9 @@
 use std::{collections::HashSet, rc::Rc};
 
-use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, RowEntry, Type};
+use aven_check::{
+    ComptimeArg, ComptimeError, ComptimeTypeContext, HostComptimeFn, RowEntry, Type,
+    might_contain_float,
+};
 use aven_eval::{RuntimeType, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId, Value};
 
 use crate::io::aven_value_type_name;
@@ -105,6 +108,40 @@ impl HostComptimeFn for DecodeComptimeResolver {
 
 pub(crate) fn decode_comptime_resolver(error_type: &'static str) -> Rc<dyn HostComptimeFn> {
     Rc::new(DecodeComptimeResolver { error_type })
+}
+
+struct EncodeTextComptimeResolver {
+    format: &'static str,
+}
+
+impl HostComptimeFn for EncodeTextComptimeResolver {
+    fn resolve(&self, _args: &[ComptimeArg]) -> Result<Type, ComptimeError> {
+        unreachable!("encodeText resolver always receives checker type analysis context")
+    }
+
+    fn resolve_with_type_context(
+        &self,
+        args: &[ComptimeArg],
+        context: &ComptimeTypeContext<'_>,
+    ) -> Result<Type, ComptimeError> {
+        let [ComptimeArg::Type(argument)] = args else {
+            return Err(ComptimeError::new(format!(
+                "{}.encodeText resolver expects one inferred argument type",
+                self.format
+            )));
+        };
+        if might_contain_float(argument, context) {
+            return Err(ComptimeError::new(format!(
+                "{}.encodeText requires a type that cannot contain a non-finite Float; this type may — use {}.encode instead",
+                self.format, self.format
+            )));
+        }
+        Ok(crate::build::text())
+    }
+}
+
+pub(crate) fn encode_text_comptime_resolver(format: &'static str) -> Rc<dyn HostComptimeFn> {
+    Rc::new(EncodeTextComptimeResolver { format })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

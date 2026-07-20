@@ -1421,6 +1421,89 @@ tomlAgain = Toml.decode(Toml.encode(tomlTree)?!, Tree)?!
 }
 
 #[test]
+fn encode_text_narrows_float_free_values_for_all_formats() {
+    let dir = TempDir::new("encode-text-float-free");
+    write(
+        dir.path(),
+        "main.av",
+        r#"Money = Int {}
+Tree = { value: Int, next: ?Tree }
+money: Money = 7
+tree: Tree = { value: 1 }
+value = { money, nested: ([true, "ok"], { count: 2 }) }
+json = Json.encodeText(value)
+yaml = Yaml.encodeText(value)
+toml = Toml.encodeText({ money, count: 2 })
+treeText = Json.encodeText(tree)
+{
+  jsonSame: json == Json.encode(value)?!,
+  yamlSame: yaml == Yaml.encode(value)?!,
+  tomlSame: toml == Toml.encode({ money, count: 2 })?!,
+  treeSame: treeText == Json.encode(tree)?!,
+}
+"#,
+    );
+
+    let mut host = Host::new();
+    host.register_json();
+    host.register_yaml();
+    host.register_toml();
+    let output = eval_with_host(&dir.path().join("main.av"), &host);
+    assert_no_errors(&output.reports);
+    let value = output
+        .value
+        .expect("program returns encodeText comparisons");
+    for field in ["jsonSame", "yamlSame", "tomlSame", "treeSame"] {
+        assert_eq!(value_field(&value, field), &Value::Bool(true));
+    }
+}
+
+#[test]
+fn encode_text_rejects_float_reachable_and_unresolved_types() {
+    let dir = TempDir::new("encode-text-float-rejection");
+    write(
+        dir.path(),
+        "main.av",
+        r#"Ratio = Float {}
+ratio: Ratio = 1.5
+bare = Json.encodeText(1.5)
+record = Yaml.encodeText({ nested: ([ratio], true) })
+tuple = Toml.encodeText({ pair: (1, 2.0) })
+map = Json.encodeText(Map([("ratio", ratio)]))
+unresolved = (value) => Json.encodeText(value)
+"#,
+    );
+
+    let mut host = Host::new();
+    host.register_json();
+    host.register_yaml();
+    host.register_toml();
+    let output =
+        check_path_with_host_globals(&dir.path().join("main.av"), &host.check_host_globals())
+            .expect("check should load encodeText rejection module");
+    let messages = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        messages.contains("Json.encodeText requires a type"),
+        "{messages}"
+    );
+    assert!(
+        messages.contains("Yaml.encodeText requires a type"),
+        "{messages}"
+    );
+    assert!(
+        messages.contains("Toml.encodeText requires a type"),
+        "{messages}"
+    );
+    assert!(messages.contains("use Json.encode instead"), "{messages}");
+}
+
+#[test]
 fn recursive_variant_decode_keeps_the_existing_unsupported_wire_boundary() {
     let dir = TempDir::new("recursive-runtime-variant");
     write(

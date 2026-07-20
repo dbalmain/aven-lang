@@ -2472,10 +2472,9 @@ impl<'a> Checker<'a> {
                 HostComptimeParam::Value(_) => self
                     .evaluate_comptime_param_argument(arg, &bindings)
                     .map(|argument| argument.value),
-                HostComptimeParam::TypeOf(_) => arg_types.get(index).and_then(|actual| {
+                HostComptimeParam::TypeOf(_) => arg_types.get(index).map(|actual| {
                     let actual = self.normalize(&self.resolve_and_default(actual));
-                    host_comptime_reifiable_type(&actual)
-                        .then_some(comptime::ComptimeValue::ReifiedType(actual))
+                    comptime::ComptimeValue::ReifiedType(actual)
                 }),
             }) else {
                 return Some(Type::Deferred);
@@ -2502,7 +2501,16 @@ impl<'a> Checker<'a> {
             return Some(Type::Deferred);
         }
 
-        match spec.resolver.resolve(&comptime_args) {
+        let type_context = crate::ComptimeTypeContext {
+            type_definitions: &self.type_definitions,
+            named_families: &self.named_families,
+            named_family_aliases: &self.named_family_aliases,
+            recursive_type_unfoldings: &self.recursive_type_unfoldings,
+        };
+        match spec
+            .resolver
+            .resolve_with_type_context(&comptime_args, &type_context)
+        {
             Ok(ty) => Some(ty),
             Err(error) => {
                 self.report_host_comptime_error(error, error_span);
@@ -3693,33 +3701,6 @@ fn export_generic_name(index: usize) -> String {
         .get(index)
         .map(|letter| char::from(*letter).to_string())
         .unwrap_or_else(|| format!("t{index}"))
-}
-
-fn host_comptime_reifiable_type(ty: &Type) -> bool {
-    match ty {
-        Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
-        Type::Named(_) | Type::Recursive(_) => true,
-        Type::Apply { callee, args } => {
-            host_comptime_reifiable_type(callee) && args.iter().all(host_comptime_reifiable_type)
-        }
-        Type::Function { params, result, .. } => {
-            params.iter().all(host_comptime_reifiable_type) && host_comptime_reifiable_type(result)
-        }
-        Type::Optional(inner) | Type::Nullable(inner) => host_comptime_reifiable_type(inner),
-        Type::Tuple(items) => items.iter().all(host_comptime_reifiable_type),
-        Type::Record(row) | Type::Variant(row) => row.entries.iter().all(|entry| match entry {
-            RowEntry::Field { ty, .. } => host_comptime_reifiable_type(ty),
-            RowEntry::Tag { payload, .. } => payload.iter().all(host_comptime_reifiable_type),
-            RowEntry::Literal { .. } => true,
-        }),
-        Type::SlotRecord { data, slots } => [data, slots].into_iter().all(|row| {
-            row.entries.iter().all(|entry| match entry {
-                RowEntry::Field { ty, .. } => host_comptime_reifiable_type(ty),
-                RowEntry::Tag { payload, .. } => payload.iter().all(host_comptime_reifiable_type),
-                RowEntry::Literal { .. } => true,
-            })
-        }),
-    }
 }
 
 fn receiver_type_carries_member(ty: &Type, member: &str) -> bool {

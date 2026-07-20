@@ -615,6 +615,12 @@ pub fn json_encode_type() -> Type {
     )
 }
 
+/// `(a) -> Text` — `Json.encodeText` is additionally gated by a host comptime
+/// resolver which proves `a` cannot contain a `Float`.
+pub fn json_encode_text_type() -> Type {
+    build::function(vec![build::var("a")], build::text())
+}
+
 /// The base `Json.decode` type: `(Text, ? = _) -> ?`. The checker uses it for
 /// arity and the input text argument; the host comptime resolver refines the
 /// result from the optional trailing type argument, defaulting to `Data`.
@@ -631,6 +637,11 @@ pub fn yaml_encode_type() -> Type {
     )
 }
 
+/// `(a) -> Text`; the comptime resolver rejects types that may contain Float.
+pub fn yaml_encode_text_type() -> Type {
+    build::function(vec![build::var("a")], build::text())
+}
+
 /// The base `Yaml.decode` type: `(Text, ? = _) -> ?`.
 pub fn yaml_decode_base_type() -> Type {
     format_decode_base_type()
@@ -643,6 +654,11 @@ pub fn toml_encode_type() -> Type {
         vec![build::var("a")],
         build::result(build::text(), build::named("TomlEncodeError")),
     )
+}
+
+/// `(a) -> Text`; the comptime resolver rejects types that may contain Float.
+pub fn toml_encode_text_type() -> Type {
+    build::function(vec![build::var("a")], build::text())
 }
 
 /// The base `Toml.decode` type: `(Text, ? = _) -> ?`.
@@ -818,12 +834,33 @@ pub fn standard_check_host_globals() -> HostGlobals {
                 HostComptimeFnSpec::new(json::decode_comptime_resolver(), vec![1]),
             ),
             (
+                "Json.encodeText".to_owned(),
+                HostComptimeFnSpec::new_type_of(
+                    text_format::encode_text_comptime_resolver("Json"),
+                    vec![0],
+                ),
+            ),
+            (
                 "Yaml.decode".to_owned(),
                 HostComptimeFnSpec::new(yaml::decode_comptime_resolver(), vec![1]),
             ),
             (
+                "Yaml.encodeText".to_owned(),
+                HostComptimeFnSpec::new_type_of(
+                    text_format::encode_text_comptime_resolver("Yaml"),
+                    vec![0],
+                ),
+            ),
+            (
                 "Toml.decode".to_owned(),
                 HostComptimeFnSpec::new(toml_format::decode_comptime_resolver(), vec![1]),
+            ),
+            (
+                "Toml.encodeText".to_owned(),
+                HostComptimeFnSpec::new_type_of(
+                    text_format::encode_text_comptime_resolver("Toml"),
+                    vec![0],
+                ),
             ),
             (
                 "Http.get".to_owned(),
@@ -886,12 +923,13 @@ pub fn standard_check_host_globals() -> HostGlobals {
     )
 }
 
-/// The statics the `Json` type carries: `encode`/`decode`. Shared by the
+/// The statics the `Json` type carries: `encode`/`encodeText`/`decode`. Shared by the
 /// hand-built [`standard_check_host_globals`] and [`Host::register_json`] so the
 /// two registration paths can't drift.
 pub(crate) fn json_statics() -> Vec<(String, Type)> {
     vec![
         ("encode".to_owned(), json_encode_type()),
+        ("encodeText".to_owned(), json_encode_text_type()),
         ("decode".to_owned(), json_decode_base_type()),
     ]
 }
@@ -899,6 +937,7 @@ pub(crate) fn json_statics() -> Vec<(String, Type)> {
 pub(crate) fn yaml_statics() -> Vec<(String, Type)> {
     vec![
         ("encode".to_owned(), yaml_encode_type()),
+        ("encodeText".to_owned(), yaml_encode_text_type()),
         ("decode".to_owned(), yaml_decode_base_type()),
     ]
 }
@@ -906,6 +945,7 @@ pub(crate) fn yaml_statics() -> Vec<(String, Type)> {
 pub(crate) fn toml_statics() -> Vec<(String, Type)> {
     vec![
         ("encode".to_owned(), toml_encode_type()),
+        ("encodeText".to_owned(), toml_encode_text_type()),
         ("decode".to_owned(), toml_decode_base_type()),
     ]
 }
@@ -1229,7 +1269,7 @@ mod tests {
         }
 
         // Format names are type artifacts carrying statics, not namespace
-        // records: they are absent from `types` and their `encode`/`decode`
+        // records: they are absent from `types` and their codec statics
         // members live in the statics table.
         let host_globals = standard_check_host_globals();
         let data = host_globals
@@ -1263,7 +1303,7 @@ mod tests {
                 .iter()
                 .map(|field| field.name.as_str())
                 .collect::<Vec<_>>();
-            assert_eq!(static_names, vec!["encode", "decode"]);
+            assert_eq!(static_names, vec!["encode", "encodeText", "decode"]);
 
             let encode = static_type(&statics, "encode");
             let (encode_params, encode_result) = function_signature(&encode)
@@ -1274,6 +1314,13 @@ mod tests {
                 encode_result,
                 build::result(build::text(), build::named(error))
             );
+
+            let encode_text = static_type(&statics, "encodeText");
+            let (encode_text_params, encode_text_result) = function_signature(&encode_text)
+                .unwrap_or_else(|| panic!("{format}.encodeText is a function"));
+            assert_eq!(function_required_arity(&encode_text), Some(1));
+            assert_eq!(encode_text_params, vec![build::var("a")]);
+            assert_eq!(encode_text_result, build::text());
 
             let decode = static_type(&statics, "decode");
             let (decode_params, decode_result) = function_signature(&decode)

@@ -715,7 +715,11 @@ fn completion_at_json_static_access_lists_statics() {
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(labels, vec!["encode", "decode"], "{format} statics");
+        assert_eq!(
+            labels,
+            vec!["encode", "encodeText", "decode"],
+            "{format} statics"
+        );
     }
 }
 

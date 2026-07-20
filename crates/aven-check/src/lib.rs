@@ -14,15 +14,15 @@ use aven_parser::{Expr, ExprKind, Item, Module, RecordEntry};
 
 pub use comptime::{ComptimeExport, ComptimeModuleIdentity, ComptimeOrigin, SpecializationKey};
 pub use host_comptime::{
-    ComptimeArg, ComptimeError, HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals,
-    HostStatics,
+    ComptimeArg, ComptimeError, ComptimeTypeContext, HostComptimeFn, HostComptimeFnSpec,
+    HostComptimeParam, HostGlobals, HostStatics,
 };
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
 pub use ty::{
     MethodConstraint, QualifiedType, RecordField, RecursiveTypeId, Row, RowEntry, RowTail, Type,
     function_required_arity, function_signature, is_text_type, literal_union_members,
-    record_fields, render_type, type_contains_deferred, variant_tags,
+    might_contain_float, record_fields, render_type, type_contains_deferred, variant_tags,
 };
 
 /// Clone the completed one-level head for a recursive reference. Nested

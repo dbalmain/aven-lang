@@ -24,6 +24,11 @@ impl Host {
                     encode_native(),
                 ),
                 (
+                    "encodeText".to_owned(),
+                    crate::toml_encode_text_type(),
+                    encode_text_native(),
+                ),
+                (
                     "decode".to_owned(),
                     crate::toml_decode_base_type(),
                     decode_native(),
@@ -33,6 +38,11 @@ impl Host {
         self.register_type_definition("TomlError", crate::toml_error_type());
         self.register_type_definition("TomlEncodeError", crate::toml_encode_error_type());
         self.register_comptime_resolver("Toml.decode", vec![1], decode_comptime_resolver());
+        self.register_comptime_type_resolver(
+            "Toml.encodeText",
+            vec![0],
+            crate::text_format::encode_text_comptime_resolver("Toml"),
+        );
     }
 }
 
@@ -119,6 +129,21 @@ fn encode_native() -> Value {
             Ok(text) => ok_value(Value::Text(text)),
             Err(error) => err_value(encode_error_value(error)),
         })
+    })
+}
+
+fn encode_text_native() -> Value {
+    Value::native(|args| {
+        let [value] = args else {
+            return Err(format!(
+                "Toml.encodeText expects 1 argument, got {}",
+                args.len()
+            ));
+        };
+        let text = encode_to_text(value).unwrap_or_else(|error| {
+            panic!("Toml.encodeText Float-free type invariant failed: {error}")
+        });
+        Ok(Value::Text(text))
     })
 }
 

@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use aven_parser::{Literal, decode_string_literal};
 
+use crate::NamedFamilyType;
 use crate::comptime;
-use crate::ty::Type;
+use crate::ty::{RecursiveTypeId, Type};
 
 /// Public facade for values the checker can prove at compile time before
 /// dispatching to a host-provided resolver.
@@ -104,6 +106,26 @@ impl ComptimeError {
 
 pub trait HostComptimeFn {
     fn resolve(&self, args: &[ComptimeArg]) -> Result<Type, ComptimeError>;
+
+    /// Resolve with the checker's structural type tables when a host function
+    /// needs to inspect a reified runtime argument type.
+    fn resolve_with_type_context(
+        &self,
+        args: &[ComptimeArg],
+        _context: &ComptimeTypeContext<'_>,
+    ) -> Result<Type, ComptimeError> {
+        self.resolve(args)
+    }
+}
+
+/// Checker-owned structural information for host resolvers that analyze a
+/// reified type. It keeps nominal family bases and recursive heads available
+/// without making them part of every [`Type`] node.
+pub struct ComptimeTypeContext<'a> {
+    pub type_definitions: &'a HashMap<String, Type>,
+    pub named_families: &'a HashMap<String, NamedFamilyType>,
+    pub named_family_aliases: &'a HashMap<String, String>,
+    pub recursive_type_unfoldings: &'a HashMap<RecursiveTypeId, Type>,
 }
 
 #[derive(Clone)]

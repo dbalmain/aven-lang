@@ -1239,6 +1239,74 @@ pub(crate) fn type_contains_variable(ty: &Type) -> bool {
     found
 }
 
+/// Whether a type may contain a `Float` value. Unknown leaves and open rows
+/// are deliberately conservative: callers use this to establish a static
+/// safety guarantee, not to speculate about a runtime value.
+pub fn might_contain_float(ty: &Type, context: &crate::ComptimeTypeContext<'_>) -> bool {
+    fn visit(
+        ty: &Type,
+        context: &crate::ComptimeTypeContext<'_>,
+        recursive: &mut HashSet<RecursiveTypeId>,
+    ) -> bool {
+        match ty {
+            Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
+            Type::Named(name) if name == "Float" => true,
+            Type::Named(name) => {
+                let Some(owner) = context.named_family_aliases.get(name) else {
+                    return false;
+                };
+                context
+                    .named_families
+                    .get(owner)
+                    .and_then(|family| family.primitive_base.as_ref())
+                    .is_some_and(|base| visit(base, context, recursive))
+            }
+            Type::Recursive(id) => {
+                if !recursive.insert(*id) {
+                    return false;
+                }
+                let result = context
+                    .recursive_type_unfoldings
+                    .get(id)
+                    .is_some_and(|head| visit(head, context, recursive));
+                recursive.remove(id);
+                result
+            }
+            Type::Apply { callee, args } => {
+                visit(callee, context, recursive)
+                    || args.iter().any(|arg| visit(arg, context, recursive))
+            }
+            Type::Function { params, result, .. } => {
+                params.iter().any(|param| visit(param, context, recursive))
+                    || visit(result, context, recursive)
+            }
+            Type::Optional(inner) | Type::Nullable(inner) => visit(inner, context, recursive),
+            Type::Tuple(items) => items.iter().any(|item| visit(item, context, recursive)),
+            Type::Record(row) | Type::Variant(row) => visit_row(row, context, recursive),
+            Type::SlotRecord { data, slots } => {
+                visit_row(data, context, recursive) || visit_row(slots, context, recursive)
+            }
+        }
+    }
+
+    fn visit_row(
+        row: &Row,
+        context: &crate::ComptimeTypeContext<'_>,
+        recursive: &mut HashSet<RecursiveTypeId>,
+    ) -> bool {
+        !matches!(row.tail, RowTail::Closed)
+            || row.entries.iter().any(|entry| match entry {
+                RowEntry::Field { ty, .. } => visit(ty, context, recursive),
+                RowEntry::Tag { payload, .. } => {
+                    payload.iter().any(|ty| visit(ty, context, recursive))
+                }
+                RowEntry::Literal { .. } => false,
+            })
+    }
+
+    visit(ty, context, &mut HashSet::new())
+}
+
 /// Free `Type::Variable` names in `ty` (annotation binders / skolems).
 pub(crate) fn type_variable_names(ty: &Type) -> HashSet<String> {
     let mut names = HashSet::new();
