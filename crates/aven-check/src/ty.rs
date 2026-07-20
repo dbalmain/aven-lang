@@ -94,6 +94,10 @@ pub const TEXT_METHOD_NAMES: &[&str] = &[
     "padRight",
     "toInt",
     "toFloat",
+    "reverse",
+    "indexOf",
+    "slice",
+    "capitalize",
 ];
 
 pub const RESULT_METHOD_NAMES: &[&str] = &[
@@ -325,6 +329,15 @@ fn text_method_type(name: &str) -> Option<Type> {
         "toFloat" => Some(function(
             Vec::new(),
             Type::Optional(Box::new(named_builtin("Float"))),
+        )),
+        "reverse" | "capitalize" => Some(function(Vec::new(), text)),
+        "indexOf" => Some(function(
+            vec![text],
+            Type::Optional(Box::new(named_builtin("Int"))),
+        )),
+        "slice" => Some(function(
+            vec![named_builtin("Int"), named_builtin("Int")],
+            text,
         )),
         _ => None,
     }

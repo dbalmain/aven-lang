@@ -1899,6 +1899,140 @@ fn money_style_composition_via_int_helpers() {
 }
 
 #[test]
+fn text_reverse_index_of_slice_capitalize() {
+    // reverse: scalar-order reverse; empty stays empty.
+    // indexOf: char-offset; missing → undefined.
+    // slice: clamp into [0,len]; start>end → empty; no negative indexing.
+    // capitalize: first scalar uppercased; empty unchanged.
+    assert_module_value(
+        "[\
+           \"abc\".reverse(), \"\".reverse(), \"a☕b\".reverse(), \
+           \"hello\".indexOf(\"ll\") ?? -1, \"hello\".indexOf(\"x\") ?? -1, \
+           \"a☕b\".indexOf(\"☕\") ?? -1, \"a☕b\".indexOf(\"b\") ?? -1, \
+           \"hello\".slice(1, 4), \"hello\".slice(-2, 99), \"hello\".slice(3, 1), \
+           \"\".slice(0, 1), \"hello\".slice(0, 0), \
+           \"hello\".capitalize(), \"\".capitalize(), \"école\".capitalize()\
+         ]\n",
+        array_value(vec![
+            Value::Text("cba".to_owned()),
+            Value::Text(String::new()),
+            Value::Text("b☕a".to_owned()),
+            Value::Int(2),
+            Value::Int(-1),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Text("ell".to_owned()),
+            Value::Text("hello".to_owned()),
+            Value::Text(String::new()),
+            Value::Text(String::new()),
+            Value::Text(String::new()),
+            Value::Text("Hello".to_owned()),
+            Value::Text(String::new()),
+            Value::Text("École".to_owned()),
+        ]),
+    );
+
+    assert_module_value("\"missing\".indexOf(\"z\")\n", Value::Undefined);
+}
+
+#[test]
+fn int_numeric_helpers() {
+    assert_module_value(
+        "[\
+           (-5).abs(), 0.abs(), 5.abs(), \
+           3.min(5), 5.min(3), (-1).min(-3), \
+           3.max(5), 5.max(3), (-1).max(-3), \
+           10.clamp(0, 5), (-2).clamp(0, 5), 3.clamp(0, 5), \
+           3.clamp(5, 0), \
+           2.pow(10), 2.pow(0), 2.pow(-3), 0.pow(0), \
+           (-3).sign(), 0.sign(), 7.sign(), \
+           42.toFloat()\
+         ]\n",
+        array_value(vec![
+            Value::Int(5),
+            Value::Int(0),
+            Value::Int(5),
+            Value::Int(3),
+            Value::Int(3),
+            Value::Int(-3),
+            Value::Int(5),
+            Value::Int(5),
+            Value::Int(-1),
+            Value::Int(5),
+            Value::Int(0),
+            Value::Int(3),
+            Value::Int(5), // min > max → return min
+            Value::Int(1024),
+            Value::Int(1),
+            Value::Int(1), // negative exponent clamps to 0 → 1
+            Value::Int(1),
+            Value::Int(-1),
+            Value::Int(0),
+            Value::Int(1),
+            Value::Float(42.0),
+        ]),
+    );
+}
+
+#[test]
+fn float_numeric_helpers() {
+    assert_module_value(
+        "[\
+           (-1.5).abs(), 0.0.abs(), \
+           1.0.min(2.0), 2.0.min(1.0), \
+           1.0.max(2.0), 2.0.max(1.0), \
+           3.5.clamp(0.0, 1.0), (-2.0).clamp(0.0, 1.0), 0.5.clamp(0.0, 1.0), \
+           0.5.clamp(2.0, 1.0), \
+           2.0.pow(3.0), \
+           1.5.round(), 1.5.floor(), 1.5.ceil(), 1.5.truncate(), \
+           (-1.5).truncate(), 4.0.sqrt()\
+         ]\n",
+        array_value(vec![
+            Value::Float(1.5),
+            Value::Float(0.0),
+            Value::Float(1.0),
+            Value::Float(1.0),
+            Value::Float(2.0),
+            Value::Float(2.0),
+            Value::Float(1.0),
+            Value::Float(0.0),
+            Value::Float(0.5),
+            Value::Float(2.0), // min > max → return min
+            Value::Float(8.0),
+            Value::Float(2.0),
+            Value::Float(1.0),
+            Value::Float(2.0),
+            Value::Float(1.0),
+            Value::Float(-1.0),
+            Value::Float(2.0),
+        ]),
+    );
+
+    // NaN handling: f64::min/max propagate the non-NaN operand.
+    let nan_min = eval_module(&parse_ok("(0.0 / 0.0).min(1.0)\n"));
+    let Some(Value::Float(nan_min_v)) = nan_min.value else {
+        panic!("expected Float from NaN.min, got {nan_min:?}");
+    };
+    assert!(nan_min.diagnostics.is_empty());
+    assert!((nan_min_v - 1.0).abs() < f64::EPSILON);
+
+    let nan_max = eval_module(&parse_ok("1.0.max(0.0 / 0.0)\n"));
+    let Some(Value::Float(nan_max_v)) = nan_max.value else {
+        panic!("expected Float from max(NaN), got {nan_max:?}");
+    };
+    assert!(nan_max.diagnostics.is_empty());
+    assert!((nan_max_v - 1.0).abs() < f64::EPSILON);
+
+    // Negative sqrt → NaN.
+    let neg_sqrt = eval_module(&parse_ok("(-1.0).sqrt()\n"));
+    let Some(Value::Float(neg_sqrt_v)) = neg_sqrt.value else {
+        panic!("expected Float from negative sqrt, got {neg_sqrt:?}");
+    };
+    assert!(neg_sqrt.diagnostics.is_empty());
+    assert!(neg_sqrt_v.is_nan());
+}
+
+#[test]
 fn text_methods_parse_numbers() {
     assert_module_value(
         concat!(

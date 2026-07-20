@@ -862,6 +862,10 @@ fn completion_at_text_field_access_returns_builtin_methods() {
         "padRight",
         "toInt",
         "toFloat",
+        "reverse",
+        "indexOf",
+        "slice",
+        "capitalize",
     ] {
         assert!(
             labels.contains(&name),

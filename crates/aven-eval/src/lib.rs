@@ -518,6 +518,10 @@ pub const TEXT_METHOD_NAMES: &[&str] = &[
     "padRight",
     "toInt",
     "toFloat",
+    "reverse",
+    "indexOf",
+    "slice",
+    "capitalize",
 ];
 
 impl fmt::Debug for Value {
@@ -3360,6 +3364,13 @@ fn unbound_builtin_type_method(owner: &str, field: &str) -> Option<Value> {
         ("Int", "div") => Some(unbound_int_checked_method("div", i64::checked_div)),
         ("Int", "mod") => Some(unbound_int_checked_method("mod", i64::checked_rem)),
         ("Int", "toGrouped") => Some(unbound_int_to_grouped_method()),
+        ("Int", "abs") => Some(unbound_int_nullary_method("abs", |v| v.saturating_abs())),
+        ("Int", "min") => Some(unbound_int_binary_method("min", i64::min)),
+        ("Int", "max") => Some(unbound_int_binary_method("max", i64::max)),
+        ("Int", "clamp") => Some(unbound_int_clamp_method()),
+        ("Int", "pow") => Some(unbound_int_pow_method()),
+        ("Int", "sign") => Some(unbound_int_nullary_method("sign", int_sign)),
+        ("Int", "toFloat") => Some(unbound_int_to_float_method()),
         ("Float", "+") => Some(unbound_binary_operator("+")),
         ("Float", "-") => Some(unbound_binary_operator("-")),
         ("Float", "*") => Some(unbound_binary_operator("*")),
@@ -3377,6 +3388,16 @@ fn unbound_builtin_type_method(owner: &str, field: &str) -> Option<Value> {
         }
         ("Float", "ieeeEquals") => Some(unbound_float_ieee_equals_method()),
         ("Float", "toFixed") => Some(unbound_float_to_fixed_method()),
+        ("Float", "abs") => Some(unbound_float_nullary_float("abs", f64::abs)),
+        ("Float", "min") => Some(unbound_float_binary_method("min", f64::min)),
+        ("Float", "max") => Some(unbound_float_binary_method("max", f64::max)),
+        ("Float", "clamp") => Some(unbound_float_clamp_method()),
+        ("Float", "pow") => Some(unbound_float_binary_method("pow", f64::powf)),
+        ("Float", "round") => Some(unbound_float_nullary_float("round", f64::round)),
+        ("Float", "floor") => Some(unbound_float_nullary_float("floor", f64::floor)),
+        ("Float", "ceil") => Some(unbound_float_nullary_float("ceil", f64::ceil)),
+        ("Float", "truncate") => Some(unbound_float_nullary_float("truncate", f64::trunc)),
+        ("Float", "sqrt") => Some(unbound_float_nullary_float("sqrt", f64::sqrt)),
         ("Text", "+") => Some(unbound_binary_operator("+")),
         _ => None,
     }
@@ -3529,6 +3550,15 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (Value::Int(value), "div") => Some(int_checked_method(*value, "div", i64::checked_div)),
         (Value::Int(value), "mod") => Some(int_checked_method(*value, "mod", i64::checked_rem)),
         (Value::Int(value), "toGrouped") => Some(int_to_grouped_method(*value)),
+        (Value::Int(value), "abs") => {
+            Some(int_nullary_method(*value, "abs", |v| v.saturating_abs()))
+        }
+        (Value::Int(value), "min") => Some(int_binary_method(*value, "min", i64::min)),
+        (Value::Int(value), "max") => Some(int_binary_method(*value, "max", i64::max)),
+        (Value::Int(value), "clamp") => Some(int_clamp_method(*value)),
+        (Value::Int(value), "pow") => Some(int_pow_method(*value)),
+        (Value::Int(value), "sign") => Some(int_nullary_method(*value, "sign", int_sign)),
+        (Value::Int(value), "toFloat") => Some(int_to_float_method(*value)),
         (Value::Float(value), "isFinite") => {
             Some(float_nullary_bool(*value, "isFinite", f64::is_finite))
         }
@@ -3538,6 +3568,18 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         }
         (Value::Float(value), "ieeeEquals") => Some(float_ieee_equals_method(*value)),
         (Value::Float(value), "toFixed") => Some(float_to_fixed_method(*value)),
+        (Value::Float(value), "abs") => Some(float_nullary_float(*value, "abs", f64::abs)),
+        (Value::Float(value), "min") => Some(float_binary_method(*value, "min", f64::min)),
+        (Value::Float(value), "max") => Some(float_binary_method(*value, "max", f64::max)),
+        (Value::Float(value), "clamp") => Some(float_clamp_method(*value)),
+        (Value::Float(value), "pow") => Some(float_binary_method(*value, "pow", f64::powf)),
+        (Value::Float(value), "round") => Some(float_nullary_float(*value, "round", f64::round)),
+        (Value::Float(value), "floor") => Some(float_nullary_float(*value, "floor", f64::floor)),
+        (Value::Float(value), "ceil") => Some(float_nullary_float(*value, "ceil", f64::ceil)),
+        (Value::Float(value), "truncate") => {
+            Some(float_nullary_float(*value, "truncate", f64::trunc))
+        }
+        (Value::Float(value), "sqrt") => Some(float_nullary_float(*value, "sqrt", f64::sqrt)),
         (Value::Text(text), field) => text_method(text, field),
         (
             Value::Tag { name, payload },
@@ -3616,6 +3658,366 @@ fn float_ieee_equals_method(left: f64) -> Value {
     })
 }
 
+fn int_sign(value: i64) -> i64 {
+    match value.cmp(&0) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+fn int_nullary_method(value: i64, name: &'static str, f: fn(i64) -> i64) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Int.{name} expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(Value::Int(f(value)))
+    })
+}
+
+fn int_binary_method(left: i64, name: &'static str, f: fn(i64, i64) -> i64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Int.{name} expects 1 argument, got {}", args.len()));
+        }
+        let Value::Int(right) = &args[0] else {
+            return Err(format!(
+                "Int.{name} expects Int, got {}",
+                args[0].type_name()
+            ));
+        };
+        Ok(Value::Int(f(left, *right)))
+    })
+}
+
+/// Total clamp. When `min > max`, returns `min` (easy-to-revisit choice).
+fn int_clamp(value: i64, min: i64, max: i64) -> i64 {
+    if min > max {
+        min
+    } else {
+        value.clamp(min, max)
+    }
+}
+
+fn int_clamp_method(value: i64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!("Int.clamp expects 2 arguments, got {}", args.len()));
+        }
+        let Value::Int(min) = &args[0] else {
+            return Err(format!(
+                "Int.clamp expects Int min, got {}",
+                args[0].type_name()
+            ));
+        };
+        let Value::Int(max) = &args[1] else {
+            return Err(format!(
+                "Int.clamp expects Int max, got {}",
+                args[1].type_name()
+            ));
+        };
+        Ok(Value::Int(int_clamp(value, *min, *max)))
+    })
+}
+
+/// Negative exponents clamp to 0 (result `1`). Overflow is a runtime error,
+/// matching `Int.^`.
+fn int_pow(base: i64, exponent: i64) -> Result<i64, String> {
+    let exponent = exponent.max(0);
+    let Ok(exponent) = u32::try_from(exponent) else {
+        return Err("Int.pow exponent is too large".to_owned());
+    };
+    base.checked_pow(exponent)
+        .ok_or_else(|| "integer overflow in Int.pow".to_owned())
+}
+
+fn int_pow_method(base: i64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Int.pow expects 1 argument, got {}", args.len()));
+        }
+        let Value::Int(exponent) = &args[0] else {
+            return Err(format!("Int.pow expects Int, got {}", args[0].type_name()));
+        };
+        int_pow(base, *exponent).map(Value::Int)
+    })
+}
+
+fn int_to_float_method(value: i64) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Int.toFloat expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(Value::Float(value as f64))
+    })
+}
+
+fn unbound_int_nullary_method(name: &'static str, f: fn(i64) -> i64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "unbound Int.{name} expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Int(value) = receiver else {
+            return Err(format!(
+                "unbound Int.{name} expects Int receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        Ok(Value::Int(f(value)))
+    })
+}
+
+fn unbound_int_binary_method(name: &'static str, f: fn(i64, i64) -> i64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "unbound Int.{name} expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Int(left) = receiver else {
+            return Err(format!(
+                "unbound Int.{name} expects Int receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        let Value::Int(right) = &args[1] else {
+            return Err(format!(
+                "unbound Int.{name} expects Int, got {}",
+                args[1].type_name()
+            ));
+        };
+        Ok(Value::Int(f(left, *right)))
+    })
+}
+
+fn unbound_int_clamp_method() -> Value {
+    Value::native(move |args| {
+        if args.len() != 3 {
+            return Err(format!(
+                "unbound Int.clamp expects 3 arguments, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Int(value) = receiver else {
+            return Err(format!(
+                "unbound Int.clamp expects Int receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        let Value::Int(min) = &args[1] else {
+            return Err(format!(
+                "unbound Int.clamp expects Int min, got {}",
+                args[1].type_name()
+            ));
+        };
+        let Value::Int(max) = &args[2] else {
+            return Err(format!(
+                "unbound Int.clamp expects Int max, got {}",
+                args[2].type_name()
+            ));
+        };
+        Ok(Value::Int(int_clamp(value, *min, *max)))
+    })
+}
+
+fn unbound_int_pow_method() -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "unbound Int.pow expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Int(base) = receiver else {
+            return Err(format!(
+                "unbound Int.pow expects Int receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        let Value::Int(exponent) = &args[1] else {
+            return Err(format!(
+                "unbound Int.pow expects Int, got {}",
+                args[1].type_name()
+            ));
+        };
+        int_pow(base, *exponent).map(Value::Int)
+    })
+}
+
+fn unbound_int_to_float_method() -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "unbound Int.toFloat expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Int(value) = receiver else {
+            return Err(format!(
+                "unbound Int.toFloat expects Int receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        Ok(Value::Float(value as f64))
+    })
+}
+
+fn float_nullary_float(value: f64, name: &'static str, f: fn(f64) -> f64) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Float.{name} expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(Value::Float(f(value)))
+    })
+}
+
+fn float_binary_method(left: f64, name: &'static str, f: fn(f64, f64) -> f64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Float.{name} expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let Value::Float(right) = &args[0] else {
+            return Err(format!(
+                "Float.{name} expects Float, got {}",
+                args[0].type_name()
+            ));
+        };
+        Ok(Value::Float(f(left, *right)))
+    })
+}
+
+/// Total clamp. When `min > max`, returns `min`. NaN receiver is preserved.
+/// Bounds use `f64::max`/`f64::min` (non-NaN wins if one bound is NaN).
+fn float_clamp(value: f64, min: f64, max: f64) -> f64 {
+    if value.is_nan() {
+        return value;
+    }
+    if min > max {
+        return min;
+    }
+    value.max(min).min(max)
+}
+
+fn float_clamp_method(value: f64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "Float.clamp expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let Value::Float(min) = &args[0] else {
+            return Err(format!(
+                "Float.clamp expects Float min, got {}",
+                args[0].type_name()
+            ));
+        };
+        let Value::Float(max) = &args[1] else {
+            return Err(format!(
+                "Float.clamp expects Float max, got {}",
+                args[1].type_name()
+            ));
+        };
+        Ok(Value::Float(float_clamp(value, *min, *max)))
+    })
+}
+
+fn unbound_float_nullary_float(name: &'static str, f: fn(f64) -> f64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "unbound Float.{name} expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Float(value) = receiver else {
+            return Err(format!(
+                "unbound Float.{name} expects Float receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        Ok(Value::Float(f(value)))
+    })
+}
+
+fn unbound_float_binary_method(name: &'static str, f: fn(f64, f64) -> f64) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "unbound Float.{name} expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Float(left) = receiver else {
+            return Err(format!(
+                "unbound Float.{name} expects Float receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        let Value::Float(right) = &args[1] else {
+            return Err(format!(
+                "unbound Float.{name} expects Float, got {}",
+                args[1].type_name()
+            ));
+        };
+        Ok(Value::Float(f(left, *right)))
+    })
+}
+
+fn unbound_float_clamp_method() -> Value {
+    Value::native(move |args| {
+        if args.len() != 3 {
+            return Err(format!(
+                "unbound Float.clamp expects 3 arguments, got {}",
+                args.len()
+            ));
+        }
+        let receiver = erase_primitive_brand(args[0].clone());
+        let Value::Float(value) = receiver else {
+            return Err(format!(
+                "unbound Float.clamp expects Float receiver, got {}",
+                receiver.type_name()
+            ));
+        };
+        let Value::Float(min) = &args[1] else {
+            return Err(format!(
+                "unbound Float.clamp expects Float min, got {}",
+                args[1].type_name()
+            ));
+        };
+        let Value::Float(max) = &args[2] else {
+            return Err(format!(
+                "unbound Float.clamp expects Float max, got {}",
+                args[2].type_name()
+            ));
+        };
+        Ok(Value::Float(float_clamp(value, *min, *max)))
+    })
+}
+
 /// The ambient `toText` method: renders the receiver with the display
 /// protocol, so container elements observe family overrides and attachments.
 fn ambient_to_text_method(receiver: Value, attachments: BuiltinMethodEnvironment) -> Value {
@@ -3685,6 +4087,12 @@ fn text_method(text: &str, field: &str) -> Option<Value> {
         "toFloat" => Some(text_nullary_optional(text, "toFloat", |s| {
             s.parse::<f64>().ok().map(Value::Float)
         })),
+        "reverse" => Some(text_nullary_text(text, "reverse", |s| {
+            s.chars().rev().collect()
+        })),
+        "indexOf" => Some(text_index_of_method(text)),
+        "slice" => Some(text_slice_method(text)),
+        "capitalize" => Some(text_nullary_text(text, "capitalize", text_capitalize)),
         _ => None,
     }
 }
@@ -3859,6 +4267,86 @@ fn text_pad_method(text: String, left: bool) -> Value {
         let pad = expect_text_arg(&args[1], &format!("Text.{name}"))?;
         Ok(Value::Text(text_pad(&text, *width, pad, left)))
     })
+}
+
+/// Char-offset of the first occurrence of `needle` (Unicode scalar positions).
+/// Missing → `undefined` (`?Int`).
+fn text_index_of_method(text: String) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!(
+                "Text.indexOf expects 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let needle = expect_text_arg(&args[0], "Text.indexOf")?;
+        let Some(byte_offset) = text.find(needle) else {
+            return Ok(Value::Undefined);
+        };
+        let char_offset = text[..byte_offset].chars().count();
+        let Ok(index) = i64::try_from(char_offset) else {
+            return Err("Text.indexOf position is too large".to_owned());
+        };
+        Ok(Value::Int(index))
+    })
+}
+
+/// Char-range substring. Clamps `start`/`end` into `[0, len]`; if
+/// `start > end` after clamping, returns empty text. No negative indexing.
+fn text_slice(text: &str, start: i64, end: i64) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let start = clamp_char_index(start, len);
+    let end = clamp_char_index(end, len);
+    if start >= end {
+        return String::new();
+    }
+    chars[start..end].iter().collect()
+}
+
+fn clamp_char_index(index: i64, len: usize) -> usize {
+    if index <= 0 {
+        return 0;
+    }
+    let Ok(index) = usize::try_from(index) else {
+        return len;
+    };
+    index.min(len)
+}
+
+fn text_slice_method(text: String) -> Value {
+    Value::native(move |args| {
+        if args.len() != 2 {
+            return Err(format!(
+                "Text.slice expects 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let Value::Int(start) = &args[0] else {
+            return Err(format!(
+                "Text.slice expects Int start, got {}",
+                args[0].type_name()
+            ));
+        };
+        let Value::Int(end) = &args[1] else {
+            return Err(format!(
+                "Text.slice expects Int end, got {}",
+                args[1].type_name()
+            ));
+        };
+        Ok(Value::Text(text_slice(&text, *start, *end)))
+    })
+}
+
+/// Uppercase the first Unicode scalar; leave the rest unchanged. Empty → empty.
+fn text_capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut result: String = first.to_uppercase().collect();
+    result.extend(chars);
+    result
 }
 
 /// Pad `text` to `width` Unicode scalar values (`chars().count()`), matching

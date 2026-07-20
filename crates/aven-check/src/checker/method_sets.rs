@@ -73,7 +73,9 @@ struct BuiltinMethodEntry {
 }
 
 const INT_PARAM: &[BuiltinType] = &[BuiltinType::Int];
+const INT_PARAMS_2: &[BuiltinType] = &[BuiltinType::Int, BuiltinType::Int];
 const FLOAT_PARAM: &[BuiltinType] = &[BuiltinType::Float];
+const FLOAT_PARAMS_2: &[BuiltinType] = &[BuiltinType::Float, BuiltinType::Float];
 const TEXT_PARAM: &[BuiltinType] = &[BuiltinType::Text];
 const NO_PARAMS: &[BuiltinType] = &[];
 
@@ -256,6 +258,48 @@ const BUILTIN_METHODS: &[BuiltinMethodEntry] = &[
         result: BuiltinResult::Plain(BuiltinType::Text),
     },
     BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "abs",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Int),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "min",
+        params: INT_PARAM,
+        result: BuiltinResult::Plain(BuiltinType::Int),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "max",
+        params: INT_PARAM,
+        result: BuiltinResult::Plain(BuiltinType::Int),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "clamp",
+        params: INT_PARAMS_2,
+        result: BuiltinResult::Plain(BuiltinType::Int),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "pow",
+        params: INT_PARAM,
+        result: BuiltinResult::Plain(BuiltinType::Int),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "sign",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Int),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Int,
+        member: "toFloat",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
         owner: BuiltinType::Float,
         member: "toText",
         params: NO_PARAMS,
@@ -266,6 +310,66 @@ const BUILTIN_METHODS: &[BuiltinMethodEntry] = &[
         member: "toFixed",
         params: INT_PARAM,
         result: BuiltinResult::Plain(BuiltinType::Text),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "abs",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "min",
+        params: FLOAT_PARAM,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "max",
+        params: FLOAT_PARAM,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "clamp",
+        params: FLOAT_PARAMS_2,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "pow",
+        params: FLOAT_PARAM,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "round",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "floor",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "ceil",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "truncate",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Float),
+    },
+    BuiltinMethodEntry {
+        owner: BuiltinType::Float,
+        member: "sqrt",
+        params: NO_PARAMS,
+        result: BuiltinResult::Plain(BuiltinType::Float),
     },
     BuiltinMethodEntry {
         owner: BuiltinType::Bool,
@@ -764,7 +868,23 @@ mod tests {
         }
         assert_signature("Int", "toGrouped", "Text", "Text");
         assert_signature("Float", "toFixed", "Int", "Text");
-        assert_eq!(BUILTIN_METHODS.len(), 33);
+        assert_nullary_signature("Int", "abs", "Int");
+        assert_signature("Int", "min", "Int", "Int");
+        assert_signature("Int", "max", "Int", "Int");
+        assert_nullary_signature("Int", "sign", "Int");
+        assert_nullary_signature("Int", "toFloat", "Float");
+        assert_signature("Int", "pow", "Int", "Int");
+        assert_nullary_signature("Float", "abs", "Float");
+        assert_signature("Float", "min", "Float", "Float");
+        assert_signature("Float", "max", "Float", "Float");
+        assert_signature("Float", "pow", "Float", "Float");
+        assert_nullary_signature("Float", "round", "Float");
+        assert_nullary_signature("Float", "floor", "Float");
+        assert_nullary_signature("Float", "ceil", "Float");
+        assert_nullary_signature("Float", "truncate", "Float");
+        assert_nullary_signature("Float", "sqrt", "Float");
+        // 33 prior + 7 Int + 10 Float
+        assert_eq!(BUILTIN_METHODS.len(), 50);
     }
 
     #[test]

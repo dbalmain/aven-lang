@@ -5516,6 +5516,26 @@ fn text_method_field_query_returns_typed_methods() {
     assert_eq!(pad_right.ty.render(), "(Int, Text) -> Text");
     assert_eq!(to_int.ty.render(), "() -> ?Int");
     assert_eq!(to_float.ty.render(), "() -> ?Float");
+    let reverse = fields
+        .iter()
+        .find(|field| field.name == "reverse")
+        .expect("reverse method");
+    let index_of = fields
+        .iter()
+        .find(|field| field.name == "indexOf")
+        .expect("indexOf method");
+    let slice = fields
+        .iter()
+        .find(|field| field.name == "slice")
+        .expect("slice method");
+    let capitalize = fields
+        .iter()
+        .find(|field| field.name == "capitalize")
+        .expect("capitalize method");
+    assert_eq!(reverse.ty.render(), "() -> Text");
+    assert_eq!(index_of.ty.render(), "Text -> ?Int");
+    assert_eq!(slice.ty.render(), "(Int, Int) -> Text");
+    assert_eq!(capitalize.ty.render(), "() -> Text");
     let literal_fields = record_fields(&build::text_literals(&["42"]))
         .expect("text literal unions have Text methods");
     assert!(
@@ -5554,6 +5574,10 @@ fn text_methods_type_check_and_reject_mismatches() {
         "r : Float = t.toFloat() ?? 0.0\n",
         "s = t.padLeft(4, \"0\")\n",
         "u = t.padRight(4, \" \")\n",
+        "v = t.reverse()\n",
+        "w : Int = t.indexOf(\"h\") ?? -1\n",
+        "x = t.slice(0, 1)\n",
+        "y = t.capitalize()\n",
     ));
     let ok_check = check_module(&ok.module);
     assert!(
@@ -5578,6 +5602,24 @@ fn text_methods_type_check_and_reject_mismatches() {
         1,
         "t.padLeft(\"2\", \"0\") should be a type mismatch: {:?}",
         pad_mismatch_check.diagnostics
+    );
+
+    let index_of_mismatch = parse_module("t : Text = \"hi\"\nvalue = t.indexOf(1)\n");
+    let index_of_check = check_module(&index_of_mismatch.module);
+    assert_eq!(
+        matching_codes(&index_of_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "t.indexOf(1) should be a type mismatch: {:?}",
+        index_of_check.diagnostics
+    );
+
+    let slice_mismatch = parse_module("t : Text = \"hi\"\nvalue = t.slice(0, \"1\")\n");
+    let slice_check = check_module(&slice_mismatch.module);
+    assert_eq!(
+        matching_codes(&slice_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "t.slice(0, \"1\") should be a type mismatch: {:?}",
+        slice_check.diagnostics
     );
 
     let numeric_mismatch = parse_module("t : Text = \"hi\"\nvalue = t.toInt(1)\n");
@@ -11041,6 +11083,18 @@ fn named_primitive_family_core_checks_construction_lifting_and_widening() {
     assert!(money.methods.contains_key("toText"));
     assert_eq!(money.methods["toGrouped"].result.render(), "Text");
     assert_eq!(money.methods["toGrouped"].params, vec![named("Text")]);
+    // Same-base Int results/params lift to Money (like `+`); foreign results stay.
+    assert_eq!(money.methods["abs"].result, named(owner));
+    assert_eq!(money.methods["abs"].params, Vec::<Type>::new());
+    assert_eq!(money.methods["min"].params, vec![named(owner)]);
+    assert_eq!(money.methods["min"].result, named(owner));
+    assert_eq!(
+        money.methods["clamp"].params,
+        vec![named(owner), named(owner)]
+    );
+    assert_eq!(money.methods["pow"].params, vec![named(owner)]);
+    assert_eq!(money.methods["sign"].result, named(owner));
+    assert_eq!(money.methods["toFloat"].result.render(), "Float");
 }
 
 #[test]
@@ -11108,6 +11162,106 @@ fn number_format_helpers_typecheck_and_reject_mismatches() {
             || !wrong_check.diagnostics.is_empty(),
         "Text.toGrouped should error: {:?}",
         wrong_check.diagnostics
+    );
+}
+
+#[test]
+fn int_float_numeric_helpers_typecheck_and_reject_mismatches() {
+    let ok = parse_module(concat!(
+        "a = (-5).abs()\n",
+        "b = 3.min(5)\n",
+        "c = 3.max(5)\n",
+        "d = 10.clamp(0, 5)\n",
+        "e = 2.pow(10)\n",
+        "f = (-3).sign()\n",
+        "g : Float = 42.toFloat()\n",
+        "h = (-1.5).abs()\n",
+        "i = 1.0.min(2.0)\n",
+        "j = 1.0.max(2.0)\n",
+        "k = 3.5.clamp(0.0, 1.0)\n",
+        "l = 2.0.pow(3.0)\n",
+        "m = 1.5.round()\n",
+        "n = 1.5.floor()\n",
+        "o = 1.5.ceil()\n",
+        "p = 1.5.truncate()\n",
+        "q = 4.0.sqrt()\n",
+        // Family carriage: same-base params/results lift to the family
+        // (so min/clamp/pow take Money/Ratio args, not bare Int/Float).
+        "Money = Int {}\n",
+        "amount: Money = 42\n",
+        "moneyAbs = amount.abs()\n",
+        "moneyMin = amount.min(Money(0))\n",
+        "moneyClamp = amount.clamp(Money(0), Money(10))\n",
+        "moneyPow = amount.pow(Money(2))\n",
+        "moneySign = amount.sign()\n",
+        "moneyFloat = amount.toFloat()\n",
+        "Ratio = Float {}\n",
+        "ratio: Ratio = 2.5\n",
+        "ratioAbs = ratio.abs()\n",
+        "ratioMin = ratio.min(Ratio(0.0))\n",
+        "ratioClamp = ratio.clamp(Ratio(0.0), Ratio(1.0))\n",
+        "ratioPow = ratio.pow(Ratio(2.0))\n",
+        "ratioRound = ratio.round()\n",
+        "ratioSqrt = ratio.sqrt()\n",
+    ));
+    let ok_check = check_module(&ok.module);
+    assert!(
+        ok_check.diagnostics.is_empty(),
+        "int/float numeric helpers should type-check: {:?}",
+        ok_check.diagnostics
+    );
+
+    let int_min_mismatch = parse_module("value = 1.min(\"x\")\n");
+    let int_min_check = check_module(&int_min_mismatch.module);
+    assert_eq!(
+        matching_codes(&int_min_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "1.min(\"x\") should mismatch: {:?}",
+        int_min_check.diagnostics
+    );
+
+    let int_clamp_mismatch = parse_module("value = 1.clamp(0, \"x\")\n");
+    let int_clamp_check = check_module(&int_clamp_mismatch.module);
+    assert_eq!(
+        matching_codes(&int_clamp_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "1.clamp(0, \"x\") should mismatch: {:?}",
+        int_clamp_check.diagnostics
+    );
+
+    let float_min_mismatch = parse_module("value = 1.5.min(\"x\")\n");
+    let float_min_check = check_module(&float_min_mismatch.module);
+    assert_eq!(
+        matching_codes(&float_min_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "1.5.min(\"x\") should mismatch: {:?}",
+        float_min_check.diagnostics
+    );
+
+    let int_pow_mismatch = parse_module("value = 2.pow(\"x\")\n");
+    let int_pow_check = check_module(&int_pow_mismatch.module);
+    assert_eq!(
+        matching_codes(&int_pow_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "2.pow(\"x\") should mismatch: {:?}",
+        int_pow_check.diagnostics
+    );
+
+    let wrong_receiver = parse_module("value = \"1\".abs()\n");
+    let wrong_check = check_module(&wrong_receiver.module);
+    assert!(
+        matching_codes(&wrong_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
+            || !wrong_check.diagnostics.is_empty(),
+        "Text.abs should error: {:?}",
+        wrong_check.diagnostics
+    );
+
+    let float_to_int_out_of_scope = parse_module("value = 1.5.toInt()\n");
+    let float_to_int_check = check_module(&float_to_int_out_of_scope.module);
+    assert!(
+        !float_to_int_check.diagnostics.is_empty(),
+        "Float.toInt is out of scope and should not exist: {:?}",
+        float_to_int_check.diagnostics
     );
 }
 
