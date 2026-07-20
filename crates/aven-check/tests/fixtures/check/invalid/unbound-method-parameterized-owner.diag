@@ -1,0 +1,6 @@
+error type.unbound-method-parameterized-owner: cannot form unbound method `sortBy` from parameterized type `Array`
+  label 10..16: `Array` takes type parameters
+  note: an unbound method value needs a concrete instantiation to bind against; call `sortBy` on a value of type `Array(...)` instead
+error type.unbound-method-parameterized-owner: cannot form unbound method `sortBy` from parameterized type `Array`
+  label 23..29: `Array` takes type parameters
+  note: an unbound method value needs a concrete instantiation to bind against; call `sortBy` on a value of type `Array(...)` instead

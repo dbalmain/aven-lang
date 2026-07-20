@@ -144,6 +144,7 @@ pub mod ty {
     pub const TUPLE_INDEX_OUT_OF_RANGE: &str = "type.tuple-index-out-of-range";
     pub const NOT_INDEXABLE: &str = "type.not-indexable";
     pub const TYPE_ONLY_RECORD_ENTRY: &str = "type.type-only-record-entry";
+    pub const UNBOUND_METHOD_PARAMETERIZED_OWNER: &str = "type.unbound-method-parameterized-owner";
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
     pub const UNGUARDED_EMPTY_ACCESS: &str = "type.unguarded-empty-access";
     pub const UPPERCASE_PATTERN_BINDER_UNSUPPORTED: &str =
@@ -270,6 +271,7 @@ pub const ALL: &[&str] = &[
     ty::TUPLE_INDEX_NOT_COMPTIME,
     ty::TUPLE_INDEX_OUT_OF_RANGE,
     ty::TYPE_ONLY_RECORD_ENTRY,
+    ty::UNBOUND_METHOD_PARAMETERIZED_OWNER,
     ty::UNEXPECTED_FIELD,
     ty::UNGUARDED_EMPTY_ACCESS,
     ty::UNKNOWN_MODULE_TYPE,

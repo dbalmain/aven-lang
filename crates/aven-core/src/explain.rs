@@ -463,6 +463,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "This record entry form is only meaningful in type position. Use it inside an annotation or replace it with a value-level record entry.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNBOUND_METHOD_PARAMETERIZED_OWNER,
+        text: "An unbound method value such as `Array.sortBy` was formed from a parameterized type constructor. Unlike scalar owners (`Int`, `Text`) or unparameterized named families, a type constructor has no single concrete method value until it is instantiated. Call the method on a value of a concrete instantiation instead (for example `xs.sortBy(...)` where `xs : Array(...)`).",
+    },
+    DiagnosticExplanation {
         code: codes::ty::UNEXPECTED_FIELD,
         text: "A closed record value contains a field that is not present in its declared type. Remove the field or open the record type with `..`.",
     },

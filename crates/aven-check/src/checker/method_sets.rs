@@ -1,9 +1,10 @@
 use super::Checker;
 use std::collections::{HashMap, HashSet};
 
-use aven_core::Span;
+use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::Literal;
 
+use crate::env::TypeEnv;
 use crate::ty::{
     LiteralBase, MethodPredicate, RowEntry, Type, literal_variant_base, map_type, named_builtin,
     record_fields, type_variable_names,
@@ -551,13 +552,67 @@ fn method_scheme_variables(
 impl Checker<'_> {
     /// Owner name for the unbound method form `Owner.member` when the receiver
     /// is a type-static name: a named family alias, or a concrete scalar
-    /// builtin (`Int` / `Float` / `Text` / `Bool`). Parameterized owners such
-    /// as `Array(Text)` stay staged elsewhere and are intentionally omitted.
+    /// builtin (`Int` / `Float` / `Text` / `Bool`). Parameterized type
+    /// constructors (`Array`, `Map`, user uppercase type functions, …) have no
+    /// single concrete method value; callers detect them separately via
+    /// [`Self::is_parameterized_type_constructor_name`] and report
+    /// `type.unbound-method-parameterized-owner`.
     pub(crate) fn unbound_method_owner_name(&self, name: &str) -> Option<String> {
         if let Some(owner) = self.named_family_aliases.get(name) {
             return Some(owner.clone());
         }
         matches!(name, "Int" | "Float" | "Text" | "Bool").then(|| name.to_owned())
+    }
+
+    /// True when `name` is a type-level function / type constructor that takes
+    /// parameters — the bare form cannot yield an unbound method value.
+    ///
+    /// Reuses the same classifications the checker already uses for type
+    /// application: [`super::core::builtin_owner_arity`] for builtins with a
+    /// positive arity, and [`Self::lookup_comptime_function_export`] for
+    /// user-defined uppercase comptime type functions with at least one
+    /// parameter. A local or top-level value binding that is not such a type
+    /// function shadows the constructor and returns false.
+    pub(crate) fn is_parameterized_type_constructor_name(&self, env: &TypeEnv, name: &str) -> bool {
+        if env.get(name).is_some() {
+            return false;
+        }
+
+        if let Some(export) = self.lookup_comptime_function_export(name)
+            && name.chars().next().is_some_and(char::is_uppercase)
+            && !export.params.is_empty()
+        {
+            return true;
+        }
+
+        // A non-type-function binding (including named-family providers) is a
+        // value namespace, not the builtin type constructor of the same name.
+        if self.bindings.contains_key(name) {
+            return false;
+        }
+
+        matches!(super::core::builtin_owner_arity(name), Some(arity) if arity > 0)
+    }
+
+    pub(crate) fn report_unbound_method_parameterized_owner(
+        &mut self,
+        owner: &str,
+        member: &str,
+        span: Span,
+    ) {
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!(
+                "cannot form unbound method `{member}` from parameterized type `{owner}`"
+            ))
+            .with_code(codes::ty::UNBOUND_METHOD_PARAMETERIZED_OWNER)
+            .with_label(Label::primary(
+                span,
+                format!("`{owner}` takes type parameters"),
+            ))
+            .with_note(format!(
+                "an unbound method value needs a concrete instantiation to bind against; call `{member}` on a value of type `{owner}(...)` instead"
+            )),
+        );
     }
 
     /// Query one exact owner category. User families never fall back to a

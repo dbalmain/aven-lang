@@ -2228,7 +2228,10 @@ impl<'a> Checker<'a> {
     }
 }
 
-fn builtin_owner_arity(name: &str) -> Option<usize> {
+/// Arity of a compiler-known builtin method-owner type constructor.
+/// Parameterized owners (`Array`, `Map`, …) return a positive count; scalar
+/// owners return `Some(0)`. Non-owners return `None`.
+pub(crate) fn builtin_owner_arity(name: &str) -> Option<usize> {
     match name {
         "Array" | "Set" => Some(1),
         "Map" | "Result" => Some(2),

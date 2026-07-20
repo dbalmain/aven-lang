@@ -1510,6 +1510,15 @@ impl<'a> Checker<'a> {
             return self.instantiate_scheme_at(&scheme, field_span);
         }
 
+        // Bare `Array.sortBy` / `Pair.method` — parameterized type constructors
+        // have no single unbound method value without an instantiation.
+        if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
+            && self.is_parameterized_type_constructor_name(env, name)
+        {
+            self.report_unbound_method_parameterized_owner(name, field, field_span);
+            return Type::Deferred;
+        }
+
         if let Some(scheme) = self.imported_field_scheme(env, receiver, field, field_span) {
             return self.instantiate_scheme_at(&scheme, field_span);
         }

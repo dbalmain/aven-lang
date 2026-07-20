@@ -183,13 +183,24 @@ impl<'a> Checker<'a> {
     /// receiver that lacks the field is a real missing-field error; an
     /// unknown/open receiver stays deferred as before.
     pub(super) fn check_value_field_access(&mut self, receiver: &Expr, field: &str, span: Span) {
-        if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
-            && let Some(owner) = self.unbound_method_owner_name(name)
-            && self
-                .exact_method_signature(&Type::Named(owner), field)
-                .is_some()
-        {
-            return;
+        if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind {
+            if let Some(owner) = self.unbound_method_owner_name(name)
+                && self
+                    .exact_method_signature(&Type::Named(owner), field)
+                    .is_some()
+            {
+                return;
+            }
+            let env = self.local_types.inference_env();
+            // Statics on type names (`Map.empty`) are valid; only bare method
+            // values on parameterized constructors need the dedicated error.
+            if self.static_member_scheme(&env, name, field).is_some() {
+                return;
+            }
+            if self.is_parameterized_type_constructor_name(&env, name) {
+                self.report_unbound_method_parameterized_owner(name, field, span);
+                return;
+            }
         }
         self.check_value_expr(receiver);
 

@@ -11557,6 +11557,78 @@ fn unbound_builtin_operator_and_named_methods_typecheck() {
 }
 
 #[test]
+fn unbound_method_on_parameterized_builtin_reports_targeted_diagnostic() {
+    // Value-producing path (`infer_field_access`) and statement path
+    // (`check_value_field_access`) both surface the same code.
+    let parsed = parse_module(concat!("x = Array.sortBy\n", "Array.sortBy\n",));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    let targeted: Vec<_> = check
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::UNBOUND_METHOD_PARAMETERIZED_OWNER)
+        })
+        .collect();
+    assert_eq!(targeted.len(), 2, "{:?}", check.diagnostics);
+    for diagnostic in &targeted {
+        assert!(
+            diagnostic.message.contains("Array") && diagnostic.message.contains("sortBy"),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("concrete instantiation")),
+            "{diagnostic:?}"
+        );
+    }
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::name::UNBOUND),
+        "must not fall through to unbound-name: {:?}",
+        check.diagnostics
+    );
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+        "must not fall through to missing-field: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn unbound_method_on_user_parameterized_type_reports_targeted_diagnostic() {
+    let parsed = parse_module(concat!(
+        "Box = (t: Type) => { value: t }\n",
+        "x = Box.get\n",
+        "Box.get\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    let targeted: Vec<_> = check
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::UNBOUND_METHOD_PARAMETERIZED_OWNER)
+        })
+        .collect();
+    assert_eq!(targeted.len(), 2, "{:?}", check.diagnostics);
+    for diagnostic in &targeted {
+        assert!(
+            diagnostic.message.contains("Box") && diagnostic.message.contains("get"),
+            "{diagnostic:?}"
+        );
+    }
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+        "must not fall through to missing-field: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn named_primitive_family_rejects_nonliteral_base_operator_argument() {
     let parsed = parse_module(concat!(
         "Money = Int {}\n",
