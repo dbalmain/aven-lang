@@ -581,6 +581,18 @@ impl Unifier {
                     .collect(),
                 result: instantiate_type(&predicate.result, &replacements, &row_replacements),
                 operator_span: predicate.operator_span,
+                divisor_context: predicate.divisor_context.as_ref().map(|context| {
+                    crate::ty::IntegerDivisorContext {
+                        span: context.span,
+                        literal_is_zero: context.literal_is_zero,
+                        right_type: instantiate_type(
+                            &context.right_type,
+                            &replacements,
+                            &row_replacements,
+                        ),
+                        parameter_index: context.parameter_index,
+                    }
+                }),
                 binding: predicate.binding.clone(),
                 call_span: predicate.call_span,
                 obligation_id: predicate.obligation_id,

@@ -641,9 +641,22 @@ pub(crate) struct MethodPredicate {
     pub(crate) params: Vec<Type>,
     pub(crate) result: Type,
     pub(crate) operator_span: Span,
+    pub(crate) divisor_context: Option<IntegerDivisorContext>,
     pub(crate) binding: Option<String>,
     pub(crate) call_span: Option<Span>,
     pub(crate) obligation_id: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct IntegerDivisorContext {
+    /// The original RHS span and syntax/type evidence used by the immediate
+    /// integer-divisor check.
+    pub(crate) span: Span,
+    pub(crate) literal_is_zero: Option<bool>,
+    pub(crate) right_type: Type,
+    /// When the RHS is a lambda parameter, its actual call argument replaces
+    /// `right_type` before the predicate discharges.
+    pub(crate) parameter_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

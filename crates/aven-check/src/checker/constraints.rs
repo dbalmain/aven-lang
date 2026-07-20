@@ -80,6 +80,7 @@ impl<'a> Checker<'a> {
         param: Type,
         result: Type,
         operator_span: Span,
+        divisor_context: Option<IntegerDivisorContext>,
     ) {
         self.push_new_method_obligations([MethodPredicate {
             candidate: candidate.clone(),
@@ -87,6 +88,7 @@ impl<'a> Checker<'a> {
             params: vec![param],
             result,
             operator_span,
+            divisor_context,
             binding: None,
             call_span: None,
             obligation_id: None,
@@ -132,6 +134,14 @@ impl<'a> Checker<'a> {
                 .collect(),
             result: resolve_signature_type(&predicate.result),
             operator_span: predicate.operator_span,
+            divisor_context: predicate.divisor_context.as_ref().map(|context| {
+                IntegerDivisorContext {
+                    span: context.span,
+                    literal_is_zero: context.literal_is_zero,
+                    right_type: self.normalize(&self.resolve_and_default(&context.right_type)),
+                    parameter_index: context.parameter_index,
+                }
+            }),
             binding: predicate.binding.clone(),
             call_span: predicate.call_span,
             obligation_id: predicate.obligation_id,
@@ -172,6 +182,39 @@ impl<'a> Checker<'a> {
         })
     }
 
+    pub(super) fn set_integer_divisor_call_types(
+        &mut self,
+        obligation_start: usize,
+        obligation_end: usize,
+        arg_types: &[Type],
+    ) {
+        let arg_types = arg_types
+            .iter()
+            .map(|ty| {
+                let resolved = self.normalize(&self.resolve_and_default(ty));
+                snapshot_integer_divisor_evidence(resolved)
+            })
+            .collect::<Vec<_>>();
+        for predicate in &mut self.method_obligations {
+            let Some(id) = predicate.obligation_id else {
+                continue;
+            };
+            if !(obligation_start..obligation_end).contains(&id) {
+                continue;
+            }
+            let Some(context) = &mut predicate.divisor_context else {
+                continue;
+            };
+            let Some(right_type) = context
+                .parameter_index
+                .and_then(|index| arg_types.get(index))
+            else {
+                continue;
+            };
+            context.right_type = right_type.clone();
+        }
+    }
+
     fn discharge_known_method_predicate(&mut self, owner: &Type, predicate: &MethodPredicate) {
         let Some(actual) = self.exact_method_signature(owner, &predicate.member) else {
             self.report_missing_method(owner, predicate);
@@ -193,6 +236,9 @@ impl<'a> Checker<'a> {
             self.unifier.restore(snapshot);
             self.report_method_signature_mismatch(owner, &actual, predicate);
         } else {
+            if let Some(context) = &predicate.divisor_context {
+                self.maybe_report_integer_divisor(&predicate.member, owner, context);
+            }
             let call_span = predicate.call_span.unwrap_or(predicate.operator_span);
             self.push_method_obligations_at(actual.predicates, call_span);
             self.simplify_method_obligations(false);
@@ -322,6 +368,7 @@ impl<'a> Checker<'a> {
                         params: params.iter().map(replace_candidate).collect(),
                         result: replace_candidate(&result),
                         operator_span: *name_span,
+                        divisor_context: None,
                         binding: None,
                         call_span: None,
                         obligation_id: None,
@@ -674,6 +721,19 @@ impl<'a> Checker<'a> {
     }
 }
 
+fn snapshot_integer_divisor_evidence(mut ty: Type) -> Type {
+    // A literal value's free row tail may absorb the other homogeneous
+    // operator argument during call unification. Close only this evidence copy
+    // so the divisor check keeps the actual argument's known literals.
+    if let Type::Variant(row) = &mut ty
+        && literal_variant_base(row) == Some(LiteralBase::Number)
+        && matches!(row.tail, RowTail::Var(_))
+    {
+        row.tail = RowTail::Closed;
+    }
+    ty
+}
+
 fn deduplicate_predicates(predicates: Vec<MethodPredicate>) -> Vec<MethodPredicate> {
     let mut deduplicated = Vec::new();
     for predicate in predicates {
@@ -682,6 +742,7 @@ fn deduplicate_predicates(predicates: Vec<MethodPredicate>) -> Vec<MethodPredica
                 && existing.member == predicate.member
                 && existing.params == predicate.params
                 && existing.result == predicate.result
+                && existing.divisor_context == predicate.divisor_context
         });
         if !duplicate {
             deduplicated.push(predicate);
@@ -695,6 +756,12 @@ fn predicate_free_metas(predicate: &MethodPredicate) -> impl Iterator<Item = u32
         .into_iter()
         .chain(predicate.params.iter().flat_map(free_metas))
         .chain(free_metas(&predicate.result))
+        .chain(
+            predicate
+                .divisor_context
+                .iter()
+                .flat_map(|context| free_metas(&context.right_type)),
+        )
 }
 
 fn predicate_contains_meta(predicate: &MethodPredicate, id: u32) -> bool {

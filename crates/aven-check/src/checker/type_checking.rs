@@ -438,6 +438,7 @@ impl<'a> Checker<'a> {
                     params: params.clone(),
                     result: result.as_ref().clone(),
                     operator_span: value.span,
+                    divisor_context: None,
                     binding: None,
                     call_span: Some(value.span),
                     obligation_id: None,

@@ -23,11 +23,11 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    LiteralBase, MethodPredicate, RecursiveTypeId, Row, RowEntry, RowKind, RowMergeSource, RowTail,
-    Type, TypeScheme, builtin_collection_method_type, display_inferred_type, free_metas,
-    generalize, is_concrete_type, is_meta_type, is_null_value, is_resolved_value_type,
-    is_text_type, is_undefined_value, literal_base, literal_variant_base, map_type,
-    mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
+    IntegerDivisorContext, LiteralBase, MethodPredicate, RecursiveTypeId, Row, RowEntry, RowKind,
+    RowMergeSource, RowTail, Type, TypeScheme, builtin_collection_method_type,
+    display_inferred_type, free_metas, generalize, is_concrete_type, is_meta_type, is_null_value,
+    is_resolved_value_type, is_text_type, is_undefined_value, literal_base, literal_variant_base,
+    map_type, mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
     numeric_type_name, open_literal_variant_base, render_literal_value, render_type_scheme,
     type_contains_deferred, type_contains_variable, type_is_uninhabited, type_variable_names,
 };
@@ -107,6 +107,9 @@ pub(crate) struct Checker<'a> {
     /// inline annotation are inference holes, so each scope maps a name to the
     /// meta shared by every occurrence in that lexical lambda scope.
     inline_lambda_type_var_scopes: Vec<HashMap<String, Type>>,
+    /// Lambda parameter positions used to preserve divisor argument evidence
+    /// across generic operator-obligation instantiation.
+    lambda_parameter_scopes: Vec<HashMap<String, usize>>,
     requirement_self_scopes: Vec<Type>,
     provider_owner_scopes: Vec<String>,
     method_obligations: Vec<MethodPredicate>,
@@ -1656,6 +1659,7 @@ fn scheme_from_qualified_type(
                 .collect(),
             result: instantiate_constraint_type(&constraint.result, &names),
             operator_span: origin_span,
+            divisor_context: None,
             binding: Some(binding.to_owned()),
             call_span: None,
             obligation_id: None,

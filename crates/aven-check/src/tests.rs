@@ -6072,6 +6072,91 @@ fn integer_division_and_remainder_require_non_zero_literal_divisors() {
 }
 
 #[test]
+fn generic_integer_operator_obligations_keep_static_divisor_rule() {
+    let accepted_source = concat!(
+        "divide = (x, y) => x / y\n",
+        "remainder = (x, y) => x % y\n",
+        "quotient = divide(10, 2)\n",
+        "zero_quotient = divide(0, 2)\n",
+        "n = 10 / 2\n",
+        "bound_quotient = divide(100, n)\n",
+        "rest = remainder(10, 3)\n",
+    );
+    let accepted = parse_module(accepted_source);
+    let accepted = check_module(&accepted.module);
+    assert!(
+        accepted.diagnostics.is_empty(),
+        "{:?}",
+        accepted.diagnostics
+    );
+
+    for (operator, code) in [
+        ("/", codes::ty::DIVISOR_NOT_STATIC),
+        ("%", codes::ty::DIVISOR_NOT_STATIC),
+    ] {
+        let source = format!(
+            "apply = (x, y) => x {operator} y\n\
+             divisor : Int = 2\n\
+             bad = apply(10, divisor)\n"
+        );
+        let parsed = parse_module(&source);
+        let checked = check_module(&parsed.module);
+        assert_eq!(
+            matching_codes(&checked.diagnostics, code),
+            1,
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+        let operator_use = nth_span(&source, &format!("{operator} y"), 0);
+        let divisor_span = Span::new(operator_use.end - 1, operator_use.end);
+        assert_eq!(
+            checked
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.code.as_deref() == Some(code))
+                .and_then(|diagnostic| diagnostic.labels.first())
+                .map(|label| label.span),
+            Some(divisor_span)
+        );
+    }
+
+    for operator in ["/", "%"] {
+        let source = format!(
+            "apply = (x, y) => x {operator} y\n\
+             bad = apply(10, 0)\n"
+        );
+        let parsed = parse_module(&source);
+        let checked = check_module(&parsed.module);
+        assert_eq!(
+            matching_codes(&checked.diagnostics, codes::ty::DIVISION_BY_ZERO),
+            1,
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
+fn generic_integer_divisor_obligation_is_checked_per_call() {
+    let source = concat!(
+        "divide = (x, y) => x / y\n",
+        "safe = divide(10, 2)\n",
+        "divisor : Int = 2\n",
+        "unsafe = divide(10, divisor)\n",
+        "also_safe = divide(100, 5)\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+
+    assert_eq!(
+        matching_codes(&checked.diagnostics, codes::ty::DIVISOR_NOT_STATIC),
+        1,
+        "{:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
 fn checked_integer_division_methods_and_bound_values_type_check() {
     let output = parse_module(concat!(
         "x : Int = 7\n",
@@ -11688,6 +11773,25 @@ fn named_primitive_family_keeps_static_integer_divisor_rule() {
         check.diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("divisor is not statically known to be non-zero")),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn named_primitive_family_keeps_static_divisor_rule_after_generic_instantiation() {
+    let parsed = parse_module(concat!(
+        "Money = Int {}\n",
+        "divide = (x, y) => x / y\n",
+        "money = Money(10)\n",
+        "divisor = Money(2)\n",
+        "bad = divide(money, divisor)\n",
+    ));
+    let check = check_module(&parsed.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::DIVISOR_NOT_STATIC),
+        1,
         "{:?}",
         check.diagnostics
     );

@@ -386,6 +386,12 @@ impl<'a> Checker<'a> {
         let diagnostic_snapshot = self.diagnostic_snapshot();
         let left_type = self.infer(env, left);
         let right_type = self.infer(env, right);
+        let divisor_context = IntegerDivisorContext {
+            span: right.span,
+            literal_is_zero: static_integer_literal_is_zero(right),
+            right_type: right_type.clone(),
+            parameter_index: self.integer_divisor_parameter_index(right),
+        };
         let left_owner = self.normalize(&self.resolve_and_default(&left_type));
 
         if is_method_operator(operator)
@@ -397,7 +403,7 @@ impl<'a> Checker<'a> {
                 self.check_call_arg_against_param(param, right);
             }
             self.simplify_method_obligations(false);
-            self.maybe_report_integer_divisor(operator, &left_type, &right_type, right);
+            self.maybe_report_integer_divisor(operator, &left_type, &divisor_context);
             return self.resolve_and_default(&signature.result);
         }
 
@@ -413,7 +419,7 @@ impl<'a> Checker<'a> {
         // Integer `/` and `%` need a statically non-zero divisor. The check
         // consults both syntax (literal tokens) and the divisor's resolved type
         // (closed / inferred-open number literal unions).
-        self.maybe_report_integer_divisor(operator, &left_type, &right_type, right);
+        self.maybe_report_integer_divisor(operator, &left_type, &divisor_context);
 
         if let Some(literal) = self.fold_binary_literal(operator, &left_type, &right_type) {
             return self.open_literal_variant(&literal);
@@ -480,6 +486,7 @@ impl<'a> Checker<'a> {
                 obligation_right,
                 result.clone(),
                 operator_span,
+                matches!(operator, "/" | "%").then_some(divisor_context.clone()),
             );
             result
         } else {
@@ -525,21 +532,20 @@ impl<'a> Checker<'a> {
 
         // Operator resolution can constrain an initially-unresolved operand to
         // Int. Recheck after those unifications; diagnostics are deduplicated.
-        self.maybe_report_integer_divisor(operator, &left_type, &right_type, right);
+        self.maybe_report_integer_divisor(operator, &left_type, &divisor_context);
 
         result
     }
 
-    fn maybe_report_integer_divisor(
+    pub(super) fn maybe_report_integer_divisor(
         &mut self,
         operator: &str,
         left_type: &Type,
-        right_type: &Type,
-        right: &Expr,
+        context: &IntegerDivisorContext,
     ) {
         if !matches!(operator, "/" | "%")
             || !self.operator_operand_resolves_to_int(left_type)
-            || !self.operator_operand_resolves_to_int(right_type)
+            || !self.operator_operand_resolves_to_int(&context.right_type)
         {
             return;
         }
@@ -549,10 +555,10 @@ impl<'a> Checker<'a> {
         // so positions that have not yet formed a literal type still accept.
         // Fall back to the divisor's resolved type: a number literal variant
         // whose known members are all non-zero integers is also legal.
-        let (is_zero, zero_from_syntax) = match static_integer_literal_is_zero(right) {
+        let (is_zero, zero_from_syntax) = match context.literal_is_zero {
             Some(is_zero) => (Some(is_zero), true),
             None => {
-                let right_resolved = self.normalize(&self.resolve_and_default(right_type));
+                let right_resolved = self.normalize(&self.resolve_and_default(&context.right_type));
                 (static_integer_divisor_type_is_zero(&right_resolved), false)
             }
         };
@@ -565,7 +571,7 @@ impl<'a> Checker<'a> {
                 };
                 Diagnostic::error("division by zero")
                     .with_code(codes::ty::DIVISION_BY_ZERO)
-                    .with_label(Label::primary(right.span, label))
+                    .with_label(Label::primary(context.span, label))
                     .with_note(format!(
                         "use checked `x.{checked_method}(n)` (`?Int`) when the divisor may be zero"
                     ))
@@ -574,7 +580,7 @@ impl<'a> Checker<'a> {
             None => Diagnostic::error("divisor is not statically known to be non-zero")
                 .with_code(codes::ty::DIVISOR_NOT_STATIC)
                 .with_label(Label::primary(
-                    right.span,
+                    context.span,
                     "this divisor is not a non-zero integer literal",
                 ))
                 .with_note(format!(
@@ -595,6 +601,16 @@ impl<'a> Checker<'a> {
                     && !row.entries.iter().any(|entry| matches!(entry,
                         RowEntry::Literal { value: Literal::Number(number) }
                             if is_float_literal_text(number))))
+    }
+
+    fn integer_divisor_parameter_index(&self, right: &Expr) -> Option<usize> {
+        let ExprKind::Name(name) = &ungroup_expr(right).kind else {
+            return None;
+        };
+        self.lambda_parameter_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
     }
 
     pub(super) fn infer_binary_type(
@@ -1220,12 +1236,20 @@ impl<'a> Checker<'a> {
         let assumptions = self.requirement_predicates(requirements);
         let obligation_marker = self.method_obligation_marker();
         self.push_method_assumptions(assumptions.clone());
+        self.lambda_parameter_scopes.push(
+            params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| (param.name.clone(), index))
+                .collect(),
+        );
         self.push_local_comptime_param_scope(params);
         self.propagation_contexts
             .push(PropagationContext::default());
         let body_type = self.infer(&next_env, body);
         let propagation = self.pop_propagation_context();
         self.local_comptime_params.pop();
+        self.lambda_parameter_scopes.pop();
         let body_type = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
         let result_type = if let Some(annotation) = return_annotation {
             // Trust the return annotation as the lambda's result type so
@@ -1703,7 +1727,9 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        let callee_obligation_start = self.method_obligation_marker();
         let callee_type = self.infer(env, callee);
+        let callee_obligation_end = self.method_obligation_marker();
         let resolved_callee = self.unifier.resolve(&callee_type);
         let callee_type = if matches!(resolved_callee, Type::Function { .. }) {
             self.instantiate_nonrigid_type_variables(&resolved_callee, &mut HashMap::new())
@@ -1711,6 +1737,11 @@ impl<'a> Checker<'a> {
             callee_type
         };
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+        self.set_integer_divisor_call_types(
+            callee_obligation_start,
+            callee_obligation_end,
+            &arg_types,
+        );
 
         // When the callee already resolves to a function (e.g. a host global or
         // a lambda with defaults), unify each supplied argument against the
@@ -1947,6 +1978,7 @@ impl<'a> Checker<'a> {
             params: arg_types,
             result: result.clone(),
             operator_span: *field_span,
+            divisor_context: None,
             binding: None,
             call_span: None,
             obligation_id: None,

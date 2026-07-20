@@ -46,6 +46,7 @@ impl<'a> Checker<'a> {
             propagation_contexts: Vec::new(),
             rigid_type_var_scopes: Vec::new(),
             inline_lambda_type_var_scopes: Vec::new(),
+            lambda_parameter_scopes: Vec::new(),
             requirement_self_scopes: Vec::new(),
             provider_owner_scopes: Vec::new(),
             method_obligations: Vec::new(),
