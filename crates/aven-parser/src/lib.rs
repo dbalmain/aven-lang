@@ -28,8 +28,9 @@ pub use names::{NameAnalysis, analyze_names};
 pub use operators::{is_custom_operator_token, is_method_operator, is_reserved_or_fixed_operator};
 pub use parser::{
     Binding, Expr, ExprKind, InterpolationSegment, Item, Literal, METHOD_RECEIVER_NAME, MatchArm,
-    MethodAttachment, Module, Param, ParseOutput, PatternBinding, PropagationMode, RecordEntry,
-    Requirement, Signature, SpreadBinding, parse_module, parse_source,
+    MethodAttachment, Module, ModuleRole, Param, ParseOutput, PatternBinding, PropagationMode,
+    RecordEntry, Requirement, Signature, SpreadBinding, parse_module, parse_module_with_fixities,
+    parse_source, parse_source_with_fixities,
 };
 pub use resolve::{
     BindingSite, annotation_for_definition, is_method_requirement_row, is_named_method_provider,

@@ -74,6 +74,7 @@ pub mod name {
 }
 
 pub mod parse {
+    pub const CUSTOM_INFIX_NOT_ROOT: &str = "parse.custom-infix-not-root";
     pub const EXPECTED_EXPRESSION: &str = "parse.expected-expression";
     pub const EXPECTED_FIELD_NAME: &str = "parse.expected-field-name";
     pub const EXPECTED_MATCH_ARM: &str = "parse.expected-match-arm";
@@ -91,6 +92,8 @@ pub mod parse {
     pub const MISSING_MATCH_ARMS: &str = "parse.missing-match-arms";
     pub const MISSING_MATCH_BODY: &str = "parse.missing-match-body";
     pub const MISSING_METHOD_BOUND_OPEN: &str = "parse.missing-method-bound-open";
+    pub const OPERATOR_ASSOCIATIVITY_CONFLICT: &str = "parse.operator-associativity-conflict";
+    pub const OPERATOR_FIXITY_UNDECLARED: &str = "parse.operator-fixity-undeclared";
     pub const OPERATOR_MEMBER_PARAMETER_LIST: &str = "parse.operator-member-parameter-list";
     pub const QUOTED_METHOD_MEMBER: &str = "parse.quoted-method-member";
     pub const REQUIRED_PARAM_AFTER_DEFAULT: &str = "parse.required-param-after-default";
@@ -216,6 +219,7 @@ pub const ALL: &[&str] = &[
     name::UNUSED_BINDING,
     name::UPPERCASE_MODULE_BINDING,
     name::UPPERCASE_RUNTIME_BINDING,
+    parse::CUSTOM_INFIX_NOT_ROOT,
     parse::EXPECTED_EXPRESSION,
     parse::EXPECTED_FIELD_NAME,
     parse::EXPECTED_MATCH_ARM,
@@ -233,6 +237,8 @@ pub const ALL: &[&str] = &[
     parse::MISSING_MATCH_ARMS,
     parse::MISSING_MATCH_BODY,
     parse::MISSING_METHOD_BOUND_OPEN,
+    parse::OPERATOR_ASSOCIATIVITY_CONFLICT,
+    parse::OPERATOR_FIXITY_UNDECLARED,
     parse::OPERATOR_MEMBER_PARAMETER_LIST,
     parse::QUOTED_METHOD_MEMBER,
     parse::REQUIRED_PARAM_AFTER_DEFAULT,

@@ -4,10 +4,10 @@ use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
-    MatchArm, MergedItem, Module, Param, PatternBinding, PropagationMode, RecordEntry, Requirement,
-    Signature, SpreadBinding, collect_declarations, decode_string_literal,
-    is_comptime_identifier_name, is_method_operator, lambda_parts, merged_items, pattern_bindings,
-    walk_expr_children,
+    MatchArm, MergedItem, Module, ModuleRole, Param, PatternBinding, PropagationMode, RecordEntry,
+    Requirement, Signature, SpreadBinding, collect_declarations, decode_string_literal,
+    is_comptime_identifier_name, is_custom_operator_token, is_method_operator, lambda_parts,
+    merged_items, pattern_bindings, walk_expr_children,
 };
 
 use crate::BUILTIN_TYPES;
@@ -54,6 +54,7 @@ mod value;
 pub(crate) use aven_parser::is_method_requirement_row;
 
 pub(crate) struct Checker<'a> {
+    module_role: ModuleRole,
     known_types: HashSet<String>,
     pub(crate) type_definitions: HashMap<String, Type>,
     /// Source-visible aliases mapped to their canonical method owner. Owners

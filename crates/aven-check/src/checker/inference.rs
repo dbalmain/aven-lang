@@ -374,6 +374,25 @@ impl<'a> Checker<'a> {
         operator_span: Span,
         right: &Expr,
     ) -> Type {
+        if self.module_role == ModuleRole::Dependency && is_custom_operator_token(operator) {
+            self.infer(env, left);
+            self.infer(env, right);
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "custom operator `{operator}` cannot be used as bare infix in a dependency"
+                ))
+                .with_code(codes::parse::CUSTOM_INFIX_NOT_ROOT)
+                .with_label(Label::primary(
+                    operator_span,
+                    "bare custom infix is allowed only in the compilation entry",
+                ))
+                .with_note(format!(
+                    "rewrite this use as `left.{operator}(right)`, or move the expression into the designated entry"
+                )),
+            );
+            return Type::Deferred;
+        }
+
         if operator == "|>" {
             let call = pipe_call_expr(left, right);
             let ExprKind::Call { callee, args } = &call.kind else {

@@ -777,11 +777,12 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
     let parse_has_errors = parse.diagnostics.iter().any(Diagnostic::is_error);
     let (name_analysis, name_duration) = timed(|| aven_parser::analyze_names(&parse.module));
     let (check_output, check_duration) = timed(|| {
-        aven_check::check_module_with_host_globals_and_imports_in(
+        aven_check::check_module_with_host_globals_and_imports_in_role(
             &parse.module,
             globals,
             imports,
             module_identity,
+            parse.role,
         )
     });
     let aven_check::CheckOutput {

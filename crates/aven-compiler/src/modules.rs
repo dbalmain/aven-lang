@@ -714,7 +714,11 @@ impl ModuleGraph {
                 .cloned()
                 .unwrap_or_else(|| aven_parser::parse_source(&file))
         } else {
-            aven_parser::parse_source(&file)
+            aven_parser::parse_source_with_fixities(
+                &file,
+                &aven_parser::OperatorFixityTable::default(),
+                aven_parser::ModuleRole::Dependency,
+            )
         };
         let node_id = self.nodes.len();
         let is_entry = self.nodes.is_empty();

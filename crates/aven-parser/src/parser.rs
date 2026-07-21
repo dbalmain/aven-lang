@@ -1,7 +1,8 @@
 use aven_core::{Diagnostic, FileId, Label, SourceFile, Span, codes};
 
 use crate::{
-    Keyword, Token, TokenKind, decode_string_literal, is_method_operator, lex_then_layout,
+    Keyword, OperatorAssociativity, OperatorFixityTable, OperatorPrecedence, Token, TokenKind,
+    decode_string_literal, is_custom_operator_token, is_method_operator, lex_then_layout,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,6 +314,12 @@ pub enum Literal {
 #[derive(Debug, Clone)]
 pub struct ParseOutput {
     pub file_id: FileId,
+    /// Normalized custom-fixity fingerprint used for this parse. Dependencies
+    /// carry the empty-table fingerprint because their syntax cannot consult
+    /// the entry/platform table.
+    pub operator_fixity_fingerprint: String,
+    /// Compilation role under which this syntax was parsed.
+    pub role: ModuleRole,
     /// Raw lexer tokens, including comments and raw newline/indent trivia.
     ///
     /// The formatter can use this stream to preserve source trivia without
@@ -325,15 +332,43 @@ pub struct ParseOutput {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// A source module's role in one compilation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModuleRole {
+    Entry,
+    Dependency,
+}
+
 pub fn parse_module(source: &str) -> ParseOutput {
-    parse_module_with_file_id(FileId(0), source)
+    parse_module_with_fixities(source, &OperatorFixityTable::default(), ModuleRole::Entry)
+}
+
+pub fn parse_module_with_fixities(
+    source: &str,
+    operator_fixities: &OperatorFixityTable,
+    role: ModuleRole,
+) -> ParseOutput {
+    parse_module_with_file_id(FileId(0), source, operator_fixities, role)
 }
 
 pub fn parse_source(file: &SourceFile) -> ParseOutput {
-    parse_module_with_file_id(file.id, file.source())
+    parse_source_with_fixities(file, &OperatorFixityTable::default(), ModuleRole::Entry)
 }
 
-fn parse_module_with_file_id(file_id: FileId, source: &str) -> ParseOutput {
+pub fn parse_source_with_fixities(
+    file: &SourceFile,
+    operator_fixities: &OperatorFixityTable,
+    role: ModuleRole,
+) -> ParseOutput {
+    parse_module_with_file_id(file.id, file.source(), operator_fixities, role)
+}
+
+fn parse_module_with_file_id(
+    file_id: FileId,
+    source: &str,
+    operator_fixities: &OperatorFixityTable,
+    role: ModuleRole,
+) -> ParseOutput {
     let (raw_tokens, mut layout) = lex_then_layout(source);
     let layout_tokens = layout.tokens;
     let mut diagnostics = std::mem::take(&mut layout.diagnostics);
@@ -344,6 +379,8 @@ fn parse_module_with_file_id(file_id: FileId, source: &str) -> ParseOutput {
             tokens: &layout_tokens,
             cursor: 0,
             diagnostics,
+            operator_fixities,
+            role,
         };
         let module = parser.parse_module();
         (module, parser.diagnostics)
@@ -351,6 +388,11 @@ fn parse_module_with_file_id(file_id: FileId, source: &str) -> ParseOutput {
 
     ParseOutput {
         file_id,
+        operator_fixity_fingerprint: match role {
+            ModuleRole::Entry => operator_fixities.fingerprint().to_owned(),
+            ModuleRole::Dependency => OperatorFixityTable::default().fingerprint().to_owned(),
+        },
+        role,
         raw_tokens,
         layout_tokens,
         module,
@@ -362,6 +404,8 @@ struct Parser<'a> {
     tokens: &'a [Token],
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
+    operator_fixities: &'a OperatorFixityTable,
+    role: ModuleRole,
 }
 
 /// Whether an entry loop is parsing a record `{...}`, a set/variant `@{...}`,
@@ -378,8 +422,60 @@ enum EntryMode {
 struct InfixOperator {
     text: String,
     span: Span,
+    precedence: OperatorPrecedence,
+    associativity: OperatorAssociativity,
     left_binding_power: u8,
     right_binding_power: u8,
+    validity: InfixValidity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InfixValidity {
+    Valid,
+    CustomNotRoot,
+    UndeclaredCustom,
+}
+
+#[derive(Debug, Clone)]
+struct AdjacentInfixOperator {
+    text: String,
+    span: Span,
+    associativity: OperatorAssociativity,
+}
+
+impl InfixOperator {
+    fn new(
+        text: String,
+        span: Span,
+        precedence: OperatorPrecedence,
+        associativity: OperatorAssociativity,
+        validity: InfixValidity,
+    ) -> Self {
+        let (left_binding_power, right_binding_power) =
+            precedence.infix_binding_power(associativity);
+        Self {
+            text,
+            span,
+            precedence,
+            associativity,
+            left_binding_power,
+            right_binding_power,
+            validity,
+        }
+    }
+
+    /// Invalid custom infix still consumes a deterministic expression tail so
+    /// parsing can continue, but it is lowered to `ExprKind::Missing` and can
+    /// never be mistaken for an accepted grouping.
+    fn recovery(text: String, span: Span, validity: InfixValidity) -> Self {
+        Self::new(
+            text,
+            span,
+            OperatorPrecedence::Exponentiation,
+            OperatorAssociativity::Left,
+            validity,
+        )
+    }
 }
 
 impl Parser<'_> {
@@ -827,6 +923,23 @@ impl Parser<'_> {
             self.advance();
             let right = self.parse_binary_expression(operator.right_binding_power, allow_lambda);
             let span = left.span.merge(right.span);
+
+            if operator.validity != InfixValidity::Valid {
+                self.report_invalid_custom_infix(&operator);
+                left = missing_expr(span);
+                continue;
+            }
+
+            if matches!(left.kind, ExprKind::Missing) || matches!(right.kind, ExprKind::Missing) {
+                left = missing_expr(span);
+                continue;
+            }
+
+            if let Some(adjacent) = self.associativity_conflict(&operator, &left, &right) {
+                self.report_operator_associativity_conflict(&operator, &adjacent);
+                left = missing_expr(span);
+                continue;
+            }
 
             left = Expr {
                 kind: ExprKind::Binary {
@@ -2925,16 +3038,24 @@ impl Parser<'_> {
             return;
         }
 
+        // Custom operators are binary infix only, so one reaching here has no
+        // left operand. Every other token is an ordinary unsupported remainder.
+        let note = match &token.kind {
+            TokenKind::Operator(operator) if is_custom_operator_token(operator) => format!(
+                "custom operator `{operator}` is binary infix; give it a left operand or write `left.{operator}(right)`"
+            ),
+            _ => "this operator cannot appear in this position".to_owned(),
+        };
+        let span = token.span;
+
         self.diagnostics.push(
             Diagnostic::error("unsupported expression syntax")
                 .with_code(codes::parse::UNSUPPORTED_SYNTAX)
                 .with_label(Label::primary(
-                    token.span,
+                    span,
                     "this syntax is not supported by the core parser yet",
                 ))
-                .with_note(
-                    "custom operators do not have bare-infix parsing yet; use explicit member access such as `left.**(right)`",
-                ),
+                .with_note(note),
         );
         self.recover_to_next_line();
     }
@@ -3039,14 +3160,147 @@ impl Parser<'_> {
             return None;
         };
 
-        let (left_binding_power, right_binding_power) = infix_binding_power(operator)?;
+        if let Some((precedence, associativity)) = builtin_infix_fixity(operator) {
+            return Some(InfixOperator::new(
+                operator.clone(),
+                *span,
+                precedence,
+                associativity,
+                InfixValidity::Valid,
+            ));
+        }
 
-        Some(InfixOperator {
-            text: operator.clone(),
-            span: *span,
-            left_binding_power,
-            right_binding_power,
+        if !is_custom_operator_token(operator) {
+            return None;
+        }
+
+        // Role authorization deliberately precedes table lookup. A dependency
+        // parse is independent of every entry/platform fixity declaration.
+        if self.role == ModuleRole::Dependency {
+            return Some(InfixOperator::recovery(
+                operator.clone(),
+                *span,
+                InfixValidity::CustomNotRoot,
+            ));
+        }
+
+        let Some(fixity) = self.operator_fixities.get(operator) else {
+            return Some(InfixOperator::recovery(
+                operator.clone(),
+                *span,
+                InfixValidity::UndeclaredCustom,
+            ));
+        };
+
+        Some(InfixOperator::new(
+            operator.clone(),
+            *span,
+            fixity.precedence(),
+            fixity.associativity(),
+            InfixValidity::Valid,
+        ))
+    }
+
+    fn associativity_conflict(
+        &self,
+        operator: &InfixOperator,
+        left: &Expr,
+        right: &Expr,
+    ) -> Option<AdjacentInfixOperator> {
+        [left, right].into_iter().find_map(|operand| {
+            let ExprKind::Binary {
+                operator: adjacent,
+                operator_span,
+                ..
+            } = &operand.kind
+            else {
+                return None;
+            };
+            let (precedence, associativity) = self.valid_infix_fixity(adjacent)?;
+            let incompatible = precedence == operator.precedence
+                && (associativity == OperatorAssociativity::None
+                    || operator.associativity == OperatorAssociativity::None
+                    || associativity != operator.associativity);
+            incompatible.then(|| AdjacentInfixOperator {
+                text: adjacent.clone(),
+                span: *operator_span,
+                associativity,
+            })
         })
+    }
+
+    fn valid_infix_fixity(
+        &self,
+        operator: &str,
+    ) -> Option<(OperatorPrecedence, OperatorAssociativity)> {
+        if let Some(fixity) = builtin_infix_fixity(operator) {
+            return Some(fixity);
+        }
+        if self.role == ModuleRole::Dependency {
+            return None;
+        }
+        self.operator_fixities
+            .get(operator)
+            .map(|fixity| (fixity.precedence(), fixity.associativity()))
+    }
+
+    fn report_invalid_custom_infix(&mut self, operator: &InfixOperator) {
+        let diagnostic = match operator.validity {
+            InfixValidity::CustomNotRoot => Diagnostic::error(format!(
+                "custom operator `{}` cannot be used as bare infix in a dependency",
+                operator.text
+            ))
+            .with_code(codes::parse::CUSTOM_INFIX_NOT_ROOT)
+            .with_label(Label::primary(
+                operator.span,
+                "bare custom infix is allowed only in the compilation entry",
+            ))
+            .with_note(format!(
+                "rewrite this use as `left.{}(right)`, or move the expression into the designated entry",
+                operator.text
+            )),
+            InfixValidity::UndeclaredCustom => Diagnostic::error(format!(
+                "custom operator `{}` has no fixity declaration",
+                operator.text
+            ))
+            .with_code(codes::parse::OPERATOR_FIXITY_UNDECLARED)
+            .with_label(Label::primary(
+                operator.span,
+                "bare custom infix needs an entry fixity declaration",
+            ))
+            .with_note(format!(
+                "declare `{}` in `Aven.toml`, the entry shebang, or a `--operator` argument; or rewrite this use as `left.{}(right)`",
+                operator.text, operator.text
+            )),
+            InfixValidity::Valid => return,
+        };
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn report_operator_associativity_conflict(
+        &mut self,
+        operator: &InfixOperator,
+        adjacent: &AdjacentInfixOperator,
+    ) {
+        self.diagnostics.push(
+            Diagnostic::error("operators at this precedence cannot be chained")
+                .with_code(codes::parse::OPERATOR_ASSOCIATIVITY_CONFLICT)
+                .with_label(Label::primary(
+                    adjacent.span,
+                    format!(
+                        "`{}` has `{}` associativity",
+                        adjacent.text, adjacent.associativity
+                    ),
+                ))
+                .with_label(Label::primary(
+                    operator.span,
+                    format!(
+                        "`{}` has `{}` associativity",
+                        operator.text, operator.associativity
+                    ),
+                ))
+                .with_note("add parentheses around one operation to state the intended grouping"),
+        );
     }
 
     fn consume_collection_separator(&mut self, allow_semicolon: bool) -> bool {
@@ -3305,10 +3559,8 @@ impl BindingOperator {
     }
 }
 
-fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
-    use crate::{OperatorAssociativity, OperatorPrecedence};
-
-    let (precedence, associativity) = match operator {
+fn builtin_infix_fixity(operator: &str) -> Option<(OperatorPrecedence, OperatorAssociativity)> {
+    Some(match operator {
         "|" => (OperatorPrecedence::Union, OperatorAssociativity::Left),
         "|>" => (OperatorPrecedence::Pipe, OperatorAssociativity::Left),
         "??" => (OperatorPrecedence::Coalesce, OperatorAssociativity::Left),
@@ -3327,9 +3579,7 @@ fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
             OperatorAssociativity::Right,
         ),
         _ => return None,
-    };
-
-    Some(precedence.infix_binding_power(associativity))
+    })
 }
 
 fn scan_delimiters(tokens: &[Token]) -> Vec<Diagnostic> {
@@ -3420,10 +3670,14 @@ mod tests {
     use aven_core::{FileId, SourceFile, codes};
 
     use super::{
-        ExprKind, InterpolationSegment, Item, Literal, METHOD_RECEIVER_NAME, Param, ParseOutput,
-        PropagationMode, RecordEntry, parse_module, parse_source,
+        ExprKind, InterpolationSegment, Item, Literal, METHOD_RECEIVER_NAME, ModuleRole, Param,
+        ParseOutput, PropagationMode, RecordEntry, parse_module, parse_module_with_fixities,
+        parse_source,
     };
-    use crate::TokenKind;
+    use crate::{
+        OperatorAssociativity, OperatorFixity, OperatorFixityTable, OperatorOrigin,
+        OperatorPrecedence, TokenKind,
+    };
 
     #[test]
     fn parses_call_expressions_into_ast_nodes() {
@@ -3478,6 +3732,11 @@ mod tests {
         let output = parse_source(&file);
 
         assert_eq!(output.file_id, FileId(42));
+        assert_eq!(output.role, ModuleRole::Entry);
+        assert_eq!(
+            output.operator_fixity_fingerprint,
+            OperatorFixityTable::default().fingerprint()
+        );
         assert!(output.diagnostics.is_empty());
     }
 
@@ -3958,16 +4217,243 @@ mod tests {
     }
 
     #[test]
-    fn bare_custom_operator_remains_unsupported() {
+    fn entry_rejects_undeclared_bare_custom_operator() {
         let output = parse_module("value = left ** right\n");
 
         assert!(output.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code.as_deref() == Some(codes::parse::UNSUPPORTED_SYNTAX)
+            diagnostic.code.as_deref() == Some(codes::parse::OPERATOR_FIXITY_UNDECLARED)
+                && diagnostic
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("Aven.toml") && note.contains("left.**(right)"))
         }));
         assert!(!matches!(
             binding_value(&output, 0),
             ExprKind::Binary { operator, .. } if operator == "**"
         ));
+    }
+
+    #[test]
+    fn declared_custom_operators_follow_left_and_right_associativity() {
+        let fixities = operator_fixities([
+            (
+                "**",
+                OperatorPrecedence::Exponentiation,
+                OperatorAssociativity::Left,
+            ),
+            (
+                "$$",
+                OperatorPrecedence::Exponentiation,
+                OperatorAssociativity::Right,
+            ),
+        ]);
+        let output = parse_module_with_fixities(
+            "left = a ** b ** c\nright = a $$ b $$ c\n",
+            &fixities,
+            ModuleRole::Entry,
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let ExprKind::Binary {
+            operator,
+            left,
+            right,
+            ..
+        } = binding_value(&output, 0)
+        else {
+            panic!("expected left-associative binary expression");
+        };
+        assert_eq!(operator, "**");
+        assert!(matches!(
+            &left.kind,
+            ExprKind::Binary { operator, .. } if operator == "**"
+        ));
+        assert!(matches!(&right.kind, ExprKind::Name(name) if name == "c"));
+
+        let ExprKind::Binary {
+            operator,
+            left,
+            right,
+            ..
+        } = binding_value(&output, 1)
+        else {
+            panic!("expected right-associative binary expression");
+        };
+        assert_eq!(operator, "$$");
+        assert!(matches!(&left.kind, ExprKind::Name(name) if name == "a"));
+        assert!(matches!(
+            &right.kind,
+            ExprKind::Binary { operator, .. } if operator == "$$"
+        ));
+    }
+
+    #[test]
+    fn custom_precedence_interleaves_with_builtin_anchors() {
+        let fixities = operator_fixities([
+            (
+                "**",
+                OperatorPrecedence::Exponentiation,
+                OperatorAssociativity::Right,
+            ),
+            (
+                "$$",
+                OperatorPrecedence::Additive,
+                OperatorAssociativity::Left,
+            ),
+        ]);
+        let output = parse_module_with_fixities(
+            "different = a + b * c ** d\nsame = a + b $$ c\nsameRight = a ^ b ** c\n",
+            &fixities,
+            ModuleRole::Entry,
+        );
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let ExprKind::Binary {
+            operator, right, ..
+        } = binding_value(&output, 0)
+        else {
+            panic!("expected additive root");
+        };
+        assert_eq!(operator, "+");
+        let ExprKind::Binary {
+            operator, right, ..
+        } = &right.kind
+        else {
+            panic!("expected multiplicative right operand");
+        };
+        assert_eq!(operator, "*");
+        assert!(matches!(
+            &right.kind,
+            ExprKind::Binary { operator, .. } if operator == "**"
+        ));
+
+        let ExprKind::Binary { operator, left, .. } = binding_value(&output, 1) else {
+            panic!("expected same-anchor custom root");
+        };
+        assert_eq!(operator, "$$");
+        assert!(matches!(
+            &left.kind,
+            ExprKind::Binary { operator, .. } if operator == "+"
+        ));
+
+        let ExprKind::Binary {
+            operator, right, ..
+        } = binding_value(&output, 2)
+        else {
+            panic!("expected same-anchor right-associative root");
+        };
+        assert_eq!(operator, "^");
+        assert!(matches!(
+            &right.kind,
+            ExprKind::Binary { operator, .. } if operator == "**"
+        ));
+    }
+
+    #[test]
+    fn non_associative_custom_operator_rejects_unparenthesized_chaining() {
+        let fixities = operator_fixities([(
+            "%%",
+            OperatorPrecedence::Multiplicative,
+            OperatorAssociativity::None,
+        )]);
+        let output = parse_module_with_fixities(
+            "value = a %% b %% c\nleft = (a %% b) %% c\nright = a %% (b %% c)\n",
+            &fixities,
+            ModuleRole::Entry,
+        );
+
+        assert_eq!(
+            diagnostic_codes(&output),
+            vec![codes::parse::OPERATOR_ASSOCIATIVITY_CONFLICT]
+        );
+        assert!(matches!(binding_value(&output, 0), ExprKind::Missing));
+        assert!(matches!(binding_value(&output, 1), ExprKind::Binary { .. }));
+        assert!(matches!(binding_value(&output, 2), ExprKind::Binary { .. }));
+    }
+
+    #[test]
+    fn same_precedence_mixed_associativity_requires_parentheses() {
+        let fixities = operator_fixities([
+            (
+                "%%",
+                OperatorPrecedence::Additive,
+                OperatorAssociativity::Left,
+            ),
+            (
+                "$$",
+                OperatorPrecedence::Additive,
+                OperatorAssociativity::Right,
+            ),
+        ]);
+        let custom =
+            parse_module_with_fixities("value = a %% b $$ c\n", &fixities, ModuleRole::Entry);
+        let builtin =
+            parse_module_with_fixities("value = a + b $$ c\n", &fixities, ModuleRole::Entry);
+
+        assert_eq!(
+            diagnostic_codes(&custom),
+            vec![codes::parse::OPERATOR_ASSOCIATIVITY_CONFLICT]
+        );
+        assert_eq!(
+            diagnostic_codes(&builtin),
+            vec![codes::parse::OPERATOR_ASSOCIATIVITY_CONFLICT]
+        );
+    }
+
+    #[test]
+    fn dependency_rejects_declared_bare_custom_operator_before_fixity_lookup() {
+        let fixities = operator_fixities([(
+            "**",
+            OperatorPrecedence::Exponentiation,
+            OperatorAssociativity::Right,
+        )]);
+        let output = parse_module_with_fixities(
+            "value = left ** right\n",
+            &fixities,
+            ModuleRole::Dependency,
+        );
+
+        assert_eq!(
+            diagnostic_codes(&output),
+            vec![codes::parse::CUSTOM_INFIX_NOT_ROOT]
+        );
+        assert!(
+            output.diagnostics[0]
+                .notes
+                .iter()
+                .any(|note| note.contains("left.**(right)"))
+        );
+        assert!(
+            !output.diagnostics[0]
+                .notes
+                .iter()
+                .any(|note| note.contains("Aven.toml"))
+        );
+        assert!(matches!(binding_value(&output, 0), ExprKind::Missing));
+        assert_eq!(output.role, ModuleRole::Dependency);
+        assert_eq!(
+            output.operator_fixity_fingerprint,
+            OperatorFixityTable::default().fingerprint()
+        );
+    }
+
+    #[test]
+    fn explicit_custom_operator_call_works_in_both_roles() {
+        let fixities = operator_fixities([(
+            "**",
+            OperatorPrecedence::Exponentiation,
+            OperatorAssociativity::Right,
+        )]);
+        for role in [ModuleRole::Entry, ModuleRole::Dependency] {
+            let output = parse_module_with_fixities("value = left.**(right)\n", &fixities, role);
+
+            assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+            assert!(matches!(
+                binding_value(&output, 0),
+                ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::FieldAccess { field, .. } if field == "**")
+            ));
+        }
     }
 
     #[test]
@@ -4862,6 +5348,32 @@ mod tests {
             body.kind,
             ExprKind::Name(ref name) if name == METHOD_RECEIVER_NAME
         ));
+    }
+
+    fn operator_fixities<const N: usize>(
+        declarations: [(&str, OperatorPrecedence, OperatorAssociativity); N],
+    ) -> OperatorFixityTable {
+        OperatorFixityTable::try_from_entries(declarations.into_iter().enumerate().map(
+            |(registration_index, (token, precedence, associativity))| {
+                (
+                    token.to_owned(),
+                    OperatorFixity::new(
+                        precedence,
+                        associativity,
+                        OperatorOrigin::Platform { registration_index },
+                    ),
+                )
+            },
+        ))
+        .expect("test operator declarations are valid and distinct")
+    }
+
+    fn diagnostic_codes(output: &ParseOutput) -> Vec<&str> {
+        output
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .collect()
     }
 
     fn binding_value(output: &ParseOutput, index: usize) -> &ExprKind {

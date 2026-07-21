@@ -10,7 +10,7 @@ mod unify;
 use std::collections::{HashMap, HashSet};
 
 use aven_core::{Diagnostic, Span};
-use aven_parser::{Expr, ExprKind, Item, Module, RecordEntry};
+use aven_parser::{Expr, ExprKind, Item, Module, ModuleRole, RecordEntry};
 
 pub use comptime::{ComptimeExport, ComptimeModuleIdentity, ComptimeOrigin, SpecializationKey};
 pub use host_comptime::{
@@ -456,7 +456,21 @@ impl ModuleImports {
 }
 
 pub fn check_module(module: &Module) -> CheckOutput {
-    check_module_with_globals(module, &[])
+    check_module_with_role(module, ModuleRole::Entry)
+}
+
+/// Check a module under its compilation role.
+///
+/// Parsers reject dependency bare custom infix first; retaining the role here
+/// also protects callers that reuse or manually construct an AST.
+pub fn check_module_with_role(module: &Module, module_role: ModuleRole) -> CheckOutput {
+    check_module_with_host_globals_and_imports_in_role(
+        module,
+        &HostGlobals::default(),
+        &ModuleImports::default(),
+        ComptimeModuleIdentity::Current,
+        module_role,
+    )
 }
 
 /// Check `module` with a set of host/library globals seeded into the top-level
@@ -515,6 +529,22 @@ pub fn check_module_with_host_globals_and_imports_in(
     globals: &HostGlobals,
     imports: &ModuleImports,
     module_identity: ComptimeModuleIdentity,
+) -> CheckOutput {
+    check_module_with_host_globals_and_imports_in_role(
+        module,
+        globals,
+        imports,
+        module_identity,
+        ModuleRole::Entry,
+    )
+}
+
+pub fn check_module_with_host_globals_and_imports_in_role(
+    module: &Module,
+    globals: &HostGlobals,
+    imports: &ModuleImports,
+    module_identity: ComptimeModuleIdentity,
+    module_role: ModuleRole,
 ) -> CheckOutput {
     let mut reserved_type_names: HashSet<_> = BUILTIN_TYPES
         .iter()
@@ -597,13 +627,14 @@ pub fn check_module_with_host_globals_and_imports_in(
             }
         }
     }
-    let mut checker = Checker::with_module_and_host_globals_and_imports(
+    let mut checker = Checker::with_module_and_host_globals_and_imports_in_role(
         known_types,
         seed_definitions,
         module,
         globals,
         imports,
         module_identity,
+        module_role,
     );
 
     checker.diagnostics.extend(reserved_diagnostics);

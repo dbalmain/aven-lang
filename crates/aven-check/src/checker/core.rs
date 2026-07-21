@@ -6,6 +6,7 @@ impl<'a> Checker<'a> {
         type_definitions: HashMap<String, Type>,
     ) -> Self {
         Self {
+            module_role: ModuleRole::Entry,
             known_types,
             type_definitions,
             named_family_aliases: HashMap::new(),
@@ -110,8 +111,29 @@ impl<'a> Checker<'a> {
         imports: &ModuleImports,
         module_identity: comptime::ComptimeModuleIdentity,
     ) -> Self {
+        Self::with_module_and_host_globals_and_imports_in_role(
+            known_types,
+            type_definitions,
+            module,
+            globals,
+            imports,
+            module_identity,
+            ModuleRole::Entry,
+        )
+    }
+
+    pub(crate) fn with_module_and_host_globals_and_imports_in_role(
+        known_types: HashSet<String>,
+        type_definitions: HashMap<String, Type>,
+        module: &'a Module,
+        globals: &HostGlobals,
+        imports: &ModuleImports,
+        module_identity: comptime::ComptimeModuleIdentity,
+        module_role: ModuleRole,
+    ) -> Self {
         let mut checker = Self::with_module_environment(known_types, type_definitions, module);
         checker.module_identity = module_identity;
+        checker.module_role = module_role;
         checker.globals = globals.types.clone();
         // `debugText` is a language-level builtin, not host-registered: seed it
         // unless the host claims the name. User top-level declarations still

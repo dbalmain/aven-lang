@@ -4,7 +4,11 @@ use std::rc::Rc;
 use crate::checker::comptime_rhs_needs_evaluation;
 use crate::*;
 use aven_core::{Diagnostic, Severity, Span, codes};
-use aven_parser::{ExprKind, Item, Literal, Module, collect_declarations, parse_module};
+use aven_parser::{
+    ExprKind, Item, Literal, Module, ModuleRole, OperatorAssociativity, OperatorFixity,
+    OperatorFixityTable, OperatorOrigin, OperatorPrecedence, ParseOutput, collect_declarations,
+    parse_module, parse_module_with_fixities,
+};
 
 fn annotation<'a>(module: &'a Module, name: &str) -> &'a Expr {
     module
@@ -35,6 +39,21 @@ fn binding_value(source: &str) -> Expr {
             _ => None,
         })
         .unwrap_or_else(|| panic!("expected binding for {source:?}"))
+}
+
+fn parse_with_custom_infix(source: &str) -> ParseOutput {
+    let fixities = OperatorFixityTable::try_from_entries([(
+        "**".to_owned(),
+        OperatorFixity::new(
+            OperatorPrecedence::Exponentiation,
+            OperatorAssociativity::Right,
+            OperatorOrigin::Platform {
+                registration_index: 0,
+            },
+        ),
+    )])
+    .expect("test custom operator fixity is valid");
+    parse_module_with_fixities(source, &fixities, ModuleRole::Entry)
 }
 
 fn binding_value_named<'a>(module: &'a Module, name: &str) -> &'a Expr {
@@ -11661,6 +11680,159 @@ fn custom_operator_methods_explicit_access_and_requirements_typecheck() {
     let check = check_module(&parsed.module);
 
     assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn custom_bare_infix_resolves_through_the_left_owner_method() {
+    let parsed = parse_with_custom_infix(concat!(
+        "Scalar = {\n",
+        "  value: Int\n",
+        "  **(other: Scalar): Scalar => .\n",
+        "}\n",
+        "left = Scalar({ value: 2 })\n",
+        "right = Scalar({ value: 3 })\n",
+        "result: Scalar = left ** right\n",
+        "result\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let check = check_module_with_role(&parsed.module, parsed.role);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn custom_bare_infix_reports_missing_left_owner_method() {
+    let parsed = parse_with_custom_infix("result: Int = 2 ** 3\n");
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let check = check_module(&parsed.module);
+
+    assert!(
+        check.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::INVALID_OPERATOR_OPERANDS)
+                && diagnostic.message.contains("operator `**`")
+                && diagnostic.message.contains("Int")
+        }),
+        "{:#?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn custom_bare_infix_checks_right_parameter_and_result_types() {
+    let wrong_parameter = parse_with_custom_infix(concat!(
+        "Scalar = {\n",
+        "  value: Int\n",
+        "  **(other: Text): Scalar => .\n",
+        "}\n",
+        "left = Scalar({ value: 2 })\n",
+        "right = Scalar({ value: 3 })\n",
+        "result = left ** right\n",
+        "result\n",
+    ));
+    let wrong_result = parse_with_custom_infix(concat!(
+        "Scalar = {\n",
+        "  value: Int\n",
+        "  **(other: Text): Text => other\n",
+        "}\n",
+        "left = Scalar({ value: 2 })\n",
+        "result: Scalar = left ** \"value\"\n",
+        "result\n",
+    ));
+    assert!(
+        wrong_parameter.diagnostics.is_empty(),
+        "{:?}",
+        wrong_parameter.diagnostics
+    );
+    assert!(
+        wrong_result.diagnostics.is_empty(),
+        "{:?}",
+        wrong_result.diagnostics
+    );
+
+    let parameter_check = check_module(&wrong_parameter.module);
+    let result_check = check_module(&wrong_result.module);
+
+    assert!(
+        parameter_check.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::MISMATCH)
+                && diagnostic
+                    .message
+                    .contains("expected `Text`, found `Scalar`")
+        }),
+        "{:#?}",
+        parameter_check.diagnostics
+    );
+    assert!(
+        result_check.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::MISMATCH)
+                && diagnostic
+                    .message
+                    .contains("expected `Scalar`, found `Text`")
+        }),
+        "{:#?}",
+        result_check.diagnostics
+    );
+}
+
+#[test]
+fn generic_custom_infix_needs_corresponding_receiver_closed_requirement() {
+    let parsed = parse_with_custom_infix(concat!(
+        "pow = (left: t, right: t): t\n",
+        "  t: { +(Self): Self, .. }\n",
+        "=>\n",
+        "  left ** right\n",
+        "{ pow }\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let check = check_module(&parsed.module);
+
+    assert!(
+        check.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::MISMATCH)
+                && diagnostic.message.contains("operator `**`")
+                && diagnostic.message.contains("declared requirements")
+        }),
+        "{:#?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn checker_rejects_reused_custom_infix_ast_in_dependency_role() {
+    let parsed = parse_with_custom_infix(concat!(
+        "Scalar = {\n",
+        "  value: Int\n",
+        "  **(other: Scalar): Scalar => .\n",
+        "}\n",
+        "left = Scalar({ value: 2 })\n",
+        "right = Scalar({ value: 3 })\n",
+        "result = left ** right\n",
+        "result\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let check = check_module_with_role(&parsed.module, ModuleRole::Dependency);
+
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::parse::CUSTOM_INFIX_NOT_ROOT))
+        .expect("dependency role rejects reused custom bare infix");
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("left.**(right)"))
+    );
+    assert!(
+        !diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("Aven.toml"))
+    );
 }
 
 #[test]

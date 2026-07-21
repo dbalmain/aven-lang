@@ -6,7 +6,10 @@ use super::{
     record_field_value,
 };
 use aven_core::codes;
-use aven_parser::{Item, Module, parse_module};
+use aven_parser::{
+    Item, Module, ModuleRole, OperatorAssociativity, OperatorFixity, OperatorFixityTable,
+    OperatorOrigin, OperatorPrecedence, parse_module, parse_module_with_fixities,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -64,6 +67,44 @@ fn evaluates_custom_operator_method_via_explicit_access() {
             ("explicit", Value::Float(8.0)),
             ("unbound", Value::Float(8.0)),
         ]),
+    );
+}
+
+#[test]
+fn evaluates_declared_custom_bare_infix_through_named_method_dispatch() {
+    let fixities = OperatorFixityTable::try_from_entries([(
+        "**".to_owned(),
+        OperatorFixity::new(
+            OperatorPrecedence::Exponentiation,
+            OperatorAssociativity::Right,
+            OperatorOrigin::Platform {
+                registration_index: 0,
+            },
+        ),
+    )])
+    .expect("test custom operator fixity is valid");
+    let parsed = parse_module_with_fixities(
+        concat!(
+            "Scalar = {\n",
+            "  value: Float\n",
+            "  **(other: Scalar): Scalar =>\n",
+            "    Scalar({ value: .value ^ other.value })\n",
+            "}\n",
+            "left = Scalar({ value: 2.0 })\n",
+            "right = Scalar({ value: 3.0 })\n",
+            "(left ** right).value\n",
+        ),
+        &fixities,
+        ModuleRole::Entry,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    assert_eq!(
+        eval_module(&parsed.module),
+        EvalOutcome {
+            value: Some(Value::Float(8.0)),
+            diagnostics: Vec::new(),
+        }
     );
 }
 

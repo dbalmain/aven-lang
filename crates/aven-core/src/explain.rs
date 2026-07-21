@@ -207,6 +207,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Uppercase names are reserved for compile-time identifiers. Runtime parameters must use lowercase names.",
     },
     DiagnosticExplanation {
+        code: codes::parse::CUSTOM_INFIX_NOT_ROOT,
+        text: "A custom operator token was used as bare infix syntax in a dependency module. Bare custom infix is reserved for the designated compilation entry; rewrite the expression as an explicit left-receiver method call such as left.**(right).",
+    },
+    DiagnosticExplanation {
         code: codes::parse::EXPECTED_EXPRESSION,
         text: "The parser expected an expression term such as a literal, identifier, call, collection, lambda, or parenthesized group.",
     },
@@ -273,6 +277,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::parse::MISSING_METHOD_BOUND_OPEN,
         text: "A method bound must end with .. so it can accept additional methods. Insert , .. before the closing brace.",
+    },
+    DiagnosticExplanation {
+        code: codes::parse::OPERATOR_ASSOCIATIVITY_CONFLICT,
+        text: "Two unparenthesized operators at the same precedence level have incompatible associativity, or one is non-associative. Add parentheses to state the intended grouping.",
+    },
+    DiagnosticExplanation {
+        code: codes::parse::OPERATOR_FIXITY_UNDECLARED,
+        text: "A legal custom operator token was used as bare infix syntax in the compilation entry without a fixity declaration. Declare it in Aven.toml, the entry shebang, or a --operator argument, or use an explicit left-receiver method call such as left.**(right).",
     },
     DiagnosticExplanation {
         code: codes::parse::OPERATOR_MEMBER_PARAMETER_LIST,
