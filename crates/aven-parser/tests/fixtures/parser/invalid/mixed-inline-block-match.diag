@@ -3,4 +3,4 @@ error parse.unexpected-indentation: unexpected indentation
   note: remove the indentation or place the item inside a block
 error parse.unsupported-syntax: unsupported expression syntax
   label 40..42: this syntax is not supported by the core parser yet
-  note: custom operators are not supported yet; supported operators are `|`, `|>`, `??`, `||`, `&&`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, and `^`
+  note: custom operators do not have bare-infix parsing yet; use explicit member access such as `left.**(right)`

@@ -9,7 +9,7 @@ use std::{
 use aven_core::{Diagnostic, Label, Span, codes};
 use aven_parser::{
     Expr, ExprKind, InterpolationSegment, Item, Literal, MatchArm, Module, PropagationMode,
-    RecordEntry, decode_string_literal, is_method_requirement_row,
+    RecordEntry, decode_string_literal, is_method_operator, is_method_requirement_row,
 };
 
 mod display;
@@ -2578,10 +2578,7 @@ fn apply_inherited_primitive_method(
 }
 
 fn is_binary_method(member: &str) -> bool {
-    matches!(
-        member,
-        "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
-    )
+    is_method_operator(member)
 }
 
 fn apply_named_family_constructor(

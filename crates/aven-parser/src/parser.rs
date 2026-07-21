@@ -1,6 +1,8 @@
 use aven_core::{Diagnostic, FileId, Label, SourceFile, Span, codes};
 
-use crate::{Keyword, Token, TokenKind, decode_string_literal, lex_then_layout};
+use crate::{
+    Keyword, Token, TokenKind, decode_string_literal, is_method_operator, lex_then_layout,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
@@ -1574,7 +1576,7 @@ impl Parser<'_> {
         token.span.start == after.end
             && matches!(
                 &token.kind,
-                TokenKind::Operator(operator) if operator_member_name(operator).is_some()
+                TokenKind::Operator(operator) if is_method_operator(operator)
             )
     }
 
@@ -2285,7 +2287,7 @@ impl Parser<'_> {
     fn current_is_operator_member_name(&self) -> bool {
         matches!(
             self.current().map(|token| &token.kind),
-            Some(TokenKind::Operator(operator)) if operator_member_name(operator).is_some()
+            Some(TokenKind::Operator(operator)) if is_method_operator(operator)
         )
     }
 
@@ -2930,7 +2932,9 @@ impl Parser<'_> {
                     token.span,
                     "this syntax is not supported by the core parser yet",
                 ))
-                .with_note("custom operators are not supported yet; supported operators are `|`, `|>`, `??`, `||`, `&&`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, and `^`"),
+                .with_note(
+                    "custom operators do not have bare-infix parsing yet; use explicit member access such as `left.**(right)`",
+                ),
         );
         self.recover_to_next_line();
     }
@@ -3316,16 +3320,6 @@ fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
     };
 
     Some((precedence, precedence + 1))
-}
-
-/// Operator tokens that can appear as type-carried method members (`Int.+`,
-/// declaration `+(Self): Self`, unbound `Int.+(., other)`).
-fn operator_member_name(operator: &str) -> Option<&str> {
-    matches!(
-        operator,
-        "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
-    )
-    .then_some(operator)
 }
 
 fn scan_delimiters(tokens: &[Token]) -> Vec<Diagnostic> {
@@ -3895,6 +3889,75 @@ mod tests {
             } if field == "+"
         ));
         assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn parses_custom_operator_members_and_explicit_access() {
+        let output = parse_module(concat!(
+            "Scalar = {\n",
+            "  value: Float\n",
+            "  **(other: Self): Self => .\n",
+            "}\n",
+            "pow = (left: Scalar, right: Scalar): Scalar => left.**(right)\n",
+            "unbound = Scalar.**\n",
+            "required = (left: t, right: t): t\n",
+            "  t: { **(Self): Self, .. }\n",
+            "=>\n",
+            "  left.**(right)\n",
+        ));
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(scalar)) = output.module.items.first() else {
+            panic!("expected Scalar binding");
+        };
+        let ExprKind::Record(entries) = &scalar.value.kind else {
+            panic!("expected named-family record");
+        };
+        assert!(matches!(
+            &entries[1],
+            RecordEntry::Method { name, .. } if name == "**"
+        ));
+
+        let ExprKind::Lambda { body, .. } = binding_value(&output, 1) else {
+            panic!("expected explicit-call lambda");
+        };
+        assert!(matches!(
+            &body.kind,
+            ExprKind::Call { callee, args }
+                if args.len() == 1
+                    && matches!(
+                        &callee.kind,
+                        ExprKind::FieldAccess { field, .. } if field == "**"
+                    )
+        ));
+        assert!(matches!(
+            binding_value(&output, 2),
+            ExprKind::FieldAccess { field, .. } if field == "**"
+        ));
+
+        let ExprKind::Lambda { requirements, .. } = binding_value(&output, 3) else {
+            panic!("expected requirement lambda");
+        };
+        let ExprKind::Record(requirement_entries) = &requirements[0].bound.kind else {
+            panic!("expected method requirement row");
+        };
+        assert!(matches!(
+            &requirement_entries[0],
+            RecordEntry::Method { name, .. } if name == "**"
+        ));
+    }
+
+    #[test]
+    fn bare_custom_operator_remains_unsupported() {
+        let output = parse_module("value = left ** right\n");
+
+        assert!(output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::parse::UNSUPPORTED_SYNTAX)
+        }));
+        assert!(!matches!(
+            binding_value(&output, 0),
+            ExprKind::Binary { operator, .. } if operator == "**"
+        ));
     }
 
     #[test]

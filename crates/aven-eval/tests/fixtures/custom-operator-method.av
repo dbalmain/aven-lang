@@ -1,0 +1,16 @@
+Scalar = {
+  value: Float
+
+  **(other: Scalar): Scalar =>
+    Scalar({ value: .value ^ other.value })
+}
+
+powExplicit = (left: Scalar, right: Scalar): Scalar => left.**(right)
+powUnbound = Scalar.**
+
+left = Scalar({ value: 2.0 })
+right = Scalar({ value: 3.0 })
+{
+  explicit: powExplicit(left, right).value
+  unbound: powUnbound(left, right).value
+}

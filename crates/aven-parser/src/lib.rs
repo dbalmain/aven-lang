@@ -3,6 +3,7 @@ mod items;
 mod layout;
 mod lexer;
 mod names;
+mod operators;
 mod parser;
 mod resolve;
 mod strings;
@@ -19,6 +20,7 @@ pub use lexer::{
     Keyword, LexOutput, Token, TokenKind, is_comptime_identifier_name, is_identifier, lex_source,
 };
 pub use names::{NameAnalysis, analyze_names};
+pub use operators::{is_custom_operator_token, is_method_operator};
 pub use parser::{
     Binding, Expr, ExprKind, InterpolationSegment, Item, Literal, METHOD_RECEIVER_NAME, MatchArm,
     MethodAttachment, Module, Param, ParseOutput, PatternBinding, PropagationMode, RecordEntry,

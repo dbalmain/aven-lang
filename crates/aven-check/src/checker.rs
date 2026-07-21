@@ -6,7 +6,8 @@ use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
     MatchArm, MergedItem, Module, Param, PatternBinding, PropagationMode, RecordEntry, Requirement,
     Signature, SpreadBinding, collect_declarations, decode_string_literal,
-    is_comptime_identifier_name, lambda_parts, merged_items, pattern_bindings, walk_expr_children,
+    is_comptime_identifier_name, is_method_operator, lambda_parts, merged_items, pattern_bindings,
+    walk_expr_children,
 };
 
 use crate::BUILTIN_TYPES;

@@ -4039,13 +4039,6 @@ fn operator_operand_note(operator: &str) -> &'static str {
     }
 }
 
-fn is_method_operator(operator: &str) -> bool {
-    matches!(
-        operator,
-        "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
-    )
-}
-
 fn binary_operand_is_text(ty: &Type) -> bool {
     matches!(named_type_name(ty), Some("Text"))
         || matches!(ty, Type::Variant(row) if literal_variant_base(row) == Some(LiteralBase::Text))

@@ -57,6 +57,17 @@ fn evaluates_unbound_builtin_operator_and_div_methods() {
 }
 
 #[test]
+fn evaluates_custom_operator_method_via_explicit_access() {
+    assert_module_value(
+        include_str!("../tests/fixtures/custom-operator-method.av"),
+        record_value(vec![
+            ("explicit", Value::Float(8.0)),
+            ("unbound", Value::Float(8.0)),
+        ]),
+    );
+}
+
+#[test]
 fn evaluates_float_predicate_and_ieee_equals_methods() {
     assert_eval("(0.0 / 0.0).isNaN()", Value::Bool(true));
     assert_eval("(1.0 / 0.0).isInfinite()", Value::Bool(true));

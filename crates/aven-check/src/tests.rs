@@ -11642,6 +11642,59 @@ fn unbound_builtin_operator_and_named_methods_typecheck() {
 }
 
 #[test]
+fn custom_operator_methods_explicit_access_and_requirements_typecheck() {
+    let parsed = parse_module(concat!(
+        "Scalar = {\n",
+        "  value: Float\n",
+        "  **(other: Scalar): Scalar =>\n",
+        "    Scalar({ value: .value ^ other.value })\n",
+        "}\n",
+        "pow = (left: Scalar, right: Scalar): Scalar => left.**(right)\n",
+        "unbound = Scalar.**\n",
+        "required = (left: t, right: t): t\n",
+        "  t: { **(Self): Self, .. }\n",
+        "=>\n",
+        "  left.**(right)\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
+fn duplicate_custom_operator_method_uses_existing_duplicate_error() {
+    let parsed = parse_module(concat!(
+        "Scalar = {\n",
+        "  value: Float\n",
+        "  **(other: Scalar): Scalar => .\n",
+        "  **(other: Scalar): Scalar => .\n",
+        "}\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code.as_deref() == Some(codes::ty::MISMATCH)
+            && diagnostic.message == "duplicate method `**`"
+    }));
+}
+
+#[test]
+fn custom_operator_eval_fixture_typechecks() {
+    let parsed = parse_module(include_str!(
+        "../../aven-eval/tests/fixtures/custom-operator-method.av"
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn unbound_method_on_parameterized_builtin_reports_targeted_diagnostic() {
     // Value-producing path (`infer_field_access`) and statement path
     // (`check_value_field_access`) both surface the same code.

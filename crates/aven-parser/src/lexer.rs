@@ -1,5 +1,7 @@
 use aven_core::{Diagnostic, Label, Span, codes};
 
+use crate::operators::is_custom_operator_byte;
+
 #[derive(Debug, Clone)]
 pub struct LexOutput {
     pub tokens: Vec<Token>,
@@ -947,48 +949,15 @@ pub fn is_comptime_identifier_name(name: &str) -> bool {
 }
 
 fn is_operator_start_byte(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'=' | b':'
-            | b'.'
-            | b'?'
-            | b'+'
-            | b'-'
-            | b'*'
-            | b'/'
-            | b'%'
-            | b'^'
-            | b'|'
-            | b'&'
-            | b'<'
-            | b'>'
-            | b'!'
-            | b'~'
-            | b'$'
-    )
+    is_custom_operator_byte(byte) || matches!(byte, b':' | b'.' | b'?' | b'|')
 }
 
 fn is_custom_operator_continue_byte(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'+' | b'-'
-            | b'*'
-            | b'/'
-            | b'%'
-            | b'^'
-            | b'|'
-            | b'&'
-            | b'<'
-            | b'>'
-            | b'!'
-            | b'~'
-            | b'$'
-            | b'='
-    )
+    is_custom_operator_byte(byte)
 }
 
 fn is_operator_run_byte(byte: u8) -> bool {
-    is_custom_operator_continue_byte(byte) || matches!(byte, b':' | b'?' | b'.' | b'@')
+    is_custom_operator_continue_byte(byte) || matches!(byte, b':' | b'?' | b'.' | b'@' | b'|')
 }
 
 fn reserved_operator_continues(matched: &str, byte: u8) -> bool {
@@ -1155,6 +1124,22 @@ mod tests {
                 TokenKind::CloseParen,
             ]
         );
+    }
+
+    #[test]
+    fn lexes_custom_operator_runs_without_absorbing_pipe_tokens() {
+        let output = lex_source("left.**(right) *| tail |> next || fallback && guard ?? default");
+        let operators: Vec<_> = output
+            .tokens
+            .into_iter()
+            .filter_map(|token| match token.kind {
+                TokenKind::Operator(operator) => Some(operator),
+                _ => None,
+            })
+            .collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(operators, [".", "**", "*", "|", "|>", "||", "&&", "??"]);
     }
 
     #[test]
