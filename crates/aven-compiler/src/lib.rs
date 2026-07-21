@@ -25,17 +25,22 @@ mod operator_config;
 mod runtime_types;
 pub use modules::{
     ExportProvenance, ExportProvenanceMap, LibraryModules, ModuleCheckOutput, ModuleEvalOutput,
-    ModuleImportResolution, ModuleInterface, ModuleNodeCheckOutput, ModuleRoots, SourceOverlay,
-    check_path_with_host_globals, check_path_with_host_globals_and_overlay,
+    ModuleImportResolution, ModuleInterface, ModuleNodeCheckOutput, ModuleRoots, ProjectConfig,
+    SourceOverlay, check_path_with_host_globals,
+    check_path_with_host_globals_and_entry_source_and_fixities_with_roots,
+    check_path_with_host_globals_and_overlay,
     check_path_with_host_globals_and_overlay_and_entry_parse,
     check_path_with_host_globals_and_overlay_and_entry_parse_with_roots,
     check_path_with_host_globals_and_roots, eval_path_with_globals,
-    eval_path_with_globals_and_roots, eval_path_with_host_globals_and_roots, library_specifier,
+    eval_path_with_globals_and_roots,
+    eval_path_with_host_globals_and_entry_source_and_fixities_with_roots,
+    eval_path_with_host_globals_and_roots, library_specifier,
 };
 pub use operator_config::{
-    OperatorConfigResult, OperatorFixityDeclaration, OperatorManifestSource,
+    OperatorConfigDiagnostic, OperatorConfigDiagnosticSource, OperatorConfigResult,
+    OperatorFixityDeclaration, OperatorManifestSource, ShebangInvocation, ShebangStyle,
     load_operator_fixity_table, merge_operator_fixities, parse_argv_operator_fixities,
-    parse_manifest_operator_fixities, parse_shebang_operator_fixities,
+    parse_manifest_operator_fixities, parse_shebang_invocation, parse_shebang_operator_fixities,
 };
 pub(crate) use runtime_types::runtime_type_bindings;
 

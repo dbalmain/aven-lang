@@ -12,6 +12,61 @@ use aven_parser::{
 
 pub type OperatorConfigResult<T> = Result<T, Vec<Diagnostic>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorConfigDiagnosticSource {
+    Manifest,
+    Shebang,
+    Argv { declaration_index: usize },
+    Platform,
+    Multiple,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorConfigDiagnostic {
+    source: OperatorConfigDiagnosticSource,
+    diagnostic: Diagnostic,
+}
+
+impl OperatorConfigDiagnostic {
+    pub(crate) fn new(source: OperatorConfigDiagnosticSource, diagnostic: Diagnostic) -> Self {
+        Self { source, diagnostic }
+    }
+
+    pub const fn source(&self) -> OperatorConfigDiagnosticSource {
+        self.source
+    }
+
+    pub const fn diagnostic(&self) -> &Diagnostic {
+        &self.diagnostic
+    }
+
+    pub fn into_diagnostic(self) -> Diagnostic {
+        self.diagnostic
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShebangStyle {
+    Direct,
+    EnvS,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShebangInvocation {
+    style: ShebangStyle,
+    operator_arguments: Vec<String>,
+}
+
+impl ShebangInvocation {
+    pub const fn style(&self) -> ShebangStyle {
+        self.style
+    }
+
+    pub fn operator_arguments(&self) -> &[String] {
+        &self.operator_arguments
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorFixityDeclaration {
     token: String,
@@ -52,28 +107,51 @@ where
     P: IntoIterator<Item = (T, OperatorPrecedence, OperatorAssociativity)>,
     T: Into<String>,
 {
+    load_operator_fixity_table_detailed(manifest, entry_source, argv_atoms, platform).map_err(
+        |diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(OperatorConfigDiagnostic::into_diagnostic)
+                .collect()
+        },
+    )
+}
+
+pub(crate) fn load_operator_fixity_table_detailed<A, S, P, T>(
+    manifest: Option<OperatorManifestSource<'_>>,
+    entry_source: &str,
+    argv_atoms: A,
+    platform: P,
+) -> Result<OperatorFixityTable, Vec<OperatorConfigDiagnostic>>
+where
+    A: IntoIterator<Item = S>,
+    S: AsRef<str>,
+    P: IntoIterator<Item = (T, OperatorPrecedence, OperatorAssociativity)>,
+    T: Into<String>,
+{
     let mut declarations = Vec::new();
     let mut diagnostics = Vec::new();
 
     if let Some(manifest) = manifest {
-        collect_result(
+        collect_located_result(
             parse_manifest_operator_fixities(manifest.source, manifest.path),
+            OperatorConfigDiagnosticSource::Manifest,
             &mut declarations,
             &mut diagnostics,
         );
     }
-    collect_result(
+    collect_located_result(
         parse_shebang_operator_fixities(entry_source),
+        OperatorConfigDiagnosticSource::Shebang,
         &mut declarations,
         &mut diagnostics,
     );
-    collect_result(
-        parse_argv_operator_fixities(argv_atoms),
-        &mut declarations,
-        &mut diagnostics,
-    );
+    let (mut argv_declarations, mut argv_diagnostics) =
+        parse_argv_operator_fixities_detailed(argv_atoms);
+    declarations.append(&mut argv_declarations);
+    diagnostics.append(&mut argv_diagnostics);
 
-    match merge_operator_fixities(declarations, platform) {
+    match merge_operator_fixities_detailed(declarations, platform) {
         Ok(table) if diagnostics.is_empty() => Ok(table),
         Ok(_) => Err(diagnostics),
         Err(mut merge_diagnostics) => {
@@ -175,31 +253,13 @@ pub fn parse_manifest_operator_fixities(
 pub fn parse_shebang_operator_fixities(
     source: &str,
 ) -> OperatorConfigResult<Vec<OperatorFixityDeclaration>> {
-    let line = first_line(source);
-    if !line.starts_with("#!") {
+    let Some((_, words)) = parse_shebang_words(source)? else {
         return Ok(Vec::new());
-    }
-
-    let Some(words) = shebang_words(line) else {
-        return Err(vec![malformed_shebang(
-            Span::new(0, line.len()),
-            "the shebang must use spaces between unquoted arguments",
-        )]);
-    };
-    let flag_start = if is_env_s_form(&words) {
-        4
-    } else if is_direct_form(&words) {
-        2
-    } else {
-        return Err(vec![malformed_shebang(
-            Span::new(0, line.len()),
-            "expected `/usr/bin/env -S aven run` or an absolute path ending in `/aven` followed by `run`",
-        )]);
     };
 
     let mut declarations = Vec::new();
     let mut diagnostics = Vec::new();
-    for word in &words[flag_start..] {
+    for word in words {
         let origin = OperatorOrigin::Shebang { span: word.span };
         match parse_operator_flag(word.text, word.span, origin, FlagContext::Shebang) {
             Ok(declaration) => declarations.push(declaration),
@@ -214,10 +274,72 @@ pub fn parse_shebang_operator_fixities(
     }
 }
 
+/// Parse the restricted first-line Aven invocation without treating its flags
+/// as a second command-line authority contribution.
+pub fn parse_shebang_invocation(source: &str) -> OperatorConfigResult<Option<ShebangInvocation>> {
+    let Some((style, words)) = parse_shebang_words(source)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(ShebangInvocation {
+        style,
+        operator_arguments: words.iter().map(|word| word.text.to_owned()).collect(),
+    }))
+}
+
+/// Verify the opaque optional argument delivered by a direct Linux shebang
+/// against the source line that remains authoritative for configuration.
+pub(crate) fn validate_direct_shebang_arguments(
+    source: &str,
+    arguments: &[String],
+) -> OperatorConfigResult<()> {
+    let Some((style, words)) = parse_shebang_words(source)? else {
+        return Err(vec![malformed_shebang(
+            Span::new(0, first_line(source).len()),
+            "direct execution requires the entry's first line to be an Aven shebang",
+        )]);
+    };
+    let source_arguments = words.iter().map(|word| word.text).collect::<Vec<_>>();
+    if style != ShebangStyle::Direct
+        || !source_arguments
+            .iter()
+            .copied()
+            .eq(arguments.iter().map(String::as_str))
+    {
+        return Err(vec![malformed_shebang(
+            Span::new(0, first_line(source).len()),
+            "the source shebang does not match the direct invocation received from the operating system",
+        )]);
+    }
+
+    Ok(())
+}
+
 /// Parse repeatable full `--operator=TOKEN:ANCHOR:ASSOC` argv atoms.
 pub fn parse_argv_operator_fixities<A, S>(
     atoms: A,
 ) -> OperatorConfigResult<Vec<OperatorFixityDeclaration>>
+where
+    A: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let (declarations, diagnostics) = parse_argv_operator_fixities_detailed(atoms);
+    if diagnostics.is_empty() {
+        Ok(declarations)
+    } else {
+        Err(diagnostics
+            .into_iter()
+            .map(OperatorConfigDiagnostic::into_diagnostic)
+            .collect())
+    }
+}
+
+fn parse_argv_operator_fixities_detailed<A, S>(
+    atoms: A,
+) -> (
+    Vec<OperatorFixityDeclaration>,
+    Vec<OperatorConfigDiagnostic>,
+)
 where
     A: IntoIterator<Item = S>,
     S: AsRef<str>,
@@ -234,15 +356,14 @@ where
         };
         match parse_operator_flag(atom, span, origin, FlagContext::Argv) {
             Ok(declaration) => declarations.push(declaration),
-            Err(diagnostic) => diagnostics.push(diagnostic),
+            Err(diagnostic) => diagnostics.push(OperatorConfigDiagnostic {
+                source: OperatorConfigDiagnosticSource::Argv { declaration_index },
+                diagnostic,
+            }),
         }
     }
 
-    if diagnostics.is_empty() {
-        Ok(declarations)
-    } else {
-        Err(diagnostics)
-    }
+    (declarations, diagnostics)
 }
 
 /// Disjointly merge root declarations with a platform-supplied set.
@@ -250,6 +371,23 @@ pub fn merge_operator_fixities<R, P, T>(
     root: R,
     platform: P,
 ) -> OperatorConfigResult<OperatorFixityTable>
+where
+    R: IntoIterator<Item = OperatorFixityDeclaration>,
+    P: IntoIterator<Item = (T, OperatorPrecedence, OperatorAssociativity)>,
+    T: Into<String>,
+{
+    merge_operator_fixities_detailed(root, platform).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(OperatorConfigDiagnostic::into_diagnostic)
+            .collect()
+    })
+}
+
+fn merge_operator_fixities_detailed<R, P, T>(
+    root: R,
+    platform: P,
+) -> Result<OperatorFixityTable, Vec<OperatorConfigDiagnostic>>
 where
     R: IntoIterator<Item = OperatorFixityDeclaration>,
     P: IntoIterator<Item = (T, OperatorPrecedence, OperatorAssociativity)>,
@@ -266,7 +404,10 @@ where
         let token = token.into();
         let origin = OperatorOrigin::Platform { registration_index };
         if let Some(diagnostic) = invalid_token_diagnostic(&token, &origin, Span::point(0)) {
-            diagnostics.push(diagnostic);
+            diagnostics.push(OperatorConfigDiagnostic {
+                source: OperatorConfigDiagnosticSource::Platform,
+                diagnostic,
+            });
         } else {
             entries.push((
                 token,
@@ -279,7 +420,11 @@ where
         Ok(table) if diagnostics.is_empty() => Ok(table),
         Ok(_) => Err(diagnostics),
         Err(error) => {
-            diagnostics.push(table_error_diagnostic(error));
+            let source = table_error_source(&error);
+            diagnostics.push(OperatorConfigDiagnostic {
+                source,
+                diagnostic: table_error_diagnostic(error),
+            });
             Err(diagnostics)
         }
     }
@@ -400,6 +545,34 @@ fn parse_operator_flag(
 fn first_line(source: &str) -> &str {
     let line = source.split_once('\n').map_or(source, |(line, _)| line);
     line.strip_suffix('\r').unwrap_or(line)
+}
+
+fn parse_shebang_words(
+    source: &str,
+) -> OperatorConfigResult<Option<(ShebangStyle, Vec<ShebangWord<'_>>)>> {
+    let line = first_line(source);
+    if !line.starts_with("#!") {
+        return Ok(None);
+    }
+
+    let Some(words) = shebang_words(line) else {
+        return Err(vec![malformed_shebang(
+            Span::new(0, line.len()),
+            "the shebang must use spaces between unquoted arguments",
+        )]);
+    };
+    let (style, flag_start) = if is_env_s_form(&words) {
+        (ShebangStyle::EnvS, 4)
+    } else if is_direct_form(&words) {
+        (ShebangStyle::Direct, 2)
+    } else {
+        return Err(vec![malformed_shebang(
+            Span::new(0, line.len()),
+            "expected `/usr/bin/env -S aven run` or an absolute path ending in `/aven` followed by `run`",
+        )]);
+    };
+
+    Ok(Some((style, words[flag_start..].to_vec())))
 }
 
 fn shebang_words(line: &str) -> Option<Vec<ShebangWord<'_>>> {
@@ -533,15 +706,85 @@ fn table_error_diagnostic(error: OperatorFixityTableError) -> Diagnostic {
             token,
             first,
             second,
-        } => Diagnostic::error(format!(
-            "operator fixity for `{token}` has multiple origins"
-        ))
-        .with_code(codes::config::OPERATOR_FIXITY_CONFLICT)
-        .with_note(format!("first: {first} from {}", first.origin()))
-        .with_note(format!("second: {second} from {}", second.origin()))
-        .with_note(
-            "remove all but one declaration; configuration sources never override each other",
-        ),
+        } => {
+            let mut diagnostic = Diagnostic::error(format!(
+                "operator fixity for `{token}` has multiple origins"
+            ))
+            .with_code(codes::config::OPERATOR_FIXITY_CONFLICT);
+
+            // Label the origin that points into a real file. Without a label the
+            // report has no snippet to attach to and the notes naming both
+            // origins are never rendered.
+            if let Some(fixity) = renderable_conflict_fixity(&first, &second)
+                && let Some(span) = renderable_origin_span(fixity.origin())
+            {
+                diagnostic = diagnostic.with_label(Label::primary(
+                    span,
+                    format!("`{token}` is also declared by another configuration source"),
+                ));
+            }
+
+            diagnostic
+                .with_note(format!("first: {first} from {}", first.origin()))
+                .with_note(format!("second: {second} from {}", second.origin()))
+                .with_note(
+                    "remove all but one declaration; configuration sources never override each other",
+                )
+        }
+    }
+}
+
+/// The span of an origin that points into a real file, if it has one. Argv and
+/// platform declarations have no file to underline.
+fn renderable_origin_span(origin: &OperatorOrigin) -> Option<Span> {
+    match origin {
+        OperatorOrigin::Manifest { span, .. } | OperatorOrigin::Shebang { span } => Some(*span),
+        OperatorOrigin::Argv { .. } | OperatorOrigin::Platform { .. } => None,
+    }
+}
+
+/// Which side of a conflict the report is rendered against: the first that has a
+/// real file. `table_error_source` must agree with this choice.
+fn renderable_conflict_fixity<'a>(
+    first: &'a OperatorFixity,
+    second: &'a OperatorFixity,
+) -> Option<&'a OperatorFixity> {
+    [first, second]
+        .into_iter()
+        .find(|fixity| renderable_origin_span(fixity.origin()).is_some())
+}
+
+fn table_error_source(error: &OperatorFixityTableError) -> OperatorConfigDiagnosticSource {
+    match error {
+        OperatorFixityTableError::InvalidToken { fixity, .. } => {
+            diagnostic_source_for_origin(fixity.origin())
+        }
+        OperatorFixityTableError::Duplicate { first, second, .. } => {
+            let first_source = diagnostic_source_for_origin(first.origin());
+            if first_source == diagnostic_source_for_origin(second.origin()) {
+                return first_source;
+            }
+
+            // Must match the side `table_error_diagnostic` labels, so the span
+            // and the rendered file agree.
+            renderable_conflict_fixity(first, second)
+                .map_or(OperatorConfigDiagnosticSource::Multiple, |fixity| {
+                    diagnostic_source_for_origin(fixity.origin())
+                })
+        }
+    }
+}
+
+fn diagnostic_source_for_origin(origin: &OperatorOrigin) -> OperatorConfigDiagnosticSource {
+    match origin {
+        OperatorOrigin::Manifest { .. } => OperatorConfigDiagnosticSource::Manifest,
+        OperatorOrigin::Shebang { .. } => OperatorConfigDiagnosticSource::Shebang,
+        OperatorOrigin::Argv {
+            declaration_index, ..
+        } => OperatorConfigDiagnosticSource::Argv {
+            declaration_index: *declaration_index,
+        },
+        OperatorOrigin::Platform { .. } => OperatorConfigDiagnosticSource::Platform,
     }
 }
 
@@ -550,14 +793,19 @@ fn range_to_span(range: std::ops::Range<usize>, source_len: usize) -> Span {
     Span::new(start, range.end.min(source_len).max(start))
 }
 
-fn collect_result<T>(
+fn collect_located_result<T>(
     result: OperatorConfigResult<Vec<T>>,
+    source: OperatorConfigDiagnosticSource,
     values: &mut Vec<T>,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<OperatorConfigDiagnostic>,
 ) {
     match result {
         Ok(mut parsed) => values.append(&mut parsed),
-        Err(mut errors) => diagnostics.append(&mut errors),
+        Err(errors) => diagnostics.extend(
+            errors
+                .into_iter()
+                .map(|diagnostic| OperatorConfigDiagnostic { source, diagnostic }),
+        ),
     }
 }
 

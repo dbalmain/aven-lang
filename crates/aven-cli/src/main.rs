@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::ops::Range;
@@ -34,6 +35,10 @@ enum Command {
         /// Print parse/name/check timings.
         #[arg(long)]
         timings: bool,
+
+        /// Declare a root custom operator as TOKEN:ANCHOR:ASSOCIATIVITY.
+        #[arg(long = "operator")]
+        operators: Vec<String>,
     },
 
     /// Run a file and print the last expression value.
@@ -52,6 +57,10 @@ enum Command {
         /// Logger record rendering format.
         #[arg(long = "log-format", value_enum, default_value_t = LogFormat::Json)]
         log_format: LogFormat,
+
+        /// Declare a root custom operator as TOKEN:ANCHOR:ASSOCIATIVITY.
+        #[arg(long = "operator")]
+        operators: Vec<String>,
     },
 
     /// Explain a diagnostic code.
@@ -80,6 +89,10 @@ enum Command {
 
         /// Source file to format.
         path: PathBuf,
+
+        /// Declare a root custom operator as TOKEN:ANCHOR:ASSOCIATIVITY.
+        #[arg(long = "operator")]
+        operators: Vec<String>,
     },
 
     /// Start the language server on stdin/stdout.
@@ -113,26 +126,101 @@ impl Default for RunConfig {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct NormalizedArgv {
+    args: Vec<OsString>,
+    direct_shebang_arguments: Option<Vec<String>>,
+}
+
+fn normalize_direct_shebang_argv(args: Vec<OsString>) -> Result<NormalizedArgv> {
+    let Some(blob) = args.get(1).and_then(|argument| argument.to_str()) else {
+        return Ok(NormalizedArgv {
+            args,
+            direct_shebang_arguments: None,
+        });
+    };
+    if !blob.starts_with("run ") {
+        return Ok(NormalizedArgv {
+            args,
+            direct_shebang_arguments: None,
+        });
+    }
+    if blob.ends_with(' ')
+        || blob
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() && byte != b' ')
+    {
+        bail!("malformed direct Aven shebang argument: use unquoted arguments separated by spaces");
+    }
+
+    let words = blob
+        .split(' ')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let operator_arguments = words[1..]
+        .iter()
+        .map(|word| (*word).to_owned())
+        .collect::<Vec<_>>();
+    if let Err(diagnostics) = aven_compiler::parse_argv_operator_fixities(&operator_arguments) {
+        let messages = diagnostics
+            .iter()
+            .map(|diagnostic| {
+                diagnostic.code.as_deref().map_or_else(
+                    || diagnostic.message.clone(),
+                    |code| format!("{code}: {}", diagnostic.message),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("malformed direct Aven shebang argument: {messages}");
+    }
+
+    let mut normalized = Vec::with_capacity(args.len());
+    normalized.push(args[0].clone());
+    normalized.push(OsString::from("run"));
+    normalized.extend(args.into_iter().skip(2));
+    Ok(NormalizedArgv {
+        args: normalized,
+        direct_shebang_arguments: Some(operator_arguments),
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let NormalizedArgv {
+        args,
+        direct_shebang_arguments,
+    } = normalize_direct_shebang_argv(std::env::args_os().collect())?;
+    let cli = Cli::parse_from(args);
 
     match cli.command {
         Command::Check {
             path,
             format,
             timings,
-        } => check(&path, format, timings),
+            operators,
+        } => check(&path, format, timings, &operators),
         Command::Run {
             path,
             format,
             log,
             log_format,
-        } => run(&path, format, &RunConfig { log, log_format }),
+            operators,
+        } => run(
+            &path,
+            format,
+            &RunConfig { log, log_format },
+            &operators,
+            direct_shebang_arguments.as_deref(),
+        ),
         Command::Explain { code } => explain(&code),
         Command::Tokens { path } => tokens(&path),
         Command::Layout { path } => layout(&path),
-        Command::Fmt { check, path } => fmt(&path, check),
+        Command::Fmt {
+            check,
+            path,
+            operators,
+        } => fmt(&path, check, &operators),
         Command::Lsp => {
             aven_lsp::run_stdio().await;
             Ok(())
@@ -151,14 +239,23 @@ fn explain(code: &str) -> Result<()> {
     Ok(())
 }
 
-fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
+fn check(
+    path: &Path,
+    format: OutputFormat,
+    show_timings: bool,
+    operators: &[String],
+) -> Result<()> {
     let roots = discover_roots(path);
-    let checked = aven_compiler::check_path_with_host_globals_and_roots(
-        path,
-        &aven_host::standard_check_host_globals(),
-        &roots,
-    )
-    .with_context(|| format!("failed to load {}", path.display()))?;
+    let configured = load_path_operator_config(path, &roots, operators, None, false, format)?;
+    let checked =
+        aven_compiler::check_path_with_host_globals_and_entry_source_and_fixities_with_roots(
+            path,
+            &aven_host::standard_check_host_globals(),
+            configured.file.source(),
+            &configured.operator_fixities,
+            &roots,
+        )
+        .with_context(|| format!("failed to load {}", path.display()))?;
     let timings = checked.timings;
     let has_errors = reports_have_errors(&checked.reports);
 
@@ -192,16 +289,33 @@ fn check(path: &Path, format: OutputFormat, show_timings: bool) -> Result<()> {
     Ok(())
 }
 
-fn run(path: &Path, format: OutputFormat, config: &RunConfig) -> Result<()> {
+fn run(
+    path: &Path,
+    format: OutputFormat,
+    config: &RunConfig,
+    operators: &[String],
+    direct_shebang_arguments: Option<&[String]>,
+) -> Result<()> {
     let host = build_host(config)?;
     let roots = discover_roots_for_host(path, &host);
-    let output = aven_compiler::eval_path_with_host_globals_and_roots(
+    let configured = load_path_operator_config(
         path,
-        &host.check_host_globals(),
-        host.eval_globals(),
         &roots,
-    )
-    .with_context(|| format!("failed to load {}", path.display()))?;
+        operators,
+        direct_shebang_arguments,
+        direct_shebang_arguments.is_none(),
+        format,
+    )?;
+    let output =
+        aven_compiler::eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
+            path,
+            &host.check_host_globals(),
+            host.eval_globals(),
+            configured.file.source(),
+            &configured.operator_fixities,
+            &roots,
+        )
+        .with_context(|| format!("failed to load {}", path.display()))?;
     let has_errors = reports_have_errors(&output.reports);
 
     match format {
@@ -264,6 +378,58 @@ fn discover_roots_for_host(path: &Path, host: &aven_host::Host) -> aven_compiler
             roots.with_disabled_capability_module(specifier, capability, register_method)
         },
     )
+}
+
+struct PathOperatorConfig {
+    file: SourceFile,
+    operator_fixities: aven_parser::OperatorFixityTable,
+}
+
+fn load_path_operator_config(
+    path: &Path,
+    roots: &aven_compiler::ModuleRoots,
+    operators: &[String],
+    direct_shebang_arguments: Option<&[String]>,
+    allow_env_s_transport: bool,
+    format: OutputFormat,
+) -> Result<PathOperatorConfig> {
+    let project = aven_compiler::ProjectConfig::load(roots)
+        .with_context(|| "failed to read discovered Aven.toml")?;
+    let file = load_source_file(path)?;
+    let mut argv_atoms = operators
+        .iter()
+        .map(|operator| format!("--operator={operator}"))
+        .collect::<Vec<_>>();
+
+    if allow_env_s_transport
+        && let Ok(Some(invocation)) = aven_compiler::parse_shebang_invocation(file.source())
+        && invocation.style() == aven_compiler::ShebangStyle::EnvS
+        && argv_atoms.starts_with(invocation.operator_arguments())
+    {
+        argv_atoms.drain(..invocation.operator_arguments().len());
+    }
+
+    let operator_fixities = match project.operator_fixity_table(
+        file.source(),
+        &argv_atoms,
+        std::iter::empty::<(
+            String,
+            aven_parser::OperatorPrecedence,
+            aven_parser::OperatorAssociativity,
+        )>(),
+        direct_shebang_arguments,
+    ) {
+        Ok(operator_fixities) => operator_fixities,
+        Err(diagnostics) => {
+            print_operator_config_diagnostics(&project, &file, &argv_atoms, &diagnostics, format)?;
+            bail!("operator configuration failed");
+        }
+    };
+
+    Ok(PathOperatorConfig {
+        file,
+        operator_fixities,
+    })
 }
 
 fn is_err_value(value: &aven_eval::Value) -> bool {
@@ -716,16 +882,20 @@ fn layout(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn fmt(path: &Path, check: bool) -> Result<()> {
-    let file = load_source_file(path)?;
-    let formatted = match aven_fmt::format_source(file.source()) {
-        Ok(formatted) => formatted,
-        Err(diagnostics) => {
-            let report = DiagnosticReport::new(file.id, diagnostics);
-            print_diagnostics(&file, &report)?;
-            bail!("formatting failed");
-        }
-    };
+fn fmt(path: &Path, check: bool, operators: &[String]) -> Result<()> {
+    let roots = aven_compiler::ModuleRoots::discover(path);
+    let configured =
+        load_path_operator_config(path, &roots, operators, None, false, OutputFormat::Text)?;
+    let file = configured.file;
+    let formatted =
+        match aven_fmt::format_source_with_fixities(file.source(), &configured.operator_fixities) {
+            Ok(formatted) => formatted,
+            Err(diagnostics) => {
+                let report = DiagnosticReport::new(file.id, diagnostics);
+                print_diagnostics(&file, &report)?;
+                bail!("formatting failed");
+            }
+        };
 
     if file.source() == formatted {
         return Ok(());
@@ -765,6 +935,74 @@ fn print_diagnostics(file: &SourceFile, report: &DiagnosticReport) -> Result<()>
     Ok(())
 }
 
+fn print_operator_config_diagnostics(
+    project: &aven_compiler::ProjectConfig,
+    entry: &SourceFile,
+    argv_atoms: &[String],
+    diagnostics: &[aven_compiler::OperatorConfigDiagnostic],
+    format: OutputFormat,
+) -> Result<()> {
+    let reports = diagnostics
+        .iter()
+        .enumerate()
+        .map(|(index, located)| {
+            let id = FileId(index);
+            let file = match located.source() {
+                aven_compiler::OperatorConfigDiagnosticSource::Manifest => SourceFile::new(
+                    id,
+                    project
+                        .manifest_path()
+                        .map_or_else(|| "Aven.toml".to_owned(), |path| path.display().to_string()),
+                    project.manifest_path().map(Path::to_path_buf),
+                    project.manifest_source().unwrap_or_default(),
+                ),
+                aven_compiler::OperatorConfigDiagnosticSource::Shebang => {
+                    SourceFile::new(id, entry.name.clone(), entry.path.clone(), entry.source())
+                }
+                aven_compiler::OperatorConfigDiagnosticSource::Argv { declaration_index } => {
+                    SourceFile::new(
+                        id,
+                        format!(
+                            "<command-line operator declaration {}>",
+                            declaration_index + 1
+                        ),
+                        None,
+                        argv_atoms.get(declaration_index).map_or("", String::as_str),
+                    )
+                }
+                aven_compiler::OperatorConfigDiagnosticSource::Platform => {
+                    SourceFile::new(id, "<platform operator configuration>", None, "")
+                }
+                aven_compiler::OperatorConfigDiagnosticSource::Multiple => {
+                    SourceFile::new(id, "<operator configuration>", None, "")
+                }
+            };
+            let report = DiagnosticReport::new(id, vec![located.diagnostic().clone()]);
+            (file, report)
+        })
+        .collect::<Vec<_>>();
+
+    match format {
+        OutputFormat::Text => {
+            for (file, report) in &reports {
+                print_diagnostics(file, report)?;
+            }
+        }
+        OutputFormat::Json => {
+            let output = json!({
+                "ok": false,
+                "files": reports
+                    .iter()
+                    .map(|(file, report)| json_report(file, report))
+                    .collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+
+    Ok(())
+}
+
 fn print_diagnostic_reports(
     source_map: &aven_core::SourceMap,
     reports: &[DiagnosticReport],
@@ -785,12 +1023,6 @@ fn print_diagnostic(
     diagnostic: &AvenDiagnostic,
     use_color: bool,
 ) -> std::io::Result<()> {
-    debug_assert!(
-        !diagnostic.labels.is_empty(),
-        "diagnostic `{}` has no labels",
-        diagnostic.code.as_deref().unwrap_or("unclassified")
-    );
-
     let primary_span = diagnostic
         .labels
         .first()

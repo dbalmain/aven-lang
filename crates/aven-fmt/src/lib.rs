@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use aven_core::{Diagnostic, Span};
 use aven_parser::{
-    Expr, ExprKind, Item, MatchArm, Module, ParseOutput, RecordEntry, Token, TokenKind,
-    is_identifier, parse_module, walk_expr_children,
+    Expr, ExprKind, Item, MatchArm, Module, ModuleRole, OperatorFixityTable, ParseOutput,
+    RecordEntry, Token, TokenKind, is_identifier, parse_module, parse_module_with_fixities,
+    walk_expr_children,
 };
 
 const INDENT_WIDTH: usize = 2;
@@ -13,6 +14,14 @@ const MAX_LINE_WIDTH: usize = 100;
 
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let parse = parse_module(source);
+    format_parsed_source(source, &parse)
+}
+
+pub fn format_source_with_fixities(
+    source: &str,
+    operator_fixities: &OperatorFixityTable,
+) -> Result<String, Vec<Diagnostic>> {
+    let parse = parse_module_with_fixities(source, operator_fixities, ModuleRole::Entry);
     format_parsed_source(source, &parse)
 }
 

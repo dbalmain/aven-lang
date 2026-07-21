@@ -7,7 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aven_check::build;
 use aven_compiler::{
-    HostGlobals, ModuleRoots, SourceOverlay, check_path_with_host_globals,
+    HostGlobals, ModuleRoots, ProjectConfig, SourceOverlay, check_path_with_host_globals,
+    check_path_with_host_globals_and_entry_source_and_fixities_with_roots,
     check_path_with_host_globals_and_overlay, check_path_with_host_globals_and_roots,
     eval_path_with_globals, eval_path_with_globals_and_roots,
     eval_path_with_host_globals_and_roots,
@@ -675,6 +676,92 @@ fn project_root_import_discovers_aven_toml_from_nested_entry() {
     let evaluated = eval_path_with_globals(&entry, Vec::new())
         .expect("eval should load project-root import via Aven.toml discovery");
     assert_no_errors(&evaluated.reports);
+}
+
+#[test]
+fn manifest_fixity_never_authorizes_bare_custom_infix_in_a_dependency() {
+    let dir = TempDir::new("dependency-custom-infix");
+    write(
+        dir.path(),
+        "Aven.toml",
+        "[operators]\n\"**\" = { precedence = \"^\", associativity = \"right\" }\n",
+    );
+    write(
+        dir.path(),
+        "lib.av",
+        concat!(
+            "Scalar = {\n",
+            "  value: Float\n",
+            "  **(other: Scalar): Scalar =>\n",
+            "    Scalar({ value: .value ^ other.value })\n",
+            "}\n",
+            "left = Scalar({ value: 2.0 })\n",
+            "right = Scalar({ value: 3.0 })\n",
+            "value = (left ** right).value\n",
+            "{ value }\n",
+        ),
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "library = import(\"./lib\")\n{ library }\n",
+    );
+    let entry = dir.path().join("main.av");
+    let dependency =
+        fs::canonicalize(dir.path().join("lib.av")).expect("dependency path should canonicalize");
+    let roots = ModuleRoots::discover(&entry);
+    let project = ProjectConfig::load(&roots).expect("manifest should load");
+    let entry_source = fs::read_to_string(&entry).expect("entry source should load");
+    let fixities = project
+        .operator_fixity_table(
+            &entry_source,
+            std::iter::empty::<String>(),
+            std::iter::empty::<(
+                String,
+                aven_parser::OperatorPrecedence,
+                aven_parser::OperatorAssociativity,
+            )>(),
+            None,
+        )
+        .expect("manifest operator configuration should be valid");
+
+    let output = check_path_with_host_globals_and_entry_source_and_fixities_with_roots(
+        &entry,
+        &HostGlobals::default(),
+        &entry_source,
+        &fixities,
+        &roots,
+    )
+    .expect("check should load the real module graph");
+
+    let report = output
+        .reports
+        .iter()
+        .find(|report| {
+            report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::parse::CUSTOM_INFIX_NOT_ROOT)
+            })
+        })
+        .expect("dependency bare infix should produce the role diagnostic");
+    let file = output
+        .source_map
+        .get(report.file_id)
+        .expect("diagnostic report should identify its source file");
+
+    assert_eq!(file.path.as_deref(), Some(dependency.as_path()));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::parse::CUSTOM_INFIX_NOT_ROOT)
+            })
+            .all(|diagnostic| diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("left.**(right)"))),
+        "expected dependency-only repair guidance, got {report:#?}"
+    );
 }
 
 #[test]

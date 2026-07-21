@@ -11,12 +11,17 @@ use aven_check::{
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
 use aven_parser::{
-    Binding, Expr, ExprKind, Item, Literal, Module, ParseOutput, PatternBinding, RecordEntry,
-    decode_string_literal, lambda_parts,
+    Binding, Expr, ExprKind, Item, Literal, Module, OperatorAssociativity, OperatorFixityTable,
+    OperatorPrecedence, ParseOutput, PatternBinding, RecordEntry, decode_string_literal,
+    lambda_parts,
 };
 
+use crate::operator_config::{
+    load_operator_fixity_table_detailed, validate_direct_shebang_arguments,
+};
 use crate::{
-    HostGlobals, PhaseTimings, SemanticOutput, analyze_semantics_with_host_globals_and_imports_in,
+    HostGlobals, OperatorConfigDiagnostic, OperatorConfigDiagnosticSource, OperatorManifestSource,
+    PhaseTimings, SemanticOutput, analyze_semantics_with_host_globals_and_imports_in,
     runtime_type_bindings,
 };
 
@@ -91,6 +96,9 @@ pub struct DisabledCapabilityModule {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModuleRoots {
     pub project: Option<PathBuf>,
+    /// The manifest selected by discovery, if one exists. `project` still
+    /// falls back to the entry directory when this is `None`.
+    pub manifest: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub filesystem: bool,
     /// Host-registered libraries resolving bare import specifiers: library
@@ -113,13 +121,18 @@ impl ModuleRoots {
 
     pub fn discover(entry: &Path) -> Self {
         let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
-        let project = entry_dir
+        let manifest = entry_dir
             .ancestors()
-            .find(|directory| directory.join("Aven.toml").is_file())
+            .map(|directory| directory.join("Aven.toml"))
+            .find(|manifest| manifest.is_file());
+        let project = manifest
+            .as_deref()
+            .and_then(Path::parent)
             .map_or_else(|| entry_dir.to_path_buf(), Path::to_path_buf);
         let home = std::env::var_os("HOME").map(PathBuf::from);
         Self {
             project: Some(project),
+            manifest,
             home,
             filesystem: true,
             libraries: HashMap::new(),
@@ -164,6 +177,86 @@ impl ModuleRoots {
             },
         );
         self
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectConfig {
+    manifest: Option<ProjectManifest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectManifest {
+    path: PathBuf,
+    source: String,
+}
+
+impl ProjectConfig {
+    /// Read the manifest selected by `ModuleRoots::discover`, without walking
+    /// the filesystem again. An absent manifest remains distinct from the
+    /// fallback project directory used by `$/` imports.
+    pub fn load(roots: &ModuleRoots) -> io::Result<Self> {
+        let manifest = roots
+            .manifest
+            .as_ref()
+            .map(|path| {
+                fs::read_to_string(path).map(|source| ProjectManifest {
+                    path: path.clone(),
+                    source,
+                })
+            })
+            .transpose()?;
+        Ok(Self { manifest })
+    }
+
+    pub fn manifest_path(&self) -> Option<&Path> {
+        self.manifest
+            .as_ref()
+            .map(|manifest| manifest.path.as_path())
+    }
+
+    pub fn manifest_source(&self) -> Option<&str> {
+        self.manifest
+            .as_ref()
+            .map(|manifest| manifest.source.as_str())
+    }
+
+    pub fn operator_fixity_table<A, S, P, T>(
+        &self,
+        entry_source: &str,
+        argv_atoms: A,
+        platform: P,
+        direct_shebang_arguments: Option<&[String]>,
+    ) -> Result<OperatorFixityTable, Vec<OperatorConfigDiagnostic>>
+    where
+        A: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        P: IntoIterator<Item = (T, OperatorPrecedence, OperatorAssociativity)>,
+        T: Into<String>,
+    {
+        let manifest = self
+            .manifest
+            .as_ref()
+            .map(|manifest| OperatorManifestSource {
+                path: &manifest.path,
+                source: &manifest.source,
+            });
+        let mut result =
+            load_operator_fixity_table_detailed(manifest, entry_source, argv_atoms, platform);
+
+        if let Some(arguments) = direct_shebang_arguments
+            && let Err(diagnostics) = validate_direct_shebang_arguments(entry_source, arguments)
+        {
+            let located = diagnostics.into_iter().map(|diagnostic| {
+                OperatorConfigDiagnostic::new(OperatorConfigDiagnosticSource::Shebang, diagnostic)
+            });
+            match &mut result {
+                Ok(_) => result = Err(located.collect()),
+                Err(existing) => existing.extend(located),
+            }
+        }
+
+        result
     }
 }
 
@@ -293,8 +386,37 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
     entry_parse: Option<&ParseOutput>,
     roots: &ModuleRoots,
 ) -> io::Result<ModuleCheckOutput> {
+    check_path_impl(
+        path,
+        globals,
+        overlay,
+        entry_parse,
+        roots,
+        &OperatorFixityTable::default(),
+    )
+}
+
+pub fn check_path_with_host_globals_and_entry_source_and_fixities_with_roots(
+    path: &Path,
+    globals: &HostGlobals,
+    entry_source: &str,
+    operator_fixities: &OperatorFixityTable,
+    roots: &ModuleRoots,
+) -> io::Result<ModuleCheckOutput> {
+    let overlay = entry_source_overlay(path, entry_source)?;
+    check_path_impl(path, globals, &overlay, None, roots, operator_fixities)
+}
+
+fn check_path_impl(
+    path: &Path,
+    globals: &HostGlobals,
+    overlay: &SourceOverlay,
+    entry_parse: Option<&ParseOutput>,
+    roots: &ModuleRoots,
+    operator_fixities: &OperatorFixityTable,
+) -> io::Result<ModuleCheckOutput> {
     let total_start = Instant::now();
-    let graph = ModuleGraph::load(path, overlay, entry_parse, roots)?;
+    let graph = ModuleGraph::load(path, overlay, entry_parse, operator_fixities, roots)?;
     let mut diagnostics = parse_diagnostics(&graph);
     let mut exports = vec![CheckExport::HasErrors; graph.nodes.len()];
     let mut export_provenance = vec![ExportProvenanceMap::new(); graph.nodes.len()];
@@ -424,7 +546,44 @@ pub fn eval_path_with_host_globals_and_roots(
     globals: Vec<(String, Value)>,
     roots: &ModuleRoots,
 ) -> io::Result<ModuleEvalOutput> {
-    let graph = ModuleGraph::load(path, &SourceOverlay::default(), None, roots)?;
+    eval_path_impl(
+        path,
+        check_globals,
+        globals,
+        &SourceOverlay::default(),
+        &OperatorFixityTable::default(),
+        roots,
+    )
+}
+
+pub fn eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
+    path: &Path,
+    check_globals: &HostGlobals,
+    globals: Vec<(String, Value)>,
+    entry_source: &str,
+    operator_fixities: &OperatorFixityTable,
+    roots: &ModuleRoots,
+) -> io::Result<ModuleEvalOutput> {
+    let overlay = entry_source_overlay(path, entry_source)?;
+    eval_path_impl(
+        path,
+        check_globals,
+        globals,
+        &overlay,
+        operator_fixities,
+        roots,
+    )
+}
+
+fn eval_path_impl(
+    path: &Path,
+    check_globals: &HostGlobals,
+    globals: Vec<(String, Value)>,
+    overlay: &SourceOverlay,
+    operator_fixities: &OperatorFixityTable,
+    roots: &ModuleRoots,
+) -> io::Result<ModuleEvalOutput> {
+    let graph = ModuleGraph::load(path, overlay, None, operator_fixities, roots)?;
     let mut diagnostics = parse_diagnostics(&graph);
     // Evaluation remains runtime-first: semantic diagnostics are not surfaced
     // here, but the checked artifacts are needed to reify recursive type
@@ -562,6 +721,12 @@ pub fn eval_path_with_host_globals_and_roots(
     })
 }
 
+fn entry_source_overlay(path: &Path, entry_source: &str) -> io::Result<SourceOverlay> {
+    let mut overlay = SourceOverlay::new();
+    overlay.insert(fs::canonicalize(path)?, entry_source.to_owned());
+    Ok(overlay)
+}
+
 fn failed_method_constraint(diagnostic: &Diagnostic) -> bool {
     diagnostic.is_error()
         && diagnostic
@@ -668,13 +833,27 @@ fn eval_globals_for_node(
         .collect()
 }
 
+/// How the entry node is parsed. Dependencies never consult either field: they
+/// always parse in `Dependency` role against the empty table.
+#[derive(Clone, Copy)]
+struct EntryParse<'a> {
+    /// A parse the caller already has (the LSP reuses its cached one).
+    reuse: Option<&'a ParseOutput>,
+    operator_fixities: &'a OperatorFixityTable,
+}
+
 impl ModuleGraph {
     fn load(
         entry_path: &Path,
         overlay: &SourceOverlay,
         entry_parse: Option<&ParseOutput>,
+        entry_operator_fixities: &OperatorFixityTable,
         roots: &ModuleRoots,
     ) -> io::Result<Self> {
+        let entry = EntryParse {
+            reuse: entry_parse,
+            operator_fixities: entry_operator_fixities,
+        };
         let entry_path = fs::canonicalize(entry_path)?;
         let mut graph = Self {
             source_map: SourceMap::new(),
@@ -684,14 +863,7 @@ impl ModuleGraph {
         };
         let mut states = HashMap::new();
         let mut stack = Vec::new();
-        graph.load_module(
-            &entry_path,
-            overlay,
-            entry_parse,
-            roots,
-            &mut states,
-            &mut stack,
-        )?;
+        graph.load_module(&entry_path, overlay, entry, roots, &mut states, &mut stack)?;
         Ok(graph)
     }
 
@@ -699,7 +871,7 @@ impl ModuleGraph {
         &mut self,
         path: &Path,
         overlay: &SourceOverlay,
-        entry_parse: Option<&ParseOutput>,
+        entry: EntryParse<'_>,
         roots: &ModuleRoots,
         states: &mut HashMap<PathBuf, VisitState>,
         stack: &mut Vec<PathBuf>,
@@ -710,9 +882,13 @@ impl ModuleGraph {
 
         let file = self.load_source(path, overlay, roots)?;
         let parse = if self.nodes.is_empty() {
-            entry_parse
-                .cloned()
-                .unwrap_or_else(|| aven_parser::parse_source(&file))
+            entry.reuse.cloned().unwrap_or_else(|| {
+                aven_parser::parse_source_with_fixities(
+                    &file,
+                    entry.operator_fixities,
+                    aven_parser::ModuleRole::Entry,
+                )
+            })
         } else {
             aven_parser::parse_source_with_fixities(
                 &file,
@@ -742,7 +918,7 @@ impl ModuleGraph {
             ambient.sort();
             for specifier in ambient {
                 let virtual_path = library_virtual_path(&specifier);
-                self.load_module(&virtual_path, overlay, None, roots, states, stack)?;
+                self.load_module(&virtual_path, overlay, entry, roots, states, stack)?;
             }
         }
 
@@ -905,7 +1081,19 @@ impl ModuleGraph {
             });
         }
 
-        let target = self.load_module(&canonical, overlay, None, roots, states, stack)?;
+        // A dependency never consults entry fixity, so the table here is empty.
+        let dependency_fixities = OperatorFixityTable::default();
+        let target = self.load_module(
+            &canonical,
+            overlay,
+            EntryParse {
+                reuse: None,
+                operator_fixities: &dependency_fixities,
+            },
+            roots,
+            states,
+            stack,
+        )?;
         Ok(ImportRef {
             specifier,
             specifier_span: call.specifier_span,
