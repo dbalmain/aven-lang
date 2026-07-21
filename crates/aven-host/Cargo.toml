@@ -15,7 +15,7 @@ aven-eval.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_norway = "0.9.42"
-toml = "1.0.3"
+toml.workspace = true
 tz-rs = "0.7.3"
 ureq = "3"
 

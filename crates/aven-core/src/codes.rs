@@ -21,6 +21,15 @@ pub mod comptime {
     pub const UNEXPANDABLE_IMPORT: &str = "comptime.unexpandable-import";
 }
 
+pub mod config {
+    pub const OPERATOR_ARGUMENT_MALFORMED: &str = "config.operator-argument-malformed";
+    pub const OPERATOR_FIXITY_CONFLICT: &str = "config.operator-fixity-conflict";
+    pub const OPERATOR_MANIFEST_INVALID: &str = "config.operator-manifest-invalid";
+    pub const OPERATOR_SHEBANG_MALFORMED: &str = "config.operator-shebang-malformed";
+    pub const OPERATOR_TOKEN_INVALID: &str = "config.operator-token-invalid";
+    pub const OPERATOR_TOKEN_RESERVED: &str = "config.operator-token-reserved";
+}
+
 pub mod layout {
     pub const INCONSISTENT_INDENTATION: &str = "layout.inconsistent-indentation";
 }
@@ -170,6 +179,12 @@ pub const ALL: &[&str] = &[
     comptime::REDUNDANT_COMPTIME_MARKER,
     comptime::REFLECTION_TYPE_MISMATCH,
     comptime::UNEXPANDABLE_IMPORT,
+    config::OPERATOR_ARGUMENT_MALFORMED,
+    config::OPERATOR_FIXITY_CONFLICT,
+    config::OPERATOR_MANIFEST_INVALID,
+    config::OPERATOR_SHEBANG_MALFORMED,
+    config::OPERATOR_TOKEN_INVALID,
+    config::OPERATOR_TOKEN_RESERVED,
     layout::INCONSISTENT_INDENTATION,
     lex::LEADING_BOM,
     lex::RESERVED_OPERATOR,

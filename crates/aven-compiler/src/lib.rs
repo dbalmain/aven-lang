@@ -21,6 +21,7 @@ pub use aven_check::{
 };
 
 mod modules;
+mod operator_config;
 mod runtime_types;
 pub use modules::{
     ExportProvenance, ExportProvenanceMap, LibraryModules, ModuleCheckOutput, ModuleEvalOutput,
@@ -30,6 +31,11 @@ pub use modules::{
     check_path_with_host_globals_and_overlay_and_entry_parse_with_roots,
     check_path_with_host_globals_and_roots, eval_path_with_globals,
     eval_path_with_globals_and_roots, eval_path_with_host_globals_and_roots, library_specifier,
+};
+pub use operator_config::{
+    OperatorConfigResult, OperatorFixityDeclaration, OperatorManifestSource,
+    load_operator_fixity_table, merge_operator_fixities, parse_argv_operator_fixities,
+    parse_manifest_operator_fixities, parse_shebang_operator_fixities,
 };
 pub(crate) use runtime_types::runtime_type_bindings;
 

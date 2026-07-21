@@ -3306,20 +3306,30 @@ impl BindingOperator {
 }
 
 fn infix_binding_power(operator: &str) -> Option<(u8, u8)> {
-    let precedence = match operator {
-        "|" => 1,
-        "|>" => 2,
-        "??" => 3,
-        "||" => 4,
-        "&&" => 5,
-        "==" | "!=" | "<" | "<=" | ">" | ">=" => 6,
-        "+" | "-" => 7,
-        "*" | "/" | "%" => 8,
-        "^" => return Some((9, 9)),
+    use crate::{OperatorAssociativity, OperatorPrecedence};
+
+    let (precedence, associativity) = match operator {
+        "|" => (OperatorPrecedence::Union, OperatorAssociativity::Left),
+        "|>" => (OperatorPrecedence::Pipe, OperatorAssociativity::Left),
+        "??" => (OperatorPrecedence::Coalesce, OperatorAssociativity::Left),
+        "||" => (OperatorPrecedence::Or, OperatorAssociativity::Left),
+        "&&" => (OperatorPrecedence::And, OperatorAssociativity::Left),
+        "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+            (OperatorPrecedence::Comparison, OperatorAssociativity::Left)
+        }
+        "+" | "-" => (OperatorPrecedence::Additive, OperatorAssociativity::Left),
+        "*" | "/" | "%" => (
+            OperatorPrecedence::Multiplicative,
+            OperatorAssociativity::Left,
+        ),
+        "^" => (
+            OperatorPrecedence::Exponentiation,
+            OperatorAssociativity::Right,
+        ),
         _ => return None,
     };
 
-    Some((precedence, precedence + 1))
+    Some(precedence.infix_binding_power(associativity))
 }
 
 fn scan_delimiters(tokens: &[Token]) -> Vec<Diagnostic> {

@@ -1,4 +1,5 @@
 mod declarations;
+mod fixity;
 mod items;
 mod layout;
 mod lexer;
@@ -13,6 +14,10 @@ pub use declarations::{
     CallableShape, Declaration, DeclarationKind, DeclarationPhase, DeclarationShape,
     collect_declarations,
 };
+pub use fixity::{
+    OperatorAssociativity, OperatorFixity, OperatorFixityTable, OperatorFixityTableError,
+    OperatorOrigin, OperatorPrecedence,
+};
 pub use items::{MergedItem, merged_items};
 pub(crate) use layout::lex_then_layout;
 pub use layout::{LayoutOutput, layout_source, layout_tokens};
@@ -20,7 +25,7 @@ pub use lexer::{
     Keyword, LexOutput, Token, TokenKind, is_comptime_identifier_name, is_identifier, lex_source,
 };
 pub use names::{NameAnalysis, analyze_names};
-pub use operators::{is_custom_operator_token, is_method_operator};
+pub use operators::{is_custom_operator_token, is_method_operator, is_reserved_or_fixed_operator};
 pub use parser::{
     Binding, Expr, ExprKind, InterpolationSegment, Item, Literal, METHOD_RECEIVER_NAME, MatchArm,
     MethodAttachment, Module, Param, ParseOutput, PatternBinding, PropagationMode, RecordEntry,

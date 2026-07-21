@@ -25,7 +25,8 @@ pub(crate) fn is_custom_operator_byte(byte: u8) -> bool {
     )
 }
 
-fn is_reserved_or_fixed_operator(operator: &str) -> bool {
+/// Whether `operator` is an existing fixed or syntax-reserved token.
+pub fn is_reserved_or_fixed_operator(operator: &str) -> bool {
     FIXED_METHOD_OPERATORS.contains(&operator)
         || matches!(
             operator,

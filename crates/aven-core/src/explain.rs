@@ -59,6 +59,30 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "An imported name was applied in type position, but the importer could not expand it to a concrete type. Export a comptime type function from the dependency (params + body that evaluate at compile time), or write the type annotation without that application.",
     },
     DiagnosticExplanation {
+        code: codes::config::OPERATOR_ARGUMENT_MALFORMED,
+        text: "A command-line operator declaration does not have the required --operator=TOKEN:ANCHOR:ASSOCIATIVITY form. Use a valid custom token, one of the nine fixed precedence anchors, and left, right, or none associativity.",
+    },
+    DiagnosticExplanation {
+        code: codes::config::OPERATOR_FIXITY_CONFLICT,
+        text: "More than one configuration authority declared fixity for the same custom operator token. Remove every declaration except one; manifest, shebang, command-line, and platform declarations never override or deduplicate each other.",
+    },
+    DiagnosticExplanation {
+        code: codes::config::OPERATOR_MANIFEST_INVALID,
+        text: "The Aven.toml operators table is not in its fixed shape. Quote each custom-token key and give it exactly the string fields precedence and associativity, with no missing, duplicate, or unknown fields.",
+    },
+    DiagnosticExplanation {
+        code: codes::config::OPERATOR_SHEBANG_MALFORMED,
+        text: "The entry's first line starts as a shebang but is not one of Aven's restricted run forms. Use /usr/bin/env -S aven run or an absolute path ending in aven followed only by repeated --operator=TOKEN:ANCHOR:ASSOCIATIVITY flags.",
+    },
+    DiagnosticExplanation {
+        code: codes::config::OPERATOR_TOKEN_INVALID,
+        text: "An operator fixity declaration names text that is not a legal custom operator token. Use a non-empty ASCII run from Aven's custom-operator alphabet that does not start with = and does not use a reserved syntax family.",
+    },
+    DiagnosticExplanation {
+        code: codes::config::OPERATOR_TOKEN_RESERVED,
+        text: "An operator fixity declaration tries to register an existing fixed or syntax-reserved token. Custom fixity applies only to new custom tokens; remove this declaration or choose a different token.",
+    },
+    DiagnosticExplanation {
         code: codes::layout::INCONSISTENT_INDENTATION,
         text: "A line dedented to a column that does not match an open layout block. Align it with an existing block level or change the surrounding indentation.",
     },
