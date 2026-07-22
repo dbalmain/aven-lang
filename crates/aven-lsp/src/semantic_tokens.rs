@@ -73,7 +73,16 @@ pub(crate) fn tokens(document: &ParsedDocument) -> SemanticTokens {
 
 fn semantic_token_styles(document: &ParsedDocument) -> HashMap<Span, SemanticStyle> {
     let mut collector = StyleCollector::new(document);
-    collector.collect_items(&document.parse_output().module.items);
+    let items = &document.parse_output().module.items;
+
+    // Binder definitions come from the shared parser walk so match arms, lambda
+    // params, pattern bindings, and block bindings stay in lockstep with inlays.
+    aven_parser::walk_binder_sites_in_items(items, &mut |site| {
+        collector.insert_binder_site(site);
+    });
+
+    // Signatures and record field labels are not value binders.
+    collector.collect_surface_styles(items);
     collector.styles
 }
 
@@ -118,41 +127,52 @@ impl StyleCollector {
         }
     }
 
-    fn collect_items(&mut self, items: &[aven_parser::Item]) {
+    fn insert_binder_site(&mut self, site: aven_parser::BinderSite<'_>) {
+        if let Some(style) = self.top_level.get(&site.span) {
+            self.styles.insert(site.span, *style);
+            return;
+        }
+
+        let style = match site.role {
+            aven_parser::BinderRole::Binding => definition_style(
+                aven_parser::is_comptime_identifier_name(site.name),
+                site.is_callable,
+            ),
+            aven_parser::BinderRole::Pattern => SemanticStyle {
+                token_type: TOKEN_VARIABLE,
+                modifiers: MODIFIER_DEFINITION,
+            },
+            aven_parser::BinderRole::Parameter | aven_parser::BinderRole::Iteration => {
+                SemanticStyle {
+                    token_type: TOKEN_PARAMETER,
+                    modifiers: MODIFIER_DEFINITION,
+                }
+            }
+        };
+        self.styles.insert(site.span, style);
+    }
+
+    fn collect_surface_styles(&mut self, items: &[aven_parser::Item]) {
         for item in items {
             match item {
                 aven_parser::Item::Binding(binding) => {
-                    let style = self
-                        .top_level
-                        .get(&binding.name_span)
-                        .copied()
-                        .unwrap_or_else(|| binding_semantic_style(binding));
-                    self.styles.insert(binding.name_span, style);
                     if let Some(annotation) = &binding.annotation {
-                        self.collect_expr(annotation);
+                        self.collect_surface_in_expr(annotation);
                     }
-                    self.collect_expr(&binding.value);
+                    self.collect_surface_in_expr(&binding.value);
                 }
                 aven_parser::Item::PatternBinding(binding) => {
-                    for site in aven_parser::pattern_bindings(&binding.pattern) {
-                        self.styles.insert(
-                            site.span,
-                            SemanticStyle {
-                                token_type: TOKEN_VARIABLE,
-                                modifiers: MODIFIER_DEFINITION,
-                            },
-                        );
-                    }
-                    self.collect_expr(&binding.value);
+                    self.collect_surface_in_expr(&binding.pattern);
+                    self.collect_surface_in_expr(&binding.value);
                 }
                 aven_parser::Item::SpreadBinding(binding) => {
-                    self.collect_expr(&binding.value);
+                    self.collect_surface_in_expr(&binding.value);
                 }
                 aven_parser::Item::MethodAttachment(attachment) => {
-                    self.collect_expr(&attachment.owner);
-                    self.collect_record_entries(&attachment.members);
+                    self.collect_surface_in_expr(&attachment.owner);
+                    self.collect_record_properties(&attachment.members);
                     for member in &attachment.members {
-                        collect_record_entry_exprs(member, &mut |expr| self.collect_expr(expr));
+                        self.collect_surface_in_record_entry_values(member);
                     }
                 }
                 aven_parser::Item::Signature(signature) => {
@@ -162,74 +182,46 @@ impl StyleCollector {
                         .copied()
                         .unwrap_or_else(|| signature_semantic_style(signature));
                     self.styles.insert(signature.name_span, style);
-                    self.collect_expr(&signature.annotation);
+                    self.collect_surface_in_expr(&signature.annotation);
                 }
-                aven_parser::Item::Expr(expr) => self.collect_expr(expr),
+                aven_parser::Item::Expr(expr) => self.collect_surface_in_expr(expr),
             }
         }
     }
 
-    fn collect_expr(&mut self, expr: &aven_parser::Expr) {
+    fn collect_surface_in_expr(&mut self, expr: &aven_parser::Expr) {
         match &expr.kind {
-            aven_parser::ExprKind::Lambda {
-                params,
-                return_annotation,
-                body,
-                ..
-            } => {
-                for param in params {
-                    self.styles.insert(
-                        param.name_span,
-                        SemanticStyle {
-                            token_type: TOKEN_PARAMETER,
-                            modifiers: MODIFIER_DEFINITION,
-                        },
-                    );
-                    if let Some(annotation) = &param.annotation {
-                        self.collect_expr(annotation);
-                    }
-                }
-
-                if let Some(annotation) = return_annotation {
-                    self.collect_expr(annotation);
-                }
-                self.collect_expr(body);
-            }
-            aven_parser::ExprKind::Block(items) => self.collect_items(items),
+            aven_parser::ExprKind::Block(items) => self.collect_surface_styles(items),
             aven_parser::ExprKind::Record(entries) | aven_parser::ExprKind::Set(entries) => {
-                self.collect_record_entries(entries);
-                aven_parser::walk_expr_children(expr, &mut |child| self.collect_expr(child));
+                self.collect_record_properties(entries);
+                aven_parser::walk_expr_children(expr, &mut |child| {
+                    self.collect_surface_in_expr(child);
+                });
             }
-            aven_parser::ExprKind::Match { subject, arms, .. } => {
-                self.collect_expr(subject);
-                for arm in arms {
-                    for site in aven_parser::pattern_bindings(&arm.pattern) {
-                        self.styles.insert(
-                            site.span,
-                            SemanticStyle {
-                                token_type: TOKEN_VARIABLE,
-                                modifiers: MODIFIER_DEFINITION,
-                            },
-                        );
-                    }
-                    for guard in &arm.guards {
-                        self.collect_expr(guard);
-                    }
-                    self.collect_expr(&arm.body);
+            aven_parser::ExprKind::PrimitiveFamily { base, members } => {
+                self.collect_surface_in_expr(base);
+                self.collect_record_properties(members);
+                for member in members {
+                    self.collect_surface_in_record_entry_values(member);
                 }
             }
-            _ => aven_parser::walk_expr_children(expr, &mut |child| self.collect_expr(child)),
+            aven_parser::ExprKind::Array(entries) => {
+                // Arrays can carry iteration binders' bodies with nested records.
+                self.collect_record_properties(entries);
+                aven_parser::walk_expr_children(expr, &mut |child| {
+                    self.collect_surface_in_expr(child);
+                });
+            }
+            _ => aven_parser::walk_expr_children(expr, &mut |child| {
+                self.collect_surface_in_expr(child);
+            }),
         }
     }
 
-    fn collect_record_entries(&mut self, entries: &[aven_parser::RecordEntry]) {
+    fn collect_record_properties(&mut self, entries: &[aven_parser::RecordEntry]) {
         let property = SemanticStyle {
             token_type: TOKEN_PROPERTY,
             modifiers: 0,
-        };
-        let binder = SemanticStyle {
-            token_type: TOKEN_PARAMETER,
-            modifiers: MODIFIER_DEFINITION,
         };
 
         for entry in entries {
@@ -247,11 +239,9 @@ impl StyleCollector {
                     self.styles.insert(*from_span, property);
                     self.styles.insert(*to_span, property);
                 }
-                aven_parser::RecordEntry::Iteration {
-                    binder_span, body, ..
-                } => {
-                    self.styles.insert(*binder_span, binder);
-                    self.collect_record_entries(body);
+                aven_parser::RecordEntry::Iteration { body, .. } => {
+                    // Iteration binders are handled by walk_binder_sites.
+                    self.collect_record_properties(body);
                 }
                 aven_parser::RecordEntry::Spread { .. }
                 | aven_parser::RecordEntry::FieldComputed { .. }
@@ -261,48 +251,45 @@ impl StyleCollector {
             }
         }
     }
-}
 
-fn collect_record_entry_exprs(
-    entry: &aven_parser::RecordEntry,
-    visit: &mut impl FnMut(&aven_parser::Expr),
-) {
-    match entry {
-        aven_parser::RecordEntry::Field { value, .. }
-        | aven_parser::RecordEntry::Method { value, .. }
-        | aven_parser::RecordEntry::Spread { value, .. }
-        | aven_parser::RecordEntry::DeleteComputed { key: value, .. }
-        | aven_parser::RecordEntry::Element(value) => visit(value),
-        aven_parser::RecordEntry::FieldComputed { key, value, .. } => {
-            visit(key);
-            visit(value);
-        }
-        aven_parser::RecordEntry::FieldDefault {
-            annotation,
-            default,
-            ..
-        } => {
-            visit(annotation);
-            visit(default);
-        }
-        aven_parser::RecordEntry::Iteration {
-            source,
-            guard,
-            body,
-            ..
-        } => {
-            visit(source);
-            if let Some(guard) = guard {
-                visit(guard);
+    fn collect_surface_in_record_entry_values(&mut self, entry: &aven_parser::RecordEntry) {
+        match entry {
+            aven_parser::RecordEntry::Field { value, .. }
+            | aven_parser::RecordEntry::Method { value, .. }
+            | aven_parser::RecordEntry::Spread { value, .. }
+            | aven_parser::RecordEntry::DeleteComputed { key: value, .. }
+            | aven_parser::RecordEntry::Element(value) => self.collect_surface_in_expr(value),
+            aven_parser::RecordEntry::FieldComputed { key, value, .. } => {
+                self.collect_surface_in_expr(key);
+                self.collect_surface_in_expr(value);
             }
-            for entry in body {
-                collect_record_entry_exprs(entry, visit);
+            aven_parser::RecordEntry::FieldDefault {
+                annotation,
+                default,
+                ..
+            } => {
+                self.collect_surface_in_expr(annotation);
+                self.collect_surface_in_expr(default);
             }
+            aven_parser::RecordEntry::Iteration {
+                source,
+                guard,
+                body,
+                ..
+            } => {
+                self.collect_surface_in_expr(source);
+                if let Some(guard) = guard {
+                    self.collect_surface_in_expr(guard);
+                }
+                for entry in body {
+                    self.collect_surface_in_record_entry_values(entry);
+                }
+            }
+            aven_parser::RecordEntry::Shorthand { .. }
+            | aven_parser::RecordEntry::Delete { .. }
+            | aven_parser::RecordEntry::Rename { .. }
+            | aven_parser::RecordEntry::Open { .. } => {}
         }
-        aven_parser::RecordEntry::Shorthand { .. }
-        | aven_parser::RecordEntry::Delete { .. }
-        | aven_parser::RecordEntry::Rename { .. }
-        | aven_parser::RecordEntry::Open { .. } => {}
     }
 }
 
@@ -336,13 +323,6 @@ fn declaration_semantic_style(declaration: &aven_parser::Declaration) -> Semanti
     definition_style(
         declaration.phase == aven_parser::DeclarationPhase::Comptime,
         is_callable,
-    )
-}
-
-fn binding_semantic_style(binding: &aven_parser::Binding) -> SemanticStyle {
-    definition_style(
-        aven_parser::is_comptime_identifier_name(&binding.name),
-        matches!(binding.value.kind, aven_parser::ExprKind::Lambda { .. }),
     )
 }
 

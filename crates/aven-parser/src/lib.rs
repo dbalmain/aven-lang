@@ -40,4 +40,7 @@ pub use resolve::{
 pub use resolve::{resolve_local_definition, resolve_local_references, visible_local_bindings};
 pub(crate) use strings::decode_string_fragment;
 pub use strings::decode_string_literal;
-pub use walk::{find_map_expr_children, walk_expr_children};
+pub use walk::{
+    BinderRole, BinderSite, find_map_expr_children, walk_binder_sites_in_expr,
+    walk_binder_sites_in_items, walk_expr_children,
+};

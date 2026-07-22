@@ -2392,80 +2392,12 @@ fn closing_delimiter_kind(token: &aven_parser::Token) -> Option<DelimiterKind> {
 
 fn inlay_hints_in_range(document: &ParsedDocument, range: Range) -> Vec<InlayHint> {
     let mut hints = Vec::new();
-    collect_inlay_hints_in_items(
-        document,
-        &document.parse_output().module.items,
-        range,
-        &mut hints,
-    );
+    // Shared binder walk keeps inlays aligned with semantic-token definition
+    // sites (bindings, patterns, lambda params, match arms, iterations).
+    aven_parser::walk_binder_sites_in_items(&document.parse_output().module.items, &mut |site| {
+        push_inlay_hint_for_name_span(document, site.span, range, &mut hints);
+    });
     hints
-}
-
-fn collect_inlay_hints_in_items(
-    document: &ParsedDocument,
-    items: &[aven_parser::Item],
-    range: Range,
-    hints: &mut Vec<InlayHint>,
-) {
-    for item in items {
-        match item {
-            aven_parser::Item::Binding(binding) => {
-                push_inlay_hint_for_name_span(document, binding.name_span, range, hints);
-                collect_inlay_hints_in_expr(document, &binding.value, range, hints);
-            }
-            aven_parser::Item::PatternBinding(binding) => {
-                for site in aven_parser::pattern_bindings(&binding.pattern) {
-                    push_inlay_hint_for_name_span(document, site.span, range, hints);
-                }
-                collect_inlay_hints_in_expr(document, &binding.value, range, hints);
-            }
-            aven_parser::Item::SpreadBinding(binding) => {
-                collect_inlay_hints_in_expr(document, &binding.value, range, hints);
-            }
-            aven_parser::Item::MethodAttachment(attachment) => {
-                let record = method_attachment_record(attachment);
-                collect_inlay_hints_in_expr(document, &record, range, hints);
-            }
-            aven_parser::Item::Signature(_) => {}
-            aven_parser::Item::Expr(expr) => {
-                collect_inlay_hints_in_expr(document, expr, range, hints)
-            }
-        }
-    }
-}
-
-fn collect_inlay_hints_in_expr(
-    document: &ParsedDocument,
-    expr: &aven_parser::Expr,
-    range: Range,
-    hints: &mut Vec<InlayHint>,
-) {
-    match &expr.kind {
-        aven_parser::ExprKind::Lambda { params, body, .. } => {
-            for param in params {
-                push_inlay_hint_for_name_span(document, param.name_span, range, hints);
-            }
-            collect_inlay_hints_in_expr(document, body, range, hints);
-        }
-        aven_parser::ExprKind::Block(items) => {
-            collect_inlay_hints_in_items(document, items, range, hints);
-        }
-        aven_parser::ExprKind::Match { subject, arms, .. } => {
-            collect_inlay_hints_in_expr(document, subject, range, hints);
-            for arm in arms {
-                for binding in aven_parser::pattern_bindings(&arm.pattern) {
-                    push_inlay_hint_for_name_span(document, binding.span, range, hints);
-                }
-                for guard in &arm.guards {
-                    collect_inlay_hints_in_expr(document, guard, range, hints);
-                }
-                collect_inlay_hints_in_expr(document, &arm.body, range, hints);
-            }
-        }
-        _ => aven_parser::walk_expr_children(expr, &mut |child| {
-            collect_inlay_hints_in_expr(document, child, range, hints);
-        }),
-    }
 }
 
 fn push_inlay_hint_for_name_span(

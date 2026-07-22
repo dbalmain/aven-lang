@@ -1,4 +1,196 @@
+use aven_core::Span;
+
 use crate::parser::{Expr, ExprKind, InterpolationSegment, Item, RecordEntry};
+use crate::resolve::pattern_bindings;
+
+/// How a binder name is introduced in the AST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinderRole {
+    /// `name = value` (top-level, block, or nested).
+    Binding,
+    /// Pattern binding site (`{ x } = ...`) or match-arm pattern binder.
+    Pattern,
+    /// Lambda parameter.
+    Parameter,
+    /// Record comprehension iteration binder (`for x in ...`).
+    Iteration,
+}
+
+/// A name span that introduces a binder, shared by LSP semantic tokens, inlays,
+/// and any other consumer that must not miss a binder form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinderSite<'a> {
+    pub name: &'a str,
+    pub span: Span,
+    pub role: BinderRole,
+    /// True when this binding's value is written as a lambda. Only meaningful
+    /// for [`BinderRole::Binding`]; other roles leave this `false`.
+    pub is_callable: bool,
+}
+
+/// Visit every binder-introducing name span under `items` (and nested exprs).
+///
+/// Covers ordinary bindings, pattern bindings, lambda parameters, match-arm
+/// pattern binders, and record-comprehension iteration binders. Signature
+/// names are intentionally omitted — they are declaration labels, not value
+/// binders (inlay and local-rename treat them that way).
+pub fn walk_binder_sites_in_items<'a>(items: &'a [Item], visit: &mut impl FnMut(BinderSite<'a>)) {
+    for item in items {
+        walk_binder_sites_in_item(item, visit);
+    }
+}
+
+/// Visit every binder-introducing name span under `expr`.
+pub fn walk_binder_sites_in_expr<'a>(expr: &'a Expr, visit: &mut impl FnMut(BinderSite<'a>)) {
+    match &expr.kind {
+        ExprKind::Lambda {
+            params,
+            return_annotation,
+            requirements,
+            body,
+            ..
+        } => {
+            for param in params {
+                visit(BinderSite {
+                    name: param.name.as_str(),
+                    span: param.name_span,
+                    role: BinderRole::Parameter,
+                    is_callable: false,
+                });
+                if let Some(annotation) = &param.annotation {
+                    walk_binder_sites_in_expr(annotation, visit);
+                }
+                if let Some(default) = &param.default {
+                    walk_binder_sites_in_expr(default, visit);
+                }
+            }
+            if let Some(annotation) = return_annotation {
+                walk_binder_sites_in_expr(annotation, visit);
+            }
+            for requirement in requirements {
+                walk_binder_sites_in_expr(&requirement.bound, visit);
+            }
+            walk_binder_sites_in_expr(body, visit);
+        }
+        ExprKind::Block(items) => walk_binder_sites_in_items(items, visit),
+        ExprKind::Match { subject, arms, .. } => {
+            walk_binder_sites_in_expr(subject, visit);
+            for arm in arms {
+                for site in pattern_bindings(&arm.pattern) {
+                    visit(BinderSite {
+                        name: site.name,
+                        span: site.span,
+                        role: BinderRole::Pattern,
+                        is_callable: false,
+                    });
+                }
+                for guard in &arm.guards {
+                    walk_binder_sites_in_expr(guard, visit);
+                }
+                walk_binder_sites_in_expr(&arm.body, visit);
+            }
+        }
+        ExprKind::Record(entries) | ExprKind::Set(entries) | ExprKind::Array(entries) => {
+            walk_binder_sites_in_record_entries(entries, visit);
+        }
+        ExprKind::PrimitiveFamily { base, members } => {
+            walk_binder_sites_in_expr(base, visit);
+            walk_binder_sites_in_record_entries(members, visit);
+        }
+        _ => walk_expr_children(expr, &mut |child| walk_binder_sites_in_expr(child, visit)),
+    }
+}
+
+fn walk_binder_sites_in_item<'a>(item: &'a Item, visit: &mut impl FnMut(BinderSite<'a>)) {
+    match item {
+        Item::Binding(binding) => {
+            visit(BinderSite {
+                name: binding.name.as_str(),
+                span: binding.name_span,
+                role: BinderRole::Binding,
+                is_callable: matches!(binding.value.kind, ExprKind::Lambda { .. }),
+            });
+            if let Some(annotation) = &binding.annotation {
+                walk_binder_sites_in_expr(annotation, visit);
+            }
+            walk_binder_sites_in_expr(&binding.value, visit);
+        }
+        Item::PatternBinding(binding) => {
+            for site in pattern_bindings(&binding.pattern) {
+                visit(BinderSite {
+                    name: site.name,
+                    span: site.span,
+                    role: BinderRole::Pattern,
+                    is_callable: false,
+                });
+            }
+            walk_binder_sites_in_expr(&binding.value, visit);
+        }
+        Item::SpreadBinding(binding) => {
+            walk_binder_sites_in_expr(&binding.value, visit);
+        }
+        Item::MethodAttachment(attachment) => {
+            walk_binder_sites_in_expr(&attachment.owner, visit);
+            walk_binder_sites_in_record_entries(&attachment.members, visit);
+        }
+        Item::Signature(signature) => {
+            // Declaration label only — do not report as a value binder.
+            walk_binder_sites_in_expr(&signature.annotation, visit);
+        }
+        Item::Expr(expr) => walk_binder_sites_in_expr(expr, visit),
+    }
+}
+
+fn walk_binder_sites_in_record_entries<'a>(
+    entries: &'a [RecordEntry],
+    visit: &mut impl FnMut(BinderSite<'a>),
+) {
+    for entry in entries {
+        match entry {
+            RecordEntry::Field { value, .. }
+            | RecordEntry::Method { value, .. }
+            | RecordEntry::Spread { value, .. }
+            | RecordEntry::DeleteComputed { key: value, .. }
+            | RecordEntry::Element(value) => walk_binder_sites_in_expr(value, visit),
+            RecordEntry::FieldComputed { key, value, .. } => {
+                walk_binder_sites_in_expr(key, visit);
+                walk_binder_sites_in_expr(value, visit);
+            }
+            RecordEntry::FieldDefault {
+                annotation,
+                default,
+                ..
+            } => {
+                walk_binder_sites_in_expr(annotation, visit);
+                walk_binder_sites_in_expr(default, visit);
+            }
+            RecordEntry::Iteration {
+                source,
+                binder,
+                binder_span,
+                guard,
+                body,
+                ..
+            } => {
+                visit(BinderSite {
+                    name: binder.as_str(),
+                    span: *binder_span,
+                    role: BinderRole::Iteration,
+                    is_callable: false,
+                });
+                walk_binder_sites_in_expr(source, visit);
+                if let Some(guard) = guard {
+                    walk_binder_sites_in_expr(guard, visit);
+                }
+                walk_binder_sites_in_record_entries(body, visit);
+            }
+            RecordEntry::Shorthand { .. }
+            | RecordEntry::Delete { .. }
+            | RecordEntry::Rename { .. }
+            | RecordEntry::Open { .. } => {}
+        }
+    }
+}
 
 pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
     match &expr.kind {
@@ -155,5 +347,36 @@ fn walk_record_entry_exprs<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMu
             | RecordEntry::Rename { .. }
             | RecordEntry::Open { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse_module;
+
+    #[test]
+    fn walk_binder_sites_covers_binding_lambda_match_and_pattern() {
+        let parse = parse_module(concat!(
+            "value = 1\n",
+            "f = (item) => item\n",
+            "result = x ?>\n",
+            "  n => n\n",
+            "  _ => 0\n",
+            "{ a } = { a: 1 }\n",
+        ));
+        let mut sites = Vec::new();
+        walk_binder_sites_in_items(&parse.module.items, &mut |site| {
+            sites.push((site.name, site.role, site.is_callable));
+        });
+
+        assert!(sites.contains(&("value", BinderRole::Binding, false)));
+        assert!(sites.contains(&("f", BinderRole::Binding, true)));
+        assert!(sites.contains(&("item", BinderRole::Parameter, false)));
+        assert!(sites.contains(&("result", BinderRole::Binding, false)));
+        assert!(sites.contains(&("n", BinderRole::Pattern, false)));
+        assert!(sites.contains(&("a", BinderRole::Pattern, false)));
+        // Wildcard match arms do not introduce binders.
+        assert!(!sites.iter().any(|(name, _, _)| *name == "_"));
     }
 }
