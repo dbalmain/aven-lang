@@ -62,6 +62,10 @@ struct DocumentStore {
     module_graphs: HashMap<Url, Arc<DocumentModuleGraph>>,
     project_roots: HashMap<PathBuf, PathBuf>,
     project_contexts: HashMap<PathBuf, ProjectContext>,
+    /// Why a document's operator configuration failed to load, if it did. The
+    /// fixity table falls back to empty on failure, so without these the editor
+    /// would blame the user's code for an operator its own manifest declares.
+    config_diagnostics: HashMap<Url, Vec<aven_compiler::OperatorConfigDiagnostic>>,
 }
 
 /// Per-project discovery result, cached so the ancestor walk and the manifest
@@ -242,7 +246,7 @@ impl DocumentStore {
         source: &str,
     ) -> aven_parser::OperatorFixityTable {
         let Ok(path) = uri.to_file_path() else {
-            return operator_fixities(&aven_compiler::ProjectConfig::default(), source);
+            return operator_fixities(&aven_compiler::ProjectConfig::default(), source).0;
         };
         let entry_directory = path
             .parent()
@@ -266,7 +270,78 @@ impl DocumentStore {
             .project_contexts
             .get(&project_root)
             .expect("project discovery inserts a context for its root");
-        operator_fixities(&context.config, source)
+        let (table, diagnostics) = operator_fixities(&context.config, source);
+        if diagnostics.is_empty() {
+            self.config_diagnostics.remove(uri);
+        } else {
+            self.config_diagnostics.insert(uri.clone(), diagnostics);
+        }
+        table
+    }
+
+    /// Operator-configuration failures grouped by the URI that owns them: a
+    /// manifest declaration reports against `Aven.toml`, a shebang declaration
+    /// against the document's own first line.
+    ///
+    /// The manifest entry is present whenever the document has a manifest, with
+    /// an empty list when nothing is wrong — publishing empty is what clears a
+    /// previously reported error once the user fixes it.
+    fn config_diagnostics_for(&self, uri: &Url) -> Vec<(Url, Vec<Diagnostic>)> {
+        let manifest = self.manifest_source_for(uri);
+        let mut manifest_diagnostics = Vec::new();
+        let mut document_diagnostics = Vec::new();
+
+        for diagnostic in self.config_diagnostics.get(uri).into_iter().flatten() {
+            // The LSP supplies no argv and no platform operators, so only the
+            // two file-backed sources are reachable. Anything else still gets
+            // surfaced on the document rather than dropped.
+            match diagnostic.source() {
+                aven_compiler::OperatorConfigDiagnosticSource::Manifest => {
+                    manifest_diagnostics.push(diagnostic.diagnostic());
+                }
+                _ => document_diagnostics.push(diagnostic.diagnostic()),
+            }
+        }
+
+        let mut reports = Vec::new();
+        if let Some((manifest_uri, manifest_file)) = manifest {
+            reports.push((
+                manifest_uri,
+                manifest_diagnostics
+                    .into_iter()
+                    .map(|diagnostic| to_lsp_diagnostic(&manifest_file, diagnostic))
+                    .collect(),
+            ));
+        }
+        if !document_diagnostics.is_empty()
+            && let Some(document) = self.document(uri)
+        {
+            reports.push((
+                uri.clone(),
+                document_diagnostics
+                    .into_iter()
+                    .map(|diagnostic| to_lsp_diagnostic(document.file(), diagnostic))
+                    .collect(),
+            ));
+        }
+        reports
+    }
+
+    /// The document's manifest as a `SourceFile`, so manifest spans convert to
+    /// LSP ranges. The id is unused by span conversion.
+    fn manifest_source_for(&self, uri: &Url) -> Option<(Url, SourceFile)> {
+        let path = uri.to_file_path().ok()?;
+        let root = self.project_roots.get(path.parent()?)?;
+        let config = &self.project_contexts.get(root)?.config;
+        let manifest_path = config.manifest_path()?;
+        let manifest_uri = Url::from_file_path(manifest_path).ok()?;
+        let file = SourceFile::new(
+            FileId(0),
+            manifest_path.display().to_string(),
+            Some(manifest_path.to_path_buf()),
+            config.manifest_source()?.to_owned(),
+        );
+        Some((manifest_uri, file))
     }
 
     fn module_roots_for(&self, uri: &Url) -> Option<aven_compiler::ModuleRoots> {
@@ -281,6 +356,7 @@ impl DocumentStore {
         self.project_roots.clear();
         self.project_contexts.clear();
         self.module_graphs.clear();
+        self.config_diagnostics.clear();
         let documents = self
             .file_ids
             .keys()
@@ -303,10 +379,18 @@ impl DocumentStore {
     }
 }
 
+/// The document's fixity table, plus why it is empty when configuration failed.
+///
+/// A failed load still parses against an empty table so the rest of the file
+/// stays useful, but the reason must reach the user or the editor reports an
+/// undeclared operator at a line that is not the mistake.
 fn operator_fixities(
     project: &aven_compiler::ProjectConfig,
     source: &str,
-) -> aven_parser::OperatorFixityTable {
+) -> (
+    aven_parser::OperatorFixityTable,
+    Vec<aven_compiler::OperatorConfigDiagnostic>,
+) {
     project
         .operator_fixity_table(
             source,
@@ -318,7 +402,10 @@ fn operator_fixities(
             )>(),
             None,
         )
-        .unwrap_or_default()
+        .map_or_else(
+            |diagnostics| (aven_parser::OperatorFixityTable::default(), diagnostics),
+            |table| (table, Vec::new()),
+        )
 }
 
 fn source_name(uri: &Url) -> String {
@@ -652,9 +739,27 @@ impl Backend {
             return;
         };
         let version = document.revision().as_i32();
+        let config = self
+            .store
+            .lock()
+            .ok()
+            .map_or_else(Vec::new, |store| store.config_diagnostics_for(&uri));
+
+        let mut diagnostics = document_diagnostics(&document);
+        for (config_uri, config_diagnostics) in config {
+            if config_uri == uri {
+                diagnostics.extend(config_diagnostics);
+            } else {
+                // Always published, empty included, so fixing the manifest
+                // clears the error the editor is still showing against it.
+                self.client
+                    .publish_diagnostics(config_uri, config_diagnostics, None)
+                    .await;
+            }
+        }
 
         self.client
-            .publish_diagnostics(uri, document_diagnostics(&document), Some(version))
+            .publish_diagnostics(uri, diagnostics, Some(version))
             .await;
     }
 
@@ -700,13 +805,31 @@ async fn publish_semantic_diagnostics(
         return;
     };
 
-    let dependency_diagnostics = store
-        .lock()
-        .ok()
-        .map_or_else(Vec::new, |store| store.dependency_diagnostics(&uri));
+    let (dependency_diagnostics, config_diagnostics) = store.lock().ok().map_or_else(
+        || (Vec::new(), Vec::new()),
+        |store| {
+            (
+                store.dependency_diagnostics(&uri),
+                store.config_diagnostics_for(&uri),
+            )
+        },
+    );
+
+    // This publish replaces the one from `publish_diagnostics`, so the config
+    // diagnostics have to be repeated here or they would appear and then vanish
+    // as soon as semantic analysis lands.
+    let mut diagnostics = document_diagnostics(&document);
+    for (config_uri, config) in config_diagnostics {
+        if config_uri == uri {
+            diagnostics.extend(config);
+        } else {
+            client.publish_diagnostics(config_uri, config, None).await;
+        }
+    }
     client
-        .publish_diagnostics(uri, document_diagnostics(&document), Some(version))
+        .publish_diagnostics(uri, diagnostics, Some(version))
         .await;
+
     for (dependency_uri, diagnostics) in dependency_diagnostics {
         client
             .publish_diagnostics(dependency_uri, diagnostics, None)

@@ -1664,6 +1664,87 @@ fn file_backed_document_uses_shebang_custom_operator_fixity_before_parsing() {
 }
 
 #[test]
+fn malformed_manifest_operator_config_reports_against_the_manifest() {
+    let dir = TempDir::new("lsp-manifest-operator-invalid");
+    write(
+        dir.path(),
+        "Aven.toml",
+        "[operators]\n\"**\" = { precedence = \"nonsense\", associativity = \"right\" }\n",
+    );
+    let uri = file_uri(&dir.path().join("main.av"));
+    let manifest_uri = file_uri(&dir.path().join("Aven.toml"));
+    let mut store = DocumentStore::default();
+    store.set_document(uri.clone(), 1, "value = 2 ** 3\n".to_owned());
+
+    let reports = store.config_diagnostics_for(&uri);
+    let (reported_uri, diagnostics) = reports
+        .iter()
+        .find(|(reported, _)| *reported == manifest_uri)
+        .expect("a manifest configuration error belongs to the manifest");
+
+    assert_eq!(*reported_uri, manifest_uri);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].code,
+        Some(tower_lsp::lsp_types::NumberOrString::String(
+            aven_core::codes::config::OPERATOR_MANIFEST_INVALID.to_owned()
+        ))
+    );
+    // The span points into `Aven.toml`, not into the document that triggered
+    // the load.
+    assert_eq!(diagnostics[0].range.start.line, 1);
+}
+
+#[test]
+fn a_valid_manifest_still_reports_an_empty_list_so_a_fixed_error_clears() {
+    let dir = TempDir::new("lsp-manifest-operator-clears");
+    write(
+        dir.path(),
+        "Aven.toml",
+        "[operators]\n\"**\" = { precedence = \"^\", associativity = \"right\" }\n",
+    );
+    let uri = file_uri(&dir.path().join("main.av"));
+    let manifest_uri = file_uri(&dir.path().join("Aven.toml"));
+    let mut store = DocumentStore::default();
+    store.set_document(uri.clone(), 1, "value = 2 ** 3\n".to_owned());
+
+    let reports = store.config_diagnostics_for(&uri);
+    let (_, diagnostics) = reports
+        .iter()
+        .find(|(reported, _)| *reported == manifest_uri)
+        .expect("the manifest is always reported so a fixed error clears");
+
+    assert!(diagnostics.is_empty());
+}
+
+#[test]
+fn malformed_shebang_operator_config_reports_against_the_document() {
+    let dir = TempDir::new("lsp-shebang-operator-invalid");
+    let uri = file_uri(&dir.path().join("script.av"));
+    let mut store = DocumentStore::default();
+    store.set_document(
+        uri.clone(),
+        1,
+        "#!/usr/bin/env -S aven run --operator=**:bogus:right\nvalue = 2 ** 3\n".to_owned(),
+    );
+
+    let reports = store.config_diagnostics_for(&uri);
+    let (_, diagnostics) = reports
+        .iter()
+        .find(|(reported, _)| *reported == uri)
+        .expect("a shebang configuration error belongs to the document");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].code,
+        Some(tower_lsp::lsp_types::NumberOrString::String(
+            aven_core::codes::config::OPERATOR_SHEBANG_MALFORMED.to_owned()
+        ))
+    );
+    assert_eq!(diagnostics[0].range.start.line, 0);
+}
+
+#[test]
 fn manifest_invalidation_reparses_open_documents_with_unchanged_source() {
     let dir = TempDir::new("lsp-manifest-invalidation");
     let manifest = "[operators]\n\"**\" = { precedence = \"^\", associativity = \"right\" }\n";
