@@ -3,7 +3,7 @@ use std::future;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::time::advance;
 use tower::Service;
@@ -39,6 +39,65 @@ async fn next_publish_diagnostics(
     serde_json::from_value(params).expect("expected valid publishDiagnostics params")
 }
 
+async fn initialize_service(
+    service: &mut LspService<Backend>,
+    socket: &mut tower_lsp::ClientSocket,
+) -> InitializeResult {
+    let initialize = Request::build("initialize")
+        .params(json!({"capabilities": {}}))
+        .id(1)
+        .finish();
+    let Some(response) = call_service(service, initialize).await else {
+        panic!("expected initialize response");
+    };
+    let (_id, body) = response.into_parts();
+    let value = body.expect("expected successful initialize response");
+    let result = serde_json::from_value(value).expect("expected initialize result");
+
+    // Complete the LSP handshake. Backend::initialized registers a file watcher
+    // capability (request) and emits a logMessage (notification); answer them
+    // while the notification is handled so the server does not hang.
+    let initialized = Request::build("initialized").params(json!({})).finish();
+    let (notification, ()) = tokio::join!(call_service(service, initialized), async {
+        let register = socket
+            .next()
+            .await
+            .expect("expected client/registerCapability");
+        assert_eq!(register.method(), "client/registerCapability");
+        let id = register
+            .id()
+            .cloned()
+            .expect("registerCapability is a request");
+        socket
+            .send(Response::from_ok(id, json!(null)))
+            .await
+            .expect("respond to registerCapability");
+
+        let log = socket.next().await.expect("expected window/logMessage");
+        assert_eq!(log.method(), "window/logMessage");
+    });
+    assert!(
+        notification.is_none(),
+        "initialized is a notification without a response"
+    );
+
+    result
+}
+
+async fn open_test_document(service: &mut LspService<Backend>, uri: &Url, text: &str) {
+    let did_open = Request::build("textDocument/didOpen")
+        .params(json!({
+            "textDocument": {
+                "uri": uri.to_string(),
+                "languageId": "aven",
+                "version": 1,
+                "text": text,
+            }
+        }))
+        .finish();
+    assert!(call_service(service, did_open).await.is_none());
+}
+
 fn test_backend(client: Client) -> Backend {
     Backend {
         client,
@@ -69,6 +128,141 @@ fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
     )
 }
 
+/// Byte offset of the first bare deferred-type hole (`?` as a type atom), if any.
+/// Optional (`?T`) and nullable (`T?`) sugar are allowed. String literal types
+/// may contain `?` characters (`"?"`, `"yes?"`) and must not be flagged.
+fn type_hole_position(rendered: &str) -> Option<usize> {
+    let characters: Vec<char> = rendered.chars().collect();
+    let mut index = 0;
+    let mut byte_offset = 0;
+
+    while index < characters.len() {
+        let ch = characters[index];
+        match ch {
+            '"' => {
+                byte_offset += ch.len_utf8();
+                index += 1;
+                while index < characters.len() {
+                    let inner = characters[index];
+                    match inner {
+                        '\\' if index + 1 < characters.len() => {
+                            byte_offset += inner.len_utf8() + characters[index + 1].len_utf8();
+                            index += 2;
+                        }
+                        '"' => {
+                            byte_offset += inner.len_utf8();
+                            index += 1;
+                            break;
+                        }
+                        _ => {
+                            byte_offset += inner.len_utf8();
+                            index += 1;
+                        }
+                    }
+                }
+            }
+            '?' => {
+                let prefix_optional = characters.get(index + 1).is_some_and(|next| {
+                    next.is_ascii_alphanumeric()
+                        || *next == '_'
+                        || matches!(next, '(' | '{' | '@' | '"')
+                });
+                let suffix_nullable = index
+                    .checked_sub(1)
+                    .and_then(|previous| characters.get(previous))
+                    .is_some_and(|previous| {
+                        previous.is_ascii_alphanumeric()
+                            || *previous == '_'
+                            || matches!(previous, ')' | ']' | '}' | '"')
+                    });
+
+                if !prefix_optional && !suffix_nullable {
+                    return Some(byte_offset);
+                }
+                byte_offset += ch.len_utf8();
+                index += 1;
+            }
+            _ => {
+                byte_offset += ch.len_utf8();
+                index += 1;
+            }
+        }
+    }
+    None
+}
+
+fn assert_no_type_hole_in(rendered: &str, context: &str) {
+    if let Some(offset) = type_hole_position(rendered) {
+        panic!("{context}: bare deferred-type hole at byte offset {offset} in {rendered:?}");
+    }
+}
+
+fn hover_type_portion(hover: &Hover) -> Option<&str> {
+    let HoverContents::Markup(markup) = &hover.contents else {
+        return None;
+    };
+    let value = markup
+        .value
+        .strip_prefix("```aven\n")?
+        .strip_suffix("\n```")?;
+
+    // Hover labels are `name : type` (see hover formatting in lib.rs).
+    Some(value.split_once(" : ").map_or(value, |(_, ty)| ty))
+}
+
+fn assert_inlay_labels_have_no_type_hole_in(hints: &[InlayHint], context: &str) -> usize {
+    let mut asserted = 0;
+    for (hint_index, hint) in hints.iter().enumerate() {
+        let InlayHintLabel::String(label) = &hint.label else {
+            continue;
+        };
+        let Some(rendered) = label.strip_prefix(": ") else {
+            panic!("{context}: expected type inlay label, got {label:?}");
+        };
+        assert_no_type_hole_in(
+            rendered,
+            &format!("{context} inlay[{hint_index}] at {:?}", hint.position),
+        );
+        asserted += 1;
+    }
+    asserted
+}
+
+#[test]
+fn type_hole_helper_distinguishes_optional_sugar_from_deferred_types() {
+    for rendered in [
+        "?Int",
+        "?Node",
+        "?Text?",
+        "?(Int -> Text)",
+        "Text?",
+        "(Int -> Text)?",
+        "({ .. }, { .. }) -> { .. }",
+        // String literal types may embed `?`; they are not deferred holes.
+        "\"?\"",
+        "\"why?\"",
+        "\"?\" | Text",
+        "\"yes?\" | \"no?\"",
+        "?\"hi\"",
+        "\"hi\"?",
+    ] {
+        assert!(
+            type_hole_position(rendered).is_none(),
+            "expected no type hole in {rendered:?}"
+        );
+    }
+
+    for rendered in ["?", "-> ?", "(?, ?)", "Result(?, IoError)", "\"ok\" | ?"] {
+        assert!(
+            type_hole_position(rendered).is_some(),
+            "expected type hole in {rendered:?}"
+        );
+    }
+
+    assert_eq!(type_hole_position("-> ?"), Some(3));
+    assert_eq!(type_hole_position("Result(?, IoError)"), Some(7));
+}
+
 fn parsed_file_document(uri: &Url, source: impl Into<String>) -> ParsedDocument {
     let file = SourceFile::new(
         FileId(0),
@@ -93,25 +287,11 @@ fn analyze_file_document(
 
 #[tokio::test(flavor = "current_thread")]
 async fn protocol_smoke_opens_document_and_returns_symbols() {
-    let (mut service, _) = LspService::new(test_backend);
+    let (mut service, mut socket) = LspService::new(test_backend);
     let uri = test_uri();
     let uri_text = uri.to_string();
 
-    let initialize = Request::build("initialize")
-        .params(json!({"capabilities": {}}))
-        .id(1)
-        .finish();
-    let Some(response) = call_service(&mut service, initialize).await else {
-        panic!("expected initialize response");
-    };
-    let (_id, body) = response.into_parts();
-    let Ok(value) = body else {
-        panic!("expected successful initialize response");
-    };
-    let initialize_result = match serde_json::from_value::<InitializeResult>(value) {
-        Ok(result) => result,
-        Err(error) => panic!("expected initialize result: {error}"),
-    };
+    let initialize_result = initialize_service(&mut service, &mut socket).await;
     assert!(matches!(
         initialize_result
             .capabilities
@@ -156,18 +336,12 @@ async fn protocol_smoke_opens_document_and_returns_symbols() {
         initialize_result.capabilities.inlay_hint_provider,
         Some(OneOf::Left(true))
     ));
+    assert!(matches!(
+        initialize_result.capabilities.document_formatting_provider,
+        Some(OneOf::Left(true))
+    ));
 
-    let did_open = Request::build("textDocument/didOpen")
-        .params(json!({
-            "textDocument": {
-                "uri": uri_text.clone(),
-                "languageId": "aven",
-                "version": 1,
-                "text": "User = { name: Text }\nvalue = 1\n"
-            }
-        }))
-        .finish();
-    assert!(call_service(&mut service, did_open).await.is_none());
+    open_test_document(&mut service, &uri, "User = { name: Text }\nvalue = 1\n").await;
 
     let completion = Request::build("textDocument/completion")
         .params(json!({
@@ -246,32 +420,200 @@ async fn protocol_smoke_opens_document_and_returns_symbols() {
     assert!(!semantic_tokens.data.is_empty());
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_formatting_returns_reformatting_edit() {
+    let (mut service, mut socket) = LspService::new(test_backend);
+    let uri = test_uri();
+    let source = "value=1\n";
+    let expected = aven_fmt::format_source(source).expect("expected source to format");
+
+    let _ = initialize_service(&mut service, &mut socket).await;
+    open_test_document(&mut service, &uri, source).await;
+
+    let request = Request::build("textDocument/formatting")
+        .params(json!({
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        }))
+        .id(2)
+        .finish();
+    let response = call_service(&mut service, request)
+        .await
+        .expect("expected formatting response");
+    let (_id, body) = response.into_parts();
+    let edits: Vec<TextEdit> =
+        serde_json::from_value(body.expect("successful formatting response"))
+            .expect("expected formatting edits");
+
+    assert_eq!(edits.len(), 1);
+    assert_eq!(
+        edits[0].range,
+        full_document_range(&parsed_document(source))
+    );
+    assert_eq!(edits[0].new_text, expected);
+    assert_ne!(edits[0].new_text, source);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_hover_and_definition_use_on_demand_semantics() {
+    let (mut service, mut socket) = LspService::new(test_backend);
+    let uri = test_uri();
+
+    let _ = initialize_service(&mut service, &mut socket).await;
+    open_test_document(&mut service, &uri, "value = 1\nuse = value\n").await;
+
+    let hover = Request::build("textDocument/hover")
+        .params(json!({
+            "textDocument": { "uri": uri.clone() },
+            "position": { "line": 0, "character": 1 },
+        }))
+        .id(2)
+        .finish();
+    let response = call_service(&mut service, hover)
+        .await
+        .expect("expected hover response");
+    let (_id, body) = response.into_parts();
+    let hover: Option<Hover> = serde_json::from_value(body.expect("successful hover response"))
+        .expect("expected hover response body");
+    assert_hover_value(hover.expect("expected hover"), "```aven\nvalue : 1\n```");
+
+    let definition = Request::build("textDocument/definition")
+        .params(json!({
+            "textDocument": { "uri": uri.clone() },
+            "position": { "line": 1, "character": 7 },
+        }))
+        .id(3)
+        .finish();
+    let response = call_service(&mut service, definition)
+        .await
+        .expect("expected definition response");
+    let (_id, body) = response.into_parts();
+    let definition: Option<GotoDefinitionResponse> =
+        serde_json::from_value(body.expect("successful definition response"))
+            .expect("expected definition response body");
+    let Some(GotoDefinitionResponse::Scalar(location)) = definition else {
+        panic!("expected scalar definition location");
+    };
+    assert_eq!(location.uri, uri);
+    assert_eq!(location.range.start, position(0, 0));
+    assert_eq!(location.range.end, position(0, 5));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_signature_help_and_rename_return_edits() {
+    let (mut service, mut socket) = LspService::new(test_backend);
+    let uri = test_uri();
+
+    let _ = initialize_service(&mut service, &mut socket).await;
+    open_test_document(
+        &mut service,
+        &uri,
+        "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, 2)\nf = (x) => x\n",
+    )
+    .await;
+
+    let signature = Request::build("textDocument/signatureHelp")
+        .params(json!({
+            "textDocument": { "uri": uri.clone() },
+            "position": { "line": 2, "character": 15 },
+        }))
+        .id(2)
+        .finish();
+    let response = call_service(&mut service, signature)
+        .await
+        .expect("expected signature help response");
+    let (_id, body) = response.into_parts();
+    let signature: Option<SignatureHelp> =
+        serde_json::from_value(body.expect("successful signature help response"))
+            .expect("expected signature help response body");
+    let signature = signature.expect("expected signature help");
+    assert_eq!(signature.signatures[0].label, "add(Int, Int) -> Int");
+    assert_eq!(signature.active_signature, Some(0));
+    assert_eq!(signature.active_parameter, Some(1));
+    assert_eq!(signature.signatures[0].active_parameter, Some(1));
+
+    let rename = Request::build("textDocument/rename")
+        .params(json!({
+            "textDocument": { "uri": uri.clone() },
+            "position": { "line": 3, "character": 11 },
+            "newName": "item",
+        }))
+        .id(3)
+        .finish();
+    let response = call_service(&mut service, rename)
+        .await
+        .expect("expected rename response");
+    let (_id, body) = response.into_parts();
+    let edit: Option<WorkspaceEdit> =
+        serde_json::from_value(body.expect("successful rename response"))
+            .expect("expected workspace edit response");
+    let edits = edit
+        .and_then(|edit| edit.changes)
+        .and_then(|changes| changes.get(&uri).cloned())
+        .expect("expected local rename edits");
+    assert_eq!(edits.len(), 2);
+    assert_eq!(edits[0].new_text, "item");
+    assert_eq!(edits[0].range.start, position(3, 5));
+    assert_eq!(edits[0].range.end, position(3, 6));
+    assert_eq!(edits[1].new_text, "item");
+    assert_eq!(edits[1].range.start, position(3, 11));
+    assert_eq!(edits[1].range.end, position(3, 12));
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn protocol_code_action_uses_published_semantic_diagnostic() {
+    let (mut service, mut socket) = LspService::new(test_backend);
+    let uri = test_uri();
+
+    let _ = initialize_service(&mut service, &mut socket).await;
+    open_test_document(
+        &mut service,
+        &uri,
+        "y = { x: 1 }\nz = { x: 2 }\na = { ..y, ..z }\n",
+    )
+    .await;
+    let _parse = next_publish_diagnostics(&mut socket).await;
+    advance(SEMANTIC_DEBOUNCE + Duration::from_millis(1)).await;
+    let semantic = next_publish_diagnostics(&mut socket).await;
+    let diagnostic = duplicate_spread_label_diagnostic(&semantic.diagnostics);
+
+    let request = Request::build("textDocument/codeAction")
+        .params(json!({
+            "textDocument": { "uri": uri.clone() },
+            "range": {
+                "start": { "line": 2, "character": 11 },
+                "end": { "line": 2, "character": 14 },
+            },
+            "context": { "diagnostics": semantic.diagnostics },
+        }))
+        .id(2)
+        .finish();
+    let response = call_service(&mut service, request)
+        .await
+        .expect("expected code action response");
+    let (_id, body) = response.into_parts();
+    let actions: Option<CodeActionResponse> =
+        serde_json::from_value(body.expect("successful code action response"))
+            .expect("expected code action response body");
+    let actions = actions.expect("expected quickfix action");
+    let action = single_code_action(&actions);
+    assert_eq!(action.title, "Overwrite-merge spread with `:..`");
+    assert_eq!(action.kind.as_ref(), Some(&CodeActionKind::QUICKFIX));
+    assert_action_carries_diagnostic(action, diagnostic);
+    let edit = single_action_text_edit(action, &uri);
+    assert_eq!(edit.new_text, ":");
+    assert_eq!(edit.range.start, diagnostic.range.start);
+    assert_eq!(edit.range.end, diagnostic.range.start);
+}
+
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn protocol_inlay_hint_returns_inferred_binding_type() {
     let (mut service, mut socket) = LspService::new(test_backend);
     let uri = test_uri();
     let uri_text = uri.to_string();
 
-    let initialize = Request::build("initialize")
-        .params(json!({"capabilities": {}}))
-        .id(1)
-        .finish();
-    let Some(response) = call_service(&mut service, initialize).await else {
-        panic!("expected initialize response");
-    };
-    assert!(response.is_ok());
-
-    let did_open = Request::build("textDocument/didOpen")
-        .params(json!({
-            "textDocument": {
-                "uri": uri_text.clone(),
-                "languageId": "aven",
-                "version": 1,
-                "text": "n = 1\n"
-            }
-        }))
-        .finish();
-    assert!(call_service(&mut service, did_open).await.is_none());
+    let _ = initialize_service(&mut service, &mut socket).await;
+    open_test_document(&mut service, &uri, "n = 1\n").await;
 
     let parse = next_publish_diagnostics(&mut socket).await;
     assert_eq!(parse.version, Some(1));
@@ -323,27 +665,12 @@ async fn completion_returns_fields_before_debounced_semantics() {
     // requested right after didOpen must still return type-directed fields,
     // proving the handler computes semantics on demand rather than waiting
     // for SEMANTIC_DEBOUNCE.
-    let (mut service, _socket) = LspService::new(test_backend);
+    let (mut service, mut socket) = LspService::new(test_backend);
     let uri = test_uri();
     let uri_text = uri.to_string();
 
-    let initialize = Request::build("initialize")
-        .params(json!({"capabilities": {}}))
-        .id(1)
-        .finish();
-    assert!(call_service(&mut service, initialize).await.is_some());
-
-    let did_open = Request::build("textDocument/didOpen")
-        .params(json!({
-            "textDocument": {
-                "uri": uri_text.clone(),
-                "languageId": "aven",
-                "version": 1,
-                "text": "r = { a: 1, b: 2 }\nx = r.\n"
-            }
-        }))
-        .finish();
-    assert!(call_service(&mut service, did_open).await.is_none());
+    let _ = initialize_service(&mut service, &mut socket).await;
+    open_test_document(&mut service, &uri, "r = { a: 1, b: 2 }\nx = r.\n").await;
 
     let completion = Request::build("textDocument/completion")
         .params(json!({
@@ -382,26 +709,8 @@ async fn semantic_diagnostics_are_debounced_and_stale_results_are_cancelled() {
     let uri = test_uri();
     let uri_text = uri.to_string();
 
-    let initialize = Request::build("initialize")
-        .params(json!({"capabilities": {}}))
-        .id(1)
-        .finish();
-    let Some(response) = call_service(&mut service, initialize).await else {
-        panic!("expected initialize response");
-    };
-    assert!(response.is_ok());
-
-    let did_open = Request::build("textDocument/didOpen")
-        .params(json!({
-            "textDocument": {
-                "uri": uri_text.clone(),
-                "languageId": "aven",
-                "version": 1,
-                "text": "value : Missing = value\n"
-            }
-        }))
-        .finish();
-    assert!(call_service(&mut service, did_open).await.is_none());
+    let _ = initialize_service(&mut service, &mut socket).await;
+    open_test_document(&mut service, &uri, "value : Missing = value\n").await;
 
     let first = next_publish_diagnostics(&mut socket).await;
     assert_eq!(first.version, Some(1));
@@ -2411,41 +2720,17 @@ fn interface_cache_documents_are_detected_by_prefix() {
 async fn did_open_under_interface_cache_publishes_no_diagnostics() {
     let (mut service, mut socket) = LspService::new(test_backend);
 
-    let initialize = Request::build("initialize")
-        .params(json!({"capabilities": {}}))
-        .id(1)
-        .finish();
-    assert!(call_service(&mut service, initialize).await.is_some());
+    let _ = initialize_service(&mut service, &mut socket).await;
 
     // A generated interface document; even with invalid content it must not
     // be analyzed or produce diagnostics.
     let cache_uri = file_uri(&interface_cache_dir().join("std/result.av"));
-    let open_cached = Request::build("textDocument/didOpen")
-        .params(json!({
-            "textDocument": {
-                "uri": cache_uri.to_string(),
-                "languageId": "aven",
-                "version": 1,
-                "text": "definitely (((( not valid\n"
-            }
-        }))
-        .finish();
-    assert!(call_service(&mut service, open_cached).await.is_none());
+    open_test_document(&mut service, &cache_uri, "definitely (((( not valid\n").await;
 
     // Opening an ordinary document afterwards proves the cache document
     // published nothing: the first notification on the socket is for it.
     let uri = test_uri();
-    let open_ordinary = Request::build("textDocument/didOpen")
-        .params(json!({
-            "textDocument": {
-                "uri": uri.to_string(),
-                "languageId": "aven",
-                "version": 1,
-                "text": "value = 1\n"
-            }
-        }))
-        .finish();
-    assert!(call_service(&mut service, open_ordinary).await.is_none());
+    open_test_document(&mut service, &uri, "value = 1\n").await;
 
     let publish = next_publish_diagnostics(&mut socket).await;
     assert_eq!(publish.uri, uri);
@@ -3115,6 +3400,159 @@ fn hover_at_position_returns_none_when_inference_defers() {
     let hover = hover_at_position(&document, position(0, 1));
 
     assert!(hover.is_none());
+}
+
+#[test]
+fn inlay_hints_skip_deferred_bindings() {
+    let document = parsed_document_with_semantics("value = missing\n");
+    let hints = inlay_hints_in_range(&document, full_document_range(&document));
+
+    assert!(hints.is_empty());
+    assert_eq!(
+        assert_inlay_labels_have_no_type_hole_in(&hints, "deferred binding"),
+        0
+    );
+}
+
+#[test]
+fn valid_check_fixtures_and_host_bindings_never_publish_type_holes() {
+    // Load-bearing cross-crate path: this gate sweeps every valid aven-check
+    // fixture. If aven-check relocates fixtures, update this path — do not let
+    // an empty directory silently pass the type-hole invariant.
+    let fixture_directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../aven-check/tests/fixtures/check/valid");
+    let mut fixtures: Vec<PathBuf> = fs::read_dir(&fixture_directory)
+        .expect("expected valid checker fixtures directory (load-bearing path above)")
+        .map(|entry| entry.expect("expected valid checker fixture entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "av"))
+        .collect();
+    fixtures.sort();
+    assert!(
+        !fixtures.is_empty(),
+        "expected at least one .av under {}, got none — gate would pass vacuously",
+        fixture_directory.display()
+    );
+    let fixture_count = fixtures.len();
+
+    let mut sources: Vec<(String, String)> = fixtures
+        .into_iter()
+        .map(|path| {
+            let source = fs::read_to_string(&path).expect("expected valid checker fixture source");
+            (path.display().to_string(), source)
+        })
+        .collect();
+    sources.extend([
+        (
+            "host File.open".to_owned(),
+            "handle = File.open(\"x\", \"r\")\n".to_owned(),
+        ),
+        (
+            "host Json.decode".to_owned(),
+            "text = \"{\\\"a\\\":1}\"\ndata = Json.decode(text)\n".to_owned(),
+        ),
+    ]);
+
+    let mut asserted_renders = 0usize;
+    let mut asserted_hovers = 0usize;
+
+    for (name, source) in &sources {
+        let document = parsed_document_with_semantics(source.clone());
+
+        for inferred in document.inferred_types() {
+            assert_no_type_hole_in(
+                &inferred.render(),
+                &format!("{name} inferred type at {:?}", inferred.name_span),
+            );
+            asserted_renders += 1;
+        }
+
+        for item in &document.parse_output().module.items {
+            let aven_parser::Item::Binding(binding) = item else {
+                continue;
+            };
+            let position = to_lsp_position(
+                document
+                    .file()
+                    .line_index()
+                    .offset_to_position(document.source(), binding.name_span.start),
+            );
+            let Some(hover) = hover_at_position(&document, position) else {
+                continue;
+            };
+            let Some(rendered) = hover_type_portion(&hover) else {
+                continue;
+            };
+            assert_no_type_hole_in(
+                rendered,
+                &format!("{name} hover on binding `{}`", binding.name),
+            );
+            asserted_renders += 1;
+            asserted_hovers += 1;
+        }
+
+        let hints = inlay_hints_in_range(&document, full_document_range(&document));
+        asserted_renders += assert_inlay_labels_have_no_type_hole_in(&hints, name);
+    }
+
+    // Floor prevents a silent vacuous pass if fixtures vanish or every hover
+    // path returns None. Host snippets add two sources beyond the fixture set.
+    let source_count = fixture_count + 2;
+    assert!(
+        asserted_renders >= source_count,
+        "type-hole sweep asserted only {asserted_renders} type surfaces across {source_count} sources"
+    );
+    assert!(
+        asserted_hovers >= source_count,
+        "type-hole sweep asserted only {asserted_hovers} binding hovers across {source_count} sources"
+    );
+}
+
+#[test]
+fn refined_host_result_bindings_have_concrete_type_surfaces() {
+    for (source, name, expected_type) in [
+        ("h = File.open(\"x\", \"r\")\n", "h", "Result({ readLine:"),
+        ("j = Json.decode(\"{}\")\n", "j", "Result(Data, JsonError)"),
+    ] {
+        let document = parsed_document_with_semantics(source);
+        let offset = source.find(name).expect("expected binding name");
+        let position = to_lsp_position(
+            document
+                .file()
+                .line_index()
+                .offset_to_position(document.source(), offset),
+        );
+        let hover = hover_at_position(&document, position).expect("expected binding hover");
+        let rendered = hover_type_portion(&hover).expect("expected rendered type hover");
+        assert!(
+            rendered.contains(expected_type),
+            "expected {name} hover to contain {expected_type:?}, got {rendered:?}"
+        );
+        assert_no_type_hole_in(rendered, &format!("host binding `{name}` hover"));
+
+        let hints = inlay_hints_in_range(&document, full_document_range(&document));
+        let label = hints
+            .iter()
+            .find_map(|hint| match &hint.label {
+                InlayHintLabel::String(label) if label.starts_with(": ") => Some(label),
+                _ => None,
+            })
+            .expect("expected binding type inlay hint");
+        assert!(
+            label.contains(expected_type),
+            "unexpected inlay hint for `{name}`: {label}"
+        );
+        assert_inlay_labels_have_no_type_hole_in(&hints, &format!("host binding `{name}`"));
+
+        let completions = completions_at_marker(&format!("{source}|"));
+        let detail = completion_item(&completions, name)
+            .and_then(|item| item.detail.as_deref())
+            .expect("expected binding completion detail");
+        assert!(
+            detail.contains(expected_type),
+            "expected {name} completion detail to contain {expected_type:?}, got {detail:?}"
+        );
+        assert_no_type_hole_in(detail, &format!("host binding `{name}` completion"));
+    }
 }
 
 const COMPTIME_TYPE_SOURCE: &str = "User = { name: Text, email: Text }\n\

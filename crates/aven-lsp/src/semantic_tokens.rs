@@ -200,6 +200,24 @@ impl StyleCollector {
                 self.collect_record_entries(entries);
                 aven_parser::walk_expr_children(expr, &mut |child| self.collect_expr(child));
             }
+            aven_parser::ExprKind::Match { subject, arms, .. } => {
+                self.collect_expr(subject);
+                for arm in arms {
+                    for site in aven_parser::pattern_bindings(&arm.pattern) {
+                        self.styles.insert(
+                            site.span,
+                            SemanticStyle {
+                                token_type: TOKEN_VARIABLE,
+                                modifiers: MODIFIER_DEFINITION,
+                            },
+                        );
+                    }
+                    for guard in &arm.guards {
+                        self.collect_expr(guard);
+                    }
+                    self.collect_expr(&arm.body);
+                }
+            }
             _ => aven_parser::walk_expr_children(expr, &mut |child| self.collect_expr(child)),
         }
     }
@@ -553,6 +571,208 @@ mod tests {
                 token_type: "property",
                 modifiers: 0,
             },
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_classify_method_attachment_members_and_parameters() {
+        let document = parsed_document("User { greet: (name) => name }\n");
+        let tokens = decoded_semantic_tokens(&document);
+
+        assert_eq!(
+            tokens,
+            vec![
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 0,
+                    length: 4,
+                    token_type: "type",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 7,
+                    length: 5,
+                    token_type: "property",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 12,
+                    length: 1,
+                    token_type: "operator",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 15,
+                    length: 4,
+                    token_type: "parameter",
+                    modifiers: MODIFIER_DEFINITION,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 21,
+                    length: 2,
+                    token_type: "operator",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 24,
+                    length: 4,
+                    token_type: "variable",
+                    modifiers: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_classify_match_pattern_binders() {
+        let document = parsed_document("value = x ?>\n  n => n\n  _ => 0\n");
+        let tokens = decoded_semantic_tokens(&document);
+
+        assert_eq!(
+            tokens,
+            vec![
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 0,
+                    length: 5,
+                    token_type: "variable",
+                    modifiers: MODIFIER_DEFINITION,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 6,
+                    length: 1,
+                    token_type: "operator",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 8,
+                    length: 1,
+                    token_type: "variable",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 10,
+                    length: 2,
+                    token_type: "operator",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 1,
+                    start: 2,
+                    length: 1,
+                    token_type: "variable",
+                    modifiers: MODIFIER_DEFINITION,
+                },
+                DecodedSemanticToken {
+                    line: 1,
+                    start: 4,
+                    length: 2,
+                    token_type: "operator",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 1,
+                    start: 7,
+                    length: 1,
+                    token_type: "variable",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 2,
+                    start: 2,
+                    length: 1,
+                    token_type: "variable",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 2,
+                    start: 4,
+                    length: 2,
+                    token_type: "operator",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 2,
+                    start: 7,
+                    length: 1,
+                    token_type: "number",
+                    modifiers: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_classify_import_call_tokens() {
+        let document = parsed_document("module = import(\"util\")\n");
+        let tokens = decoded_semantic_tokens(&document);
+
+        assert_eq!(
+            tokens,
+            vec![
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 0,
+                    length: 6,
+                    token_type: "variable",
+                    modifiers: MODIFIER_DEFINITION,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 7,
+                    length: 1,
+                    token_type: "operator",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 9,
+                    length: 6,
+                    token_type: "variable",
+                    modifiers: 0,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 16,
+                    length: 6,
+                    token_type: "string",
+                    modifiers: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_tolerate_broken_syntax() {
+        let document = parsed_document("value =\n");
+        let tokens = decoded_semantic_tokens(&document);
+
+        assert_eq!(
+            tokens,
+            vec![
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 0,
+                    length: 5,
+                    token_type: "variable",
+                    modifiers: MODIFIER_DEFINITION,
+                },
+                DecodedSemanticToken {
+                    line: 0,
+                    start: 6,
+                    length: 1,
+                    token_type: "operator",
+                    modifiers: 0,
+                },
+            ]
         );
     }
 

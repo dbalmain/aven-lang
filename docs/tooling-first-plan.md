@@ -1862,6 +1862,14 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
   `?.` operator via an additional text edit when the receiver is empty-wrapped
   and the typed operator is `.`; already-null-safe and plain-record receivers
   are unchanged.
+- T11 done: no bare deferred-type hole (`?` as a free type atom) reaches an
+  editor surface. LSP tests gate hover, inlay, completion detail, and
+  inferred-type snapshots (including a sweep of
+  `aven-check` valid fixtures plus refined host bindings) so optional `?T` and
+  nullable `T?` sugar stay allowed while free-standing `?` fails the gate. The
+  deliberate exception is unapplied host base signatures that still render
+  `-> ?` until call-site refinement (e.g. hovering `File.open` itself); refined
+  bindings such as `h = File.open(...)` must show concrete `Result` shapes.
 - Quick fixes so far: a colliding spread offers an overwrite-merge (`:..`)
   rewrite; a dropped `Result` value warns and offers a `?!` insertion.
 

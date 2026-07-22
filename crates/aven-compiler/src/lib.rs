@@ -235,6 +235,11 @@ impl DocumentSnapshot {
         &self.semantic_diagnostics
     }
 
+    /// Inferred types recorded by semantic analysis for editor-facing queries.
+    pub fn inferred_types(&self) -> &[InferredType] {
+        &self.inferred_types
+    }
+
     pub fn type_at(&self, span: aven_core::Span) -> Option<&Type> {
         self.inferred_type_at(span).map(|inferred| &inferred.ty)
     }
