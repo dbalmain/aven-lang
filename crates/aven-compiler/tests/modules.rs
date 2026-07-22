@@ -15,7 +15,7 @@ use aven_compiler::{
 };
 use aven_core::codes;
 use aven_eval::Value;
-use aven_host::Host;
+use aven_host::{Host, OperatorAssociativity, OperatorPrecedence};
 
 #[test]
 fn checks_diamond_graph_and_private_bindings() {
@@ -762,6 +762,163 @@ fn manifest_fixity_never_authorizes_bare_custom_infix_in_a_dependency() {
                 .any(|note| note.contains("left.**(right)"))),
         "expected dependency-only repair guidance, got {report:#?}"
     );
+}
+
+#[test]
+fn platform_fixity_authorizes_bare_custom_infix_in_an_entry() {
+    let dir = TempDir::new("platform-entry-custom-infix");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Scalar = {\n",
+            "  value: Float\n",
+            "  **(other: Scalar): Scalar =>\n",
+            "    Scalar({ value: .value ^ other.value })\n",
+            "}\n",
+            "left = Scalar({ value: 2.0 })\n",
+            "right = Scalar({ value: 3.0 })\n",
+            "value = (left ** right).value\n",
+            "{ value }\n",
+        ),
+    );
+    let entry = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&entry);
+    let project = ProjectConfig::load(&roots).expect("entry has no manifest");
+    let entry_source = fs::read_to_string(&entry).expect("entry source should load");
+    let mut host = Host::new();
+    host.register_operator(
+        "**",
+        OperatorPrecedence::Exponentiation,
+        OperatorAssociativity::Right,
+    )
+    .expect("custom operator should register");
+    let fixities = project
+        .operator_fixity_table(
+            &entry_source,
+            std::iter::empty::<String>(),
+            host.operator_fixities(),
+            None,
+        )
+        .expect("platform configuration should be valid");
+
+    let output = check_path_with_host_globals_and_entry_source_and_fixities_with_roots(
+        &entry,
+        &host.check_host_globals(),
+        &entry_source,
+        &fixities,
+        &roots,
+    )
+    .expect("check should load the entry");
+
+    assert_no_errors(&output.reports);
+}
+
+#[test]
+fn manifest_and_platform_fixity_conflict_labels_the_manifest() {
+    let dir = TempDir::new("manifest-platform-custom-infix-conflict");
+    let manifest_source =
+        "[operators]\n\"**\" = { precedence = \"^\", associativity = \"right\" }\n";
+    write(dir.path(), "Aven.toml", manifest_source);
+    write(dir.path(), "main.av", "value = 1\n");
+    let entry = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&entry);
+    let project = ProjectConfig::load(&roots).expect("manifest should load");
+    let entry_source = fs::read_to_string(&entry).expect("entry source should load");
+    let mut host = Host::new();
+    host.register_operator(
+        "**",
+        OperatorPrecedence::Exponentiation,
+        OperatorAssociativity::Right,
+    )
+    .expect("custom operator should register");
+
+    let diagnostics = project
+        .operator_fixity_table(
+            &entry_source,
+            std::iter::empty::<String>(),
+            host.operator_fixities(),
+            None,
+        )
+        .expect_err("identical manifest and platform declarations must conflict");
+
+    assert_eq!(diagnostics.len(), 1);
+    let diagnostic = diagnostics[0].diagnostic();
+    assert_eq!(
+        diagnostics[0].source(),
+        aven_compiler::OperatorConfigDiagnosticSource::Manifest
+    );
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::config::OPERATOR_FIXITY_CONFLICT)
+    );
+    assert_eq!(diagnostic.labels.len(), 1);
+    assert_eq!(
+        diagnostic.labels[0].span,
+        nth_span(manifest_source, "\"**\"", 0)
+    );
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("platform registration 1")),
+        "expected platform registration note, got {diagnostic:#?}"
+    );
+}
+
+#[test]
+fn platform_fixity_never_authorizes_bare_custom_infix_in_a_dependency() {
+    let dir = TempDir::new("platform-dependency-custom-infix");
+    write(
+        dir.path(),
+        "lib.av",
+        concat!(
+            "Scalar = {\n",
+            "  value: Float\n",
+            "  **(other: Scalar): Scalar =>\n",
+            "    Scalar({ value: .value ^ other.value })\n",
+            "}\n",
+            "left = Scalar({ value: 2.0 })\n",
+            "right = Scalar({ value: 3.0 })\n",
+            "value = (left ** right).value\n",
+            "{ value }\n",
+        ),
+    );
+    write(
+        dir.path(),
+        "main.av",
+        "library = import(\"./lib\")\n{ library }\n",
+    );
+    let entry = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&entry);
+    let project = ProjectConfig::load(&roots).expect("entry has no manifest");
+    let entry_source = fs::read_to_string(&entry).expect("entry source should load");
+    let mut host = Host::new();
+    host.register_operator(
+        "**",
+        OperatorPrecedence::Exponentiation,
+        OperatorAssociativity::Right,
+    )
+    .expect("custom operator should register");
+    let fixities = project
+        .operator_fixity_table(
+            &entry_source,
+            std::iter::empty::<String>(),
+            host.operator_fixities(),
+            None,
+        )
+        .expect("platform configuration should be valid");
+
+    let output = check_path_with_host_globals_and_entry_source_and_fixities_with_roots(
+        &entry,
+        &host.check_host_globals(),
+        &entry_source,
+        &fixities,
+        &roots,
+    )
+    .expect("check should load the module graph");
+
+    assert_has_code(&output.reports, codes::parse::CUSTOM_INFIX_NOT_ROOT);
 }
 
 #[test]

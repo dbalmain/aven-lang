@@ -245,8 +245,10 @@ fn check(
     show_timings: bool,
     operators: &[String],
 ) -> Result<()> {
+    let host = parse_only_host();
     let roots = discover_roots(path);
-    let configured = load_path_operator_config(path, &roots, operators, None, false, format)?;
+    let configured =
+        load_path_operator_config(path, &roots, operators, &host, None, false, format)?;
     let checked =
         aven_compiler::check_path_with_host_globals_and_entry_source_and_fixities_with_roots(
             path,
@@ -302,6 +304,7 @@ fn run(
         path,
         &roots,
         operators,
+        &host,
         direct_shebang_arguments,
         direct_shebang_arguments.is_none(),
         format,
@@ -389,6 +392,7 @@ fn load_path_operator_config(
     path: &Path,
     roots: &aven_compiler::ModuleRoots,
     operators: &[String],
+    host: &aven_host::Host,
     direct_shebang_arguments: Option<&[String]>,
     allow_env_s_transport: bool,
     format: OutputFormat,
@@ -412,11 +416,7 @@ fn load_path_operator_config(
     let operator_fixities = match project.operator_fixity_table(
         file.source(),
         &argv_atoms,
-        std::iter::empty::<(
-            String,
-            aven_parser::OperatorPrecedence,
-            aven_parser::OperatorAssociativity,
-        )>(),
+        host.operator_fixities(),
         direct_shebang_arguments,
     ) {
         Ok(operator_fixities) => operator_fixities,
@@ -443,6 +443,30 @@ fn is_trivial_value(value: &aven_eval::Value) -> bool {
     value.is_unit() || matches!(value, aven_eval::Value::Record(fields) if fields.is_empty())
 }
 
+/// Custom operator fixity contributed by the CLI platform.
+///
+/// Fixity decides how the entry parses, so `check` and `fmt` must see exactly
+/// what `run` sees — otherwise a platform operator would run fine but fail to
+/// check, or reformat into something that no longer parses. Keeping the
+/// registrations in one function shared by all three commands is what makes
+/// that agreement structural rather than a thing to remember.
+fn register_platform_operators(host: &mut aven_host::Host) {
+    // The stock CLI platform declares no custom operators yet; an embedder
+    // adding `host.register_operator(..)` here gets it in all three commands.
+    let _ = host;
+}
+
+/// A host carrying only what parsing needs: the platform's operator fixity.
+///
+/// `check` and `fmt` take the standard platform's *types* from
+/// [`aven_host::standard_check_host_globals`] but never evaluate, so they skip
+/// the IO registrations `build_host` performs.
+fn parse_only_host() -> aven_host::Host {
+    let mut host = aven_host::Host::new();
+    register_platform_operators(&mut host);
+    host
+}
+
 /// Build the host registry that feeds both `run` (values) and `check` (types).
 ///
 /// The CLI owns the concrete IO (the selected log sink, the root trace context,
@@ -451,6 +475,7 @@ fn is_trivial_value(value: &aven_eval::Value) -> bool {
 fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     let mut host = aven_host::Host::new();
 
+    register_platform_operators(&mut host);
     host.register_logger(config.log_sink()?, root_trace_context()?);
     host.register("dbg", dbg_native(), aven_host::dbg_type());
 
@@ -883,9 +908,17 @@ fn layout(path: &Path) -> Result<()> {
 }
 
 fn fmt(path: &Path, check: bool, operators: &[String]) -> Result<()> {
+    let host = parse_only_host();
     let roots = aven_compiler::ModuleRoots::discover(path);
-    let configured =
-        load_path_operator_config(path, &roots, operators, None, false, OutputFormat::Text)?;
+    let configured = load_path_operator_config(
+        path,
+        &roots,
+        operators,
+        &host,
+        None,
+        false,
+        OutputFormat::Text,
+    )?;
     let file = configured.file;
     let formatted =
         match aven_fmt::format_source_with_fixities(file.source(), &configured.operator_fixities) {
@@ -1116,6 +1149,20 @@ mod tests {
         assert_eq!(
             host.check_host_globals().statics,
             aven_host::standard_check_host_globals().statics
+        );
+        Ok(())
+    }
+
+    /// `run` parses with `build_host`'s fixity while `check` and `fmt` parse
+    /// with `parse_only_host`'s. If those ever diverge, a platform operator
+    /// would run but fail to check, so they must stay identical. Both are empty
+    /// today; this fails the moment a `register_operator` call is added to
+    /// `build_host` directly instead of to `register_platform_operators`.
+    #[test]
+    fn check_and_run_agree_on_platform_operator_fixity() -> Result<()> {
+        assert_eq!(
+            parse_only_host().operator_fixities(),
+            build_host(&RunConfig::default())?.operator_fixities()
         );
         Ok(())
     }

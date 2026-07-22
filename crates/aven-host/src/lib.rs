@@ -18,10 +18,12 @@ mod toml_format;
 mod yaml;
 
 use std::collections::HashMap;
+use std::fmt;
 use std::rc::Rc;
 
 use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals, Type};
 
+pub use aven_parser::{OperatorAssociativity, OperatorPrecedence};
 pub use marshal::{AvenMarshal, IntoHostFn};
 /// The Aven type of the platform `now` value: `() -> Instant`.
 pub use temporal::now_type;
@@ -33,6 +35,39 @@ pub use temporal::zone_type;
 pub use aven_check::build;
 use aven_eval::Value;
 use aven_eval::logging::{LogSink, TraceContext, logger};
+use aven_parser::{is_custom_operator_token, is_reserved_or_fixed_operator};
+
+/// Why a platform operator-fixity registration was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperatorRegistrationError {
+    InvalidToken { token: String },
+    ReservedToken { token: String },
+    Duplicate { token: String },
+}
+
+impl fmt::Display for OperatorRegistrationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidToken { token } => {
+                write!(formatter, "invalid custom operator token `{token}`")
+            }
+            Self::ReservedToken { token } => {
+                write!(
+                    formatter,
+                    "cannot register fixity for reserved operator `{token}`"
+                )
+            }
+            Self::Duplicate { token } => {
+                write!(
+                    formatter,
+                    "operator `{token}` is already registered by this host"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for OperatorRegistrationError {}
 
 /// A name registered with both a runtime value and an Aven type.
 struct TypedEntry {
@@ -87,6 +122,13 @@ struct ComptimeResolverEntry {
     comptime_params: Vec<HostComptimeParam>,
 }
 
+/// A custom operator fixity registered by the embedding platform.
+struct OperatorFixityRegistration {
+    token: String,
+    precedence: OperatorPrecedence,
+    associativity: OperatorAssociativity,
+}
+
 /// Registry of host/library globals seeded into the evaluator and the checker.
 #[derive(Default)]
 pub struct Host {
@@ -96,6 +138,7 @@ pub struct Host {
     statics: Vec<StaticsEntry>,
     comptime: Vec<ComptimeEntry>,
     comptime_resolvers: Vec<ComptimeResolverEntry>,
+    operator_fixities: Vec<OperatorFixityRegistration>,
     clock_registered: bool,
     zones_registered: bool,
 }
@@ -114,6 +157,53 @@ impl Host {
             value,
             ty,
         });
+    }
+
+    /// Register custom infix fixity supplied by this platform. This affects
+    /// parsing only; it does not add an Aven value or checker declaration.
+    pub fn register_operator(
+        &mut self,
+        token: impl Into<String>,
+        precedence: OperatorPrecedence,
+        associativity: OperatorAssociativity,
+    ) -> Result<(), OperatorRegistrationError> {
+        let token = token.into();
+        if !is_custom_operator_token(&token) {
+            return Err(if is_reserved_or_fixed_operator(&token) {
+                OperatorRegistrationError::ReservedToken { token }
+            } else {
+                OperatorRegistrationError::InvalidToken { token }
+            });
+        }
+        if self
+            .operator_fixities
+            .iter()
+            .any(|registration| registration.token == token)
+        {
+            return Err(OperatorRegistrationError::Duplicate { token });
+        }
+
+        self.operator_fixities.push(OperatorFixityRegistration {
+            token,
+            precedence,
+            associativity,
+        });
+        Ok(())
+    }
+
+    /// Platform fixity declarations in stable registration order, suitable for
+    /// passing to `ProjectConfig::operator_fixity_table`.
+    pub fn operator_fixities(&self) -> Vec<(String, OperatorPrecedence, OperatorAssociativity)> {
+        self.operator_fixities
+            .iter()
+            .map(|registration| {
+                (
+                    registration.token.clone(),
+                    registration.precedence,
+                    registration.associativity,
+                )
+            })
+            .collect()
     }
 
     /// Escape hatch for a value whose type is not registered yet. Runs but is NOT
@@ -1030,6 +1120,84 @@ mod tests {
 
         let check = host.check_globals();
         assert_eq!(check, vec![("answer".to_owned(), build::int())]);
+    }
+
+    #[test]
+    fn register_operator_preserves_fixity_registration_order() {
+        let mut host = Host::new();
+        host.register_operator(
+            "**",
+            OperatorPrecedence::Exponentiation,
+            OperatorAssociativity::Right,
+        )
+        .expect("custom operator should register");
+        host.register_operator(
+            "$$",
+            OperatorPrecedence::Multiplicative,
+            OperatorAssociativity::Left,
+        )
+        .expect("second custom operator should register");
+
+        assert_eq!(
+            host.operator_fixities(),
+            vec![
+                (
+                    "**".to_owned(),
+                    OperatorPrecedence::Exponentiation,
+                    OperatorAssociativity::Right,
+                ),
+                (
+                    "$$".to_owned(),
+                    OperatorPrecedence::Multiplicative,
+                    OperatorAssociativity::Left,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn register_operator_rejects_invalid_reserved_and_duplicate_tokens() {
+        let mut host = Host::new();
+
+        assert_eq!(
+            host.register_operator(
+                "word",
+                OperatorPrecedence::Additive,
+                OperatorAssociativity::Left,
+            ),
+            Err(OperatorRegistrationError::InvalidToken {
+                token: "word".to_owned(),
+            })
+        );
+        for token in ["+", "==", "|>"] {
+            assert_eq!(
+                host.register_operator(
+                    token,
+                    OperatorPrecedence::Additive,
+                    OperatorAssociativity::Left,
+                ),
+                Err(OperatorRegistrationError::ReservedToken {
+                    token: token.to_owned(),
+                })
+            );
+        }
+
+        host.register_operator(
+            "**",
+            OperatorPrecedence::Exponentiation,
+            OperatorAssociativity::Right,
+        )
+        .expect("custom operator should register");
+        assert_eq!(
+            host.register_operator(
+                "**",
+                OperatorPrecedence::Exponentiation,
+                OperatorAssociativity::Right,
+            ),
+            Err(OperatorRegistrationError::Duplicate {
+                token: "**".to_owned(),
+            })
+        );
     }
 
     #[test]
