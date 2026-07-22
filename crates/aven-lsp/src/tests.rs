@@ -85,7 +85,7 @@ fn analyze_file_document(
     source: impl Into<String>,
 ) -> Arc<ParsedDocument> {
     store.set_document(uri.clone(), 1, source.into());
-    let (document, overlay) = store.semantic_input(uri).expect("expected semantic input");
+    let (document, overlay, _) = store.semantic_input(uri).expect("expected semantic input");
     let analysis = analyze_document_semantics_for_uri(uri, &document, &overlay);
     assert!(store.set_semantic(uri, 1, analysis));
     store.document(uri).expect("expected stored document")
@@ -1596,7 +1596,7 @@ fn file_backed_semantic_diagnostics_use_entry_buffer_overlay() {
         1,
         "dep = import(\"./dep\")\nvalue : Int = dep.value\n{ value }\n".to_owned(),
     );
-    let (document, overlay) = store
+    let (document, overlay, _) = store
         .semantic_input(&main_uri)
         .expect("expected semantic input");
 
@@ -1623,13 +1623,146 @@ fn file_backed_semantic_diagnostics_use_dependency_buffer_overlay() {
         1,
         "dep = import(\"./dep\")\nvalue : Int = dep.value\n{ value }\n".to_owned(),
     );
-    let (document, overlay) = store
+    let (document, overlay, _) = store
         .semantic_input(&main_uri)
         .expect("expected semantic input");
 
     let semantic = analyze_document_semantics_for_uri(&main_uri, &document, &overlay);
 
     assert_no_aven_diagnostics(&semantic.diagnostics);
+}
+
+#[test]
+fn file_backed_document_uses_manifest_custom_operator_fixity_before_parsing() {
+    let dir = TempDir::new("lsp-manifest-custom-operator");
+    write(
+        dir.path(),
+        "Aven.toml",
+        "[operators]\n\"**\" = { precedence = \"^\", associativity = \"right\" }\n",
+    );
+    let uri = file_uri(&dir.path().join("main.av"));
+    let mut store = DocumentStore::default();
+    store.set_document(uri.clone(), 1, "value = 2 ** 3\n".to_owned());
+
+    let document = store.document(&uri).expect("expected stored document");
+    assert_no_aven_diagnostics(document.parse_diagnostics());
+}
+
+#[test]
+fn file_backed_document_uses_shebang_custom_operator_fixity_before_parsing() {
+    let dir = TempDir::new("lsp-shebang-custom-operator");
+    let uri = file_uri(&dir.path().join("script.av"));
+    let mut store = DocumentStore::default();
+    store.set_document(
+        uri.clone(),
+        1,
+        "#!/usr/bin/env -S aven run --operator=**:^:right\nvalue = 2 ** 3\n".to_owned(),
+    );
+
+    let document = store.document(&uri).expect("expected stored document");
+    assert_no_aven_diagnostics(document.parse_diagnostics());
+}
+
+#[test]
+fn manifest_invalidation_reparses_open_documents_with_unchanged_source() {
+    let dir = TempDir::new("lsp-manifest-invalidation");
+    let manifest = "[operators]\n\"**\" = { precedence = \"^\", associativity = \"right\" }\n";
+    write(dir.path(), "Aven.toml", manifest);
+    let uri = file_uri(&dir.path().join("main.av"));
+    let mut store = DocumentStore::default();
+    store.set_document(uri.clone(), 1, "value = 2 ** 3\n".to_owned());
+    let first = store.document(&uri).expect("expected first document");
+
+    write(
+        dir.path(),
+        "Aven.toml",
+        "[operators]\n\"**\" = { precedence = \"*\", associativity = \"left\" }\n",
+    );
+    assert_eq!(store.invalidate_project_contexts(), vec![(uri.clone(), 1)]);
+    let reparsed = store.document(&uri).expect("expected reparsed document");
+
+    assert!(!Arc::ptr_eq(&first, &reparsed));
+    assert_ne!(
+        first.parse_output().operator_fixity_fingerprint,
+        reparsed.parse_output().operator_fixity_fingerprint
+    );
+}
+
+#[test]
+fn dependency_custom_infix_diagnostic_is_retained_for_the_dependency_uri() {
+    let dir = TempDir::new("lsp-dependency-custom-operator");
+    write(
+        dir.path(),
+        "Aven.toml",
+        "[operators]\n\"**\" = { precedence = \"^\", associativity = \"right\" }\n",
+    );
+    write(dir.path(), "dep.av", "value = 2 ** 3\n");
+    write(dir.path(), "main.av", "");
+    let main_uri = file_uri(&dir.path().join("main.av"));
+    let dep_uri = file_uri(&dir.path().join("dep.av"));
+    let mut store = DocumentStore::default();
+    let document =
+        analyze_file_document(&mut store, &main_uri, "dep = import(\"./dep\")\n{ dep }\n");
+    assert!(document.has_semantic());
+    let dependency = store.dependency_diagnostics(&main_uri);
+    let (_, diagnostics) = dependency
+        .into_iter()
+        .find(|(uri, _)| *uri == dep_uri)
+        .unwrap_or_else(|| panic!("expected dependency diagnostics for {dep_uri}"));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code.as_ref(),
+            Some(NumberOrString::String(code)) if code == codes::parse::CUSTOM_INFIX_NOT_ROOT
+        )
+    }));
+}
+
+#[test]
+fn bare_custom_infix_hover_and_definition_resolve_to_its_method() {
+    let dir = TempDir::new("lsp-custom-operator-symbols");
+    write(
+        dir.path(),
+        "Aven.toml",
+        "[operators]\n\"**\" = { precedence = \"^\", associativity = \"right\" }\n",
+    );
+    let uri = file_uri(&dir.path().join("main.av"));
+    let source = concat!(
+        "Scalar = {\n",
+        "  value: Float\n",
+        "  **(other: Scalar): Scalar => Scalar({ value: .value ^ other.value })\n",
+        "}\n",
+        "left = Scalar({ value: 2.0 })\n",
+        "right = Scalar({ value: 3.0 })\n",
+        "value = left ** right\n",
+    );
+    let mut store = DocumentStore::default();
+    let document = analyze_file_document(&mut store, &uri, source);
+    let operator_offset = source.rfind("**").expect("expected custom infix");
+    let operator_position = to_lsp_position(
+        document
+            .file()
+            .line_index()
+            .offset_to_position(document.source(), operator_offset),
+    );
+
+    let hover = hover_at_position(&document, operator_position).expect("expected hover");
+    let HoverContents::Markup(markup) = hover.contents else {
+        panic!("expected markup hover");
+    };
+    assert!(markup.value.contains("left.** :"), "{}", markup.value);
+
+    let location =
+        definition_location(&document, uri, operator_position, None).expect("expected definition");
+    let declaration_offset = source.find("**(").expect("expected method declaration");
+    assert_eq!(
+        location.range.start,
+        to_lsp_position(
+            document
+                .file()
+                .line_index()
+                .offset_to_position(document.source(), declaration_offset)
+        )
+    );
 }
 
 #[test]
@@ -1642,7 +1775,7 @@ fn file_backed_documents_resolve_the_std_library() {
     let main_uri = file_uri(&dir.path().join("main.av"));
     let mut store = DocumentStore::default();
     store.set_document(main_uri.clone(), 1, source.to_owned());
-    let (document, overlay) = store
+    let (document, overlay, _) = store
         .semantic_input(&main_uri)
         .expect("expected semantic input");
 
@@ -1666,7 +1799,7 @@ fn file_backed_semantic_diagnostics_report_missing_dependency() {
         1,
         "missing = import(\"./missing\")\n{ missing }\n".to_owned(),
     );
-    let (document, overlay) = store
+    let (document, overlay, _) = store
         .semantic_input(&main_uri)
         .expect("expected semantic input");
 

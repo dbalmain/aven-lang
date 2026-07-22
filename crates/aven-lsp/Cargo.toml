@@ -15,11 +15,11 @@ aven-core.workspace = true
 aven-fmt.workspace = true
 aven-host.workspace = true
 aven-parser.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tower-lsp.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true

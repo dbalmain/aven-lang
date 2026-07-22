@@ -279,8 +279,18 @@ impl DocumentSnapshot {
         DiagnosticReport::new(self.file.id, self.diagnostics().cloned().collect())
     }
 
-    fn matches(&self, revision: Revision, source: &str) -> bool {
-        self.revision == revision && self.source() == source
+    fn matches(
+        &self,
+        revision: Revision,
+        source: &str,
+        operator_fixities: &aven_parser::OperatorFixityTable,
+        role: aven_parser::ModuleRole,
+    ) -> bool {
+        self.revision == revision
+            && self.source() == source
+            && self.parse.role == role
+            && (role == aven_parser::ModuleRole::Dependency
+                || self.parse.operator_fixity_fingerprint == operator_fixities.fingerprint())
     }
 }
 
@@ -911,14 +921,34 @@ where
         revision: Revision,
         file: SourceFile,
     ) -> Arc<DocumentSnapshot> {
+        self.set_document_with_fixities(
+            key,
+            revision,
+            file,
+            &aven_parser::OperatorFixityTable::default(),
+            aven_parser::ModuleRole::Entry,
+        )
+    }
+
+    /// Store a document parsed in the supplied compilation role and fixity
+    /// environment. A cached snapshot is reusable only when that environment's
+    /// syntax fingerprint also matches.
+    pub fn set_document_with_fixities(
+        &mut self,
+        key: K,
+        revision: Revision,
+        file: SourceFile,
+        operator_fixities: &aven_parser::OperatorFixityTable,
+        role: aven_parser::ModuleRole,
+    ) -> Arc<DocumentSnapshot> {
         let previous = self.documents.get(&key);
         if let Some(document) = previous
-            && document.matches(revision, file.source())
+            && document.matches(revision, file.source(), operator_fixities, role)
         {
             return Arc::clone(document);
         }
 
-        let parse = aven_parser::parse_source(&file);
+        let parse = aven_parser::parse_source_with_fixities(&file, operator_fixities, role);
         let document = Arc::new(DocumentSnapshot::from_parse_reusing(
             revision,
             file,
@@ -933,10 +963,29 @@ where
     /// no stored snapshot already matches. Callers can check this before
     /// building a `SourceFile` to skip the line-index scan on no-op updates.
     pub fn needs_update(&self, key: &K, revision: Revision, source: &str) -> bool {
+        self.needs_update_with_fixities(
+            key,
+            revision,
+            source,
+            &aven_parser::OperatorFixityTable::default(),
+            aven_parser::ModuleRole::Entry,
+        )
+    }
+
+    /// Whether `set_document_with_fixities` would reparse for this key,
+    /// revision, source, and syntax environment.
+    pub fn needs_update_with_fixities(
+        &self,
+        key: &K,
+        revision: Revision,
+        source: &str,
+        operator_fixities: &aven_parser::OperatorFixityTable,
+        role: aven_parser::ModuleRole,
+    ) -> bool {
         !self
             .documents
             .get(key)
-            .is_some_and(|document| document.matches(revision, source))
+            .is_some_and(|document| document.matches(revision, source, operator_fixities, role))
     }
 
     pub fn document(&self, key: &K) -> Option<Arc<DocumentSnapshot>> {
@@ -987,11 +1036,26 @@ mod tests {
     use std::collections::HashSet;
 
     use aven_core::{FileId, SourceFile, Span, codes};
+    use aven_parser::{
+        OperatorAssociativity, OperatorFixity, OperatorFixityTable, OperatorOrigin,
+        OperatorPrecedence,
+    };
 
     use super::*;
 
     fn source_file(source: &str) -> SourceFile {
         SourceFile::new(FileId(0), "test.av", None, source)
+    }
+
+    fn operator_fixities(
+        precedence: OperatorPrecedence,
+        origin: OperatorOrigin,
+    ) -> OperatorFixityTable {
+        OperatorFixityTable::try_from_entries([(
+            "**".to_owned(),
+            OperatorFixity::new(precedence, OperatorAssociativity::Right, origin),
+        )])
+        .expect("a custom operator fixity is valid")
     }
 
     fn runtime_key(name: &str) -> DeclarationKey {
@@ -1226,6 +1290,56 @@ mod tests {
         assert!(!database.needs_update(&"file", Revision::new(1), "value = 1\n"));
         assert!(database.needs_update(&"file", Revision::new(2), "value = 1\n"));
         assert!(database.needs_update(&"file", Revision::new(1), "value = 2\n"));
+    }
+
+    #[test]
+    fn database_reparses_when_fixity_fingerprint_changes_but_not_when_origins_change() {
+        let mut database = CompilerDatabase::default();
+        let source = "value = 1 ** 2\n";
+        let shebang = operator_fixities(
+            OperatorPrecedence::Exponentiation,
+            OperatorOrigin::Shebang {
+                span: Span::new(0, 1),
+            },
+        );
+        let manifest = operator_fixities(
+            OperatorPrecedence::Exponentiation,
+            OperatorOrigin::Manifest {
+                path: "Aven.toml".into(),
+                span: Span::new(0, 1),
+            },
+        );
+        let changed = operator_fixities(
+            OperatorPrecedence::Additive,
+            OperatorOrigin::Shebang {
+                span: Span::new(0, 1),
+            },
+        );
+
+        let first = database.set_document_with_fixities(
+            "file",
+            Revision::new(1),
+            source_file(source),
+            &shebang,
+            aven_parser::ModuleRole::Entry,
+        );
+        let same_syntax = database.set_document_with_fixities(
+            "file",
+            Revision::new(1),
+            source_file(source),
+            &manifest,
+            aven_parser::ModuleRole::Entry,
+        );
+        let reparsed = database.set_document_with_fixities(
+            "file",
+            Revision::new(1),
+            source_file(source),
+            &changed,
+            aven_parser::ModuleRole::Entry,
+        );
+
+        assert!(Arc::ptr_eq(&first, &same_syntax));
+        assert!(!Arc::ptr_eq(&same_syntax, &reparsed));
     }
 
     #[test]

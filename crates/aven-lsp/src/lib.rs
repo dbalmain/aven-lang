@@ -11,16 +11,18 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, CompletionTextEdit, Diagnostic,
-    DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    DiagnosticSeverity, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidChangeWatchedFilesRegistrationOptions, DidOpenTextDocumentParams, DocumentFormattingParams,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FileSystemWatcher, GlobPattern,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
     InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind,
     MessageType, NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position, Range,
-    RenameParams, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolKind,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
+    Registration, RenameParams, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    SignatureInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    Url, WatchKind, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -58,6 +60,17 @@ struct DocumentStore {
     file_ids: HashMap<Url, FileId>,
     database: aven_compiler::CompilerDatabase<Url>,
     module_graphs: HashMap<Url, Arc<DocumentModuleGraph>>,
+    project_roots: HashMap<PathBuf, PathBuf>,
+    project_contexts: HashMap<PathBuf, ProjectContext>,
+}
+
+/// Per-project discovery result, cached so the ancestor walk and the manifest
+/// read do not run on every keystroke. Invalidated wholesale when a watched
+/// `Aven.toml` changes.
+#[derive(Debug, Clone)]
+struct ProjectContext {
+    roots: aven_compiler::ModuleRoots,
+    config: aven_compiler::ProjectConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +78,7 @@ struct DocumentModuleGraph {
     revision: aven_compiler::Revision,
     entry_path: PathBuf,
     nodes: HashMap<PathBuf, ModuleNodeCache>,
+    diagnostics: HashMap<PathBuf, Vec<AvenDiagnostic>>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,11 +104,24 @@ impl DocumentStore {
     fn set_document(&mut self, uri: Url, version: i32, text: String) -> FileId {
         let file_id = self.file_id_for(&uri);
         let revision = aven_compiler::Revision::from(version);
+        let operator_fixities = self.operator_fixities_for(&uri, &text);
 
-        if self.database.needs_update(&uri, revision, &text) {
+        if self.database.needs_update_with_fixities(
+            &uri,
+            revision,
+            &text,
+            &operator_fixities,
+            aven_parser::ModuleRole::Entry,
+        ) {
             let file = SourceFile::new(file_id, source_name(&uri), uri.to_file_path().ok(), text);
             self.module_graphs.remove(&uri);
-            self.database.set_document(uri, revision, file);
+            self.database.set_document_with_fixities(
+                uri,
+                revision,
+                file,
+                &operator_fixities,
+                aven_parser::ModuleRole::Entry,
+            );
         }
 
         file_id
@@ -107,8 +134,16 @@ impl DocumentStore {
     fn semantic_input(
         &self,
         uri: &Url,
-    ) -> Option<(Arc<ParsedDocument>, aven_compiler::SourceOverlay)> {
-        Some((self.document(uri)?, self.source_overlay()))
+    ) -> Option<(
+        Arc<ParsedDocument>,
+        aven_compiler::SourceOverlay,
+        aven_compiler::ModuleRoots,
+    )> {
+        Some((
+            self.document(uri)?,
+            self.source_overlay(),
+            self.module_roots_for(uri)?,
+        ))
     }
 
     fn source_overlay(&self) -> aven_compiler::SourceOverlay {
@@ -169,6 +204,28 @@ impl DocumentStore {
         (graph.revision == document.revision()).then(|| Arc::clone(graph))
     }
 
+    fn dependency_diagnostics(&self, uri: &Url) -> Vec<(Url, Vec<Diagnostic>)> {
+        let Some(graph) = self.module_graph(uri) else {
+            return Vec::new();
+        };
+        graph
+            .nodes
+            .iter()
+            .filter(|(path, _)| **path != graph.entry_path)
+            .filter_map(|(path, node)| {
+                let uri = Url::from_file_path(path).ok()?;
+                let diagnostics = graph
+                    .diagnostics
+                    .get(path)
+                    .into_iter()
+                    .flatten()
+                    .map(|diagnostic| to_lsp_diagnostic(&node.file, diagnostic))
+                    .collect();
+                Some((uri, diagnostics))
+            })
+            .collect()
+    }
+
     fn file_id_for(&mut self, uri: &Url) -> FileId {
         if let Some(id) = self.file_ids.get(uri).copied() {
             return id;
@@ -178,6 +235,90 @@ impl DocumentStore {
         self.file_ids.insert(uri.clone(), id);
         id
     }
+
+    fn operator_fixities_for(
+        &mut self,
+        uri: &Url,
+        source: &str,
+    ) -> aven_parser::OperatorFixityTable {
+        let Ok(path) = uri.to_file_path() else {
+            return operator_fixities(&aven_compiler::ProjectConfig::default(), source);
+        };
+        let entry_directory = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let project_root = self
+            .project_roots
+            .get(&entry_directory)
+            .cloned()
+            .unwrap_or_else(|| {
+                let roots = aven_compiler::ModuleRoots::discover(&path);
+                let root = roots.project.clone().unwrap_or(entry_directory.clone());
+                let config = aven_compiler::ProjectConfig::load(&roots).unwrap_or_default();
+                self.project_contexts
+                    .entry(root.clone())
+                    .or_insert(ProjectContext { roots, config });
+                self.project_roots.insert(entry_directory, root.clone());
+                root
+            });
+        let context = self
+            .project_contexts
+            .get(&project_root)
+            .expect("project discovery inserts a context for its root");
+        operator_fixities(&context.config, source)
+    }
+
+    fn module_roots_for(&self, uri: &Url) -> Option<aven_compiler::ModuleRoots> {
+        let path = uri.to_file_path().ok()?;
+        let entry_directory = path.parent()?;
+        let root = self.project_roots.get(entry_directory)?;
+        let roots = self.project_contexts.get(root)?.roots.clone();
+        Some(with_standard_library(roots))
+    }
+
+    fn invalidate_project_contexts(&mut self) -> Vec<(Url, i32)> {
+        self.project_roots.clear();
+        self.project_contexts.clear();
+        self.module_graphs.clear();
+        let documents = self
+            .file_ids
+            .keys()
+            .filter_map(|uri| {
+                let document = self.document(uri)?;
+                Some((
+                    uri.clone(),
+                    document.revision().as_i32(),
+                    document.source().to_owned(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (uri, version, source) in &documents {
+            self.set_document(uri.clone(), *version, source.clone());
+        }
+        documents
+            .into_iter()
+            .map(|(uri, version, _)| (uri, version))
+            .collect()
+    }
+}
+
+fn operator_fixities(
+    project: &aven_compiler::ProjectConfig,
+    source: &str,
+) -> aven_parser::OperatorFixityTable {
+    project
+        .operator_fixity_table(
+            source,
+            std::iter::empty::<&str>(),
+            std::iter::empty::<(
+                String,
+                aven_parser::OperatorPrecedence,
+                aven_parser::OperatorAssociativity,
+            )>(),
+            None,
+        )
+        .unwrap_or_default()
 }
 
 fn source_name(uri: &Url) -> String {
@@ -226,6 +367,21 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        let watchers = DidChangeWatchedFilesRegistrationOptions {
+            watchers: vec![FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/Aven.toml".to_owned()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            }],
+        };
+        let register_options = serde_json::to_value(watchers).ok();
+        let _ = self
+            .client
+            .register_capability(vec![Registration {
+                id: "aven-operator-config".to_owned(),
+                method: "workspace/didChangeWatchedFiles".to_owned(),
+                register_options,
+            }])
+            .await;
         self.client
             .log_message(MessageType::INFO, "Aven language server initialized")
             .await;
@@ -263,6 +419,18 @@ impl LanguageServer for Backend {
         self.set_document(uri.clone(), version, text);
         self.publish_diagnostics(uri.clone()).await;
         self.schedule_semantic_diagnostics(uri, version);
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        if params.changes.iter().any(|change| {
+            change
+                .uri
+                .to_file_path()
+                .ok()
+                .is_some_and(|path| path.file_name().is_some_and(|name| name == "Aven.toml"))
+        }) {
+            self.refresh_project_diagnostics().await;
+        }
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
@@ -424,18 +592,23 @@ impl Backend {
     /// first; compute once for the revision and store the result for later
     /// requests.
     fn document_with_semantics(&self, uri: &Url) -> Option<Arc<ParsedDocument>> {
-        let (document, overlay) = {
+        let (document, overlay, roots) = {
             let store = self.store.lock().ok()?;
             let document = store.document(uri)?;
             let needs_graph = uri.to_file_path().is_ok();
             if document.has_semantic() && (!needs_graph || store.module_graph(uri).is_some()) {
                 return Some(document);
             }
-            (document, store.source_overlay())
+            (
+                document,
+                store.source_overlay(),
+                store.module_roots_for(uri)?,
+            )
         };
 
         let version = document.revision().as_i32();
-        let analysis = analyze_document_semantics_for_uri(uri, &document, &overlay);
+        let analysis =
+            analyze_document_semantics_for_uri_with_roots(uri, &document, &overlay, &roots);
         self.store.lock().ok().and_then(|mut store| {
             if !store.set_semantic(uri, version, analysis) {
                 return None;
@@ -484,6 +657,18 @@ impl Backend {
             .publish_diagnostics(uri, document_diagnostics(&document), Some(version))
             .await;
     }
+
+    async fn refresh_project_diagnostics(&self) {
+        let documents = self
+            .store
+            .lock()
+            .ok()
+            .map_or_else(Vec::new, |mut store| store.invalidate_project_contexts());
+        for (uri, version) in documents {
+            self.publish_diagnostics(uri.clone()).await;
+            self.schedule_semantic_diagnostics(uri, version);
+        }
+    }
 }
 
 async fn publish_semantic_diagnostics(
@@ -492,7 +677,7 @@ async fn publish_semantic_diagnostics(
     uri: Url,
     version: i32,
 ) {
-    let Some((document, overlay)) = store
+    let Some((document, overlay, roots)) = store
         .lock()
         .ok()
         .and_then(|store| store.semantic_input(&uri))
@@ -504,7 +689,7 @@ async fn publish_semantic_diagnostics(
         return;
     }
 
-    let analysis = analyze_document_semantics_for_uri(&uri, &document, &overlay);
+    let analysis = analyze_document_semantics_for_uri_with_roots(&uri, &document, &overlay, &roots);
     let Some(document) = store.lock().ok().and_then(|mut store| {
         if !store.set_semantic(&uri, version, analysis) {
             return None;
@@ -515,9 +700,18 @@ async fn publish_semantic_diagnostics(
         return;
     };
 
+    let dependency_diagnostics = store
+        .lock()
+        .ok()
+        .map_or_else(Vec::new, |store| store.dependency_diagnostics(&uri));
     client
         .publish_diagnostics(uri, document_diagnostics(&document), Some(version))
         .await;
+    for (dependency_uri, diagnostics) in dependency_diagnostics {
+        client
+            .publish_diagnostics(dependency_uri, diagnostics, None)
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -527,15 +721,43 @@ fn analyze_document_semantics(document: &ParsedDocument) -> aven_compiler::Seman
     analyze_pathless_semantics(document, &globals)
 }
 
+#[cfg(test)]
 fn analyze_document_semantics_for_uri(
     uri: &Url,
     document: &ParsedDocument,
     overlay: &aven_compiler::SourceOverlay,
 ) -> DocumentSemanticAnalysis {
+    let roots = uri
+        .to_file_path()
+        .ok()
+        .as_deref()
+        .map(aven_compiler::ModuleRoots::discover)
+        .map(with_standard_library);
+    roots.map_or_else(
+        || {
+            analyze_document_semantics_for_uri_with_roots(
+                uri,
+                document,
+                overlay,
+                &aven_compiler::ModuleRoots::none(),
+            )
+        },
+        |roots| analyze_document_semantics_for_uri_with_roots(uri, document, overlay, &roots),
+    )
+}
+
+fn analyze_document_semantics_for_uri_with_roots(
+    uri: &Url,
+    document: &ParsedDocument,
+    overlay: &aven_compiler::SourceOverlay,
+    roots: &aven_compiler::ModuleRoots,
+) -> DocumentSemanticAnalysis {
     // Module graph needs the full set so `std/clock`/`std/zones` can pun
     // library-only names; per-node filtering strips them from user modules.
     let full_globals = aven_host::standard_check_host_globals();
-    if let Some(analysis) = module_semantics_for_document(uri, document, &full_globals, overlay) {
+    if let Some(analysis) =
+        module_semantics_for_document(uri, document, &full_globals, overlay, roots)
+    {
         return analysis;
     }
 
@@ -584,8 +806,8 @@ fn analyze_pathless_semantics(
 
 /// Module roots for file-backed documents: filesystem discovery plus the
 /// embedded standard library, matching the CLI's `check`/`run` wiring.
-fn discover_module_roots(entry: &Path) -> aven_compiler::ModuleRoots {
-    aven_compiler::ModuleRoots::discover(entry)
+fn with_standard_library(roots: aven_compiler::ModuleRoots) -> aven_compiler::ModuleRoots {
+    roots
         .with_library(
             aven_host::STD_LIBRARY_NAME,
             aven_host::standard_std_library(),
@@ -599,16 +821,16 @@ fn module_semantics_for_document(
     document: &ParsedDocument,
     globals: &aven_compiler::HostGlobals,
     overlay: &aven_compiler::SourceOverlay,
+    roots: &aven_compiler::ModuleRoots,
 ) -> Option<DocumentSemanticAnalysis> {
     let entry_path = fs::canonicalize(uri.to_file_path().ok()?).ok()?;
-    let roots = discover_module_roots(&entry_path);
     let output =
         aven_compiler::check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
             &entry_path,
             globals,
             overlay,
             Some(document.parse_output()),
-            &roots,
+            roots,
         )
         .ok()?;
     let entry_node = output
@@ -630,7 +852,12 @@ fn module_semantics_for_document(
     let recursive_type_unfoldings = entry_node.semantic.recursive_type_unfoldings.clone();
     let builtin_methods = entry_node.semantic.builtin_methods.clone();
     let named_families = entry_node.semantic.named_families.clone();
-    let module_graph = module_graph_cache(document.revision(), entry_path, output.nodes);
+    let module_graph = module_graph_cache(
+        document.revision(),
+        entry_path,
+        output.nodes,
+        output.reports,
+    );
 
     Some(DocumentSemanticAnalysis {
         diagnostics,
@@ -647,10 +874,19 @@ fn module_graph_cache(
     revision: aven_compiler::Revision,
     entry_path: PathBuf,
     nodes: Vec<aven_compiler::ModuleNodeCheckOutput>,
+    reports: Vec<aven_core::DiagnosticReport>,
 ) -> DocumentModuleGraph {
+    let diagnostics_by_file = reports
+        .into_iter()
+        .map(|report| (report.file_id, report.diagnostics))
+        .collect::<HashMap<_, _>>();
+    let mut diagnostics = HashMap::new();
     let nodes = nodes
         .into_iter()
         .map(|node| {
+            if let Some(node_diagnostics) = diagnostics_by_file.get(&node.file.id) {
+                diagnostics.insert(node.canonical_path.clone(), node_diagnostics.clone());
+            }
             (
                 node.canonical_path,
                 ModuleNodeCache {
@@ -667,17 +903,18 @@ fn module_graph_cache(
         revision,
         entry_path,
         nodes,
+        diagnostics,
     }
 }
 
 fn document_diagnostics(document: &ParsedDocument) -> Vec<Diagnostic> {
     document
         .diagnostics()
-        .map(|diagnostic| to_lsp_diagnostic(document, diagnostic))
+        .map(|diagnostic| to_lsp_diagnostic(document.file(), diagnostic))
         .collect()
 }
 
-fn to_lsp_diagnostic(document: &ParsedDocument, diagnostic: &AvenDiagnostic) -> Diagnostic {
+fn to_lsp_diagnostic(document: &SourceFile, diagnostic: &AvenDiagnostic) -> Diagnostic {
     let span = diagnostic
         .labels
         .first()
@@ -685,7 +922,7 @@ fn to_lsp_diagnostic(document: &ParsedDocument, diagnostic: &AvenDiagnostic) -> 
         .unwrap_or_else(|| Span::point(0));
 
     Diagnostic {
-        range: span_to_range(document, span),
+        range: span_to_range_for_file(document, span),
         severity: Some(match diagnostic.severity {
             Severity::Error => DiagnosticSeverity::ERROR,
             Severity::Warning => DiagnosticSeverity::WARNING,
@@ -2571,6 +2808,22 @@ fn identifier_hover_at_position(
 ) -> Option<HoverCandidate> {
     let identifier = identifier_at_position(document, position)?;
 
+    if let Some((receiver, symbol)) = binary_method_symbol_at_position(document, position) {
+        return Some(HoverCandidate {
+            span: identifier.span,
+            hover: Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!(
+                        "```aven\n{}.{} : {}\n```",
+                        receiver.name, symbol.member, symbol.signature
+                    ),
+                }),
+                range: Some(span_to_range(document, identifier.span)),
+            },
+        });
+    }
+
     if let Some(field_access) = field_access_identifier_at_position(document, position)
         && field_access.field.span == identifier.span
         && let Some(field_type) = field_type_for_access(document, &field_access)
@@ -2998,12 +3251,7 @@ fn identifier_from_token(token: &aven_parser::Token) -> Option<IdentifierAtPosit
             name: name.clone(),
             span: token.span,
         }),
-        aven_parser::TokenKind::Operator(name)
-            if matches!(
-                name.as_str(),
-                "+" | "-" | "*" | "/" | "%" | "^" | "<" | "<=" | ">" | ">="
-            ) =>
-        {
+        aven_parser::TokenKind::Operator(name) if aven_parser::is_method_operator(name) => {
             Some(IdentifierAtPosition {
                 name: name.clone(),
                 span: token.span,
@@ -3140,6 +3388,10 @@ fn named_method_declaration_hover(document: &ParsedDocument, position: Position)
 }
 
 fn named_method_definition_span(document: &ParsedDocument, position: Position) -> Option<Span> {
+    if let Some((_, symbol)) = binary_method_symbol_at_position(document, position) {
+        return Some(symbol.name_span);
+    }
+
     // Call / field-access site: `money.toText` / `money.toText()` → method decl.
     if let Some(access) = field_access_identifier_at_position(document, position)
         && let Some(owner) = receiver_family_owner(document, &access.receiver)
@@ -3157,6 +3409,75 @@ fn named_method_definition_span(document: &ParsedDocument, position: Position) -
     let identifier = identifier_at_position(document, position)?;
     let symbol = named_method_at_span(document, identifier.span)?;
     Some(symbol.name_span)
+}
+
+fn binary_method_symbol_at_position(
+    document: &ParsedDocument,
+    position: Position,
+) -> Option<(IdentifierAtPosition, NamedMethodSymbol)> {
+    let offset = position_to_offset(document, position)?;
+    let mut binary = None;
+    for item in &document.parse_output().module.items {
+        collect_binary_at_offset(item, offset, &mut binary);
+    }
+    let binary = binary?;
+    let aven_parser::ExprKind::Binary { left, operator, .. } = &binary.kind else {
+        return None;
+    };
+    let aven_parser::ExprKind::Name(name) = &left.kind else {
+        return None;
+    };
+    let receiver = IdentifierAtPosition {
+        name: name.clone(),
+        span: left.span,
+    };
+    let owner = receiver_family_owner(document, &receiver)?;
+    let symbol = named_method_symbols(document)
+        .into_iter()
+        .find(|symbol| symbol.owner == owner && symbol.member == *operator)?;
+    Some((receiver, symbol))
+}
+
+fn collect_binary_at_offset<'a>(
+    item: &'a aven_parser::Item,
+    offset: usize,
+    found: &mut Option<&'a aven_parser::Expr>,
+) {
+    let mut visit = |expr: &'a aven_parser::Expr| {
+        if let aven_parser::ExprKind::Binary { operator_span, .. } = &expr.kind
+            && offset >= operator_span.start
+            && offset <= operator_span.end
+        {
+            *found = Some(expr);
+        }
+        aven_parser::walk_expr_children(expr, &mut |child| {
+            collect_binary_in_expr(child, offset, found);
+        });
+    };
+    match item {
+        aven_parser::Item::Binding(binding) => visit(&binding.value),
+        aven_parser::Item::PatternBinding(binding) => visit(&binding.value),
+        aven_parser::Item::SpreadBinding(binding) => visit(&binding.value),
+        aven_parser::Item::MethodAttachment(attachment) => visit(&attachment.owner),
+        aven_parser::Item::Signature(signature) => visit(&signature.annotation),
+        aven_parser::Item::Expr(expr) => visit(expr),
+    }
+}
+
+fn collect_binary_in_expr<'a>(
+    expr: &'a aven_parser::Expr,
+    offset: usize,
+    found: &mut Option<&'a aven_parser::Expr>,
+) {
+    if let aven_parser::ExprKind::Binary { operator_span, .. } = &expr.kind
+        && offset >= operator_span.start
+        && offset <= operator_span.end
+    {
+        *found = Some(expr);
+    }
+    aven_parser::walk_expr_children(expr, &mut |child| {
+        collect_binary_in_expr(child, offset, found);
+    });
 }
 
 fn receiver_family_owner(
@@ -3200,10 +3521,11 @@ fn is_trivia_token(token: &aven_parser::Token) -> bool {
 }
 
 fn span_to_range(document: &ParsedDocument, span: Span) -> Range {
-    let (start, end) = document
-        .file()
-        .line_index()
-        .span_to_range(document.source(), span);
+    span_to_range_for_file(document.file(), span)
+}
+
+fn span_to_range_for_file(file: &SourceFile, span: Span) -> Range {
+    let (start, end) = file.line_index().span_to_range(file.source(), span);
 
     Range {
         start: to_lsp_position(start),
