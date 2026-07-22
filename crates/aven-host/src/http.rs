@@ -723,8 +723,8 @@ fn http_transport_error_tag(error: &ureq::Error) -> &'static str {
 mod tests {
     use super::*;
 
-    use std::io::Write;
-    use std::net::TcpListener;
+    use std::io::{ErrorKind, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::thread;
 
     use aven_check::{RowEntry, RowTail, Type, record_fields, variant_tags};
@@ -1137,11 +1137,17 @@ mod tests {
 
     #[test]
     fn http_get_timeout_plumbs_to_ureq() {
+        // The client timeout is global — it covers connect as well as the wait
+        // for a response. It must therefore sit well above loopback connect
+        // latency, or a loaded machine times out before connecting and the
+        // server never sees the request this test is about. The server delay
+        // stays comfortably above the timeout so the deadline still fires while
+        // awaiting the response.
         let (url, handle) = spawn_one_request_server_with_delay(
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-            Duration::from_millis(100),
+            Duration::from_millis(300),
         );
-        let value = run(&format!("Http.get(\"{url}/slow\", {{ timeout: 1 }})\n"));
+        let value = run(&format!("Http.get(\"{url}/slow\", {{ timeout: 50 }})\n"));
         let _request = handle.join().expect("server thread completes");
 
         let Value::Tag { name, payload } = value else {
@@ -1390,6 +1396,13 @@ mod tests {
             .unwrap_or("")
     }
 
+    /// Ceiling on every blocking step of the one-request test server. Each test
+    /// ends in `handle.join()`, so a client that never connects — or connects
+    /// and stalls — would otherwise wedge the whole suite with no timeout to
+    /// break it. Well above any legitimate loopback latency, so exceeding it is
+    /// a real failure rather than a slow machine.
+    const SERVER_DEADLINE: Duration = Duration::from_secs(5);
+
     fn spawn_one_request_server(response: &'static str) -> (String, thread::JoinHandle<String>) {
         spawn_one_request_server_with_delay(response, Duration::ZERO)
     }
@@ -1401,11 +1414,19 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
         let addr = listener.local_addr().expect("read local address");
         let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept one request");
+            let mut stream = accept_within_deadline(&listener);
             let mut request = Vec::new();
             let mut buffer = [0; 512];
             loop {
-                let read = stream.read(&mut buffer).expect("read request");
+                let read = match stream.read(&mut buffer) {
+                    Ok(read) => read,
+                    Err(error)
+                        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                    {
+                        panic!("test server stalled reading the request after {SERVER_DEADLINE:?}")
+                    }
+                    Err(error) => panic!("read request: {error}"),
+                };
                 if read == 0 {
                     break;
                 }
@@ -1419,6 +1440,38 @@ mod tests {
             String::from_utf8_lossy(&request).to_string()
         });
         (format!("http://{addr}"), handle)
+    }
+
+    /// Accept the single expected connection, giving up after [`SERVER_DEADLINE`]
+    /// instead of blocking forever in `accept`.
+    fn accept_within_deadline(listener: &TcpListener) -> TcpStream {
+        listener
+            .set_nonblocking(true)
+            .expect("set test server non-blocking");
+        let deadline = Instant::now() + SERVER_DEADLINE;
+
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .expect("restore blocking test stream");
+                    stream
+                        .set_read_timeout(Some(SERVER_DEADLINE))
+                        .expect("set test stream read timeout");
+                    return stream;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "test server saw no connection within {SERVER_DEADLINE:?}; \
+                         the client most likely gave up before connecting"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("accept one request: {error}"),
+            }
+        }
     }
 
     fn value_record_field<'a>(fields: &'a [(String, Value)], name: &str) -> &'a Value {
