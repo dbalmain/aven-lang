@@ -1169,7 +1169,7 @@ fn declaration_symbol(
 ) -> DocumentSymbol {
     DocumentSymbol {
         name: declaration.name.clone(),
-        detail: declaration_detail(declaration),
+        detail: declaration_detail(document, declaration),
         kind: symbol_kind(declaration),
         tags: None,
         deprecated: None,
@@ -1179,7 +1179,10 @@ fn declaration_symbol(
     }
 }
 
-fn declaration_detail(declaration: &aven_parser::Declaration) -> Option<String> {
+fn declaration_detail(
+    document: &ParsedDocument,
+    declaration: &aven_parser::Declaration,
+) -> Option<String> {
     if declaration.is_annotated {
         return Some("binding with signature".to_owned());
     }
@@ -1188,7 +1191,17 @@ fn declaration_detail(declaration: &aven_parser::Declaration) -> Option<String> 
         return Some("signature".to_owned());
     }
 
-    None
+    // Prefer an exact name-span type (value bindings). Comptime type aliases
+    // such as `User = { name: Text }` only appear in type_definitions.
+    if let Some(inferred) = document.inferred_type_at_exact_span(declaration.name_span)
+        && !aven_compiler::type_contains_deferred(&inferred.ty)
+    {
+        return Some(inferred.render());
+    }
+    document
+        .type_definition(&declaration.name)
+        .filter(|ty| !aven_compiler::type_contains_deferred(ty))
+        .map(aven_compiler::Type::render)
 }
 
 fn symbol_kind(declaration: &aven_parser::Declaration) -> SymbolKind {
@@ -2414,13 +2427,18 @@ fn push_inlay_hint_for_name_span(
         return;
     }
 
-    let Some(ty) = document.type_at(name_span) else {
+    // Exact span only: `type_at` uses containment and would otherwise paint a
+    // binder with an enclosing expression type (e.g. the whole lambda).
+    let Some(inferred) = document.inferred_type_at_exact_span(name_span) else {
         return;
     };
+    if aven_compiler::type_contains_deferred(&inferred.ty) {
+        return;
+    }
 
     hints.push(InlayHint {
         position: name_range.end,
-        label: InlayHintLabel::String(format!(": {}", ty.render())),
+        label: InlayHintLabel::String(format!(": {}", inferred.render())),
         kind: Some(InlayHintKind::TYPE),
         text_edits: None,
         tooltip: None,

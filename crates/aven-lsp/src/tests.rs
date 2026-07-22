@@ -228,6 +228,28 @@ fn assert_inlay_labels_have_no_type_hole_in(hints: &[InlayHint], context: &str) 
     asserted
 }
 
+fn inlay_label_at(hints: &[InlayHint], pos: Position) -> Option<&str> {
+    hints.iter().find_map(|hint| {
+        if hint.position != pos {
+            return None;
+        }
+        match &hint.label {
+            InlayHintLabel::String(label) => Some(label.as_str()),
+            _ => None,
+        }
+    })
+}
+
+fn inlay_labels(hints: &[InlayHint]) -> Vec<(Position, String)> {
+    hints
+        .iter()
+        .filter_map(|hint| match &hint.label {
+            InlayHintLabel::String(label) => Some((hint.position, label.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn type_hole_helper_distinguishes_optional_sugar_from_deferred_types() {
     for rendered in [
@@ -809,6 +831,49 @@ fn document_symbols_keep_unmatched_signatures() {
     assert_eq!(symbols[0].detail.as_deref(), Some("signature"));
     assert_eq!(symbols[1].name, "other");
     assert_eq!(symbols[1].kind, SymbolKind::VARIABLE);
+}
+
+#[test]
+fn document_symbols_include_inferred_type_details() {
+    let document = parsed_document_with_semantics(
+        "User = { name: Text }\nvalue = 1\ndouble = (x: Int) => x\n",
+    );
+    let symbols = document_symbols(&document);
+
+    assert_eq!(symbols.len(), 3);
+    assert_eq!(symbols[0].name, "User");
+    assert_eq!(symbols[0].detail.as_deref(), Some("{ name: Text }"));
+    assert_no_type_hole_in(
+        symbols[0].detail.as_deref().expect("User detail"),
+        "User detail",
+    );
+
+    assert_eq!(symbols[1].name, "value");
+    assert_eq!(symbols[1].detail.as_deref(), Some("1"));
+    assert_no_type_hole_in(
+        symbols[1].detail.as_deref().expect("value detail"),
+        "value detail",
+    );
+
+    assert_eq!(symbols[2].name, "double");
+    assert_eq!(symbols[2].detail.as_deref(), Some("Int -> Int"));
+    assert_no_type_hole_in(
+        symbols[2].detail.as_deref().expect("double detail"),
+        "double detail",
+    );
+}
+
+#[test]
+fn document_symbols_keep_static_details_over_types() {
+    let document =
+        parsed_document_with_semantics("double : (Int) -> Int\ndouble = (x) => x\nvalue : Int\n");
+    let symbols = document_symbols(&document);
+
+    assert_eq!(symbols.len(), 2);
+    assert_eq!(symbols[0].name, "double");
+    assert_eq!(symbols[0].detail.as_deref(), Some("binding with signature"));
+    assert_eq!(symbols[1].name, "value");
+    assert_eq!(symbols[1].detail.as_deref(), Some("signature"));
 }
 
 #[test]
@@ -1714,11 +1779,234 @@ fn signature_help_outside_call_returns_none() {
 }
 
 #[test]
+fn signature_help_at_optional_host_param_locks_active_index() {
+    // Host defaults render as `= _` in hover, but signature help labels are
+    // built from function_signature param types only (no default encoding).
+    let document = parsed_document_with_semantics("res = Http.get(\"u\")\n");
+    let Some(help) = signature_help_at_position(&document, position(0, 15)) else {
+        panic!("expected signature help inside Http.get(");
+    };
+    assert_eq!(help.active_parameter, Some(0));
+    assert!(
+        help.signatures[0]
+            .label
+            .starts_with("Http.get(Text, { .. })"),
+        "unexpected label: {}",
+        help.signatures[0].label
+    );
+    assert!(
+        !help.signatures[0].label.contains("= _"),
+        "signature help currently omits default markers; got {}",
+        help.signatures[0].label
+    );
+    assert_no_type_hole_in(&help.signatures[0].label, "Http.get signature help");
+
+    let document = parsed_document_with_semantics("res = Http.get(\"u\", )\n");
+    let Some(help) = signature_help_at_position(&document, position(0, 19)) else {
+        panic!("expected signature help after optional-arg comma");
+    };
+    assert_eq!(help.active_parameter, Some(1));
+    assert!(
+        help.signatures[0]
+            .label
+            .starts_with("Http.get(Text, { .. })"),
+        "unexpected label: {}",
+        help.signatures[0].label
+    );
+    assert!(
+        !help.signatures[0].label.contains("= _"),
+        "signature help currently omits default markers; got {}",
+        help.signatures[0].label
+    );
+    assert_no_type_hole_in(
+        &help.signatures[0].label,
+        "Http.get optional-arg signature help",
+    );
+}
+
+#[test]
+fn signature_help_nested_calls_use_enclosing_call_stack() {
+    let document = parsed_document_with_semantics(
+        "add : (Int, Int) -> Int\n\
+add = (a, b) => a + b\n\
+outer : (Int, Int) -> Int\n\
+outer = (x, y) => x\n\
+value = outer(add(1, 2), 3)\n",
+    );
+
+    // Cursor at the first-arg / comma boundary inside `add(1, 2)` (offset on
+    // the comma). Active index stays 0 until a comma's start is strictly
+    // before the cursor.
+    let Some(inner) = signature_help_at_position(&document, position(4, 19)) else {
+        panic!("expected signature help inside add(");
+    };
+    assert_eq!(inner.signatures[0].label, "add(Int, Int) -> Int");
+    assert_eq!(inner.active_parameter, Some(0));
+
+    // Second arg of outer call (`3`).
+    let Some(outer) = signature_help_at_position(&document, position(4, 26)) else {
+        panic!("expected signature help in outer call");
+    };
+    assert_eq!(outer.signatures[0].label, "outer(Int, Int) -> Int");
+    assert_eq!(outer.active_parameter, Some(1));
+}
+
+#[test]
+fn signature_help_trailing_comma_selects_next_parameter() {
+    let document = parsed_document_with_semantics(
+        "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, )\n",
+    );
+    // Cursor in the empty second-argument slot after the trailing comma.
+    let Some(help) = signature_help_at_position(&document, position(2, 15)) else {
+        panic!("expected signature help after trailing comma");
+    };
+    assert_eq!(help.signatures[0].label, "add(Int, Int) -> Int");
+    assert_eq!(help.active_parameter, Some(1));
+    assert_eq!(help.signatures[0].active_parameter, Some(1));
+}
+
+#[test]
+fn signature_help_trailing_comma_after_final_arg_advances_index() {
+    // Parser accepts a trailing comma after the last argument; active index
+    // advances past the final parameter (past-the-end is intentional).
+    let document = parsed_document_with_semantics(
+        "add : (Int, Int) -> Int\nadd = (a, b) => a + b\ntotal = add(1, 2,)\n",
+    );
+    assert!(document.parse_diagnostics().is_empty());
+    let Some(help) = signature_help_at_position(&document, position(2, 17)) else {
+        panic!("expected signature help after final trailing comma");
+    };
+    assert_eq!(help.signatures[0].label, "add(Int, Int) -> Int");
+    assert_eq!(help.active_parameter, Some(2));
+}
+
+#[test]
 fn inlay_hints_in_range_skip_annotated_bindings() {
     let document = parsed_document_with_semantics("x : Text = \"a\"\n");
     let hints = inlay_hints_in_range(&document, full_document_range(&document));
 
     assert!(hints.is_empty());
+}
+
+#[test]
+fn inlay_hints_lambda_params_annotated_skip_unannotated_show_type() {
+    // Annotated params must stay hint-free. Unannotated params only get a
+    // recorded type under a contextual signature (synthesis alone does not).
+    let document = parsed_document_with_semantics(
+        "double = (x: Int) => x\ntotal : Int -> Int\ntotal = (a) => a + 1\n",
+    );
+    let hints = inlay_hints_in_range(&document, full_document_range(&document));
+    assert_inlay_labels_have_no_type_hole_in(&hints, "lambda params");
+    // Full set: unannotated binding `double`, unannotated param `a` only.
+    // Annotated `x` and annotated-via-signature binding `total` are skipped.
+    assert_eq!(
+        inlay_labels(&hints),
+        vec![
+            (position(0, 6), ": Int -> Int".to_owned()),
+            (position(2, 10), ": Int".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn inlay_hints_do_not_paint_lambda_params_with_enclosing_function_type() {
+    // Without a contextual signature, unannotated params have no exact type
+    // entry. Containment-based lookup would wrongly show `Int -> Int` on `a`.
+    let document = parsed_document_with_semantics("total = (a) => a + 1\n");
+    let hints = inlay_hints_in_range(&document, full_document_range(&document));
+    assert_inlay_labels_have_no_type_hole_in(&hints, "unsigned lambda");
+    assert_eq!(
+        inlay_labels(&hints),
+        vec![(position(0, 5), ": Int -> Int".to_owned())]
+    );
+}
+
+#[test]
+fn inlay_hints_match_and_pattern_binders() {
+    let document = parsed_document_with_semantics(
+        "matched = @Some(1) ?>\n  @Some(n) => n\n\
+u = { name: \"Ada\", age: 36 }\n\
+{ name, age } = u\n",
+    );
+    let hints = inlay_hints_in_range(&document, full_document_range(&document));
+    assert_inlay_labels_have_no_type_hole_in(&hints, "match/pattern binders");
+
+    // Match binder `n` (open-variant payload).
+    assert_eq!(inlay_label_at(&hints, position(1, 9)), Some(": 1 | .."));
+    // Pattern binders from record destructure.
+    assert_eq!(inlay_label_at(&hints, position(3, 6)), Some(": \"Ada\""));
+    assert_eq!(inlay_label_at(&hints, position(3, 11)), Some(": 36"));
+}
+
+#[test]
+fn inlay_hints_range_clipping_excludes_out_of_range_binders() {
+    let document = parsed_document_with_semantics("first = 1\nsecond = 2\n");
+    let full = inlay_hints_in_range(&document, full_document_range(&document));
+    assert_eq!(inlay_label_at(&full, position(0, 5)), Some(": 1"));
+    assert_eq!(inlay_label_at(&full, position(1, 6)), Some(": 2"));
+
+    let clipped = Range {
+        start: position(0, 0),
+        end: position(1, 0),
+    };
+    let hints = inlay_hints_in_range(&document, clipped);
+    assert_inlay_labels_have_no_type_hole_in(&hints, "clipped range");
+    assert_eq!(
+        inlay_labels(&hints),
+        vec![(position(0, 5), ": 1".to_owned())]
+    );
+}
+
+#[test]
+fn hover_at_match_arm_binder_shows_bound_type() {
+    let document = parsed_document_with_semantics(
+        "f = (result: Result(Int, Text)) =>\n  result ?>\n    @Ok(value) => value\n    @Err(e) => 0\n",
+    );
+    let Some(hover) = hover_at_position(&document, position(2, 9)) else {
+        panic!("expected hover on match binder `value`");
+    };
+    assert_hover_value(hover, "```aven\nvalue : Int\n```");
+
+    let Some(err_hover) = hover_at_position(&document, position(3, 9)) else {
+        panic!("expected hover on match binder `e`");
+    };
+    assert_hover_value(err_hover, "```aven\ne : Text\n```");
+}
+
+#[test]
+fn inlay_hints_match_arm_payload_binders() {
+    let document = parsed_document_with_semantics(
+        "f = (result: Result(Int, Text)) =>\n  result ?>\n    @Ok(value) => value\n    @Err(e) => 0\n",
+    );
+    let hints = inlay_hints_in_range(&document, full_document_range(&document));
+    assert_inlay_labels_have_no_type_hole_in(&hints, "result match binders");
+    assert_eq!(inlay_label_at(&hints, position(2, 13)), Some(": Int"));
+    assert_eq!(inlay_label_at(&hints, position(3, 10)), Some(": Text"));
+}
+
+#[test]
+fn completion_inside_match_arm_includes_pattern_binder() {
+    // Binders are visible in block arm bodies (inline single-token bodies can
+    // miss the scope when the cursor sits on the body identifier itself).
+    let completions = completions_at_marker(
+        "f = (result: Result(Int, Text)) =>\n  result ?>\n    @Ok(value) =>\n      valu|\n    @Err(_) => 0\n",
+    );
+    let Some(item) = completion_item(&completions, "value") else {
+        panic!(
+            "expected `value` binder in arm-body completion, got {:?}",
+            completions
+                .iter()
+                .map(|c| c.label.as_str())
+                .collect::<Vec<_>>()
+        );
+    };
+    assert_eq!(item.detail.as_deref(), Some("Int"));
+    assert_no_type_hole_in(
+        item.detail.as_deref().expect("value completion detail"),
+        "value completion",
+    );
+    assert!(completion_item(&completions, "result").is_some());
+    assert!(completion_item(&completions, "f").is_some());
 }
 
 #[test]

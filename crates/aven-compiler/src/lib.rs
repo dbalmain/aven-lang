@@ -251,6 +251,15 @@ impl DocumentSnapshot {
             .min_by_key(|inferred| inferred.name_span.len())
     }
 
+    /// Type recorded for an exact binder/name span, ignoring containing expressions.
+    /// Prefer this for inlays and symbol details so binders do not inherit the
+    /// enclosing lambda or call type via containment.
+    pub fn inferred_type_at_exact_span(&self, span: aven_core::Span) -> Option<&InferredType> {
+        self.inferred_types
+            .iter()
+            .find(|inferred| inferred.name_span == span)
+    }
+
     /// The reified type for a comptime type binding or definition, by name
     /// (e.g. `Draft` for `Draft = partial(User)`). Empty until semantics run.
     pub fn type_definition(&self, name: &str) -> Option<&Type> {
