@@ -171,9 +171,9 @@ impl StyleCollector {
                 aven_parser::Item::MethodAttachment(attachment) => {
                     self.collect_surface_in_expr(&attachment.owner);
                     self.collect_record_properties(&attachment.members);
-                    for member in &attachment.members {
-                        self.collect_surface_in_record_entry_values(member);
-                    }
+                    aven_parser::walk_record_entry_exprs(&attachment.members, &mut |e| {
+                        self.collect_surface_in_expr(e);
+                    });
                 }
                 aven_parser::Item::Signature(signature) => {
                     let style = self
@@ -198,12 +198,12 @@ impl StyleCollector {
                     self.collect_surface_in_expr(child);
                 });
             }
-            aven_parser::ExprKind::PrimitiveFamily { base, members } => {
-                self.collect_surface_in_expr(base);
+            aven_parser::ExprKind::PrimitiveFamily { members, .. } => {
+                // walk_expr_children already visits base and member value exprs.
                 self.collect_record_properties(members);
-                for member in members {
-                    self.collect_surface_in_record_entry_values(member);
-                }
+                aven_parser::walk_expr_children(expr, &mut |child| {
+                    self.collect_surface_in_expr(child);
+                });
             }
             aven_parser::ExprKind::Array(entries) => {
                 // Arrays can carry iteration binders' bodies with nested records.
@@ -231,13 +231,15 @@ impl StyleCollector {
                 | aven_parser::RecordEntry::FieldDefault { name_span, .. }
                 | aven_parser::RecordEntry::Shorthand { name_span, .. }
                 | aven_parser::RecordEntry::Delete { name_span, .. } => {
-                    self.styles.insert(*name_span, property);
+                    // Do not clobber binder DEFINITION styles (e.g. pattern
+                    // shorthands in `{ a } = …` already marked by the walk).
+                    self.styles.entry(*name_span).or_insert(property);
                 }
                 aven_parser::RecordEntry::Rename {
                     from_span, to_span, ..
                 } => {
-                    self.styles.insert(*from_span, property);
-                    self.styles.insert(*to_span, property);
+                    self.styles.entry(*from_span).or_insert(property);
+                    self.styles.entry(*to_span).or_insert(property);
                 }
                 aven_parser::RecordEntry::Iteration { body, .. } => {
                     // Iteration binders are handled by walk_binder_sites.
@@ -249,46 +251,6 @@ impl StyleCollector {
                 | aven_parser::RecordEntry::Open { .. }
                 | aven_parser::RecordEntry::Element(_) => {}
             }
-        }
-    }
-
-    fn collect_surface_in_record_entry_values(&mut self, entry: &aven_parser::RecordEntry) {
-        match entry {
-            aven_parser::RecordEntry::Field { value, .. }
-            | aven_parser::RecordEntry::Method { value, .. }
-            | aven_parser::RecordEntry::Spread { value, .. }
-            | aven_parser::RecordEntry::DeleteComputed { key: value, .. }
-            | aven_parser::RecordEntry::Element(value) => self.collect_surface_in_expr(value),
-            aven_parser::RecordEntry::FieldComputed { key, value, .. } => {
-                self.collect_surface_in_expr(key);
-                self.collect_surface_in_expr(value);
-            }
-            aven_parser::RecordEntry::FieldDefault {
-                annotation,
-                default,
-                ..
-            } => {
-                self.collect_surface_in_expr(annotation);
-                self.collect_surface_in_expr(default);
-            }
-            aven_parser::RecordEntry::Iteration {
-                source,
-                guard,
-                body,
-                ..
-            } => {
-                self.collect_surface_in_expr(source);
-                if let Some(guard) = guard {
-                    self.collect_surface_in_expr(guard);
-                }
-                for entry in body {
-                    self.collect_surface_in_record_entry_values(entry);
-                }
-            }
-            aven_parser::RecordEntry::Shorthand { .. }
-            | aven_parser::RecordEntry::Delete { .. }
-            | aven_parser::RecordEntry::Rename { .. }
-            | aven_parser::RecordEntry::Open { .. } => {}
         }
     }
 }

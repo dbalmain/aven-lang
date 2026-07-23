@@ -43,13 +43,7 @@ pub fn walk_binder_sites_in_items<'a>(items: &'a [Item], visit: &mut impl FnMut(
 /// Visit every binder-introducing name span under `expr`.
 pub fn walk_binder_sites_in_expr<'a>(expr: &'a Expr, visit: &mut impl FnMut(BinderSite<'a>)) {
     match &expr.kind {
-        ExprKind::Lambda {
-            params,
-            return_annotation,
-            requirements,
-            body,
-            ..
-        } => {
+        ExprKind::Lambda { params, .. } => {
             for param in params {
                 visit(BinderSite {
                     name: param.name.as_str(),
@@ -57,24 +51,13 @@ pub fn walk_binder_sites_in_expr<'a>(expr: &'a Expr, visit: &mut impl FnMut(Bind
                     role: BinderRole::Parameter,
                     is_callable: false,
                 });
-                if let Some(annotation) = &param.annotation {
-                    walk_binder_sites_in_expr(annotation, visit);
-                }
-                if let Some(default) = &param.default {
-                    walk_binder_sites_in_expr(default, visit);
-                }
             }
-            if let Some(annotation) = return_annotation {
-                walk_binder_sites_in_expr(annotation, visit);
-            }
-            for requirement in requirements {
-                walk_binder_sites_in_expr(&requirement.bound, visit);
-            }
-            walk_binder_sites_in_expr(body, visit);
+            // Child exprs (annotations, defaults, requirements, body) via the
+            // shared structural walker so Lambda fields are not listed twice.
+            walk_expr_children(expr, &mut |child| walk_binder_sites_in_expr(child, visit));
         }
         ExprKind::Block(items) => walk_binder_sites_in_items(items, visit),
-        ExprKind::Match { subject, arms, .. } => {
-            walk_binder_sites_in_expr(subject, visit);
+        ExprKind::Match { arms, .. } => {
             for arm in arms {
                 for site in pattern_bindings(&arm.pattern) {
                     visit(BinderSite {
@@ -84,11 +67,10 @@ pub fn walk_binder_sites_in_expr<'a>(expr: &'a Expr, visit: &mut impl FnMut(Bind
                         is_callable: false,
                     });
                 }
-                for guard in &arm.guards {
-                    walk_binder_sites_in_expr(guard, visit);
-                }
-                walk_binder_sites_in_expr(&arm.body, visit);
             }
+            // subject, arm patterns/guards/bodies — patterns introduce no extra
+            // binder sites beyond what pattern_bindings already yielded.
+            walk_expr_children(expr, &mut |child| walk_binder_sites_in_expr(child, visit));
         }
         ExprKind::Record(entries) | ExprKind::Set(entries) | ExprKind::Array(entries) => {
             walk_binder_sites_in_record_entries(entries, visit);
@@ -145,49 +127,29 @@ fn walk_binder_sites_in_record_entries<'a>(
     entries: &'a [RecordEntry],
     visit: &mut impl FnMut(BinderSite<'a>),
 ) {
+    // Iteration binders need entry-level access; child exprs share the single
+    // RecordEntry enumeration in walk_record_entry_exprs.
+    walk_iteration_binders(entries, visit);
+    walk_record_entry_exprs(entries, &mut |e| walk_binder_sites_in_expr(e, visit));
+}
+
+/// Emit `Iteration` binder sites (including nested comprehension bodies).
+fn walk_iteration_binders<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMut(BinderSite<'a>)) {
     for entry in entries {
-        match entry {
-            RecordEntry::Field { value, .. }
-            | RecordEntry::Method { value, .. }
-            | RecordEntry::Spread { value, .. }
-            | RecordEntry::DeleteComputed { key: value, .. }
-            | RecordEntry::Element(value) => walk_binder_sites_in_expr(value, visit),
-            RecordEntry::FieldComputed { key, value, .. } => {
-                walk_binder_sites_in_expr(key, visit);
-                walk_binder_sites_in_expr(value, visit);
-            }
-            RecordEntry::FieldDefault {
-                annotation,
-                default,
-                ..
-            } => {
-                walk_binder_sites_in_expr(annotation, visit);
-                walk_binder_sites_in_expr(default, visit);
-            }
-            RecordEntry::Iteration {
-                source,
-                binder,
-                binder_span,
-                guard,
-                body,
-                ..
-            } => {
-                visit(BinderSite {
-                    name: binder.as_str(),
-                    span: *binder_span,
-                    role: BinderRole::Iteration,
-                    is_callable: false,
-                });
-                walk_binder_sites_in_expr(source, visit);
-                if let Some(guard) = guard {
-                    walk_binder_sites_in_expr(guard, visit);
-                }
-                walk_binder_sites_in_record_entries(body, visit);
-            }
-            RecordEntry::Shorthand { .. }
-            | RecordEntry::Delete { .. }
-            | RecordEntry::Rename { .. }
-            | RecordEntry::Open { .. } => {}
+        if let RecordEntry::Iteration {
+            binder,
+            binder_span,
+            body,
+            ..
+        } = entry
+        {
+            visit(BinderSite {
+                name: binder.as_str(),
+                span: *binder_span,
+                role: BinderRole::Iteration,
+                is_callable: false,
+            });
+            walk_iteration_binders(body, visit);
         }
     }
 }
@@ -310,7 +272,8 @@ fn walk_exprs<'a>(items: &'a [Expr], visit: &mut impl FnMut(&'a Expr)) {
     }
 }
 
-fn walk_record_entry_exprs<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMut(&'a Expr)) {
+/// Visit every child expression under a list of record entries.
+pub fn walk_record_entry_exprs<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMut(&'a Expr)) {
     for entry in entries {
         match entry {
             RecordEntry::Field { value, .. }
@@ -364,18 +327,35 @@ mod tests {
             "  n => n\n",
             "  _ => 0\n",
             "{ a } = { a: 1 }\n",
+            "picked = { @{\"name\"} -> k; (k, k) }\n",
+            "block =\n",
+            "  nested = 2\n",
+            "  nested\n",
         ));
         let mut sites = Vec::new();
         walk_binder_sites_in_items(&parse.module.items, &mut |site| {
             sites.push((site.name, site.role, site.is_callable));
         });
 
-        assert!(sites.contains(&("value", BinderRole::Binding, false)));
-        assert!(sites.contains(&("f", BinderRole::Binding, true)));
-        assert!(sites.contains(&("item", BinderRole::Parameter, false)));
-        assert!(sites.contains(&("result", BinderRole::Binding, false)));
-        assert!(sites.contains(&("n", BinderRole::Pattern, false)));
-        assert!(sites.contains(&("a", BinderRole::Pattern, false)));
+        let expected = [
+            ("value", BinderRole::Binding, false),
+            ("f", BinderRole::Binding, true),
+            ("item", BinderRole::Parameter, false),
+            ("result", BinderRole::Binding, false),
+            ("n", BinderRole::Pattern, false),
+            ("a", BinderRole::Pattern, false),
+            ("picked", BinderRole::Binding, false),
+            ("k", BinderRole::Iteration, false),
+            ("block", BinderRole::Binding, false),
+            ("nested", BinderRole::Binding, false),
+        ];
+        for site in expected {
+            let count = sites.iter().filter(|s| **s == site).count();
+            assert_eq!(
+                count, 1,
+                "expected binder {site:?} exactly once, got {sites:?}"
+            );
+        }
         // Wildcard match arms do not introduce binders.
         assert!(!sites.iter().any(|(name, _, _)| *name == "_"));
     }

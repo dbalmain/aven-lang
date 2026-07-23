@@ -2030,6 +2030,97 @@ fn inlay_hints_match_arm_payload_binders() {
     assert_eq!(inlay_label_at(&hints, position(3, 10)), Some(": Text"));
 }
 
+/// Decode full semantic tokens to absolute (line, start, length, modifiers).
+fn decoded_semantic_token_positions(document: &ParsedDocument) -> Vec<(u32, u32, u32, u32)> {
+    let mut line = 0u32;
+    let mut start = 0u32;
+    semantic_tokens::tokens(document)
+        .data
+        .into_iter()
+        .map(|token| {
+            line += token.delta_line;
+            if token.delta_line == 0 {
+                start += token.delta_start;
+            } else {
+                start = token.delta_start;
+            }
+            (line, start, token.length, token.token_modifiers_bitset)
+        })
+        .collect()
+}
+
+/// Map a binder [`Span`] to the (line, start, length) used by semantic tokens.
+fn binder_span_token_pos(document: &ParsedDocument, span: aven_core::Span) -> (u32, u32, u32) {
+    let range = span_to_range(document, span);
+    (
+        range.start.line,
+        range.start.character,
+        range.end.character.saturating_sub(range.start.character),
+    )
+}
+
+#[test]
+fn semantic_tokens_and_inlays_agree_with_shared_binder_walk() {
+    // Every binder form the shared walk covers: top-level binding, lambda
+    // parameter, match-arm pattern, pattern binding, record-comprehension
+    // iteration, and a block-nested binding.
+    let source = concat!(
+        "value = 1\n",
+        "f = (item) => item\n",
+        "result = @Some(1) ?>\n",
+        "  @Some(n) => n\n",
+        "  _ => 0\n",
+        "{ a } = { a: 1 }\n",
+        "picked = { @{\"name\"} -> k; (k, k) }\n",
+        "block =\n",
+        "  nested = 2\n",
+        "  nested\n",
+    );
+    let document = parsed_document_with_semantics(source);
+
+    let mut walked = Vec::new();
+    aven_parser::walk_binder_sites_in_items(&document.parse_output().module.items, &mut |site| {
+        walked.push(site.span);
+    });
+    assert!(
+        !walked.is_empty(),
+        "fixture must yield binder sites (non-vacuous)"
+    );
+
+    const MODIFIER_DEFINITION: u32 = 1 << 0;
+    let definition_tokens: Vec<_> = decoded_semantic_token_positions(&document)
+        .into_iter()
+        .filter(|(_, _, _, modifiers)| modifiers & MODIFIER_DEFINITION != 0)
+        .map(|(line, start, length, _)| (line, start, length))
+        .collect();
+
+    // Tokens cover the walk: every walked binder span is a DEFINITION token.
+    for span in &walked {
+        let pos = binder_span_token_pos(&document, *span);
+        assert!(
+            definition_tokens.contains(&pos),
+            "walked binder at {pos:?} missing DEFINITION token; definition_tokens={definition_tokens:?}"
+        );
+    }
+
+    // Inlays stay within the walk (subset — concrete unannotated types only).
+    let walked_ends: Vec<_> = walked
+        .iter()
+        .map(|span| {
+            let end = span_to_range(&document, *span).end;
+            (end.line, end.character)
+        })
+        .collect();
+    let hints = inlay_hints_in_range(&document, full_document_range(&document));
+    for hint in &hints {
+        let pos = (hint.position.line, hint.position.character);
+        assert!(
+            walked_ends.contains(&pos),
+            "inlay at {pos:?} is not the end of any walked binder span"
+        );
+    }
+}
+
 #[test]
 fn completion_inside_match_arm_includes_pattern_binder() {
     // Binders are visible in block arm bodies (inline single-token bodies can
