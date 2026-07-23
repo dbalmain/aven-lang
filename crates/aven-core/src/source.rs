@@ -180,6 +180,7 @@ fn usize_to_u32(value: usize) -> u32 {
 mod tests {
     use super::{LineIndex, SourcePosition};
     use crate::Span;
+    use proptest::prelude::*;
 
     #[test]
     fn converts_offsets_to_positions() {
@@ -271,5 +272,203 @@ mod tests {
             index.span_to_range(source, Span::point(4)),
             (SourcePosition::new(1, 0), SourcePosition::new(1, 1))
         );
+    }
+
+    /// Hazard-heavy chunk tokens for synthetic source strings.
+    ///
+    /// Mix deliberately includes: ASCII, tab, LF, CRLF, lone CR, empty,
+    /// 2-byte (`é`), 3-byte (`中`), and 4-byte / UTF-16 surrogate-pair (`😀`).
+    fn source_chunk_strategy() -> impl Strategy<Value = &'static str> {
+        prop::sample::select(vec![
+            "hello", "world", "a", " ", "\t", "\n", "\r\n", "\r", "", "é", "中", "😀",
+        ])
+    }
+
+    fn source_strategy() -> impl Strategy<Value = String> {
+        prop::collection::vec(source_chunk_strategy(), 0..24).prop_map(|chunks| chunks.concat())
+    }
+
+    /// Char-boundary byte offsets, including `source.len()` (end-of-source).
+    fn char_boundary_offsets(source: &str) -> Vec<usize> {
+        let mut offsets: Vec<usize> = source.char_indices().map(|(i, _)| i).collect();
+        offsets.push(source.len());
+        offsets
+    }
+
+    fn pos_key(pos: SourcePosition) -> (u32, u32) {
+        (pos.line, pos.character)
+    }
+
+    // property-test tiering: same 64-case default / PROPTEST_CASES override as
+    // `span.rs` (see the comment there). Domain properties live here.
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// Char-boundary offset → position → offset is identity.
+        ///
+        /// Guards: UTF-16 `character` width (not bytes/codepoints); mid-char
+        /// byte offsets are excluded because `offset_to_position` clamps those
+        /// to the following UTF-16 column, so only char boundaries roundtrip.
+        #[test]
+        fn offset_position_roundtrip_at_char_boundaries(source in source_strategy()) {
+            let index = LineIndex::new(&source);
+            for o in char_boundary_offsets(&source) {
+                let pos = index.offset_to_position(&source, o);
+                prop_assert_eq!(
+                    index.position_to_offset(&source, pos),
+                    Some(o),
+                    "roundtrip failed at offset {} in {:?}",
+                    o,
+                    source
+                );
+            }
+        }
+
+        /// Walking char-boundary offsets: positions are non-decreasing in
+        /// `(line, character)`; column strictly advances on same line; a line
+        /// increase means the previous boundary was a `\n` and the new
+        /// character is 0.
+        ///
+        /// Guards: UTF-16 width + `\n`-only line splits (`\r` is ordinary).
+        #[test]
+        fn offset_to_position_is_monotonic_with_column_reset(
+            source in source_strategy()
+        ) {
+            let index = LineIndex::new(&source);
+            let boundaries = char_boundary_offsets(&source);
+            let mut prev_offset: Option<usize> = None;
+            let mut prev_pos: Option<SourcePosition> = None;
+
+            for &o in &boundaries {
+                let pos = index.offset_to_position(&source, o);
+                if let (Some(po), Some(pp)) = (prev_offset, prev_pos) {
+                    prop_assert!(
+                        pos.line >= pp.line,
+                        "line decreased: offset {} -> {:?}, {} -> {:?} in {:?}",
+                        po,
+                        pp,
+                        o,
+                        pos,
+                        source
+                    );
+                    if pos.line == pp.line {
+                        prop_assert!(
+                            pos.character > pp.character,
+                            "same-line character not strictly greater: \
+                             offset {} -> {:?}, {} -> {:?} in {:?}",
+                            po,
+                            pp,
+                            o,
+                            pos,
+                            source
+                        );
+                    } else {
+                        // Line advance only at a `\n` boundary; next column is 0.
+                        prop_assert_eq!(
+                            source.as_bytes().get(po),
+                            Some(&b'\n'),
+                            "line increase without prior \\n at offset {} in {:?}",
+                            po,
+                            source
+                        );
+                        prop_assert_eq!(
+                            pos.character,
+                            0,
+                            "column not reset after \\n: offset {} -> {:?} in {:?}",
+                            o,
+                            pos,
+                            source
+                        );
+                    }
+                }
+                prev_offset = Some(o);
+                prev_pos = Some(pos);
+            }
+        }
+
+        /// `span_to_range` equals the two independent conversions, with end
+        /// widened via `end.max(start + 1)` so a point span is one unit wide.
+        ///
+        /// Guards: the deliberate `max(start+1)` widening (do not assert
+        /// `range.1 == offset_to_position(span.end)` for empty spans).
+        #[test]
+        fn span_to_range_matches_offset_conversions(source in source_strategy()) {
+            let index = LineIndex::new(&source);
+            let boundaries = char_boundary_offsets(&source);
+
+            for (i, &start) in boundaries.iter().enumerate() {
+                for &end in &boundaries[i..] {
+                    let range = index.span_to_range(&source, Span::new(start, end));
+                    let expected_end_offset = end.max(start.saturating_add(1));
+                    let expected = (
+                        index.offset_to_position(&source, start),
+                        index.offset_to_position(&source, expected_end_offset),
+                    );
+                    prop_assert_eq!(
+                        range,
+                        expected,
+                        "span_to_range mismatch for Span::new({}, {}) in {:?}",
+                        start,
+                        end,
+                        source
+                    );
+                    prop_assert!(
+                        pos_key(range.0) <= pos_key(range.1),
+                        "range not ordered: {:?} > {:?} for Span::new({}, {}) in {:?}",
+                        range.0,
+                        range.1,
+                        start,
+                        end,
+                        source
+                    );
+                }
+            }
+        }
+
+        /// Arbitrary positions never panic; `None` iff line is past the last
+        /// line. Over-wide `character` still returns `Some` (clamped to EOL).
+        ///
+        /// Guards: line-out-of-range is the only `None` path; character clamp
+        /// and char-boundary return offsets.
+        #[test]
+        fn position_to_offset_total_and_line_none(
+            source in source_strategy(),
+            line in any::<u32>(),
+            character in any::<u32>(),
+        ) {
+            let index = LineIndex::new(&source);
+            let last_line = index.offset_to_position(&source, source.len()).line;
+            let pos = SourcePosition::new(line, character);
+            let result = index.position_to_offset(&source, pos);
+
+            if line <= last_line {
+                let off = result.expect("in-range line must yield Some");
+                prop_assert!(
+                    off <= source.len(),
+                    "offset {} past source.len() {} for {:?} in {:?}",
+                    off,
+                    source.len(),
+                    pos,
+                    source
+                );
+                prop_assert!(
+                    source.is_char_boundary(off),
+                    "offset {} not a char boundary for {:?} in {:?}",
+                    off,
+                    pos,
+                    source
+                );
+            } else {
+                prop_assert_eq!(
+                    result,
+                    None,
+                    "expected None for line past last_line={} got {:?} for {:?} in {:?}",
+                    last_line,
+                    result,
+                    pos,
+                    source
+                );
+            }
+        }
     }
 }
