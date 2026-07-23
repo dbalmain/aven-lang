@@ -44,6 +44,7 @@ impl Span {
 #[cfg(test)]
 mod tests {
     use super::Span;
+    use proptest::prelude::*;
 
     #[test]
     fn contains_spans_starting_inside_the_span() {
@@ -56,5 +57,30 @@ mod tests {
     fn contains_treats_empty_spans_as_cursor_positions() {
         assert!(Span::point(10).contains(Span::point(10)));
         assert!(!Span::point(10).contains(Span::point(11)));
+    }
+
+    // property-test tiering:
+    // - default is 64 cases for the fast PR gate (`cargo test --workspace`)
+    // - the scheduled heavy job (`.github/workflows/heavy.yml`) sets
+    //   `PROPTEST_CASES` high (e.g. 8192); proptest's env override wins over
+    //   this in-code default for every property that uses this pattern
+    // - individual slow properties use `#[ignore = "slow: <reason>"]`; the PR
+    //   gate skips ignored tests, and the heavy job runs them via
+    //   `cargo test --workspace -- --include-ignored`
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn span_len_equals_end_minus_start(
+            start in 0usize..=4096,
+            end in 0usize..=4096,
+        ) {
+            let (a, b) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+            prop_assert_eq!(Span::new(a, b).len(), b - a);
+        }
     }
 }
