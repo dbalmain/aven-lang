@@ -203,6 +203,7 @@ name = "aven-parser"
 version = "0.1.0"
 dependencies = [
  "aven-core",
+ "proptest",
 ]
 
 [[package]]
