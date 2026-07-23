@@ -1,0 +1,4 @@
+closed : @{@A, @B}
+closedResult : 1 | 2
+open : @A
+openResult : 1

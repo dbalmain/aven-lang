@@ -1,0 +1,2 @@
+empty = Map.empty()
+m : Map(Text, Int) = Map.empty()

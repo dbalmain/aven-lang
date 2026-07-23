@@ -1,0 +1,12 @@
+Status : Set("waiting" | "running")
+Waiting : Set("waiting")
+Codes : Set(0 | 1 | 2)
+ZeroOne : Set(0 | 1)
+status : Status
+code : Codes
+mode : "r" | "w" | "rw"
+variant : @A | @B
+waiting : Waiting
+wideStatus : Status
+zeroOne : ZeroOne
+wideCode : Codes

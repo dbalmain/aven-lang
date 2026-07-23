@@ -1,0 +1,2 @@
+handle = File.open("x", "r")
+data = Json.decode("{}")

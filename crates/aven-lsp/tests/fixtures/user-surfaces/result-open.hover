@@ -1,0 +1,2 @@
+handle : Result({ readLine: () -> Result(?Text, @UnexpectedEof(Text) | @Other(Text)), readAll: () -> Result(Text, @UnexpectedEof(Text) | @Other(Text)) }, @NotFound(Text) | @PermissionDenied(Text) | @AlreadyExists(Text) | @BrokenPipe(Text) | @Other(Text))
+data : Result(Data, JsonError)

@@ -1,0 +1,2 @@
+empty : Map(a, b)
+m : Map(Text, Int)

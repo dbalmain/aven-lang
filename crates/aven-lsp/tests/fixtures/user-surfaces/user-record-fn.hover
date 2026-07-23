@@ -1,0 +1,3 @@
+User = { name: Text, age: Int }
+user : { name: "Ada", age: 36 }
+greet : { name: Text, age: Int } -> Text

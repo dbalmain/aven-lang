@@ -1,0 +1,14 @@
+a : ?Text
+a2 : ?Text
+b : Text?
+b2 : Text?
+c : ?Text?
+c2 : ?Text?
+c3 : ?Text?
+plain : Text
+optionalFromPlain : ?Text
+nullableFromPlain : Text?
+bothFromPlain : ?Text?
+bothFromOptional : ?Text?
+bothFromNullable : ?Text?
+matched : Text

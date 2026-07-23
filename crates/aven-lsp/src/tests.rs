@@ -115,6 +115,8 @@ fn parsed_document_with_file_id(file_id: FileId, source: impl Into<String>) -> P
     aven_compiler::DocumentSnapshot::parse(aven_compiler::Revision::default(), file)
 }
 
+/// Pathless snippet analysis: parse + semantic check. Entry point for LSP unit
+/// tests that need inferred types / hovers / inlays.
 fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
     let document = parsed_document(source);
     let semantic = analyze_document_semantics(&document);
@@ -126,6 +128,58 @@ fn parsed_document_with_semantics(source: impl Into<String>) -> ParsedDocument {
         semantic.builtin_methods,
         semantic.named_families,
     )
+}
+
+/// Deterministic top-level **binding** hover report for surface goldens.
+/// One line per named top-level binding that produces a hover, in source order.
+/// Labels match the fenced body the user sees (`name : type` / `name = type`).
+/// Multi-line fenced bodies are rejected — goldens assume a single line per binding.
+fn top_level_binding_hover_report(document: &ParsedDocument) -> String {
+    let mut lines = Vec::new();
+    for item in &document.parse_output().module.items {
+        let aven_parser::Item::Binding(binding) = item else {
+            continue;
+        };
+        let position = to_lsp_position(
+            document
+                .file()
+                .line_index()
+                .offset_to_position(document.source(), binding.name_span.start),
+        );
+        let Some(hover) = hover_at_position(document, position) else {
+            continue;
+        };
+        let Some(label) = hover_fenced_label(&hover) else {
+            continue;
+        };
+        assert!(
+            !label.contains('\n'),
+            "hover report binding `{}`: multi-line hover not supported in surface goldens; \
+             pick another fixture or extend the report format. label={label:?}",
+            binding.name
+        );
+        if let Some(ty) = hover_type_portion(&hover) {
+            assert_no_type_hole_in(ty, &format!("hover report binding `{}`", binding.name));
+        } else {
+            assert_no_type_hole_in(label, &format!("hover report binding `{}`", binding.name));
+        }
+        lines.push(label.to_owned());
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
+}
+
+/// Body of the first aven markdown fence in a hover (fences stripped).
+fn hover_fenced_label(hover: &Hover) -> Option<&str> {
+    let HoverContents::Markup(markup) = &hover.contents else {
+        return None;
+    };
+    let rest = markup.value.strip_prefix("```aven\n")?;
+    let (body, _) = rest.split_once("\n```")?;
+    Some(body)
 }
 
 /// Byte offset of the first bare deferred-type hole (`?` as a type atom), if any.
@@ -198,16 +252,8 @@ fn assert_no_type_hole_in(rendered: &str, context: &str) {
 }
 
 fn hover_type_portion(hover: &Hover) -> Option<&str> {
-    let HoverContents::Markup(markup) = &hover.contents else {
-        return None;
-    };
-    let value = markup
-        .value
-        .strip_prefix("```aven\n")?
-        .strip_suffix("\n```")?;
-
     // Hover labels are `name : type` (see hover formatting in lib.rs).
-    Some(value.split_once(" : ").map_or(value, |(_, ty)| ty))
+    hover_fenced_label(hover).map(|body| body.split_once(" : ").map_or(body, |(_, ty)| ty))
 }
 
 fn assert_inlay_labels_have_no_type_hole_in(hints: &[InlayHint], context: &str) -> usize {
@@ -3700,6 +3746,170 @@ fn inlay_hints_skip_deferred_bindings() {
         assert_inlay_labels_have_no_type_hole_in(&hints, "deferred binding"),
         0
     );
+}
+
+/// Stems of aven-check valid fixtures that have committed LSP surface goldens
+/// under `tests/fixtures/check-surfaces/<stem>.hover`.
+///
+/// Load-bearing cross-crate path: sources load from
+/// `../aven-check/tests/fixtures/check/valid/<stem>.av` via
+/// [`check_valid_fixture_path`]. Renaming or deleting one of those aven-check
+/// fixtures will fail these goldens — that is intended (the failure names the
+/// missing file).
+const CHECK_SURFACE_GOLDEN_STEMS: &[&str] = &[
+    "binding-forms",
+    "bound-local-binders",
+    "bound-host-global",
+    "literal-types",
+    "nullability",
+    "variant-match-exhaustiveness",
+    "value-keywords",
+    "string-interpolation",
+];
+
+/// Required user-code surface pairs under `tests/fixtures/user-surfaces/`.
+const USER_SURFACE_GOLDEN_STEMS: &[&str] = &[
+    "result-open",
+    "array-methods",
+    "map-value",
+    "user-record-fn",
+];
+
+fn check_valid_fixture_path(stem: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../aven-check/tests/fixtures/check/valid")
+        .join(format!("{stem}.av"))
+}
+
+fn check_surface_hover_path(stem: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/check-surfaces")
+        .join(format!("{stem}.hover"))
+}
+
+fn user_surface_fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/user-surfaces")
+}
+
+fn list_extension_files(dir: &Path, extension: &str) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("expected directory {}: {error}", dir.display()))
+        .map(|entry| entry.expect("fixture directory entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == extension))
+        .collect();
+    files.sort();
+    files
+}
+
+fn assert_hover_report_matches(actual: &str, expected_path: &Path, context: &str) {
+    let expected = fs::read_to_string(expected_path).unwrap_or_else(|error| {
+        panic!(
+            "{context}: failed to read expected hover golden {}: {error}",
+            expected_path.display()
+        );
+    });
+    assert_eq!(
+        actual,
+        expected,
+        "{context}: hover report mismatch for {}\n--- actual ---\n{actual}--- expected ---\n{expected}",
+        expected_path.display()
+    );
+}
+
+#[test]
+fn check_surface_goldens_match_top_level_binding_hovers() {
+    let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/check-surfaces");
+    let hover_files = list_extension_files(&golden_dir, "hover");
+    assert!(
+        !hover_files.is_empty(),
+        "expected at least one .hover under {}, got none — gate would pass vacuously",
+        golden_dir.display()
+    );
+
+    for expected_path in &hover_files {
+        let stem = expected_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("hover file stem");
+        let source_path = check_valid_fixture_path(stem);
+        let source = fs::read_to_string(&source_path).unwrap_or_else(|error| {
+            panic!(
+                "check-surface golden `{stem}`: missing check fixture {}: {error}",
+                source_path.display()
+            )
+        });
+        let document = parsed_document_with_semantics(source);
+        let report = top_level_binding_hover_report(&document);
+        assert!(
+            !report.is_empty(),
+            "check-surface golden `{stem}`: expected at least one top-level binding hover"
+        );
+        assert_hover_report_matches(&report, expected_path, &format!("check-surface `{stem}`"));
+    }
+
+    // Floor: curated stems must be present among discovered goldens.
+    for stem in CHECK_SURFACE_GOLDEN_STEMS {
+        assert!(
+            check_surface_hover_path(stem).is_file(),
+            "missing required check-surface golden for stem `{stem}`"
+        );
+    }
+}
+
+#[test]
+fn user_surface_goldens_match_binding_hovers() {
+    let golden_dir = user_surface_fixture_dir();
+    let hover_files = list_extension_files(&golden_dir, "hover");
+    assert!(
+        !hover_files.is_empty(),
+        "expected at least one .hover under {}, got none — gate would pass vacuously",
+        golden_dir.display()
+    );
+
+    for expected_path in &hover_files {
+        let stem = expected_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("user-surface stem");
+        let source_path = golden_dir.join(format!("{stem}.av"));
+        let source = fs::read_to_string(&source_path).unwrap_or_else(|error| {
+            panic!(
+                "user-surface `{stem}`: missing source {}: {error}",
+                source_path.display()
+            )
+        });
+        let document = parsed_document_with_semantics(source);
+        let report = top_level_binding_hover_report(&document);
+        assert!(
+            !report.is_empty(),
+            "user-surface `{stem}`: expected at least one top-level binding hover"
+        );
+        assert_hover_report_matches(&report, expected_path, &format!("user-surface `{stem}`"));
+    }
+
+    for stem in USER_SURFACE_GOLDEN_STEMS {
+        assert!(
+            golden_dir.join(format!("{stem}.av")).is_file(),
+            "missing required user-surface source for stem `{stem}`"
+        );
+        assert!(
+            golden_dir.join(format!("{stem}.hover")).is_file(),
+            "missing required user-surface golden for stem `{stem}`"
+        );
+    }
+}
+
+#[test]
+fn user_surface_result_match_arm_binder_hover() {
+    // Pathless Result match — locks arm-binder hover for user code, not only
+    // library interface shape views.
+    let hover = hover_at_marker(
+        "f = (result: Result(Int, Text)) =>\n  result ?>\n    @Ok(value) => valu|e\n    @Err(e) => 0\n",
+    )
+    .expect("Result arm binder hover");
+    let rendered = hover_type_portion(&hover).expect("type portion");
+    assert_eq!(rendered, "Int");
+    assert_no_type_hole_in(rendered, "Result @Ok binder");
 }
 
 #[test]
