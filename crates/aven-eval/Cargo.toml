@@ -12,3 +12,6 @@ workspace = true
 [dependencies]
 aven-core.workspace = true
 aven-parser.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

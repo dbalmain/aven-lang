@@ -10,7 +10,9 @@ use aven_parser::{
     Item, Module, ModuleRole, OperatorAssociativity, OperatorFixity, OperatorFixityTable,
     OperatorOrigin, OperatorPrecedence, parse_module, parse_module_with_fixities,
 };
-use std::cell::RefCell;
+use proptest::prelude::*;
+use proptest::test_runner::TestCaseError;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 #[test]
@@ -2867,4 +2869,199 @@ fn parse_ok(source: &str) -> Module {
         output.diagnostics
     );
     output.module
+}
+
+/// Seed ambient Array methods by evaluating `std/array` with attachments
+/// enabled. The program under test does not import `std/array` — methods are
+/// looked up from the shared `BuiltinMethodEnvironment` (same pattern as
+/// `float_nan_sorts_last_and_minimum_ignores_nan` / combinator tests).
+/// Cached per thread so high `PROPTEST_CASES` counts stay cheap.
+fn ambient_array_methods() -> BuiltinMethodEnvironment {
+    thread_local! {
+        static METHODS: OnceCell<BuiltinMethodEnvironment> = const { OnceCell::new() };
+    }
+    METHODS.with(|cell| {
+        cell.get_or_init(|| {
+            let array_module = parse_ok(include_str!("../../aven-host/std/array.av"));
+            let builtin_methods = BuiltinMethodEnvironment::default();
+            let _export = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+                &array_module,
+                Vec::new(),
+                &ModuleImports::default(),
+                &RuntimeTypeBindings::default(),
+                &builtin_methods,
+                true,
+            )
+            .value
+            .expect("std/array should export a record");
+            builtin_methods
+        })
+        .clone()
+    })
+}
+
+/// Eval a program with ambient Array methods installed (no program-side import).
+fn eval_with_builtins(source: &str) -> Value {
+    let module = parse_ok(source);
+    let builtin_methods = ambient_array_methods();
+    eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+        &module,
+        Vec::new(),
+        &ModuleImports::default(),
+        &RuntimeTypeBindings::default(),
+        &builtin_methods,
+        false,
+    )
+    .value
+    .expect("program yields a value")
+}
+
+/// Bounded int vectors: small range so duplicates appear; avoids `i64::MIN` /
+/// huge-literal rendering noise. Length 0..12.
+fn int_vec_strategy() -> impl Strategy<Value = Vec<i64>> {
+    prop::collection::vec(-50i64..=50, 0..12)
+}
+
+/// Render `[1, -2, 3]` / `[]` for embedding in Aven source.
+fn render_ints(xs: &[i64]) -> String {
+    if xs.is_empty() {
+        return "[]".to_owned();
+    }
+    let body: String = xs.iter().map(i64::to_string).collect::<Vec<_>>().join(", ");
+    format!("[{body}]")
+}
+
+/// Unwrap `Value::Array` of `Value::Int`, failing the property case otherwise.
+fn ints(value: &Value) -> Result<Vec<i64>, TestCaseError> {
+    let Value::Array(items) = value else {
+        return Err(TestCaseError::fail(format!(
+            "expected Array of Int, got {value:?}"
+        )));
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Int(n) => Ok(*n),
+            other => Err(TestCaseError::fail(format!(
+                "expected Int element, got {other:?}"
+            ))),
+        })
+        .collect()
+}
+
+fn record_field<'a>(record: &'a Value, name: &str) -> Result<&'a Value, TestCaseError> {
+    let Value::Record(fields) = record else {
+        return Err(TestCaseError::fail(format!(
+            "expected Record, got {record:?}"
+        )));
+    };
+    record_field_value(fields, name)
+        .ok_or_else(|| TestCaseError::fail(format!("record missing field `{name}`: {record:?}")))
+}
+
+// property-test tiering:
+// - default is 64 cases for the fast PR gate (`cargo test --workspace`)
+// - the scheduled heavy job (`.github/workflows/heavy.yml`) sets
+//   `PROPTEST_CASES` high (e.g. 8192); proptest's env override wins over
+//   this in-code default for every property that uses this pattern
+// - individual slow properties use `#[ignore = "slow: <reason>"]`; the PR
+//   gate skips ignored tests, and the heavy job runs them via
+//   `cargo test --workspace -- --include-ignored`
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Algebraic laws for ambient array builtins (sortBy, reverse, length,
+    /// concat). One eval per case builds a record of derived values; laws are
+    /// checked Rust-side against the generated inputs.
+    #[test]
+    fn ambient_array_builtin_algebraic_laws(
+        xs in int_vec_strategy(),
+        ys in int_vec_strategy(),
+    ) {
+        let source = format!(
+            "xs = {xs}\n\
+             ys = {ys}\n\
+             {{\n\
+               once: xs.sortBy((x) => x),\n\
+               twice: xs.sortBy((x) => x).sortBy((x) => x),\n\
+               rev: xs.reverse(),\n\
+               revrev: xs.reverse().reverse(),\n\
+               len: xs.length(),\n\
+               cat: xs.concat(ys),\n\
+               catLen: xs.concat(ys).length(),\n\
+             }}\n",
+            xs = render_ints(&xs),
+            ys = render_ints(&ys),
+        );
+        let result = eval_with_builtins(&source);
+
+        let once = ints(record_field(&result, "once")?)?;
+        let twice = ints(record_field(&result, "twice")?)?;
+        let rev = ints(record_field(&result, "rev")?)?;
+        let revrev = ints(record_field(&result, "revrev")?)?;
+        let cat = ints(record_field(&result, "cat")?)?;
+        let len = record_field(&result, "len")?;
+        let cat_len = record_field(&result, "catLen")?;
+
+        // 1. Sort is a permutation (multiset equality via Rust-side sort).
+        let mut once_sorted = once.clone();
+        once_sorted.sort_unstable();
+        let mut xs_sorted = xs.clone();
+        xs_sorted.sort_unstable();
+        prop_assert_eq!(&once_sorted, &xs_sorted, "sortBy is not a permutation of xs");
+
+        // 2. Sort is ordered (non-decreasing).
+        prop_assert!(
+            once.windows(2).all(|w| w[0] <= w[1]),
+            "sortBy result is not non-decreasing: {once:?}"
+        );
+
+        // 3. Sort is idempotent.
+        prop_assert_eq!(&twice, &once, "sortBy is not idempotent");
+
+        // 4. Reverse is an involution.
+        prop_assert_eq!(&revrev, &xs, "reverse∘reverse is not identity");
+
+        // 5. Reverse equals Rust reverse (permutation + exact order).
+        let mut xs_rev = xs.clone();
+        xs_rev.reverse();
+        prop_assert_eq!(&rev, &xs_rev, "reverse does not match Rust reverse");
+
+        // 6. length.
+        prop_assert_eq!(
+            len,
+            &Value::Int(xs.len() as i64),
+            "length() disagrees with Rust len"
+        );
+
+        // 7. concat content + length.
+        let mut expected_cat = xs.clone();
+        expected_cat.extend_from_slice(&ys);
+        prop_assert_eq!(&cat, &expected_cat, "concat content mismatch");
+        prop_assert_eq!(
+            cat_len,
+            &Value::Int((xs.len() + ys.len()) as i64),
+            "concat.length() disagrees with xs.len() + ys.len()"
+        );
+    }
+
+    /// `push` increases length by one (definitional length law).
+    #[test]
+    fn ambient_array_push_length_law(
+        xs in int_vec_strategy(),
+        e in -50i64..=50,
+    ) {
+        let source = format!(
+            "xs = {}\n\
+             xs.push({}).length()\n",
+            render_ints(&xs),
+            e,
+        );
+        let len = eval_with_builtins(&source);
+        prop_assert_eq!(
+            len,
+            Value::Int(xs.len() as i64 + 1),
+            "push(e).length() should be xs.length() + 1"
+        );
+    }
 }
