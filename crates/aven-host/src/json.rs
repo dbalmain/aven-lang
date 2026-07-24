@@ -254,8 +254,7 @@ fn encode_value(
 
     match value {
         Value::Int(value) => output.push_str(&value.to_string()),
-        Value::Float(value) if value.is_finite() => output.push_str(&value.to_string()),
-        Value::Float(value) => return Err(json_non_finite_float_error(*value)),
+        Value::Float(value) => push_json_float(*value, output)?,
         Value::Text(value) => encode_string(value, output),
         Value::Bool(true) => output.push_str("true"),
         Value::Bool(false) => output.push_str("false"),
@@ -334,10 +333,9 @@ fn encode_json_constructor(
             let [Value::Float(value)] = payload else {
                 return Err(json_constructor_shape_error(name, "Float"));
             };
-            if !value.is_finite() {
-                return Err(json_non_finite_float_error(*value));
-            }
-            output.push_str(&value.to_string());
+            // Same wire form as bare Value::Float: Data-target decode rebuilds
+            // floats as @Float tags, so the text-anchor law needs both paths.
+            push_json_float(*value, output)?;
         }
         "Text" => {
             let [Value::Text(value)] = payload else {
@@ -421,6 +419,31 @@ fn json_non_finite_float_error(value: f64) -> String {
         "-Infinity"
     };
     format!("Json.encode cannot encode non-finite Float {kind}")
+}
+
+/// Append a finite JSON float via serde_json's own number formatting.
+///
+/// `serde_json::Number::from_f64` produces the shortest round-trippable text,
+/// and decode reads it back with serde_json's correctly-rounded parser (the
+/// `float_roundtrip` feature is enabled on the workspace `serde_json` dependency
+/// — without it serde_json's default parser is not always correctly rounded and
+/// the roundtrip is off by up to ~1 ULP on ordinary decimals). Encode and decode
+/// therefore agree exactly, so the text-anchor law
+/// `encode(decode(encode(v))) == encode(v)` holds for every finite float.
+///
+/// `from_f64` returns `None` exactly for non-finite values (NaN / ±Infinity),
+/// which stay an encode error. Integer-valued floats keep a fractional marker
+/// (`3.0`, not `3`), so float vs int is preserved on the wire. Both the bare
+/// `Value::Float` arm and the `@Float` constructor arm route through here so the
+/// two paths always emit identical text.
+fn push_json_float(value: f64, output: &mut String) -> Result<(), String> {
+    match serde_json::Number::from_f64(value) {
+        Some(number) => {
+            output.push_str(&number.to_string());
+            Ok(())
+        }
+        None => Err(json_non_finite_float_error(value)),
+    }
 }
 
 fn encode_record(fields: &[(String, Value)], output: &mut String) -> Result<(), String> {
@@ -1167,23 +1190,18 @@ mod tests {
     /// Plain JSON-safe `Value`s that `encode_to_text` accepts and that anchor
     /// cleanly under `encode ∘ decode(Data) ∘ encode`.
     ///
-    /// Domain: Null, Bool, Int, Text, Array, Record (unique keys).
+    /// Domain: Null, Bool, Int, finite Float, Text, Array, Record (unique keys).
     /// Excluded (encode errors, lossy, or out of this law): Map, Set, Tuple,
     /// Tag / NamedRecord / SlotRecord / branded / closures / Undefined, and
-    /// **all Float** — encode prints floats with Rust's `f64` Display while
-    /// decode parses numbers through serde_json, and those two disagree on many
-    /// large-magnitude finite bit patterns, so the roundtrip is not text-stable
-    /// for floats. That limitation is pinned by
-    /// `json_float_roundtrip_is_a_known_text_anchor_limitation` below; a matched
-    /// printer/parser is a separate codec slice. Restricting the generator to a
-    /// float subset that anchors would have to replay the very pipeline under
-    /// test, making the float coverage tautological — so Float is dropped here
-    /// and characterized explicitly instead.
+    /// non-finite Float (NaN / ±Infinity — encode rejects them).
     fn json_safe_value_strategy() -> impl Strategy<Value = Value> {
         let leaf = prop_oneof![
             Just(Value::Null),
             any::<bool>().prop_map(Value::Bool),
             any::<i64>().prop_map(Value::Int),
+            any::<f64>()
+                .prop_filter("finite", |f| f.is_finite())
+                .prop_map(Value::Float),
             ".*".prop_map(Value::Text),
         ];
         leaf.prop_recursive(
@@ -1218,30 +1236,20 @@ mod tests {
         );
     }
 
-    /// Characterizes a KNOWN codec limitation: `encode_to_text` prints floats
-    /// with Rust's `f64` Display, but decode parses numbers through serde_json,
-    /// and the two disagree on many large-magnitude finite floats. Until the
-    /// codec adopts a matched printer/parser (a separate slice), the text-anchor
-    /// law `encode(decode(encode(v))) == encode(v)` does NOT hold for such
-    /// floats — which is why `json_safe_value_strategy` excludes Float rather
-    /// than pre-filtering to an anchoring subset (that filter would just replay
-    /// this pipeline, making the coverage tautological). This test pins the
-    /// limitation: if the roundtrip ever becomes stable here, the codec was
-    /// fixed and Float can rejoin the generative domain.
+    /// Regression: large-magnitude finite floats text-roundtrip through
+    /// `encode → serde_json parse → decode(Data) → encode`. Shrunk from the S4
+    /// property run; it failed before the `float_roundtrip` feature was enabled
+    /// on serde_json (whose default parser is not correctly rounded), which
+    /// broke decode's half of the roundtrip.
     #[test]
-    fn json_float_roundtrip_is_a_known_text_anchor_limitation() {
-        // Shrunk from the S4 property run before Float was excluded.
+    fn json_large_float_round_trips() {
         let f = -3.0821111369395157e146_f64;
         let t0 = encode_to_text(&Value::Float(f)).expect("finite float encodes");
         let parsed = serde_json::from_str::<JsonValue>(&t0).expect("encode text parses as JSON");
         let decoded = decode_value(&parsed, &Value::named_type("Data"), "Json")
             .unwrap_or_else(|_| panic!("Data decode succeeds for {t0}"));
         let t1 = encode_to_text(&decoded).expect("re-encode succeeds");
-        assert_ne!(
-            t1, t0,
-            "float roundtrip is unexpectedly text-stable; the codec may be \
-             fixed — re-include Float in json_safe_value_strategy"
-        );
+        assert_eq!(t1, t0, "large float must text-roundtrip; t0={t0}, t1={t1}");
     }
 
     proptest! {
@@ -1255,10 +1263,10 @@ mod tests {
         ///   (`@Array([@Int(1), …])`), not a plain value, so
         ///   `decode(encode(v))` is never structurally equal to plain `v`.
         /// - Anchoring on encode's image (canonical JSON text) is stable and
-        ///   well-defined, and eliminates the float/int normalization hazard
-        ///   for free: the codec renders `Float(1.0)` as `"1"`, which decode
-        ///   reads back as `@Int(1)` and re-encodes as `"1"`. Comparing text
-        ///   makes that collapse a no-op; finite floats need no special-case.
+        ///   well-defined. Floats are emitted in a serde_json-stable wire form
+        ///   so every finite f64 round-trips as a float (including
+        ///   integer-valued floats, which stay `3.0` rather than collapsing
+        ///   to the int wire form `3`).
         #[test]
         fn json_encode_decode_encode_is_text_stable(v in json_safe_value_strategy()) {
             let t0 = match encode_to_text(&v) {
