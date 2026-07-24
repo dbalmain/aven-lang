@@ -494,6 +494,8 @@ mod tests {
 
     use aven_core::{Span, codes};
     use aven_parser::parse_module;
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
 
     fn json_host() -> Host {
         let mut host = Host::new();
@@ -1151,5 +1153,157 @@ mod tests {
             panic!("method `{method}` is native");
         };
         native(&[]).unwrap_or_else(|error| panic!("method failed: {error}"))
+    }
+
+    // property-test tiering:
+    // - default is 64 cases for the fast PR gate (`cargo test --workspace`)
+    // - the scheduled heavy job (`.github/workflows/heavy.yml`) sets
+    //   `PROPTEST_CASES` high (e.g. 8192); proptest's env override wins over
+    //   this in-code default for every property that uses this pattern
+    // - individual slow properties use `#[ignore = "slow: <reason>"]`; the PR
+    //   gate skips ignored tests, and the heavy job runs them via
+    //   `cargo test --workspace -- --include-ignored`
+
+    /// Plain JSON-safe `Value`s that `encode_to_text` accepts and that anchor
+    /// cleanly under `encode ∘ decode(Data) ∘ encode`.
+    ///
+    /// Domain: Null, Bool, Int, Text, Array, Record (unique keys).
+    /// Excluded (encode errors, lossy, or out of this law): Map, Set, Tuple,
+    /// Tag / NamedRecord / SlotRecord / branded / closures / Undefined, and
+    /// **all Float** — encode prints floats with Rust's `f64` Display while
+    /// decode parses numbers through serde_json, and those two disagree on many
+    /// large-magnitude finite bit patterns, so the roundtrip is not text-stable
+    /// for floats. That limitation is pinned by
+    /// `json_float_roundtrip_is_a_known_text_anchor_limitation` below; a matched
+    /// printer/parser is a separate codec slice. Restricting the generator to a
+    /// float subset that anchors would have to replay the very pipeline under
+    /// test, making the float coverage tautological — so Float is dropped here
+    /// and characterized explicitly instead.
+    fn json_safe_value_strategy() -> impl Strategy<Value = Value> {
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(Value::Int),
+            ".*".prop_map(Value::Text),
+        ];
+        leaf.prop_recursive(
+            4,  // depth
+            32, // desired total nodes
+            6,  // expected items per collection
+            |inner| {
+                prop_oneof![
+                    prop::collection::vec(inner.clone(), 0..6)
+                        .prop_map(|items| Value::Array(Rc::new(items))),
+                    prop::collection::vec((".*", inner), 0..6).prop_map(|entries| {
+                        let mut seen = std::collections::HashSet::new();
+                        let unique: Vec<(String, Value)> = entries
+                            .into_iter()
+                            .filter(|(key, _)| seen.insert(key.clone()))
+                            .collect();
+                        Value::Record(Rc::new(unique))
+                    }),
+                ]
+            },
+        )
+    }
+
+    /// Boundary: bare `Map` is outside the encode-clean domain.
+    #[test]
+    fn encode_to_text_rejects_bare_map() {
+        let map = Value::Map(Rc::new(vec![(Value::Text("k".into()), Value::Int(1))]));
+        let err = encode_to_text(&map).expect_err("Map must not encode");
+        assert!(
+            err.contains("cannot encode Map"),
+            "unexpected encode error: {err}"
+        );
+    }
+
+    /// Characterizes a KNOWN codec limitation: `encode_to_text` prints floats
+    /// with Rust's `f64` Display, but decode parses numbers through serde_json,
+    /// and the two disagree on many large-magnitude finite floats. Until the
+    /// codec adopts a matched printer/parser (a separate slice), the text-anchor
+    /// law `encode(decode(encode(v))) == encode(v)` does NOT hold for such
+    /// floats — which is why `json_safe_value_strategy` excludes Float rather
+    /// than pre-filtering to an anchoring subset (that filter would just replay
+    /// this pipeline, making the coverage tautological). This test pins the
+    /// limitation: if the roundtrip ever becomes stable here, the codec was
+    /// fixed and Float can rejoin the generative domain.
+    #[test]
+    fn json_float_roundtrip_is_a_known_text_anchor_limitation() {
+        // Shrunk from the S4 property run before Float was excluded.
+        let f = -3.0821111369395157e146_f64;
+        let t0 = encode_to_text(&Value::Float(f)).expect("finite float encodes");
+        let parsed = serde_json::from_str::<JsonValue>(&t0).expect("encode text parses as JSON");
+        let decoded = decode_value(&parsed, &Value::named_type("Data"), "Json")
+            .unwrap_or_else(|_| panic!("Data decode succeeds for {t0}"));
+        let t1 = encode_to_text(&decoded).expect("re-encode succeeds");
+        assert_ne!(
+            t1, t0,
+            "float roundtrip is unexpectedly text-stable; the codec may be \
+             fixed — re-include Float in json_safe_value_strategy"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// Text-anchored JSON codec law:
+        /// `encode(decode(encode(v), Data)) == encode(v)` (as canonical text).
+        ///
+        /// Why text, not value equality:
+        /// - Data-target decode builds a structural constructor tree
+        ///   (`@Array([@Int(1), …])`), not a plain value, so
+        ///   `decode(encode(v))` is never structurally equal to plain `v`.
+        /// - Anchoring on encode's image (canonical JSON text) is stable and
+        ///   well-defined, and eliminates the float/int normalization hazard
+        ///   for free: the codec renders `Float(1.0)` as `"1"`, which decode
+        ///   reads back as `@Int(1)` and re-encodes as `"1"`. Comparing text
+        ///   makes that collapse a no-op; finite floats need no special-case.
+        #[test]
+        fn json_encode_decode_encode_is_text_stable(v in json_safe_value_strategy()) {
+            let t0 = match encode_to_text(&v) {
+                Ok(text) => text,
+                Err(error) => {
+                    return Err(TestCaseError::fail(format!(
+                        "in-domain value must encode; error={error}, v={v:?}"
+                    )));
+                }
+            };
+
+            let parsed = match serde_json::from_str::<JsonValue>(&t0) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(TestCaseError::fail(format!(
+                        "canonical encode text must parse; error={error}, t0={t0}"
+                    )));
+                }
+            };
+
+            // DecodeError is not Debug; map failures through TestCaseError.
+            let decoded = match decode_value(&parsed, &Value::named_type("Data"), "Json") {
+                Ok(value) => value,
+                Err(_) => {
+                    return Err(TestCaseError::fail(format!(
+                        "Data decode must succeed for encode text; t0={t0}"
+                    )));
+                }
+            };
+
+            let t1 = match encode_to_text(&decoded) {
+                Ok(text) => text,
+                Err(error) => {
+                    return Err(TestCaseError::fail(format!(
+                        "decoded Data tree must encode; error={error}, decoded={decoded:?}"
+                    )));
+                }
+            };
+
+            prop_assert_eq!(
+                t1,
+                t0,
+                "encode∘decode∘encode is not text-stable; v={:?}",
+                v
+            );
+        }
     }
 }
