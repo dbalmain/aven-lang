@@ -1,11 +1,19 @@
 pub mod codes;
 pub mod diagnostic;
 pub mod explain;
+pub mod session;
+pub mod sha256;
 pub mod source;
 pub mod span;
 
 pub use diagnostic::{Diagnostic, DiagnosticReport, Label, Severity};
 pub use explain::{DiagnosticExplanation, explain};
+pub use session::{
+    SESSION_LOG_ENV, SESSION_SCHEMA_VERSION, SESSION_TAG_ENV, SessionRecord, SessionRecordParts,
+    SessionSummary, SessionTimings, append_session_record, append_session_record_if_enabled,
+    session_log_path_from_env, session_tag_from_env,
+};
+pub use sha256::sha256_hex;
 pub use source::{FileId, LineIndex, SourceFile, SourceMap, SourcePosition};
 pub use span::Span;
 

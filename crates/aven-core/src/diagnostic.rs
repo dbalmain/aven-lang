@@ -1,13 +1,14 @@
 use crate::{FileId, Span};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Severity {
     Error,
     Warning,
     Note,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Label {
     pub span: Span,
     pub message: String,
@@ -22,7 +23,10 @@ impl Label {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Machine-readable diagnostic shape shared by `aven check --format json`,
+/// session logs, and (later) LSP telemetry. Field names and nesting match the
+/// existing CLI JSON contract exactly — do not invent a parallel shape.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Diagnostic {
     pub severity: Severity,
     pub code: Option<String>,

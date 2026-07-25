@@ -9,9 +9,92 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use ariadne::{Config as AriadneConfig, Label as AriadneLabel, Report, ReportKind, Source};
-use aven_core::{Diagnostic as AvenDiagnostic, DiagnosticReport, FileId, Severity, SourceFile};
+use aven_core::{
+    Diagnostic as AvenDiagnostic, DiagnosticReport, FileId, SessionRecord, SessionRecordParts,
+    SessionSummary, SessionTimings, Severity, SourceFile,
+};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
+
+/// Accumulates one session-log record for the current invocation.
+///
+/// Emitted exactly once via [`SessionCapture::emit`] from the single exit funnel
+/// in `main` — never from a `Drop` impl, because several paths used to call
+/// `std::process::exit` (and any future hard-exit would still skip destructors).
+#[derive(Debug, Default)]
+struct SessionCapture {
+    subcommand: String,
+    argv: Vec<String>,
+    entry_path: Option<String>,
+    entry_source: Option<String>,
+    timings: Option<SessionTimings>,
+    diagnostics: Vec<AvenDiagnostic>,
+    summary: Option<SessionSummary>,
+}
+
+impl SessionCapture {
+    fn new(subcommand: impl Into<String>, argv: Vec<String>) -> Self {
+        Self {
+            subcommand: subcommand.into(),
+            argv,
+            ..Self::default()
+        }
+    }
+
+    fn set_entry_path(&mut self, path: &Path) {
+        self.entry_path = Some(path.display().to_string());
+    }
+
+    fn set_entry_source(&mut self, source: &str) {
+        self.entry_source = Some(source.to_owned());
+    }
+
+    fn set_timings(&mut self, timings: aven_compiler::PhaseTimings) {
+        self.timings = Some(SessionTimings {
+            parse: duration_ms(timings.parse),
+            name: timings.name.map(duration_ms),
+            check: timings.check.map(duration_ms),
+            total: duration_ms(timings.total),
+        });
+    }
+
+    fn set_diagnostics(&mut self, diagnostics: Vec<AvenDiagnostic>) {
+        self.diagnostics = diagnostics;
+    }
+
+    fn set_diagnostics_from_reports(&mut self, reports: &[DiagnosticReport]) {
+        self.diagnostics = reports
+            .iter()
+            .flat_map(|report| report.diagnostics.iter().cloned())
+            .collect();
+    }
+
+    fn set_test_summary(&mut self, total: usize, passed: usize, failed: usize, errored: usize) {
+        self.summary = Some(SessionSummary::Test {
+            total,
+            passed,
+            failed,
+            errored,
+        });
+    }
+
+    fn emit(self, exit_code: i32) {
+        let record = SessionRecord::from_parts(SessionRecordParts {
+            tag: aven_core::session_tag_from_env(),
+            aven_version: env!("CARGO_PKG_VERSION").to_owned(),
+            aven_build_commit: option_env!("AVEN_BUILD_COMMIT").map(str::to_owned),
+            subcommand: self.subcommand,
+            argv: self.argv,
+            entry_path: self.entry_path,
+            entry_source: self.entry_source,
+            timings: self.timings,
+            diagnostics: self.diagnostics,
+            exit_code,
+            summary: self.summary,
+        });
+        aven_core::append_session_record_if_enabled(&record);
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "aven")]
@@ -208,58 +291,124 @@ fn normalize_direct_shebang_argv(args: Vec<OsString>) -> Result<NormalizedArgv> 
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    // Single exit funnel: every command returns an exit code (or Err → 1), then
+    // we emit the session record once and call `process::exit`. This avoids a
+    // Drop-based logger, which would silently miss the old `process::exit` paths.
+    let exit_code = match run_cli().await {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            1
+        }
+    };
+    std::process::exit(exit_code);
+}
+
+async fn run_cli() -> Result<i32> {
+    let raw_args = std::env::args_os().collect::<Vec<_>>();
     let NormalizedArgv {
         args,
         direct_shebang_arguments,
-    } = normalize_direct_shebang_argv(std::env::args_os().collect())?;
-    let cli = Cli::parse_from(args);
+    } = normalize_direct_shebang_argv(raw_args)?;
+    let argv = args
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let cli = Cli::parse_from(&args);
+    let subcommand = command_name(&cli.command);
+    let mut session = SessionCapture::new(subcommand, argv);
 
-    match cli.command {
+    let result = match cli.command {
         Command::Check {
             path,
             format,
             timings,
             operators,
-        } => check(&path, format, timings, &operators),
+        } => {
+            session.set_entry_path(&path);
+            check(&path, format, timings, &operators, &mut session)
+        }
         Command::Run {
             path,
             format,
             log,
             log_format,
             operators,
-        } => run(
-            &path,
-            format,
-            &RunConfig { log, log_format },
-            &operators,
-            direct_shebang_arguments.as_deref(),
-        ),
+        } => {
+            session.set_entry_path(&path);
+            run(
+                &path,
+                format,
+                &RunConfig { log, log_format },
+                &operators,
+                direct_shebang_arguments.as_deref(),
+                &mut session,
+            )
+        }
         Command::Test {
             path,
             format,
             log,
             log_format,
             operators,
-        } => test(
-            &path,
-            format,
-            &RunConfig { log, log_format },
-            &operators,
-            direct_shebang_arguments.as_deref(),
-        ),
-        Command::Explain { code } => explain(&code),
-        Command::Tokens { path } => tokens(&path),
-        Command::Layout { path } => layout(&path),
+        } => {
+            session.set_entry_path(&path);
+            test(
+                &path,
+                format,
+                &RunConfig { log, log_format },
+                &operators,
+                direct_shebang_arguments.as_deref(),
+                &mut session,
+            )
+        }
+        Command::Explain { code } => explain(&code).map(|()| 0),
+        Command::Tokens { path } => {
+            session.set_entry_path(&path);
+            tokens(&path, &mut session)
+        }
+        Command::Layout { path } => {
+            session.set_entry_path(&path);
+            layout(&path, &mut session)
+        }
         Command::Fmt {
             check,
             path,
             operators,
-        } => fmt(&path, check, &operators),
+        } => {
+            session.set_entry_path(&path);
+            fmt(&path, check, &operators, &mut session)
+        }
         Command::Lsp => {
             aven_lsp::run_stdio().await;
-            Ok(())
+            Ok(0)
         }
+    };
+
+    match result {
+        Ok(code) => {
+            session.emit(code);
+            Ok(code)
+        }
+        Err(error) => {
+            // Emit before propagating so load/bail failures still leave a record.
+            session.emit(1);
+            Err(error)
+        }
+    }
+}
+
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Check { .. } => "check",
+        Command::Run { .. } => "run",
+        Command::Test { .. } => "test",
+        Command::Explain { .. } => "explain",
+        Command::Tokens { .. } => "tokens",
+        Command::Layout { .. } => "layout",
+        Command::Fmt { .. } => "fmt",
+        Command::Lsp => "lsp",
     }
 }
 
@@ -279,11 +428,13 @@ fn check(
     format: OutputFormat,
     show_timings: bool,
     operators: &[String],
-) -> Result<()> {
+    session: &mut SessionCapture,
+) -> Result<i32> {
     let host = parse_only_host();
     let roots = discover_roots(path);
     let configured =
         load_path_operator_config(path, &roots, operators, &host, None, false, format)?;
+    session.set_entry_source(configured.file.source());
     let checked =
         aven_compiler::check_path_with_host_globals_and_entry_source_and_fixities_with_roots(
             path,
@@ -294,6 +445,8 @@ fn check(
         )
         .with_context(|| format!("failed to load {}", path.display()))?;
     let timings = checked.timings;
+    session.set_timings(timings);
+    session.set_diagnostics_from_reports(&checked.reports);
     let has_errors = reports_have_errors(&checked.reports);
 
     match format {
@@ -323,7 +476,7 @@ fn check(
         );
     }
 
-    Ok(())
+    Ok(0)
 }
 
 fn run(
@@ -332,8 +485,17 @@ fn run(
     config: &RunConfig,
     operators: &[String],
     direct_shebang_arguments: Option<&[String]>,
-) -> Result<()> {
-    let output = eval_entry_module(path, format, config, operators, direct_shebang_arguments)?;
+    session: &mut SessionCapture,
+) -> Result<i32> {
+    let output = eval_entry_module(
+        path,
+        format,
+        config,
+        operators,
+        direct_shebang_arguments,
+        session,
+    )?;
+    session.set_diagnostics_from_reports(&output.reports);
     let has_errors = reports_have_errors(&output.reports);
 
     match format {
@@ -358,6 +520,7 @@ fn run(
         let rendered = match aven_eval::display_text(&value) {
             Ok(rendered) => rendered,
             Err(diagnostics) => {
+                session.set_diagnostics(diagnostics.clone());
                 for diagnostic in diagnostics {
                     eprintln!("{}", diagnostic.message);
                 }
@@ -366,12 +529,12 @@ fn run(
         };
         if is_err_value(&value) {
             eprintln!("{rendered}");
-            std::process::exit(1);
+            return Ok(1);
         }
         println!("{rendered}");
     }
 
-    Ok(())
+    Ok(0)
 }
 
 /// Exit codes for `aven test`: harnesses depend on these being distinct.
@@ -385,9 +548,18 @@ fn test(
     config: &RunConfig,
     operators: &[String],
     direct_shebang_arguments: Option<&[String]>,
-) -> Result<()> {
-    let output = eval_entry_module(path, format, config, operators, direct_shebang_arguments)?;
+    session: &mut SessionCapture,
+) -> Result<i32> {
+    let output = eval_entry_module(
+        path,
+        format,
+        config,
+        operators,
+        direct_shebang_arguments,
+        session,
+    )?;
     if reports_have_errors(&output.reports) {
+        session.set_diagnostics_from_reports(&output.reports);
         match format {
             OutputFormat::Text => {
                 print_diagnostic_reports(&output.source_map, &output.reports)?;
@@ -396,7 +568,7 @@ fn test(
                 print_json_diagnostic_reports(&output.source_map, &output.reports, None)?;
             }
         }
-        std::process::exit(TEST_EXIT_SUITE_UNRUNNABLE);
+        return Ok(TEST_EXIT_SUITE_UNRUNNABLE);
     }
 
     let Some(suite_value) = output.value else {
@@ -407,7 +579,7 @@ fn test(
         .with_note(
             "write a record literal as the last expression, e.g. `{ \"case\": () => test.pass }`",
         );
-        return emit_suite_unrunnable(path, format, &output.source_map, vec![diagnostic]);
+        return emit_suite_unrunnable(path, format, &output.source_map, vec![diagnostic], session);
     };
 
     let aven_eval::Value::Record(fields) = suite_value else {
@@ -419,7 +591,7 @@ fn test(
         .with_note(
             "export a record whose fields are `() => Result({}, Text)` thunks as the module value",
         );
-        return emit_suite_unrunnable(path, format, &output.source_map, vec![diagnostic]);
+        return emit_suite_unrunnable(path, format, &output.source_map, vec![diagnostic], session);
     };
 
     // Field order follows the record's evaluation order (source order for
@@ -454,7 +626,7 @@ fn test(
         }
     }
     if !suite_diagnostics.is_empty() {
-        return emit_suite_unrunnable(path, format, &output.source_map, suite_diagnostics);
+        return emit_suite_unrunnable(path, format, &output.source_map, suite_diagnostics, session);
     }
 
     let suite_started = std::time::Instant::now();
@@ -474,16 +646,23 @@ fn test(
         duration_ms: duration_ms(suite_started.elapsed()),
     };
 
+    session.set_test_summary(
+        report.total(),
+        report.passed(),
+        report.failed(),
+        report.errored(),
+    );
+
     match format {
         OutputFormat::Text => print_test_suite_text(&report)?,
         OutputFormat::Json => print_test_suite_json(&report)?,
     }
 
     if report.failed() + report.errored() > 0 {
-        std::process::exit(TEST_EXIT_CASES_FAILED);
+        return Ok(TEST_EXIT_CASES_FAILED);
     }
     debug_assert_eq!(TEST_EXIT_OK, 0);
-    Ok(())
+    Ok(TEST_EXIT_OK)
 }
 
 /// Shared host/root/operator/eval path for `run` and `test`.
@@ -493,6 +672,7 @@ fn eval_entry_module(
     config: &RunConfig,
     operators: &[String],
     direct_shebang_arguments: Option<&[String]>,
+    session: &mut SessionCapture,
 ) -> Result<aven_compiler::ModuleEvalOutput> {
     let host = build_host(config)?;
     let roots = discover_roots_for_host(path, &host);
@@ -505,6 +685,7 @@ fn eval_entry_module(
         direct_shebang_arguments.is_none(),
         format,
     )?;
+    session.set_entry_source(configured.file.source());
     aven_compiler::eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
         path,
         &host.check_host_globals(),
@@ -611,7 +792,9 @@ fn emit_suite_unrunnable(
     format: OutputFormat,
     source_map: &aven_core::SourceMap,
     diagnostics: Vec<AvenDiagnostic>,
-) -> Result<()> {
+    session: &mut SessionCapture,
+) -> Result<i32> {
+    session.set_diagnostics(diagnostics.clone());
     let file_id = source_map
         .files()
         .iter()
@@ -628,7 +811,7 @@ fn emit_suite_unrunnable(
         OutputFormat::Text => print_diagnostic_reports(source_map, &reports)?,
         OutputFormat::Json => print_json_diagnostic_reports(source_map, &reports, None)?,
     }
-    std::process::exit(TEST_EXIT_SUITE_UNRUNNABLE);
+    Ok(TEST_EXIT_SUITE_UNRUNNABLE)
 }
 
 fn print_test_suite_text(report: &TestSuiteReport) -> Result<()> {
@@ -1174,36 +1357,19 @@ fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
+/// Same shape as `aven check --format json` diagnostics — delegated to
+/// [`AvenDiagnostic`]'s serde impl in `aven-core` so session logs and the CLI
+/// cannot drift apart.
 fn diagnostic_json(diagnostic: &AvenDiagnostic) -> serde_json::Value {
-    json!({
-        "severity": severity_name(diagnostic.severity),
-        "code": diagnostic.code,
-        "message": diagnostic.message,
-        "labels": diagnostic.labels.iter().map(|label| {
-            json!({
-                "span": {
-                    "start": label.span.start,
-                    "end": label.span.end,
-                },
-                "message": label.message,
-            })
-        }).collect::<Vec<_>>(),
-        "notes": diagnostic.notes,
-    })
+    serde_json::to_value(diagnostic).expect("Diagnostic always serializes to JSON")
 }
 
-fn severity_name(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Error => "error",
-        Severity::Warning => "warning",
-        Severity::Note => "note",
-    }
-}
-
-fn tokens(path: &Path) -> Result<()> {
+fn tokens(path: &Path, session: &mut SessionCapture) -> Result<i32> {
     let file = load_source_file(path)?;
+    session.set_entry_source(file.source());
     let output = aven_parser::lex_source(file.source());
     let report = DiagnosticReport::new(file.id, output.diagnostics.clone());
+    session.set_diagnostics(report.diagnostics.clone());
 
     if !report.is_empty() {
         print_diagnostics(&file, &report)?;
@@ -1222,13 +1388,15 @@ fn tokens(path: &Path) -> Result<()> {
         bail!("tokenization failed");
     }
 
-    Ok(())
+    Ok(0)
 }
 
-fn layout(path: &Path) -> Result<()> {
+fn layout(path: &Path, session: &mut SessionCapture) -> Result<i32> {
     let file = load_source_file(path)?;
+    session.set_entry_source(file.source());
     let output = aven_parser::layout_source(file.source());
     let report = DiagnosticReport::new(file.id, output.diagnostics.clone());
+    session.set_diagnostics(report.diagnostics.clone());
 
     if !report.is_empty() {
         print_diagnostics(&file, &report)?;
@@ -1247,10 +1415,15 @@ fn layout(path: &Path) -> Result<()> {
         bail!("layout failed");
     }
 
-    Ok(())
+    Ok(0)
 }
 
-fn fmt(path: &Path, check: bool, operators: &[String]) -> Result<()> {
+fn fmt(
+    path: &Path,
+    check: bool,
+    operators: &[String],
+    session: &mut SessionCapture,
+) -> Result<i32> {
     let host = parse_only_host();
     let roots = aven_compiler::ModuleRoots::discover(path);
     let configured = load_path_operator_config(
@@ -1263,10 +1436,12 @@ fn fmt(path: &Path, check: bool, operators: &[String]) -> Result<()> {
         OutputFormat::Text,
     )?;
     let file = configured.file;
+    session.set_entry_source(file.source());
     let formatted =
         match aven_fmt::format_source_with_fixities(file.source(), &configured.operator_fixities) {
             Ok(formatted) => formatted,
             Err(diagnostics) => {
+                session.set_diagnostics(diagnostics.clone());
                 let report = DiagnosticReport::new(file.id, diagnostics);
                 print_diagnostics(&file, &report)?;
                 bail!("formatting failed");
@@ -1274,7 +1449,7 @@ fn fmt(path: &Path, check: bool, operators: &[String]) -> Result<()> {
         };
 
     if file.source() == formatted {
-        return Ok(());
+        return Ok(0);
     }
 
     if check {
@@ -1282,7 +1457,7 @@ fn fmt(path: &Path, check: bool, operators: &[String]) -> Result<()> {
     }
 
     fs::write(path, formatted).with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
+    Ok(0)
 }
 
 fn load_source_file(path: &Path) -> Result<SourceFile> {
