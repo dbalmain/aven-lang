@@ -996,4 +996,24 @@ mod tests {
             "formatter must not invent a return annotation: {formatted}"
         );
     }
+
+    #[test]
+    fn preserves_dollar_escape_in_string_literals() {
+        // `\$` is source-preserved (not rewritten to `\u{24}` or bare `$`).
+        let source = r#"value = "\$" "#;
+        let formatted = format_source(source).expect("format");
+        assert!(
+            formatted.contains(r#"\$"#),
+            "formatter must preserve `\\$`: {formatted}"
+        );
+        assert_eq!(format_source(&formatted), Ok(formatted.clone()));
+
+        let literal_interp = r#"value = "a\${b}" "#;
+        let formatted = format_source(literal_interp).expect("format");
+        assert!(
+            formatted.contains(r#"\${b}"#),
+            "formatter must preserve escaped interpolation: {formatted}"
+        );
+        assert_eq!(format_source(&formatted), Ok(formatted));
+    }
 }

@@ -104,11 +104,11 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::lex::UNKNOWN_ESCAPE,
-        text: "A string literal contains an unsupported or malformed escape sequence. Use one of the supported escapes: \\\\, \\\", \\n, \\r, \\t, or \\u{H} with a valid Unicode scalar value.",
+        text: "A string literal contains an unsupported or malformed escape sequence. Use one of the supported escapes: \\\\, \\\", \\$, \\n, \\r, \\t, or \\u{H} with a valid Unicode scalar value.",
     },
     DiagnosticExplanation {
         code: codes::lex::UNTERMINATED_INTERPOLATION,
-        text: "A string interpolation was opened but the interpolated string did not reach its closing quote. Close the interpolation with } and close the surrounding string with a quote.",
+        text: "A string interpolation was opened but the interpolated string did not reach its closing quote. Close the interpolation with } and close the surrounding string with a quote. If you meant a literal dollar before a brace, write \\${ instead of ${.",
     },
     DiagnosticExplanation {
         code: codes::lex::UNTERMINATED_REGEX,

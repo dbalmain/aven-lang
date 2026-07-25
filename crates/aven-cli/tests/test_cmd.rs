@@ -435,6 +435,10 @@ fn parse_json(output: &Output) -> serde_json::Value {
 /// exactly the same inputs, and only the *message* comes out inverted. This is
 /// the one test that fails if the orientation flips, so the assertion messages
 /// keep agreeing with what `aven explain test.not-callable` teaches.
+///
+/// Messages render compared values with `debugText` (quoted Text, structural
+/// containers) so orientation stays readable when values contain commas or
+/// trailing punctuation.
 #[test]
 fn std_test_helper_messages_report_actual_and_expected_in_order() {
     let file = TempFile::new(
@@ -443,6 +447,7 @@ fn std_test_helper_messages_report_actual_and_expected_in_order() {
 
 {
   "eq reports expected then actual": () => test.expectEq(1, 2),
+  "eq quotes Text values": () => test.expectEq("One for Bob, one for me.", "Two for Bob."),
   "ok reports the err payload": () => test.expectOk(@Err("boom")),
   "err reports the ok payload": () => test.expectErr(@Ok(7)),
 }
@@ -455,8 +460,13 @@ fn std_test_helper_messages_report_actual_and_expected_in_order() {
     let cases = json["cases"].as_array().expect("cases array");
     // `expectEq(actual, expected)`: 1 is what we got, 2 is what we wanted.
     assert_eq!(cases[0]["message"], "expected 2, got 1");
-    assert_eq!(cases[1]["message"], "expected @Ok, got @Err(boom)");
-    assert_eq!(cases[2]["message"], "expected @Err, got @Ok(7)");
+    // Text is `debugText`-quoted so commas and trailing periods stay unambiguous.
+    assert_eq!(
+        cases[1]["message"],
+        "expected \"Two for Bob.\", got \"One for Bob, one for me.\""
+    );
+    assert_eq!(cases[2]["message"], "expected @Ok, got @Err(\"boom\")");
+    assert_eq!(cases[3]["message"], "expected @Err, got @Ok(7)");
 }
 
 fn stdout(output: &Output) -> String {

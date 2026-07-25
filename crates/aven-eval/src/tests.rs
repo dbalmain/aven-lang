@@ -302,6 +302,13 @@ fn evaluates_supported_string_escapes() {
 }
 
 #[test]
+fn evaluates_dollar_string_escape() {
+    assert_eval(r#""\$""#, Value::Text("$".to_owned()));
+    assert_eval(r#""a\${b}""#, Value::Text("a${b}".to_owned()));
+    assert_eval(r#""\u{24}""#, Value::Text("$".to_owned()));
+}
+
+#[test]
 fn evaluates_unicode_string_escape() {
     assert_eval(r#""\u{41}""#, Value::Text("A".to_owned()));
 }
@@ -3184,7 +3191,7 @@ fn text_strategy() -> impl Strategy<Value = String> {
 
 /// Embed `s` as an Aven double-quoted string literal.
 /// Escapes quotes, backslashes, and controls; uses `\u{24}` for `$` so `${`
-/// cannot open interpolation (bare `\$` is not a supported escape).
+/// cannot open interpolation (`\$` is also accepted by the lexer).
 fn render_aven_string(s: &str) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(s.len() + 2);

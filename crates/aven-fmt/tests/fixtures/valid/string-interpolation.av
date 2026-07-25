@@ -1,1 +1,2 @@
 message="hi ${user.name} ${1+2}"
+literalDollar="cost: \${amount}"

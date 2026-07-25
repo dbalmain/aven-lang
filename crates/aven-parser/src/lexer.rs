@@ -443,7 +443,7 @@ impl Lexer<'_> {
         };
 
         match ch {
-            'n' | 'r' | 't' | '"' | '\\' => {
+            'n' | 'r' | 't' | '"' | '\\' | '$' => {
                 self.offset += ch.len_utf8();
             }
             'u' => self.scan_unicode_escape(escape_start),
@@ -519,7 +519,7 @@ impl Lexer<'_> {
                 .with_code(codes::lex::UNKNOWN_ESCAPE)
                 .with_label(Label::primary(span, label))
                 .with_note(
-                    "supported escapes are `\\\\`, `\\\"`, `\\n`, `\\r`, `\\t`, and `\\u{H}`",
+                    "supported escapes are `\\\\`, `\\\"`, `\\$`, `\\n`, `\\r`, `\\t`, and `\\u{H}`",
                 ),
         );
     }
@@ -558,7 +558,8 @@ impl Lexer<'_> {
                     Span::new(start, self.offset),
                     "interpolated string starts here",
                 ))
-                .with_note("close the interpolation with `}` and the string with a `\"`."),
+                .with_note("close the interpolation with `}` and the string with a `\"`.")
+                .with_note("`${` opens interpolation; write a literal `$` before `{` as `\\$`."),
         );
 
         if synthesize_end {
@@ -1175,19 +1176,24 @@ mod tests {
     }
 
     #[test]
-    fn escaped_interpolation_marker_recovers_as_a_plain_string() {
+    fn escaped_interpolation_marker_is_a_plain_string() {
         let output = lex_source(r#""\${x}""#);
         let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
 
-        assert_eq!(output.diagnostics.len(), 1);
-        assert_eq!(
-            output.diagnostics[0].code.as_deref(),
-            Some("lex.unknown-escape")
-        );
+        assert!(output.diagnostics.is_empty());
         assert_eq!(
             tokens,
             vec![TokenKind::StringLiteral(r#""\${x}""#.to_owned())]
         );
+    }
+
+    #[test]
+    fn dollar_escape_is_accepted() {
+        let output = lex_source(r#""\$""#);
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(tokens, vec![TokenKind::StringLiteral(r#""\$""#.to_owned())]);
     }
 
     #[test]
@@ -1210,7 +1216,7 @@ mod tests {
 
     #[test]
     fn reports_unterminated_interpolation_on_newline_and_eof() {
-        for source in ["\"a${b\n", "\"a${b"] {
+        for source in ["\"a${b\n", "\"a${b", "\"a${"] {
             let output = lex_source(source);
             let codes: Vec<_> = output
                 .diagnostics
@@ -1219,6 +1225,11 @@ mod tests {
                 .collect();
 
             assert_eq!(codes, vec!["lex.unterminated-interpolation"]);
+            let notes = &output.diagnostics[0].notes;
+            assert!(
+                notes.iter().any(|note| note.contains("\\$")),
+                "expected a note about `\\$` for literal dollars, got {notes:?}"
+            );
         }
     }
 

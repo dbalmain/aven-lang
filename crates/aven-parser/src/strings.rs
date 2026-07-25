@@ -30,6 +30,7 @@ pub(crate) fn decode_string_fragment(text: &str) -> String {
             't' => decoded.push('\t'),
             '"' => decoded.push('"'),
             '\\' => decoded.push('\\'),
+            '$' => decoded.push('$'),
             'u' => decode_unicode_escape(&mut chars, &mut decoded),
             other => decoded.push(other),
         }
@@ -82,6 +83,8 @@ mod tests {
     #[test]
     fn decodes_supported_escapes() {
         assert_eq!(decode_string_literal(r#""\\\"\n\r\t""#), "\\\"\n\r\t");
+        assert_eq!(decode_string_literal(r#""\$""#), "$");
+        assert_eq!(decode_string_literal(r#""a\${b}""#), "a${b}");
     }
 
     #[test]
