@@ -1990,6 +1990,78 @@ fn text_reverse_index_of_slice_capitalize() {
 }
 
 #[test]
+fn text_length_counts_unicode_scalar_values() {
+    // Units are scalar values, not graphemes and not UTF-8 bytes.
+    assert_module_value("\"abc\".length()\n", Value::Int(3));
+    assert_module_value("\"café\".length()\n", Value::Int(4));
+    // Combining acute: e + U+0301 is two scalars (deliberate non-grapheme answer).
+    assert_module_value("\"e\\u{301}\".length()\n", Value::Int(2));
+    assert_module_value("\"👍\".length()\n", Value::Int(1));
+    assert_module_value("\"\".length()\n", Value::Int(0));
+}
+
+#[test]
+fn text_indexing_by_scalar_value() {
+    // Same wrap/OOB convention as arrays: negative from end, OOB → undefined.
+    assert_module_value("\"abc\"[0]\n", Value::Text("a".to_owned()));
+    assert_module_value("\"abc\"[1]\n", Value::Text("b".to_owned()));
+    assert_module_value("\"abc\"[-1]\n", Value::Text("c".to_owned()));
+    assert_module_value("\"abc\"[10]\n", Value::Undefined);
+    assert_module_value("\"\"[0]\n", Value::Undefined);
+    assert_module_value("\"\"[-1]\n", Value::Undefined);
+    // Multi-byte scalar: index is by scalar, not by UTF-8 byte.
+    // A byte-based implementation would mis-split café and fail this.
+    assert_module_value("\"café\"[3]\n", Value::Text("é".to_owned()));
+    assert_module_value("\"café\"[0]\n", Value::Text("c".to_owned()));
+    assert_module_value("\"café\"[-1]\n", Value::Text("é".to_owned()));
+    assert_module_value("\"e\\u{301}\"[1]\n", Value::Text("\u{301}".to_owned()));
+    assert_module_value("\"👍\"[0]\n", Value::Text("👍".to_owned()));
+}
+
+#[test]
+fn text_chars_yields_scalar_array() {
+    assert_module_value(
+        "\"abc\".chars()\n",
+        array_value(vec![
+            Value::Text("a".to_owned()),
+            Value::Text("b".to_owned()),
+            Value::Text("c".to_owned()),
+        ]),
+    );
+    assert_module_value(
+        "\"café\".chars()\n",
+        array_value(vec![
+            Value::Text("c".to_owned()),
+            Value::Text("a".to_owned()),
+            Value::Text("f".to_owned()),
+            Value::Text("é".to_owned()),
+        ]),
+    );
+    assert_module_value(
+        "\"e\\u{301}\".chars()\n",
+        array_value(vec![
+            Value::Text("e".to_owned()),
+            Value::Text("\u{301}".to_owned()),
+        ]),
+    );
+    assert_module_value("\"\".chars()\n", array_value(vec![]));
+    // Round-trip: chars joined with empty separator reconstructs the text.
+    assert_module_value(
+        "\"café\".chars().joinWith(\"\")\n",
+        Value::Text("café".to_owned()),
+    );
+    // Round-trip: chars().length() (ambient Array.length) matches Text.length().
+    assert_eq!(
+        eval_with_builtins("t = \"e\\u{301}\"\nt.chars().length() == t.length()\n"),
+        Value::Bool(true),
+    );
+    assert_eq!(
+        eval_with_builtins("t = \"café\"\nt.chars().length() == t.length()\n"),
+        Value::Bool(true),
+    );
+}
+
+#[test]
 fn int_numeric_helpers() {
     assert_module_value(
         "[\
@@ -3064,4 +3136,73 @@ proptest! {
             "push(e).length() should be xs.length() + 1"
         );
     }
+
+    /// Text.chars()/length() laws over arbitrary scalar strings:
+    /// - chars().joinWith("") reconstructs the input
+    /// - chars().length() == length()
+    /// - length() equals Rust `chars().count()`
+    #[test]
+    fn text_chars_and_length_laws(s in text_strategy()) {
+        let lit = render_aven_string(&s);
+        let source = format!(
+            "t = {lit}\n\
+             {{\n\
+               len: t.length(),\n\
+               charsLen: t.chars().length(),\n\
+               joined: t.chars().joinWith(\"\"),\n\
+             }}\n"
+        );
+        let result = eval_with_builtins(&source);
+        let len = record_field(&result, "len")?;
+        let chars_len = record_field(&result, "charsLen")?;
+        let joined = record_field(&result, "joined")?;
+
+        // Strategy caps length at 24 scalars, so the cast is exact.
+        let expected_len = s.chars().count() as i64;
+        prop_assert_eq!(
+            len,
+            &Value::Int(expected_len),
+            "length() disagrees with Rust chars().count()"
+        );
+        prop_assert_eq!(
+            chars_len,
+            &Value::Int(expected_len),
+            "chars().length() disagrees with length()"
+        );
+        prop_assert_eq!(
+            joined,
+            &Value::Text(s.clone()),
+            "chars().joinWith(\"\") does not reconstruct input"
+        );
+    }
+}
+
+/// Bounded arbitrary Unicode scalar strings (valid `char`s; length 0..24).
+fn text_strategy() -> impl Strategy<Value = String> {
+    prop::collection::vec(any::<char>(), 0..24).prop_map(|cs| cs.into_iter().collect())
+}
+
+/// Embed `s` as an Aven double-quoted string literal.
+/// Escapes quotes, backslashes, and controls; uses `\u{24}` for `$` so `${`
+/// cannot open interpolation (bare `\$` is not a supported escape).
+fn render_aven_string(s: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\u{24}"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{{{:X}}}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

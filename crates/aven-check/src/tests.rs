@@ -5551,10 +5551,20 @@ fn text_method_field_query_returns_typed_methods() {
         .iter()
         .find(|field| field.name == "capitalize")
         .expect("capitalize method");
+    let length = fields
+        .iter()
+        .find(|field| field.name == "length")
+        .expect("length method");
+    let chars = fields
+        .iter()
+        .find(|field| field.name == "chars")
+        .expect("chars method");
     assert_eq!(reverse.ty.render(), "() -> Text");
     assert_eq!(index_of.ty.render(), "Text -> ?Int");
     assert_eq!(slice.ty.render(), "(Int, Int) -> Text");
     assert_eq!(capitalize.ty.render(), "() -> Text");
+    assert_eq!(length.ty.render(), "() -> Int");
+    assert_eq!(chars.ty.render(), "() -> Array(Text)");
     let literal_fields = record_fields(&build::text_literals(&["42"]))
         .expect("text literal unions have Text methods");
     assert!(
@@ -5562,10 +5572,8 @@ fn text_method_field_query_returns_typed_methods() {
         "text literal unions must expose Text.toInt"
     );
     assert!(
-        !fields
-            .iter()
-            .any(|field| field.name == "length" || field.name == "len"),
-        "Text must not expose length/len"
+        !fields.iter().any(|field| field.name == "len"),
+        "Text must not expose bare `len` (use length())"
     );
 }
 
@@ -5597,6 +5605,9 @@ fn text_methods_type_check_and_reject_mismatches() {
         "w : Int = t.indexOf(\"h\") ?? -1\n",
         "x = t.slice(0, 1)\n",
         "y = t.capitalize()\n",
+        "len : Int = t.length() + 1\n",
+        "cs : Array(Text) = t.chars()\n",
+        "ch : Text = t[0] ?? \"\"\n",
     ));
     let ok_check = check_module(&ok.module);
     assert!(
@@ -5665,6 +5676,48 @@ fn text_methods_type_check_and_reject_mismatches() {
         "1.isEmpty should error: {:?}",
         non_text_check.diagnostics
     );
+
+    // length()/chars() are methods: misuse of args is rejected; length result is Int.
+    let length_args = parse_module("t : Text = \"hi\"\nvalue = t.length(1)\n");
+    let length_args_check = check_module(&length_args.module);
+    assert!(
+        !length_args_check.diagnostics.is_empty(),
+        "t.length(1) should reject an argument"
+    );
+
+    let length_misuse = parse_module("t : Text = \"hi\"\nvalue : Text = t.length()\n");
+    let length_misuse_check = check_module(&length_misuse.module);
+    assert_eq!(
+        matching_codes(&length_misuse_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "t.length() is Int, not Text: {:?}",
+        length_misuse_check.diagnostics
+    );
+
+    let chars_misuse = parse_module("t : Text = \"hi\"\nvalue : Text = t.chars()\n");
+    let chars_misuse_check = check_module(&chars_misuse.module);
+    assert_eq!(
+        matching_codes(&chars_misuse_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "t.chars() is Array(Text), not Text: {:?}",
+        chars_misuse_check.diagnostics
+    );
+}
+
+#[test]
+fn text_index_infers_optional_text() {
+    let output = parse_module("t : Text = \"abc\"\nch = t[1]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    let scheme = checker.infer_top_level_scheme("ch").expect("scheme for ch");
+    assert!(
+        matches!(&scheme.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::Named(name) if name == "Text")),
+        "expected `?Text`, got {:?}",
+        scheme.ty
+    );
+    assert!(checker.diagnostics.is_empty());
 }
 
 #[test]
@@ -7220,7 +7273,9 @@ fn computed_value_index_with_runtime_key_reports_not_comptime() {
 
 #[test]
 fn computed_value_index_with_non_record_receiver_reports_not_indexable() {
-    let output = parse_module("text = \"Ada\"\nvalue = text[\"name\"]\n");
+    // Int is still not indexable. Text is now indexable (scalar values); a
+    // string-key index on Text is a type mismatch instead (see next test).
+    let output = parse_module("n = 1\nvalue = n[\"name\"]\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
@@ -7234,6 +7289,22 @@ fn computed_value_index_with_non_record_receiver_reports_not_indexable() {
     assert_eq!(
         matching_codes(&checker.diagnostics, codes::ty::NOT_INDEXABLE),
         1
+    );
+}
+
+#[test]
+fn text_index_requires_an_int_index() {
+    let output = parse_module("text = \"Ada\"\nvalue = text[\"name\"]\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let _ = checker.infer_top_level_scheme("value");
+
+    assert_eq!(
+        matching_codes(&checker.diagnostics, codes::ty::MISMATCH),
+        1,
+        "Text index must be Int: {:?}",
+        checker.diagnostics
     );
 }
 
@@ -7383,9 +7454,8 @@ fn array_index_accepts_literal_and_bound_int_indexes() {
 
 #[test]
 fn array_index_with_deferred_index_type_keeps_the_index_deferred() {
-    let output = parse_module(
-        "arr = [1, 2, 3]\nunknown = \"not a record\"[\"key\"]\nvalue = arr[unknown]\n",
-    );
+    // Use a non-indexable receiver (Bool); Text is now indexable by Int.
+    let output = parse_module("arr = [1, 2, 3]\nunknown = true[\"key\"]\nvalue = arr[unknown]\n");
     let known_types = known_type_names(&output.module);
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);

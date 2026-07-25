@@ -498,8 +498,13 @@ pub const MAP_METHOD_NAMES: &[&str] = &[
 ];
 
 /// Roc-aligned Text helpers. Keep in lockstep with `aven_check::ty::TEXT_METHOD_NAMES`.
+///
+/// `length`/`chars` count and iterate Unicode scalar values (not graphemes);
+/// see the checker's `TEXT_METHOD_NAMES` doc for the provisional decision.
 pub const TEXT_METHOD_NAMES: &[&str] = &[
     "isEmpty",
+    "length",
+    "chars",
     "contains",
     "startsWith",
     "endsWith",
@@ -4104,6 +4109,14 @@ fn text_method(text: &str, field: &str) -> Option<Value> {
     let text = text.to_owned();
     match field {
         "isEmpty" => Some(text_nullary_bool(text, "isEmpty", |s| s.is_empty())),
+        "length" => Some(text_nullary_int(text, "length", |s| {
+            i64::try_from(s.chars().count()).map_err(|_| "Text.length is too large".to_owned())
+        })),
+        "chars" => Some(text_nullary_value(text, "chars", |s| {
+            Value::Array(Rc::new(
+                s.chars().map(|c| Value::Text(c.to_string())).collect(),
+            ))
+        })),
         "contains" => Some(text_predicate_method(text, "contains", |s, needle| {
             s.contains(needle)
         })),
@@ -4161,6 +4174,38 @@ fn text_nullary_bool(
             ));
         }
         Ok(Value::Bool(f(&text)))
+    })
+}
+
+fn text_nullary_int(
+    text: String,
+    name: &'static str,
+    f: impl Fn(&str) -> Result<i64, String> + 'static,
+) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Text.{name} expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(Value::Int(f(&text)?))
+    })
+}
+
+fn text_nullary_value(
+    text: String,
+    name: &'static str,
+    f: impl Fn(&str) -> Value + 'static,
+) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Text.{name} expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+        Ok(f(&text))
     })
 }
 
@@ -4928,6 +4973,19 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
             // Still-out-of-bounds after wrap → `undefined`, same as past-the-end.
             Ok(array_indexed_value(&values, index).unwrap_or(Value::Undefined))
         }
+        Value::Text(text) => {
+            let Value::Int(index) = arg_value else {
+                return Err(one_diagnostic(record_type_error(
+                    args[0].span,
+                    "text indexing",
+                    arg_value.type_name(),
+                    "Int",
+                )));
+            };
+
+            // Scalar-value index, same wrap/OOB rule as arrays (via `resolve_index`).
+            Ok(text_indexed_value(&text, index).unwrap_or(Value::Undefined))
+        }
         Value::Tuple(values) => {
             let Value::Int(index) = arg_value else {
                 return Err(one_diagnostic(record_type_error(
@@ -4968,7 +5026,7 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
             callee.span,
             "indexing",
             value.type_name(),
-            "Array, Tuple, Record, or Map",
+            "Array, Text, Tuple, Record, or Map",
         ))),
     }
 }
@@ -5002,12 +5060,13 @@ fn runtime_type_target(value: &Value) -> bool {
     }
 }
 
-/// Array index with Python-style negative wrap: `i < 0` → `length + i`.
+/// Resolve a Python-style index: `i < 0` → `length + i`.
 /// Returns `None` when the resolved index is still out of bounds.
-fn array_indexed_value(values: &[Value], index: i64) -> Option<Value> {
-    let len = i64::try_from(values.len()).ok()?;
+/// Shared by array and Text indexing so the wrap/OOB rules cannot drift.
+fn resolve_index(len: usize, index: i64) -> Option<usize> {
+    let len_i = i64::try_from(len).ok()?;
     let resolved = if index < 0 {
-        index.checked_add(len)?
+        index.checked_add(len_i)?
     } else {
         index
     };
@@ -5015,7 +5074,19 @@ fn array_indexed_value(values: &[Value], index: i64) -> Option<Value> {
         return None;
     }
     let resolved = usize::try_from(resolved).ok()?;
-    values.get(resolved).cloned()
+    (resolved < len).then_some(resolved)
+}
+
+/// Array index with Python-style negative wrap (see `resolve_index`).
+fn array_indexed_value(values: &[Value], index: i64) -> Option<Value> {
+    resolve_index(values.len(), index).map(|i| values[i].clone())
+}
+
+/// Text index by Unicode scalar value, same wrap/OOB rule as arrays.
+/// Returns a single-scalar `Text`, or `None` → runtime `undefined`.
+fn text_indexed_value(text: &str, index: i64) -> Option<Value> {
+    let chars: Vec<char> = text.chars().collect();
+    resolve_index(chars.len(), index).map(|i| Value::Text(chars[i].to_string()))
 }
 
 /// Tuple index: no negative wrap; negative or past-end yields `None`.

@@ -1264,6 +1264,8 @@ fn completion_at_text_field_access_returns_builtin_methods() {
 
     for name in [
         "isEmpty",
+        "length",
+        "chars",
         "contains",
         "startsWith",
         "endsWith",
@@ -1292,12 +1294,20 @@ fn completion_at_text_field_access_returns_builtin_methods() {
             "expected Text.{name} completion, got {labels:?}"
         );
     }
-    assert!(!labels.contains(&"length") && !labels.contains(&"len"));
+    assert!(!labels.contains(&"len"));
 
     let Some(is_empty) = completion_item(&completions, "isEmpty") else {
         panic!("expected Text.isEmpty completion");
     };
     assert_eq!(is_empty.detail.as_deref(), Some("() -> Bool"));
+    let Some(length) = completion_item(&completions, "length") else {
+        panic!("expected Text.length completion");
+    };
+    assert_eq!(length.detail.as_deref(), Some("() -> Int"));
+    let Some(chars) = completion_item(&completions, "chars") else {
+        panic!("expected Text.chars completion");
+    };
+    assert_eq!(chars.detail.as_deref(), Some("() -> Array(Text)"));
     let Some(repeat) = completion_item(&completions, "repeat") else {
         panic!("expected Text.repeat completion");
     };

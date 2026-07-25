@@ -237,18 +237,15 @@ impl<'a> Checker<'a> {
             self.report_missing_field(field, span);
             return;
         }
-        // Array methods (`has`, `push`) are not invented on non-array receivers.
+        // Array / Text method names must not be invented on unrelated non-record
+        // receivers (`1.has`, `true.length`). Records fall through so a field
+        // that happens to share a method name (`{ length: Int }.length`) still
+        // type-checks.
         if is_concrete_type(&receiver_type)
-            && crate::ty::ARRAY_METHOD_NAMES.contains(&field)
-            && !is_array_receiver_type(&receiver_type)
-        {
-            self.report_missing_field(field, span);
-            return;
-        }
-        // Text methods are not invented on non-Text receivers.
-        if is_concrete_type(&receiver_type)
-            && crate::ty::TEXT_METHOD_NAMES.contains(&field)
-            && !is_text_type(&receiver_type)
+            && !matches!(&receiver_type, Type::Record(_))
+            && ((crate::ty::ARRAY_METHOD_NAMES.contains(&field)
+                && !is_array_receiver_type(&receiver_type))
+                || (crate::ty::TEXT_METHOD_NAMES.contains(&field) && !is_text_type(&receiver_type)))
         {
             self.report_missing_field(field, span);
             return;

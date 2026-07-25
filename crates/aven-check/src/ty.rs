@@ -72,10 +72,19 @@ pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "push"];
 
 pub const SET_METHOD_NAMES: &[&str] = &["has"];
 
-/// Roc-aligned `Str` helpers (camelCase). No `length`/`len` — grapheme
-/// ambiguity; Roc omits it on purpose.
+/// Roc-aligned `Str` helpers (camelCase).
+///
+/// Roc deliberately omits `length`/`len` because of grapheme ambiguity (is
+/// `"e\u{301}"` one character or two?). Aven provisionally reverses that for
+/// ergonomics: character-level Exercism-style work is pervasive, and walking
+/// with `slice(i, i+1)` is too clumsy. Units are **Unicode scalar values**
+/// (code points), not grapheme clusters and not UTF-8 bytes — so
+/// `"café".length()` is 4, `"e\u{301}".length()` is 2, `"👍".length()` is 1.
+/// Revisit if benchmark data shows grapheme correctness actually mattering.
 pub const TEXT_METHOD_NAMES: &[&str] = &[
     "isEmpty",
+    "length",
+    "chars",
     "contains",
     "startsWith",
     "endsWith",
@@ -310,6 +319,9 @@ fn text_method_type(name: &str) -> Option<Type> {
     let bool_ty = named_builtin("Bool");
     match name {
         "isEmpty" => Some(function(Vec::new(), bool_ty)),
+        // Scalar-value count (see `TEXT_METHOD_NAMES` for the provisional decision).
+        "length" => Some(function(Vec::new(), named_builtin("Int"))),
+        "chars" => Some(function(Vec::new(), array_apply(named_builtin("Text")))),
         "contains" | "startsWith" | "endsWith" => Some(function(vec![text.clone()], bool_ty)),
         "trim" | "trimStart" | "trimEnd" | "toLower" | "toUpper" => {
             Some(function(Vec::new(), text))

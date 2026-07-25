@@ -3173,6 +3173,11 @@ impl<'a> Checker<'a> {
                 self.check_value_index_arg(env, arg, key_type);
                 Type::Optional(Box::new(value_type))
             }
+            _ if is_text_type(&callee_type) => {
+                // Scalar-value index; same optional/`undefined` OOB rule as arrays.
+                self.check_value_index_arg(env, arg, named_builtin("Int"));
+                Type::Optional(Box::new(named_builtin("Text")))
+            }
             _ if is_resolved_value_type(&callee_type) => {
                 self.report_not_indexable(&callee_type, callee.span);
                 Type::Deferred

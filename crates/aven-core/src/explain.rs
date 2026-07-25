@@ -464,7 +464,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::NOT_INDEXABLE,
-        text: "This value does not support square-bracket indexing. Index an Array, Map, tuple, or record instead.",
+        text: "This value does not support square-bracket indexing. Index an Array, Text, Map, tuple, or record instead.",
     },
     DiagnosticExplanation {
         code: codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE,

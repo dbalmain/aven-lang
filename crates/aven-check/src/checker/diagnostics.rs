@@ -474,7 +474,7 @@ impl<'a> Checker<'a> {
             Diagnostic::error(format!("values of type `{ty}` cannot be indexed"))
                 .with_code(codes::ty::NOT_INDEXABLE)
                 .with_label(Label::primary(span, "this value is not indexable"))
-                .with_note("index an Array, Map, tuple, or record instead"),
+                .with_note("index an Array, Text, Map, tuple, or record instead"),
         );
     }
 
