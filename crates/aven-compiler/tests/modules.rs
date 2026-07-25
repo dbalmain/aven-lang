@@ -382,20 +382,24 @@ fn quoted_sentence_export_fields_are_not_type_exports() {
             .expect("check should load graph");
     assert_no_errors(&output.reports);
 
-    // Residual: a quoted-but-identifier-shaped uppercase field still triggers
-    // the rule (AST does not retain a quoted flag).
+    // Quoted identifier-shaped uppercase fields are value fields: a quoted name
+    // cannot be referenced as a type, so it is not a type export.
     write(
         dir.path(),
         "quoted_ident.av",
-        "value = 1\n{ \"User\": value }\n",
+        "value = 1\n{ \"Yacht\": value }\n",
     );
     let quoted_ident =
         check_path_with_host_globals(&dir.path().join("quoted_ident.av"), &HostGlobals::default())
             .expect("check should load graph");
-    assert_has_code(
-        &quoted_ident.reports,
-        codes::module::UPPERCASE_EXPORT_NOT_TYPE,
-    );
+    assert_no_errors(&quoted_ident.reports);
+
+    // Bare uppercase still means type export.
+    write(dir.path(), "bare_upper.av", "value = 1\n{ Yacht: value }\n");
+    let bare =
+        check_path_with_host_globals(&dir.path().join("bare_upper.av"), &HostGlobals::default())
+            .expect("check should load graph");
+    assert_has_code(&bare.reports, codes::module::UPPERCASE_EXPORT_NOT_TYPE);
 }
 
 #[test]

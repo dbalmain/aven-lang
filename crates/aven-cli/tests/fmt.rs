@@ -102,6 +102,26 @@ fn check_accepts_inline_match_arms() {
     );
 }
 
+/// Formatting must preserve quoted field names so a check-clean program stays
+/// check-clean after `aven fmt` (quoted uppercase is a value field; bare is not).
+#[test]
+fn fmt_preserves_quoted_uppercase_field_and_stays_check_clean() {
+    let file = TempFile::new("quoted-yacht-fmt", "value = 1\n{ \"Yacht\": value }\n");
+
+    assert_success(&run_aven(["check"], file.path()));
+    assert_success(&run_aven(["fmt"], file.path()));
+    let formatted = fs::read_to_string(file.path()).expect("failed to read formatted source");
+    assert!(
+        formatted.contains("\"Yacht\""),
+        "fmt must preserve quoted field name; got:\n{formatted}"
+    );
+    assert!(
+        !formatted.contains("{ Yacht:") && !formatted.contains("{Yacht:"),
+        "fmt must not rewrite quoted Yacht to bare; got:\n{formatted}"
+    );
+    assert_success(&run_aven(["check"], file.path()));
+}
+
 #[test]
 fn fmt_preserves_parenthesized_inline_matches_that_exceed_the_line_width() {
     let file = TempFile::new(

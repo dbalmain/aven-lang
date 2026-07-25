@@ -13,7 +13,7 @@ use aven_eval::{ModuleImports as EvalModuleImports, Value};
 use aven_parser::{
     Binding, Expr, ExprKind, Item, Literal, Module, OperatorAssociativity, OperatorFixityTable,
     OperatorPrecedence, ParseOutput, PatternBinding, RecordEntry, decode_string_literal,
-    is_identifier, lambda_parts,
+    lambda_parts,
 };
 
 use crate::operator_config::{
@@ -1290,12 +1290,11 @@ fn eval_imports_for_node(
     imports
 }
 
-/// True when `name` could be a type export: a bare identifier starting with an
-/// uppercase letter. Quoted field names that are not valid identifiers (spaces,
-/// punctuation, …) can never be type references, so they are value fields even
-/// when they start with a capital letter.
-fn is_type_export_name(name: &str) -> bool {
-    name.chars().next().is_some_and(char::is_uppercase) && is_identifier(name)
+/// True when a record export field is a candidate type export: written unquoted
+/// and starting with an uppercase letter. Quoted field names cannot be type
+/// references (they are not bare identifiers in the surface syntax).
+fn is_type_export_field(name: &str, quoted: bool) -> bool {
+    !quoted && name.chars().next().is_some_and(char::is_uppercase)
 }
 
 fn check_export_for_node(
@@ -1354,13 +1353,11 @@ fn check_export_for_node(
             note: "final expression is not a record literal".to_owned(),
         };
     };
-    let has_type_shaped_field = entries.iter().any(|entry| {
-        let name = match entry {
-            RecordEntry::Field { name, .. } | RecordEntry::Shorthand { name, .. } => name,
-            RecordEntry::Rename { to, .. } => to,
-            _ => return false,
-        };
-        is_type_export_name(name)
+    let has_type_shaped_field = entries.iter().any(|entry| match entry {
+        RecordEntry::Field { name, quoted, .. } => is_type_export_field(name, *quoted),
+        RecordEntry::Shorthand { name, .. } => is_type_export_field(name, false),
+        RecordEntry::Rename { to, .. } => is_type_export_field(to, false),
+        _ => false,
     });
     if !has_type_shaped_field {
         // Polymorphic function exports often leave the final-expression type as
@@ -1417,29 +1414,30 @@ fn check_export_for_node(
     let mut qualified_exports = HashMap::new();
     let mut named_family_exports = HashMap::new();
     for entry in entries {
-        let (name, source_name, value_span, source_is_name) = match entry {
+        let (name, source_name, value_span, source_is_name, quoted) = match entry {
             RecordEntry::Field {
                 name,
+                quoted,
                 value,
                 name_span,
                 ..
-            } => (name, expr_name(value), *name_span, true),
+            } => (name, expr_name(value), *name_span, true, *quoted),
             RecordEntry::Shorthand {
                 name, name_span, ..
-            } => (name, Some(name.as_str()), *name_span, true),
+            } => (name, Some(name.as_str()), *name_span, true, false),
             RecordEntry::Rename {
                 from,
                 from_span,
                 to,
                 ..
-            } => (to, Some(from.as_str()), *from_span, true),
+            } => (to, Some(from.as_str()), *from_span, true, false),
             _ => {
                 return CheckExport::NotImportable {
                     note: "final expression contains an unsupported export entry".to_owned(),
                 };
             }
         };
-        let is_type = is_type_export_name(name);
+        let is_type = is_type_export_field(name, quoted);
         let field_ty = if is_type {
             if let Some(source) = source_name
                 && let Some(export) = comptime_export_for_source(

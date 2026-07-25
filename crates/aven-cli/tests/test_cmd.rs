@@ -291,6 +291,31 @@ fn check_and_test_agree_on_quoted_uppercase_case_names() {
     assert_eq!(json["passed"], 1);
 }
 
+/// Identifier-shaped quoted uppercase names (`"Yacht"`) are value fields, not
+/// type exports. check and test must both accept them.
+#[test]
+fn check_and_test_agree_on_quoted_identifier_uppercase_case_names() {
+    let file = TempFile::new(
+        "quoted-yacht-case",
+        r#"test = import("std/test")
+
+{
+  "Yacht": () => test.pass,
+}
+"#,
+    );
+
+    let checked = run_aven(["check"], file.path());
+    assert_exit(&checked, 0);
+
+    let tested = run_aven(["test", "--format", "json"], file.path());
+    assert_exit(&tested, 0);
+    let json = parse_json(&tested);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["total"], 1);
+    assert_eq!(json["passed"], 1);
+}
+
 #[test]
 fn test_expect_approx_eq_within_outside_and_default_tolerance() {
     let file = TempFile::new(

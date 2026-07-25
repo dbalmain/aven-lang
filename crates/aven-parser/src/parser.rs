@@ -230,6 +230,9 @@ pub enum RecordEntry {
     Field {
         name: String,
         name_span: Span,
+        /// `true` when the field name was written as a string literal
+        /// (`{"Yacht": v}`). Quoted names cannot be type references.
+        quoted: bool,
         value: Expr,
         overwrite: bool,
         /// The span of a legacy `=`/`:=` separator. Method-bearing record
@@ -1695,7 +1698,9 @@ impl Parser<'_> {
 
     fn parse_field_access_member(&mut self, operator_span: Span) -> Option<(String, Span)> {
         if self.current_is_field_access_name() {
-            return self.parse_field_name();
+            return self
+                .parse_field_name()
+                .map(|(name, span, _quoted)| (name, span));
         }
         if !self.current_is_adjacent_operator_member(operator_span) {
             return None;
@@ -2225,7 +2230,7 @@ impl Parser<'_> {
             return None;
         }
 
-        let Some((name, name_span)) = self.parse_field_name() else {
+        let Some((name, name_span, quoted)) = self.parse_field_name() else {
             self.report_expected_record_entry(self.current_span());
             self.recover_record_entry();
             return None;
@@ -2281,6 +2286,7 @@ impl Parser<'_> {
             return Some(RecordEntry::Field {
                 name,
                 name_span,
+                quoted,
                 value,
                 overwrite,
                 legacy_separator_span: legacy.then_some(separator_span),
@@ -2564,16 +2570,18 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_field_name(&mut self) -> Option<(String, Span)> {
+    /// Returns `(name, span, quoted)` where `quoted` is true for string-literal
+    /// field names (`"Yacht"`) and false for bare identifiers.
+    fn parse_field_name(&mut self) -> Option<(String, Span, bool)> {
         let token = self.current()?.clone();
         match token.kind {
             TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name) => {
                 self.advance();
-                Some((name, token.span))
+                Some((name, token.span, false))
             }
             TokenKind::StringLiteral(text) => {
                 self.advance();
-                Some((decode_string_literal(&text), token.span))
+                Some((decode_string_literal(&text), token.span, true))
             }
             _ => None,
         }
@@ -3986,6 +3994,51 @@ mod tests {
                 overwrite: true,
                 ..
             } if name == "age"
+        ));
+    }
+
+    #[test]
+    fn records_whether_field_names_were_quoted() {
+        let bare = parse_module("r = { Yacht: 1 }\n");
+        assert!(bare.diagnostics.is_empty());
+        let ExprKind::Record(entries) = binding_value(&bare, 0) else {
+            panic!("expected record expression");
+        };
+        assert!(matches!(
+            &entries[..],
+            [RecordEntry::Field {
+                name,
+                quoted: false,
+                ..
+            }] if name == "Yacht"
+        ));
+
+        let quoted = parse_module(r#"r = { "Yacht": 1 }"#);
+        assert!(quoted.diagnostics.is_empty());
+        let ExprKind::Record(entries) = binding_value(&quoted, 0) else {
+            panic!("expected record expression");
+        };
+        assert!(matches!(
+            &entries[..],
+            [RecordEntry::Field {
+                name,
+                quoted: true,
+                ..
+            }] if name == "Yacht"
+        ));
+
+        let sentence = parse_module(r#"r = { "Zero is fine": 1 }"#);
+        assert!(sentence.diagnostics.is_empty());
+        let ExprKind::Record(entries) = binding_value(&sentence, 0) else {
+            panic!("expected record expression");
+        };
+        assert!(matches!(
+            &entries[..],
+            [RecordEntry::Field {
+                name,
+                quoted: true,
+                ..
+            }] if name == "Zero is fine"
         ));
     }
 

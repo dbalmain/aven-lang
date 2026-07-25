@@ -750,10 +750,17 @@ fn collect_record_entry_field_names<'a>(
         RecordEntry::Field {
             name,
             name_span,
+            quoted,
             value,
             ..
         } => {
-            spans.insert(*name_span, name.as_str());
+            // Preserve source quoting for string-literal field names so fmt
+            // never rewrites `{"Yacht": v}` into `{Yacht: v}` (which would
+            // change type-export semantics). Unquoted names still map through
+            // so spacing/normalisation of bare identifiers is unchanged.
+            if !quoted {
+                spans.insert(*name_span, name.as_str());
+            }
             collect_expr_field_names(value, spans);
         }
         RecordEntry::FieldComputed { key, value, .. } => {
