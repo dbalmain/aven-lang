@@ -1235,13 +1235,26 @@ mod tests {
         let Value::Native(native) = &eval[0].1 else {
             panic!("add is a native value");
         };
-        assert_eq!(native(&[Value::Int(2), Value::Int(3)]), Ok(Value::Int(5)));
+        let span = aven_core::Span::new(0, 0);
         assert_eq!(
-            native(&[Value::Text("x".to_owned()), Value::Int(3)]),
+            native(
+                &[Value::Int(2), Value::Int(3)],
+                aven_eval::NativeContext::without_source(span),
+            ),
+            Ok(Value::Int(5))
+        );
+        assert_eq!(
+            native(
+                &[Value::Text("x".to_owned()), Value::Int(3)],
+                aven_eval::NativeContext::without_source(span),
+            ),
             Err("expected Int, got Text".to_owned())
         );
         assert_eq!(
-            native(&[Value::Int(2)]),
+            native(
+                &[Value::Int(2)],
+                aven_eval::NativeContext::without_source(span),
+            ),
             Err("expected 2 arguments, got 1".to_owned())
         );
     }
@@ -1258,7 +1271,13 @@ mod tests {
         let Value::Native(native) = &eval[0].1 else {
             panic!("answer is a native value");
         };
-        assert_eq!(native(&[]), Ok(Value::Int(42)));
+        assert_eq!(
+            native(
+                &[],
+                aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+            ),
+            Ok(Value::Int(42))
+        );
     }
 
     #[test]
@@ -1280,7 +1299,10 @@ mod tests {
             "add(2, 3) checks: {:?}",
             checked.diagnostics
         );
-        let evaluated = aven_eval::eval_module_with_globals(&ok.module, host.eval_globals());
+        let evaluated = aven_eval::eval_module_with_options(
+            &ok.module,
+            aven_eval::EvalModuleOptions::default().with_globals(host.eval_globals()),
+        );
         assert_eq!(evaluated.value, Some(Value::Int(5)));
 
         let bad = parse_module("add(\"x\", 3)\n");

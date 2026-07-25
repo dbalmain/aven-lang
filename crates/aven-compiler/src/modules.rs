@@ -689,15 +689,19 @@ fn eval_path_impl(
             direct_slot_inits,
             primitive_families,
         );
-        let outcome = aven_eval::eval_module_with_globals_imports_runtime_types_builtin_methods_and_reifications(
-            &graph.nodes[node_id].parse.module,
-            node_globals,
-            &imports,
-            &runtime_types,
-            &runtime_builtin_methods,
-            trusted_ambient,
-            &elaborations,
-        );
+        // Root this module's lexical environment in its file identity. Child
+        // scopes and closures inherit it, so location-aware natives receive
+        // the source whose offsets their call span uses.
+        let eval_source = eval_source_for_file(&graph.nodes[node_id].file);
+        let options = aven_eval::EvalModuleOptions::default()
+            .with_globals(node_globals)
+            .with_imports(&imports)
+            .with_runtime_types(&runtime_types)
+            .with_builtin_methods(&runtime_builtin_methods, trusted_ambient)
+            .with_elaborations(&elaborations)
+            .with_source(eval_source);
+        let outcome =
+            aven_eval::eval_module_with_options(&graph.nodes[node_id].parse.module, options);
         entry_value = (node_id == 0).then_some(outcome.value.clone()).flatten();
         diagnostics
             .entry(file_id)
@@ -2292,6 +2296,18 @@ fn render_span(file: &SourceFile, span: Span) -> String {
         position.line + 1,
         position.character + 1
     )
+}
+
+/// Display identity for `dbg` location prefixes: basename for path-backed
+/// files (greppable `script.av:12:`), bare library specifier otherwise.
+fn eval_source_for_file(file: &SourceFile) -> aven_eval::EvalSource {
+    let name = file
+        .path
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map_or_else(|| file.name.clone(), str::to_owned);
+    aven_eval::EvalSource::new(name, file.source())
 }
 
 fn value_type_name(value: &Value) -> &'static str {

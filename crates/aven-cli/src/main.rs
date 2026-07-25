@@ -1022,25 +1022,25 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     Ok(host)
 }
 
-/// Writes each argument's `Display` to stderr (space-separated, newline-terminated)
-/// and returns its single argument unchanged, so `dbg(x)` is usable inline. This
-/// keeps stdout clean for the program's value and log output. The IO effect lives in
-/// the host, so the native is injected by the CLI prelude rather than `aven-eval`.
+/// Writes its single argument's `debugText` rendering to stderr (optionally
+/// prefixed with `file:line: ` from its lexical eval source) and returns the
+/// argument unchanged, so `dbg(x)` is usable inline. Keeps stdout clean for the
+/// program's value and log output. The IO effect lives in the host, so the
+/// native is injected by the CLI prelude rather than `aven-eval`.
 fn dbg_native() -> aven_eval::Value {
-    aven_eval::Value::native(|args| {
-        let mut stderr = io::stderr().lock();
-        for (index, value) in args.iter().enumerate() {
-            if index > 0 {
-                write!(stderr, " ").map_err(|error| error.to_string())?;
-            }
-            write!(stderr, "{value}").map_err(|error| error.to_string())?;
-        }
-        writeln!(stderr).map_err(|error| error.to_string())?;
+    aven_eval::Value::native_at(|args, context| {
+        let [value] = args else {
+            return Err(format!("dbg expects 1 argument, got {}", args.len()));
+        };
 
-        Ok(match args {
-            [single] => single.clone(),
-            _ => aven_eval::Value::unit(),
-        })
+        let rendered = aven_eval::debug_text(value);
+        let mut stderr = io::stderr().lock();
+        if let Some(source) = &context.source {
+            write!(stderr, "{}", source.format_location(context.span))
+                .map_err(|error| error.to_string())?;
+        }
+        writeln!(stderr, "{rendered}").map_err(|error| error.to_string())?;
+        Ok(value.clone())
     })
 }
 

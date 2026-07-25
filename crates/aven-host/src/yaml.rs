@@ -455,8 +455,10 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        let outcome =
-            aven_eval::eval_module_with_globals(&parsed.module, yaml_host().eval_globals());
+        let outcome = aven_eval::eval_module_with_options(
+            &parsed.module,
+            aven_eval::EvalModuleOptions::default().with_globals(yaml_host().eval_globals()),
+        );
         assert!(
             outcome.diagnostics.is_empty(),
             "program runs: {:?}",
@@ -772,6 +774,10 @@ mod tests {
         else {
             panic!("method `{method}` is native");
         };
-        native(&[]).unwrap_or_else(|error| panic!("method failed: {error}"))
+        native(
+            &[],
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        )
+        .unwrap_or_else(|error| panic!("method failed: {error}"))
     }
 }

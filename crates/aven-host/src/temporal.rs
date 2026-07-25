@@ -2270,8 +2270,10 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        let outcome =
-            aven_eval::eval_module_with_globals(&parsed.module, temporal_host().eval_globals());
+        let outcome = aven_eval::eval_module_with_options(
+            &parsed.module,
+            aven_eval::EvalModuleOptions::default().with_globals(temporal_host().eval_globals()),
+        );
         assert!(
             outcome.diagnostics.is_empty(),
             "program runs: {:?}",
@@ -2645,7 +2647,11 @@ mod tests {
         else {
             panic!("expected native `{name}` to be registered");
         };
-        function(args).unwrap_or_else(|error| panic!("native `{name}` failed: {error}"))
+        function(
+            args,
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        )
+        .unwrap_or_else(|error| panic!("native `{name}` failed: {error}"))
     }
 
     fn run_on_with_globals(host: Host, mut globals: Vec<(String, Value)>, source: &str) -> Value {
@@ -2656,7 +2662,10 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        let outcome = aven_eval::eval_module_with_globals(&parsed.module, globals);
+        let outcome = aven_eval::eval_module_with_options(
+            &parsed.module,
+            aven_eval::EvalModuleOptions::default().with_globals(globals),
+        );
         assert!(
             outcome.diagnostics.is_empty(),
             "program runs: {:?}",
@@ -2683,7 +2692,11 @@ mod tests {
         let Value::Native(native) = wall else {
             panic!("wallTime is native");
         };
-        let result = native(&[instant_value(instant)]).expect("wallTime ok");
+        let result = native(
+            &[instant_value(instant)],
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        )
+        .expect("wallTime ok");
         let Value::Record(wall_fields) = result else {
             panic!("wallTime returns record, got {result:?}");
         };
@@ -2705,7 +2718,11 @@ mod tests {
         let Value::Native(native) = instant_fn else {
             panic!("instant is native");
         };
-        native(&[datetime_value(datetime)]).expect("instant ok")
+        native(
+            &[datetime_value(datetime)],
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        )
+        .expect("instant ok")
     }
 
     fn tag_name(value: &Value) -> &str {
@@ -2882,7 +2899,10 @@ resolved = z.instant(DateTime.parse("2025-06-15T12:00:00")?!)
             "program parses: {:?}",
             parsed.diagnostics
         );
-        aven_eval::eval_module_with_globals(&parsed.module, temporal_host().eval_globals())
-            .diagnostics
+        aven_eval::eval_module_with_options(
+            &parsed.module,
+            aven_eval::EvalModuleOptions::default().with_globals(temporal_host().eval_globals()),
+        )
+        .diagnostics
     }
 }

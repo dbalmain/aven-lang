@@ -534,8 +534,10 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        let outcome =
-            aven_eval::eval_module_with_globals(&parsed.module, json_host().eval_globals());
+        let outcome = aven_eval::eval_module_with_options(
+            &parsed.module,
+            aven_eval::EvalModuleOptions::default().with_globals(json_host().eval_globals()),
+        );
         assert!(
             outcome.diagnostics.is_empty(),
             "program runs: {:?}",
@@ -551,7 +553,11 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        aven_eval::eval_module_with_globals(&parsed.module, json_host().eval_globals()).diagnostics
+        aven_eval::eval_module_with_options(
+            &parsed.module,
+            aven_eval::EvalModuleOptions::default().with_globals(json_host().eval_globals()),
+        )
+        .diagnostics
     }
 
     fn check(source: &str) -> aven_check::CheckOutput {
@@ -898,11 +904,11 @@ mod tests {
             Value::recursive_type(id, "Node", graph),
         )]);
         let parsed = parse_module(source);
-        let outcome = aven_eval::eval_module_with_globals_imports_and_runtime_types(
+        let outcome = aven_eval::eval_module_with_options(
             &parsed.module,
-            json_host().eval_globals(),
-            &aven_eval::ModuleImports::default(),
-            &runtime_types,
+            aven_eval::EvalModuleOptions::default()
+                .with_globals(json_host().eval_globals())
+                .with_runtime_types(&runtime_types),
         );
         assert!(
             outcome.diagnostics.is_empty(),
@@ -1175,7 +1181,11 @@ mod tests {
         else {
             panic!("method `{method}` is native");
         };
-        native(&[]).unwrap_or_else(|error| panic!("method failed: {error}"))
+        native(
+            &[],
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        )
+        .unwrap_or_else(|error| panic!("method failed: {error}"))
     }
 
     // property-test tiering:

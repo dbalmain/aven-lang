@@ -647,7 +647,7 @@ mod tests {
 
     use aven_check::Type;
     use aven_core::{Span, codes};
-    use aven_eval::eval_module_with_globals;
+    use aven_eval::{EvalModuleOptions, eval_module_with_options};
     use aven_parser::parse_module;
 
     use crate::Host;
@@ -726,7 +726,10 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        let outcome = eval_module_with_globals(&parsed.module, file_host().eval_globals());
+        let outcome = eval_module_with_options(
+            &parsed.module,
+            EvalModuleOptions::default().with_globals(file_host().eval_globals()),
+        );
         assert!(
             outcome.diagnostics.is_empty(),
             "program runs: {:?}",

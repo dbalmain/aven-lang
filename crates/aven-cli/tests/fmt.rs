@@ -556,8 +556,113 @@ fn run_dbg_writes_type_to_stderr_and_keeps_stdout_clean() {
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
+    // Final program value still uses the display protocol on stdout.
     assert_eq!(stdout(&output), "{ name: Text }\n");
-    assert_eq!(stderr(&output), "{ name: Text }\n");
+    // `dbg` writes only to stderr, with a `file:line: ` prefix and debugText body.
+    let file_name = file
+        .path()
+        .file_name()
+        .expect("temp path has a file name")
+        .to_string_lossy();
+    assert_eq!(
+        stderr(&output),
+        format!("{file_name}:2: {{ name: Text }}\n")
+    );
+}
+
+#[test]
+fn run_dbg_renders_debug_text_and_returns_argument() {
+    // Pins: quoted text (ambiguity fix), constructor wrap over toText override,
+    // inline usability, stderr-only side effect, location prefix.
+    let source = "\
+Money = Int {
+  toText(): Text => \"$${.}\"
+}
+m: Money = 2749
+text = dbg(\"a, b\")
+n = dbg(42)
+arr = dbg([\"a\", \"b\"])
+rec = dbg({ a: 1 })
+money = dbg(m)
+(text, n, arr, rec, money)
+";
+    let file = TempFile::new("run-dbg-debugtext", source);
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    // Returned values are unchanged (Money still brands); final print uses toText.
+    assert_eq!(stdout(&output), "(a, b, 42, [a, b], { a: 1 }, $2749)\n");
+    let file_name = file
+        .path()
+        .file_name()
+        .expect("temp path has a file name")
+        .to_string_lossy();
+    let stderr = stderr(&output);
+    let expected = [
+        format!("{file_name}:5: \"a, b\""),
+        format!("{file_name}:6: 42"),
+        format!("{file_name}:7: [\"a\", \"b\"]"),
+        format!("{file_name}:8: {{ a: 1 }}"),
+        format!("{file_name}:9: Money(2749)"),
+    ]
+    .join("\n")
+        + "\n";
+    assert_eq!(stderr, expected, "dbg stderr:\n{stderr}");
+}
+
+#[test]
+fn run_dbg_location_uses_imported_module_file() {
+    let dir = TempDir::new("run-dbg-import");
+    let lib_path = dir.path().join("lib.av");
+    let main_path = dir.path().join("main.av");
+    fs::write(&lib_path, "value = dbg(99)\n{ value }\n").expect("write lib");
+    fs::write(&main_path, "{ value } = import(\"./lib\")\nvalue\n").expect("write main");
+
+    let output = run_aven(["run"], &main_path);
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "99\n");
+    assert_eq!(stderr(&output), "lib.av:1: 99\n");
+}
+
+#[test]
+fn run_dbg_in_imported_closure_uses_defining_module_location() {
+    let dir = TempDir::new("run-dbg-import-closure");
+    let lib_path = dir.path().join("lib.av");
+    let main_path = dir.path().join("main.av");
+    fs::write(
+        &lib_path,
+        "helper = (value) =>\n  marker = \"library\"\n  dbg(value)\n{ helper }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        &main_path,
+        "padding = \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\n\
+         { helper } = import(\"./lib\")\n\
+         helper(\"called from main\")\n",
+    )
+    .expect("write main");
+
+    let output = run_aven(["run"], &main_path);
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "called from main\n");
+    assert_eq!(stderr(&output), "lib.av:3: \"called from main\"\n");
+}
+
+#[test]
+fn run_dbg_without_native_source_omits_location_prefix() {
+    let file = TempFile::new(
+        "run-dbg-no-source",
+        "value = @Ok(\"from callback\").map(dbg)\nvalue\n",
+    );
+
+    let output = run_aven(["run"], file.path());
+
+    assert_success(&output);
+    assert_eq!(stdout(&output), "@Ok(from callback)\n");
+    assert_eq!(stderr(&output), "\"from callback\"\n");
 }
 
 #[test]
@@ -1182,5 +1287,32 @@ impl TempFile {
 impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(label: &str) -> Self {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is before the Unix epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("aven-fmt-{label}-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&path).expect("failed to create temp directory");
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
     }
 }

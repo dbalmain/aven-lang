@@ -31,7 +31,59 @@ enum Flow {
 /// Internal evaluator result. `Ok` is the produced value; `Err` is a [`Flow`].
 type Eval<T = Value> = Result<T, Flow>;
 
-pub type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
+/// Host-provided native function. Prefer [`Value::native`] for
+/// context-ignoring hosts; use [`Value::native_at`] when call-site context
+/// matters.
+pub type NativeFn = Rc<dyn Fn(&[Value], NativeContext) -> Result<Value, String>>;
+
+/// Lexical source identity carried by an evaluator [`Environment`].
+///
+/// Location-aware natives use this to turn a [`Span`] into a greppable
+/// `file:line` prefix. It is absent when evaluation is driven without a file
+/// identity or when a native is invoked through an environment-free path.
+#[derive(Debug)]
+pub struct EvalSource {
+    /// Display name: basename for path-backed files, bare specifier for
+    /// embedded library modules.
+    pub name: String,
+    source: String,
+    line_index: aven_core::LineIndex,
+}
+
+impl EvalSource {
+    pub fn new(name: impl Into<String>, source: impl Into<String>) -> Self {
+        let source = source.into();
+        let line_index = aven_core::LineIndex::new(&source);
+        Self {
+            name: name.into(),
+            source,
+            line_index,
+        }
+    }
+
+    /// `name:line: ` (1-based line) for the byte offset, suitable as a
+    /// `dbg` prefix. Column is omitted: file+line is enough to distinguish
+    /// two calls, and keeps the line greppable as `file:line:`.
+    pub fn format_location(&self, span: Span) -> String {
+        let position = self.line_index.offset_to_position(&self.source, span.start);
+        format!("{}:{}: ", self.name, position.line + 1)
+    }
+}
+
+/// Context supplied to a host native at an application site.
+#[derive(Debug, Clone)]
+pub struct NativeContext {
+    pub span: Span,
+    pub source: Option<Rc<EvalSource>>,
+}
+
+impl NativeContext {
+    /// Context for application paths that have no lexical evaluator
+    /// environment. Location-aware natives must not infer a source here.
+    pub fn without_source(span: Span) -> Self {
+        Self { span, source: None }
+    }
+}
 
 #[derive(Clone)]
 pub struct Closure {
@@ -690,7 +742,16 @@ impl fmt::Display for Value {
 }
 
 impl Value {
+    /// Wrap a context-ignoring native. Existing host sites keep this shape;
+    /// call-site context is available only via [`Self::native_at`].
     pub fn native(function: impl Fn(&[Value]) -> Result<Value, String> + 'static) -> Self {
+        Self::Native(Rc::new(move |args, _context| function(args)))
+    }
+
+    /// Wrap a native that receives call-site context.
+    pub fn native_at(
+        function: impl Fn(&[Value], NativeContext) -> Result<Value, String> + 'static,
+    ) -> Self {
         Self::Native(Rc::new(function))
     }
 
@@ -974,6 +1035,7 @@ fn escape_string(text: &str) -> String {
 #[derive(Clone)]
 pub struct Environment {
     scope: Rc<Scope>,
+    source: Option<Rc<EvalSource>>,
     imports: Rc<ModuleImports>,
     builtin_methods: BuiltinMethodEnvironment,
     slot_reifications: Rc<SlotReificationPlan>,
@@ -1024,6 +1086,7 @@ impl Environment {
             SlotReificationPlan::default(),
             DirectSlotInitPlan::default(),
             PrimitiveFamilyPlan::default(),
+            None,
         )
     }
 
@@ -1034,9 +1097,11 @@ impl Environment {
         slot_reifications: SlotReificationPlan,
         direct_slot_inits: DirectSlotInitPlan,
         primitive_families: PrimitiveFamilyPlan,
+        source: Option<Rc<EvalSource>>,
     ) -> Self {
         Self {
             scope: Rc::new(Scope::new(None)),
+            source,
             imports: Rc::new(imports),
             builtin_methods,
             slot_reifications: Rc::new(slot_reifications),
@@ -1050,6 +1115,7 @@ impl Environment {
     fn child(&self) -> Self {
         Self {
             scope: Rc::new(Scope::new(Some(Rc::clone(&self.scope)))),
+            source: self.source.as_ref().map(Rc::clone),
             imports: Rc::clone(&self.imports),
             builtin_methods: self.builtin_methods.clone(),
             slot_reifications: Rc::clone(&self.slot_reifications),
@@ -1057,6 +1123,13 @@ impl Environment {
             primitive_families: Rc::clone(&self.primitive_families),
             family_descriptors: Rc::clone(&self.family_descriptors),
             allow_builtin_method_attachments: self.allow_builtin_method_attachments,
+        }
+    }
+
+    fn native_context(&self, span: Span) -> NativeContext {
+        NativeContext {
+            span,
+            source: self.source.as_ref().map(Rc::clone),
         }
     }
 
@@ -1136,83 +1209,82 @@ impl ModuleImports {
 /// Evaluate module items sequentially. Bindings update the environment for
 /// later items, and the outcome value is produced only by a trailing expression.
 pub fn eval_module(module: &Module) -> EvalOutcome {
-    eval_module_with_globals(module, Vec::new())
+    eval_module_with_options(module, EvalModuleOptions::default())
 }
 
-/// Evaluate a module with host-provided globals pre-bound in the top-level
-/// environment. Module bindings use normal top-level scope rules and may shadow
-/// an injected global by rebinding the same name.
-pub fn eval_module_with_globals(module: &Module, globals: Vec<(String, Value)>) -> EvalOutcome {
-    eval_module_with_globals_and_imports(module, globals, &ModuleImports::default())
-}
-
-pub fn eval_module_with_globals_and_imports(
-    module: &Module,
+/// Optional inputs for [`eval_module_with_options`].
+#[derive(Default)]
+pub struct EvalModuleOptions<'a> {
     globals: Vec<(String, Value)>,
-    imports: &ModuleImports,
-) -> EvalOutcome {
-    eval_module_with_globals_imports_and_runtime_types(
-        module,
-        globals,
-        imports,
-        &RuntimeTypeBindings::default(),
-    )
-}
-
-pub fn eval_module_with_globals_imports_and_runtime_types(
-    module: &Module,
-    globals: Vec<(String, Value)>,
-    imports: &ModuleImports,
-    runtime_types: &RuntimeTypeBindings,
-) -> EvalOutcome {
-    eval_module_with_globals_imports_runtime_types_and_builtin_methods(
-        module,
-        globals,
-        imports,
-        runtime_types,
-        &BuiltinMethodEnvironment::default(),
-        false,
-    )
-}
-
-pub fn eval_module_with_globals_imports_runtime_types_and_builtin_methods(
-    module: &Module,
-    globals: Vec<(String, Value)>,
-    imports: &ModuleImports,
-    runtime_types: &RuntimeTypeBindings,
-    builtin_methods: &BuiltinMethodEnvironment,
+    imports: Option<&'a ModuleImports>,
+    runtime_types: Option<&'a RuntimeTypeBindings>,
+    builtin_methods: Option<&'a BuiltinMethodEnvironment>,
     allow_builtin_method_attachments: bool,
-) -> EvalOutcome {
-    eval_module_with_globals_imports_runtime_types_builtin_methods_and_reifications(
-        module,
-        globals,
-        imports,
-        runtime_types,
-        builtin_methods,
-        allow_builtin_method_attachments,
-        &EvalElaborationPlan::default(),
-    )
+    elaborations: Option<&'a EvalElaborationPlan>,
+    source: Option<Rc<EvalSource>>,
 }
 
-pub fn eval_module_with_globals_imports_runtime_types_builtin_methods_and_reifications(
-    module: &Module,
-    globals: Vec<(String, Value)>,
-    imports: &ModuleImports,
-    runtime_types: &RuntimeTypeBindings,
-    builtin_methods: &BuiltinMethodEnvironment,
-    allow_builtin_method_attachments: bool,
-    elaborations: &EvalElaborationPlan,
-) -> EvalOutcome {
+impl<'a> EvalModuleOptions<'a> {
+    pub fn with_globals(mut self, globals: Vec<(String, Value)>) -> Self {
+        self.globals = globals;
+        self
+    }
+
+    pub fn with_imports(mut self, imports: &'a ModuleImports) -> Self {
+        self.imports = Some(imports);
+        self
+    }
+
+    pub fn with_runtime_types(mut self, runtime_types: &'a RuntimeTypeBindings) -> Self {
+        self.runtime_types = Some(runtime_types);
+        self
+    }
+
+    pub fn with_builtin_methods(
+        mut self,
+        builtin_methods: &'a BuiltinMethodEnvironment,
+        allow_attachments: bool,
+    ) -> Self {
+        self.builtin_methods = Some(builtin_methods);
+        self.allow_builtin_method_attachments = allow_attachments;
+        self
+    }
+
+    pub fn with_elaborations(mut self, elaborations: &'a EvalElaborationPlan) -> Self {
+        self.elaborations = Some(elaborations);
+        self
+    }
+
+    pub fn with_source(mut self, source: EvalSource) -> Self {
+        self.source = Some(Rc::new(source));
+        self
+    }
+}
+
+/// Evaluate a module with the supplied host bindings and evaluator metadata.
+///
+/// Globals are pre-bound in the top-level environment. Module bindings use
+/// normal top-level scope rules and may shadow an injected global.
+pub fn eval_module_with_options(module: &Module, options: EvalModuleOptions<'_>) -> EvalOutcome {
+    let default_imports = ModuleImports::default();
+    let default_runtime_types = RuntimeTypeBindings::default();
+    let default_builtin_methods = BuiltinMethodEnvironment::default();
+    let default_elaborations = EvalElaborationPlan::default();
+    let imports = options.imports.unwrap_or(&default_imports);
+    let runtime_types = options.runtime_types.unwrap_or(&default_runtime_types);
+    let builtin_methods = options.builtin_methods.unwrap_or(&default_builtin_methods);
+    let elaborations = options.elaborations.unwrap_or(&default_elaborations);
     let env = Environment::with_imports_builtin_methods_and_reifications(
         imports.clone(),
         builtin_methods.clone(),
-        allow_builtin_method_attachments,
+        options.allow_builtin_method_attachments,
         elaborations.slot_reifications.clone(),
         elaborations.direct_slot_inits.clone(),
         elaborations.primitive_families.clone(),
+        options.source,
     );
     bind_intrinsics(&env);
-    for (name, value) in globals {
+    for (name, value) in options.globals {
         env.bind(name, value);
     }
     // Top-level: a propagated `@Err` (`?^` with no enclosing function) becomes
@@ -2261,7 +2333,12 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
         {
             let decode_fn = format_static_value(format, "decode", env)?;
             let arg_values = receiver_prefixed_arg_values(receiver_value, &args[1..], env)?;
-            return apply_callee_values(decode_fn, format.span, arg_values, span);
+            return apply_callee_values(
+                decode_fn,
+                format.span,
+                arg_values,
+                env.native_context(span),
+            );
         }
         let callee_value =
             field_access_value(receiver_value, receiver.span, field, *field_span, env)?;
@@ -2285,7 +2362,12 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
         {
             let encode_fn = format_static_value(format, "encode", env)?;
             let arg_values = receiver_prefixed_arg_values(receiver_value, &args[1..], env)?;
-            return apply_callee_values(encode_fn, format.span, arg_values, span);
+            return apply_callee_values(
+                encode_fn,
+                format.span,
+                arg_values,
+                env.native_context(span),
+            );
         }
         let callee_value =
             field_access_value(receiver_value, receiver.span, field, *field_span, env)?;
@@ -2359,7 +2441,7 @@ fn apply_callee(
             for arg in args {
                 arg_values.push(eval_expr_many(arg, env)?);
             }
-            apply_native(function, arg_values, span)
+            apply_native(function, arg_values, env.native_context(span))
         }
         Value::ResultMethod { receiver, kind } => {
             let mut arg_values = Vec::with_capacity(args.len());
@@ -2406,10 +2488,11 @@ fn apply_callee_values(
     callee_value: Value,
     callee_span: Span,
     arg_values: Vec<Value>,
-    span: Span,
+    context: NativeContext,
 ) -> Eval {
+    let span = context.span;
     match callee_value {
-        Value::Native(function) => apply_native(function, arg_values, span),
+        Value::Native(function) => apply_native(function, arg_values, context),
         Value::ResultMethod { receiver, kind } => {
             apply_result_method(*receiver, kind, arg_values, callee_span, span)
         }
@@ -2560,7 +2643,7 @@ fn apply_inherited_primitive_method(
     } else {
         let method = builtin_method(&receiver, &implementation.member, &implementation.env)
             .ok_or_else(|| one_diagnostic(missing_field(&implementation.member, span)))?;
-        apply_callee_values(method, span, args, span)?
+        apply_callee_values(method, span, args, implementation.env.native_context(span))?
     };
 
     if implementation.lifted_result {
@@ -2719,8 +2802,12 @@ fn apply_result_method(
         }
         ResultMethod::Map => {
             if name == "Ok" {
-                let transformed =
-                    apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)?;
+                let transformed = apply_callee_values(
+                    args[0].clone(),
+                    callee_span,
+                    vec![value.clone()],
+                    NativeContext::without_source(span),
+                )?;
                 Ok(Value::Tag {
                     name,
                     payload: vec![transformed],
@@ -2734,7 +2821,12 @@ fn apply_result_method(
         }
         ResultMethod::AndThen => {
             if name == "Ok" {
-                apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)
+                apply_callee_values(
+                    args[0].clone(),
+                    callee_span,
+                    vec![value.clone()],
+                    NativeContext::without_source(span),
+                )
             } else {
                 Ok(Value::Tag {
                     name,
@@ -2749,8 +2841,12 @@ fn apply_result_method(
                     payload: vec![value.clone()],
                 })
             } else {
-                let transformed =
-                    apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)?;
+                let transformed = apply_callee_values(
+                    args[0].clone(),
+                    callee_span,
+                    vec![value.clone()],
+                    NativeContext::without_source(span),
+                )?;
                 Ok(Value::Tag {
                     name,
                     payload: vec![transformed],
@@ -2764,14 +2860,20 @@ fn apply_result_method(
                     payload: vec![value.clone()],
                 })
             } else {
-                apply_callee_values(args[0].clone(), callee_span, vec![value.clone()], span)
+                apply_callee_values(
+                    args[0].clone(),
+                    callee_span,
+                    vec![value.clone()],
+                    NativeContext::without_source(span),
+                )
             }
         }
     }
 }
 
-fn apply_native(function: NativeFn, arg_values: Vec<Value>, span: Span) -> Eval {
-    function(&arg_values).map_err(|message| one_diagnostic(platform_error(span, message)))
+fn apply_native(function: NativeFn, arg_values: Vec<Value>, context: NativeContext) -> Eval {
+    let span = context.span;
+    function(&arg_values, context).map_err(|message| one_diagnostic(platform_error(span, message)))
 }
 
 fn apply_closure(closure: Closure, args: &[Expr], span: Span, env: &Environment) -> Eval {
@@ -2825,7 +2927,12 @@ fn apply_closure_values(closure: Closure, arg_values: Vec<Value>, span: Span) ->
 /// matches what a normal function call does for its caller.
 pub fn call_value(callee: &Value, args: Vec<Value>) -> Result<Value, Vec<Diagnostic>> {
     let span = Span::new(0, 0);
-    match apply_callee_values(callee.clone(), span, args, span) {
+    match apply_callee_values(
+        callee.clone(),
+        span,
+        args,
+        NativeContext::without_source(span),
+    ) {
         Ok(value) => Ok(value),
         Err(Flow::Fail(diagnostics)) => Err(diagnostics),
         Err(Flow::Propagate(value)) => Ok(*value),
@@ -5020,7 +5127,8 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
             let Value::Native(get) = map_get_method(entries) else {
                 unreachable!("map_get_method always returns Value::Native")
             };
-            get(&[arg_value]).map_err(|message| one_diagnostic(platform_error(span, message)))
+            get(&[arg_value], env.native_context(span))
+                .map_err(|message| one_diagnostic(platform_error(span, message)))
         }
         value => Err(one_diagnostic(record_type_error(
             callee.span,
@@ -5711,10 +5819,10 @@ fn unsupported_import_root(specifier: &str, span: Span) -> Diagnostic {
 }
 
 /// A static relative import evaluated without an injected imports map: this
-/// evaluation entered through bare `eval_module_with_globals` (an embedding)
-/// instead of the module-graph driver, so no module was loaded. Unlike the
-/// checker's warning, evaluation cannot produce a value here, so this is an
-/// error.
+/// evaluation entered through `eval_module` or options without imports (an
+/// embedding) instead of the module-graph driver, so no module was loaded.
+/// Unlike the checker's warning, evaluation cannot produce a value here, so
+/// this is an error.
 fn unresolved_import(specifier: &str, span: Span) -> Diagnostic {
     Diagnostic::error(format!("import `{specifier}` is not resolved here"))
         .with_code(codes::module::UNRESOLVED_IMPORT)

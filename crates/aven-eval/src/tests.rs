@@ -1,8 +1,6 @@
 use super::{
-    BuiltinMethodEnvironment, Environment, EvalOutcome, ModuleImports, RuntimeType,
-    RuntimeTypeBindings, Value, eval_expr, eval_module, eval_module_with_globals,
-    eval_module_with_globals_and_imports,
-    eval_module_with_globals_imports_runtime_types_and_builtin_methods, logging,
+    BuiltinMethodEnvironment, Environment, EvalModuleOptions, EvalOutcome, ModuleImports,
+    RuntimeType, Value, eval_expr, eval_module, eval_module_with_options, logging,
     record_field_value,
 };
 use aven_core::codes;
@@ -165,13 +163,9 @@ fn float_non_finite_values_display_as_aven_spellings() {
 fn float_nan_sorts_last_and_minimum_ignores_nan() {
     let array_module = parse_ok(include_str!("../../aven-host/std/array.av"));
     let builtin_methods = BuiltinMethodEnvironment::default();
-    let _array_export = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    let _array_export = eval_module_with_options(
         &array_module,
-        Vec::new(),
-        &ModuleImports::default(),
-        &RuntimeTypeBindings::default(),
-        &builtin_methods,
-        true,
+        EvalModuleOptions::default().with_builtin_methods(&builtin_methods, true),
     )
     .value
     .expect("std/array should export a record");
@@ -184,13 +178,9 @@ fn float_nan_sorts_last_and_minimum_ignores_nan() {
         "  maximum: xs.maximum(),\n",
         "}\n",
     );
-    let outcome = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    let outcome = eval_module_with_options(
         &parse_ok(source),
-        Vec::new(),
-        &ModuleImports::default(),
-        &RuntimeTypeBindings::default(),
-        &builtin_methods,
-        false,
+        EvalModuleOptions::default().with_builtin_methods(&builtin_methods, false),
     );
     assert_eq!(
         outcome,
@@ -399,7 +389,10 @@ fn evaluates_pattern_binding_rhs_once() {
         Ok(record_value(vec![("value", Value::Int(9))]))
     });
     let module = parse_ok("{ value } = make()\nvalue\n");
-    let outcome = eval_module_with_globals(&module, vec![("make".to_owned(), make)]);
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_globals(vec![("make".to_owned(), make)]),
+    );
 
     assert_eq!(outcome.value, Some(Value::Int(9)));
     assert_eq!(outcome.diagnostics, Vec::new());
@@ -415,7 +408,10 @@ fn evaluates_spread_binding_operand_once() {
         Ok(record_value(vec![("value", Value::Int(9))]))
     });
     let module = parse_ok("..make()\nvalue\n");
-    let outcome = eval_module_with_globals(&module, vec![("make".to_owned(), make)]);
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_globals(vec![("make".to_owned(), make)]),
+    );
 
     assert_eq!(outcome.value, Some(Value::Int(9)));
     assert_eq!(outcome.diagnostics, Vec::new());
@@ -537,7 +533,10 @@ fn evaluates_native_host_function_through_field_access() {
     );
     let module = parse_ok("Host.Native.log(\"hi\")\n");
 
-    let outcome = eval_module_with_globals(&module, vec![("Host".to_owned(), host)]);
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_globals(vec![("Host".to_owned(), host)]),
+    );
 
     assert_eq!(
         outcome,
@@ -555,7 +554,10 @@ fn reports_native_host_errors_at_call_span() {
     let module = parse_ok("Host.Native.fail(\"hi\")\n");
     let call_span = module_expr_span(&module);
 
-    let outcome = eval_module_with_globals(&module, vec![("Host".to_owned(), host)]);
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_globals(vec![("Host".to_owned(), host)]),
+    );
 
     assert_eq!(outcome.value, None);
     assert_eq!(outcome.diagnostics.len(), 1);
@@ -574,7 +576,10 @@ fn log_info_emits_message_fields_and_trace_context() {
     let logger = capturing_logger(Rc::clone(&records));
     let module = parse_ok("logger.info(\"hi\", { userId: 42 })\n");
 
-    let outcome = eval_module_with_globals(&module, vec![("logger".to_owned(), logger)]);
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_globals(vec![("logger".to_owned(), logger)]),
+    );
 
     assert_eq!(
         outcome,
@@ -602,7 +607,10 @@ fn child_logger_inherits_trace_and_merges_bound_context() {
     let module =
         parse_ok("requestLog = logger.child({ requestId: \"r1\" })\nrequestLog.info(\"child\")\n");
 
-    let outcome = eval_module_with_globals(&module, vec![("logger".to_owned(), logger)]);
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_globals(vec![("logger".to_owned(), logger)]),
+    );
 
     assert_eq!(outcome.value, Some(Value::unit()));
     assert!(outcome.diagnostics.is_empty());
@@ -625,7 +633,10 @@ fn child_logger_trace_keys_update_trace_context_not_attributes() {
         "child = logger.child({{ traceId: \"{trace_id}\", requestId: \"r1\" }})\nchild.info(\"child\")\n"
     ));
 
-    let outcome = eval_module_with_globals(&module, vec![("logger".to_owned(), logger)]);
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_globals(vec![("logger".to_owned(), logger)]),
+    );
 
     assert_eq!(outcome.value, Some(Value::unit()));
     assert!(outcome.diagnostics.is_empty());
@@ -681,7 +692,10 @@ fn module_bindings_can_shadow_injected_globals() {
         "toolbox = { Native: { log: (message) => message } }\ntoolbox.Native.log(\"local\")\n",
     );
 
-    let outcome = eval_module_with_globals(&module, vec![("toolbox".to_owned(), toolbox)]);
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_globals(vec![("toolbox".to_owned(), toolbox)]),
+    );
 
     assert_eq!(
         outcome,
@@ -1308,13 +1322,9 @@ fn std_array_combinators_run_via_import() {
     let array_source = include_str!("../../aven-host/std/array.av");
     let array_module = parse_ok(array_source);
     let builtin_methods = BuiltinMethodEnvironment::default();
-    let array_export = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    let array_export = eval_module_with_options(
         &array_module,
-        Vec::new(),
-        &ModuleImports::default(),
-        &RuntimeTypeBindings::default(),
-        &builtin_methods,
-        true,
+        EvalModuleOptions::default().with_builtin_methods(&builtin_methods, true),
     )
     .value
     .expect("std/array should export a record");
@@ -1402,13 +1412,11 @@ fn std_array_combinators_run_via_import() {
         "}\n",
     );
     let module = parse_ok(source);
-    let outcome = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    let outcome = eval_module_with_options(
         &module,
-        Vec::new(),
-        &imports,
-        &RuntimeTypeBindings::default(),
-        &builtin_methods,
-        false,
+        EvalModuleOptions::default()
+            .with_imports(&imports)
+            .with_builtin_methods(&builtin_methods, false),
     );
 
     assert_eq!(
@@ -1632,7 +1640,8 @@ fn std_result_combinators_run_via_import() {
         "}\n",
     );
     let module = parse_ok(source);
-    let outcome = eval_module_with_globals_and_imports(&module, Vec::new(), &imports);
+    let outcome =
+        eval_module_with_options(&module, EvalModuleOptions::default().with_imports(&imports));
 
     assert_eq!(
         outcome,
@@ -1687,24 +1696,16 @@ fn user_binding_shadows_map_builtin() {
 fn std_map_helpers_run_via_import() {
     let array_module = parse_ok(include_str!("../../aven-host/std/array.av"));
     let builtin_methods = BuiltinMethodEnvironment::default();
-    let array_export = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    let array_export = eval_module_with_options(
         &array_module,
-        Vec::new(),
-        &ModuleImports::default(),
-        &RuntimeTypeBindings::default(),
-        &builtin_methods,
-        true,
+        EvalModuleOptions::default().with_builtin_methods(&builtin_methods, true),
     )
     .value
     .expect("std/array should export a record");
     let map_module = parse_ok(include_str!("../../aven-host/std/map.av"));
-    let map_export = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    let map_export = eval_module_with_options(
         &map_module,
-        Vec::new(),
-        &ModuleImports::default(),
-        &RuntimeTypeBindings::default(),
-        &builtin_methods,
-        false,
+        EvalModuleOptions::default().with_builtin_methods(&builtin_methods, false),
     )
     .value
     .expect("std/map should export a record");
@@ -1718,13 +1719,11 @@ fn std_map_helpers_run_via_import() {
          from = fromEntries(entries)\n\
          { duplicate: getOr(from, \"one\", 0), missing: getOr(from, \"missing\", 99), updated: toEntries(update(from, \"two\", (n) => n + 10)), unchanged: toEntries(update(from, \"missing\", (n) => n + 10)), mapped: toEntries(mapValues(from, (n) => n + 1)), filtered: toEntries(filter(from, (key, _) => key == \"two\")) }\n",
     );
-    let outcome = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    let outcome = eval_module_with_options(
         &module,
-        Vec::new(),
-        &imports,
-        &RuntimeTypeBindings::default(),
-        &builtin_methods,
-        false,
+        EvalModuleOptions::default()
+            .with_imports(&imports)
+            .with_builtin_methods(&builtin_methods, false),
     );
     assert_eq!(outcome.diagnostics, Vec::new());
     assert_eq!(
@@ -2851,7 +2850,9 @@ fn module_error(source: &str) -> aven_core::Diagnostic {
 
 fn module_error_with_globals(source: &str, globals: Vec<(String, Value)>) -> aven_core::Diagnostic {
     let module = parse_ok(source);
-    let mut diagnostics = eval_module_with_globals(&module, globals).diagnostics;
+    let mut diagnostics =
+        eval_module_with_options(&module, EvalModuleOptions::default().with_globals(globals))
+            .diagnostics;
 
     assert_eq!(diagnostics.len(), 1);
     diagnostics.remove(0)
@@ -2963,13 +2964,9 @@ fn ambient_array_methods() -> BuiltinMethodEnvironment {
         cell.get_or_init(|| {
             let array_module = parse_ok(include_str!("../../aven-host/std/array.av"));
             let builtin_methods = BuiltinMethodEnvironment::default();
-            let _export = eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+            let _export = eval_module_with_options(
                 &array_module,
-                Vec::new(),
-                &ModuleImports::default(),
-                &RuntimeTypeBindings::default(),
-                &builtin_methods,
-                true,
+                EvalModuleOptions::default().with_builtin_methods(&builtin_methods, true),
             )
             .value
             .expect("std/array should export a record");
@@ -2983,13 +2980,9 @@ fn ambient_array_methods() -> BuiltinMethodEnvironment {
 fn eval_with_builtins(source: &str) -> Value {
     let module = parse_ok(source);
     let builtin_methods = ambient_array_methods();
-    eval_module_with_globals_imports_runtime_types_and_builtin_methods(
+    eval_module_with_options(
         &module,
-        Vec::new(),
-        &ModuleImports::default(),
-        &RuntimeTypeBindings::default(),
-        &builtin_methods,
-        false,
+        EvalModuleOptions::default().with_builtin_methods(&builtin_methods, false),
     )
     .value
     .expect("program yields a value")

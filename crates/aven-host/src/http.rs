@@ -729,7 +729,7 @@ mod tests {
 
     use aven_check::{RowEntry, RowTail, Type, record_fields, variant_tags};
     use aven_core::{Span, codes};
-    use aven_eval::eval_module_with_globals;
+    use aven_eval::{EvalModuleOptions, eval_module_with_options};
     use aven_parser::parse_module;
 
     fn http_host() -> Host {
@@ -787,7 +787,10 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        let outcome = eval_module_with_globals(&parsed.module, http_host().eval_globals());
+        let outcome = eval_module_with_options(
+            &parsed.module,
+            EvalModuleOptions::default().with_globals(http_host().eval_globals()),
+        );
         assert!(
             outcome.diagnostics.is_empty(),
             "program runs: {:?}",
@@ -805,7 +808,11 @@ mod tests {
             "program parses: {:?}",
             parsed.diagnostics
         );
-        eval_module_with_globals(&parsed.module, http_host().eval_globals()).diagnostics
+        eval_module_with_options(
+            &parsed.module,
+            EvalModuleOptions::default().with_globals(http_host().eval_globals()),
+        )
+        .diagnostics
     }
 
     #[test]
@@ -1055,7 +1062,10 @@ mod tests {
         let Value::Native(get) = http_native(HttpMethod::Get) else {
             panic!("Http.get is native");
         };
-        let error = match get(&[Value::Int(5)]) {
+        let error = match get(
+            &[Value::Int(5)],
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        ) {
             Ok(value) => panic!("expected native arg error, got {value:?}"),
             Err(error) => error,
         };
@@ -1071,7 +1081,10 @@ mod tests {
             "headers".to_owned(),
             Value::record(vec![("Authorization".to_owned(), Value::Int(5))]),
         )]);
-        let error = match get(&[Value::Text("https://example.com".to_owned()), options]) {
+        let error = match get(
+            &[Value::Text("https://example.com".to_owned()), options],
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        ) {
             Ok(value) => panic!("expected native arg error, got {value:?}"),
             Err(error) => error,
         };
@@ -1087,7 +1100,10 @@ mod tests {
             panic!("Http.get is native");
         };
         let options = Value::record(vec![("hedaers".to_owned(), Value::record(vec![]))]);
-        let error = match get(&[Value::Text("https://example.com".to_owned()), options]) {
+        let error = match get(
+            &[Value::Text("https://example.com".to_owned()), options],
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        ) {
             Ok(value) => panic!("expected native arg error, got {value:?}"),
             Err(error) => error,
         };
@@ -1106,7 +1122,10 @@ mod tests {
                 Value::record(vec![("ok".to_owned(), Value::Bool(true))]),
             ),
         ]);
-        let error = match post(&[Value::Text("https://example.com".to_owned()), options]) {
+        let error = match post(
+            &[Value::Text("https://example.com".to_owned()), options],
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        ) {
             Ok(value) => panic!("expected native arg error, got {value:?}"),
             Err(error) => error,
         };
@@ -1187,12 +1206,19 @@ mod tests {
             panic!("first is native");
         };
 
+        let span = aven_core::Span::new(0, 0);
         assert_eq!(
-            first(&[Value::Text("SET-COOKIE".to_owned())]),
+            first(
+                &[Value::Text("SET-COOKIE".to_owned())],
+                aven_eval::NativeContext::without_source(span),
+            ),
             Ok(Value::Text("a=1".to_owned()))
         );
         assert_eq!(
-            first(&[Value::Text("missing".to_owned())]),
+            first(
+                &[Value::Text("missing".to_owned())],
+                aven_eval::NativeContext::without_source(span),
+            ),
             Ok(Value::Undefined)
         );
     }

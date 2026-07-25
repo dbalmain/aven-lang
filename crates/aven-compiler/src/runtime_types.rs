@@ -285,11 +285,9 @@ mod tests {
             &checked.type_definitions,
             &checked.recursive_type_unfoldings,
         );
-        let outcome = aven_eval::eval_module_with_globals_imports_and_runtime_types(
+        let outcome = aven_eval::eval_module_with_options(
             &parsed.module,
-            Vec::new(),
-            &aven_eval::ModuleImports::default(),
-            &bindings,
+            aven_eval::EvalModuleOptions::default().with_runtime_types(&bindings),
         );
         assert!(
             outcome.diagnostics.is_empty(),
@@ -329,11 +327,9 @@ mod tests {
             &checked.type_definitions,
             &checked.recursive_type_unfoldings,
         );
-        let outcome = aven_eval::eval_module_with_globals_imports_and_runtime_types(
+        let outcome = aven_eval::eval_module_with_options(
             &parsed.module,
-            Vec::new(),
-            &aven_eval::ModuleImports::default(),
-            &bindings,
+            aven_eval::EvalModuleOptions::default().with_runtime_types(&bindings),
         );
         assert!(
             outcome.diagnostics.is_empty(),

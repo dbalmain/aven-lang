@@ -251,7 +251,10 @@ mod tests {
         let Value::Native(native) = value else {
             panic!("expected a native value");
         };
-        native(args)
+        native(
+            args,
+            aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
+        )
     }
 
     #[test]

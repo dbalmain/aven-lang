@@ -14,9 +14,9 @@ use std::{cell::RefCell, fmt::Write as _};
 use aven_core::{Diagnostic, Span};
 
 use crate::{
-    BuiltinMethodEnvironment, Closure, Eval, NamedMethodImplementation, Value, apply_callee_values,
-    apply_closure_values, escape_string, flow_diagnostics, one_diagnostic, record_field_value,
-    record_type_error,
+    BuiltinMethodEnvironment, Closure, Eval, NamedMethodImplementation, NativeContext, Value,
+    apply_callee_values, apply_closure_values, escape_string, flow_diagnostics, one_diagnostic,
+    record_field_value, record_type_error,
 };
 
 /// The field host temporal records carry to identify their nominal kind. Kept
@@ -135,7 +135,12 @@ fn override_to_text(
         }
         Value::SlotRecord { slots, .. } => match record_field_value(slots, "toText") {
             Some(slot) => {
-                let result = apply_callee_values(slot.clone(), span, Vec::new(), span)?;
+                let result = apply_callee_values(
+                    slot.clone(),
+                    span,
+                    Vec::new(),
+                    NativeContext::without_source(span),
+                )?;
                 expect_text(result, span).map(Some)
             }
             None => Ok(None),
@@ -450,7 +455,7 @@ fn temporal_iso_text(fields: &[(String, Value)]) -> Option<String> {
     let Some(Value::Native(format)) = record_field_value(fields, "format") else {
         return None;
     };
-    match format(&[]) {
+    match format(&[], NativeContext::without_source(Span::new(0, 0))) {
         Ok(Value::Text(text)) => Some(text),
         _ => None,
     }
