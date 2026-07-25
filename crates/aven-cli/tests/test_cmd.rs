@@ -266,6 +266,69 @@ fn test_std_test_helpers_via_suite() {
     assert_eq!(cases[7]["message"], "nope");
 }
 
+/// `aven check` and `aven test` must agree on quoted sentence case names.
+/// Before the fix, check rejected them as type exports while test ran them.
+#[test]
+fn check_and_test_agree_on_quoted_uppercase_case_names() {
+    let file = TempFile::new(
+        "quoted-case-names",
+        r#"test = import("std/test")
+
+{
+  "Zero is fine at runtime": () => test.pass,
+}
+"#,
+    );
+
+    let checked = run_aven(["check"], file.path());
+    assert_exit(&checked, 0);
+
+    let tested = run_aven(["test", "--format", "json"], file.path());
+    assert_exit(&tested, 0);
+    let json = parse_json(&tested);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["total"], 1);
+    assert_eq!(json["passed"], 1);
+}
+
+#[test]
+fn test_expect_approx_eq_within_outside_and_default_tolerance() {
+    let file = TempFile::new(
+        "approx-eq",
+        r#"test = import("std/test")
+
+{
+  "within tolerance": () => test.expectApproxEq(1.0, 1.001, 0.01),
+  "outside tolerance": () => test.expectApproxEq(1.0, 2.0, 0.01),
+  "default tolerance near equal": () => test.expectApproxEq(1.0, 1.0 + 1.0e-12),
+  "default tolerance far": () => test.expectApproxEq(1.0, 1.001),
+}
+"#,
+    );
+
+    let output = run_aven(["test", "--format", "json"], file.path());
+    assert_exit(&output, 1);
+    let json = parse_json(&output);
+    assert_eq!(json["total"], 4);
+    assert_eq!(json["passed"], 2);
+    assert_eq!(json["failed"], 2);
+    let cases = json["cases"].as_array().expect("cases array");
+    assert_eq!(cases[0]["outcome"], "pass");
+    assert_eq!(cases[1]["outcome"], "fail");
+    let outside = cases[1]["message"].as_str().expect("fail message");
+    assert!(
+        outside.contains("1") && outside.contains("2") && outside.contains("0.01"),
+        "failure must name actual, expected, and tolerance; got: {outside}"
+    );
+    assert_eq!(cases[2]["outcome"], "pass");
+    assert_eq!(cases[3]["outcome"], "fail");
+    let default_fail = cases[3]["message"].as_str().expect("default fail message");
+    assert!(
+        default_fail.contains("tolerance") && default_fail.contains("0.000000001"),
+        "default-tolerance failure must report the default used; got: {default_fail}"
+    );
+}
+
 #[test]
 fn test_text_output_is_terse() {
     let file = TempFile::new(

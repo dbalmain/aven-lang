@@ -18,6 +18,18 @@ expectNe = (actual, expected) =>
     true => @Ok({})
     false => @Err("expected values to differ, both were ${actual}")
 
+# Absolute float comparison. Order is `(actual, expected, tolerance)` — same
+# actual-first orientation as `expectEq`. Tolerance defaults to `1.0e-9` so the
+# two-argument form works for near-exact floats. Relative tolerance is not
+# offered yet; add a separate helper if a task needs it.
+# No top-level `(Float, Float, Float) -> …` annotation: that form marks every
+# parameter required, which would reject the defaulted two-argument call at
+# check time. Param annotations + trailing default keep both arities sound.
+expectApproxEq = (actual: Float, expected: Float, tolerance: Float = 1.0e-9) =>
+  (actual - expected).abs() <= tolerance ?>
+    true => @Ok({})
+    false => @Err("expected approximately ${expected} (tolerance ${tolerance}), got ${actual}")
+
 expectOk : (Result(a, e)) -> Result({}, Text)
 expectOk = (result) =>
   result ?>
@@ -48,4 +60,4 @@ fail = (message) => @Err(message)
 pass : Result({}, Text)
 pass = @Ok({})
 
-{ expectEq, expectNe, expectOk, expectErr, expectTrue, expectFalse, fail, pass }
+{ expectEq, expectNe, expectApproxEq, expectOk, expectErr, expectTrue, expectFalse, fail, pass }

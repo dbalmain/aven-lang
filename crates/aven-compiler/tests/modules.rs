@@ -368,6 +368,37 @@ fn recursive_type_exports_carry_one_level_heads_to_importers() {
 }
 
 #[test]
+fn quoted_sentence_export_fields_are_not_type_exports() {
+    // Exercism-style suite fields: English descriptions start with a capital
+    // letter but contain spaces, so they can never be type references.
+    let dir = TempDir::new("quoted-sentence-export");
+    write(
+        dir.path(),
+        "suite.av",
+        "{\n  \"Zero is fine at runtime\": () => 1,\n}\n",
+    );
+    let output =
+        check_path_with_host_globals(&dir.path().join("suite.av"), &HostGlobals::default())
+            .expect("check should load graph");
+    assert_no_errors(&output.reports);
+
+    // Residual: a quoted-but-identifier-shaped uppercase field still triggers
+    // the rule (AST does not retain a quoted flag).
+    write(
+        dir.path(),
+        "quoted_ident.av",
+        "value = 1\n{ \"User\": value }\n",
+    );
+    let quoted_ident =
+        check_path_with_host_globals(&dir.path().join("quoted_ident.av"), &HostGlobals::default())
+            .expect("check should load graph");
+    assert_has_code(
+        &quoted_ident.reports,
+        codes::module::UPPERCASE_EXPORT_NOT_TYPE,
+    );
+}
+
+#[test]
 fn module_type_export_diagnostics_are_structured() {
     let dir = TempDir::new("type-export-diagnostics");
     write(

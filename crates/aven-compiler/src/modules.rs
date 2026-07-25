@@ -13,7 +13,7 @@ use aven_eval::{ModuleImports as EvalModuleImports, Value};
 use aven_parser::{
     Binding, Expr, ExprKind, Item, Literal, Module, OperatorAssociativity, OperatorFixityTable,
     OperatorPrecedence, ParseOutput, PatternBinding, RecordEntry, decode_string_literal,
-    lambda_parts,
+    is_identifier, lambda_parts,
 };
 
 use crate::operator_config::{
@@ -1290,6 +1290,14 @@ fn eval_imports_for_node(
     imports
 }
 
+/// True when `name` could be a type export: a bare identifier starting with an
+/// uppercase letter. Quoted field names that are not valid identifiers (spaces,
+/// punctuation, …) can never be type references, so they are value fields even
+/// when they start with a capital letter.
+fn is_type_export_name(name: &str) -> bool {
+    name.chars().next().is_some_and(char::is_uppercase) && is_identifier(name)
+}
+
 fn check_export_for_node(
     node: &ModuleNode,
     semantic: &SemanticOutput,
@@ -1352,7 +1360,7 @@ fn check_export_for_node(
             RecordEntry::Rename { to, .. } => to,
             _ => return false,
         };
-        name.chars().next().is_some_and(char::is_uppercase)
+        is_type_export_name(name)
     });
     if !has_type_shaped_field {
         // Polymorphic function exports often leave the final-expression type as
@@ -1431,7 +1439,7 @@ fn check_export_for_node(
                 };
             }
         };
-        let is_type = name.chars().next().is_some_and(char::is_uppercase);
+        let is_type = is_type_export_name(name);
         let field_ty = if is_type {
             if let Some(source) = source_name
                 && let Some(export) = comptime_export_for_source(
