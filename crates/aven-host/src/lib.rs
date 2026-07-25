@@ -850,8 +850,9 @@ pub fn std_library() -> HashMap<String, &'static str> {
         ("std".to_owned(), include_str!("../std/std.av")),
         ("std/array".to_owned(), include_str!("../std/array.av")),
         ("std/map".to_owned(), include_str!("../std/map.av")),
-        ("std/time".to_owned(), include_str!("../std/time.av")),
         ("std/result".to_owned(), include_str!("../std/result.av")),
+        ("std/test".to_owned(), include_str!("../std/test.av")),
+        ("std/time".to_owned(), include_str!("../std/time.av")),
     ])
 }
 
@@ -1069,7 +1070,14 @@ mod tests {
         specifiers.sort();
         assert_eq!(
             specifiers,
-            ["std", "std/array", "std/map", "std/result", "std/time"]
+            [
+                "std",
+                "std/array",
+                "std/map",
+                "std/result",
+                "std/test",
+                "std/time",
+            ]
         );
 
         for (specifier, source) in &library {

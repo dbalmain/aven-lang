@@ -1,0 +1,51 @@
+# Test assertions: `import("std/test")`. Pure Aven — no host natives.
+# Each helper returns `Result({}, Text)` so a suite of zero-arg thunks can
+# chain with `?^` and report pass/fail without host support.
+
+# Argument order is `(actual, expected)` — the computed value first, matching
+# the order `aven explain test.not-callable` teaches. Getting it backwards is
+# silent: the assertion still passes or fails correctly, only the message is
+# inverted. The orientation is pinned by a test with distinguishable arguments.
+expectEq : (a, a) -> Result({}, Text)
+expectEq = (actual, expected) =>
+  actual == expected ?>
+    true => @Ok({})
+    false => @Err("expected ${expected}, got ${actual}")
+
+expectNe : (a, a) -> Result({}, Text)
+expectNe = (actual, expected) =>
+  actual != expected ?>
+    true => @Ok({})
+    false => @Err("expected values to differ, both were ${actual}")
+
+expectOk : (Result(a, e)) -> Result({}, Text)
+expectOk = (result) =>
+  result ?>
+    @Ok(_) => @Ok({})
+    @Err(error) => @Err("expected @Ok, got @Err(${error})")
+
+expectErr : (Result(a, e)) -> Result({}, Text)
+expectErr = (result) =>
+  result ?>
+    @Ok(value) => @Err("expected @Err, got @Ok(${value})")
+    @Err(_) => @Ok({})
+
+expectTrue : (Bool) -> Result({}, Text)
+expectTrue = (value) =>
+  value ?>
+    true => @Ok({})
+    false => @Err("expected true, got false")
+
+expectFalse : (Bool) -> Result({}, Text)
+expectFalse = (value) =>
+  value ?>
+    true => @Err("expected false, got true")
+    false => @Ok({})
+
+fail : (Text) -> Result({}, Text)
+fail = (message) => @Err(message)
+
+pass : Result({}, Text)
+pass = @Ok({})
+
+{ expectEq, expectNe, expectOk, expectErr, expectTrue, expectFalse, fail, pass }

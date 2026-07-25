@@ -125,6 +125,13 @@ pub mod runtime {
     pub const UNSUPPORTED: &str = "runtime.unsupported";
 }
 
+pub mod test {
+    pub const NON_ZERO_ARITY: &str = "test.non-zero-arity";
+    pub const NOT_A_RECORD: &str = "test.not-a-record";
+    pub const NOT_A_RESULT: &str = "test.not-a-result";
+    pub const NOT_CALLABLE: &str = "test.not-callable";
+}
+
 pub mod ty {
     pub const BRACKET_TYPE_APPLICATION: &str = "type.bracket-type-application";
     pub const COALESCE_NEVER_EMPTY: &str = "type.coalesce-never-empty";
@@ -262,6 +269,10 @@ pub const ALL: &[&str] = &[
     runtime::TYPE_ERROR,
     runtime::UNBOUND_NAME,
     runtime::UNSUPPORTED,
+    test::NON_ZERO_ARITY,
+    test::NOT_A_RECORD,
+    test::NOT_A_RESULT,
+    test::NOT_CALLABLE,
     ty::BRACKET_TYPE_APPLICATION,
     ty::COALESCE_NEVER_EMPTY,
     ty::CYCLIC_ALIAS,

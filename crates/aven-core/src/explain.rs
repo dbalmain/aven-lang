@@ -379,6 +379,22 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Runtime evaluation reached syntax that is parsed but not implemented by the current evaluator slice. Rewrite the program using supported expression forms or wait for the planned evaluator milestone.",
     },
     DiagnosticExplanation {
+        code: codes::test::NON_ZERO_ARITY,
+        text: "A test suite field is callable but requires one or more arguments. Each case must be a zero-parameter thunk such as `() => test.expectEq(actual, expected)` so the runner can invoke it without arguments.",
+    },
+    DiagnosticExplanation {
+        code: codes::test::NOT_A_RECORD,
+        text: "The module entry value for `aven test` must be a record whose fields are zero-arg thunks returning `Result({}, Text)`. Export a record literal (or a binding that evaluates to one) as the last expression of the file.",
+    },
+    DiagnosticExplanation {
+        code: codes::test::NOT_A_RESULT,
+        text: "A test case thunk returned a value that is not a `Result`. Each case must return `@Ok({})` on success or `@Err(message)` on failure — typically via `std/test` helpers such as `expectEq`.",
+    },
+    DiagnosticExplanation {
+        code: codes::test::NOT_CALLABLE,
+        text: "A test suite field is not callable. Each field of the suite record must be a zero-parameter function, for example `\"case name\": () => test.expectEq(actual, expected)`.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::BRACKET_TYPE_APPLICATION,
         text: "Bracket type application has been removed. Use ordinary call syntax such as Result(Int, Text); postfix square brackets are reserved for indexing.",
     },

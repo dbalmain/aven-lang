@@ -717,7 +717,7 @@ impl Value {
         matches!(self, Self::Tuple(values) if values.is_empty())
     }
 
-    fn type_name(&self) -> &'static str {
+    pub fn type_name(&self) -> &'static str {
         match self {
             Self::Int(_) => "Int",
             Self::Float(_) => "Float",
@@ -2797,6 +2797,60 @@ fn apply_closure_values(closure: Closure, arg_values: Vec<Value>, span: Span) ->
     }
 
     bind_and_eval_closure(closure, arg_values, provided)
+}
+
+/// Call a value with already-evaluated arguments.
+///
+/// This is the public boundary counterpart of internal call evaluation: runtime
+/// errors surface as `Err(diagnostics)` rather than the evaluator's private
+/// [`Flow`] channel.
+///
+/// ## `Flow::Propagate` at this boundary
+///
+/// `?^` early-returns an `@Err` from the enclosing function as
+/// [`Flow::Propagate`]. Ordinary closure application already converts that into
+/// a successful return of the `@Err` value at the function body boundary (so a
+/// zero-arg thunk that ends with `someResult?^` yields `@Err(...)` as its
+/// return value, not a diagnostic).
+///
+/// If `Propagate` still reaches this public API — for example from a non-closure
+/// callable that somehow produces it — it is treated the same way: the
+/// propagated `@Err` is returned as `Ok(value)`. Turning it into a diagnostic
+/// would reclassify intentional error returns as crashes; surfacing the value
+/// matches what a normal function call does for its caller.
+pub fn call_value(callee: &Value, args: Vec<Value>) -> Result<Value, Vec<Diagnostic>> {
+    let span = Span::new(0, 0);
+    match apply_callee_values(callee.clone(), span, args, span) {
+        Ok(value) => Ok(value),
+        Err(Flow::Fail(diagnostics)) => Err(diagnostics),
+        Err(Flow::Propagate(value)) => Ok(*value),
+    }
+}
+
+/// Required and total parameter counts when the value is callable and arity is
+/// known statically. Closures report their declared parameters; other callables
+/// return `None` for the counts (still callable via [`call_value`]). Non-callables
+/// also return `None`.
+pub fn callable_arity(value: &Value) -> Option<(usize, usize)> {
+    match value {
+        Value::Closure(closure) => Some(closure_arity(closure)),
+        // Every other callable (natives, method values, named families) carries
+        // no statically-known arity; see `is_callable` for the callable set.
+        _ => None,
+    }
+}
+
+/// Whether the value can be applied with [`call_value`].
+pub fn is_callable(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Closure(_)
+            | Value::Native(_)
+            | Value::ResultMethod { .. }
+            | Value::NamedFamily(_)
+            | Value::NamedMethod { .. }
+            | Value::UnboundNamedMethod { .. }
+    )
 }
 
 fn closure_arity(closure: &Closure) -> (usize, usize) {

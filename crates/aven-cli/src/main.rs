@@ -63,6 +63,28 @@ enum Command {
         operators: Vec<String>,
     },
 
+    /// Run a test suite module (record of zero-arg Result thunks).
+    Test {
+        /// Source file whose entry value is the suite record.
+        path: PathBuf,
+
+        /// Diagnostic / suite report output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+
+        /// Logger sink target: stdout, stderr, syslog, journald, or a file path.
+        #[arg(long, default_value = "stdout")]
+        log: String,
+
+        /// Logger record rendering format.
+        #[arg(long = "log-format", value_enum, default_value_t = LogFormat::Json)]
+        log_format: LogFormat,
+
+        /// Declare a root custom operator as TOKEN:ANCHOR:ASSOCIATIVITY.
+        #[arg(long = "operator")]
+        operators: Vec<String>,
+    },
+
     /// Explain a diagnostic code.
     Explain {
         /// Diagnostic code to explain.
@@ -213,6 +235,19 @@ async fn main() -> Result<()> {
             &operators,
             direct_shebang_arguments.as_deref(),
         ),
+        Command::Test {
+            path,
+            format,
+            log,
+            log_format,
+            operators,
+        } => test(
+            &path,
+            format,
+            &RunConfig { log, log_format },
+            &operators,
+            direct_shebang_arguments.as_deref(),
+        ),
         Command::Explain { code } => explain(&code),
         Command::Tokens { path } => tokens(&path),
         Command::Layout { path } => layout(&path),
@@ -298,27 +333,7 @@ fn run(
     operators: &[String],
     direct_shebang_arguments: Option<&[String]>,
 ) -> Result<()> {
-    let host = build_host(config)?;
-    let roots = discover_roots_for_host(path, &host);
-    let configured = load_path_operator_config(
-        path,
-        &roots,
-        operators,
-        &host,
-        direct_shebang_arguments,
-        direct_shebang_arguments.is_none(),
-        format,
-    )?;
-    let output =
-        aven_compiler::eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
-            path,
-            &host.check_host_globals(),
-            host.eval_globals(),
-            configured.file.source(),
-            &configured.operator_fixities,
-            &roots,
-        )
-        .with_context(|| format!("failed to load {}", path.display()))?;
+    let output = eval_entry_module(path, format, config, operators, direct_shebang_arguments)?;
     let has_errors = reports_have_errors(&output.reports);
 
     match format {
@@ -356,6 +371,334 @@ fn run(
         println!("{rendered}");
     }
 
+    Ok(())
+}
+
+/// Exit codes for `aven test`: harnesses depend on these being distinct.
+const TEST_EXIT_OK: i32 = 0;
+const TEST_EXIT_CASES_FAILED: i32 = 1;
+const TEST_EXIT_SUITE_UNRUNNABLE: i32 = 2;
+
+fn test(
+    path: &Path,
+    format: OutputFormat,
+    config: &RunConfig,
+    operators: &[String],
+    direct_shebang_arguments: Option<&[String]>,
+) -> Result<()> {
+    let output = eval_entry_module(path, format, config, operators, direct_shebang_arguments)?;
+    if reports_have_errors(&output.reports) {
+        match format {
+            OutputFormat::Text => {
+                print_diagnostic_reports(&output.source_map, &output.reports)?;
+            }
+            OutputFormat::Json => {
+                print_json_diagnostic_reports(&output.source_map, &output.reports, None)?;
+            }
+        }
+        std::process::exit(TEST_EXIT_SUITE_UNRUNNABLE);
+    }
+
+    let Some(suite_value) = output.value else {
+        let diagnostic = AvenDiagnostic::error(
+            "test suite module produced no entry value; export a record of zero-arg thunks",
+        )
+        .with_code(aven_core::codes::test::NOT_A_RECORD)
+        .with_note(
+            "write a record literal as the last expression, e.g. `{ \"case\": () => test.pass }`",
+        );
+        return emit_suite_unrunnable(path, format, &output.source_map, vec![diagnostic]);
+    };
+
+    let aven_eval::Value::Record(fields) = suite_value else {
+        let diagnostic = AvenDiagnostic::error(format!(
+            "test suite entry value is {}, expected a record of zero-arg thunks",
+            suite_value.type_name()
+        ))
+        .with_code(aven_core::codes::test::NOT_A_RECORD)
+        .with_note(
+            "export a record whose fields are `() => Result({}, Text)` thunks as the module value",
+        );
+        return emit_suite_unrunnable(path, format, &output.source_map, vec![diagnostic]);
+    };
+
+    // Field order follows the record's evaluation order (source order for
+    // ordinary record literals). The harness may treat case order as meaningful.
+    let mut suite_diagnostics = Vec::new();
+    for (name, field) in fields.iter() {
+        if !aven_eval::is_callable(field) {
+            suite_diagnostics.push(
+                AvenDiagnostic::error(format!(
+                    "test case `{name}` is not callable (got {})",
+                    field.type_name()
+                ))
+                .with_code(aven_core::codes::test::NOT_CALLABLE)
+                .with_note(
+                    "each suite field must be a zero-parameter thunk, e.g. `() => test.expectEq(a, b)`",
+                ),
+            );
+            continue;
+        }
+        if let Some((required, _)) = aven_eval::callable_arity(field)
+            && required != 0
+        {
+            suite_diagnostics.push(
+                AvenDiagnostic::error(format!(
+                    "test case `{name}` requires {required} argument(s); cases must be zero-arg thunks"
+                ))
+                .with_code(aven_core::codes::test::NON_ZERO_ARITY)
+                .with_note(
+                    "write `() => ...` so the runner can call the case without supplying arguments",
+                ),
+            );
+        }
+    }
+    if !suite_diagnostics.is_empty() {
+        return emit_suite_unrunnable(path, format, &output.source_map, suite_diagnostics);
+    }
+
+    let suite_started = std::time::Instant::now();
+    let mut cases = Vec::with_capacity(fields.len());
+    for (name, field) in fields.iter() {
+        let case_started = std::time::Instant::now();
+        let outcome = run_test_case(field);
+        cases.push(TestCaseResult {
+            name: name.clone(),
+            outcome,
+            duration_ms: duration_ms(case_started.elapsed()),
+        });
+    }
+    let report = TestSuiteReport {
+        path: path.display().to_string(),
+        cases,
+        duration_ms: duration_ms(suite_started.elapsed()),
+    };
+
+    match format {
+        OutputFormat::Text => print_test_suite_text(&report)?,
+        OutputFormat::Json => print_test_suite_json(&report)?,
+    }
+
+    if report.failed() + report.errored() > 0 {
+        std::process::exit(TEST_EXIT_CASES_FAILED);
+    }
+    debug_assert_eq!(TEST_EXIT_OK, 0);
+    Ok(())
+}
+
+/// Shared host/root/operator/eval path for `run` and `test`.
+fn eval_entry_module(
+    path: &Path,
+    format: OutputFormat,
+    config: &RunConfig,
+    operators: &[String],
+    direct_shebang_arguments: Option<&[String]>,
+) -> Result<aven_compiler::ModuleEvalOutput> {
+    let host = build_host(config)?;
+    let roots = discover_roots_for_host(path, &host);
+    let configured = load_path_operator_config(
+        path,
+        &roots,
+        operators,
+        &host,
+        direct_shebang_arguments,
+        direct_shebang_arguments.is_none(),
+        format,
+    )?;
+    aven_compiler::eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
+        path,
+        &host.check_host_globals(),
+        host.eval_globals(),
+        configured.file.source(),
+        &configured.operator_fixities,
+        &roots,
+    )
+    .with_context(|| format!("failed to load {}", path.display()))
+}
+
+#[derive(Debug)]
+struct TestSuiteReport {
+    path: String,
+    cases: Vec<TestCaseResult>,
+    duration_ms: f64,
+}
+
+impl TestSuiteReport {
+    fn total(&self) -> usize {
+        self.cases.len()
+    }
+
+    fn passed(&self) -> usize {
+        self.cases
+            .iter()
+            .filter(|case| matches!(case.outcome, TestCaseOutcome::Pass))
+            .count()
+    }
+
+    fn failed(&self) -> usize {
+        self.cases
+            .iter()
+            .filter(|case| matches!(case.outcome, TestCaseOutcome::Fail { .. }))
+            .count()
+    }
+
+    fn errored(&self) -> usize {
+        self.cases
+            .iter()
+            .filter(|case| matches!(case.outcome, TestCaseOutcome::Error { .. }))
+            .count()
+    }
+
+    fn ok(&self) -> bool {
+        self.failed() + self.errored() == 0
+    }
+}
+
+#[derive(Debug)]
+struct TestCaseResult {
+    name: String,
+    outcome: TestCaseOutcome,
+    duration_ms: f64,
+}
+
+#[derive(Debug)]
+enum TestCaseOutcome {
+    Pass,
+    Fail { message: String },
+    Error { diagnostics: Vec<AvenDiagnostic> },
+}
+
+fn run_test_case(thunk: &aven_eval::Value) -> TestCaseOutcome {
+    match aven_eval::call_value(thunk, Vec::new()) {
+        Ok(value) => match result_case_outcome(&value) {
+            Some(outcome) => outcome,
+            None => TestCaseOutcome::Error {
+                diagnostics: vec![AvenDiagnostic::error(format!(
+                    "test case returned {}, expected Result(@Ok({{}}) | @Err(Text))",
+                    value.type_name()
+                ))
+                .with_code(aven_core::codes::test::NOT_A_RESULT)
+                .with_note(
+                    "return `@Ok({})` on success or `@Err(message)` on failure (see `std/test`)",
+                )],
+            },
+        },
+        Err(diagnostics) => TestCaseOutcome::Error { diagnostics },
+    }
+}
+
+/// Interpret a thunk return value as a test outcome. `None` means not a Result.
+fn result_case_outcome(value: &aven_eval::Value) -> Option<TestCaseOutcome> {
+    let aven_eval::Value::Tag { name, payload } = value else {
+        return None;
+    };
+    match (name.as_str(), payload.as_slice()) {
+        ("Ok", [_]) => Some(TestCaseOutcome::Pass),
+        ("Err", [error]) => {
+            let message = match aven_eval::display_text(error) {
+                Ok(text) => text,
+                Err(_) => error.to_string(),
+            };
+            Some(TestCaseOutcome::Fail { message })
+        }
+        ("Ok", _) | ("Err", _) => None,
+        _ => None,
+    }
+}
+
+fn emit_suite_unrunnable(
+    path: &Path,
+    format: OutputFormat,
+    source_map: &aven_core::SourceMap,
+    diagnostics: Vec<AvenDiagnostic>,
+) -> Result<()> {
+    let file_id = source_map
+        .files()
+        .iter()
+        .find(|file| {
+            file.path
+                .as_ref()
+                .is_some_and(|file_path| file_path == path)
+        })
+        .map(|file| file.id)
+        .or_else(|| source_map.files().first().map(|file| file.id))
+        .unwrap_or(FileId(0));
+    let reports = vec![DiagnosticReport::new(file_id, diagnostics)];
+    match format {
+        OutputFormat::Text => print_diagnostic_reports(source_map, &reports)?,
+        OutputFormat::Json => print_json_diagnostic_reports(source_map, &reports, None)?,
+    }
+    std::process::exit(TEST_EXIT_SUITE_UNRUNNABLE);
+}
+
+fn print_test_suite_text(report: &TestSuiteReport) -> Result<()> {
+    for case in &report.cases {
+        match &case.outcome {
+            TestCaseOutcome::Pass => println!("ok  - {}", case.name),
+            TestCaseOutcome::Fail { message } => {
+                println!("FAIL - {}: {message}", case.name);
+            }
+            TestCaseOutcome::Error { diagnostics } => {
+                println!("ERROR - {}", case.name);
+                for diagnostic in diagnostics {
+                    if let Some(code) = &diagnostic.code {
+                        println!("  [{code}] {}", diagnostic.message);
+                    } else {
+                        println!("  {}", diagnostic.message);
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "{}: {} passed, {} failed, {} errored ({}/{}) in {:.3} ms",
+        report.path,
+        report.passed(),
+        report.failed(),
+        report.errored(),
+        report.passed(),
+        report.total(),
+        report.duration_ms
+    );
+    Ok(())
+}
+
+fn print_test_suite_json(report: &TestSuiteReport) -> Result<()> {
+    let cases = report
+        .cases
+        .iter()
+        .map(|case| match &case.outcome {
+            TestCaseOutcome::Pass => json!({
+                "name": case.name,
+                "outcome": "pass",
+                "duration_ms": case.duration_ms,
+            }),
+            TestCaseOutcome::Fail { message } => json!({
+                "name": case.name,
+                "outcome": "fail",
+                "message": message,
+                "duration_ms": case.duration_ms,
+            }),
+            TestCaseOutcome::Error { diagnostics } => json!({
+                "name": case.name,
+                "outcome": "error",
+                "diagnostics": diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
+                "duration_ms": case.duration_ms,
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    let output = json!({
+        "ok": report.ok(),
+        "path": report.path,
+        "total": report.total(),
+        "passed": report.passed(),
+        "failed": report.failed(),
+        "errored": report.errored(),
+        "duration_ms": report.duration_ms,
+        "cases": cases,
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
