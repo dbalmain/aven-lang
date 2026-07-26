@@ -50,6 +50,7 @@ pub mod module {
 pub mod lex {
     pub const LEADING_BOM: &str = "lex.leading-bom";
     pub const RESERVED_OPERATOR: &str = "lex.reserved-operator";
+    pub const SPREAD_EXTRA_DOTS: &str = "lex.spread-extra-dots";
     pub const TAB_INDENTATION: &str = "lex.tab-indentation";
     pub const UNEXPECTED_CHARACTER: &str = "lex.unexpected-character";
     pub const UNKNOWN_ESCAPE: &str = "lex.unknown-escape";
@@ -198,6 +199,7 @@ pub const ALL: &[&str] = &[
     layout::INCONSISTENT_INDENTATION,
     lex::LEADING_BOM,
     lex::RESERVED_OPERATOR,
+    lex::SPREAD_EXTRA_DOTS,
     lex::TAB_INDENTATION,
     lex::UNEXPECTED_CHARACTER,
     lex::UNKNOWN_ESCAPE,

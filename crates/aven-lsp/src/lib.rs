@@ -600,6 +600,11 @@ impl LanguageServer for Backend {
         };
 
         let mut actions = spread_overwrite_code_actions(&document, &uri, &params.context);
+        actions.extend(spread_extra_dots_code_actions(
+            &document,
+            &uri,
+            &params.context,
+        ));
         actions.extend(unused_result_code_actions(&uri, &params.context));
         if actions.is_empty() {
             return Ok(None);
@@ -1111,6 +1116,57 @@ fn is_duplicate_spread_label_diagnostic(diagnostic: &Diagnostic) -> bool {
     matches!(
         diagnostic.code.as_ref(),
         Some(NumberOrString::String(code)) if code == codes::ty::DUPLICATE_SPREAD_LABEL
+    )
+}
+
+fn spread_extra_dots_code_actions(
+    document: &ParsedDocument,
+    uri: &Url,
+    context: &CodeActionContext,
+) -> Vec<CodeActionOrCommand> {
+    context
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            if !is_spread_extra_dots_diagnostic(diagnostic) {
+                return None;
+            }
+
+            let start = position_to_offset(document, diagnostic.range.start)?;
+            let end = position_to_offset(document, diagnostic.range.end)?;
+            // The diagnostic spans the whole dot run, so the fix is a
+            // replacement; only the `:` of an overwrite spread survives it.
+            let spread = if document.source().get(start..end)?.starts_with(':') {
+                ":.."
+            } else {
+                ".."
+            };
+
+            let edit = TextEdit {
+                range: diagnostic.range,
+                new_text: spread.to_owned(),
+            };
+
+            Some(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!("Spread with `{spread}`"),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diagnostic.clone()]),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                is_preferred: Some(true),
+                ..CodeAction::default()
+            }))
+        })
+        .collect()
+}
+
+fn is_spread_extra_dots_diagnostic(diagnostic: &Diagnostic) -> bool {
+    matches!(
+        diagnostic.code.as_ref(),
+        Some(NumberOrString::String(code)) if code == codes::lex::SPREAD_EXTRA_DOTS
     )
 }
 

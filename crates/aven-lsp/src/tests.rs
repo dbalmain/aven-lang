@@ -2253,6 +2253,48 @@ fn spread_overwrite_code_action_skips_duplicate_add_with_shared_code() {
 }
 
 #[test]
+fn spread_extra_dots_code_action_replaces_the_dot_run_with_two_dots() {
+    let uri = test_uri();
+    let document = parsed_document("joined = [...list1, ..list2]\n");
+    let diagnostics = document_diagnostics(&document);
+    let diagnostic = spread_extra_dots_diagnostic(&diagnostics);
+    let context = CodeActionContext {
+        diagnostics: diagnostics.clone(),
+        ..CodeActionContext::default()
+    };
+    let actions = spread_extra_dots_code_actions(&document, &uri, &context);
+
+    let action = single_code_action(&actions);
+    assert_eq!(action.title, "Spread with `..`");
+    assert_eq!(action.kind.as_ref(), Some(&CodeActionKind::QUICKFIX));
+    assert_eq!(action.is_preferred, Some(true));
+    assert_action_carries_diagnostic(action, diagnostic);
+
+    let edit = single_action_text_edit(action, &uri);
+    assert_eq!(edit.new_text, "..");
+    assert_eq!(edit.range, diagnostic.range);
+    assert_edit_replaces_text(&document, edit, "joined = [..list1, ..list2]\n");
+}
+
+#[test]
+fn spread_extra_dots_code_action_keeps_the_overwrite_colon() {
+    let uri = test_uri();
+    let document = parsed_document("wide = { :...base }\n");
+    let diagnostics = document_diagnostics(&document);
+    let range = spread_extra_dots_diagnostic(&diagnostics).range;
+    let context = CodeActionContext {
+        diagnostics,
+        ..CodeActionContext::default()
+    };
+    let actions = spread_extra_dots_code_actions(&document, &uri, &context);
+
+    let edit = single_action_text_edit(single_code_action(&actions), &uri);
+    assert_eq!(edit.new_text, ":..");
+    assert_eq!(edit.range, range);
+    assert_edit_replaces_text(&document, edit, "wide = { :..base }\n");
+}
+
+#[test]
 fn unused_result_code_action_inserts_panic_unwrap_at_expression_end() {
     let uri = test_uri();
     let document = parsed_document_with_semantics("stdout.write(\"x\")\n1\n");
@@ -4315,6 +4357,13 @@ fn unused_result_diagnostic(diagnostics: &[Diagnostic]) -> &Diagnostic {
         .expect("expected unused Result diagnostic")
 }
 
+fn spread_extra_dots_diagnostic(diagnostics: &[Diagnostic]) -> &Diagnostic {
+    diagnostics
+        .iter()
+        .find(|diagnostic| is_spread_extra_dots_diagnostic(diagnostic))
+        .expect("expected extra-dot spread diagnostic")
+}
+
 fn single_code_action(actions: &[CodeActionOrCommand]) -> &CodeAction {
     assert_eq!(actions.len(), 1);
     let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
@@ -4382,6 +4431,17 @@ fn assert_edit_inserts_text(document: &ParsedDocument, edit: &TextEdit, expected
         edited.contains(expected),
         "expected edited source to contain {expected:?}, got {edited:?}"
     );
+}
+
+fn assert_edit_replaces_text(document: &ParsedDocument, edit: &TextEdit, expected: &str) {
+    let start = position_to_offset(document, edit.range.start)
+        .expect("expected edit start to convert to source offset");
+    let end = position_to_offset(document, edit.range.end)
+        .expect("expected edit end to convert to source offset");
+    let mut edited = document.source().to_owned();
+    edited.replace_range(start..end, &edit.new_text);
+
+    assert_eq!(edited, expected);
 }
 
 fn completion_item<'a>(items: &'a [CompletionItem], label: &str) -> Option<&'a CompletionItem> {

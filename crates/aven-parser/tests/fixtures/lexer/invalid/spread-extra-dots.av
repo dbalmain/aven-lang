@@ -1,0 +1,4 @@
+joined = [...list1, ...list2]
+merged = { ...base, x: 1 }
+wide = { :...base }
+four = [....list]

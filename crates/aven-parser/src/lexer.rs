@@ -802,7 +802,16 @@ impl Lexer<'_> {
             {
                 self.offset += self.current_char_len();
             }
-            self.push_reserved_operator_diagnostic(start, prefix);
+
+            // A pure dot run in prefix position is the JavaScript spread
+            // spelling, and its repair is "delete a dot" — not the reserved
+            // namespace rules the generic diagnostic explains.
+            match extra_spread_dots(operator, &self.source[start..self.offset]) {
+                Some(extra) if self.spread_plausible_here() => {
+                    self.push_spread_extra_dots_diagnostic(start, operator, extra);
+                }
+                _ => self.push_reserved_operator_diagnostic(start, prefix),
+            }
         }
 
         self.push(
@@ -831,6 +840,48 @@ impl Lexer<'_> {
                 ))
                 .with_note("custom operators cannot start with `=`, `:`, `.`, `?`, `@`, or `|`"),
         );
+    }
+
+    fn push_spread_extra_dots_diagnostic(&mut self, start: usize, operator: &str, extra: usize) {
+        let run = &self.source[start..self.offset];
+        let dots = if extra == 1 { "dot" } else { "dots" };
+        let message = format!("`{run}` is not a spread operator");
+        let label = format!("spread is written `{operator}`, with exactly two dots");
+        let note = format!(
+            "delete the extra {dots}: write `{operator}` — Aven spreads with two dots (`[..items]`, `{{ ..record }}`), not JavaScript's `...`"
+        );
+
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(codes::lex::SPREAD_EXTRA_DOTS)
+                .with_label(Label::primary(Span::new(start, self.offset), label))
+                .with_note(note),
+        );
+    }
+
+    /// Whether a spread could start here: either the run opens a line or file,
+    /// or the token before it cannot end an expression. Infix dot runs (`1...5`,
+    /// a Ruby range) are left to the reserved-operator diagnostic — v0 has no
+    /// range syntax, so `..` is not their repair.
+    fn spread_plausible_here(&self) -> bool {
+        let previous = self.tokens.iter().rev().find(|token| {
+            !token.kind.is_trivia()
+                || matches!(token.kind, TokenKind::RawNewline | TokenKind::Newline)
+        });
+
+        match previous.map(|token| &token.kind) {
+            // Start of file or start of a line: a block spread entry opens here.
+            None | Some(TokenKind::RawNewline | TokenKind::Newline) => true,
+            Some(kind) => matches!(
+                kind,
+                TokenKind::Operator(_)
+                    | TokenKind::OpenParen
+                    | TokenKind::OpenBrace
+                    | TokenKind::OpenBracket
+                    | TokenKind::Comma
+                    | TokenKind::Semicolon
+            ),
+        }
     }
 
     fn scan_custom_operator(&mut self) {
@@ -977,6 +1028,18 @@ fn reserved_operator_continues(matched: &str, byte: u8) -> bool {
         "|" | "||" | "|>" => is_operator_run_byte(byte),
         _ => false,
     }
+}
+
+/// Surplus dot count when a reserved run is a spread operator wearing extra
+/// dots (`...`, `:...`). `None` for every other run, including `..<`, `.?`, and
+/// `:.` — those are genuine reserved-namespace uses.
+fn extra_spread_dots(operator: &str, run: &str) -> Option<usize> {
+    if !matches!(operator, ".." | ":..") {
+        return None;
+    }
+
+    let extra = run.get(operator.len()..)?;
+    (!extra.is_empty() && extra.bytes().all(|byte| byte == b'.')).then_some(extra.len())
 }
 
 #[cfg(test)]
@@ -1161,6 +1224,72 @@ mod tests {
                 TokenKind::Identifier("b".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn javascript_spread_spelling_names_the_two_dot_fix() {
+        // Every position where a spread can start: after an open delimiter, a
+        // comma, a field colon, or at the head of a line.
+        for (source, span) in [
+            ("[...items]", Span::new(1, 4)),
+            ("{ ...record }", Span::new(2, 5)),
+            ("[..head, ...tail]", Span::new(9, 12)),
+            ("call(...args)", Span::new(5, 8)),
+            ("{ key: ...items }", Span::new(7, 10)),
+            ("x = 1\n...record", Span::new(6, 9)),
+        ] {
+            let output = lex_source(source);
+            let codes: Vec<_> = output
+                .diagnostics
+                .iter()
+                .filter_map(|diagnostic| diagnostic.code.as_deref())
+                .collect();
+
+            assert_eq!(codes, vec!["lex.spread-extra-dots"], "for {source:?}");
+            assert_eq!(output.diagnostics[0].labels[0].span, span, "for {source:?}");
+            assert!(
+                output.diagnostics[0]
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("write `..`")),
+                "expected the note to name `..` for {source:?}, got {:?}",
+                output.diagnostics[0].notes
+            );
+        }
+    }
+
+    #[test]
+    fn extra_dot_spread_recovers_as_a_spread_token() {
+        let output = lex_source("[...items]");
+        let tokens: Vec<_> = output.tokens.into_iter().map(|token| token.kind).collect();
+
+        assert_eq!(
+            tokens,
+            vec![
+                TokenKind::OpenBracket,
+                // One token spanning all three dots: the parser sees a spread
+                // and keeps going, so the dot count is the only complaint.
+                TokenKind::Operator("..".to_owned()),
+                TokenKind::Identifier("items".to_owned()),
+                TokenKind::CloseBracket,
+            ]
+        );
+    }
+
+    #[test]
+    fn non_spread_reserved_dot_runs_keep_the_reserved_operator_error() {
+        // `1...5` is a Ruby range, not a spread: v0 has no range syntax, so `..`
+        // is not its repair. `..<` and `:.` are not dot runs at all.
+        for source in ["r = 1...5", "range = a ..< b", "focus = { :.field }"] {
+            let output = lex_source(source);
+            let codes: Vec<_> = output
+                .diagnostics
+                .iter()
+                .filter_map(|diagnostic| diagnostic.code.as_deref())
+                .collect();
+
+            assert_eq!(codes, vec!["lex.reserved-operator"], "for {source:?}");
+        }
     }
 
     #[test]

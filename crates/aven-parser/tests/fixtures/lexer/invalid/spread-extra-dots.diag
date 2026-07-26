@@ -1,0 +1,15 @@
+error lex.spread-extra-dots: `...` is not a spread operator
+  label 10..13: spread is written `..`, with exactly two dots
+  note: delete the extra dot: write `..` — Aven spreads with two dots (`[..items]`, `{ ..record }`), not JavaScript's `...`
+error lex.spread-extra-dots: `...` is not a spread operator
+  label 20..23: spread is written `..`, with exactly two dots
+  note: delete the extra dot: write `..` — Aven spreads with two dots (`[..items]`, `{ ..record }`), not JavaScript's `...`
+error lex.spread-extra-dots: `...` is not a spread operator
+  label 41..44: spread is written `..`, with exactly two dots
+  note: delete the extra dot: write `..` — Aven spreads with two dots (`[..items]`, `{ ..record }`), not JavaScript's `...`
+error lex.spread-extra-dots: `:...` is not a spread operator
+  label 66..70: spread is written `:..`, with exactly two dots
+  note: delete the extra dot: write `:..` — Aven spreads with two dots (`[..items]`, `{ ..record }`), not JavaScript's `...`
+error lex.spread-extra-dots: `....` is not a spread operator
+  label 85..89: spread is written `..`, with exactly two dots
+  note: delete the extra dots: write `..` — Aven spreads with two dots (`[..items]`, `{ ..record }`), not JavaScript's `...`

@@ -95,6 +95,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "This symbolic operator starts with a reserved character sequence. Operators beginning with =, :, ., ?, or @ are reserved for language syntax.",
     },
     DiagnosticExplanation {
+        code: codes::lex::SPREAD_EXTRA_DOTS,
+        text: "A spread operator was written with more than two dots, the JavaScript/TypeScript spelling. Aven spreads with exactly two dots: .. for disjoint spread and :.. for overwrite spread. Delete the extra dots.",
+    },
+    DiagnosticExplanation {
         code: codes::lex::TAB_INDENTATION,
         text: "Tabs are not accepted in indentation for v0. Use spaces so layout depth is stable across editors.",
     },

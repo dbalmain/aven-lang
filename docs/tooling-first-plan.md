@@ -1864,14 +1864,15 @@ landed (an X-discovered gap), and dynamic JSON (Milestone J2, below) landed
   are unchanged.
 - T11 done: no bare deferred-type hole (`?` as a free type atom) reaches an
   editor surface. LSP tests gate hover, inlay, completion detail, and
-  inferred-type snapshots (including a sweep of
-  `aven-check` valid fixtures plus refined host bindings) so optional `?T` and
-  nullable `T?` sugar stay allowed while free-standing `?` fails the gate. The
-  deliberate exception is unapplied host base signatures that still render
-  `-> ?` until call-site refinement (e.g. hovering `File.open` itself); refined
-  bindings such as `h = File.open(...)` must show concrete `Result` shapes.
+  inferred-type snapshots (including a sweep of `aven-check` valid fixtures plus
+  refined host bindings) so optional `?T` and nullable `T?` sugar stay allowed
+  while free-standing `?` fails the gate. The deliberate exception is unapplied
+  host base signatures that still render `-> ?` until call-site refinement (e.g.
+  hovering `File.open` itself); refined bindings such as `h = File.open(...)`
+  must show concrete `Result` shapes.
 - Quick fixes so far: a colliding spread offers an overwrite-merge (`:..`)
-  rewrite; a dropped `Result` value warns and offers a `?!` insertion.
+  rewrite; a dropped `Result` value warns and offers a `?!` insertion; a
+  JavaScript-spelled spread (`...`) offers the two-dot rewrite.
 
 ## Milestone E — tree-walking evaluator
 
@@ -3025,6 +3026,25 @@ everything pure Aven unless noted:
 Open forks (user's): record `==` record strictness (fits-based equality),
 recursive parameterized types, whether `sortWith` should get an `Ordering`
 variant companion.
+
+## Transfer-error diagnostics
+
+Benchmark work (agents writing Aven after Python/Ruby/JS) surfaces a class of
+errors where the reader knows _what_ they meant and only needs the Aven
+spelling. These get their own code so the note can name the repair instead of
+explaining the rule that happens to reject the text.
+
+- `lex.spread-extra-dots` (2026-07-26): `...` — JavaScript's spread — used to
+  land on `lex.reserved-operator`, whose note is about custom-operator
+  namespaces and never mentions `..`. A dot run of three or more in prefix
+  position (start of file/line, or after an opener, comma, or operator) now
+  reports its own code, labels the whole run, and names `..` (or `:..`, when the
+  run started `:...`). The lexer still emits the two-dot operator token with the
+  full run's span, so the parser recovers as a spread and the dot count is the
+  only complaint. Infix dot runs are deliberately excluded: `1...5` is a Ruby
+  range and v0 has no range syntax, so `..` is not its repair — those keep
+  `lex.reserved-operator`. The LSP quick fix replaces the whole run with the
+  two-dot form.
 
 ## To investigate later
 
