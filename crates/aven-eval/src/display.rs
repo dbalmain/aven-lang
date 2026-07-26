@@ -1,13 +1,13 @@
-//! The display protocol: `toText` rendering and the structural `debugText`.
+//! The display protocol: `toText` rendering and the structural `repr`.
 //!
 //! `to_text` is the rendering behind interpolation (`${x}`), the ambient
 //! `.toText()` method, and `aven run`'s final-value printing: a user or family
 //! `toText` override wins, then the builtin rendering for the value's shape,
-//! then the `debugText` rendering for renderless values (closures, methods,
+//! then the `repr` rendering for renderless values (closures, methods,
 //! host handles) — interpolation never fails. Propagation is homogeneous:
 //! whichever rendering is called on a container is the one called on its
 //! elements, so text inside a `toText`-rendered array is unquoted while
-//! `debugText` quotes and escapes it.
+//! `repr` quotes and escapes it.
 
 use std::{cell::RefCell, fmt::Write as _};
 
@@ -50,7 +50,7 @@ pub(crate) fn to_text_owner_is_active(owner: &str) -> bool {
 }
 
 /// Render a value with the `toText` protocol: override, then builtin
-/// rendering, then the `debugText` fallback. This is the rendering `aven run`
+/// rendering, then the `repr` fallback. This is the rendering `aven run`
 /// uses for final values, matching interpolation. It fails only when a user
 /// `toText` override itself fails.
 pub fn display_text(value: &Value) -> Result<String, Vec<Diagnostic>> {
@@ -61,15 +61,15 @@ pub fn display_text(value: &Value) -> Result<String, Vec<Diagnostic>> {
 /// named/branded values wrapped in their constructor, text quoted and escaped,
 /// floats always carrying a decimal point, and opaque markers for values with
 /// no literal form. Never consults `toText` overrides.
-pub fn debug_text(value: &Value) -> String {
+pub fn repr_text(value: &Value) -> String {
     let mut out = String::new();
-    write_debug(&mut out, value);
+    write_repr(&mut out, value);
     out
 }
 
 /// Whether a value carries the ambient `toText` method (the builtin rendering
 /// exists for its shape). Values outside this set — closures, methods, natives,
-/// type values — only reach the `debugText` fallback through interpolation.
+/// type values — only reach the `repr` fallback through interpolation.
 pub(crate) fn carries_ambient_to_text(value: &Value) -> bool {
     matches!(
         value,
@@ -232,7 +232,7 @@ fn write_to_text(
         }
         Value::Undefined => out.push_str("undefined"),
         Value::Null => out.push_str("null"),
-        // Renderless values: the debugText rendering, so interpolation never
+        // Renderless values: the repr rendering, so interpolation never
         // fails. Slot records without a `toText` slot land here too.
         Value::SlotRecord { .. }
         | Value::NamedFamily(_)
@@ -241,7 +241,7 @@ fn write_to_text(
         | Value::ResultMethod { .. }
         | Value::Closure(_)
         | Value::Native(_)
-        | Value::Type(_) => write_debug(out, value),
+        | Value::Type(_) => write_repr(out, value),
     }
     Ok(())
 }
@@ -304,7 +304,7 @@ fn write_to_text_braced(
     Ok(())
 }
 
-fn write_debug(out: &mut String, value: &Value) {
+fn write_repr(out: &mut String, value: &Value) {
     match value {
         Value::Int(value) => push_int(out, *value),
         Value::Float(value) => out.push_str(&float_text(*value)),
@@ -314,42 +314,42 @@ fn write_debug(out: &mut String, value: &Value) {
             out.push('"');
         }
         Value::Bool(value) => out.push_str(bool_text(*value)),
-        Value::Array(items) => write_debug_sequence(out, "[", "]", items),
-        Value::Tuple(items) => write_debug_sequence(out, "(", ")", items),
+        Value::Array(items) => write_repr_sequence(out, "[", "]", items),
+        Value::Tuple(items) => write_repr_sequence(out, "(", ")", items),
         Value::Set(items) => {
-            write_debug_braced(out, "@{", items.len(), |out| {
+            write_repr_braced(out, "@{", items.len(), |out| {
                 for (index, item) in items.iter().enumerate() {
                     if index > 0 {
                         out.push_str(", ");
                     }
-                    write_debug(out, item);
+                    write_repr(out, item);
                 }
             });
         }
         Value::Map(entries) => {
-            write_debug_braced(out, "Map{", entries.len(), |out| {
+            write_repr_braced(out, "Map{", entries.len(), |out| {
                 for (index, (key, value)) in entries.iter().enumerate() {
                     if index > 0 {
                         out.push_str(", ");
                     }
-                    write_debug(out, key);
+                    write_repr(out, key);
                     out.push_str(": ");
-                    write_debug(out, value);
+                    write_repr(out, value);
                 }
             });
         }
         Value::Record(fields) => {
-            if let Some(iso) = temporal_debug_text(fields) {
+            if let Some(iso) = temporal_repr_text(fields) {
                 out.push_str(&iso);
                 return;
             }
-            write_debug_record(out, fields);
+            write_repr_record(out, fields);
         }
         Value::SlotRecord { .. } => out.push_str("<slot-record>"),
         Value::NamedRecord { descriptor, fields } => {
             out.push_str(family_name(&descriptor.owner));
             out.push('(');
-            write_debug_record(out, fields);
+            write_repr_record(out, fields);
             out.push(')');
         }
         Value::BrandedPrimitive {
@@ -358,14 +358,14 @@ fn write_debug(out: &mut String, value: &Value) {
         } => {
             out.push_str(family_name(&descriptor.owner));
             out.push('(');
-            write_debug(out, &payload.to_value());
+            write_repr(out, &payload.to_value());
             out.push(')');
         }
         Value::Tag { name, payload } => {
             out.push('@');
             out.push_str(name);
             if !payload.is_empty() {
-                write_debug_sequence(out, "(", ")", payload);
+                write_repr_sequence(out, "(", ")", payload);
             }
         }
         Value::NamedFamily(descriptor) => out.push_str(family_name(&descriptor.owner)),
@@ -384,31 +384,31 @@ fn write_debug(out: &mut String, value: &Value) {
     }
 }
 
-fn write_debug_sequence(out: &mut String, open: &str, close: &str, items: &[Value]) {
+fn write_repr_sequence(out: &mut String, open: &str, close: &str, items: &[Value]) {
     out.push_str(open);
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
             out.push_str(", ");
         }
-        write_debug(out, item);
+        write_repr(out, item);
     }
     out.push_str(close);
 }
 
-fn write_debug_record(out: &mut String, fields: &[(String, Value)]) {
-    write_debug_braced(out, "{", fields.len(), |out| {
+fn write_repr_record(out: &mut String, fields: &[(String, Value)]) {
+    write_repr_braced(out, "{", fields.len(), |out| {
         for (index, (name, value)) in fields.iter().enumerate() {
             if index > 0 {
                 out.push_str(", ");
             }
             out.push_str(name);
             out.push_str(": ");
-            write_debug(out, value);
+            write_repr(out, value);
         }
     });
 }
 
-fn write_debug_braced(out: &mut String, open: &str, len: usize, body: impl FnOnce(&mut String)) {
+fn write_repr_braced(out: &mut String, open: &str, len: usize, body: impl FnOnce(&mut String)) {
     out.push_str(open);
     if len > 0 {
         out.push(' ');
@@ -461,10 +461,10 @@ fn temporal_iso_text(fields: &[(String, Value)]) -> Option<String> {
     }
 }
 
-/// The debug rendering of a temporal record: constructor-shaped around the ISO
+/// The `repr` rendering of a temporal record: constructor-shaped around the ISO
 /// text (`Instant("2026-07-19T00:00:00Z")`), since temporal values have no
 /// literal form and their raw record structure is host-internal.
-fn temporal_debug_text(fields: &[(String, Value)]) -> Option<String> {
+fn temporal_repr_text(fields: &[(String, Value)]) -> Option<String> {
     let Some(Value::Text(kind)) = record_field_value(fields, TEMPORAL_KIND_FIELD) else {
         return None;
     };

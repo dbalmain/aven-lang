@@ -11440,7 +11440,7 @@ fn int_float_numeric_helpers_typecheck_and_reject_mismatches() {
 }
 
 #[test]
-fn ambient_to_text_and_debug_text_typecheck() {
+fn ambient_to_text_and_repr_typecheck() {
     let parsed = parse_module(concat!(
         "int = 1.toText()\n",
         "float = 1.0.toText()\n",
@@ -11457,7 +11457,7 @@ fn ambient_to_text_and_debug_text_typecheck() {
         "Shown = { toText(): Text }\n",
         "shownSlot: Shown = { toText(): Text => \"shown\" }\n",
         "slotText = shownSlot.toText()\n",
-        "shown: Text = debugText((x) => x)\n",
+        "shown: Text = repr((x) => x)\n",
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let check = check_module(&parsed.module);

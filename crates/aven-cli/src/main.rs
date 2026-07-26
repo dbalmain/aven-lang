@@ -515,7 +515,7 @@ fn run(
 
     if let Some(value) = output.value.filter(|value| !is_trivial_value(value)) {
         // Final-value printing uses the same rendering as interpolation: the
-        // toText protocol with the debugText fallback. It fails only when a
+        // toText protocol with the `repr` fallback. It fails only when a
         // user `toText` override itself fails.
         let rendered = match aven_eval::display_text(&value) {
             Ok(rendered) => rendered,
@@ -1022,7 +1022,7 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     Ok(host)
 }
 
-/// Writes its single argument's `debugText` rendering to stderr (optionally
+/// Writes its single argument's `repr` rendering to stderr (optionally
 /// prefixed with `file:line: ` from its lexical eval source) and returns the
 /// argument unchanged, so `dbg(x)` is usable inline. Keeps stdout clean for the
 /// program's value and log output. The IO effect lives in the host, so the
@@ -1033,7 +1033,7 @@ fn dbg_native() -> aven_eval::Value {
             return Err(format!("dbg expects 1 argument, got {}", args.len()));
         };
 
-        let rendered = aven_eval::debug_text(value);
+        let rendered = aven_eval::repr_text(value);
         let mut stderr = io::stderr().lock();
         if let Some(source) = &context.source {
             write!(stderr, "{}", source.format_location(context.span))

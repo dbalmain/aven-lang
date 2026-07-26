@@ -2505,7 +2505,7 @@ fn named_primitive_family_money_checks_and_runs_end_to_end() {
             "total = price + tax\n",
             "label = total.toText()\n",
             "rendered = \"${total}\"\n",
-            "debug = debugText(total)\n",
+            "structural = repr(total)\n",
             "bound = total.toText\n",
             "boundLabel = bound()\n",
             "unbound = Money.toText\n",
@@ -2518,7 +2518,7 @@ fn named_primitive_family_money_checks_and_runs_end_to_end() {
             "brandedPlusLabel = brandedPlus.toText()\n",
             "squared: Int = Money(3) ^ Money(2)\n",
             "asInt: Int = total\n",
-            "{ label, rendered, debug, singletonLabel, boundLabel, unboundLabel, shownLabel, cheap, mixed, brandedPlusLabel, squared, asInt }\n",
+            "{ label, rendered, structural, singletonLabel, boundLabel, unboundLabel, shownLabel, cheap, mixed, brandedPlusLabel, squared, asInt }\n",
         ),
     );
     let path = dir.path().join("main.av");
@@ -2537,7 +2537,7 @@ fn named_primitive_family_money_checks_and_runs_end_to_end() {
     assert_eq!(
         ran.value.as_ref().map(ToString::to_string),
         Some(
-            "{ label: \"$27.49\", rendered: \"$27.49\", debug: \"Money(2749)\", singletonLabel: \"$0.3\", boundLabel: \"$27.49\", unboundLabel: \"$27.49\", shownLabel: \"$27.49\", cheap: 150, mixed: 2750, brandedPlusLabel: \"$27.50\", squared: 9, asInt: 2749 }"
+            "{ label: \"$27.49\", rendered: \"$27.49\", structural: \"Money(2749)\", singletonLabel: \"$0.3\", boundLabel: \"$27.49\", unboundLabel: \"$27.49\", shownLabel: \"$27.49\", cheap: 150, mixed: 2750, brandedPlusLabel: \"$27.50\", squared: 9, asInt: 2749 }"
                 .to_owned()
         )
     );

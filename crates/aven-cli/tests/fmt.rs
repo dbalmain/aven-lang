@@ -558,7 +558,7 @@ fn run_dbg_writes_type_to_stderr_and_keeps_stdout_clean() {
     assert_success(&output);
     // Final program value still uses the display protocol on stdout.
     assert_eq!(stdout(&output), "{ name: Text }\n");
-    // `dbg` writes only to stderr, with a `file:line: ` prefix and debugText body.
+    // `dbg` writes only to stderr, with a `file:line: ` prefix and `repr` body.
     let file_name = file
         .path()
         .file_name()
@@ -571,7 +571,7 @@ fn run_dbg_writes_type_to_stderr_and_keeps_stdout_clean() {
 }
 
 #[test]
-fn run_dbg_renders_debug_text_and_returns_argument() {
+fn run_dbg_renders_repr_and_returns_argument() {
     // Pins: quoted text (ambiguity fix), constructor wrap over toText override,
     // inline usability, stderr-only side effect, location prefix.
     let source = "\
@@ -586,7 +586,7 @@ rec = dbg({ a: 1 })
 money = dbg(m)
 (text, n, arr, rec, money)
 ";
-    let file = TempFile::new("run-dbg-debugtext", source);
+    let file = TempFile::new("run-dbg-repr", source);
 
     let output = run_aven(["run"], file.path());
 

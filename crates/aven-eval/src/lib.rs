@@ -15,7 +15,7 @@ use aven_parser::{
 mod display;
 pub mod logging;
 
-pub use display::{debug_text, display_text};
+pub use display::{display_text, repr_text};
 
 /// The evaluator's control-flow channel. Most failures are ordinary runtime
 /// errors ([`Flow::Fail`]); [`Flow::Propagate`] carries an `@Err` value that is
@@ -1344,12 +1344,12 @@ fn intrinsics() -> Vec<(String, Value)> {
     intrinsics.push(("Map.from".to_owned(), Value::native(map_from_intrinsic)));
 
     intrinsics.push((
-        "debugText".to_owned(),
+        "repr".to_owned(),
         Value::native(|args| {
             let [value] = args else {
-                return Err(format!("debugText expects 1 argument, got {}", args.len()));
+                return Err(format!("repr expects 1 argument, got {}", args.len()));
             };
-            Ok(Value::Text(display::debug_text(value)))
+            Ok(Value::Text(display::repr_text(value)))
         }),
     ));
 

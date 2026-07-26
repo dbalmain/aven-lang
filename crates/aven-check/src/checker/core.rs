@@ -135,12 +135,12 @@ impl<'a> Checker<'a> {
         checker.module_identity = module_identity;
         checker.module_role = module_role;
         checker.globals = globals.types.clone();
-        // `debugText` is a language-level builtin, not host-registered: seed it
+        // `repr` is a language-level builtin, not host-registered: seed it
         // unless the host claims the name. User top-level declarations still
         // shadow it through the ordinary `build_value_types` scoping.
-        if !checker.globals.iter().any(|(name, _)| name == "debugText") {
+        if !checker.globals.iter().any(|(name, _)| name == "repr") {
             checker.globals.push((
-                "debugText".to_owned(),
+                "repr".to_owned(),
                 crate::ty::build::function(
                     vec![crate::ty::build::var("a")],
                     crate::ty::build::text(),

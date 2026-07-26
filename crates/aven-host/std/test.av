@@ -6,20 +6,20 @@
 # the order `aven explain test.not-callable` teaches. Getting it backwards is
 # silent: the assertion still passes or fails correctly, only the message is
 # inverted. The orientation is pinned by a test with distinguishable arguments.
-# Compared values are rendered with `debugText` so messages stay unambiguous:
+# Compared values are rendered with `repr` so messages stay unambiguous:
 # Text is quoted, containers keep structure, and a custom `toText` cannot make a
 # failing assertion look correct. Caller-supplied messages (`fail`) stay as-is.
 expectEq : (a, a) -> Result({}, Text)
 expectEq = (actual, expected) =>
   actual == expected ?>
     true => @Ok({})
-    false => @Err("expected ${debugText(expected)}, got ${debugText(actual)}")
+    false => @Err("expected ${repr(expected)}, got ${repr(actual)}")
 
 expectNe : (a, a) -> Result({}, Text)
 expectNe = (actual, expected) =>
   actual != expected ?>
     true => @Ok({})
-    false => @Err("expected values to differ, both were ${debugText(actual)}")
+    false => @Err("expected values to differ, both were ${repr(actual)}")
 
 # Absolute float comparison. Order is `(actual, expected, tolerance)` — same
 # actual-first orientation as `expectEq`. Tolerance defaults to `1.0e-9` so the
@@ -31,18 +31,18 @@ expectNe = (actual, expected) =>
 expectApproxEq = (actual: Float, expected: Float, tolerance: Float = 1.0e-9) =>
   (actual - expected).abs() <= tolerance ?>
     true => @Ok({})
-    false => @Err("expected approximately ${debugText(expected)} (tolerance ${debugText(tolerance)}), got ${debugText(actual)}")
+    false => @Err("expected approximately ${repr(expected)} (tolerance ${repr(tolerance)}), got ${repr(actual)}")
 
 expectOk : (Result(a, e)) -> Result({}, Text)
 expectOk = (result) =>
   result ?>
     @Ok(_) => @Ok({})
-    @Err(error) => @Err("expected @Ok, got @Err(${debugText(error)})")
+    @Err(error) => @Err("expected @Ok, got @Err(${repr(error)})")
 
 expectErr : (Result(a, e)) -> Result({}, Text)
 expectErr = (result) =>
   result ?>
-    @Ok(value) => @Err("expected @Err, got @Ok(${debugText(value)})")
+    @Ok(value) => @Err("expected @Err, got @Ok(${repr(value)})")
     @Err(_) => @Ok({})
 
 expectTrue : (Bool) -> Result({}, Text)

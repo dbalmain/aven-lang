@@ -436,7 +436,7 @@ fn parse_json(output: &Output) -> serde_json::Value {
 /// the one test that fails if the orientation flips, so the assertion messages
 /// keep agreeing with what `aven explain test.not-callable` teaches.
 ///
-/// Messages render compared values with `debugText` (quoted Text, structural
+/// Messages render compared values with `repr` (quoted Text, structural
 /// containers) so orientation stays readable when values contain commas or
 /// trailing punctuation.
 #[test]
@@ -460,7 +460,7 @@ fn std_test_helper_messages_report_actual_and_expected_in_order() {
     let cases = json["cases"].as_array().expect("cases array");
     // `expectEq(actual, expected)`: 1 is what we got, 2 is what we wanted.
     assert_eq!(cases[0]["message"], "expected 2, got 1");
-    // Text is `debugText`-quoted so commas and trailing periods stay unambiguous.
+    // Text is `repr`-quoted so commas and trailing periods stay unambiguous.
     assert_eq!(
         cases[1]["message"],
         "expected \"Two for Bob.\", got \"One for Bob, one for me.\""

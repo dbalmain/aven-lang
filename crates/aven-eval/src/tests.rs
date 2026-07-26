@@ -238,12 +238,12 @@ fn evaluates_string_interpolation_with_stringified_values() {
 }
 
 #[test]
-fn display_protocol_interpolation_and_debug_text_use_distinct_homogeneous_rendering() {
+fn display_protocol_interpolation_and_repr_use_distinct_homogeneous_rendering() {
     assert_eval("\"${1.0}\"", Value::Text("1.0".to_owned()));
     assert_eval("\"${[1.0, 2.5]}\"", Value::Text("[1.0, 2.5]".to_owned()));
     assert_eval("\"${[\"a\", \"b\"]}\"", Value::Text("[a, b]".to_owned()));
     assert_module_value(
-        "debugText([\"a\", \"b\"])\n",
+        "repr([\"a\", \"b\"])\n",
         Value::Text("[\"a\", \"b\"]".to_owned()),
     );
     assert_eval("\"${[[\"a\"]]}\"", Value::Text("[[a]]".to_owned()));
@@ -252,7 +252,13 @@ fn display_protocol_interpolation_and_debug_text_use_distinct_homogeneous_render
 }
 
 #[test]
-fn interpolation_falls_back_to_debug_text_for_closures() {
+fn repr_quotes_text_as_structural_rendering() {
+    // Pins the Aven-visible name and the structural quote rule for Text.
+    assert_module_value("repr(\"a\")\n", Value::Text("\"a\"".to_owned()));
+}
+
+#[test]
+fn interpolation_falls_back_to_repr_for_closures() {
     assert_module_value(
         "f = (x) => x\n\"${f}\"\n",
         Value::Text("<function>".to_owned()),
@@ -260,9 +266,9 @@ fn interpolation_falls_back_to_debug_text_for_closures() {
 }
 
 #[test]
-fn debug_text_marks_slot_records_as_opaque() {
+fn repr_text_marks_slot_records_as_opaque() {
     assert_eq!(
-        super::debug_text(&Value::SlotRecord {
+        super::repr_text(&Value::SlotRecord {
             fields: Rc::new(Vec::new()),
             slots: Rc::new(Vec::new()),
         }),
