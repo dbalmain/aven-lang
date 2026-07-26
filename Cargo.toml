@@ -34,9 +34,9 @@ clap = { version = "4.6.1", features = ["derive"] }
 futures-util = "0.3.31"
 proptest = "1.11.0"
 serde = "1.0.228"
-# float_roundtrip: use serde_json's correctly-rounded float parser so JSON decode
-# is lossless (the default parser is off by up to ~1 ULP on ordinary decimals).
-serde_json = { version = "1.0.150", features = ["float_roundtrip"] }
+# Preserve JSON object order and arbitrary-precision number lexemes; use the
+# correctly-rounded float parser for decimal fractions.
+serde_json = { version = "1.0.150", features = ["arbitrary_precision", "float_roundtrip", "preserve_order"] }
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["io-std", "macros", "rt-multi-thread", "time"] }
 toml = "1.1.3"

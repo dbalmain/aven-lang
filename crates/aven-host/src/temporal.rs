@@ -18,9 +18,9 @@
 //! `Instant` and `Duration` store **i64 nanoseconds** (epoch for Instant).
 //! That range is roughly years 1678–2262 — enough for config/script clocks and
 //! a single `Value::Int` field. Values outside the range fail at parse /
-//! construction rather than silently wrapping. `i128` was rejected for this
-//! slice: no public Aven integer wider than `Int` (`i64`), and codecs already
-//! round-trip through that width.
+//! construction rather than silently wrapping. Aven's arbitrary-precision
+//! `Int` crosses this boundary through checked conversion; the finite range is
+//! a property of the temporal platform types, not the language integer.
 
 use std::cmp::Ordering;
 use std::path::PathBuf;
@@ -751,7 +751,7 @@ fn text_error(message: impl Into<String>) -> Value {
 }
 
 fn compare_int(order: Ordering) -> Value {
-    Value::Int(match order {
+    Value::int(match order {
         Ordering::Less => -1,
         Ordering::Equal => 0,
         Ordering::Greater => 1,
@@ -786,15 +786,15 @@ pub(crate) fn date_from_value(value: &Value) -> Option<Date> {
         return None;
     };
     let year = match record_field(fields, "year")? {
-        Value::Int(v) => *v as i32,
+        Value::Int(v) => v.to_i32()?,
         _ => return None,
     };
     let month = match record_field(fields, "month")? {
-        Value::Int(v) => u8::try_from(*v).ok()?,
+        Value::Int(v) => v.to_u8()?,
         _ => return None,
     };
     let day = match record_field(fields, "day")? {
-        Value::Int(v) => u8::try_from(*v).ok()?,
+        Value::Int(v) => v.to_u8()?,
         _ => return None,
     };
     Some(Date { year, month, day })
@@ -808,19 +808,19 @@ pub(crate) fn time_from_value(value: &Value) -> Option<Time> {
         return None;
     };
     let hour = match record_field(fields, "hour")? {
-        Value::Int(v) => u8::try_from(*v).ok()?,
+        Value::Int(v) => v.to_u8()?,
         _ => return None,
     };
     let minute = match record_field(fields, "minute")? {
-        Value::Int(v) => u8::try_from(*v).ok()?,
+        Value::Int(v) => v.to_u8()?,
         _ => return None,
     };
     let second = match record_field(fields, "second")? {
-        Value::Int(v) => u8::try_from(*v).ok()?,
+        Value::Int(v) => v.to_u8()?,
         _ => return None,
     };
     let nanosecond = match record_field(fields, "nanosecond") {
-        Some(Value::Int(v)) => u32::try_from(*v).ok()?,
+        Some(Value::Int(v)) => v.to_u32()?,
         None => 0,
         _ => return None,
     };
@@ -852,7 +852,9 @@ pub(crate) fn instant_from_value(value: &Value) -> Option<Instant> {
         return None;
     };
     match record_field(fields, "nanos")? {
-        Value::Int(nanos) => Some(Instant { nanos: *nanos }),
+        Value::Int(nanos) => Some(Instant {
+            nanos: nanos.to_i64()?,
+        }),
         _ => None,
     }
 }
@@ -865,7 +867,9 @@ pub(crate) fn duration_from_value(value: &Value) -> Option<Duration> {
         return None;
     };
     match record_field(fields, "nanos")? {
-        Value::Int(nanos) => Some(Duration { nanos: *nanos }),
+        Value::Int(nanos) => Some(Duration {
+            nanos: nanos.to_i64()?,
+        }),
         _ => None,
     }
 }
@@ -899,9 +903,9 @@ pub(crate) fn date_value(date: Date) -> Value {
     let day = date.day;
     Value::record(vec![
         kind_field("Date"),
-        ("year".to_owned(), Value::Int(i64::from(year))),
-        ("month".to_owned(), Value::Int(i64::from(month))),
-        ("day".to_owned(), Value::Int(i64::from(day))),
+        ("year".to_owned(), Value::int(year)),
+        ("month".to_owned(), Value::int(month)),
+        ("day".to_owned(), Value::int(day)),
         (
             "format".to_owned(),
             Value::native(move |args| {
@@ -923,7 +927,10 @@ pub(crate) fn date_value(date: Date) -> Value {
                         args.len()
                     ));
                 };
-                match (Date { year, month, day }).plus_days(*n) {
+                let n = n.to_i64().ok_or_else(|| {
+                    "Date.plusDays argument does not fit its i64 day range".to_owned()
+                })?;
+                match (Date { year, month, day }).plus_days(n) {
                     Ok(date) => Ok(date_value(date)),
                     Err(error) => Err(error.message().to_owned()),
                 }
@@ -939,10 +946,10 @@ pub(crate) fn time_value(time: Time) -> Value {
     let nanosecond = time.nanosecond;
     Value::record(vec![
         kind_field("Time"),
-        ("hour".to_owned(), Value::Int(i64::from(hour))),
-        ("minute".to_owned(), Value::Int(i64::from(minute))),
-        ("second".to_owned(), Value::Int(i64::from(second))),
-        ("nanosecond".to_owned(), Value::Int(i64::from(nanosecond))),
+        ("hour".to_owned(), Value::int(hour)),
+        ("minute".to_owned(), Value::int(minute)),
+        ("second".to_owned(), Value::int(second)),
+        ("nanosecond".to_owned(), Value::int(nanosecond)),
         (
             "format".to_owned(),
             Value::native(move |args| {
@@ -994,7 +1001,10 @@ pub(crate) fn datetime_value(datetime: DateTime) -> Value {
                         args.len()
                     ));
                 };
-                match (DateTime { date, time }).instant(*offset) {
+                let offset = offset.to_i64().ok_or_else(|| {
+                    "DateTime.instant offset does not fit its i64 minute range".to_owned()
+                })?;
+                match (DateTime { date, time }).instant(offset) {
                     Ok(instant) => Ok(instant_value(instant)),
                     Err(error) => Err(error.message().to_owned()),
                 }
@@ -1007,7 +1017,7 @@ pub(crate) fn instant_value(instant: Instant) -> Value {
     let nanos = instant.nanos;
     Value::record(vec![
         kind_field("Instant"),
-        ("nanos".to_owned(), Value::Int(nanos)),
+        ("nanos".to_owned(), Value::int(nanos)),
         (
             "format".to_owned(),
             Value::native(move |args| {
@@ -1029,7 +1039,10 @@ pub(crate) fn instant_value(instant: Instant) -> Value {
                         args.len()
                     ));
                 };
-                match Instant::from_nanos(nanos).date_time(*offset) {
+                let offset = offset.to_i64().ok_or_else(|| {
+                    "Instant.dateTime offset does not fit its i64 minute range".to_owned()
+                })?;
+                match Instant::from_nanos(nanos).date_time(offset) {
                     Ok(datetime) => Ok(datetime_value(datetime)),
                     Err(error) => Err(error.message().to_owned()),
                 }
@@ -1093,7 +1106,7 @@ pub(crate) fn duration_value(duration: Duration) -> Value {
     let nanos = duration.nanos;
     Value::record(vec![
         kind_field("Duration"),
-        ("nanos".to_owned(), Value::Int(nanos)),
+        ("nanos".to_owned(), Value::int(nanos)),
         (
             "format".to_owned(),
             Value::native(move |args| {
@@ -1377,6 +1390,12 @@ pub(crate) fn duration_statics() -> Vec<(String, Type)> {
 
 // --- natives --------------------------------------------------------------
 
+fn temporal_int(value: &aven_eval::Int, context: &str) -> Result<i64, TemporalError> {
+    value
+        .to_i64()
+        .ok_or_else(|| TemporalError::new(format!("{context} is outside the supported i64 range")))
+}
+
 fn date_new_native() -> Value {
     Value::native(|args| {
         let [Value::Int(y), Value::Int(m), Value::Int(d)] = args else {
@@ -1385,7 +1404,18 @@ fn date_new_native() -> Value {
                 args.len()
             ));
         };
-        Ok(match Date::new(*y as i32, *m, *d) {
+        let result = y
+            .to_i32()
+            .ok_or_else(|| TemporalError::new("Date year is outside the supported i32 range"))
+            .and_then(|y| {
+                Ok((
+                    y,
+                    temporal_int(m, "Date month")?,
+                    temporal_int(d, "Date day")?,
+                ))
+            })
+            .and_then(|(y, m, d)| Date::new(y, m, d));
+        Ok(match result {
             Ok(date) => ok_value(date_value(date)),
             Err(error) => err_value(text_error(error.message())),
         })
@@ -1431,7 +1461,15 @@ fn time_new_native() -> Value {
                 args.len()
             ));
         };
-        Ok(match Time::new(*h, *m, *s, 0) {
+        let result = (|| {
+            Time::new(
+                temporal_int(h, "Time hour")?,
+                temporal_int(m, "Time minute")?,
+                temporal_int(s, "Time second")?,
+                0,
+            )
+        })();
+        Ok(match result {
             Ok(time) => ok_value(time_value(time)),
             Err(error) => err_value(text_error(error.message())),
         })
@@ -1555,10 +1593,12 @@ fn duration_of_seconds_native() -> Value {
                 args.len()
             ));
         };
-        Ok(match Duration::of_seconds(*seconds) {
-            Ok(duration) => ok_value(duration_value(duration)),
-            Err(error) => err_value(text_error(error.message())),
-        })
+        Ok(
+            match temporal_int(seconds, "Duration seconds").and_then(Duration::of_seconds) {
+                Ok(duration) => ok_value(duration_value(duration)),
+                Err(error) => err_value(text_error(error.message())),
+            },
+        )
     })
 }
 
@@ -1570,10 +1610,12 @@ fn duration_of_minutes_native() -> Value {
                 args.len()
             ));
         };
-        Ok(match Duration::of_minutes(*minutes) {
-            Ok(duration) => ok_value(duration_value(duration)),
-            Err(error) => err_value(text_error(error.message())),
-        })
+        Ok(
+            match temporal_int(minutes, "Duration minutes").and_then(Duration::of_minutes) {
+                Ok(duration) => ok_value(duration_value(duration)),
+                Err(error) => err_value(text_error(error.message())),
+            },
+        )
     })
 }
 
@@ -1585,10 +1627,12 @@ fn duration_of_hours_native() -> Value {
                 args.len()
             ));
         };
-        Ok(match Duration::of_hours(*hours) {
-            Ok(duration) => ok_value(duration_value(duration)),
-            Err(error) => err_value(text_error(error.message())),
-        })
+        Ok(
+            match temporal_int(hours, "Duration hours").and_then(Duration::of_hours) {
+                Ok(duration) => ok_value(duration_value(duration)),
+                Err(error) => err_value(text_error(error.message())),
+            },
+        )
     })
 }
 
@@ -1600,10 +1644,12 @@ fn duration_of_days_native() -> Value {
                 args.len()
             ));
         };
-        Ok(match Duration::of_days(*days) {
-            Ok(duration) => ok_value(duration_value(duration)),
-            Err(error) => err_value(text_error(error.message())),
-        })
+        Ok(
+            match temporal_int(days, "Duration days").and_then(Duration::of_days) {
+                Ok(duration) => ok_value(duration_value(duration)),
+                Err(error) => err_value(text_error(error.message())),
+            },
+        )
     })
 }
 
@@ -1988,7 +2034,7 @@ fn zone_wall_time(tz: &tz::TimeZone, instant: Instant) -> Result<Value, Temporal
     let date_time = instant.date_time(offset_minutes)?;
     Ok(Value::record(vec![
         ("dateTime".to_owned(), datetime_value(date_time)),
-        ("offsetMinutes".to_owned(), Value::Int(offset_minutes)),
+        ("offsetMinutes".to_owned(), Value::int(offset_minutes)),
     ]))
 }
 
@@ -2421,9 +2467,9 @@ mod tests {
 
         let ok = run("Date.new(2026, 7, 11)\n");
         let date = ok_payload(&ok);
-        assert_eq!(field(date, "year"), &Value::Int(2026));
-        assert_eq!(field(date, "month"), &Value::Int(7));
-        assert_eq!(field(date, "day"), &Value::Int(11));
+        assert_eq!(field(date, "year"), &Value::int(2026));
+        assert_eq!(field(date, "month"), &Value::int(7));
+        assert_eq!(field(date, "day"), &Value::int(11));
     }
 
     #[test]
@@ -2450,8 +2496,8 @@ mod tests {
         assert_eq!(text(field(&value, "time")), "07:32:00");
         assert_eq!(text(field(&value, "datetime")), "1979-05-27T07:32:00");
         assert_eq!(text(field(&value, "duration")), "PT1M30S");
-        assert_eq!(field(&value, "dateCmp"), &Value::Int(-1));
-        assert_eq!(field(&value, "instantCmp"), &Value::Int(0));
+        assert_eq!(field(&value, "dateCmp"), &Value::int(-1));
+        assert_eq!(field(&value, "instantCmp"), &Value::int(0));
         assert_eq!(text(field(&value, "local")), "1979-05-26T23:00:00");
         assert_eq!(text(field(&value, "back")), "1979-05-27T07:32:00Z");
     }
@@ -2467,7 +2513,7 @@ mod tests {
              }\n");
         assert_eq!(text(field(&value, "a")), "PT1H30M");
         assert_eq!(text(field(&value, "b")), "PT1H30M");
-        assert_eq!(field(&value, "cmp"), &Value::Int(0));
+        assert_eq!(field(&value, "cmp"), &Value::int(0));
     }
 
     #[test]
@@ -2704,7 +2750,7 @@ mod tests {
             datetime_from_value(record_field(&wall_fields, "dateTime").expect("dateTime"))
                 .expect("DateTime");
         let offset = match record_field(&wall_fields, "offsetMinutes").expect("offset") {
-            Value::Int(v) => *v,
+            Value::Int(v) => v.to_i64().expect("offsetMinutes fits i64"),
             other => panic!("offsetMinutes Int, got {other:?}"),
         };
         (date_time, offset)
@@ -2876,7 +2922,7 @@ resolved = z.instant(DateTime.parse("2025-06-15T12:00:00")?!)
         );
         assert_eq!(text(field(&value, "name")), "Australia/Sydney");
         assert_eq!(text(field(&value, "wall")), "2025-04-06T02:59:59");
-        assert_eq!(field(&value, "offset"), &Value::Int(660));
+        assert_eq!(field(&value, "offset"), &Value::int(660));
         assert_eq!(text(field(&value, "kind")), "Unique");
     }
 

@@ -1,6 +1,7 @@
 pub mod codes;
 pub mod diagnostic;
 pub mod explain;
+mod int;
 pub mod session;
 pub mod sha256;
 pub mod source;
@@ -8,6 +9,7 @@ pub mod span;
 
 pub use diagnostic::{Diagnostic, DiagnosticReport, Label, Severity};
 pub use explain::{DiagnosticExplanation, explain};
+pub use int::Int;
 pub use session::{
     SESSION_LOG_ENV, SESSION_SCHEMA_VERSION, SESSION_TAG_ENV, SessionRecord, SessionRecordParts,
     SessionSummary, SessionTimings, append_session_record, append_session_record_if_enabled,

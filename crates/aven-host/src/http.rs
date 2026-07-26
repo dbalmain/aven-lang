@@ -486,11 +486,17 @@ fn parse_timeout_option(
 ) -> Result<Option<Duration>, String> {
     match record_field(fields, "timeout") {
         None | Some(Value::Undefined) => Ok(None),
-        Some(Value::Int(ms)) if *ms >= 0 => Ok(Some(Duration::from_millis(*ms as u64))),
-        Some(Value::Int(ms)) => Err(format!(
-            "{} options.timeout expects non-negative Int milliseconds, got {ms}",
-            method.api_name()
-        )),
+        Some(Value::Int(ms)) => ms
+            .to_u64()
+            .map(Duration::from_millis)
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "{} options.timeout expects non-negative milliseconds through {}, got {ms}",
+                    method.api_name(),
+                    u64::MAX
+                )
+            }),
         Some(other) => Err(format!(
             "{} options.timeout expects Int milliseconds, got {}",
             method.api_name(),
@@ -609,7 +615,7 @@ fn http_response_value(response: HttpResponse) -> Value {
     let (_, body) = response.into_parts();
     let reader: Box<dyn Read> = Box::new(body.into_reader());
     Value::record(vec![
-        ("status".to_owned(), Value::Int(i64::from(status))),
+        ("status".to_owned(), Value::int(status)),
         ("headers".to_owned(), Value::Map(Rc::clone(&headers))),
         ("first".to_owned(), first_header_native(Rc::clone(&headers))),
         ("body".to_owned(), body_handle_value(reader)),
@@ -1063,7 +1069,7 @@ mod tests {
             panic!("Http.get is native");
         };
         let error = match get(
-            &[Value::Int(5)],
+            &[Value::int(5)],
             aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
         ) {
             Ok(value) => panic!("expected native arg error, got {value:?}"),
@@ -1079,7 +1085,7 @@ mod tests {
         };
         let options = Value::record(vec![(
             "headers".to_owned(),
-            Value::record(vec![("Authorization".to_owned(), Value::Int(5))]),
+            Value::record(vec![("Authorization".to_owned(), Value::int(5))]),
         )]);
         let error = match get(
             &[Value::Text("https://example.com".to_owned()), options],
@@ -1148,7 +1154,7 @@ mod tests {
 
     #[test]
     fn http_get_args_parse_timeout_milliseconds() {
-        let options = Value::record(vec![("timeout".to_owned(), Value::Int(25))]);
+        let options = Value::record(vec![("timeout".to_owned(), Value::int(25))]);
         let values = [Value::Text("https://example.com".to_owned()), options];
         let args = http_args(HttpMethod::Get, &values).expect("valid args");
         assert_eq!(args.options.timeout, Some(Duration::from_millis(25)));
@@ -1253,7 +1259,7 @@ mod tests {
         let Value::Record(fields) = value else {
             panic!("program returns a record");
         };
-        assert_eq!(value_record_field(&fields, "status"), &Value::Int(200));
+        assert_eq!(value_record_field(&fields, "status"), &Value::int(200));
         assert_eq!(
             value_record_field(&fields, "contentType"),
             &Value::Text("text/plain".to_owned())
@@ -1313,7 +1319,7 @@ mod tests {
         let Value::Record(fields) = value else {
             panic!("program returns a record");
         };
-        assert_eq!(value_record_field(&fields, "status"), &Value::Int(201));
+        assert_eq!(value_record_field(&fields, "status"), &Value::int(201));
         assert_eq!(
             value_record_field(&fields, "location"),
             &Value::Text("/users/ada".to_owned())

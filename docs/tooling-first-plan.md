@@ -2051,9 +2051,12 @@ boundary in thin, self-contained slices.
   generated from the signature. `AvenMarshal` is the single source pairing a
   Rust type with its Aven type (`aven_type()` via `build::*`) and the
   conversions in both directions (`to_value`/`from_value`); implemented for
-  `i64`→`Int`, `f64`→`Float`, `String`→`Text`, `bool`→`Bool`, `()`→`Unit`, with
-  `from_value` returning a clear shape-mismatch `Err` ("expected Int, got Text")
-  that surfaces as `runtime.platform-error` through the native path. A sealed
+  lossless arbitrary-precision `Int`, checked `i64`→`Int`, `f64`→`Float`,
+  `String`→`Text`, `bool`→`Bool`, `()`→`Unit`, with `from_value` returning a
+  clear shape-mismatch `Err` ("expected Int, got Text") that surfaces as
+  `runtime.platform-error` through the native path. An Aven integer outside
+  signed 64-bit range passed to an `i64` host parameter similarly returns a
+  clean range error rather than truncating. A sealed
   `IntoHostFn<Args>` (macro-implemented for `Fn(A0..A3) -> R + 'static` where
   every type is `AvenMarshal`, arities 0..=4) yields
   `into_host_fn() -> (Type, Value)`: an all-required `Type::Function` plus a
@@ -2506,8 +2509,10 @@ over `Json` gets typed arms and exhaustiveness; hand-built constructor tags fit
 (`display_named_definitions`). Decode's target argument became optional (one-arg
 ≡ `Json.decode(text, Json)`); parsing uses a custom serde visitor (direct
 `serde` dep) so object key order is preserved and the `@Int`/`@Float` split
-follows the number lexeme (i64 overflow → `@Float`); encode gains a structural
-carve-out for the seven constructor tags (wrong payload shape stays an error).
+originally followed both number syntax and signed 64-bit range. The
+arbitrary-precision `Int` slice later made all fraction/exponent-free lexemes
+`@Int`, including values beyond `i64`; encode gains a structural carve-out for
+the seven constructor tags (wrong payload shape stays an error).
 `examples/dynamic-json.av` locks decode → match → re-encode. Note: in
 checker-free runs the explicit `Json` target arrives as the namespace record;
 `json_namespace_target` shape-sniffs it and must track `json_value`'s field
@@ -2526,7 +2531,8 @@ Json = @{ @Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text),
 ```
 
 Arm names reuse the language's own type names. Numbers split `@Int`/`@Float`
-(i64-fitting, fraction/exponent-free → `@Int`; else `@Float`) so IDs stay exact.
+(fraction/exponent-free → `@Int`; decimal fraction/exponent → `@Float`) so
+integer IDs stay exact regardless of magnitude.
 The one-arg form is sugar: `Json.decode(text)` ≡ `Json.decode(text, Json)`,
 result `Result[Json, JsonError]` — no new API shape, just a named type the
 existing target-type machinery understands.
@@ -2559,8 +2565,8 @@ Done when:
 - `parsed = Json.decode(text)?^` checks with `parsed : Json`; `match parsed`
   over the seven arms is exhaustive with typed payloads
 - `Json.encode(parsed)` round-trips (modulo whitespace/key order)
-- numbers land in the right arm (`1` → `@Int`, `1.5`/`1e10` → `@Float`, i64
-  overflow → `@Float`)
+- numbers land in the right arm (`1` and integers beyond `i64` → `@Int`,
+  `1.5`/`1e10` → `@Float`)
 - the recursive definition produces no cyclic-alias diagnostic, and hover/LSP
   render `Json` by name rather than an infinite expansion
 
@@ -3012,8 +3018,9 @@ everything pure Aven unless noted:
   gained method forms beside the earlier `mapErr`/`orElse` (shared method table,
   LSP completion picks them up).
 - Text numeric parsing (host builtins): `toInt : () -> ?Int`,
-  `toFloat : () -> ?Float` — exact input (no trim), overflow → `undefined`;
-  `toFloat` keeps Rust non-finite parsing since Float arithmetic already carries
+  `toFloat : () -> ?Float` — exact input (no trim); `toInt` accepts arbitrary
+  decimal precision and returns `undefined` only for invalid syntax; `toFloat`
+  keeps Rust non-finite parsing since Float arithmetic already carries
   non-finite values.
 - `type.coalesce-never-empty` warning: `x ?? y` where the left can never be
   empty warns (conservative — unresolved/open/comptime-dependent lefts stay
@@ -3026,6 +3033,33 @@ everything pure Aven unless noted:
 Open forks (user's): record `==` record strictness (fits-based equality),
 recursive parameterized types, whether `sortWith` should get an `Ordering`
 variant companion.
+
+## Milestone BI — arbitrary-precision `Int`
+
+Status: done 2026-07-27
+
+`Int` now uses the shared `aven_core::Int` wrapper over
+`num_bigint::BigInt` throughout literal evaluation, checker canonical values
+and constant folding, runtime arithmetic and methods, comparison, hashing,
+rendering, format codecs, and the typed host boundary. There is deliberately no
+small-integer fast path; representation optimization is deferred to the VM.
+The old evaluator overflow diagnostic is gone, and `aven check` / `aven run`
+now agree on integer literals of any decimal magnitude, including the direct
+`-9223372036854775808` spelling.
+
+Hosts can marshal the re-exported arbitrary-precision `aven_host::Int`
+losslessly. Existing `i64` host signatures remain valid and return a clear
+platform error if the Aven value does not fit, never truncating. JSON integer
+lexemes decode to exact `@Int` values and encode as exact unquoted decimals;
+the previously verified `2^64 - 1` precision loss through `@Float` is covered
+by a round-trip regression. YAML preserves its input library's signed and
+unsigned integer range, while YAML output and TOML report clean errors when
+their underlying format APIs cannot represent an Aven integer.
+
+Separate work remains for non-decimal literal prefixes, fixed-width interop
+types, and VM-phase integer performance. Operational conversions for indexes,
+sizes, timeouts, temporal nanoseconds, Unicode scalars, float precision, and
+exponents remain explicitly bounded.
 
 ## Transfer-error diagnostics
 

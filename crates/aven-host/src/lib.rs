@@ -23,6 +23,7 @@ use std::rc::Rc;
 
 use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals, Type};
 
+pub use aven_eval::Int;
 pub use aven_parser::{OperatorAssociativity, OperatorPrecedence};
 pub use marshal::{AvenMarshal, IntoHostFn};
 /// The Aven type of the platform `now` value: `() -> Instant`.
@@ -1121,10 +1122,10 @@ mod tests {
     #[test]
     fn register_round_trips_into_both_globals() {
         let mut host = Host::new();
-        host.register("answer", Value::Int(42), build::int());
+        host.register("answer", Value::int(42), build::int());
 
         let eval = host.eval_globals();
-        assert_eq!(eval, vec![("answer".to_owned(), Value::Int(42))]);
+        assert_eq!(eval, vec![("answer".to_owned(), Value::int(42))]);
 
         let check = host.check_globals();
         assert_eq!(check, vec![("answer".to_owned(), build::int())]);
@@ -1211,9 +1212,9 @@ mod tests {
     #[test]
     fn runtime_only_is_evaluated_but_not_checked() {
         let mut host = Host::new();
-        host.register_runtime_only("dbg", Value::Int(7));
+        host.register_runtime_only("dbg", Value::int(7));
 
-        assert_eq!(host.eval_globals(), vec![("dbg".to_owned(), Value::Int(7))]);
+        assert_eq!(host.eval_globals(), vec![("dbg".to_owned(), Value::int(7))]);
         assert!(host.check_globals().is_empty());
     }
 
@@ -1238,21 +1239,21 @@ mod tests {
         let span = aven_core::Span::new(0, 0);
         assert_eq!(
             native(
-                &[Value::Int(2), Value::Int(3)],
+                &[Value::int(2), Value::int(3)],
                 aven_eval::NativeContext::without_source(span),
             ),
-            Ok(Value::Int(5))
+            Ok(Value::int(5))
         );
         assert_eq!(
             native(
-                &[Value::Text("x".to_owned()), Value::Int(3)],
+                &[Value::Text("x".to_owned()), Value::int(3)],
                 aven_eval::NativeContext::without_source(span),
             ),
             Err("expected Int, got Text".to_owned())
         );
         assert_eq!(
             native(
-                &[Value::Int(2)],
+                &[Value::int(2)],
                 aven_eval::NativeContext::without_source(span),
             ),
             Err("expected 2 arguments, got 1".to_owned())
@@ -1276,7 +1277,7 @@ mod tests {
                 &[],
                 aven_eval::NativeContext::without_source(aven_core::Span::new(0, 0)),
             ),
-            Ok(Value::Int(42))
+            Ok(Value::int(42))
         );
     }
 
@@ -1303,7 +1304,7 @@ mod tests {
             &ok.module,
             aven_eval::EvalModuleOptions::default().with_globals(host.eval_globals()),
         );
-        assert_eq!(evaluated.value, Some(Value::Int(5)));
+        assert_eq!(evaluated.value, Some(Value::int(5)));
 
         let bad = parse_module("add(\"x\", 3)\n");
         let checked = aven_check::check_module_with_globals(&bad.module, &host.check_globals());

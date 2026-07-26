@@ -11,7 +11,7 @@
 
 use std::{cell::RefCell, fmt::Write as _};
 
-use aven_core::{Diagnostic, Span};
+use aven_core::{Diagnostic, Int, Span};
 
 use crate::{
     BuiltinMethodEnvironment, Closure, Eval, NamedMethodImplementation, NativeContext, Value,
@@ -173,7 +173,7 @@ fn write_to_text(
     span: Span,
 ) -> Eval<()> {
     match value {
-        Value::Int(value) => push_int(out, *value),
+        Value::Int(value) => push_int(out, value),
         Value::Float(value) => out.push_str(&float_text(*value)),
         Value::Text(text) => out.push_str(text),
         Value::Bool(value) => out.push_str(bool_text(*value)),
@@ -306,7 +306,7 @@ fn write_to_text_braced(
 
 fn write_repr(out: &mut String, value: &Value) {
     match value {
-        Value::Int(value) => push_int(out, *value),
+        Value::Int(value) => push_int(out, value),
         Value::Float(value) => out.push_str(&float_text(*value)),
         Value::Text(text) => {
             out.push('"');
@@ -418,7 +418,7 @@ fn write_repr_braced(out: &mut String, open: &str, len: usize, body: impl FnOnce
     out.push('}');
 }
 
-fn push_int(out: &mut String, value: i64) {
+fn push_int(out: &mut String, value: &Int) {
     let _ = write!(out, "{value}");
 }
 

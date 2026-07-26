@@ -102,7 +102,7 @@ fn library_only_globals_are_hidden_from_user_modules_but_visible_to_library_modu
         &dir.path().join("main.av"),
         vec![(
             "now".to_owned(),
-            aven_eval::Value::native(|_| Ok(aven_eval::Value::Int(1))),
+            aven_eval::Value::native(|_| Ok(aven_eval::Value::int(1))),
         )],
         &roots,
     )
@@ -1620,7 +1620,7 @@ malformed = Json.decode("{\"value\":1,\"children\":[{\"value\":2,\"children\":[{
         .value
         .expect("program returns recursive decode results");
 
-    assert_eq!(value_field(&value, "treeDepth"), &Value::Int(3));
+    assert_eq!(value_field(&value, "treeDepth"), &Value::int(3));
     assert_eq!(value_field(&value, "treeRoundTrip"), &Value::Bool(true));
     assert_eq!(
         value_field(&value, "treeEncoded"),
@@ -1629,9 +1629,9 @@ malformed = Json.decode("{\"value\":1,\"children\":[{\"value\":2,\"children\":[{
                 .to_owned()
         )
     );
-    assert_eq!(value_field(&value, "chainDepth"), &Value::Int(3));
+    assert_eq!(value_field(&value, "chainDepth"), &Value::int(3));
     assert_eq!(value_field(&value, "chainRoundTrip"), &Value::Bool(true));
-    assert_eq!(value_field(&value, "mutualDepth"), &Value::Int(2));
+    assert_eq!(value_field(&value, "mutualDepth"), &Value::int(2));
     assert_eq!(value_field(&value, "mutualRoundTrip"), &Value::Bool(true));
     assert!(
         value_field(&value, "malformed")
@@ -1693,7 +1693,7 @@ tomlAgain = Toml.decode(Toml.encode(tomlTree)?!, Tree)?!
         .value
         .expect("program returns format round-trip results");
 
-    assert_eq!(value_field(&value, "yamlDepth"), &Value::Int(2));
+    assert_eq!(value_field(&value, "yamlDepth"), &Value::int(2));
     assert_eq!(value_field(&value, "yamlRoundTrip"), &Value::Bool(true));
     assert_eq!(value_field(&value, "tomlEmpty"), &Value::Bool(true));
     assert_eq!(value_field(&value, "tomlRoundTrip"), &Value::Bool(true));

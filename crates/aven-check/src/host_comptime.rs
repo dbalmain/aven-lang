@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use aven_core::Int;
 use aven_parser::{Literal, decode_string_literal};
 
 use crate::NamedFamilyType;
@@ -33,7 +34,7 @@ impl ComptimeArg {
         }
     }
 
-    pub fn as_int(&self) -> Option<i64> {
+    pub fn as_int(&self) -> Option<Int> {
         let value = self.as_number()?;
         if value.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
             return None;

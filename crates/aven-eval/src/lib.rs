@@ -15,6 +15,7 @@ use aven_parser::{
 mod display;
 pub mod logging;
 
+pub use aven_core::Int;
 pub use display::{display_text, repr_text};
 
 /// The evaluator's control-flow channel. Most failures are ordinary runtime
@@ -385,7 +386,7 @@ impl fmt::Debug for Closure {
 
 #[derive(Clone)]
 pub enum Value {
-    Int(i64),
+    Int(Int),
     Float(f64),
     Text(String),
     Bool(bool),
@@ -437,7 +438,7 @@ pub enum Value {
 
 #[derive(Debug, Clone)]
 pub enum PrimitivePayload {
-    Int(i64),
+    Int(Int),
     Float(f64),
     Text(String),
     Bool(bool),
@@ -476,7 +477,7 @@ impl PrimitivePayload {
 
     pub fn to_value(&self) -> Value {
         match self {
-            Self::Int(value) => Value::Int(*value),
+            Self::Int(value) => Value::Int(value.clone()),
             Self::Float(value) => Value::Float(*value),
             Self::Text(value) => Value::Text(value.clone()),
             Self::Bool(value) => Value::Bool(*value),
@@ -742,6 +743,10 @@ impl fmt::Display for Value {
 }
 
 impl Value {
+    pub fn int(value: impl Into<Int>) -> Self {
+        Self::Int(value.into())
+    }
+
     /// Wrap a context-ignoring native. Existing host sites keep this shape;
     /// call-site context is available only via [`Self::native_at`].
     pub fn native(function: impl Fn(&[Value]) -> Result<Value, String> + 'static) -> Self {
@@ -3524,15 +3529,15 @@ fn unbound_builtin_type_method(owner: &str, field: &str) -> Option<Value> {
         ("Int", "<=") => Some(unbound_binary_operator("<=")),
         ("Int", ">") => Some(unbound_binary_operator(">")),
         ("Int", ">=") => Some(unbound_binary_operator(">=")),
-        ("Int", "div") => Some(unbound_int_checked_method("div", i64::checked_div)),
-        ("Int", "mod") => Some(unbound_int_checked_method("mod", i64::checked_rem)),
+        ("Int", "div") => Some(unbound_int_division_method("div")),
+        ("Int", "mod") => Some(unbound_int_division_method("mod")),
         ("Int", "toGrouped") => Some(unbound_int_to_grouped_method()),
-        ("Int", "abs") => Some(unbound_int_nullary_method("abs", |v| v.saturating_abs())),
-        ("Int", "min") => Some(unbound_int_binary_method("min", i64::min)),
-        ("Int", "max") => Some(unbound_int_binary_method("max", i64::max)),
+        ("Int", "abs") => Some(unbound_int_nullary_method("abs", Int::abs)),
+        ("Int", "min") => Some(unbound_int_binary_method("min", int_min)),
+        ("Int", "max") => Some(unbound_int_binary_method("max", int_max)),
         ("Int", "clamp") => Some(unbound_int_clamp_method()),
         ("Int", "pow") => Some(unbound_int_pow_method()),
-        ("Int", "sign") => Some(unbound_int_nullary_method("sign", int_sign)),
+        ("Int", "sign") => Some(unbound_int_nullary_method("sign", Int::signum)),
         ("Int", "toFloat") => Some(unbound_int_to_float_method()),
         ("Float", "+") => Some(unbound_binary_operator("+")),
         ("Float", "-") => Some(unbound_binary_operator("-")),
@@ -3608,7 +3613,7 @@ fn unbound_binary_operator(operator: &'static str) -> Value {
     })
 }
 
-fn unbound_int_checked_method(name: &'static str, operation: fn(i64, i64) -> Option<i64>) -> Value {
+fn unbound_int_division_method(name: &'static str) -> Value {
     Value::native(move |args| {
         if args.len() != 2 {
             return Err(format!(
@@ -3630,12 +3635,10 @@ fn unbound_int_checked_method(name: &'static str, operation: fn(i64, i64) -> Opt
                 right.type_name()
             ));
         };
-        if right == 0 {
+        if right.is_zero() {
             return Ok(Value::Undefined);
         }
-        operation(left, right)
-            .map(Value::Int)
-            .ok_or_else(|| format!("integer overflow in unbound Int.{name}"))
+        Ok(Value::Int(int_division(name, &left, &right)))
     })
 }
 
@@ -3710,18 +3713,16 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (Value::Map(entries), "entries") => Some(map_entries_method(Rc::clone(entries))),
         (Value::Map(entries), "size") => Some(map_size_method(Rc::clone(entries))),
         (Value::Map(entries), "merge") => Some(map_merge_method(Rc::clone(entries))),
-        (Value::Int(value), "div") => Some(int_checked_method(*value, "div", i64::checked_div)),
-        (Value::Int(value), "mod") => Some(int_checked_method(*value, "mod", i64::checked_rem)),
-        (Value::Int(value), "toGrouped") => Some(int_to_grouped_method(*value)),
-        (Value::Int(value), "abs") => {
-            Some(int_nullary_method(*value, "abs", |v| v.saturating_abs()))
-        }
-        (Value::Int(value), "min") => Some(int_binary_method(*value, "min", i64::min)),
-        (Value::Int(value), "max") => Some(int_binary_method(*value, "max", i64::max)),
-        (Value::Int(value), "clamp") => Some(int_clamp_method(*value)),
-        (Value::Int(value), "pow") => Some(int_pow_method(*value)),
-        (Value::Int(value), "sign") => Some(int_nullary_method(*value, "sign", int_sign)),
-        (Value::Int(value), "toFloat") => Some(int_to_float_method(*value)),
+        (Value::Int(value), "div") => Some(int_division_method(value.clone(), "div")),
+        (Value::Int(value), "mod") => Some(int_division_method(value.clone(), "mod")),
+        (Value::Int(value), "toGrouped") => Some(int_to_grouped_method(value.clone())),
+        (Value::Int(value), "abs") => Some(int_nullary_method(value.clone(), "abs", Int::abs)),
+        (Value::Int(value), "min") => Some(int_binary_method(value.clone(), "min", int_min)),
+        (Value::Int(value), "max") => Some(int_binary_method(value.clone(), "max", int_max)),
+        (Value::Int(value), "clamp") => Some(int_clamp_method(value.clone())),
+        (Value::Int(value), "pow") => Some(int_pow_method(value.clone())),
+        (Value::Int(value), "sign") => Some(int_nullary_method(value.clone(), "sign", Int::signum)),
+        (Value::Int(value), "toFloat") => Some(int_to_float_method(value.clone())),
         (Value::Float(value), "isFinite") => {
             Some(float_nullary_bool(*value, "isFinite", f64::is_finite))
         }
@@ -3767,11 +3768,7 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
     }
 }
 
-fn int_checked_method(
-    left: i64,
-    name: &'static str,
-    operation: fn(i64, i64) -> Option<i64>,
-) -> Value {
+fn int_division_method(left: Int, name: &'static str) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!("Int.{name} expects 1 argument, got {}", args.len()));
@@ -3782,13 +3779,19 @@ fn int_checked_method(
                 args[0].type_name()
             ));
         };
-        if *right == 0 {
+        if right.is_zero() {
             return Ok(Value::Undefined);
         }
-        operation(left, *right)
-            .map(Value::Int)
-            .ok_or_else(|| format!("integer overflow in Int.{name}"))
+        Ok(Value::Int(int_division(name, &left, right)))
     })
+}
+
+fn int_division(name: &str, left: &Int, right: &Int) -> Int {
+    if name == "div" {
+        left / right
+    } else {
+        left % right
+    }
 }
 
 fn float_nullary_bool(value: f64, name: &'static str, predicate: fn(f64) -> bool) -> Value {
@@ -3821,15 +3824,7 @@ fn float_ieee_equals_method(left: f64) -> Value {
     })
 }
 
-fn int_sign(value: i64) -> i64 {
-    match value.cmp(&0) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
-    }
-}
-
-fn int_nullary_method(value: i64, name: &'static str, f: fn(i64) -> i64) -> Value {
+fn int_nullary_method(value: Int, name: &'static str, f: fn(&Int) -> Int) -> Value {
     Value::native(move |args| {
         if !args.is_empty() {
             return Err(format!(
@@ -3837,11 +3832,11 @@ fn int_nullary_method(value: i64, name: &'static str, f: fn(i64) -> i64) -> Valu
                 args.len()
             ));
         }
-        Ok(Value::Int(f(value)))
+        Ok(Value::Int(f(&value)))
     })
 }
 
-fn int_binary_method(left: i64, name: &'static str, f: fn(i64, i64) -> i64) -> Value {
+fn int_binary_method(left: Int, name: &'static str, f: fn(&Int, &Int) -> Int) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!("Int.{name} expects 1 argument, got {}", args.len()));
@@ -3852,20 +3847,28 @@ fn int_binary_method(left: i64, name: &'static str, f: fn(i64, i64) -> i64) -> V
                 args[0].type_name()
             ));
         };
-        Ok(Value::Int(f(left, *right)))
+        Ok(Value::Int(f(&left, right)))
     })
 }
 
 /// Total clamp. When `min > max`, returns `min` (easy-to-revisit choice).
-fn int_clamp(value: i64, min: i64, max: i64) -> i64 {
+fn int_clamp(value: &Int, min: &Int, max: &Int) -> Int {
     if min > max {
-        min
+        min.clone()
     } else {
-        value.clamp(min, max)
+        value.clamp(min, max).clone()
     }
 }
 
-fn int_clamp_method(value: i64) -> Value {
+fn int_min(left: &Int, right: &Int) -> Int {
+    left.min(right).clone()
+}
+
+fn int_max(left: &Int, right: &Int) -> Int {
+    left.max(right).clone()
+}
+
+fn int_clamp_method(value: Int) -> Value {
     Value::native(move |args| {
         if args.len() != 2 {
             return Err(format!("Int.clamp expects 2 arguments, got {}", args.len()));
@@ -3882,22 +3885,23 @@ fn int_clamp_method(value: i64) -> Value {
                 args[1].type_name()
             ));
         };
-        Ok(Value::Int(int_clamp(value, *min, *max)))
+        Ok(Value::Int(int_clamp(&value, min, max)))
     })
 }
 
-/// Negative exponents clamp to 0 (result `1`). Overflow is a runtime error,
-/// matching `Int.^`.
-fn int_pow(base: i64, exponent: i64) -> Result<i64, String> {
-    let exponent = exponent.max(0);
-    let Ok(exponent) = u32::try_from(exponent) else {
+/// Negative exponents clamp to 0 (result `1`).
+fn int_pow(base: &Int, exponent: &Int) -> Result<Int, String> {
+    let exponent = if exponent.is_negative() {
+        0
+    } else if let Some(exponent) = exponent.to_u32() {
+        exponent
+    } else {
         return Err("Int.pow exponent is too large".to_owned());
     };
-    base.checked_pow(exponent)
-        .ok_or_else(|| "integer overflow in Int.pow".to_owned())
+    Ok(base.pow(exponent))
 }
 
-fn int_pow_method(base: i64) -> Value {
+fn int_pow_method(base: Int) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!("Int.pow expects 1 argument, got {}", args.len()));
@@ -3905,11 +3909,11 @@ fn int_pow_method(base: i64) -> Value {
         let Value::Int(exponent) = &args[0] else {
             return Err(format!("Int.pow expects Int, got {}", args[0].type_name()));
         };
-        int_pow(base, *exponent).map(Value::Int)
+        int_pow(&base, exponent).map(Value::Int)
     })
 }
 
-fn int_to_float_method(value: i64) -> Value {
+fn int_to_float_method(value: Int) -> Value {
     Value::native(move |args| {
         if !args.is_empty() {
             return Err(format!(
@@ -3917,11 +3921,11 @@ fn int_to_float_method(value: i64) -> Value {
                 args.len()
             ));
         }
-        Ok(Value::Float(value as f64))
+        Ok(Value::Float(int_to_f64(&value)))
     })
 }
 
-fn unbound_int_nullary_method(name: &'static str, f: fn(i64) -> i64) -> Value {
+fn unbound_int_nullary_method(name: &'static str, f: fn(&Int) -> Int) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!(
@@ -3936,11 +3940,11 @@ fn unbound_int_nullary_method(name: &'static str, f: fn(i64) -> i64) -> Value {
                 receiver.type_name()
             ));
         };
-        Ok(Value::Int(f(value)))
+        Ok(Value::Int(f(&value)))
     })
 }
 
-fn unbound_int_binary_method(name: &'static str, f: fn(i64, i64) -> i64) -> Value {
+fn unbound_int_binary_method(name: &'static str, f: fn(&Int, &Int) -> Int) -> Value {
     Value::native(move |args| {
         if args.len() != 2 {
             return Err(format!(
@@ -3961,7 +3965,7 @@ fn unbound_int_binary_method(name: &'static str, f: fn(i64, i64) -> i64) -> Valu
                 args[1].type_name()
             ));
         };
-        Ok(Value::Int(f(left, *right)))
+        Ok(Value::Int(f(&left, right)))
     })
 }
 
@@ -3992,7 +3996,7 @@ fn unbound_int_clamp_method() -> Value {
                 args[2].type_name()
             ));
         };
-        Ok(Value::Int(int_clamp(value, *min, *max)))
+        Ok(Value::Int(int_clamp(&value, min, max)))
     })
 }
 
@@ -4017,7 +4021,7 @@ fn unbound_int_pow_method() -> Value {
                 args[1].type_name()
             ));
         };
-        int_pow(base, *exponent).map(Value::Int)
+        int_pow(&base, exponent).map(Value::Int)
     })
 }
 
@@ -4036,7 +4040,7 @@ fn unbound_int_to_float_method() -> Value {
                 receiver.type_name()
             ));
         };
-        Ok(Value::Float(value as f64))
+        Ok(Value::Float(int_to_f64(&value)))
     })
 }
 
@@ -4217,7 +4221,7 @@ fn text_method(text: &str, field: &str) -> Option<Value> {
     match field {
         "isEmpty" => Some(text_nullary_bool(text, "isEmpty", |s| s.is_empty())),
         "length" => Some(text_nullary_int(text, "length", |s| {
-            i64::try_from(s.chars().count()).map_err(|_| "Text.length is too large".to_owned())
+            Ok(Int::from(s.chars().count()))
         })),
         "chars" => Some(text_nullary_value(text, "chars", |s| {
             Value::Array(Rc::new(
@@ -4253,7 +4257,7 @@ fn text_method(text: &str, field: &str) -> Option<Value> {
         "padLeft" => Some(text_pad_method(text, true)),
         "padRight" => Some(text_pad_method(text, false)),
         "toInt" => Some(text_nullary_optional(text, "toInt", |s| {
-            s.parse::<i64>().ok().map(Value::Int)
+            s.parse::<Int>().ok().map(Value::Int)
         })),
         "toFloat" => Some(text_nullary_optional(text, "toFloat", |s| {
             s.parse::<f64>().ok().map(Value::Float)
@@ -4287,7 +4291,7 @@ fn text_nullary_bool(
 fn text_nullary_int(
     text: String,
     name: &'static str,
-    f: impl Fn(&str) -> Result<i64, String> + 'static,
+    f: impl Fn(&str) -> Result<Int, String> + 'static,
 ) -> Value {
     Value::native(move |args| {
         if !args.is_empty() {
@@ -4418,10 +4422,10 @@ fn text_repeat_method(text: String) -> Value {
             ));
         };
         // Negative count → empty text (same as count 0). Documented choice.
-        if *count <= 0 {
+        if count.is_negative() || count.is_zero() {
             return Ok(Value::Text(String::new()));
         }
-        let Ok(n) = usize::try_from(*count) else {
+        let Some(n) = count.to_usize() else {
             return Err("Text.repeat count is too large".to_owned());
         };
         Ok(Value::Text(text.repeat(n)))
@@ -4468,7 +4472,7 @@ fn text_pad_method(text: String, left: bool) -> Value {
             ));
         };
         let pad = expect_text_arg(&args[1], &format!("Text.{name}"))?;
-        Ok(Value::Text(text_pad(&text, *width, pad, left)))
+        Ok(Value::Text(text_pad(&text, width, pad, left)?))
     })
 }
 
@@ -4487,16 +4491,13 @@ fn text_index_of_method(text: String) -> Value {
             return Ok(Value::Undefined);
         };
         let char_offset = text[..byte_offset].chars().count();
-        let Ok(index) = i64::try_from(char_offset) else {
-            return Err("Text.indexOf position is too large".to_owned());
-        };
-        Ok(Value::Int(index))
+        Ok(Value::int(char_offset))
     })
 }
 
 /// Char-range substring. Clamps `start`/`end` into `[0, len]`; if
 /// `start > end` after clamping, returns empty text. No negative indexing.
-fn text_slice(text: &str, start: i64, end: i64) -> String {
+fn text_slice(text: &str, start: &Int, end: &Int) -> String {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
     let start = clamp_char_index(start, len);
@@ -4507,11 +4508,11 @@ fn text_slice(text: &str, start: i64, end: i64) -> String {
     chars[start..end].iter().collect()
 }
 
-fn clamp_char_index(index: i64, len: usize) -> usize {
-    if index <= 0 {
+fn clamp_char_index(index: &Int, len: usize) -> usize {
+    if index.is_negative() || index.is_zero() {
         return 0;
     }
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = index.to_usize() else {
         return len;
     };
     index.min(len)
@@ -4537,7 +4538,7 @@ fn text_slice_method(text: String) -> Value {
                 args[1].type_name()
             ));
         };
-        Ok(Value::Text(text_slice(&text, *start, *end)))
+        Ok(Value::Text(text_slice(&text, start, end)))
     })
 }
 
@@ -4556,17 +4557,19 @@ fn text_capitalize(text: &str) -> String {
 /// the unit other Text helpers implicitly use (no grapheme segmentation).
 /// Empty `pad` or already-wide text leaves the input unchanged. Multi-char
 /// `pad` is repeated from the start and truncated to the needed length.
-fn text_pad(text: &str, width: i64, pad: &str, left: bool) -> String {
+fn text_pad(text: &str, width: &Int, pad: &str, left: bool) -> Result<String, String> {
     if pad.is_empty() {
-        return text.to_owned();
+        return Ok(text.to_owned());
     }
-    let Ok(width) = usize::try_from(width) else {
-        // Negative width: no padding needed → unchanged.
-        return text.to_owned();
+    if width.is_negative() {
+        return Ok(text.to_owned());
+    }
+    let Some(width) = width.to_usize() else {
+        return Err("Text padding width is too large".to_owned());
     };
     let text_len = text.chars().count();
     if text_len >= width {
-        return text.to_owned();
+        return Ok(text.to_owned());
     }
     let need = width - text_len;
     let pad_chars: Vec<char> = pad.chars().collect();
@@ -4575,13 +4578,13 @@ fn text_pad(text: &str, width: i64, pad: &str, left: bool) -> String {
         padding.push(pad_chars[index % pad_chars.len()]);
     }
     if left {
-        format!("{padding}{text}")
+        Ok(format!("{padding}{text}"))
     } else {
-        format!("{text}{padding}")
+        Ok(format!("{text}{padding}"))
     }
 }
 
-fn int_to_grouped_method(value: i64) -> Value {
+fn int_to_grouped_method(value: Int) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!(
@@ -4590,7 +4593,7 @@ fn int_to_grouped_method(value: i64) -> Value {
             ));
         }
         let separator = expect_text_arg(&args[0], "Int.toGrouped")?;
-        Ok(Value::Text(int_to_grouped(value, separator)))
+        Ok(Value::Text(int_to_grouped(&value, separator)))
     })
 }
 
@@ -4610,14 +4613,14 @@ fn unbound_int_to_grouped_method() -> Value {
             ));
         };
         let separator = expect_text_arg(&args[1], "unbound Int.toGrouped")?;
-        Ok(Value::Text(int_to_grouped(value, separator)))
+        Ok(Value::Text(int_to_grouped(&value, separator)))
     })
 }
 
 /// Group digits in threes from the right with `separator`. Sign is preserved;
 /// values under 1000 (absolute) insert no separator. Empty separator is plain
 /// `to_string`.
-fn int_to_grouped(value: i64, separator: &str) -> String {
+fn int_to_grouped(value: &Int, separator: &str) -> String {
     let text = value.to_string();
     if separator.is_empty() {
         return text;
@@ -4652,7 +4655,7 @@ fn float_to_fixed_method(value: f64) -> Value {
                 args[0].type_name()
             ));
         };
-        Ok(Value::Text(float_to_fixed(value, *decimals)))
+        float_to_fixed(value, decimals).map(Value::Text)
     })
 }
 
@@ -4677,7 +4680,7 @@ fn unbound_float_to_fixed_method() -> Value {
                 args[1].type_name()
             ));
         };
-        Ok(Value::Text(float_to_fixed(value, *decimals)))
+        float_to_fixed(value, decimals).map(Value::Text)
     })
 }
 
@@ -4685,18 +4688,24 @@ fn unbound_float_to_fixed_method() -> Value {
 /// round-trip decimal of the IEEE value (Rust `f64::to_string` / ryu). Negative
 /// `decimals` clamps to 0. Non-finite values use display words regardless of
 /// `decimals`.
-fn float_to_fixed(value: f64, decimals: i64) -> String {
+fn float_to_fixed(value: f64, decimals: &Int) -> Result<String, String> {
     if value.is_nan() {
-        return "NaN".to_owned();
+        return Ok("NaN".to_owned());
     }
     if value == f64::INFINITY {
-        return "Infinity".to_owned();
+        return Ok("Infinity".to_owned());
     }
     if value == f64::NEG_INFINITY {
-        return "-Infinity".to_owned();
+        return Ok("-Infinity".to_owned());
     }
 
-    let decimals = usize::try_from(decimals.max(0)).unwrap_or(0);
+    let decimals = if decimals.is_negative() {
+        0
+    } else {
+        decimals
+            .to_usize()
+            .ok_or_else(|| "Float.toFixed decimal count is too large".to_owned())?
+    };
     // `-0.0 == 0.0`, so signed zero displays without a minus.
     let negative = value.is_sign_negative() && value != 0.0;
     let raw = value.abs().to_string();
@@ -4742,7 +4751,7 @@ fn float_to_fixed(value: f64, decimals: i64) -> String {
                 .map(|digit| char::from(b'0' + digit)),
         );
     }
-    result
+    Ok(result)
 }
 
 /// Add one at the least-significant digit, carrying left and prepending `1`
@@ -4928,7 +4937,7 @@ fn map_size_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
             return Err(format!("Map.size expects 0 arguments, got {}", args.len()));
         }
 
-        Ok(Value::Int(entries.len() as i64))
+        Ok(Value::int(entries.len()))
     })
 }
 
@@ -5078,7 +5087,7 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
 
             // Negative indexes wrap from the end (Python-style): `-1` is last.
             // Still-out-of-bounds after wrap → `undefined`, same as past-the-end.
-            Ok(array_indexed_value(&values, index).unwrap_or(Value::Undefined))
+            Ok(array_indexed_value(&values, &index).unwrap_or(Value::Undefined))
         }
         Value::Text(text) => {
             let Value::Int(index) = arg_value else {
@@ -5091,7 +5100,7 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
             };
 
             // Scalar-value index, same wrap/OOB rule as arrays (via `resolve_index`).
-            Ok(text_indexed_value(&text, index).unwrap_or(Value::Undefined))
+            Ok(text_indexed_value(&text, &index).unwrap_or(Value::Undefined))
         }
         Value::Tuple(values) => {
             let Value::Int(index) = arg_value else {
@@ -5104,8 +5113,8 @@ fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Ev
             };
 
             // Tuples do not wrap: fixed arity, out-of-bounds is a hard error.
-            indexed_value(&values, index).ok_or_else(|| {
-                one_diagnostic(index_out_of_bounds(args[0].span, index, values.len()))
+            indexed_value(&values, &index).ok_or_else(|| {
+                one_diagnostic(index_out_of_bounds(args[0].span, &index, values.len()))
             })
         }
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
@@ -5171,35 +5180,34 @@ fn runtime_type_target(value: &Value) -> bool {
 /// Resolve a Python-style index: `i < 0` → `length + i`.
 /// Returns `None` when the resolved index is still out of bounds.
 /// Shared by array and Text indexing so the wrap/OOB rules cannot drift.
-fn resolve_index(len: usize, index: i64) -> Option<usize> {
-    let len_i = i64::try_from(len).ok()?;
-    let resolved = if index < 0 {
-        index.checked_add(len_i)?
+fn resolve_index(len: usize, index: &Int) -> Option<usize> {
+    let resolved = if index.is_negative() {
+        index + &Int::from(len)
     } else {
-        index
+        index.clone()
     };
-    if resolved < 0 {
+    if resolved.is_negative() {
         return None;
     }
-    let resolved = usize::try_from(resolved).ok()?;
+    let resolved = resolved.to_usize()?;
     (resolved < len).then_some(resolved)
 }
 
 /// Array index with Python-style negative wrap (see `resolve_index`).
-fn array_indexed_value(values: &[Value], index: i64) -> Option<Value> {
+fn array_indexed_value(values: &[Value], index: &Int) -> Option<Value> {
     resolve_index(values.len(), index).map(|i| values[i].clone())
 }
 
 /// Text index by Unicode scalar value, same wrap/OOB rule as arrays.
 /// Returns a single-scalar `Text`, or `None` → runtime `undefined`.
-fn text_indexed_value(text: &str, index: i64) -> Option<Value> {
+fn text_indexed_value(text: &str, index: &Int) -> Option<Value> {
     let chars: Vec<char> = text.chars().collect();
     resolve_index(chars.len(), index).map(|i| Value::Text(chars[i].to_string()))
 }
 
 /// Tuple index: no negative wrap; negative or past-end yields `None`.
-fn indexed_value(values: &[Value], index: i64) -> Option<Value> {
-    let index = usize::try_from(index).ok()?;
+fn indexed_value(values: &[Value], index: &Int) -> Option<Value> {
+    let index = index.to_usize()?;
     values.get(index).cloned()
 }
 
@@ -5360,7 +5368,7 @@ fn eval_number_literal(text: &str, span: Span) -> Result<Value, Diagnostic> {
     }
 
     normalized
-        .parse::<i64>()
+        .parse::<Int>()
         .map(Value::Int)
         .map_err(|_| invalid_numeric_literal(text, span, "Int"))
 }
@@ -5373,10 +5381,7 @@ fn eval_unary(operator: &str, value: &Expr, span: Span, env: &Environment) -> Ev
     let value = eval_expr_many(value, env)?;
 
     match (operator, value) {
-        ("-", Value::Int(value)) => value
-            .checked_neg()
-            .map(Value::Int)
-            .ok_or_else(|| one_diagnostic(integer_overflow(span, "unary `-`"))),
+        ("-", Value::Int(value)) => Ok(Value::Int(-&value)),
         ("-", Value::Float(value)) => Ok(Value::Float(-value)),
         ("-", value) => Err(one_diagnostic(unary_type_error(
             span,
@@ -5562,10 +5567,10 @@ fn numeric_arithmetic(
             float_arithmetic(left, operator, right, right_span, span)
         }
         (Value::Int(left), Value::Float(right)) => {
-            float_arithmetic(left as f64, operator, right, right_span, span)
+            float_arithmetic(int_to_f64(&left), operator, right, right_span, span)
         }
         (Value::Float(left), Value::Int(right)) => {
-            float_arithmetic(left, operator, right as f64, right_span, span)
+            float_arithmetic(left, operator, int_to_f64(&right), right_span, span)
         }
         (left, right) => Err(binary_type_error(
             span,
@@ -5578,31 +5583,37 @@ fn numeric_arithmetic(
 }
 
 fn int_arithmetic(
-    left: i64,
+    left: Int,
     operator: &str,
-    right: i64,
+    right: Int,
     right_span: Span,
     span: Span,
 ) -> Result<Value, Diagnostic> {
-    if matches!(operator, "/" | "%") && right == 0 {
+    if matches!(operator, "/" | "%") && right.is_zero() {
         return Err(division_by_zero(right_span));
     }
 
     let result = match operator {
-        "+" => left.checked_add(right),
-        "-" => left.checked_sub(right),
-        "*" => left.checked_mul(right),
-        "/" => left.checked_div(right),
-        "%" => left.checked_rem(right),
-        "^" => u32::try_from(right)
-            .ok()
-            .and_then(|exponent| left.checked_pow(exponent)),
-        _ => None,
+        "+" => &left + &right,
+        "-" => &left - &right,
+        "*" => &left * &right,
+        "/" => &left / &right,
+        "%" => &left % &right,
+        "^" => {
+            let Some(exponent) = right.to_u32() else {
+                return Err(invalid_integer_exponent(span));
+            };
+            left.pow(exponent)
+        }
+        _ => {
+            return Err(unsupported_expr(
+                span,
+                "this integer operator is not supported by the current evaluator",
+            ));
+        }
     };
 
-    result
-        .map(Value::Int)
-        .ok_or_else(|| integer_overflow(span, operator))
+    Ok(Value::Int(result))
 }
 
 fn float_arithmetic(
@@ -5643,8 +5654,8 @@ fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Val
     let equal = match (&left, &right) {
         (Value::Int(left), Value::Int(right)) => left == right,
         (Value::Float(left), Value::Float(right)) => float_eq(*left, *right),
-        (Value::Int(left), Value::Float(right)) => float_eq(*left as f64, *right),
-        (Value::Float(left), Value::Int(right)) => float_eq(*left, *right as f64),
+        (Value::Int(left), Value::Float(right)) => float_eq(int_to_f64(left), *right),
+        (Value::Float(left), Value::Int(right)) => float_eq(*left, int_to_f64(right)),
         (Value::Text(left), Value::Text(right)) => left == right,
         (Value::Bool(left), Value::Bool(right)) => left == right,
         (Value::Array(_), Value::Array(_)) => left == right,
@@ -5702,8 +5713,8 @@ fn numeric_value_ordering(left: &Value, right: &Value) -> Option<Ordering> {
     match (left, right) {
         (Value::Int(left), Value::Int(right)) => Some(left.cmp(right)),
         (Value::Float(left), Value::Float(right)) => Some(float_total_cmp(*left, *right)),
-        (Value::Int(left), Value::Float(right)) => Some(float_total_cmp(*left as f64, *right)),
-        (Value::Float(left), Value::Int(right)) => Some(float_total_cmp(*left, *right as f64)),
+        (Value::Int(left), Value::Float(right)) => Some(float_total_cmp(int_to_f64(left), *right)),
+        (Value::Float(left), Value::Int(right)) => Some(float_total_cmp(*left, int_to_f64(right))),
         _ => None,
     }
 }
@@ -5737,6 +5748,16 @@ fn is_float_zero(value: f64) -> bool {
     value.to_bits() << 1 == 0
 }
 
+fn int_to_f64(value: &Int) -> f64 {
+    value.to_f64().unwrap_or_else(|| {
+        if value.is_negative() {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        }
+    })
+}
+
 fn invalid_numeric_literal(text: &str, span: Span, kind: &str) -> Diagnostic {
     Diagnostic::error(format!("invalid {kind} literal `{text}`"))
         .with_code(codes::runtime::TYPE_ERROR)
@@ -5744,7 +5765,7 @@ fn invalid_numeric_literal(text: &str, span: Span, kind: &str) -> Diagnostic {
             span,
             "this numeric literal cannot be evaluated",
         ))
-        .with_note("numeric literals currently evaluate as i64 Int or f64 Float values")
+        .with_note("integer literals are arbitrary precision; Float literals use f64")
 }
 
 fn unary_type_error(span: Span, operator: &str, actual: &str, expected: &str) -> Diagnostic {
@@ -5778,7 +5799,7 @@ fn record_type_error(span: Span, operation: &str, actual: &str, expected: &str) 
         )
 }
 
-fn index_out_of_bounds(span: Span, index: i64, length: usize) -> Diagnostic {
+fn index_out_of_bounds(span: Span, index: &Int, length: usize) -> Diagnostic {
     Diagnostic::error("tuple index out of bounds")
         .with_code(codes::runtime::INDEX_OUT_OF_BOUNDS)
         .with_label(Label::primary(
@@ -5940,11 +5961,14 @@ fn record_tuple_emit_type_error(span: Span, actual: &str) -> Diagnostic {
         .with_note("record tuple emits insert or replace one field using the tuple's Text label")
 }
 
-fn integer_overflow(span: Span, operation: &str) -> Diagnostic {
-    Diagnostic::error("integer arithmetic overflow")
+fn invalid_integer_exponent(span: Span) -> Diagnostic {
+    Diagnostic::error("integer exponent is out of range")
         .with_code(codes::runtime::TYPE_ERROR)
-        .with_label(Label::primary(span, format!("`{operation}` overflowed i64")))
-        .with_note("Aven Int currently uses i64; arbitrary precision integers are planned for a later milestone")
+        .with_label(Label::primary(
+            span,
+            "the exponent must be a non-negative value no larger than 4294967295",
+        ))
+        .with_note("Int values are arbitrary precision, but exponentiation uses a u32 exponent")
 }
 
 fn unbound_name(name: &str, span: Span) -> Diagnostic {

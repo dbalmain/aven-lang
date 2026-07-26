@@ -15,47 +15,84 @@ use std::rc::Rc;
 
 #[test]
 fn evaluates_arithmetic_with_parser_precedence() {
-    assert_eval("1 + 2 * 3", Value::Int(7));
+    assert_eval("1 + 2 * 3", Value::int(7));
+}
+
+#[test]
+fn evaluates_and_renders_arbitrary_precision_integers() {
+    for literal in [
+        "99999999999999999999",
+        "115132219018763992565095597973971522401",
+        "18446744073709551615",
+        "-9223372036854775808",
+    ] {
+        let expected = Value::Int(literal.parse().expect("test integer literal is valid"));
+        assert_eval(literal, expected.clone());
+        assert_eq!(expected.to_string(), literal);
+        assert_eq!(super::repr_text(&expected), literal);
+    }
+
+    assert_eval(
+        "9223372036854775807 + 1",
+        Value::int(9_223_372_036_854_775_808_u64),
+    );
+    assert_eval(
+        "99999999999999999999 * 2",
+        Value::Int(
+            "199999999999999999998"
+                .parse()
+                .expect("test integer result is valid"),
+        ),
+    );
+    assert_eval("2 ^ 64", Value::int(18_446_744_073_709_551_616_u128));
+    assert_eval(
+        "-9223372036854775808 / -1",
+        Value::int(9_223_372_036_854_775_808_u64),
+    );
+    assert_eval(
+        "18446744073709551615 < 115132219018763992565095597973971522401",
+        Value::Bool(true),
+    );
 }
 
 #[test]
 fn evaluates_grouping_before_multiplication() {
-    assert_eval("(1 + 2) * 3", Value::Int(9));
+    assert_eval("(1 + 2) * 3", Value::int(9));
 }
 
 #[test]
 fn evaluates_unary_minus_and_bool_not() {
-    assert_eval("-5", Value::Int(-5));
+    assert_eval("-5", Value::int(-5));
     assert_eval("!false", Value::Bool(true));
 }
 
 #[test]
 fn evaluates_integer_and_float_division() {
-    assert_eval("7 / 2", Value::Int(3));
+    assert_eval("7 / 2", Value::int(3));
     assert_eval("7.0 / 2", Value::Float(3.5));
     assert_eval("1.0 / 0.0", Value::Float(f64::INFINITY));
     // Literal-typed binding as divisor (type checker accepts via singleton type).
-    assert_module_value("n = 10 / 2\n100 / n\n", Value::Int(20));
-    assert_module_value("n = 10 / 2\n100 % n\n", Value::Int(0));
-    assert_module_value("7 / (1 + 1)\n", Value::Int(3));
+    assert_module_value("n = 10 / 2\n100 / n\n", Value::int(20));
+    assert_module_value("n = 10 / 2\n100 % n\n", Value::int(0));
+    assert_module_value("7 / (1 + 1)\n", Value::int(3));
 }
 
 #[test]
 fn evaluates_checked_integer_division_remainder_and_bound_method() {
-    assert_eval("7.div(2)", Value::Int(3));
+    assert_eval("7.div(2)", Value::int(3));
     assert_eval("7.div(0)", Value::Undefined);
-    assert_eval("7.mod(2)", Value::Int(1));
+    assert_eval("7.mod(2)", Value::int(1));
     assert_eval("7.mod(0)", Value::Undefined);
-    assert_eval("7 % 2", Value::Int(1));
-    assert_module_value("divide = 7.div\ndivide(2)\n", Value::Int(3));
+    assert_eval("7 % 2", Value::int(1));
+    assert_module_value("divide = 7.div\ndivide(2)\n", Value::int(3));
 }
 
 #[test]
 fn evaluates_unbound_builtin_operator_and_div_methods() {
-    assert_module_value("Int.+(10, 20)\n", Value::Int(30));
-    assert_module_value("add = Int.+\nadd(3, 4)\n", Value::Int(7));
-    assert_module_value("Int.div(10, 2)\n", Value::Int(5));
-    assert_module_value("divide = Int.div\ndivide(10, 2)\n", Value::Int(5));
+    assert_module_value("Int.+(10, 20)\n", Value::int(30));
+    assert_module_value("add = Int.+\nadd(3, 4)\n", Value::int(7));
+    assert_module_value("Int.div(10, 2)\n", Value::int(5));
+    assert_module_value("divide = Int.div\ndivide(10, 2)\n", Value::int(5));
     assert_module_value("Int.<(1, 2)\n", Value::Bool(true));
 }
 
@@ -329,7 +366,7 @@ fn evaluates_module_to_last_expression_value() {
     assert_eq!(
         outcome,
         EvalOutcome {
-            value: Some(Value::Int(6)),
+            value: Some(Value::int(6)),
             diagnostics: Vec::new()
         }
     );
@@ -345,20 +382,20 @@ fn evaluates_values_annotated_with_parameterized_recursive_types() {
             "len = (xs) => xs ?> @Nil => 0, @Cons((_, rest)) => 1 + len(rest)\n",
             "len(xs)\n",
         ),
-        Value::Int(2),
+        Value::int(2),
     );
 }
 
 #[test]
 fn evaluates_sequential_bindings() {
-    assert_module_value("x = 5\ny = x + 1\ny\n", Value::Int(6));
+    assert_module_value("x = 5\ny = x + 1\ny\n", Value::int(6));
 }
 
 #[test]
 fn evaluates_record_pattern_binding() {
     assert_module_value(
         "source = { left: 2, right: 3 }\n{ left, right } = source\nleft + right\n",
-        Value::Int(5),
+        Value::int(5),
     );
 }
 
@@ -366,7 +403,7 @@ fn evaluates_record_pattern_binding() {
 fn evaluates_record_pattern_binding_rename() {
     assert_module_value(
         "source = { value: 7 }\n{ value -> renamed } = source\nrenamed\n",
-        Value::Int(7),
+        Value::int(7),
     );
 }
 
@@ -374,7 +411,7 @@ fn evaluates_record_pattern_binding_rename() {
 fn evaluates_block_spread_binding() {
     assert_module_value(
         "result =\n  ..{ left: 2, right: 3 }\n  left + right\nresult\n",
-        Value::Int(5),
+        Value::int(5),
     );
 }
 
@@ -382,7 +419,7 @@ fn evaluates_block_spread_binding() {
 fn evaluates_block_spread_replacement() {
     assert_module_value(
         "result =\n  value = 1\n  :..{ value: 4, extra: 2 }\n  value + extra\nresult\n",
-        Value::Int(6),
+        Value::int(6),
     );
 }
 
@@ -392,7 +429,7 @@ fn evaluates_pattern_binding_rhs_once() {
     let make_calls = Rc::clone(&calls);
     let make = Value::native(move |_| {
         *make_calls.borrow_mut() += 1;
-        Ok(record_value(vec![("value", Value::Int(9))]))
+        Ok(record_value(vec![("value", Value::int(9))]))
     });
     let module = parse_ok("{ value } = make()\nvalue\n");
     let outcome = eval_module_with_options(
@@ -400,7 +437,7 @@ fn evaluates_pattern_binding_rhs_once() {
         EvalModuleOptions::default().with_globals(vec![("make".to_owned(), make)]),
     );
 
-    assert_eq!(outcome.value, Some(Value::Int(9)));
+    assert_eq!(outcome.value, Some(Value::int(9)));
     assert_eq!(outcome.diagnostics, Vec::new());
     assert_eq!(*calls.borrow(), 1);
 }
@@ -411,7 +448,7 @@ fn evaluates_spread_binding_operand_once() {
     let make_calls = Rc::clone(&calls);
     let make = Value::native(move |_| {
         *make_calls.borrow_mut() += 1;
-        Ok(record_value(vec![("value", Value::Int(9))]))
+        Ok(record_value(vec![("value", Value::int(9))]))
     });
     let module = parse_ok("..make()\nvalue\n");
     let outcome = eval_module_with_options(
@@ -419,21 +456,21 @@ fn evaluates_spread_binding_operand_once() {
         EvalModuleOptions::default().with_globals(vec![("make".to_owned(), make)]),
     );
 
-    assert_eq!(outcome.value, Some(Value::Int(9)));
+    assert_eq!(outcome.value, Some(Value::int(9)));
     assert_eq!(outcome.diagnostics, Vec::new());
     assert_eq!(*calls.borrow(), 1);
 }
 
 #[test]
 fn evaluates_simple_function_call() {
-    assert_module_value("double = (x) => x * 2\ndouble(5)\n", Value::Int(10));
+    assert_module_value("double = (x) => x * 2\ndouble(5)\n", Value::int(10));
 }
 
 #[test]
 fn evaluates_higher_order_function_call() {
     assert_module_value(
         "twice = (f, x) => f(f(x))\ninc = (n) => n + 1\ntwice(inc, 1)\n",
-        Value::Int(3),
+        Value::int(3),
     );
 }
 
@@ -441,7 +478,7 @@ fn evaluates_higher_order_function_call() {
 fn closures_capture_their_defining_scope() {
     assert_module_value(
         "add_base =\n  base = 10\n  (x) => x + base\nbase = 1\nadd_base(2)\n",
-        Value::Int(12),
+        Value::int(12),
     );
 }
 
@@ -457,17 +494,17 @@ fn reports_function_arity_mismatch() {
 
 #[test]
 fn applies_trailing_parameter_default_when_omitted() {
-    assert_module_value("f = (x, y = 10) => x + y\nf(1)\n", Value::Int(11));
+    assert_module_value("f = (x, y = 10) => x + y\nf(1)\n", Value::int(11));
 }
 
 #[test]
 fn supplied_argument_overrides_parameter_default() {
-    assert_module_value("f = (x, y = 10) => x + y\nf(1, 2)\n", Value::Int(3));
+    assert_module_value("f = (x, y = 10) => x + y\nf(1, 2)\n", Value::int(3));
 }
 
 #[test]
 fn default_may_reference_an_earlier_parameter() {
-    assert_module_value("g = (x, y = x + 1) => y\ng(5)\n", Value::Int(6));
+    assert_module_value("g = (x, y = x + 1) => y\ng(5)\n", Value::int(6));
 }
 
 #[test]
@@ -480,7 +517,7 @@ fn unannotated_single_default_applies_with_no_args() {
 
 #[test]
 fn default_is_not_evaluated_when_argument_supplied() {
-    assert_module_value("h = (x, y = 1 / 0) => x\nh(7, 2)\n", Value::Int(7));
+    assert_module_value("h = (x, y = 1 / 0) => x\nh(7, 2)\n", Value::int(7));
 }
 
 #[test]
@@ -601,7 +638,7 @@ fn log_info_emits_message_fields_and_trace_context() {
     assert_eq!(record.message, "hi");
     assert_eq!(
         record_field_value(&record.attributes, "userId"),
-        Some(&Value::Int(42))
+        Some(&Value::int(42))
     );
     assert_eq!(record.trace, fixed_trace_context());
 }
@@ -714,27 +751,27 @@ fn module_bindings_can_shadow_injected_globals() {
 
 #[test]
 fn closures_resolve_sibling_top_level_functions_at_call_time() {
-    assert_module_value("f = (x) => g(x)\ng = (x) => x + 1\nf(2)\n", Value::Int(3));
+    assert_module_value("f = (x) => g(x)\ng = (x) => x + 1\nf(2)\n", Value::int(3));
 }
 
 #[test]
 fn evaluates_block_bindings_and_result() {
     assert_module_value(
         "result =\n  a = 2\n  b = a * 3\n  b + 1\nresult\n",
-        Value::Int(7),
+        Value::int(7),
     );
 }
 
 #[test]
 fn block_local_shadowing_does_not_leak() {
-    assert_module_value("x = 1\nshadow =\n  x = 2\n  x\nx\n", Value::Int(1));
+    assert_module_value("x = 1\nshadow =\n  x = 2\n  x\nx\n", Value::int(1));
 }
 
 #[test]
 fn explicit_shadow_rhs_sees_old_binding_and_does_not_leak() {
     assert_module_value(
         "make = (value) =>\n  inner =\n    value := value + 1\n    value\n  (inner, value)\nmake(10)\n",
-        tuple_value(vec![Value::Int(11), Value::Int(10)]),
+        tuple_value(vec![Value::int(11), Value::int(10)]),
     );
 }
 
@@ -744,7 +781,7 @@ fn explicit_shadow_rhs_sees_old_binding_and_does_not_leak() {
 fn explicit_shadow_does_not_mutate_prior_closure_capture() {
     assert_module_value(
         "main = () =>\n  x = 1\n  f = () => x + 1\n  x := \"two\"\n  f()\nmain()\n",
-        Value::Int(2),
+        Value::int(2),
     );
 }
 
@@ -760,7 +797,7 @@ fn explicit_shadow_is_visible_to_closures_created_after() {
 fn sequential_explicit_shadow_rebinding() {
     assert_module_value(
         "main = () =>\n  x = 1\n  x := x + 1\n  x\nmain()\n",
-        Value::Int(2),
+        Value::int(2),
     );
 }
 
@@ -770,7 +807,7 @@ fn sequential_explicit_shadow_rebinding() {
 fn nested_block_explicit_shadow_does_not_escape() {
     assert_module_value(
         "main = () =>\n  x = 1\n  inner =\n    x := 2\n    x\n  (inner, x)\nmain()\n",
-        tuple_value(vec![Value::Int(2), Value::Int(1)]),
+        tuple_value(vec![Value::int(2), Value::int(1)]),
     );
 }
 
@@ -813,7 +850,7 @@ fn evaluates_record_literals_and_field_access() {
             "{}",
             record_value(vec![
                 ("name", Value::Text("Ada".to_owned())),
-                ("age", Value::Int(36))
+                ("age", Value::int(36))
             ])
         ),
         "{ name: \"Ada\", age: 36 }"
@@ -836,7 +873,7 @@ fn evaluates_quoted_record_field_names() {
 fn evaluates_record_spread_with_overwrite() {
     assert_module_value(
         "user = { name: \"Ada\", age: 36 }\nolder = { ..user, age :: 37 }\nolder.age\n",
-        Value::Int(37),
+        Value::int(37),
     );
 }
 
@@ -860,7 +897,7 @@ fn evaluates_record_rename() {
 fn evaluates_record_shorthand() {
     assert_module_value(
         "name = \"Ada\"\nage = 36\nuser = { name, age }\nuser.age\n",
-        Value::Int(36),
+        Value::int(36),
     );
 }
 
@@ -1068,7 +1105,7 @@ fn pick_wrong_arity_reports_platform_error() {
 
 #[test]
 fn user_binding_shadows_pick_builtin() {
-    assert_module_value("pick = 5\npick\n", Value::Int(5));
+    assert_module_value("pick = 5\npick\n", Value::int(5));
 }
 
 #[test]
@@ -1077,8 +1114,8 @@ fn map_constructs_empty_and_from_entries() {
     assert_module_value(
         "Map.from([(\"a\", 1), (\"b\", 2)])\n",
         map_value(vec![
-            (Value::Text("a".to_owned()), Value::Int(1)),
-            (Value::Text("b".to_owned()), Value::Int(2)),
+            (Value::Text("a".to_owned()), Value::int(1)),
+            (Value::Text("b".to_owned()), Value::int(2)),
         ]),
     );
 }
@@ -1088,8 +1125,8 @@ fn map_constructor_builds_from_pair_array() {
     assert_module_value(
         "Map([(\"a\", 1), (\"b\", 2)])\n",
         map_value(vec![
-            (Value::Text("a".to_owned()), Value::Int(1)),
-            (Value::Text("b".to_owned()), Value::Int(2)),
+            (Value::Text("a".to_owned()), Value::int(1)),
+            (Value::Text("b".to_owned()), Value::int(2)),
         ]),
     );
     assert_module_value("Map([])\n", map_value(vec![]));
@@ -1100,8 +1137,8 @@ fn map_constructor_preserves_insertion_order_and_overwrites_duplicates() {
     assert_module_value(
         "Map([(\"a\", 1), (\"b\", 2), (\"a\", 3)]).entries()\n",
         array_value(vec![
-            tuple_value(vec![Value::Text("a".to_owned()), Value::Int(3)]),
-            tuple_value(vec![Value::Text("b".to_owned()), Value::Int(2)]),
+            tuple_value(vec![Value::Text("a".to_owned()), Value::int(3)]),
+            tuple_value(vec![Value::Text("b".to_owned()), Value::int(2)]),
         ]),
     );
 }
@@ -1111,8 +1148,8 @@ fn map_constructor_accepts_non_text_keys() {
     assert_module_value(
         "Map([(1, \"x\"), (2, \"y\")])\n",
         map_value(vec![
-            (Value::Int(1), Value::Text("x".to_owned())),
-            (Value::Int(2), Value::Text("y".to_owned())),
+            (Value::int(1), Value::Text("x".to_owned())),
+            (Value::int(2), Value::Text("y".to_owned())),
         ]),
     );
 }
@@ -1172,8 +1209,8 @@ fn map_from_deduplicates_keys_with_last_value_and_first_order() {
     assert_module_value(
         "Map.from([(\"a\", 1), (\"b\", 2), (\"a\", 3)]).entries()\n",
         array_value(vec![
-            tuple_value(vec![Value::Text("a".to_owned()), Value::Int(3)]),
-            tuple_value(vec![Value::Text("b".to_owned()), Value::Int(2)]),
+            tuple_value(vec![Value::Text("a".to_owned()), Value::int(3)]),
+            tuple_value(vec![Value::Text("b".to_owned()), Value::int(2)]),
         ]),
     );
 }
@@ -1182,7 +1219,7 @@ fn map_from_deduplicates_keys_with_last_value_and_first_order() {
 fn map_get_hit_and_miss() {
     assert_module_value(
         "m = Map.from([(\"a\", 1)])\n[m.get(\"a\"), m.get(\"z\")]\n",
-        array_value(vec![Value::Int(1), Value::Undefined]),
+        array_value(vec![Value::int(1), Value::Undefined]),
     );
 }
 
@@ -1190,7 +1227,7 @@ fn map_get_hit_and_miss() {
 fn map_index_hit_and_miss() {
     assert_module_value(
         "m = Map.from([(\"a\", 1)])\n[m[\"a\"], m[\"z\"]]\n",
-        array_value(vec![Value::Int(1), Value::Undefined]),
+        array_value(vec![Value::int(1), Value::Undefined]),
     );
 }
 
@@ -1204,19 +1241,19 @@ fn map_set_and_delete_return_new_maps() {
         array_value(vec![
             array_value(vec![tuple_value(vec![
                 Value::Text("a".to_owned()),
-                Value::Int(1),
+                Value::int(1),
             ])]),
             array_value(vec![
-                tuple_value(vec![Value::Text("a".to_owned()), Value::Int(2)]),
-                tuple_value(vec![Value::Text("b".to_owned()), Value::Int(3)]),
+                tuple_value(vec![Value::Text("a".to_owned()), Value::int(2)]),
+                tuple_value(vec![Value::Text("b".to_owned()), Value::int(3)]),
             ]),
             array_value(vec![tuple_value(vec![
                 Value::Text("b".to_owned()),
-                Value::Int(3),
+                Value::int(3),
             ])]),
             array_value(vec![tuple_value(vec![
                 Value::Text("b".to_owned()),
-                Value::Int(3),
+                Value::int(3),
             ])]),
         ]),
     );
@@ -1230,15 +1267,15 @@ fn map_methods_report_membership_size_keys_values_and_entries() {
         array_value(vec![
             Value::Bool(true),
             Value::Bool(false),
-            Value::Int(2),
+            Value::int(2),
             array_value(vec![
                 Value::Text("a".to_owned()),
                 Value::Text("b".to_owned()),
             ]),
-            array_value(vec![Value::Int(1), Value::Int(2)]),
+            array_value(vec![Value::int(1), Value::int(2)]),
             array_value(vec![
-                tuple_value(vec![Value::Text("a".to_owned()), Value::Int(1)]),
-                tuple_value(vec![Value::Text("b".to_owned()), Value::Int(2)]),
+                tuple_value(vec![Value::Text("a".to_owned()), Value::int(1)]),
+                tuple_value(vec![Value::Text("b".to_owned()), Value::int(2)]),
             ]),
         ]),
     );
@@ -1251,9 +1288,9 @@ fn map_merge_uses_right_hand_conflicts_and_left_order() {
          right = Map.from([(\"b\", 20), (\"c\", 30)])\n\
          left.merge(right).entries()\n",
         array_value(vec![
-            tuple_value(vec![Value::Text("a".to_owned()), Value::Int(1)]),
-            tuple_value(vec![Value::Text("b".to_owned()), Value::Int(20)]),
-            tuple_value(vec![Value::Text("c".to_owned()), Value::Int(30)]),
+            tuple_value(vec![Value::Text("a".to_owned()), Value::int(1)]),
+            tuple_value(vec![Value::Text("b".to_owned()), Value::int(20)]),
+            tuple_value(vec![Value::Text("c".to_owned()), Value::int(30)]),
         ]),
     );
 }
@@ -1317,8 +1354,8 @@ fn map_grouping_example_runs() {
             "counts.entries()\n",
         ),
         array_value(vec![
-            tuple_value(vec![Value::Text("red".to_owned()), Value::Int(2)]),
-            tuple_value(vec![Value::Text("blue".to_owned()), Value::Int(1)]),
+            tuple_value(vec![Value::Text("red".to_owned()), Value::int(2)]),
+            tuple_value(vec![Value::Text("blue".to_owned()), Value::int(1)]),
         ]),
     );
 }
@@ -1429,103 +1466,103 @@ fn std_array_combinators_run_via_import() {
         outcome,
         EvalOutcome {
             value: Some(record_value(vec![
-                ("length", Value::Int(3)),
+                ("length", Value::int(3)),
                 ("isEmpty", Value::Bool(true)),
-                ("first", Value::Int(10)),
+                ("first", Value::int(10)),
                 ("firstEmpty", Value::Undefined),
-                ("last", Value::Int(30)),
+                ("last", Value::int(30)),
                 ("lastEmpty", Value::Undefined),
-                ("fold", Value::Int(60)),
-                ("sum", Value::Int(6)),
-                ("count", Value::Int(2)),
+                ("fold", Value::int(60)),
+                ("sum", Value::int(6)),
+                ("count", Value::int(2)),
                 ("all", Value::Bool(true)),
                 ("any", Value::Bool(true)),
-                ("findHit", Value::Int(20)),
+                ("findHit", Value::int(20)),
                 ("findMiss", Value::Undefined),
-                ("indexOfHit", Value::Int(1)),
+                ("indexOfHit", Value::int(1)),
                 ("indexOfMiss", Value::Undefined),
                 ("indexOfEmpty", Value::Undefined),
                 (
                     "map",
-                    array_value(vec![Value::Int(11), Value::Int(21), Value::Int(31)])
+                    array_value(vec![Value::int(11), Value::int(21), Value::int(31)])
                 ),
                 ("mapEmpty", array_value(vec![])),
                 (
                     "flatMap",
                     array_value(vec![
-                        Value::Int(10),
-                        Value::Int(11),
-                        Value::Int(20),
-                        Value::Int(21),
-                        Value::Int(30),
-                        Value::Int(31),
+                        Value::int(10),
+                        Value::int(11),
+                        Value::int(20),
+                        Value::int(21),
+                        Value::int(30),
+                        Value::int(31),
                     ])
                 ),
                 ("flatMapEmpty", array_value(vec![])),
                 ("flatMapToEmpty", array_value(vec![])),
-                ("filter", array_value(vec![Value::Int(20), Value::Int(30)])),
+                ("filter", array_value(vec![Value::int(20), Value::int(30)])),
                 ("filterEmpty", array_value(vec![])),
                 (
                     "reverse",
-                    array_value(vec![Value::Int(30), Value::Int(20), Value::Int(10)])
+                    array_value(vec![Value::int(30), Value::int(20), Value::int(10)])
                 ),
                 ("reverseEmpty", array_value(vec![])),
                 (
                     "concat",
-                    array_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+                    array_value(vec![Value::int(1), Value::int(2), Value::int(3)])
                 ),
                 (
                     "concatLeftEmpty",
-                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                    array_value(vec![Value::int(10), Value::int(20), Value::int(30)])
                 ),
                 (
                     "concatRightEmpty",
-                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                    array_value(vec![Value::int(10), Value::int(20), Value::int(30)])
                 ),
-                ("composed", array_value(vec![Value::Int(2), Value::Int(3)])),
-                ("take2", array_value(vec![Value::Int(10), Value::Int(20)])),
+                ("composed", array_value(vec![Value::int(2), Value::int(3)])),
+                ("take2", array_value(vec![Value::int(10), Value::int(20)])),
                 ("take0", array_value(vec![])),
                 ("takeNeg", array_value(vec![])),
                 (
                     "takeBig",
-                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                    array_value(vec![Value::int(10), Value::int(20), Value::int(30)])
                 ),
                 ("takeEmpty", array_value(vec![])),
-                ("drop2", array_value(vec![Value::Int(30)])),
+                ("drop2", array_value(vec![Value::int(30)])),
                 (
                     "drop0",
-                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                    array_value(vec![Value::int(10), Value::int(20), Value::int(30)])
                 ),
                 (
                     "dropNeg",
-                    array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+                    array_value(vec![Value::int(10), Value::int(20), Value::int(30)])
                 ),
                 ("dropBig", array_value(vec![])),
                 ("dropEmpty", array_value(vec![])),
-                ("slice", array_value(vec![Value::Int(20), Value::Int(30)])),
+                ("slice", array_value(vec![Value::int(20), Value::int(30)])),
                 ("sliceEmpty", array_value(vec![])),
                 (
                     "sliceClampLow",
-                    array_value(vec![Value::Int(10), Value::Int(20)])
+                    array_value(vec![Value::int(10), Value::int(20)])
                 ),
                 (
                     "slicePastEnd",
-                    array_value(vec![Value::Int(20), Value::Int(30)])
+                    array_value(vec![Value::int(20), Value::int(30)])
                 ),
                 // wrap end -1 → 2, half-open [0, 2) → all but last
                 (
                     "sliceNegEnd",
-                    array_value(vec![Value::Int(10), Value::Int(20)])
+                    array_value(vec![Value::int(10), Value::int(20)])
                 ),
                 // wrap start -2 → 1; clamp end 99 → 3 → last two
                 (
                     "sliceNegStart",
-                    array_value(vec![Value::Int(20), Value::Int(30)])
+                    array_value(vec![Value::int(20), Value::int(30)])
                 ),
                 // wrap start -99 → still < 0 → clamp 0; end 2
                 (
                     "sliceNegStartFar",
-                    array_value(vec![Value::Int(10), Value::Int(20)])
+                    array_value(vec![Value::int(10), Value::int(20)])
                 ),
                 ("sliceInverted", array_value(vec![])),
                 // wrap -1 → 2, -3 → 0 → inverted after wrap
@@ -1535,8 +1572,8 @@ fn std_array_combinators_run_via_import() {
                 (
                     "zipShort",
                     array_value(vec![
-                        tuple_value(vec![Value::Int(1), Value::Int(10)]),
-                        tuple_value(vec![Value::Int(2), Value::Int(20)]),
+                        tuple_value(vec![Value::int(1), Value::int(10)]),
+                        tuple_value(vec![Value::int(2), Value::int(20)]),
                     ])
                 ),
                 ("zipLeftEmpty", array_value(vec![])),
@@ -1544,35 +1581,35 @@ fn std_array_combinators_run_via_import() {
                 (
                     "flatten",
                     array_value(vec![
-                        Value::Int(1),
-                        Value::Int(2),
-                        Value::Int(3),
-                        Value::Int(4)
+                        Value::int(1),
+                        Value::int(2),
+                        Value::int(3),
+                        Value::int(4)
                     ])
                 ),
                 ("flattenEmpty", array_value(vec![])),
                 (
                     "range",
                     array_value(vec![
-                        Value::Int(1),
-                        Value::Int(2),
-                        Value::Int(3),
-                        Value::Int(4)
+                        Value::int(1),
+                        Value::int(2),
+                        Value::int(3),
+                        Value::int(4)
                     ])
                 ),
                 ("rangeEmpty", array_value(vec![])),
                 ("rangeRev", array_value(vec![])),
                 (
                     "sort",
-                    array_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+                    array_value(vec![Value::int(1), Value::int(2), Value::int(3)])
                 ),
                 ("sortEmpty", array_value(vec![])),
                 (
                     "sortStable",
                     array_value(vec![
-                        record_value(vec![("k", Value::Int(1)), ("id", Value::Int(2))]),
-                        record_value(vec![("k", Value::Int(2)), ("id", Value::Int(1))]),
-                        record_value(vec![("k", Value::Int(2)), ("id", Value::Int(3))]),
+                        record_value(vec![("k", Value::int(1)), ("id", Value::int(2))]),
+                        record_value(vec![("k", Value::int(2)), ("id", Value::int(1))]),
+                        record_value(vec![("k", Value::int(2)), ("id", Value::int(3))]),
                     ])
                 ),
                 (
@@ -1580,37 +1617,37 @@ fn std_array_combinators_run_via_import() {
                     array_value(vec![
                         record_value(vec![
                             ("name", Value::Text("alice".to_owned())),
-                            ("age", Value::Int(25)),
+                            ("age", Value::int(25)),
                         ]),
                         record_value(vec![
                             ("name", Value::Text("bob".to_owned())),
-                            ("age", Value::Int(30)),
+                            ("age", Value::int(30)),
                         ]),
                         record_value(vec![
                             ("name", Value::Text("carol".to_owned())),
-                            ("age", Value::Int(30)),
+                            ("age", Value::int(30)),
                         ]),
                     ])
                 ),
                 (
                     "sortByAlready",
                     array_value(vec![
-                        record_value(vec![("age", Value::Int(1))]),
-                        record_value(vec![("age", Value::Int(2))]),
+                        record_value(vec![("age", Value::int(1))]),
+                        record_value(vec![("age", Value::int(2))]),
                     ])
                 ),
                 ("sortByEmpty", array_value(vec![])),
                 (
                     "sortByStable",
                     array_value(vec![
-                        record_value(vec![("k", Value::Int(1)), ("id", Value::Int(2))]),
-                        record_value(vec![("k", Value::Int(2)), ("id", Value::Int(1))]),
-                        record_value(vec![("k", Value::Int(2)), ("id", Value::Int(3))]),
+                        record_value(vec![("k", Value::int(1)), ("id", Value::int(2))]),
+                        record_value(vec![("k", Value::int(2)), ("id", Value::int(1))]),
+                        record_value(vec![("k", Value::int(2)), ("id", Value::int(3))]),
                     ])
                 ),
-                ("minimum", Value::Int(10)),
+                ("minimum", Value::int(10)),
                 ("minimumEmpty", Value::Undefined),
-                ("maximum", Value::Int(30)),
+                ("maximum", Value::int(30)),
                 ("maximumEmpty", Value::Undefined),
             ])),
             diagnostics: Vec::new()
@@ -1657,7 +1694,7 @@ fn std_result_combinators_run_via_import() {
                     "mapOk",
                     Value::Tag {
                         name: "Ok".to_owned(),
-                        payload: vec![Value::Int(8)],
+                        payload: vec![Value::int(8)],
                     }
                 ),
                 (
@@ -1671,7 +1708,7 @@ fn std_result_combinators_run_via_import() {
                     "andThenOk",
                     Value::Tag {
                         name: "Ok".to_owned(),
-                        payload: vec![Value::Int(8)],
+                        payload: vec![Value::int(8)],
                     }
                 ),
                 (
@@ -1681,8 +1718,8 @@ fn std_result_combinators_run_via_import() {
                         payload: vec![Value::Text("boom".to_owned())],
                     }
                 ),
-                ("unwrapOk", Value::Int(7)),
-                ("unwrapErr", Value::Int(0)),
+                ("unwrapOk", Value::int(7)),
+                ("unwrapErr", Value::int(0)),
                 ("isOkOk", Value::Bool(true)),
                 ("isOkErr", Value::Bool(false)),
                 ("isErrOk", Value::Bool(false)),
@@ -1695,7 +1732,7 @@ fn std_result_combinators_run_via_import() {
 
 #[test]
 fn user_binding_shadows_map_builtin() {
-    assert_module_value("Map = 5\nMap\n", Value::Int(5));
+    assert_module_value("Map = 5\nMap\n", Value::int(5));
 }
 
 #[test]
@@ -1735,34 +1772,34 @@ fn std_map_helpers_run_via_import() {
     assert_eq!(
         outcome.value,
         Some(record_value(vec![
-            ("duplicate", Value::Int(3)),
-            ("missing", Value::Int(99)),
+            ("duplicate", Value::int(3)),
+            ("missing", Value::int(99)),
             (
                 "updated",
                 array_value(vec![
-                    tuple_value(vec![Value::Text("one".to_owned()), Value::Int(3)]),
-                    tuple_value(vec![Value::Text("two".to_owned()), Value::Int(12)])
+                    tuple_value(vec![Value::Text("one".to_owned()), Value::int(3)]),
+                    tuple_value(vec![Value::Text("two".to_owned()), Value::int(12)])
                 ])
             ),
             (
                 "unchanged",
                 array_value(vec![
-                    tuple_value(vec![Value::Text("one".to_owned()), Value::Int(3)]),
-                    tuple_value(vec![Value::Text("two".to_owned()), Value::Int(2)])
+                    tuple_value(vec![Value::Text("one".to_owned()), Value::int(3)]),
+                    tuple_value(vec![Value::Text("two".to_owned()), Value::int(2)])
                 ])
             ),
             (
                 "mapped",
                 array_value(vec![
-                    tuple_value(vec![Value::Text("one".to_owned()), Value::Int(4)]),
-                    tuple_value(vec![Value::Text("two".to_owned()), Value::Int(3)])
+                    tuple_value(vec![Value::Text("one".to_owned()), Value::int(4)]),
+                    tuple_value(vec![Value::Text("two".to_owned()), Value::int(3)])
                 ])
             ),
             (
                 "filtered",
                 array_value(vec![tuple_value(vec![
                     Value::Text("two".to_owned()),
-                    Value::Int(2)
+                    Value::int(2)
                 ])])
             ),
         ]))
@@ -1782,24 +1819,24 @@ fn array_spread_splices_elements_in_order() {
     assert_module_value(
         "xs = [1, 2]\nys = [0, ..xs, 3]\nys\n",
         array_value(vec![
-            Value::Int(0),
-            Value::Int(1),
-            Value::Int(2),
-            Value::Int(3),
+            Value::int(0),
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
         ]),
     );
     assert_module_value(
         "xs = [1]\nys = [2, 3]\nzs = [..xs, 0, ..ys]\nzs\n",
         array_value(vec![
-            Value::Int(1),
-            Value::Int(0),
-            Value::Int(2),
-            Value::Int(3),
+            Value::int(1),
+            Value::int(0),
+            Value::int(2),
+            Value::int(3),
         ]),
     );
     assert_module_value(
         "empty = []\nys = [..empty, 1]\nys\n",
-        array_value(vec![Value::Int(1)]),
+        array_value(vec![Value::int(1)]),
     );
 }
 
@@ -1808,8 +1845,8 @@ fn array_push_returns_new_array_without_mutating_receiver() {
     assert_module_value(
         "xs = [1]\nys = xs.push(2)\n[xs, ys]\n",
         array_value(vec![
-            array_value(vec![Value::Int(1)]),
-            array_value(vec![Value::Int(1), Value::Int(2)]),
+            array_value(vec![Value::int(1)]),
+            array_value(vec![Value::int(1), Value::int(2)]),
         ]),
     );
 }
@@ -1983,10 +2020,10 @@ fn text_reverse_index_of_slice_capitalize() {
             Value::Text("cba".to_owned()),
             Value::Text(String::new()),
             Value::Text("b☕a".to_owned()),
-            Value::Int(2),
-            Value::Int(-1),
-            Value::Int(1),
-            Value::Int(2),
+            Value::int(2),
+            Value::int(-1),
+            Value::int(1),
+            Value::int(2),
             Value::Text("ell".to_owned()),
             Value::Text("hello".to_owned()),
             Value::Text(String::new()),
@@ -2004,12 +2041,12 @@ fn text_reverse_index_of_slice_capitalize() {
 #[test]
 fn text_length_counts_unicode_scalar_values() {
     // Units are scalar values, not graphemes and not UTF-8 bytes.
-    assert_module_value("\"abc\".length()\n", Value::Int(3));
-    assert_module_value("\"café\".length()\n", Value::Int(4));
+    assert_module_value("\"abc\".length()\n", Value::int(3));
+    assert_module_value("\"café\".length()\n", Value::int(4));
     // Combining acute: e + U+0301 is two scalars (deliberate non-grapheme answer).
-    assert_module_value("\"e\\u{301}\".length()\n", Value::Int(2));
-    assert_module_value("\"👍\".length()\n", Value::Int(1));
-    assert_module_value("\"\".length()\n", Value::Int(0));
+    assert_module_value("\"e\\u{301}\".length()\n", Value::int(2));
+    assert_module_value("\"👍\".length()\n", Value::int(1));
+    assert_module_value("\"\".length()\n", Value::int(0));
 }
 
 #[test]
@@ -2087,26 +2124,26 @@ fn int_numeric_helpers() {
            42.toFloat()\
          ]\n",
         array_value(vec![
-            Value::Int(5),
-            Value::Int(0),
-            Value::Int(5),
-            Value::Int(3),
-            Value::Int(3),
-            Value::Int(-3),
-            Value::Int(5),
-            Value::Int(5),
-            Value::Int(-1),
-            Value::Int(5),
-            Value::Int(0),
-            Value::Int(3),
-            Value::Int(5), // min > max → return min
-            Value::Int(1024),
-            Value::Int(1),
-            Value::Int(1), // negative exponent clamps to 0 → 1
-            Value::Int(1),
-            Value::Int(-1),
-            Value::Int(0),
-            Value::Int(1),
+            Value::int(5),
+            Value::int(0),
+            Value::int(5),
+            Value::int(3),
+            Value::int(3),
+            Value::int(-3),
+            Value::int(5),
+            Value::int(5),
+            Value::int(-1),
+            Value::int(5),
+            Value::int(0),
+            Value::int(3),
+            Value::int(5), // min > max → return min
+            Value::int(1024),
+            Value::int(1),
+            Value::int(1), // negative exponent clamps to 0 → 1
+            Value::int(1),
+            Value::int(-1),
+            Value::int(0),
+            Value::int(1),
             Value::Float(42.0),
         ]),
     );
@@ -2178,12 +2215,16 @@ fn text_methods_parse_numbers() {
             "\"2.5\".toFloat() ?? 0.0, \"1e3\".toFloat() ?? 0.0]\n",
         ),
         array_value(vec![
-            Value::Int(42),
-            Value::Int(-7),
-            Value::Int(3),
+            Value::int(42),
+            Value::int(-7),
+            Value::int(3),
             Value::Float(2.5),
             Value::Float(1000.0),
         ]),
+    );
+    assert_module_value(
+        "\"9223372036854775808\".toInt()\n",
+        Value::int(9_223_372_036_854_775_808_u64),
     );
 
     for source in [
@@ -2191,7 +2232,6 @@ fn text_methods_parse_numbers() {
         "\"abc\".toInt()\n",
         "\"1.5\".toInt()\n",
         "\" 42 \".toInt()\n",
-        "\"9223372036854775808\".toInt()\n",
         "\"\".toFloat()\n",
         "\"abc\".toFloat()\n",
         "\" 42 \".toFloat()\n",
@@ -2222,20 +2262,20 @@ fn has_on_unsupported_receiver_still_reports_type_error() {
 fn evaluates_array_literals_and_indexing() {
     assert_eval(
         "[10, 20, 30]",
-        array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
+        array_value(vec![Value::int(10), Value::int(20), Value::int(30)]),
     );
-    assert_module_value("xs = [10, 20, 30]\nxs[1]\n", Value::Int(20));
+    assert_module_value("xs = [10, 20, 30]\nxs[1]\n", Value::int(20));
     assert_module_value("xs = [10, 20, 30]\nxs[9]\n", Value::Undefined);
     // Negative indexes wrap from the end (Python-style).
-    assert_module_value("xs = [10, 20, 30]\nxs[-1]\n", Value::Int(30));
-    assert_module_value("xs = [10, 20, 30]\nxs[-3]\n", Value::Int(10));
+    assert_module_value("xs = [10, 20, 30]\nxs[-1]\n", Value::int(30));
+    assert_module_value("xs = [10, 20, 30]\nxs[-3]\n", Value::int(10));
     // Beyond the start after wrap → undefined (same as past-the-end positive).
     assert_module_value("xs = [10, 20, 30]\nxs[-4]\n", Value::Undefined);
     assert_module_value("xs = []\nxs[-1]\n", Value::Undefined);
     assert_eq!(
         format!(
             "{}",
-            array_value(vec![Value::Int(10), Value::Int(20), Value::Int(30)])
+            array_value(vec![Value::int(10), Value::int(20), Value::int(30)])
         ),
         "[10, 20, 30]"
     );
@@ -2245,13 +2285,13 @@ fn evaluates_array_literals_and_indexing() {
 fn evaluates_tuple_literals_and_indexing() {
     assert_eval(
         "(1, \"a\")",
-        tuple_value(vec![Value::Int(1), Value::Text("a".to_owned())]),
+        tuple_value(vec![Value::int(1), Value::Text("a".to_owned())]),
     );
-    assert_eval("(1, \"a\")[0]", Value::Int(1));
+    assert_eval("(1, \"a\")[0]", Value::int(1));
     assert_eq!(
         format!(
             "{}",
-            tuple_value(vec![Value::Int(1), Value::Text("a".to_owned())])
+            tuple_value(vec![Value::int(1), Value::Text("a".to_owned())])
         ),
         "(1, \"a\")"
     );
@@ -2277,13 +2317,13 @@ fn evaluates_empty_tuple_as_unit() {
 fn evaluates_set_literals_with_deduplication() {
     assert_eval(
         "@{ 1, 2, 2, 3 }",
-        set_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        set_value(vec![Value::int(1), Value::int(2), Value::int(3)]),
     );
     assert_eval("@{ 1, 2, 3 } == @{ 3, 2, 1 }", Value::Bool(true));
     assert_eq!(
         format!(
             "{}",
-            set_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+            set_value(vec![Value::int(1), Value::int(2), Value::int(3)])
         ),
         "@{ 1, 2, 3 }"
     );
@@ -2294,10 +2334,10 @@ fn evaluates_set_spread_entries_with_deduplication() {
     assert_module_value(
         "a = @{ 1, 2 }\nb = @{ 2, 3 }\n@{ ..a, ..b, 4 }\n",
         set_value(vec![
-            Value::Int(1),
-            Value::Int(2),
-            Value::Int(3),
-            Value::Int(4),
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
+            Value::int(4),
         ]),
     );
 }
@@ -2337,22 +2377,22 @@ fn evaluates_set_union_promotes_singletons() {
 fn evaluates_set_union_splices_set_operands() {
     assert_eval(
         "@{ 1, 2 } | 3",
-        set_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        set_value(vec![Value::int(1), Value::int(2), Value::int(3)]),
     );
     assert_eval(
         "@{ 1, 2 } | @{ 2, 3 }",
-        set_value(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        set_value(vec![Value::int(1), Value::int(2), Value::int(3)]),
     );
 }
 
 #[test]
 fn evaluates_set_union_deduplicates() {
-    assert_eval("1 | 1", set_value(vec![Value::Int(1)]));
+    assert_eval("1 | 1", set_value(vec![Value::int(1)]));
 }
 
 #[test]
 fn evaluates_tuple_patterns() {
-    assert_module_value("pair = (1, \"a\")\npair ?>\n  (n, t) => n\n", Value::Int(1));
+    assert_module_value("pair = (1, \"a\")\npair ?>\n  (n, t) => n\n", Value::int(1));
 }
 
 #[test]
@@ -2411,9 +2451,9 @@ fn record_patterns_and_type_statics_still_error_on_absent_fields() {
 
 #[test]
 fn evaluates_null_coalescing_with_short_circuiting() {
-    assert_eval("undefined ?? 5", Value::Int(5));
-    assert_eval("null ?? 6", Value::Int(6));
-    assert_eval("7 ?? 1 / 0", Value::Int(7));
+    assert_eval("undefined ?? 5", Value::int(5));
+    assert_eval("null ?? 6", Value::int(6));
+    assert_eval("7 ?? 1 / 0", Value::int(7));
 }
 
 #[test]
@@ -2422,7 +2462,7 @@ fn evaluates_variant_tags() {
         "@Ok(1)",
         Value::Tag {
             name: "Ok".to_owned(),
-            payload: vec![Value::Int(1)],
+            payload: vec![Value::int(1)],
         },
     );
     assert_eval(
@@ -2440,7 +2480,7 @@ fn evaluates_variant_tags_with_multiple_payload_args() {
         "@Rgb(1, 2, 3)",
         Value::Tag {
             name: "Rgb".to_owned(),
-            payload: vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            payload: vec![Value::int(1), Value::int(2), Value::int(3)],
         },
     );
 }
@@ -2455,19 +2495,19 @@ fn evaluates_literal_union_match() {
 
 #[test]
 fn evaluates_literal_or_pattern_first_alternative() {
-    assert_eval("\"r\" ?>\n  \"r\" | \"w\" => 1\n  _ => 0\n", Value::Int(1));
+    assert_eval("\"r\" ?>\n  \"r\" | \"w\" => 1\n  _ => 0\n", Value::int(1));
 }
 
 #[test]
 fn evaluates_literal_or_pattern_second_alternative() {
-    assert_eval("\"w\" ?>\n  \"r\" | \"w\" => 1\n  _ => 0\n", Value::Int(1));
+    assert_eval("\"w\" ?>\n  \"r\" | \"w\" => 1\n  _ => 0\n", Value::int(1));
 }
 
 #[test]
 fn evaluates_tag_or_pattern() {
     assert_eval(
         "@Green ?>\n  @Red | @Green => 1\n  @Blue => 0\n",
-        Value::Int(1),
+        Value::int(1),
     );
 }
 
@@ -2483,7 +2523,7 @@ fn evaluates_default_match_arm() {
 fn evaluates_variant_match_payload_bindings() {
     assert_module_value(
         "result = @Ok(41)\nresult ?>\n  @Ok(x) => x + 1\n  @Err(error) => error\n",
-        Value::Int(42),
+        Value::int(42),
     );
 }
 
@@ -2526,7 +2566,7 @@ fn reports_match_without_matching_arm() {
 fn evaluates_recursive_factorial_with_match_base_case() {
     assert_module_value(
         "fact = (n) =>\n  n ?>\n    0 => 1\n    _ => n * fact(n - 1)\nfact(5)\n",
-        Value::Int(120),
+        Value::int(120),
     );
 }
 
@@ -2610,12 +2650,12 @@ fn composite_type_expressions_evaluate_to_type_values() {
 
 #[test]
 fn user_binding_shadows_primitive_type_name() {
-    assert_module_value("Text = 5\nText\n", Value::Int(5));
+    assert_module_value("Text = 5\nText\n", Value::int(5));
 }
 
 #[test]
 fn propagate_unwraps_ok_payload() {
-    assert_eval("@Ok(7)?^", Value::Int(7));
+    assert_eval("@Ok(7)?^", Value::int(7));
 }
 
 #[test]
@@ -2625,7 +2665,7 @@ fn result_methods_map_errors_and_recover_for_ok_and_err() {
         array_value(vec![
             Value::Tag {
                 name: "Ok".to_owned(),
-                payload: vec![Value::Int(7)],
+                payload: vec![Value::int(7)],
             },
             Value::Tag {
                 name: "Err".to_owned(),
@@ -2633,11 +2673,11 @@ fn result_methods_map_errors_and_recover_for_ok_and_err() {
             },
             Value::Tag {
                 name: "Ok".to_owned(),
-                payload: vec![Value::Int(7)],
+                payload: vec![Value::int(7)],
             },
             Value::Tag {
                 name: "Ok".to_owned(),
-                payload: vec![Value::Int(0)],
+                payload: vec![Value::int(0)],
             },
         ]),
     );
@@ -2657,7 +2697,7 @@ fn optional_to_result_wraps_payload_and_both_empty_values() {
         array_value(vec![
             Value::Tag {
                 name: "Ok".to_owned(),
-                payload: vec![Value::Int(7)],
+                payload: vec![Value::int(7)],
             },
             Value::Tag {
                 name: "Err".to_owned(),
@@ -2688,14 +2728,14 @@ fn result_methods_map_unwrap_or_and_predicates() {
         array_value(vec![
             Value::Tag {
                 name: "Ok".to_owned(),
-                payload: vec![Value::Int(8)],
+                payload: vec![Value::int(8)],
             },
             Value::Tag {
                 name: "Err".to_owned(),
                 payload: vec![Value::Text("bad".to_owned())],
             },
-            Value::Int(7),
-            Value::Int(0),
+            Value::int(7),
+            Value::int(0),
             Value::Bool(true),
             Value::Bool(false),
             Value::Bool(false),
@@ -2711,7 +2751,7 @@ fn result_methods_and_then_for_ok_and_err() {
         array_value(vec![
             Value::Tag {
                 name: "Ok".to_owned(),
-                payload: vec![Value::Int(8)],
+                payload: vec![Value::int(8)],
             },
             Value::Tag {
                 name: "Err".to_owned(),
@@ -2738,7 +2778,7 @@ fn propagate_err_early_returns_enclosing_function() {
 fn propagate_ok_threads_value_through_function() {
     assert_module_value(
         "f = (r) =>\n  x = r?^\n  x + 1\nf(@Ok(41))\n",
-        Value::Int(42),
+        Value::int(42),
     );
 }
 
@@ -2783,7 +2823,7 @@ fn propagate_on_non_result_reports_type_error() {
 
 #[test]
 fn panic_unwraps_ok_payload() {
-    assert_eval("@Ok(9)?!", Value::Int(9));
+    assert_eval("@Ok(9)?!", Value::int(9));
 }
 
 #[test]
@@ -2813,7 +2853,7 @@ fn chained_propagation_returns_ok_on_happy_path_and_first_err_on_sad_path() {
         &format!("{program}chain(2, 3)\n"),
         Value::Tag {
             name: "Ok".to_owned(),
-            payload: vec![Value::Int(5)],
+            payload: vec![Value::int(5)],
         },
     );
     assert_module_value(
@@ -3019,7 +3059,9 @@ fn ints(value: &Value) -> Result<Vec<i64>, TestCaseError> {
     items
         .iter()
         .map(|item| match item {
-            Value::Int(n) => Ok(*n),
+            Value::Int(n) => n
+                .to_i64()
+                .ok_or_else(|| TestCaseError::fail(format!("Int {n} does not fit i64"))),
             other => Err(TestCaseError::fail(format!(
                 "expected Int element, got {other:?}"
             ))),
@@ -3108,7 +3150,7 @@ proptest! {
         // 6. length.
         prop_assert_eq!(
             len,
-            &Value::Int(xs.len() as i64),
+            &Value::int(xs.len()),
             "length() disagrees with Rust len"
         );
 
@@ -3118,7 +3160,7 @@ proptest! {
         prop_assert_eq!(&cat, &expected_cat, "concat content mismatch");
         prop_assert_eq!(
             cat_len,
-            &Value::Int((xs.len() + ys.len()) as i64),
+            &Value::int(xs.len() + ys.len()),
             "concat.length() disagrees with xs.len() + ys.len()"
         );
     }
@@ -3138,7 +3180,7 @@ proptest! {
         let len = eval_with_builtins(&source);
         prop_assert_eq!(
             len,
-            Value::Int(xs.len() as i64 + 1),
+            Value::int(xs.len() + 1),
             "push(e).length() should be xs.length() + 1"
         );
     }
@@ -3163,16 +3205,15 @@ proptest! {
         let chars_len = record_field(&result, "charsLen")?;
         let joined = record_field(&result, "joined")?;
 
-        // Strategy caps length at 24 scalars, so the cast is exact.
-        let expected_len = s.chars().count() as i64;
+        let expected_len = s.chars().count();
         prop_assert_eq!(
             len,
-            &Value::Int(expected_len),
+            &Value::int(expected_len),
             "length() disagrees with Rust chars().count()"
         );
         prop_assert_eq!(
             chars_len,
-            &Value::Int(expected_len),
+            &Value::int(expected_len),
             "chars().length() disagrees with length()"
         );
         prop_assert_eq!(

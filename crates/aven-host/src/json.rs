@@ -4,10 +4,8 @@
 //! checker's host-comptime resolver to refine its result type from the optional
 //! trailing target type argument.
 
-use std::fmt;
-
-use aven_eval::Value;
-use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use aven_eval::{Int, Value};
+use serde::de;
 use serde::{Deserialize, Deserializer};
 
 use crate::Host;
@@ -62,98 +60,39 @@ impl<'de> Deserialize<'de> for JsonValue {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(JsonValueVisitor)
+        serde_json::Value::deserialize(deserializer).and_then(json_value_from_serde)
     }
 }
 
-struct JsonValueVisitor;
-
-impl<'de> Visitor<'de> for JsonValueVisitor {
-    type Value = JsonValue;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a JSON value")
-    }
-
-    fn visit_unit<E>(self) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(JsonValue::Null)
-    }
-
-    fn visit_none<E>(self) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(JsonValue::Null)
-    }
-
-    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(JsonValue::Bool(value))
-    }
-
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(JsonValue::Number(JsonNumber::Int(value)))
-    }
-
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        let number = i64::try_from(value)
-            .map(JsonNumber::Int)
-            .unwrap_or_else(|_| JsonNumber::Float(value as f64));
-        Ok(JsonValue::Number(number))
-    }
-
-    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(JsonValue::Number(JsonNumber::Float(value)))
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(JsonValue::Text(value.to_owned()))
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(JsonValue::Text(value))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut values = Vec::new();
-        while let Some(value) = seq.next_element()? {
-            values.push(value);
+fn json_value_from_serde<E>(value: serde_json::Value) -> Result<JsonValue, E>
+where
+    E: de::Error,
+{
+    match value {
+        serde_json::Value::Null => Ok(JsonValue::Null),
+        serde_json::Value::Bool(value) => Ok(JsonValue::Bool(value)),
+        serde_json::Value::Number(value) => {
+            let text = value.to_string();
+            let number = if text.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
+                text.parse().map(JsonNumber::Float).map_err(E::custom)?
+            } else {
+                text.parse::<Int>()
+                    .map(JsonNumber::Int)
+                    .map_err(E::custom)?
+            };
+            Ok(JsonValue::Number(number))
         }
-        Ok(JsonValue::Array(values))
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut entries = Vec::new();
-        while let Some(key) = map.next_key()? {
-            entries.push((key, map.next_value()?));
-        }
-        Ok(JsonValue::Object(entries))
+        serde_json::Value::String(value) => Ok(JsonValue::Text(value)),
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(json_value_from_serde)
+            .collect::<Result<_, _>>()
+            .map(JsonValue::Array),
+        serde_json::Value::Object(entries) => entries
+            .into_iter()
+            .map(|(key, value)| Ok((key, json_value_from_serde(value)?)))
+            .collect::<Result<_, _>>()
+            .map(JsonValue::Object),
     }
 }
 
@@ -662,9 +601,35 @@ mod tests {
         let items = tag_array_payload(&value, "Array");
         let names = items.iter().map(tag_name).collect::<Vec<_>>();
 
+        assert_eq!(names, vec!["Int", "Float", "Float", "Int", "Bool", "Null"]);
+    }
+
+    #[test]
+    fn json_round_trip_preserves_integers_larger_than_i64() {
+        let value = run(
+            "decoded = Json.decode(\"[99999999999999999999,115132219018763992565095597973971522401,18446744073709551615,-9223372036854775808]\")?!\n\
+             encoded = Json.encode(decoded)?!\n\
+             { decoded: decoded, encoded: encoded }\n",
+        );
+
+        let decoded = tag_array_payload(field(&value, "decoded"), "Array");
+        for (value, expected) in decoded.iter().zip([
+            "99999999999999999999",
+            "115132219018763992565095597973971522401",
+            "18446744073709551615",
+            "-9223372036854775808",
+        ]) {
+            let [value] = tag_payload(value, "Int") else {
+                panic!("expected @Int with one payload");
+            };
+            assert_eq!(
+                value,
+                &Value::Int(expected.parse().expect("test integer literal is valid"))
+            );
+        }
         assert_eq!(
-            names,
-            vec!["Int", "Float", "Float", "Float", "Bool", "Null"]
+            text(field(&value, "encoded")),
+            "[99999999999999999999,115132219018763992565095597973971522401,18446744073709551615,-9223372036854775808]"
         );
     }
 
@@ -916,7 +881,7 @@ mod tests {
             outcome.diagnostics
         );
         let value = outcome.value.expect("recursive decode returns a value");
-        assert_eq!(field(&value, "value"), &Value::Int(1));
+        assert_eq!(field(&value, "value"), &Value::int(1));
         assert_eq!(field(&value, "next"), &Value::Undefined);
     }
 
@@ -1208,7 +1173,7 @@ mod tests {
         let leaf = prop_oneof![
             Just(Value::Null),
             any::<bool>().prop_map(Value::Bool),
-            any::<i64>().prop_map(Value::Int),
+            any::<i64>().prop_map(Value::int),
             any::<f64>()
                 .prop_filter("finite", |f| f.is_finite())
                 .prop_map(Value::Float),
@@ -1238,7 +1203,7 @@ mod tests {
     /// Boundary: bare `Map` is outside the encode-clean domain.
     #[test]
     fn encode_to_text_rejects_bare_map() {
-        let map = Value::Map(Rc::new(vec![(Value::Text("k".into()), Value::Int(1))]));
+        let map = Value::Map(Rc::new(vec![(Value::Text("k".into()), Value::int(1))]));
         let err = encode_to_text(&map).expect_err("Map must not encode");
         assert!(
             err.contains("cannot encode Map"),

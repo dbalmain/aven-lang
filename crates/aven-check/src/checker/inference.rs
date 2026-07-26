@@ -3810,9 +3810,9 @@ fn widen_to_result_error_type(ty: &Type) -> Type {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum FoldNumber {
-    Int(i64),
+    Int(Int),
     Float(f64),
 }
 
@@ -4133,16 +4133,16 @@ fn fold_number_arithmetic(operator: &str, left: &str, right: &str) -> Option<Lit
     }
 }
 
-fn fold_int_arithmetic(operator: &str, left: i64, right: i64) -> Option<i64> {
-    if operator == "/" && right == 0 {
+fn fold_int_arithmetic(operator: &str, left: Int, right: Int) -> Option<Int> {
+    if operator == "/" && right.is_zero() {
         return None;
     }
 
     match operator {
-        "+" => left.checked_add(right),
-        "-" => left.checked_sub(right),
-        "*" => left.checked_mul(right),
-        "/" => left.checked_div(right),
+        "+" => Some(&left + &right),
+        "-" => Some(&left - &right),
+        "*" => Some(&left * &right),
+        "/" => Some(&left / &right),
         _ => None,
     }
 }
@@ -4163,9 +4163,7 @@ fn fold_float_arithmetic(operator: &str, left: f64, right: f64) -> Option<f64> {
 
 fn fold_number_negation(value: &str) -> Option<Literal> {
     match parse_fold_number(value)? {
-        FoldNumber::Int(value) => value
-            .checked_neg()
-            .map(|value| Literal::Number(value.to_string())),
+        FoldNumber::Int(value) => Some(Literal::Number((-&value).to_string())),
         FoldNumber::Float(value) => format_float_literal(-value).map(Literal::Number),
     }
 }
@@ -4205,7 +4203,7 @@ fn parse_fold_number(text: &str) -> Option<FoldNumber> {
     if is_float_literal_text(text) {
         normalized.parse::<f64>().ok().map(FoldNumber::Float)
     } else {
-        normalized.parse::<i64>().ok().map(FoldNumber::Int)
+        normalized.parse::<Int>().ok().map(FoldNumber::Int)
     }
 }
 

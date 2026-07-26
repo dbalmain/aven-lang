@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use aven_core::{Diagnostic, Label, Span, codes};
+use aven_core::{Diagnostic, Int, Label, Span, codes};
 use aven_parser::{Expr, ExprKind, Literal, MatchArm, Param, decode_string_literal};
 
 use crate::checker::string_literal_label;
@@ -171,7 +171,7 @@ impl From<RowTail> for CanonicalRowTail {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum CanonicalLiteral {
     Bool(bool),
-    Int(i64),
+    Int(Int),
     Float(u64),
     InvalidNumber(String),
     String(String),
@@ -198,7 +198,7 @@ fn canonical_number(text: &str) -> CanonicalLiteral {
         );
     }
 
-    normalized.parse::<i64>().map_or_else(
+    normalized.parse::<Int>().map_or_else(
         |_| CanonicalLiteral::InvalidNumber(text.to_owned()),
         CanonicalLiteral::Int,
     )

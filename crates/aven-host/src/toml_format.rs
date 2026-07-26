@@ -1,4 +1,4 @@
-use aven_eval::Value;
+use aven_eval::{Int, Value};
 
 use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value};
@@ -95,7 +95,7 @@ fn decode_native() -> Value {
 fn toml_to_format_value(value: ::toml::Value) -> FormatValue {
     match value {
         ::toml::Value::String(value) => FormatValue::Text(value),
-        ::toml::Value::Integer(value) => FormatValue::Number(FormatNumber::Int(value)),
+        ::toml::Value::Integer(value) => FormatValue::Number(FormatNumber::Int(Int::from(value))),
         ::toml::Value::Float(value) => FormatValue::Number(FormatNumber::Float(value)),
         ::toml::Value::Boolean(value) => FormatValue::Bool(value),
         ::toml::Value::Datetime(value) => match format_temporal_from_toml(&value) {
@@ -166,6 +166,12 @@ enum EncodePosition {
     ArrayElement,
 }
 
+fn toml_integer(value: &Int) -> Result<i64, String> {
+    value.to_i64().ok_or_else(|| {
+        format!("Toml.encode cannot represent Int {value}; TOML integers are signed 64-bit")
+    })
+}
+
 fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, String> {
     if let Some(temporal) = format_temporal_from_value(value) {
         return toml_datetime_from_format_temporal(temporal).map(::toml::Value::Datetime);
@@ -176,7 +182,7 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
     }
 
     match value {
-        Value::Int(value) => Ok(::toml::Value::Integer(*value)),
+        Value::Int(value) => toml_integer(value).map(::toml::Value::Integer),
         Value::Float(value) => Ok(::toml::Value::Float(*value)),
         Value::Text(value) => Ok(::toml::Value::String(value.clone())),
         Value::Bool(value) => Ok(::toml::Value::Boolean(*value)),
@@ -236,7 +242,7 @@ fn toml_value_from_json_constructor(
             let [Value::Int(value)] = payload else {
                 return Err(json_constructor_shape_error(name, "Int"));
             };
-            Ok(::toml::Value::Integer(*value))
+            toml_integer(value).map(::toml::Value::Integer)
         }
         "Float" => {
             let [Value::Float(value)] = payload else {
@@ -419,7 +425,7 @@ mod tests {
              Toml.decode(\"name = 'Ada'\\ncount = 3\\nenabled = true\\n\", Config)?!\n");
 
         assert_eq!(text(field(&value, "name")), "Ada");
-        assert_eq!(field(&value, "count"), &Value::Int(3));
+        assert_eq!(field(&value, "count"), &Value::int(3));
         assert_eq!(field(&value, "enabled"), &Value::Bool(true));
     }
 
@@ -435,7 +441,7 @@ mod tests {
         );
         assert_eq!(
             tag_payload(map_value(entries, "count"), "Int"),
-            &[Value::Int(3)]
+            &[Value::int(3)]
         );
         assert_eq!(
             tag_payload(map_value(entries, "when"), "Text"),
@@ -451,7 +457,7 @@ mod tests {
              { encoded: encoded, decoded: decoded }\n");
 
         assert!(text(field(&value, "encoded")).contains("name = \"Ada\""));
-        assert_eq!(field(field(&value, "decoded"), "count"), &Value::Int(3));
+        assert_eq!(field(field(&value, "decoded"), "count"), &Value::int(3));
     }
 
     #[test]
@@ -482,6 +488,18 @@ mod tests {
         assert_eq!(
             text(field(payload, "message")),
             "Toml.encode cannot encode Null because TOML has no null"
+        );
+    }
+
+    #[test]
+    fn encode_rejects_integers_beyond_toml_signed_range() {
+        let value = run("Toml.encode({ value: 18446744073709551615 })\n");
+        let (kind, payload) = err_payload(&value);
+
+        assert_eq!(kind, "Encode");
+        assert!(
+            text(field(payload, "message")).contains("TOML integers are signed 64-bit"),
+            "{payload:?}"
         );
     }
 
@@ -543,11 +561,11 @@ clock = 07:32:00\\n\", Cfg)?!\n");
             text(&run_field_call(&value, "local", "format")),
             "1979-05-27T07:32:00"
         );
-        assert_eq!(field(field(&value, "day"), "year"), &Value::Int(1979));
-        assert_eq!(field(field(&value, "day"), "month"), &Value::Int(5));
-        assert_eq!(field(field(&value, "day"), "day"), &Value::Int(27));
-        assert_eq!(field(field(&value, "clock"), "hour"), &Value::Int(7));
-        assert_eq!(field(field(&value, "clock"), "minute"), &Value::Int(32));
+        assert_eq!(field(field(&value, "day"), "year"), &Value::int(1979));
+        assert_eq!(field(field(&value, "day"), "month"), &Value::int(5));
+        assert_eq!(field(field(&value, "day"), "day"), &Value::int(27));
+        assert_eq!(field(field(&value, "clock"), "hour"), &Value::int(7));
+        assert_eq!(field(field(&value, "clock"), "minute"), &Value::int(32));
     }
 
     #[test]

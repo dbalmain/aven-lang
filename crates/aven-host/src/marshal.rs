@@ -13,10 +13,11 @@
 //! `Result`), optional params via the adapter, and arities above 4.
 
 use aven_check::{Type, build};
-use aven_eval::Value;
+use aven_eval::{Int, Value};
 
 /// A Rust type that marshals to/from an Aven [`Value`] and knows its Aven
-/// [`Type`]. Implemented for the primitive scalars and unit only;
+/// [`Type`]. Implemented for the primitive scalars, arbitrary-precision
+/// [`Int`], and unit only;
 /// [`from_value`](AvenMarshal::from_value) reports a clear shape mismatch on the
 /// wrong runtime shape.
 pub trait AvenMarshal: Sized {
@@ -58,12 +59,31 @@ impl AvenMarshal for i64 {
     }
 
     fn to_value(self) -> Value {
+        Value::int(self)
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Int(int) => int
+                .to_i64()
+                .ok_or_else(|| format!("Int value {int} does not fit Rust i64")),
+            other => Err(mismatch("Int", other)),
+        }
+    }
+}
+
+impl AvenMarshal for Int {
+    fn aven_type() -> Type {
+        build::int()
+    }
+
+    fn to_value(self) -> Value {
         Value::Int(self)
     }
 
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
-            Value::Int(int) => Ok(*int),
+            Value::Int(int) => Ok(int.clone()),
             other => Err(mismatch("Int", other)),
         }
     }
@@ -212,6 +232,10 @@ mod tests {
     #[test]
     fn primitives_round_trip() {
         assert_eq!(i64::from_value(&42_i64.to_value()), Ok(42));
+        let large: Int = "115132219018763992565095597973971522401"
+            .parse()
+            .expect("test integer literal is valid");
+        assert_eq!(Int::from_value(&large.clone().to_value()), Ok(large));
         assert_eq!(f64::from_value(&1.5_f64.to_value()), Ok(1.5));
         assert_eq!(
             String::from_value(&"hi".to_owned().to_value()),
@@ -237,14 +261,33 @@ mod tests {
             Err("expected Int, got Text".to_owned())
         );
         assert_eq!(
-            String::from_value(&Value::Int(1)),
+            String::from_value(&Value::int(1)),
             Err("expected Text, got Int".to_owned())
         );
         assert_eq!(
             bool::from_value(&Value::unit()),
             Err("expected Bool, got Unit".to_owned())
         );
-        assert!(<()>::from_value(&Value::Int(1)).is_err());
+        assert!(<()>::from_value(&Value::int(1)).is_err());
+    }
+
+    #[test]
+    fn i64_host_arguments_reject_out_of_range_aven_ints() {
+        let large = Value::Int(
+            "18446744073709551615"
+                .parse()
+                .expect("test integer literal is valid"),
+        );
+        assert_eq!(
+            i64::from_value(&large),
+            Err("Int value 18446744073709551615 does not fit Rust i64".to_owned())
+        );
+
+        let (_, native) = (|value: i64| value).into_host_fn();
+        assert_eq!(
+            call_native(&native, &[large]),
+            Err("Int value 18446744073709551615 does not fit Rust i64".to_owned())
+        );
     }
 
     fn call_native(value: &Value, args: &[Value]) -> Result<Value, String> {
@@ -267,15 +310,15 @@ mod tests {
         );
 
         assert_eq!(
-            call_native(&value, &[Value::Int(2), Value::Int(3)]),
-            Ok(Value::Int(5))
+            call_native(&value, &[Value::int(2), Value::int(3)]),
+            Ok(Value::int(5))
         );
         assert_eq!(
-            call_native(&value, &[Value::Text("x".to_owned()), Value::Int(3)]),
+            call_native(&value, &[Value::Text("x".to_owned()), Value::int(3)]),
             Err("expected Int, got Text".to_owned())
         );
         assert_eq!(
-            call_native(&value, &[Value::Int(1)]),
+            call_native(&value, &[Value::int(1)]),
             Err("expected 2 arguments, got 1".to_owned())
         );
     }
@@ -285,9 +328,9 @@ mod tests {
         let (ty, value) = (|| 42_i64).into_host_fn();
 
         assert_eq!(ty, build::function(vec![], build::int()));
-        assert_eq!(call_native(&value, &[]), Ok(Value::Int(42)));
+        assert_eq!(call_native(&value, &[]), Ok(Value::int(42)));
         assert_eq!(
-            call_native(&value, &[Value::Int(0)]),
+            call_native(&value, &[Value::int(0)]),
             Err("expected 0 arguments, got 1".to_owned())
         );
     }

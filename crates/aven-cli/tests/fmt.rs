@@ -395,6 +395,37 @@ fn run_prints_last_expression_value() {
 }
 
 #[test]
+fn check_and_run_agree_on_arbitrary_precision_integers() {
+    let file = TempFile::new(
+        "run-arbitrary-precision-int",
+        "y = 99999999999999999999\n\
+         x = 115132219018763992565095597973971522401\n\
+         unsigned_edge = 18446744073709551615\n\
+         signed_min = -9223372036854775808\n\
+         grown = 9223372036854775807 + 1\n\
+         writeLine(\"${y}\")\n\
+         writeLine(\"${unsigned_edge}\")\n\
+         writeLine(\"${signed_min}\")\n\
+         writeLine(\"${grown}\")\n\
+         x\n",
+    );
+
+    assert_success(&run_aven(["check"], file.path()));
+    let output = run_aven(["run"], file.path());
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        concat!(
+            "99999999999999999999\n",
+            "18446744073709551615\n",
+            "-9223372036854775808\n",
+            "9223372036854775808\n",
+            "115132219018763992565095597973971522401\n",
+        )
+    );
+}
+
+#[test]
 fn check_and_run_support_applied_recursive_type_values() {
     let file = TempFile::new(
         "run-applied-recursive-type",

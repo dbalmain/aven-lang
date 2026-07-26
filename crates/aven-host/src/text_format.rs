@@ -4,7 +4,7 @@ use aven_check::{
     ComptimeArg, ComptimeError, ComptimeTypeContext, HostComptimeFn, RowEntry, Type,
     might_contain_float,
 };
-use aven_eval::{RuntimeType, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId, Value};
+use aven_eval::{Int, RuntimeType, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId, Value};
 
 use crate::io::aven_value_type_name;
 use crate::temporal::{
@@ -56,9 +56,9 @@ impl FormatTemporal {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) enum FormatNumber {
-    Int(i64),
+    Int(Int),
     Float(f64),
 }
 
@@ -270,11 +270,11 @@ fn decode_named(
             _ => None,
         },
         "Int" => match value {
-            FormatValue::Number(FormatNumber::Int(value)) => Some(Value::Int(*value)),
+            FormatValue::Number(FormatNumber::Int(value)) => Some(Value::Int(value.clone())),
             _ => None,
         },
         "Float" => match value {
-            FormatValue::Number(FormatNumber::Int(value)) => Some(Value::Float(*value as f64)),
+            FormatValue::Number(FormatNumber::Int(value)) => value.to_f64().map(Value::Float),
             FormatValue::Number(FormatNumber::Float(value)) => Some(Value::Float(*value)),
             _ => None,
         },
@@ -372,7 +372,9 @@ fn decode_dynamic_data(value: &FormatValue) -> Value {
     match value {
         FormatValue::Null => data_tag("Null", Vec::new()),
         FormatValue::Bool(value) => data_tag("Bool", vec![Value::Bool(*value)]),
-        FormatValue::Number(FormatNumber::Int(value)) => data_tag("Int", vec![Value::Int(*value)]),
+        FormatValue::Number(FormatNumber::Int(value)) => {
+            data_tag("Int", vec![Value::Int(value.clone())])
+        }
         FormatValue::Number(FormatNumber::Float(value)) => {
             data_tag("Float", vec![Value::Float(*value)])
         }
@@ -767,7 +769,7 @@ mod tests {
         let mut input = FormatValue::Object(vec![
             (
                 "value".to_owned(),
-                FormatValue::Number(FormatNumber::Int(100)),
+                FormatValue::Number(FormatNumber::Int(Int::from(100))),
             ),
             ("children".to_owned(), FormatValue::Array(Vec::new())),
         ]);
@@ -775,7 +777,7 @@ mod tests {
             input = FormatValue::Object(vec![
                 (
                     "value".to_owned(),
-                    FormatValue::Number(FormatNumber::Int(value)),
+                    FormatValue::Number(FormatNumber::Int(Int::from(value))),
                 ),
                 ("children".to_owned(), FormatValue::Array(vec![input])),
             ]);
@@ -791,7 +793,7 @@ mod tests {
             let Value::Record(fields) = node else {
                 panic!("level {expected} is a record: {node:?}");
             };
-            assert_eq!(record_field(fields, "value"), &Value::Int(expected));
+            assert_eq!(record_field(fields, "value"), &Value::int(expected));
             let Value::Array(children) = record_field(fields, "children") else {
                 panic!("level {expected} has children");
             };
@@ -803,7 +805,7 @@ mod tests {
         let Value::Record(fields) = node else {
             panic!("leaf is a record: {node:?}");
         };
-        assert_eq!(record_field(fields, "value"), &Value::Int(100));
+        assert_eq!(record_field(fields, "value"), &Value::int(100));
         assert_eq!(
             record_field(fields, "children"),
             &Value::Array(Rc::new(Vec::new()))

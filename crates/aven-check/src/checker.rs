@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 
-use aven_core::{Diagnostic, Label, Span, codes};
+use aven_core::{Diagnostic, Int, Label, Span, codes};
 use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
     MatchArm, MergedItem, Module, ModuleRole, Param, PatternBinding, PropagationMode, RecordEntry,

@@ -1180,7 +1180,12 @@ fn log_record_json(record: &aven_eval::logging::LogRecord<'_>) -> JsonValue {
 
 fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
     match value {
-        aven_eval::Value::Int(value) => JsonValue::Number(JsonNumber::from(*value)),
+        aven_eval::Value::Int(value) => {
+            let text = value.to_string();
+            text.parse::<JsonNumber>()
+                .map(JsonValue::Number)
+                .unwrap_or_else(|_| JsonValue::String(text))
+        }
         aven_eval::Value::Float(value) => JsonNumber::from_f64(*value)
             .map(JsonValue::Number)
             .unwrap_or_else(|| JsonValue::String(value.to_string())),
@@ -1697,5 +1702,18 @@ mod tests {
             ),
             12..16
         );
+    }
+
+    #[test]
+    fn structured_json_keeps_arbitrary_precision_ints_as_numbers() {
+        let value = aven_eval::Value::Int(
+            "115132219018763992565095597973971522401"
+                .parse()
+                .expect("test integer literal is valid"),
+        );
+        let json = aven_value_json(&value);
+
+        assert!(json.is_number());
+        assert_eq!(json.to_string(), "115132219018763992565095597973971522401");
     }
 }

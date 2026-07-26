@@ -1,6 +1,6 @@
 use std::fmt;
 
-use aven_eval::Value;
+use aven_eval::{Int, Value};
 use serde::de::{self, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
@@ -140,17 +140,18 @@ impl<'de> Visitor<'de> for YamlValueVisitor {
     where
         E: de::Error,
     {
-        Ok(YamlValue(FormatValue::Number(FormatNumber::Int(value))))
+        Ok(YamlValue(FormatValue::Number(FormatNumber::Int(
+            Int::from(value),
+        ))))
     }
 
     fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        let number = i64::try_from(value)
-            .map(FormatNumber::Int)
-            .unwrap_or_else(|_| FormatNumber::Float(value as f64));
-        Ok(YamlValue(FormatValue::Number(number)))
+        Ok(YamlValue(FormatValue::Number(FormatNumber::Int(
+            Int::from(value),
+        ))))
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
@@ -290,6 +291,18 @@ enum EncodePosition {
     ArrayElement,
 }
 
+fn yaml_integer(value: &Int) -> Result<serde_norway::Number, String> {
+    if let Some(value) = value.to_i64() {
+        return Ok(value.into());
+    }
+    if let Some(value) = value.to_u64() {
+        return Ok(value.into());
+    }
+    Err(format!(
+        "Yaml.encode cannot represent Int {value}; the YAML backend supports integers through u64"
+    ))
+}
+
 fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::Value, String> {
     // Temporal values encode as plain ISO scalars (YAML 1.2 core has no timestamp).
     if let Some(text) = temporal_iso_text(value) {
@@ -297,7 +310,7 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
     }
 
     match value {
-        Value::Int(value) => Ok(serde_norway::Value::Number((*value).into())),
+        Value::Int(value) => yaml_integer(value).map(serde_norway::Value::Number),
         Value::Float(value) => Ok(serde_norway::Value::Number((*value).into())),
         Value::Text(value) => Ok(serde_norway::Value::String(value.clone())),
         Value::Bool(value) => Ok(serde_norway::Value::Bool(*value)),
@@ -357,7 +370,7 @@ fn yaml_value_from_json_constructor(
             let [Value::Int(value)] = payload else {
                 return Err(json_constructor_shape_error(name, "Int"));
             };
-            Ok(serde_norway::Value::Number((*value).into()))
+            yaml_integer(value).map(serde_norway::Value::Number)
         }
         "Float" => {
             let [Value::Float(value)] = payload else {
@@ -537,7 +550,7 @@ mod tests {
              Yaml.decode(\"name: Ada\\ncount: 3\\nenabled: true\\n\", Config)?!\n");
 
         assert_eq!(text(field(&value, "name")), "Ada");
-        assert_eq!(field(&value, "count"), &Value::Int(3));
+        assert_eq!(field(&value, "count"), &Value::int(3));
         assert_eq!(field(&value, "enabled"), &Value::Bool(true));
     }
 
@@ -566,7 +579,31 @@ mod tests {
              { encoded: encoded, decoded: decoded }\n");
 
         assert_eq!(text(field(&value, "encoded")), "name: Ada\ncount: 3\n");
-        assert_eq!(field(field(&value, "decoded"), "count"), &Value::Int(3));
+        assert_eq!(field(field(&value, "decoded"), "count"), &Value::int(3));
+    }
+
+    #[test]
+    fn unsigned_yaml_integers_decode_exactly_and_encoding_has_a_clean_limit() {
+        let value = run("decoded = Yaml.decode(\"18446744073709551615\", Int)?!\n\
+             encoded = Yaml.encode(decoded)?!\n\
+             { decoded: decoded, encoded: encoded }\n");
+        assert_eq!(
+            field(&value, "decoded"),
+            &Value::Int(
+                "18446744073709551615"
+                    .parse()
+                    .expect("test integer literal is valid")
+            )
+        );
+        assert_eq!(text(field(&value, "encoded")), "18446744073709551615\n");
+
+        let value = run("Yaml.encode(115132219018763992565095597973971522401)\n");
+        let (kind, payload) = err_payload(&value);
+        assert_eq!(kind, "Encode");
+        assert!(
+            text(field(payload, "message")).contains("supports integers through u64"),
+            "{payload:?}"
+        );
     }
 
     #[test]
