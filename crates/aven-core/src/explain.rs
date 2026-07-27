@@ -531,6 +531,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A field was accessed on a value that may be `undefined` or `null` (for example an array element) without `?.`. Use `?.` to propagate the empty, `??` to supply a default, or match the empty before access.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNKNOWN_METHOD,
+        text: "A builtin value was accessed with a method name that its type does not provide. Use the suggested method when one is shown, or choose one of the listed methods available on that builtin type.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::UNKNOWN_MODULE_TYPE,
         text: "A module-qualified type name is not one of the explicitly exported type fields of that module.",
     },

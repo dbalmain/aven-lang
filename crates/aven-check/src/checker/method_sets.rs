@@ -6,8 +6,8 @@ use aven_parser::Literal;
 
 use crate::env::TypeEnv;
 use crate::ty::{
-    LiteralBase, MethodPredicate, RowEntry, Type, literal_variant_base, map_type, named_builtin,
-    record_fields, type_variable_names,
+    LiteralBase, MethodPredicate, RowEntry, Type, builtin_collection_method_type,
+    literal_variant_base, map_type, named_builtin, record_fields, type_variable_names,
 };
 use crate::{MethodConstraint, NamedMethodOrigin, NamedMethodType};
 
@@ -403,6 +403,41 @@ pub(crate) fn builtin_method_signature(owner: &Type, member: &str) -> Option<Met
     })
 }
 
+const ADDITIONAL_INTRINSIC_METHOD_NAMES: &[&str] = &[
+    "toText", "toResult", "joinWith", "format", "plusDays", "instant", "dateTime", "plus", "minus",
+    "since",
+];
+
+fn builtin_method_receiver(receiver: &Type) -> Option<(Type, String)> {
+    let receiver = super::constraints::widen_literal_method_owner(receiver);
+    let display = match &receiver {
+        Type::Named(name)
+            if super::core::builtin_owner_arity(name) == Some(0)
+                || matches!(
+                    name.as_str(),
+                    "Null" | "Undefined" | "Date" | "Time" | "DateTime" | "Instant" | "Duration"
+                ) =>
+        {
+            name.clone()
+        }
+        Type::Apply { callee, args } => {
+            let Type::Named(name) = callee.as_ref() else {
+                return None;
+            };
+            if super::core::builtin_owner_arity(name) != Some(args.len()) {
+                return None;
+            }
+            name.clone()
+        }
+        Type::Optional(inner) | Type::Nullable(inner) => {
+            builtin_method_receiver(inner)?;
+            receiver.render()
+        }
+        _ => return None,
+    };
+    Some((receiver, display))
+}
+
 /// Enumerate the declaration-time effective method environment for one exact
 /// builtin owner. The returned schemes retain method-local variables; family
 /// lookup freshens them later from the materialized descriptor.
@@ -550,6 +585,23 @@ fn method_scheme_variables(
 }
 
 impl Checker<'_> {
+    pub(super) fn builtin_method_set(&self, receiver: &Type) -> Option<(String, Vec<String>)> {
+        let (receiver, display) = builtin_method_receiver(receiver)?;
+        let mut methods = effective_base_methods(self, &receiver)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        methods.extend(
+            ADDITIONAL_INTRINSIC_METHOD_NAMES
+                .iter()
+                .filter(|name| builtin_collection_method_type(&receiver, name).is_some())
+                .map(|name| (*name).to_owned()),
+        );
+        methods.sort();
+        methods.dedup();
+        (!methods.is_empty()).then_some((display, methods))
+    }
+
     /// Owner name for the unbound method form `Owner.member` when the receiver
     /// is a type-static name: a named family alias, or a concrete scalar
     /// builtin (`Int` / `Float` / `Text` / `Bool`). Parameterized type

@@ -167,6 +167,7 @@ pub mod ty {
     pub const UNBOUND_METHOD_PARAMETERIZED_OWNER: &str = "type.unbound-method-parameterized-owner";
     pub const UNEXPECTED_FIELD: &str = "type.unexpected-field";
     pub const UNGUARDED_EMPTY_ACCESS: &str = "type.unguarded-empty-access";
+    pub const UNKNOWN_METHOD: &str = "type.unknown-method";
     pub const UPPERCASE_PATTERN_BINDER_UNSUPPORTED: &str =
         "type.uppercase-pattern-binder-unsupported";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
@@ -308,6 +309,7 @@ pub const ALL: &[&str] = &[
     ty::UNBOUND_METHOD_PARAMETERIZED_OWNER,
     ty::UNEXPECTED_FIELD,
     ty::UNGUARDED_EMPTY_ACCESS,
+    ty::UNKNOWN_METHOD,
     ty::UNKNOWN_MODULE_TYPE,
     ty::UNKNOWN_NAME,
     ty::UNPRODUCTIVE_RECURSION,

@@ -4213,7 +4213,7 @@ fn optional_to_result_rejects_non_optional_receivers_and_wrong_arity() {
     ] {
         let check = check_module(&parse_module(source).module);
         assert_eq!(
-            matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+            matching_codes(&check.diagnostics, codes::ty::UNKNOWN_METHOD),
             1,
             "{source}: {:?}",
             check.diagnostics
@@ -4955,8 +4955,7 @@ fn array_push_on_non_array_reports_error() {
     let int_receiver = parse_module("value = 1.push(2)\n");
     let int_check = check_module(&int_receiver.module);
     assert!(
-        matching_codes(&int_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
-            || !int_check.diagnostics.is_empty(),
+        matching_codes(&int_check.diagnostics, codes::ty::UNKNOWN_METHOD) >= 1,
         "1.push should error: {:?}",
         int_check.diagnostics
     );
@@ -4964,8 +4963,7 @@ fn array_push_on_non_array_reports_error() {
     let text_receiver = parse_module("value = \"a\".push(\"b\")\n");
     let text_check = check_module(&text_receiver.module);
     assert!(
-        matching_codes(&text_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
-            || !text_check.diagnostics.is_empty(),
+        matching_codes(&text_check.diagnostics, codes::ty::UNKNOWN_METHOD) >= 1,
         "Text.push should error: {:?}",
         text_check.diagnostics
     );
@@ -5434,12 +5432,12 @@ fn map_index_rejects_wrong_key_type() {
 }
 
 #[test]
-fn map_unknown_method_reports_missing_field() {
+fn map_unknown_method_reports_unknown_method() {
     let output = parse_module("m : Map(Text, Int) = Map.empty()\nvalue = m.nope()\n");
     let check = check_module(&output.module);
 
     assert_eq!(
-        matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+        matching_codes(&check.diagnostics, codes::ty::UNKNOWN_METHOD),
         1
     );
 }
@@ -5662,17 +5660,16 @@ fn text_methods_type_check_and_reject_mismatches() {
     let unknown = parse_module("t : Text = \"hi\"\nvalue = t.nope()\n");
     let unknown_check = check_module(&unknown.module);
     assert_eq!(
-        matching_codes(&unknown_check.diagnostics, codes::ty::MISSING_FIELD),
+        matching_codes(&unknown_check.diagnostics, codes::ty::UNKNOWN_METHOD),
         1,
-        "unknown Text method should be missing-field: {:?}",
+        "unknown Text method should be unknown-method: {:?}",
         unknown_check.diagnostics
     );
 
     let non_text = parse_module("value = 1.isEmpty()\n");
     let non_text_check = check_module(&non_text.module);
     assert!(
-        matching_codes(&non_text_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
-            || !non_text_check.diagnostics.is_empty(),
+        matching_codes(&non_text_check.diagnostics, codes::ty::UNKNOWN_METHOD) >= 1,
         "1.isEmpty should error: {:?}",
         non_text_check.diagnostics
     );
@@ -5721,25 +5718,33 @@ fn text_index_infers_optional_text() {
 }
 
 #[test]
-fn method_calls_report_missing_fields_on_known_receivers() {
-    for (source, field) in [
-        ("n = 42\nr: Text = n.bar()\n", "bar"),
-        ("r = { a: 1 }\nx: Int = r.get(\"a\")\n", "get"),
+fn method_calls_distinguish_builtin_methods_from_record_fields() {
+    for (source, field, code) in [
+        (
+            "n = 42\nr: Text = n.bar()\n",
+            "bar",
+            codes::ty::UNKNOWN_METHOD,
+        ),
+        (
+            "r = { a: 1 }\nx: Int = r.get(\"a\")\n",
+            "get",
+            codes::ty::MISSING_FIELD,
+        ),
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
 
         assert_eq!(
-            matching_codes(&check.diagnostics, codes::ty::MISSING_FIELD),
+            matching_codes(&check.diagnostics, code),
             1,
-            "{source} should report type.missing-field: {:?}",
+            "{source} should report {code}: {:?}",
             check.diagnostics
         );
         let diagnostic = check
             .diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISSING_FIELD))
-            .expect("missing-field diagnostic");
+            .find(|diagnostic| diagnostic.code.as_deref() == Some(code))
+            .expect("field or method diagnostic");
         assert_eq!(
             &source[diagnostic.labels[0].span.start..diagnostic.labels[0].span.end],
             field,
@@ -5835,9 +5840,9 @@ fn array_join_with_only_on_array_of_text() {
     let bad = parse_module("xs : Array(Int) = [1, 2]\nvalue = xs.joinWith(\",\")\n");
     let bad_check = check_module(&bad.module);
     assert_eq!(
-        matching_codes(&bad_check.diagnostics, codes::ty::MISSING_FIELD),
+        matching_codes(&bad_check.diagnostics, codes::ty::UNKNOWN_METHOD),
         1,
-        "Array(Int).joinWith should be missing-field: {:?}",
+        "Array(Int).joinWith should be unknown-method: {:?}",
         bad_check.diagnostics
     );
 }
@@ -10794,6 +10799,105 @@ fn check_trusted_builtin_methods(source: &str) -> CheckOutput {
 }
 
 #[test]
+fn unknown_builtin_method_suggests_nearest_method_at_the_method_span() {
+    let source = "text = \"hello\"\nupper = text.toUper()\n";
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNKNOWN_METHOD))
+        .expect("Text typo should report an unknown builtin method");
+    assert_eq!(diagnostic.message, "`Text` has no method `toUper`");
+    let label = diagnostic
+        .labels
+        .first()
+        .expect("unknown-method diagnostic should have a primary label");
+    assert_eq!(&source[label.span.start..label.span.end], "toUper");
+    assert_eq!(label.message, "unknown method on `Text`");
+    assert_eq!(diagnostic.notes, ["did you mean `toUpper`?"]);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::MISSING_FIELD),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn unknown_array_method_uses_cross_language_alias_before_edit_distance() {
+    let ambient =
+        check_trusted_builtin_methods("Array(a) { fold(init: b, f: (b, a) -> b): b => init }\n");
+    assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+
+    let source = "xs: Array(Int) = [1, 2, 3]\ntotal = xs.reduce(0, (acc, _) => acc)\n";
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNKNOWN_METHOD))
+        .expect("Array.reduce should report an unknown builtin method");
+    assert_eq!(diagnostic.message, "`Array` has no method `reduce`");
+    let label = diagnostic
+        .labels
+        .first()
+        .expect("unknown-method diagnostic should have a primary label");
+    assert_eq!(&source[label.span.start..label.span.end], "reduce");
+    assert_eq!(diagnostic.notes, ["did you mean `fold`?"]);
+}
+
+#[test]
+fn unknown_builtin_method_without_match_lists_a_bounded_method_set() {
+    let source = "text = \"hello\"\nvalue = text.wibbleWobble()\n";
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNKNOWN_METHOD))
+        .expect("unknown Text method should report available methods");
+    let [note] = diagnostic.notes.as_slice() else {
+        panic!("expected one bounded method-list note: {diagnostic:?}");
+    };
+    assert!(note.starts_with("`Text` has: "), "{note}");
+    assert!(note.ends_with(", ..."), "{note}");
+    assert_eq!(note.matches(", ").count(), 10, "{note}");
+    assert!(!note.contains("did you mean"), "{note}");
+}
+
+#[test]
+fn unknown_record_field_keeps_the_record_field_diagnostic() {
+    let source = "record = { present: 1 }\nvalue = record.missing()\n";
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISSING_FIELD))
+        .expect("closed record access should keep the missing-field diagnostic");
+    assert_eq!(diagnostic.message, "missing field `missing`");
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::UNKNOWN_METHOD),
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn builtin_method_attachments_require_trusted_ambient_source() {
     let parsed = parse_module("Array(a) { identity(): Array(a) => . }\n");
     let check = check_module(&parsed.module);
@@ -11332,8 +11436,7 @@ fn number_format_helpers_typecheck_and_reject_mismatches() {
     let wrong_receiver = parse_module("value = \"1\".toGrouped(\",\")\n");
     let wrong_check = check_module(&wrong_receiver.module);
     assert!(
-        matching_codes(&wrong_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
-            || !wrong_check.diagnostics.is_empty(),
+        matching_codes(&wrong_check.diagnostics, codes::ty::UNKNOWN_METHOD) >= 1,
         "Text.toGrouped should error: {:?}",
         wrong_check.diagnostics
     );
@@ -11424,8 +11527,7 @@ fn int_float_numeric_helpers_typecheck_and_reject_mismatches() {
     let wrong_receiver = parse_module("value = \"1\".abs()\n");
     let wrong_check = check_module(&wrong_receiver.module);
     assert!(
-        matching_codes(&wrong_check.diagnostics, codes::ty::MISSING_FIELD) >= 1
-            || !wrong_check.diagnostics.is_empty(),
+        matching_codes(&wrong_check.diagnostics, codes::ty::UNKNOWN_METHOD) >= 1,
         "Text.abs should error: {:?}",
         wrong_check.diagnostics
     );
@@ -11433,7 +11535,7 @@ fn int_float_numeric_helpers_typecheck_and_reject_mismatches() {
     let float_to_int_out_of_scope = parse_module("value = 1.5.toInt()\n");
     let float_to_int_check = check_module(&float_to_int_out_of_scope.module);
     assert!(
-        !float_to_int_check.diagnostics.is_empty(),
+        matching_codes(&float_to_int_check.diagnostics, codes::ty::UNKNOWN_METHOD) >= 1,
         "Float.toInt is out of scope and should not exist: {:?}",
         float_to_int_check.diagnostics
     );

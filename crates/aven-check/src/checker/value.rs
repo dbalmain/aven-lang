@@ -206,41 +206,36 @@ impl<'a> Checker<'a> {
 
         let env = self.local_types.inference_env();
         let inferred = self.infer(&env, receiver);
-        let receiver_type = self.normalize(&self.resolve_and_default(&inferred));
-        if self.exact_method_signature(&receiver_type, field).is_some() {
+        let resolved_receiver = self.normalize(&self.resolve_and_default(&inferred));
+        if self
+            .exact_method_signature(&resolved_receiver, field)
+            .is_some()
+        {
             return;
         }
         if self
-            .attached_builtin_method_required_owner(&receiver_type, field)
+            .attached_builtin_method_required_owner(&resolved_receiver, field)
             .is_some()
         {
             // The enclosing call inference reports the owner-pattern mismatch
             // after its receiver-first lookup.
             return;
         }
-        if builtin_collection_method_type(&receiver_type, field).is_some() {
+        if builtin_collection_method_type(&resolved_receiver, field).is_some() {
             return;
         }
-        let (_, core) = peel_empty_values(&receiver_type);
+        let (_, core) = peel_empty_values(&resolved_receiver);
         let receiver_type = self
             .named_family_data_view(core)
             .unwrap_or_else(|| self.unfold_recursive_type_once(core));
         if builtin_collection_method_type(&receiver_type, field).is_some() {
             return;
         }
-        if is_concrete_type(&receiver_type)
-            && (is_map_receiver_type(&receiver_type)
-                || is_array_receiver_type(&receiver_type)
-                || is_text_type(&receiver_type)
-                || result_type_args(&receiver_type).is_some())
-        {
-            self.report_missing_field(field, span);
+        if self.report_unknown_builtin_method(&resolved_receiver, field, span) {
             return;
         }
-        // Array / Text method names must not be invented on unrelated non-record
-        // receivers (`1.has`, `true.length`). Records fall through so a field
-        // that happens to share a method name (`{ length: Int }.length`) still
-        // type-checks.
+        // Records fall through so a field that happens to share a builtin
+        // method name (`{ length: Int }.length`) still type-checks.
         if is_concrete_type(&receiver_type)
             && !matches!(&receiver_type, Type::Record(_))
             && ((crate::ty::ARRAY_METHOD_NAMES.contains(&field)

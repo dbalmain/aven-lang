@@ -800,6 +800,30 @@ impl<'a> Checker<'a> {
         );
     }
 
+    pub(super) fn report_unknown_builtin_method(
+        &mut self,
+        receiver: &Type,
+        name: &str,
+        span: Span,
+    ) -> bool {
+        let Some((owner, methods)) = self.builtin_method_set(receiver) else {
+            return false;
+        };
+        let mut diagnostic = Diagnostic::error(format!("`{owner}` has no method `{name}`"))
+            .with_code(codes::ty::UNKNOWN_METHOD)
+            .with_label(Label::primary(span, format!("unknown method on `{owner}`")));
+        diagnostic = if let Some(suggestion) = suggested_method(name, &methods) {
+            diagnostic.with_note(format!("did you mean `{suggestion}`?"))
+        } else {
+            diagnostic.with_note(format!(
+                "`{owner}` has: {}",
+                bounded_method_listing(&methods)
+            ))
+        };
+        self.push_unique_diagnostic(diagnostic);
+        true
+    }
+
     pub(super) fn report_missing_field(&mut self, name: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("missing field `{name}`"))
@@ -972,4 +996,104 @@ impl<'a> Checker<'a> {
             .with_note("use separate match arms when alternatives bind different payload types"),
         );
     }
+}
+
+const METHOD_LIST_LIMIT: usize = 10;
+
+// An alias is active only when its target is in the resolved receiver's method
+// set, so cross-language guesses cannot advertise an unavailable method.
+const METHOD_ALIASES: &[(&str, &str)] = &[
+    ("reduce", "fold"),
+    ("inject", "fold"),
+    ("toUpperCase", "toUpper"),
+    ("upcase", "toUpper"),
+    ("toLowerCase", "toLower"),
+    ("downcase", "toLower"),
+    ("append", "push"),
+    ("add", "push"),
+];
+
+fn suggested_method<'a>(unknown: &str, methods: &'a [String]) -> Option<&'a str> {
+    if let Some((_, target)) = METHOD_ALIASES
+        .iter()
+        .find(|(alias, target)| *alias == unknown && methods.iter().any(|method| method == target))
+    {
+        return methods
+            .iter()
+            .find(|method| method.as_str() == *target)
+            .map(String::as_str);
+    }
+
+    let mut best = None;
+    let mut best_distance = usize::MAX;
+    let mut tied = false;
+    for method in methods {
+        let distance = levenshtein_distance(unknown, method);
+        match distance.cmp(&best_distance) {
+            std::cmp::Ordering::Less => {
+                best = Some(method.as_str());
+                best_distance = distance;
+                tied = false;
+            }
+            std::cmp::Ordering::Equal => tied = true,
+            std::cmp::Ordering::Greater => {}
+        }
+    }
+
+    let candidate = best?;
+    (!tied && plausible_edit_distance(unknown.len().max(candidate.len()), best_distance))
+        .then_some(candidate)
+}
+
+fn plausible_edit_distance(longest: usize, distance: usize) -> bool {
+    distance
+        <= match longest {
+            0..=4 => 1,
+            5..=8 => 2,
+            _ => 3,
+        }
+}
+
+fn levenshtein_distance(left: &str, right: &str) -> usize {
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+
+    for (left_index, left_byte) in left.bytes().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_byte) in right.bytes().enumerate() {
+            current[right_index + 1] = (current[right_index] + 1)
+                .min(previous[right_index + 1] + 1)
+                .min(previous[right_index] + usize::from(left_byte != right_byte));
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right.len()]
+}
+
+fn bounded_method_listing(methods: &[String]) -> String {
+    let named = methods
+        .iter()
+        .filter(|method| {
+            method
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        })
+        .collect::<Vec<_>>();
+    let visible = if named.is_empty() {
+        methods.iter().collect::<Vec<_>>()
+    } else {
+        named
+    };
+    let mut listing = visible
+        .iter()
+        .take(METHOD_LIST_LIMIT)
+        .map(|method| method.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if visible.len() > METHOD_LIST_LIMIT {
+        listing.push_str(", ...");
+    }
+    listing
 }
