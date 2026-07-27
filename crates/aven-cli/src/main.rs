@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
@@ -1615,7 +1616,12 @@ fn print_agent_diagnostic_reports(
 
 fn print_agent_diagnostics(file: &SourceFile, report: &DiagnosticReport) -> Result<()> {
     debug_assert_eq!(file.id, report.file_id);
-    let rendered = render_agent_report(file, &report.diagnostics);
+    // Reading the working directory is the CLI's job; the renderer only strips
+    // the prefix it is handed. A cwd we cannot read simply leaves paths absolute.
+    let cwd = env::current_dir()
+        .ok()
+        .and_then(|dir| dir.into_os_string().into_string().ok());
+    let rendered = render_agent_report(file, &report.diagnostics, cwd.as_deref());
     if !rendered.is_empty() {
         writeln!(io::stderr(), "{rendered}")?;
     }

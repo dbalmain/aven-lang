@@ -8,6 +8,30 @@ use crate::{Diagnostic, Label, LineIndex, Severity, SourceFile, Span};
 /// Soft max for `in:` source line content before truncation with `...`.
 const MAX_IN_LINE_CHARS: usize = 100;
 
+/// Shorten `path` for display by stripping a leading `base` directory.
+///
+/// The whole point of this format is economy for a machine reader, and an
+/// absolute path repeated once per diagnostic is the single largest avoidable
+/// cost in it: on a two-diagnostic file it was 26% of the output, enough to eat
+/// most of the saving over the caret rendering.
+///
+/// Only a **prefix** is stripped, never resolved into `../..` segments. A path
+/// outside `base` is returned unchanged, because a chain of parent hops is both
+/// longer than the absolute path and harder to act on. Purely textual so it
+/// stays testable — the caller supplies `base`, since a working directory is an
+/// environment fact and this crate does not read the environment.
+pub fn relative_display_path<'a>(path: &'a str, base: Option<&str>) -> &'a str {
+    let Some(base) = base else { return path };
+    let base = base.strip_suffix('/').unwrap_or(base);
+    if base.is_empty() {
+        return path;
+    }
+    path.strip_prefix(base)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(path)
+}
+
 /// Render one diagnostic in `--format agent` style.
 pub fn render_agent_diagnostic(
     diagnostic: &Diagnostic,
@@ -49,12 +73,21 @@ pub fn render_agent_diagnostic(
     out
 }
 
-/// Render every diagnostic in a report (joined with newlines).
-pub fn render_agent_report(file: &SourceFile, diagnostics: &[Diagnostic]) -> String {
+/// Render every diagnostic for one file, joined with newlines.
+///
+/// `base` shortens the displayed path — pass the working directory. See
+/// [`relative_display_path`] for why this is worth doing and why it only strips
+/// a prefix.
+pub fn render_agent_report(
+    file: &SourceFile,
+    diagnostics: &[Diagnostic],
+    base: Option<&str>,
+) -> String {
+    let path = relative_display_path(&file.name, base);
     diagnostics
         .iter()
         .map(|diagnostic| {
-            render_agent_diagnostic(diagnostic, &file.name, file.source(), file.line_index())
+            render_agent_diagnostic(diagnostic, path, file.source(), file.line_index())
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -304,8 +337,8 @@ fn truncate_keeping_span(line: &str, span_start: usize, span_end: usize) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_IN_LINE_CHARS, clamp_span, render_agent_diagnostic, render_agent_report,
-        truncate_keeping_span,
+        MAX_IN_LINE_CHARS, clamp_span, relative_display_path, render_agent_diagnostic,
+        render_agent_report, truncate_keeping_span,
     };
     use crate::{Diagnostic, FileId, Label, LineIndex, SourceFile, Span, codes};
 
@@ -544,6 +577,53 @@ error[name.accidental-shadowing] shadow.av:2:12: accidental shadowing of `value`
     }
 
     #[test]
+    fn relative_display_path_strips_only_a_prefix() {
+        let base = "/home/dave/w/clex";
+        assert_eq!(
+            relative_display_path("/home/dave/w/clex/a.av", Some(base)),
+            "a.av"
+        );
+        assert_eq!(
+            relative_display_path("/home/dave/w/clex/sub/a.av", Some(base)),
+            "sub/a.av"
+        );
+        // A trailing slash on the base must not leave a leading slash behind.
+        assert_eq!(
+            relative_display_path("/home/dave/w/clex/a.av", Some("/home/dave/w/clex/")),
+            "a.av"
+        );
+
+        // Outside the base the path is returned untouched. Resolving it would
+        // produce `../../..` hops that are longer than the absolute path and
+        // harder to act on, which defeats the purpose.
+        assert_eq!(
+            relative_display_path("/etc/passwd", Some(base)),
+            "/etc/passwd"
+        );
+        // A sibling directory sharing a textual prefix must not be mangled: the
+        // separator check is what stops `/clex-other/` becoming `-other/a.av`.
+        assert_eq!(
+            relative_display_path("/home/dave/w/clex-other/a.av", Some(base)),
+            "/home/dave/w/clex-other/a.av"
+        );
+        // The base itself, and an empty base, leave the path alone.
+        assert_eq!(relative_display_path(base, Some(base)), base);
+        assert_eq!(relative_display_path("/a.av", Some("")), "/a.av");
+        assert_eq!(relative_display_path("/a.av", None), "/a.av");
+    }
+
+    #[test]
+    fn render_agent_report_shortens_the_path_against_a_base() {
+        let source = "a\n";
+        let file = SourceFile::new(FileId(0), "/tmp/work/r.av", None, source);
+        let diagnostics =
+            vec![Diagnostic::error("boom").with_label(Label::primary(Span::new(0, 1), "a"))];
+        let rendered = render_agent_report(&file, &diagnostics, Some("/tmp/work"));
+        assert!(rendered.contains("error r.av:1:1: boom"), "{rendered}");
+        assert!(!rendered.contains("/tmp/work"), "{rendered}");
+    }
+
+    #[test]
     fn render_agent_report_joins_diagnostics() {
         let source = "a\nb\n";
         let file = SourceFile::new(FileId(0), "r.av", None, source);
@@ -551,7 +631,7 @@ error[name.accidental-shadowing] shadow.av:2:12: accidental shadowing of `value`
             Diagnostic::error("first").with_label(Label::primary(Span::new(0, 1), "a")),
             Diagnostic::warning("second").with_label(Label::primary(Span::new(2, 3), "b")),
         ];
-        let rendered = render_agent_report(&file, &diagnostics);
+        let rendered = render_agent_report(&file, &diagnostics, None);
         assert_ascii(&rendered);
         assert!(rendered.contains("error r.av:1:1: first"));
         assert!(rendered.contains("warning r.av:2:1: second"));
