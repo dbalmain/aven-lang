@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use ariadne::{Config as AriadneConfig, Label as AriadneLabel, Report, ReportKind, Source};
 use aven_core::{
     Diagnostic as AvenDiagnostic, DiagnosticReport, FileId, SessionRecord, SessionRecordParts,
-    SessionSummary, SessionTimings, Severity, SourceFile,
+    SessionSummary, SessionTimings, Severity, SourceFile, render_agent_report,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
@@ -208,6 +208,8 @@ enum Command {
 enum OutputFormat {
     Text,
     Json,
+    /// Compact span-quoting diagnostics for machine readers (LLMs).
+    Agent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -463,6 +465,14 @@ fn check(
             &checked.reports,
             show_timings.then_some(timings),
         )?,
+        OutputFormat::Agent => {
+            if !checked.reports.is_empty() {
+                print_agent_diagnostic_reports(&checked.source_map, &checked.reports)?;
+            }
+            if show_timings {
+                print_timings(timings);
+            }
+        }
     }
 
     if has_errors {
@@ -506,6 +516,11 @@ fn run(
         }
         OutputFormat::Json => {
             print_json_diagnostic_reports(&output.source_map, &output.reports, None)?
+        }
+        OutputFormat::Agent => {
+            if !output.reports.is_empty() {
+                print_agent_diagnostic_reports(&output.source_map, &output.reports)?;
+            }
         }
     }
 
@@ -566,6 +581,9 @@ fn test(
             }
             OutputFormat::Json => {
                 print_json_diagnostic_reports(&output.source_map, &output.reports, None)?;
+            }
+            OutputFormat::Agent => {
+                print_agent_diagnostic_reports(&output.source_map, &output.reports)?;
             }
         }
         return Ok(TEST_EXIT_SUITE_UNRUNNABLE);
@@ -654,7 +672,7 @@ fn test(
     );
 
     match format {
-        OutputFormat::Text => print_test_suite_text(&report)?,
+        OutputFormat::Text | OutputFormat::Agent => print_test_suite_text(&report)?,
         OutputFormat::Json => print_test_suite_json(&report)?,
     }
 
@@ -810,6 +828,7 @@ fn emit_suite_unrunnable(
     match format {
         OutputFormat::Text => print_diagnostic_reports(source_map, &reports)?,
         OutputFormat::Json => print_json_diagnostic_reports(source_map, &reports, None)?,
+        OutputFormat::Agent => print_agent_diagnostic_reports(source_map, &reports)?,
     }
     Ok(TEST_EXIT_SUITE_UNRUNNABLE)
 }
@@ -1554,6 +1573,11 @@ fn print_operator_config_diagnostics(
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
+        OutputFormat::Agent => {
+            for (file, report) in &reports {
+                print_agent_diagnostics(file, report)?;
+            }
+        }
     }
 
     Ok(())
@@ -1570,6 +1594,31 @@ fn print_diagnostic_reports(
         print_diagnostics(file, report)?;
     }
 
+    Ok(())
+}
+
+/// Agent-format diagnostics go to stderr (same stream as ariadne text) so
+/// `aven run` values can still use stdout.
+fn print_agent_diagnostic_reports(
+    source_map: &aven_core::SourceMap,
+    reports: &[DiagnosticReport],
+) -> Result<()> {
+    for report in reports {
+        let Some(file) = source_map.get(report.file_id) else {
+            continue;
+        };
+        print_agent_diagnostics(file, report)?;
+    }
+
+    Ok(())
+}
+
+fn print_agent_diagnostics(file: &SourceFile, report: &DiagnosticReport) -> Result<()> {
+    debug_assert_eq!(file.id, report.file_id);
+    let rendered = render_agent_report(file, &report.diagnostics);
+    if !rendered.is_empty() {
+        writeln!(io::stderr(), "{rendered}")?;
+    }
     Ok(())
 }
 

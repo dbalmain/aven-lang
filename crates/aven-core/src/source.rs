@@ -78,10 +78,38 @@ impl LineIndex {
         )
     }
 
-    fn line_index_for_offset(&self, offset: usize) -> usize {
+    /// 0-based line index for a byte offset.
+    ///
+    /// Offsets past the last recorded line start map to the final line entry
+    /// (including the empty virtual line after a trailing `\n`).
+    pub fn line_index_for_offset(&self, offset: usize) -> usize {
         self.line_starts
             .partition_point(|line_start| *line_start <= offset)
             - 1
+    }
+
+    /// Byte offset of the start of the line containing `offset`.
+    pub fn line_start_offset(&self, offset: usize) -> usize {
+        self.line_starts[self.line_index_for_offset(offset)]
+    }
+
+    /// Text of the line containing `offset`, without a trailing `\n` or `\r`.
+    pub fn line_text<'a>(&self, source: &'a str, offset: usize) -> &'a str {
+        let line = self.line_index_for_offset(offset.min(source.len()));
+        let start = self.line_starts[line];
+        // `line_end` is the index of the terminating `\n`, or `source.len()`.
+        let mut end = self.line_end(source, line);
+        if end > source.len() {
+            end = source.len();
+        }
+        if end < start {
+            return "";
+        }
+        // Drop trailing CR so CRLF lines match LF content.
+        if end > start && source.as_bytes()[end - 1] == b'\r' {
+            end -= 1;
+        }
+        &source[start..end]
     }
 
     fn line_end(&self, source: &str, line_index: usize) -> usize {
