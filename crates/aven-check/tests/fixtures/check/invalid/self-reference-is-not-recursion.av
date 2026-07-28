@@ -1,0 +1,7 @@
+# Only a *lambda* may refer to its own binding. A non-lambda self-reference has
+# no meaning to give it, so `name.unbound` stays the accurate diagnostic.
+f = (n: Int): Int =>
+  x = x + 1
+  x + n
+
+{ f }

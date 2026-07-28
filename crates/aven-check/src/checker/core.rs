@@ -42,6 +42,7 @@ impl<'a> Checker<'a> {
             imports: ModuleImports::default(),
             report_unbound_names: true,
             report_unresolved_bindings: true,
+            coalesce_guarded_field: false,
             reported_unbound_name_spans: HashSet::new(),
             reported_import_spans: HashSet::new(),
             propagation_contexts: Vec::new(),
@@ -1473,7 +1474,92 @@ impl<'a> Checker<'a> {
         self.local_types.pop();
     }
 
+    /// The type to bind a self-recursive local function under while checking its
+    /// own body, or `None` when this binding is not one.
+    ///
+    /// Blocks are sequential — a binding scopes over the ones after it — so a
+    /// local helper that calls itself was `name.unbound` at its own name, even
+    /// though the evaluator runs it correctly. `aven-parser`'s scope analysis has
+    /// the matching rule; this is the type half of it.
+    ///
+    /// Three deliberate narrowings, so the blast radius is the recursive case and
+    /// nothing else:
+    ///
+    ///  - **The value must be a lambda.** `x = x + 1` has no meaning to give it,
+    ///    and `name.unbound` is the accurate diagnostic there.
+    ///  - **`:=` is excluded.** Its entire purpose is that the value sees the
+    ///    *previous* binding, which is what makes `count := count + 1` mean what
+    ///    it reads as.
+    ///  - **The name must actually appear in its own value.** A binding that does
+    ///    not recurse takes exactly the path it took before.
+    ///
+    /// A fully annotated helper binds under its real signature, so recursive calls
+    /// type-check properly. One that is not falls back to `Unknown`, which reads
+    /// as "declined to infer" everywhere else in the checker — the recursive call
+    /// still resolves, and `binding_value_reads_uninferred_local` keeps the body
+    /// from being reported as unresolvable.
+    /// `for_inference` selects the lowering the caller's pass uses; the rule is
+    /// identical either way.
+    pub(super) fn self_recursive_local_type(
+        &mut self,
+        binding: &Binding,
+        signature: Option<&Signature>,
+        for_inference: bool,
+    ) -> Option<LocalValueType> {
+        if binding.shadow_span.is_some() || !expr_references_name(&binding.value, &binding.name) {
+            return None;
+        }
+        let ExprKind::Lambda {
+            params,
+            return_annotation,
+            ..
+        } = &ungroup_expr(&binding.value).kind
+        else {
+            return None;
+        };
+
+        let lower = |checker: &mut Self, annotation: &Expr| {
+            if for_inference {
+                checker.lower_inline_lambda_annotation_for_inference(annotation)
+            } else {
+                checker.lower_inline_lambda_annotation(annotation)
+            }
+        };
+
+        if let Some(annotation) = signature
+            .map(|signature| &signature.annotation)
+            .or(binding.annotation.as_ref())
+        {
+            let declared = lower(self, annotation);
+            return Some(LocalValueType::Known(declared));
+        }
+
+        // Not fully annotated: nothing to bind it under but "declined to infer".
+        // The recursive call still resolves, and `binding_value_reads_uninferred_local`
+        // keeps the body from being reported as unresolvable.
+        let Some(return_annotation) = return_annotation.as_deref() else {
+            return Some(LocalValueType::Unknown);
+        };
+        let mut param_types = Vec::with_capacity(params.len());
+        for param in params {
+            let Some(annotation) = param.annotation.as_ref() else {
+                return Some(LocalValueType::Unknown);
+            };
+            let ty = lower(self, annotation);
+            param_types.push(ty);
+        }
+        let result = lower(self, return_annotation);
+        Some(LocalValueType::Known(Type::Function {
+            required: param_types.len(),
+            params: param_types,
+            result: Box::new(result),
+        }))
+    }
+
     pub(super) fn check_local_binding(&mut self, binding: &Binding, signature: Option<&Signature>) {
+        if let Some(recursive) = self.self_recursive_local_type(binding, signature, false) {
+            self.local_types.define(&binding.name, recursive);
+        }
         self.check_runtime_binding_liftability(&binding.value);
 
         let signature_type = signature.map(|signature| {
@@ -2091,6 +2177,7 @@ impl<'a> Checker<'a> {
             || self.binding_value_is_overload_selection_pending(&binding.value)
             || self.binding_value_is_host_comptime_runtime_arg_deferral(&binding.value)
             || self.binding_value_is_open_record_rest_match_unknown(&binding.value)
+            || self.binding_value_reads_uninferred_local(&binding.value)
         {
             return;
         }
@@ -2101,6 +2188,59 @@ impl<'a> Checker<'a> {
         }
 
         self.report_unresolved_binding(binding.name_span);
+    }
+
+    /// Does this binding's value read a local the checking pass declined to infer?
+    ///
+    /// An unannotated inline-lambda parameter is bound as [`LocalValueType::Unknown`]
+    /// (`check_lambda_value_expr`), and every name reference to it infers
+    /// `Type::Deferred`. So the whole of a lambda body's block was unreportable
+    /// the moment the lambda took an unannotated parameter:
+    ///
+    /// ```text
+    /// f = (a) => a + 1        # ok — no block binding to report
+    /// f = (a) =>              # `cannot determine a type for this binding`
+    ///   b = a
+    ///   b
+    /// ```
+    ///
+    /// The second form runs and returns the right answer; only `check` refused
+    /// it. That is not what this diagnostic is for. It exists to catch a binding
+    /// whose type genuinely cannot be determined, and "its type came from a
+    /// parameter we deliberately did not infer" is a statement about the checker,
+    /// not about the code — pointing at `b` blames the wrong line, and there is
+    /// no annotation the author can add to `b` that would help.
+    ///
+    /// Deliberately generous: any read of an uninferred local suppresses the
+    /// report for that binding. Missing a real unresolved binding that happens to
+    /// mention such a name is cheap; refusing every lambda body that keeps an
+    /// intermediate result is not. `type.unresolved-binding` was the single
+    /// largest diagnostic in the phase-3 sweep — 129 repair rounds across 44 of
+    /// 71 tasks — and this shape is the bulk of it.
+    pub(super) fn binding_value_reads_uninferred_local(&self, value: &Expr) -> bool {
+        self.uninferred_local_names()
+            .iter()
+            .any(|name| expr_references_name(value, name))
+    }
+
+    /// Locals currently in scope that were bound without an inferable type.
+    fn uninferred_local_names(&self) -> Vec<String> {
+        self.local_types
+            .inference_env()
+            .into_iter()
+            .filter(|(_, ty)| matches!(ty, LocalValueType::Unknown))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// Is any local in scope one the checking pass declined to infer?
+    ///
+    /// The coarse form of [`Self::binding_value_reads_uninferred_local`], for the
+    /// obligation solver, which sees a resolved `Type` and not the expression it
+    /// came from. Inside a lambda with an unannotated parameter every deferral in
+    /// the body is attributable to that parameter, so this is the same question.
+    pub(super) fn has_uninferred_locals(&self) -> bool {
+        !self.uninferred_local_names().is_empty()
     }
 
     pub(super) fn binding_value_had_prior_diagnostic(

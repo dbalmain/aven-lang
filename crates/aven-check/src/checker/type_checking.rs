@@ -1594,10 +1594,27 @@ impl<'a> Checker<'a> {
         self.report_value_record_markers(value_entries);
         self.report_redundant_undefined_record_fields(value_entries);
 
-        let Some(expected) = literal_record_type(row) else {
+        // Resolve first: a row variable that unification already bound must be
+        // read through, or a tail bound to `Closed` would look open below.
+        let resolved = self.unifier.resolve(&Type::Record(row.clone()));
+        let row = match &resolved {
+            Type::Record(resolved) => resolved,
+            _ => row,
+        };
+
+        let Some(mut expected) = literal_record_type(row) else {
             self.walk_value_record_values(value_entries);
             return;
         };
+
+        // A row variable that survives resolution is *open* — it stands for "and
+        // possibly more fields", which is the entire point of inferring one.
+        // Reading it as closed rejected every extra field passed to an inferred
+        // row-polymorphic function: `f = (r) => r.amount ?? 0` accepted
+        // `f({ amount: 42 })` and refused `f({ amount: 42, other: 1 })`, while the
+        // same function annotated `(r: { amount: ?Int, .. })` — a literal `..`
+        // tail — accepted both. Only the spelling of the tail differed.
+        expected.open |= matches!(row.tail, RowTail::Var(_));
 
         if let Some(actual) = literal_record_value(value_entries, value_span) {
             self.check_literal_record_shorthands(&actual);

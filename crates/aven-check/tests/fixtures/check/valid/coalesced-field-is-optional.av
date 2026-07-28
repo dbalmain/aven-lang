@@ -1,0 +1,25 @@
+# `r.field ?? fallback` infers the field as optional and the row as open.
+#
+# Inferring the field as *required* rejected exactly the records the guard exists
+# for: `f({ operation: "open" })` reported both a missing `amount` and an
+# unexpected `operation`, for a function the evaluator runs correctly returning
+# 0. The diagnostic's own advice was wrong too — `{ amount: ?Int }` closes the
+# row and still fails, and `{ amount?: Int, .. }` does not parse. The inferred
+# type is now `{ amount: ?a, .. } -> a`, which is the one spelling that worked.
+
+amountOr0 = (r) => r.amount ?? 0
+
+# Absent, present, and present alongside an extra field.
+absent: Int = amountOr0({ operation: "open" })
+present: Int = amountOr0({ amount: 42 })
+extra: Int = amountOr0({ amount: 7, other: 1 })
+
+# The annotated form still means the same thing.
+annotated = (r: { amount: ?Int, .. }) => r.amount ?? 0
+viaAnnotation: Int = annotated({ amount: 7, other: 1 })
+
+# Only the outermost access is guarded: `inner` is still a required field.
+nested = (r) => r.inner.amount ?? 0
+nestedValue: Int = nested({ inner: { amount: 1 } })
+
+{ amountOr0, annotated, nested, absent, present, extra, viaAnnotation, nestedValue }

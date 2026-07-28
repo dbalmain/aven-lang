@@ -403,7 +403,12 @@ impl<'a> Checker<'a> {
 
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
+        // `r.field ?? fallback` guards the field, so inferring it as *required*
+        // rejects exactly the records the guard exists for. See
+        // `infer_field_access`, which consumes this.
+        self.coalesce_guarded_field = operator == "??";
         let left_type = self.infer(env, left);
+        self.coalesce_guarded_field = false;
         let right_type = self.infer(env, right);
         let divisor_context = IntegerDivisorContext {
             span: right.span,
@@ -1530,6 +1535,10 @@ impl<'a> Checker<'a> {
         null_safe: bool,
         field_span: Span,
     ) -> Type {
+        // Consumed here, at the outermost access: in `r.a.b ?? x` only `b` is
+        // guarded, and this runs before the receiver `r.a` is inferred.
+        let guarded = std::mem::take(&mut self.coalesce_guarded_field);
+
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
             && let Some(owner) = self.unbound_method_owner_name(name)
             && let Some(signature) = self.exact_method_signature(&Type::Named(owner.clone()), field)
@@ -1620,10 +1629,23 @@ impl<'a> Checker<'a> {
 
         let field_type = self.unifier.fresh();
         let tail = self.unifier.fresh_row_var();
+        // Under a `??` guard the row entry is `?t`, not `t`. Requiring the field
+        // made `f = (r) => r.amount ?? 0` reject `{ operation: "open" }` with
+        // *two* errors — a missing `amount` and an unexpected `operation` — for a
+        // function the evaluator runs correctly, returning 0. It also made the
+        // diagnostic's own advice ("make the field type optional with `?T`")
+        // wrong: writing `{ amount: ?Int }` closes the row and still fails, and
+        // `{ amount?: Int, .. }` does not parse. The only spelling that worked
+        // was `{ amount: ?Int, .. }` — which is exactly what this now infers.
+        let entry_type = if guarded {
+            Type::Optional(Box::new(field_type.clone()))
+        } else {
+            field_type.clone()
+        };
         let required = Type::Record(Row {
             entries: vec![RowEntry::Field {
                 name: field.to_owned(),
-                ty: field_type.clone(),
+                ty: entry_type,
             }],
             tail: RowTail::Var(tail),
         });
@@ -1633,6 +1655,14 @@ impl<'a> Checker<'a> {
             self.restore_diagnostic_snapshot(diagnostic_snapshot);
             return Type::Deferred;
         }
+
+        // The access yields what the row holds, so a guarded read is `?t` and the
+        // `??` peels it back to `t` against the fallback.
+        let field_type = if guarded {
+            Type::Optional(Box::new(field_type))
+        } else {
+            field_type
+        };
 
         if empties.is_empty() {
             return field_type;
@@ -3604,6 +3634,13 @@ impl<'a> Checker<'a> {
             match item {
                 MergedItem::Binding { signature, binding } => {
                     let obligation_marker = self.method_obligation_marker();
+                    // A local function may call itself; bind it before inferring
+                    // its own value. See `self_recursive_local_type`.
+                    if let Some(recursive) =
+                        self.self_recursive_local_type(binding, signature, true)
+                    {
+                        next_env.insert(binding.name.clone(), recursive);
+                    }
                     let local_type = signature
                         .map(|signature| self.lower_annotation_for_inference(&signature.annotation))
                         .or_else(|| {

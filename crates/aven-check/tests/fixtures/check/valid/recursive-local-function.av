@@ -1,0 +1,31 @@
+# A local function that calls itself.
+#
+# Blocks are sequential — a binding scopes over the ones after it — so a
+# recursive helper was `name.unbound` at its own name, though the evaluator ran
+# it correctly. A recursive helper is the ordinary way to write a loop, so this
+# shape appeared throughout the benchmark corpus.
+
+# Fully annotated: binds under its real signature, so the recursive call is
+# type-checked rather than deferred.
+factorial = (n: Int): Int =>
+  go = (i: Int, acc: Int): Int =>
+    i <= 1 ?>
+      true => acc
+      false => go(i - 1, acc * i)
+  go(n, 1)
+
+# Unannotated: the name still resolves.
+countdown = (n: Int): Int =>
+  go = (i) =>
+    i <= 0 ?>
+      true => 0
+      false => go(i - 1)
+  go(n)
+
+# `:=` keeps the old order: the value sees the *previous* binding, which is what
+# makes this read as it means. `n` here is the parameter, not the new binding.
+increment = (n: Int): Int =>
+  n := n + 1
+  n
+
+{ factorial, countdown, increment }

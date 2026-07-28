@@ -1,0 +1,37 @@
+# A block inside a lambda with unannotated parameters.
+#
+# Every binding below used to be `type.unresolved-binding`: an unannotated
+# parameter is bound as "declined to infer", so each name reading it inferred a
+# deferred type and the binding was reported as unresolvable — even though the
+# evaluator ran all of it and produced the right answers. There is no annotation
+# the author could add to `doubled` or `sum` that would have helped; the report
+# blamed the wrong line.
+
+# The plain case: an intermediate result whose type comes from a parameter.
+identity = (a) =>
+  b = a
+  b
+
+# With an operator, which failed through a second path — the obligation solver
+# reporting `operator + has an unresolved receiver`.
+increment = (a) =>
+  b = a + 1
+  b
+
+# `:=` shadowing, which is the same thing and not a separate defect.
+bump = (a) =>
+  a := a + 1
+  a
+
+# Two parameters and a chain of locals.
+combine = (a, b) =>
+  sum = a + b
+  doubled = sum * 2
+  doubled
+
+# An annotated parameter always worked; it is here as the control.
+bumpAnnotated = (a: Int) =>
+  a := a + 1
+  a
+
+{ identity, increment, bump, combine, bumpAnnotated }

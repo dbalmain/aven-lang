@@ -98,6 +98,9 @@ pub(crate) struct Checker<'a> {
     pub(crate) imports: ModuleImports,
     report_unbound_names: bool,
     report_unresolved_bindings: bool,
+    /// Set while inferring the left operand of `??`, and consumed by the first
+    /// field access that reads it. See `infer_field_access`.
+    coalesce_guarded_field: bool,
     reported_unbound_name_spans: HashSet<Span>,
     reported_import_spans: HashSet<Span>,
     propagation_contexts: Vec<PropagationContext>,

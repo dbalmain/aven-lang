@@ -220,13 +220,42 @@ fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<
                 if let Some(annotation) = &binding.annotation {
                     analyze_expr(annotation, scopes, diagnostics);
                 }
+                // A local function may call itself. Blocks are otherwise
+                // sequential — each binding scopes over the ones after it — but a
+                // recursive helper is the ordinary way to write a loop, and
+                // without this the shape below is `name.unbound` at `go` even
+                // though the evaluator runs it correctly:
+                //
+                //   sumFrom = (xs: Array(Int)): Int =>
+                //     go = (i: Int, acc: Int): Int =>
+                //       i >= xs.length() ?> true => acc, false => go(i + 1, ...)
+                //     go(0, 0)
+                //
+                // Restricted to lambdas, and to `=`. A non-lambda self-reference
+                // (`x = x + 1`) has no meaning to give it, so it keeps the
+                // unbound diagnostic, which is the accurate one. And `:=` must
+                // keep the old order in either case: its whole purpose is that
+                // the value sees the *previous* binding, which is what makes
+                // `count := count + 1` mean what it reads as.
+                let self_recursive =
+                    binding.shadow_span.is_none() && value_is_lambda(&binding.value);
+                if self_recursive {
+                    scopes.define_local_binding(
+                        &binding.name,
+                        binding.name_span,
+                        false,
+                        diagnostics,
+                    );
+                }
                 analyze_expr(&binding.value, scopes, diagnostics);
-                scopes.define_local_binding(
-                    &binding.name,
-                    binding.name_span,
-                    binding.shadow_span.is_some(),
-                    diagnostics,
-                );
+                if !self_recursive {
+                    scopes.define_local_binding(
+                        &binding.name,
+                        binding.name_span,
+                        binding.shadow_span.is_some(),
+                        diagnostics,
+                    );
+                }
             }
             MergedItem::PatternBinding(binding) => {
                 analyze_expr(&binding.value, scopes, diagnostics);
@@ -253,6 +282,15 @@ fn analyze_block(items: &[Item], scopes: &mut ScopeStack, diagnostics: &mut Vec<
     }
 
     scopes.pop(diagnostics);
+}
+
+/// Is this binding's value a function literal, ignoring parentheses?
+fn value_is_lambda(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Lambda { .. } => true,
+        ExprKind::Group(inner) => value_is_lambda(inner),
+        _ => false,
+    }
 }
 
 fn analyze_record_entries(
