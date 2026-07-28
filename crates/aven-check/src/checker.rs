@@ -1036,7 +1036,7 @@ fn collect_comptime_type_bindings(
             );
         }
         (
-            ExprKind::Index { callee, args },
+            ExprKind::Index { callee, args, .. },
             Type::Apply {
                 callee: actual_callee,
                 args: actual_args,
@@ -1399,14 +1399,19 @@ fn describe_receiver_expr(expr: &Expr) -> Option<String> {
             let operator = if *null_safe { "?." } else { "." };
             Some(format!("{receiver}{operator}{field}"))
         }
-        ExprKind::Index { callee, args } => {
+        ExprKind::Index {
+            callee,
+            args,
+            null_safe,
+        } => {
             let callee = describe_receiver_expr(callee)?;
             let args = args
                 .iter()
                 .map(describe_index_arg)
                 .collect::<Option<Vec<_>>>()?
                 .join(", ");
-            Some(format!("{callee}[{args}]"))
+            let operator = if *null_safe { "?[" } else { "[" };
+            Some(format!("{callee}{operator}{args}]"))
         }
         _ => None,
     }

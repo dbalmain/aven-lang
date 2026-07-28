@@ -277,7 +277,11 @@ impl<'a> Checker<'a> {
                 body,
             ),
             ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
-            ExprKind::Index { callee, args } => self.infer_value_index(env, callee, args),
+            ExprKind::Index {
+                callee,
+                args,
+                null_safe,
+            } => self.infer_value_index(env, callee, args, *null_safe),
             ExprKind::FieldAccess {
                 receiver,
                 field,
@@ -3171,6 +3175,7 @@ impl<'a> Checker<'a> {
         env: &TypeEnv,
         callee: &Expr,
         args: &[Expr],
+        null_safe: bool,
     ) -> Type {
         let [arg] = args else {
             return Type::Deferred;
@@ -3178,9 +3183,20 @@ impl<'a> Checker<'a> {
 
         let callee_type = self.infer(env, callee);
         let callee_type = self.normalize(&self.resolve_and_default(&callee_type));
-        match callee_type {
-            Type::Record(row) => self.infer_record_index(&row, arg),
-            Type::Tuple(elements) => self.infer_tuple_index(&elements, arg),
+
+        // Mirror field-access: peel empties when null-safe so `?Array(a)?[i]`
+        // indexes the core and rewraps the result. Plain `[` on an optional
+        // receiver keeps today's not-indexable path (no peel).
+        let (empties, core) = if null_safe {
+            peel_empty_values(&callee_type)
+        } else {
+            (Vec::new(), &callee_type)
+        };
+        let core = core.clone();
+
+        let result = match &core {
+            Type::Record(row) => self.infer_record_index(row, arg),
+            Type::Tuple(elements) => self.infer_tuple_index(elements, arg),
             Type::Apply { callee, args }
                 if args.len() == 1
                     && matches!(callee.as_ref(), Type::Named(name) if name == "Array") =>
@@ -3203,16 +3219,25 @@ impl<'a> Checker<'a> {
                 self.check_value_index_arg(env, arg, key_type);
                 Type::Optional(Box::new(value_type))
             }
-            _ if is_text_type(&callee_type) => {
+            _ if is_text_type(&core) => {
                 // Scalar-value index; same optional/`undefined` OOB rule as arrays.
                 self.check_value_index_arg(env, arg, named_builtin("Int"));
                 Type::Optional(Box::new(named_builtin("Text")))
             }
-            _ if is_resolved_value_type(&callee_type) => {
-                self.report_not_indexable(&callee_type, callee.span);
+            _ if is_resolved_value_type(&core) => {
+                // Report the original (possibly empty-wrapped) type so plain
+                // `?Array` still shows as not-indexable.
+                let reported = if null_safe { &core } else { &callee_type };
+                self.report_not_indexable(reported, callee.span);
                 Type::Deferred
             }
             _ => Type::Deferred,
+        };
+
+        if empties.is_empty() {
+            result
+        } else {
+            rewrap_empty_values(result, &empties)
         }
     }
 

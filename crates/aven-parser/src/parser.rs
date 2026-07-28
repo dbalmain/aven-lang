@@ -136,9 +136,13 @@ pub enum ExprKind {
     /// Postfix square-bracket indexing (`users[2]`) and empty collection-type
     /// sugar (`Text[]` / `Text@{}` desugar to `Array`/`Set` index forms). Type
     /// application uses ordinary [`ExprKind::Call`] nodes such as `Array(a)`.
+    ///
+    /// `null_safe` is true for the `?[` form (`xs?[i]`), the indexing counterpart
+    /// of field-access `?.`. Plain `[` keeps `null_safe: false`.
     Index {
         callee: Box<Expr>,
         args: Vec<Expr>,
+        null_safe: bool,
     },
     /// `?T`: prefix optional marker.
     Optional(Box<Expr>),
@@ -1266,7 +1270,7 @@ impl Parser<'_> {
             }
 
             if self.current_is(TokenKind::OpenBracket) {
-                expr = self.finish_index(expr);
+                expr = self.finish_index(expr, false);
                 continue;
             }
 
@@ -1282,6 +1286,15 @@ impl Parser<'_> {
 
             if self.current_is_operator("?^") || self.current_is_operator("?!") {
                 expr = self.finish_propagation(expr);
+                continue;
+            }
+
+            // `xs?[i]`: null-safe index. Must win over bare `?` → Nullable, but
+            // only when the bracket list is non-empty — `T?[]` stays Nullable
+            // then empty-index Array sugar.
+            if self.current_is_null_safe_index() {
+                self.advance(); // consume `?`
+                expr = self.finish_index(expr, true);
                 continue;
             }
 
@@ -1314,11 +1327,14 @@ impl Parser<'_> {
         expr
     }
 
-    fn finish_index(&mut self, callee: Expr) -> Expr {
+    fn finish_index(&mut self, callee: Expr, null_safe: bool) -> Expr {
         let start = callee.span.start;
         let (bracket_span, args) = self.parse_bracketed_expressions();
 
         if args.is_empty() {
+            // Empty `[]` is collection-type sugar only for plain index; the
+            // null-safe path never reaches here (`current_is_null_safe_index`
+            // rejects empty brackets).
             return collection_type_application("Array", bracket_span, callee, bracket_span.end);
         }
 
@@ -1326,9 +1342,22 @@ impl Parser<'_> {
             kind: ExprKind::Index {
                 callee: Box::new(callee),
                 args,
+                null_safe,
             },
             span: Span::new(start, bracket_span.end),
         }
+    }
+
+    /// `?` followed by a non-empty `[...]` — the null-safe index form `xs?[i]`.
+    /// Empty `[]` is left for `Nullable` then Array type sugar (`T?[]`).
+    fn current_is_null_safe_index(&self) -> bool {
+        if !self.current_is_operator("?") || !self.next_is(TokenKind::OpenBracket) {
+            return false;
+        }
+        !self
+            .tokens
+            .get(self.cursor + 2)
+            .is_some_and(|token| token.kind == TokenKind::CloseBracket)
     }
 
     fn parse_bracketed_expressions(&mut self) -> (Span, Vec<Expr>) {
@@ -3529,6 +3558,7 @@ fn collection_type_application(
                 span: collection_span,
             }),
             args: vec![element],
+            null_safe: false,
         },
         span: Span::new(start, end),
     }
@@ -4192,6 +4222,56 @@ mod tests {
             } if field == "active"
         ));
         assert!(matches!(&right.kind, ExprKind::Call { .. }));
+    }
+
+    #[test]
+    fn parses_null_safe_index_and_plain_index() {
+        let output = parse_module("a = xs?[i]\nb = ys[j]\n");
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert!(matches!(
+            binding_value(&output, 0),
+            ExprKind::Index {
+                null_safe: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            binding_value(&output, 1),
+            ExprKind::Index {
+                null_safe: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn nullable_empty_array_sugar_is_not_null_safe_index() {
+        // `T?[]` must stay Nullable then empty-index Array sugar, not `?[`.
+        // Desugars to Index(Array, [Nullable(T)], null_safe=false).
+        let output = parse_module("value: Int?[] = []\n");
+
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let Some(Item::Binding(binding)) = output.module.items.first() else {
+            panic!("expected binding");
+        };
+        let Some(annotation) = &binding.annotation else {
+            panic!("expected annotation");
+        };
+        let ExprKind::Index {
+            callee,
+            args,
+            null_safe: false,
+        } = &annotation.kind
+        else {
+            panic!("expected Array type sugar, got {:?}", annotation.kind);
+        };
+        assert!(matches!(
+            &callee.kind,
+            ExprKind::ComptimeName(name) if name == "Array"
+        ));
+        assert_eq!(args.len(), 1);
+        assert!(matches!(&args[0].kind, ExprKind::Nullable(_)));
     }
 
     #[test]

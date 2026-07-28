@@ -506,9 +506,13 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             let _ = writeln!(output, "members");
             render_record_entries_ast(output, members, indent + 2);
         }
-        ExprKind::Index { callee, args } => {
+        ExprKind::Index {
+            callee,
+            args,
+            null_safe,
+        } => {
             write_indent(output, indent);
-            let _ = writeln!(output, "index");
+            let _ = writeln!(output, "index null_safe={null_safe}");
             write_indent(output, indent + 1);
             let _ = writeln!(output, "callee");
             render_expr_ast(output, callee, indent + 2);

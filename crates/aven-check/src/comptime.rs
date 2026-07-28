@@ -790,7 +790,9 @@ where
             ExprKind::Call { callee, args } => {
                 self.evaluate_application(expr.span, callee, args, env)
             }
-            ExprKind::Index { callee, args } => self.evaluate_type_application(callee, args, env),
+            ExprKind::Index { callee, args, .. } => {
+                self.evaluate_type_application(callee, args, env)
+            }
             ExprKind::Optional(_)
             | ExprKind::Nullable(_)
             | ExprKind::NonNull(_)

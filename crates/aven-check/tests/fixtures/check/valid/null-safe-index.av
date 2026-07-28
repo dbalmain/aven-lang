@@ -1,0 +1,18 @@
+# Null-safe index: optional receivers index through ?[, result stays optional.
+grid : Array(Array(Int)) = [[1, 2], [3, 4]]
+r : Int = 1
+c : Int = 0
+# grid[r] is ?Array(Int); second index needs ?[.
+cell : ?Int = grid[r]?[c]
+
+# Direct optional array receiver.
+maybeRow : ?Array(Int) = grid[r]
+fromMaybe : ?Int = maybeRow?[0]
+
+# Optional text indexing.
+maybeText : ?Text = "hi"
+ch : ?Text = maybeText?[0]
+
+# Non-optional receiver with ?[ is allowed (same as ?. on non-optional).
+plain : Array(Int) = [10, 20]
+plainCell : ?Int = plain?[1]

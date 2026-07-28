@@ -2422,6 +2422,21 @@ fn evaluates_null_safe_field_access() {
 }
 
 #[test]
+fn evaluates_null_safe_index() {
+    assert_eval("undefined?[0]", Value::Undefined);
+    assert_eval("null?[0]", Value::Null);
+    assert_eval("[10, 20]?[0]", Value::int(10));
+    assert_eval("[10, 20]?[1]", Value::int(20));
+    // Empty receiver must not evaluate the index (a bare name that would fail).
+    assert_module_value("xs = undefined\nxs?[missing]\n", Value::Undefined);
+    assert_module_value("xs = null\nxs?[missing]\n", Value::Null);
+    assert_module_value(
+        "grid = [[1, 2], [3, 4]]\nr = 1\nc = 0\ngrid[r]?[c]\n",
+        Value::int(3),
+    );
+}
+
+#[test]
 fn field_access_yields_undefined_for_absent_record_field() {
     // Optional fields may be omitted at construction, leaving no physical key.
     // Both field access forms read that absence as `undefined`; `?.` also

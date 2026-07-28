@@ -12,7 +12,7 @@ module
             name k
           value
             optional
-              index
+              index null_safe=false
                 callee
                   name object
                 args

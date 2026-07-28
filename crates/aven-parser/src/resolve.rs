@@ -717,7 +717,7 @@ fn collect_pattern_bindings<'a>(pattern: &'a Expr, bindings: &mut Vec<BindingSit
         ExprKind::Record(entries) | ExprKind::Set(entries) | ExprKind::Array(entries) => {
             collect_pattern_bindings_from_record_entries(entries, bindings);
         }
-        ExprKind::Index { callee, args } | ExprKind::Call { callee, args } => {
+        ExprKind::Index { callee, args, .. } | ExprKind::Call { callee, args } => {
             if !matches!(callee.kind, ExprKind::Tag(_)) {
                 collect_pattern_bindings(callee, bindings);
             }

@@ -16,7 +16,7 @@ module
                 args
                   name r
         body
-          index
+          index null_safe=false
             callee
               name o
             args

@@ -942,6 +942,18 @@ mod tests {
     }
 
     #[test]
+    fn keeps_null_safe_index_tight() {
+        // `?[` mirrors `?.`: no space between `?` and `[`, and no space after the
+        // receiver before `?`.
+        let formatted = "cell = grid[r]?[c]\nch = text?[i]\n";
+        assert_eq!(
+            format_source("cell = grid[r] ? [c]\nch = text ? [i]\n"),
+            Ok(formatted.to_owned())
+        );
+        assert_eq!(format_source(formatted), Ok(formatted.to_owned()));
+    }
+
+    #[test]
     fn formats_method_attachment_blocks_and_bare_receiver() {
         let formatted = concat!(
             "Array(Array(a)) {\n",

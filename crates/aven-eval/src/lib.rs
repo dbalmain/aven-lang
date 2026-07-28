@@ -1865,7 +1865,11 @@ fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
             field_span,
             null_safe,
         } => eval_field_access(receiver, field, *field_span, *null_safe, env),
-        ExprKind::Index { callee, args } => eval_index(callee, args, expr.span, env),
+        ExprKind::Index {
+            callee,
+            args,
+            null_safe,
+        } => eval_index(callee, args, *null_safe, expr.span, env),
         ExprKind::Call { callee, args } => eval_type_application(callee, args, expr.span, env)
             .unwrap_or_else(|| eval_call(callee, args, expr.span, env)),
         ExprKind::Propagate {
@@ -5112,8 +5116,19 @@ fn eval_type_application(
     None
 }
 
-fn eval_index(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eval {
+fn eval_index(
+    callee: &Expr,
+    args: &[Expr],
+    null_safe: bool,
+    span: Span,
+    env: &Environment,
+) -> Eval {
     let callee_value = eval_expr_many(callee, env)?;
+    // Mirror field-access `?.`: empty receiver short-circuits without evaluating
+    // the index expression.
+    if null_safe && matches!(callee_value, Value::Undefined | Value::Null) {
+        return Ok(callee_value);
+    }
 
     if args.len() != 1 {
         return Err(one_diagnostic(unsupported_expr(

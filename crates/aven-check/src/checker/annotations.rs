@@ -404,7 +404,7 @@ impl<'a> Checker<'a> {
                 .lookup_comptime_reified_type(name)
                 .unwrap_or_else(|| Type::Variable(name.clone())),
             ExprKind::Group(inner) => self.lower_annotation(inner),
-            ExprKind::Index { callee, args } => self
+            ExprKind::Index { callee, args, .. } => self
                 .lower_comptime_type_index(callee, args)
                 .unwrap_or_else(|| {
                     if !is_collection_type_sugar(callee, args) {

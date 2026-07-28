@@ -23,12 +23,12 @@ module
     annotation
       arrow
         params
-          index
+          index null_safe=false
             callee
               comptime Array
             args
               comptime Text
-          index
+          index null_safe=false
             callee
               comptime Set
             args

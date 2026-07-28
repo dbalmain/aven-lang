@@ -624,7 +624,7 @@ fn collect_pattern_references(pattern: &Expr, references: &mut Vec<Reference>) {
             phase: DeclarationPhase::Comptime,
             span: pattern.span,
         }),
-        ExprKind::Call { callee, args } | ExprKind::Index { callee, args } => {
+        ExprKind::Call { callee, args } | ExprKind::Index { callee, args, .. } => {
             if matches!(callee.kind, ExprKind::ComptimeName(_)) {
                 collect_expr_references(callee, references);
             }
