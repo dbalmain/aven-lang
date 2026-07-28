@@ -1,0 +1,6 @@
+error type.not-indexable: values of type `?Array(Int)` may be empty; write `g[r]?[c]`
+  label 105..109: this value may be empty
+  note: use `?[` to propagate the empty, `??` to supply a default, or match the empty before indexing
+error type.not-indexable: values of type `?Int` cannot be indexed
+  label 132..133: this value is not indexable
+  note: index an Array, Text, Map, tuple, or record instead

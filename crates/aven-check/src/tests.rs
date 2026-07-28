@@ -7530,11 +7530,83 @@ fn plain_field_access_through_array_element_reports_unguarded_empty() {
                 checker.diagnostics
             )
         });
-    // The message names the receiver expression rather than "this value".
+    // Field access: name the receiver and show the `?.` rewrite.
+    assert_eq!(
+        diagnostic.message,
+        "`first` may be `undefined`; write `first?.name`"
+    );
+    assert_eq!(
+        diagnostic.labels[0].message,
+        "field accessed without guarding the empty"
+    );
+}
+
+#[test]
+fn plain_method_call_through_optional_reports_unguarded_empty_as_method() {
+    let output = parse_module("xs: Array(Text) = [\"a\"]\nupper = xs[0].toUpper()\n");
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    let _ = checker.infer_top_level_scheme("upper");
+    let diagnostic = checker
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNGUARDED_EMPTY_ACCESS))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an unguarded-empty-access diagnostic, got {:?}",
+                checker.diagnostics
+            )
+        });
+    assert_eq!(
+        diagnostic.message,
+        "`xs[0]` may be `undefined`; write `xs[0]?.toUpper()`"
+    );
+    assert_eq!(
+        diagnostic.labels[0].message,
+        "method called without guarding the empty"
+    );
+}
+
+#[test]
+fn plain_index_on_optional_array_recommends_null_safe_index() {
+    let output = parse_module(
+        "f = (g: Array(Array(Int)), r: Int, c: Int) => g[r][c]\nh = (x: ?Int) => x[0]\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    let _ = checker.infer_top_level_scheme("f");
+    let _ = checker.infer_top_level_scheme("h");
+    let diagnostics: Vec<_> = checker
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::NOT_INDEXABLE))
+        .collect();
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "expected two not-indexable diagnostics, got {:?}",
+        checker.diagnostics
+    );
+    assert_eq!(
+        diagnostics[0].message,
+        "values of type `?Array(Int)` may be empty; write `g[r]?[c]`"
+    );
     assert!(
-        diagnostic.message.contains("`first`"),
-        "expected the receiver to be named, got {:?}",
-        diagnostic.message
+        diagnostics[0].notes.iter().any(|note| note.contains("?[")),
+        "optional indexable path should name `?[`: {:?}",
+        diagnostics[0].notes
+    );
+    assert_eq!(
+        diagnostics[1].message,
+        "values of type `?Int` cannot be indexed"
+    );
+    assert_eq!(
+        diagnostics[1].notes,
+        ["index an Array, Text, Map, tuple, or record instead"]
     );
 }
 

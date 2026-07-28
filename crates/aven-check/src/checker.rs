@@ -380,6 +380,14 @@ impl EmptyValue {
     }
 }
 
+/// Whether an unguarded empty access is a record field or a method call.
+/// Affects diagnostic wording only — both still require `?.`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyAccessKind {
+    Field,
+    Method,
+}
+
 fn is_non_liftable_artifact_type(ty: &Type) -> bool {
     matches!(
         ty,
@@ -1423,6 +1431,37 @@ fn describe_index_arg(expr: &Expr) -> Option<String> {
         ExprKind::Literal(Literal::String(text)) => Some(format!("\"{text}\"")),
         ExprKind::Name(name) | ExprKind::ComptimeName(name) => Some(name.clone()),
         _ => None,
+    }
+}
+
+/// Rewrite a plain index as null-safe (`g[r][c]` → `g[r]?[c]`) when the
+/// receiver and index args are compact enough to name in a diagnostic.
+fn describe_null_safe_index(callee: &Expr, args: &[Expr]) -> Option<String> {
+    let callee = describe_receiver_expr(callee)?;
+    let args = args
+        .iter()
+        .map(describe_index_arg)
+        .collect::<Option<Vec<_>>>()?
+        .join(", ");
+    Some(format!("{callee}?[{args}]"))
+}
+
+/// Types that square-bracket indexing accepts (mirrors `infer_value_index`).
+fn is_indexable_type(ty: &Type) -> bool {
+    match ty {
+        Type::Record(_) | Type::Tuple(_) => true,
+        Type::Apply { callee, args }
+            if args.len() == 1
+                && matches!(callee.as_ref(), Type::Named(name) if name == "Array") =>
+        {
+            true
+        }
+        Type::Apply { callee, args }
+            if args.len() == 2 && matches!(callee.as_ref(), Type::Named(name) if name == "Map") =>
+        {
+            true
+        }
+        _ => is_text_type(ty),
     }
 }
 

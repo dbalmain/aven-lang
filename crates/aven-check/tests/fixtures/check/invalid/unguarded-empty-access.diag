@@ -1,0 +1,6 @@
+error type.unguarded-empty-access: `xs[i]` may be `undefined`; write `xs[i]?.name`
+  label 107..112: field accessed without guarding the empty
+  note: use `?.` to propagate the empty, `??` to supply a default, or match the empty before access
+error type.unguarded-empty-access: `xs[i]` may be `undefined`; write `xs[i]?.toUpper()`
+  label 155..163: method called without guarding the empty
+  note: use `?.` to propagate the empty, `??` to supply a default, or match the empty before access

@@ -468,12 +468,35 @@ impl<'a> Checker<'a> {
         );
     }
 
-    pub(super) fn report_not_indexable(&mut self, ty: &Type, span: Span) {
+    pub(super) fn report_not_indexable(&mut self, ty: &Type, callee: &Expr, args: &[Expr]) {
+        let (empties, core) = peel_empty_values(ty);
+        // Optional/nullable wrapper around something that *is* indexable: the
+        // author almost always wants `?[` (or a default), not a different type.
+        if !empties.is_empty() && is_indexable_type(core) {
+            let ty = display_inferred_type(ty).render();
+            let rewrite = describe_null_safe_index(callee, args);
+            let message = match &rewrite {
+                Some(rewrite) => {
+                    format!("values of type `{ty}` may be empty; write `{rewrite}`")
+                }
+                None => format!("values of type `{ty}` may be empty; index with `?[`"),
+            };
+            self.diagnostics.push(
+                Diagnostic::error(message)
+                    .with_code(codes::ty::NOT_INDEXABLE)
+                    .with_label(Label::primary(callee.span, "this value may be empty"))
+                    .with_note(
+                        "use `?[` to propagate the empty, `??` to supply a default, or match the empty before indexing",
+                    ),
+            );
+            return;
+        }
+
         let ty = display_inferred_type(ty).render();
         self.diagnostics.push(
             Diagnostic::error(format!("values of type `{ty}` cannot be indexed"))
                 .with_code(codes::ty::NOT_INDEXABLE)
-                .with_label(Label::primary(span, "this value is not indexable"))
+                .with_label(Label::primary(callee.span, "this value is not indexable"))
                 .with_note("index an Array, Text, Map, tuple, or record instead"),
         );
     }

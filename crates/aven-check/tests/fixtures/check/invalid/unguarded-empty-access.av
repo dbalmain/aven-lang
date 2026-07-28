@@ -1,0 +1,3 @@
+# Field vs method wording for unguarded empty access.
+nameOf = (xs: Array({ name: Text }), i: Int) => xs[i].name
+upper = (xs: Array(Text), i: Int) => xs[i].toUpper()

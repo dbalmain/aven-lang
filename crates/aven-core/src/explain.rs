@@ -472,7 +472,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::NOT_INDEXABLE,
-        text: "This value does not support square-bracket indexing. Index an Array, Text, Map, tuple, or record instead.",
+        text: "This value does not support square-bracket indexing. When the receiver is an optional or nullable Array, Text, Map, tuple, or record, use `?[` (or supply a default with `??` before indexing). Otherwise index an Array, Text, Map, tuple, or record.",
     },
     DiagnosticExplanation {
         code: codes::ty::OPEN_VARIANT_NOT_ASSIGNABLE,
@@ -532,7 +532,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::UNGUARDED_EMPTY_ACCESS,
-        text: "A field was accessed on a value that may be `undefined` or `null` (for example an array element) without `?.`. Use `?.` to propagate the empty, `??` to supply a default, or match the empty before access.",
+        text: "A field or method was accessed on a value that may be `undefined` or `null` (for example an array element) without `?.`. Use `?.` to propagate the empty, `??` to supply a default, or match the empty before access.",
     },
     DiagnosticExplanation {
         code: codes::ty::UNKNOWN_METHOD,

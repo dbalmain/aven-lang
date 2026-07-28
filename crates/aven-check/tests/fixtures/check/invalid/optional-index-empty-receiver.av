@@ -1,0 +1,3 @@
+# Plain [ on optional indexable vs non-indexable cores.
+cell = (g: Array(Array(Int)), r: Int, c: Int) => g[r][c]
+bad = (x: ?Int) => x[0]

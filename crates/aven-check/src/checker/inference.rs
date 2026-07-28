@@ -1620,7 +1620,13 @@ impl<'a> Checker<'a> {
                 return method_type;
             }
             if !null_safe {
-                self.report_unguarded_empty_field_access(receiver, field_span, &empties);
+                self.report_unguarded_empty_access(
+                    receiver,
+                    field,
+                    field_span,
+                    &empties,
+                    EmptyAccessKind::Method,
+                );
             }
             return rewrap_empty_values(method_type, &empties);
         }
@@ -1675,7 +1681,13 @@ impl<'a> Checker<'a> {
         // The receiver may be empty: a plain `.field` would use the wrapped value
         // as its underlying `T`, which is unsound — require `?.`.
         if !null_safe {
-            self.report_unguarded_empty_field_access(receiver, field_span, &empties);
+            self.report_unguarded_empty_access(
+                receiver,
+                field,
+                field_span,
+                &empties,
+                EmptyAccessKind::Field,
+            );
         }
         rewrap_empty_values(field_type, &empties)
     }
@@ -1708,30 +1720,43 @@ impl<'a> Checker<'a> {
         ))
     }
 
-    pub(super) fn report_unguarded_empty_field_access(
+    pub(super) fn report_unguarded_empty_access(
         &mut self,
         receiver: &Expr,
+        field: &str,
         field_span: Span,
         empties: &[EmptyValue],
+        kind: EmptyAccessKind,
     ) {
-        // Underline the access (`.field`), not just the field name, and name the
-        // receiver when its shape is renderable (`headers[0] may be ...`).
+        // Underline the access (`.field` / `.method`), not just the name, and
+        // name the receiver when its shape is renderable (`headers[0] may be ...`).
         let span = Span::point(receiver.span.end).merge(field_span);
-        let subject = describe_receiver_expr(receiver)
-            .map_or_else(|| "this value".to_owned(), |text| format!("`{text}`"));
-        self.diagnostics.push(
-            Diagnostic::error(format!(
-                "{subject} may be {}; accessing a field through it needs `?.`",
-                render_empty_values(empties)
-            ))
-            .with_code(codes::ty::UNGUARDED_EMPTY_ACCESS)
-            .with_label(Label::primary(
-                span,
+        let empties = render_empty_values(empties);
+        let (message, label) = match (describe_receiver_expr(receiver), kind) {
+            (Some(subject), EmptyAccessKind::Field) => (
+                format!("`{subject}` may be {empties}; write `{subject}?.{field}`"),
                 "field accessed without guarding the empty",
-            ))
-            .with_note(
-                "use `?.` to propagate the empty, `??` to supply a default, or match the empty before access",
             ),
+            (Some(subject), EmptyAccessKind::Method) => (
+                format!("`{subject}` may be {empties}; write `{subject}?.{field}()`"),
+                "method called without guarding the empty",
+            ),
+            (None, EmptyAccessKind::Field) => (
+                format!("this value may be {empties}; accessing a field through it needs `?.`"),
+                "field accessed without guarding the empty",
+            ),
+            (None, EmptyAccessKind::Method) => (
+                format!("this value may be {empties}; calling a method through it needs `?.`"),
+                "method called without guarding the empty",
+            ),
+        };
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(codes::ty::UNGUARDED_EMPTY_ACCESS)
+                .with_label(Label::primary(span, label))
+                .with_note(
+                    "use `?.` to propagate the empty, `??` to supply a default, or match the empty before access",
+                ),
         );
     }
 
@@ -3226,9 +3251,10 @@ impl<'a> Checker<'a> {
             }
             _ if is_resolved_value_type(&core) => {
                 // Report the original (possibly empty-wrapped) type so plain
-                // `?Array` still shows as not-indexable.
+                // `[` on `?Array` can recommend `?[`; null-safe peels first, so
+                // a non-indexable core (e.g. `?Int?[0]`) reports the core.
                 let reported = if null_safe { &core } else { &callee_type };
-                self.report_not_indexable(reported, callee.span);
+                self.report_not_indexable(reported, callee, args);
                 Type::Deferred
             }
             _ => Type::Deferred,
