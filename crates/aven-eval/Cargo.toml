@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 aven-core.workspace = true
 aven-parser.workspace = true
+stacker = "0.1.24"
 
 [dev-dependencies]
 proptest.workspace = true

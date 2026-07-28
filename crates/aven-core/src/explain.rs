@@ -371,6 +371,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A host-provided platform function reported an error while running. The platform boundary is effectful, so inspect the call and the host error message attached to it.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::RECURSION_LIMIT,
+        text: "Runtime evaluation exceeded the maximum call depth. Check that every recursive function has a reachable base case; if the recursion is intentional and deeper than the limit allows, rewrite the algorithm to use less stack or split the work.",
+    },
+    DiagnosticExplanation {
         code: codes::runtime::TYPE_ERROR,
         text: "Runtime evaluation reached an operator with operands it cannot accept. Use operands of the expected runtime kind, or add a static check once the relevant language feature exists.",
     },

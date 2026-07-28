@@ -121,6 +121,7 @@ pub mod runtime {
     pub const NOT_CALLABLE: &str = "runtime.not-callable";
     pub const PANIC: &str = "runtime.panic";
     pub const PLATFORM_ERROR: &str = "runtime.platform-error";
+    pub const RECURSION_LIMIT: &str = "runtime.recursion-limit";
     pub const TYPE_ERROR: &str = "runtime.type-error";
     pub const UNBOUND_NAME: &str = "runtime.unbound-name";
     pub const UNSUPPORTED: &str = "runtime.unsupported";
@@ -269,6 +270,7 @@ pub const ALL: &[&str] = &[
     runtime::NOT_CALLABLE,
     runtime::PANIC,
     runtime::PLATFORM_ERROR,
+    runtime::RECURSION_LIMIT,
     runtime::TYPE_ERROR,
     runtime::UNBOUND_NAME,
     runtime::UNSUPPORTED,

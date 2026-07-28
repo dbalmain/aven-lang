@@ -493,6 +493,25 @@ fn reports_function_arity_mismatch() {
 }
 
 #[test]
+fn infinite_recursion_reports_recursion_limit() {
+    let diagnostic = module_error("loop = () => loop()\nloop()\n");
+
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::RECURSION_LIMIT)
+    );
+}
+
+#[test]
+fn deep_finite_recursion_succeeds() {
+    // Well above the pre-stacker native-stack ceiling (~1900 frames).
+    assert_module_value(
+        "countdown = (n) =>\n  n <= 0 ?>\n    true => 0\n    false => countdown(n - 1)\ncountdown(50000)\n",
+        Value::int(0),
+    );
+}
+
+#[test]
 fn applies_trailing_parameter_default_when_omitted() {
     assert_module_value("f = (x, y = 10) => x + y\nf(1)\n", Value::int(11));
 }

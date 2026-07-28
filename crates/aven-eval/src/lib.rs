@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp::Ordering,
     collections::{HashMap, HashSet},
     fmt,
@@ -2908,7 +2908,7 @@ fn apply_closure_values(closure: Closure, arg_values: Vec<Value>, span: Span) ->
         )));
     }
 
-    bind_and_eval_closure(closure, arg_values, provided)
+    bind_and_eval_closure(closure, arg_values, provided, span)
 }
 
 /// Call a value with already-evaluated arguments.
@@ -2982,7 +2982,53 @@ fn closure_arity(closure: &Closure) -> (usize, usize) {
     (required, total)
 }
 
-fn bind_and_eval_closure(closure: Closure, arg_values: Vec<Value>, provided: usize) -> Eval {
+/// Maximum nested Aven call frames before evaluation returns
+/// [`codes::runtime::RECURSION_LIMIT`]. Sized so the guard, not the OS stack,
+/// stops runaway recursion; `stacker` grows the stack well past the old ~1900
+/// frame native-stack ceiling.
+const MAX_CALL_DEPTH: usize = 100_000;
+
+/// Remaining stack space that triggers a fresh segment via `stacker::maybe_grow`.
+const STACK_RED_ZONE: usize = 64 * 1024;
+
+/// Size of each new stack segment allocated by `stacker` when the red zone is hit.
+const STACK_GROW_SIZE: usize = 1024 * 1024;
+
+thread_local! {
+    static CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// RAII guard that increments [`CALL_DEPTH`] on enter and decrements on drop so
+/// early returns via `?`, [`Flow::Fail`], and [`Flow::Propagate`] restore depth.
+struct CallDepthGuard;
+
+impl CallDepthGuard {
+    fn enter(span: Span) -> Result<Self, Flow> {
+        CALL_DEPTH.with(|depth| {
+            let current = depth.get();
+            if current >= MAX_CALL_DEPTH {
+                return Err(one_diagnostic(recursion_limit(span, MAX_CALL_DEPTH)));
+            }
+            depth.set(current + 1);
+            Ok(Self)
+        })
+    }
+}
+
+impl Drop for CallDepthGuard {
+    fn drop(&mut self) {
+        CALL_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+fn bind_and_eval_closure(
+    closure: Closure,
+    arg_values: Vec<Value>,
+    provided: usize,
+    span: Span,
+) -> Eval {
+    let _depth = CallDepthGuard::enter(span)?;
+
     let call_env = closure.env.child();
     for (param, value) in closure.params.iter().zip(arg_values) {
         call_env.bind(param.name.clone(), value);
@@ -2999,12 +3045,16 @@ fn bind_and_eval_closure(closure: Closure, arg_values: Vec<Value>, provided: usi
         call_env.bind(param.name.clone(), value);
     }
 
+    // Grow the OS stack on demand so deep-but-finite recursion does not abort
+    // the process. Same-thread only — compatible with `Rc`-based (`!Send`) values.
     // The closure body is a propagation boundary: a `?^` `@Err` early-returns the
     // function, so its `@Err` becomes the call's value. `Flow::Fail` still bubbles.
-    match eval_expr_many(closure.body.as_ref(), &call_env) {
-        Err(Flow::Propagate(value)) => Ok(*value),
-        other => other,
-    }
+    stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || {
+        match eval_expr_many(closure.body.as_ref(), &call_env) {
+            Err(Flow::Propagate(value)) => Ok(*value),
+            other => other,
+        }
+    })
 }
 
 /// Evaluate `expr?^` / `expr?!`. `Result` is the ordinary tagged value
@@ -5905,6 +5955,18 @@ fn arity_mismatch(span: Span, required: usize, total: usize, got: usize) -> Diag
         ))
         .with_note(format!(
             "this function expects {expected}, but the call supplied {got}"
+        ))
+}
+
+fn recursion_limit(span: Span, limit: usize) -> Diagnostic {
+    Diagnostic::error("recursion limit exceeded")
+        .with_code(codes::runtime::RECURSION_LIMIT)
+        .with_label(Label::primary(
+            span,
+            format!("call depth exceeded {limit}"),
+        ))
+        .with_note(format!(
+            "check for a missing or unreachable base case; if the recursion is intentional and deeper than {limit} frames, rewrite the algorithm to use less stack or split the work"
         ))
 }
 
