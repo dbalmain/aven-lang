@@ -9775,6 +9775,19 @@ fn lambda_default_accepts_calls_within_required_range() {
 }
 
 #[test]
+fn annotated_default_may_reference_an_earlier_parameter() {
+    let source = "f = (x: Int, y: Int = x + 1) => y\nf(5)\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn lambda_default_rejects_too_few_arguments() {
     let output = parse_module("f = (x: Int, y: Int = 0) => x + y\nf()\n");
     let check = check_module(&output.module);

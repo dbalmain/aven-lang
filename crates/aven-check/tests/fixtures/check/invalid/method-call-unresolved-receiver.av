@@ -1,0 +1,17 @@
+# A genuinely unresolved operator receiver still reports
+# `type.unresolved-binding`. The method-call composite-arg fix must not
+# silence this diagnostic when no annotation can supply the left operand.
+#
+# Slot-record `merge` matches the valid fixture's method-call path; `x` remains
+# untyped because `g` is unproductive recursion.
+
+Box = { merge(other: Array(Int)): Array(Int) }
+box: Box = {
+  merge(other: Array(Int)): Array(Int) => other,
+}
+
+f = () =>
+  x = g()
+  box.merge([x + 1])
+g = () => g()
+{ f }

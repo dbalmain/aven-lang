@@ -144,6 +144,43 @@ hi = xs.maximum()
     );
 }
 
+/// Ambient Array methods under lambda inference: annotated parameters must
+/// resolve inside composite-literal method arguments (not only at top level).
+///
+/// `std_array_type_exports_check` already covers the ambient surface with
+/// literal receivers; this pins the inference path that previously reported
+/// `type.unresolved-binding` on `a + 1` in `[a].concat([a + 1])`.
+///
+/// Cases: primary concat repro; nested array literal; record element in
+/// zip's other-array arg; chain of ambient methods. Real `std/array` methods
+/// only — no hand-rolled ambient Type surface in aven-check fixtures.
+#[test]
+fn ambient_array_method_args_resolve_lambda_params() {
+    let dir = TempDir::new("ambient-method-lambda-args");
+    let entry = dir.write(
+        "main.av",
+        r#"# Primary repro: annotated param inside composite method argument.
+f = (a: Int): Array(Int) => [a].concat([a + 1])
+# Nested array literal as concat argument.
+g = (a: Int): Array(Array(Int)) => [[a]].concat([[a + 1]])
+# Record element inside ambient method argument.
+h = (a: Int): Array((Int, { v: Int })) => [a].zip([{ v: a + 1 }])
+# Ambient method result used as further ambient receiver.
+i = (a: Int): Int => [a].concat([a + 1]).length()
+{ f, g, h, i }
+"#,
+    );
+
+    let output = aven(&["check", entry.to_str().expect("temp path is UTF-8")]);
+
+    assert!(
+        output.status.success(),
+        "aven check failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+}
+
 #[test]
 fn std_array_combinators_run() {
     let dir = TempDir::new("std-array-run");

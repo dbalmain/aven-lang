@@ -1,0 +1,62 @@
+# Method-call arguments that are composite literals must receive the method
+# parameter type the same way plain-call arguments already do, so operators
+# inside those literals see annotated receivers (e.g. `a: Int` in `a + 1`).
+#
+# Slot-record methods exercise the same known-signature method-call path as
+# ambient Array methods; fixtures do not load the ambient std method set.
+
+ArrayBox = { data: Array(Int), merge(other: Array(Int)): Array(Int) }
+NestedBox = {
+  data: Array(Array(Int)),
+  merge(other: Array(Array(Int))): Array(Array(Int)),
+}
+RecordBox = {
+  data: Array({ v: Int }),
+  merge(other: Array({ v: Int })): Array({ v: Int }),
+}
+
+arrayBox: ArrayBox = {
+  data: [0],
+  merge(other: Array(Int)): Array(Int) => [.. .data, ..other],
+}
+nestedBox: NestedBox = {
+  data: [[0]],
+  merge(other: Array(Array(Int))): Array(Array(Int)) => [.. .data, ..other],
+}
+recordBox: RecordBox = {
+  data: [{ v: 0 }],
+  merge(other: Array({ v: Int })): Array({ v: Int }) => [.. .data, ..other],
+}
+
+plain = (ys: Array(Int)) => ys
+
+# Primary repro: array literal argument to a method.
+mergeElement = (a: Int): Array(Int) => arrayBox.merge([a + 1])
+
+# Nested array literal.
+mergeNested = (a: Int): Array(Array(Int)) => nestedBox.merge([[a + 1]])
+
+# Record literal element.
+mergeRecord = (a: Int): Array({ v: Int }) => recordBox.merge([{ v: a + 1 }])
+
+# Parenthesised operator inside the literal.
+mergeGrouped = (a: Int): Array(Int) => arrayBox.merge([(a + 1)])
+
+# Method result used as a further method receiver.
+mergeThenHas = (a: Int): Bool => arrayBox.merge([a + 1]).has(a)
+
+# Plain-call counterpart stays accepted (unchanged path).
+plainCall = (a: Int): Array(Int) => plain([a + 1])
+
+# Direct method arg (no composite literal) also stays accepted.
+hasDirect = (a: Int): Bool => [a].has(a + 1)
+
+{
+  mergeElement,
+  mergeNested,
+  mergeRecord,
+  mergeGrouped,
+  mergeThenHas,
+  plainCall,
+  hasDirect,
+}

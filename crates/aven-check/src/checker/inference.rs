@@ -1231,6 +1231,7 @@ impl<'a> Checker<'a> {
         let mut next_env = env.clone();
         let mut param_types = Vec::new();
         self.push_inline_lambda_type_var_scope();
+        self.local_types.push();
         // Defaults are trailing (per D1): the required-arity is the count of
         // leading params without a default.
         let mut required = params.len();
@@ -1248,7 +1249,7 @@ impl<'a> Checker<'a> {
                 // param's default must match the annotation (a normal `type.*`
                 // diagnostic on the default); an unannotated param infers its
                 // type from the default. The default cannot reference the param
-                // itself, so use the env without it bound.
+                // itself, so neither local environment contains it yet.
                 if param.annotation.is_some() {
                     self.check_value_against(&ty, default);
                 } else {
@@ -1258,6 +1259,8 @@ impl<'a> Checker<'a> {
             }
 
             next_env.insert(param.name.clone(), LocalValueType::Known(ty.clone()));
+            self.local_types
+                .define(&param.name, LocalValueType::Known(ty.clone()));
             param_types.push(ty);
         }
 
@@ -1276,6 +1279,7 @@ impl<'a> Checker<'a> {
             .push(PropagationContext::default());
         let body_type = self.infer(&next_env, body);
         let propagation = self.pop_propagation_context();
+        self.local_types.pop();
         self.local_comptime_params.pop();
         self.lambda_parameter_scopes.pop();
         let body_type = self.apply_propagation_context_to_body_type(body, body_type, &propagation);
@@ -2036,10 +2040,16 @@ impl<'a> Checker<'a> {
                     args.len(),
                     callee.span,
                 );
-            } else {
-                for (expected, arg) in signature.params.iter().zip(args) {
-                    self.check_call_arg_against_param(expected, arg);
+                for arg in args {
+                    self.infer(env, arg);
                 }
+            } else {
+                // Same argument path as plain calls: first infer under the
+                // active env so inference-only block locals are visible, then
+                // unify / directed-check against the known parameter types.
+                let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+                let _ =
+                    self.check_call_arg_types_against_params(args, &arg_types, &signature.params);
             }
             self.simplify_method_obligations(false);
             return Some(self.resolve_and_default(&signature.result));
