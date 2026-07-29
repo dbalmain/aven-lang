@@ -1818,28 +1818,27 @@ impl<'a> Checker<'a> {
         } else {
             callee_type
         };
-        let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
-        self.set_integer_divisor_call_types(
-            callee_obligation_start,
-            callee_obligation_end,
-            &arg_types,
-        );
 
         // When the callee already resolves to a function (e.g. a host global or
-        // a lambda with defaults), unify each supplied argument against the
-        // matching param and keep the function's own result. This admits an
-        // omitted trailing optional param, which a fixed-arity synthetic
-        // function type could not.
+        // a lambda with defaults), infer and check supplied arguments from left
+        // to right. Earlier arguments can then refine the expected type of a
+        // later lambda before its parameters are checked. Keep the function's
+        // own result so an omitted trailing optional param remains valid.
         let resolved = self.unifier.resolve(&callee_type);
         if let Type::Function {
             params,
             result,
             required,
         } = &resolved
-            && *required <= arg_types.len()
-            && arg_types.len() <= params.len()
+            && *required <= args.len()
+            && args.len() <= params.len()
         {
-            self.check_call_arg_types_against_params(args, &arg_types, params);
+            let arg_types = self.infer_call_args_against_params(
+                env,
+                args,
+                params,
+                Some((callee_obligation_start, callee_obligation_end)),
+            );
             self.simplify_method_obligations(false);
             let result = self.resolve_row_merge_call_result(result);
             if is_to_result_call(callee)
@@ -1859,6 +1858,12 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
+        self.set_integer_divisor_call_types(
+            callee_obligation_start,
+            callee_obligation_end,
+            &arg_types,
+        );
         let result_type = self.unifier.fresh();
         let expected_callee = Type::Function {
             params: arg_types,
@@ -2044,12 +2049,7 @@ impl<'a> Checker<'a> {
                     self.infer(env, arg);
                 }
             } else {
-                // Same argument path as plain calls: first infer under the
-                // active env so inference-only block locals are visible, then
-                // unify / directed-check against the known parameter types.
-                let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
-                let _ =
-                    self.check_call_arg_types_against_params(args, &arg_types, &signature.params);
+                let _ = self.infer_call_args_against_params(env, args, &signature.params, None);
             }
             self.simplify_method_obligations(false);
             return Some(self.resolve_and_default(&signature.result));
@@ -2551,6 +2551,95 @@ impl<'a> Checker<'a> {
             }
         }
         all_match
+    }
+
+    fn infer_call_args_against_params(
+        &mut self,
+        env: &TypeEnv,
+        args: &[Expr],
+        params: &[Type],
+        divisor_obligations: Option<(usize, usize)>,
+    ) -> Vec<Type> {
+        // Infer ordinary arguments before applying any parameter constraints.
+        // Besides matching the usual call path, this preserves call-site
+        // evidence attached to generic operator obligations: inferring a later
+        // name must not simplify an earlier obligation after only some params
+        // have been constrained.
+        let inferred = args
+            .iter()
+            .map(|arg| {
+                (!matches!(&ungroup_expr(arg).kind, ExprKind::Lambda { .. }))
+                    .then(|| self.infer(env, arg))
+            })
+            .collect::<Vec<_>>();
+        if let Some((start, end)) = divisor_obligations {
+            let evidence = inferred
+                .iter()
+                .map(|actual| {
+                    actual
+                        .as_ref()
+                        .map(|actual| self.snapshot_integer_divisor_call_arg_type(actual))
+                        .unwrap_or(Type::Deferred)
+                })
+                .collect::<Vec<_>>();
+            self.set_integer_divisor_call_types(start, end, &evidence);
+        }
+
+        // Directed value checking reconstructs its environment from
+        // `local_types`. Mirror the active inference environment here so block
+        // locals remain visible when a call argument is checked contextually.
+        self.local_types.push();
+        for (name, ty) in env {
+            self.local_types.define(name, ty.clone());
+        }
+
+        let mut arg_types = Vec::with_capacity(args.len());
+        for ((arg, inferred), expected) in args.iter().zip(inferred).zip(params) {
+            let expected = self.unifier.resolve(expected);
+            let contextual_lambda = match (&ungroup_expr(arg).kind, &expected) {
+                (
+                    ExprKind::Lambda {
+                        params,
+                        return_annotation,
+                        requirements,
+                        body,
+                    },
+                    Type::Function {
+                        params: expected_params,
+                        result: expected_result,
+                        ..
+                    },
+                ) => Some(self.check_lambda_against_function(
+                    arg.span,
+                    params,
+                    return_annotation.as_deref(),
+                    requirements,
+                    body,
+                    (expected_params, expected_result),
+                )),
+                _ => None,
+            };
+
+            let actual = if let Some(actual) = contextual_lambda {
+                self.record_expr_type(arg.span, &actual);
+                // Directed checking admits safe widening that unification does
+                // not, but a successful unification still needs to feed
+                // concrete callback annotations back into generic results.
+                let _ = self.unifier.unify(&actual, &expected);
+                actual
+            } else {
+                let actual = inferred.unwrap_or_else(|| self.infer(env, arg));
+                if self.unifier.unify(&actual, &expected).is_err() {
+                    let expected = self.normalize(&self.resolve_and_default(&expected));
+                    self.check_call_arg_against_param(&expected, arg);
+                }
+                actual
+            };
+            arg_types.push(actual);
+        }
+
+        self.local_types.pop();
+        arg_types
     }
 
     pub(super) fn infer_host_comptime_call(

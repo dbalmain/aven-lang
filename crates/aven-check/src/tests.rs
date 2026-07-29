@@ -4040,6 +4040,34 @@ fn value_position_generic_function_calls_instantiate_per_call() {
 }
 
 #[test]
+fn higher_order_calls_contextually_check_lambdas_after_open_seeds() {
+    let imports = generic_array_module_imports();
+    let output = parse_module(
+        "array = import(\"std/array\")\n\
+         words: Array(Text) = [\"a\", \"b\", \"a\"]\n\
+         counts: Map(Text, Int) = array.fold(words, Map([]), (acc, word) => acc.set(word, (acc.get(word) ?? 0) + 1))\n\
+         seed: Map(Text, Int) = Map([])\n\
+         indexedCounts: Map(Text, Int) = array.fold(words, seed, (acc, word) => acc.set(word, (acc[word] ?? 0) + 1))\n",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        output.diagnostics
+    );
+    let check = check_module_with_host_globals_and_imports(
+        &output.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn annotated_polymorphic_body_cannot_pin_rigid_variables() {
     // `a` is caller-chosen; the body may not return Text.
     let ident = parse_module("ident : (a) -> a\nident = (x) => \"oops\"\n");

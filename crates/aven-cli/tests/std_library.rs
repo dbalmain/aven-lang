@@ -106,6 +106,7 @@ emptyFlag = empty.isEmpty()
 head = xs.first()
 tail = xs.last()
 folded = xs.fold(zero, (acc, x) => acc + x)
+frequencies: Map(Text, Int) = ["a", "b", "a"].fold(Map([]), (acc, text) => acc.set(text, (acc.get(text) ?? 0) + 1))
 total = [1, 2, 3].sum()
 n = xs.count((x) => x > 15)
 allPos = xs.all((x) => x > 0)
@@ -130,7 +131,7 @@ users = [{name: "bob", age: 30}, {name: "alice", age: 25}, {name: "carol", age: 
 byAge = users.sortBy((u) => u.age)
 lo = xs.minimum()
 hi = xs.maximum()
-{ range, len, emptyFlag, head, tail, folded, total, n, allPos, has20, hit, miss, idx, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
+{ range, len, emptyFlag, head, tail, folded, frequencies, total, n, allPos, has20, hit, miss, idx, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
 "#,
     );
 

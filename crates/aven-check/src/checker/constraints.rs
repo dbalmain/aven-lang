@@ -229,6 +229,11 @@ impl<'a> Checker<'a> {
         }
     }
 
+    pub(super) fn snapshot_integer_divisor_call_arg_type(&mut self, ty: &Type) -> Type {
+        let resolved = self.normalize(&self.resolve_and_default(ty));
+        snapshot_integer_divisor_evidence(resolved)
+    }
+
     fn discharge_known_method_predicate(&mut self, owner: &Type, predicate: &MethodPredicate) {
         let Some(actual) = self.exact_method_signature(owner, &predicate.member) else {
             self.report_missing_method(owner, predicate);

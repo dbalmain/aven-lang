@@ -125,14 +125,16 @@ impl<'a> Checker<'a> {
                     result: expected_result,
                     ..
                 },
-            ) => self.check_lambda_against_function(
-                value.span,
-                params,
-                return_annotation.as_deref(),
-                requirements,
-                body,
-                (expected_params, expected_result),
-            ),
+            ) => {
+                self.check_lambda_against_function(
+                    value.span,
+                    params,
+                    return_annotation.as_deref(),
+                    requirements,
+                    body,
+                    (expected_params, expected_result),
+                );
+            }
             (ExprKind::Name(name) | ExprKind::ComptimeName(name), _) => {
                 let env = self.local_types.inference_env();
                 let actual = self.infer_name_reference(&env, name, value.span);
@@ -801,7 +803,7 @@ impl<'a> Checker<'a> {
         requirements: &[Requirement],
         body: &Expr,
         expected: (&[Type], &Type),
-    ) {
+    ) -> Type {
         let (expected_params, expected_result) = expected;
         if params.len() != expected_params.len() {
             // The expected type is a function-type annotation, which has no
@@ -813,7 +815,7 @@ impl<'a> Checker<'a> {
                 lambda_span,
             );
             self.check_lambda_value_expr(params, return_annotation, requirements, body);
-            return;
+            return Type::Deferred;
         }
 
         self.push_inline_lambda_type_var_scope();
@@ -852,10 +854,13 @@ impl<'a> Checker<'a> {
 
         self.local_types.push();
         self.push_local_comptime_param_scope(params);
-        for (param, ty) in params.iter().zip(param_types) {
+        for (param, ty) in params.iter().zip(&param_types) {
+            if let Some(default) = &param.default {
+                self.check_value_against(ty, default);
+            }
             self.record_inferred_type(param.name_span, ty.clone());
             self.local_types
-                .define(&param.name, LocalValueType::Known(ty));
+                .define(&param.name, LocalValueType::Known(ty.clone()));
         }
         let assumptions = self.requirement_predicates(requirements);
         let obligation_marker = self.method_obligation_marker();
@@ -886,6 +891,19 @@ impl<'a> Checker<'a> {
         self.local_comptime_params.pop();
         self.local_types.pop();
         self.pop_inline_lambda_type_var_scope();
+
+        Type::Function {
+            params: param_types,
+            result: Box::new(if return_annotation.is_some() {
+                body_expected
+            } else {
+                body_type
+            }),
+            required: params
+                .iter()
+                .position(|param| param.default.is_some())
+                .unwrap_or(params.len()),
+        }
     }
 
     /// Check array/set-literal entries against an expected collection type:
