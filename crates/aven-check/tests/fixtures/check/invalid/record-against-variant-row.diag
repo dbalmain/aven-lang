@@ -1,0 +1,21 @@
+error type.mismatch: expected `1 | 2`, found `{ a: 1 | .. }`
+  label 378..386: this value has type `{ a: 1 | .. }`
+  note: change the value to produce `1 | 2`, or change the annotation to `{ a: 1 | .. }`
+error type.mismatch: expected `1 | 2`, found `{ a: 1 | .. }`
+  label 116..124: this value has type `{ a: 1 | .. }`
+  note: change the value to produce `1 | 2`, or change the annotation to `{ a: 1 | .. }`
+error type.mismatch: expected `@Red | @Green`, found `{ a: 1 | .. }`
+  label 146..154: this value has type `{ a: 1 | .. }`
+  note: change the value to produce `@Red | @Green`, or change the annotation to `{ a: 1 | .. }`
+error type.mismatch: expected `1 | 2`, found `{ a: 1 | .. }`
+  label 178..186: this value has type `{ a: 1 | .. }`
+  note: change the value to produce `1 | 2`, or change the annotation to `{ a: 1 | .. }`
+error type.mismatch: expected `1`, found `{ a: 1 | .. }`
+  label 216..224: this value has type `{ a: 1 | .. }`
+  note: change the value to produce `1`, or change the annotation to `{ a: 1 | .. }`
+error type.mismatch: expected `1 | 2`, found `{}`
+  label 253..255: this value has type `{}`
+  note: change the value to produce `1 | 2`, or change the annotation to `{}`
+error type.mismatch: expected `1 | 2`, found `{ a: 1 | .. }`
+  label 282..290: this value has type `{ a: 1 | .. }`
+  note: change the value to produce `1 | 2`, or change the annotation to `{ a: 1 | .. }`

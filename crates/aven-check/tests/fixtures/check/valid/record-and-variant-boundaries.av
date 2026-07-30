@@ -1,0 +1,14 @@
+RecordType = { a: Int }
+Color = @Red | @Green
+Outcome = @Ok(Int) | @Err(Text)
+RecordOutcome = @RecordOk({ a: Int }) | @RecordErr(Text)
+
+exactRecord: RecordType = { a: 1 }
+red: Color = @Red
+ok: Outcome = @Ok(1)
+recordOk: RecordOutcome = @RecordOk({ a: 1 })
+
+wideRecord = { a: 1, b: 2 }
+narrowBoundary: RecordType = wideRecord
+takeRecord = (value: RecordType): Int => value.a
+wideArgument = takeRecord(wideRecord)

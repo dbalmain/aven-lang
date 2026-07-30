@@ -1,0 +1,14 @@
+LiteralUnion = 1 | 2
+TagUnion = @Red | @Green
+BracedSet = @{1, 2}
+SingletonSet = @{1}
+
+literalUnion: LiteralUnion = { a: 1 }
+tagUnion: TagUnion = { a: 1 }
+bracedSet: BracedSet = { a: 1 }
+singletonSet: SingletonSet = { a: 1 }
+emptyRecord: LiteralUnion = {}
+inlineAnnotation: 1 | 2 = { a: 1 }
+
+acceptUnion = (value: LiteralUnion): LiteralUnion => value
+callArgument = acceptUnion({ a: 1 })

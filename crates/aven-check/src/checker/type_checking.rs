@@ -1177,6 +1177,9 @@ impl<'a> Checker<'a> {
             (Type::Named(expected), Type::Variant(actual)) => {
                 self.check_variant_type_against_named(expected, actual, span);
             }
+            (expected @ Type::Variant(_), actual @ Type::Record(_)) => {
+                self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
+            }
             (
                 expected @ (Type::Record(_) | Type::Tuple(_) | Type::Function { .. }),
                 Type::Variant(actual),
