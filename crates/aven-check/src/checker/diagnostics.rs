@@ -231,12 +231,32 @@ impl<'a> Checker<'a> {
         );
     }
 
-    pub(super) fn report_comptime_evaluation_unsupported(&mut self, span: Span) {
+    pub(super) fn report_comptime_evaluation_unsupported(&mut self, value: &Expr) {
+        let is_union = match &ungroup_expr(value).kind {
+            ExprKind::Set(_) => true,
+            ExprKind::Binary { operator, .. } => operator == "|",
+            _ => false,
+        };
+        if is_union {
+            self.diagnostics.push(
+                Diagnostic::error("union members must be tags or literals with one base kind")
+                    .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
+                    .with_label(Label::primary(
+                        value.span,
+                        "these members do not share a supported union kind",
+                    ))
+                    .with_note(
+                        "use literal values from one base kind, or wrap heterogeneous alternatives in distinct variant tags",
+                    ),
+            );
+            return;
+        }
+
         self.diagnostics.push(
             Diagnostic::error("this comptime binding's value cannot be evaluated at compile time")
                 .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
                 .with_label(Label::primary(
-                    span,
+                    value.span,
                     "this comptime binding needs evaluation",
                 ))
                 .with_note(

@@ -737,6 +737,7 @@ fn comptime_rhs_evaluation_check_is_shallow_and_group_unwrapped() {
         "Value =\n  temp = base\n  temp\n",
         "Value = (item) => item\n",
         "Value = (make())\n",
+        "Value = @{@Red, @Green}\n",
     ] {
         let value = binding_value(source);
         assert!(
@@ -751,7 +752,6 @@ fn comptime_rhs_evaluation_check_is_shallow_and_group_unwrapped() {
         "Value = runtimeValue\n",
         "Value = User\n",
         "Value = { name: Text }\n",
-        "Value = @{@Red, @Green}\n",
         "Value = [1, 2]\n",
         "Value = (Int, Text)\n",
         "Value = Text -> Text\n",
@@ -877,6 +877,44 @@ fn comptime_pipe_unions_lower_to_the_same_types_as_set_literals() {
         };
         assert_eq!(pipe_type, set_type);
         assert_ne!(pipe_type, &Type::Deferred);
+    }
+}
+
+#[test]
+fn comptime_pipe_unions_reject_the_same_deferred_types_as_set_literals() {
+    for source in ["T = Int | Text\n", "T = @{Int, Text}\n"] {
+        let output = parse_module(source);
+        let known_types = known_type_names(&output.module);
+        let definitions = type_definitions(&output.module, &known_types);
+        let check = check_module(&output.module);
+
+        assert_eq!(definitions.get("T"), Some(&Type::Deferred), "{source:?}");
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+            1,
+            "{source:?}: {:?}",
+            check.diagnostics
+        );
+        assert_eq!(
+            check.diagnostics[0].message,
+            "union members must be tags or literals with one base kind",
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
+fn deferred_braced_union_binding_does_not_accept_arbitrary_values() {
+    for value in ["5", "true", "{ a: 1 }"] {
+        let output = parse_module(&format!("T = @{{Int, Text}}\nx: T = {value}\n"));
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+            1,
+            "{value:?}: {:?}",
+            check.diagnostics
+        );
     }
 }
 

@@ -1810,7 +1810,8 @@ pub(crate) fn comptime_rhs_needs_evaluation(value: &Expr) -> bool {
         | ExprKind::Match { .. }
         | ExprKind::Block(_)
         | ExprKind::Lambda { .. }
-        | ExprKind::Interpolation(_) => true,
+        | ExprKind::Interpolation(_)
+        | ExprKind::Set(_) => true,
         _ => false,
     }
 }

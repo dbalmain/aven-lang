@@ -1,0 +1,5 @@
+T = @{Int, Text}
+
+integer : T = 5
+boolean : T = true
+record : T = { a: 1 }

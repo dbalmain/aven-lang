@@ -1826,7 +1826,7 @@ impl<'a> Checker<'a> {
 
         let lowering = self.lower_annotation_with_diagnostics(value);
         if lowering.diagnostics.is_empty() {
-            self.report_comptime_evaluation_unsupported(value.span);
+            self.report_comptime_evaluation_unsupported(value);
         }
     }
 

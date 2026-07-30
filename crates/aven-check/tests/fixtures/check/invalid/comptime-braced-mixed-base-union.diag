@@ -1,0 +1,3 @@
+error comptime.evaluation-unsupported: union members must be tags or literals with one base kind
+  label 4..16: these members do not share a supported union kind
+  note: use literal values from one base kind, or wrap heterogeneous alternatives in distinct variant tags
