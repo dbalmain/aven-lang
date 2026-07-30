@@ -800,6 +800,9 @@ where
             | ExprKind::Tuple(_)
             | ExprKind::Record(_)
             | ExprKind::Set(_) => self.evaluate_type_term(expr, env),
+            ExprKind::Binary { operator, .. } if operator == "|" => {
+                self.evaluate_union_type_term(expr, env)
+            }
             ExprKind::Literal(Literal::Bool(value)) => {
                 EvaluationResult::evaluated(ComptimeValue::Bool(*value))
             }
@@ -1234,6 +1237,19 @@ where
     }
 
     fn evaluate_type_term(&mut self, expr: &Expr, env: &Environment) -> EvaluationResult {
+        self.evaluate_type_term_with_options(expr, env, false)
+    }
+
+    fn evaluate_union_type_term(&mut self, expr: &Expr, env: &Environment) -> EvaluationResult {
+        self.evaluate_type_term_with_options(expr, env, true)
+    }
+
+    fn evaluate_type_term_with_options(
+        &mut self,
+        expr: &Expr,
+        env: &Environment,
+        unsupported_if_deferred: bool,
+    ) -> EvaluationResult {
         let lowering = self.context.lower_comptime_type(
             expr,
             env.bindings(),
@@ -1242,6 +1258,12 @@ where
         );
         if !lowering.diagnostics.is_empty() {
             return EvaluationResult::deferred_with_diagnostics(lowering.diagnostics);
+        }
+
+        // A union with no row representation (for example, an untagged
+        // `Int | Text`) must not become an accepted type hole.
+        if unsupported_if_deferred && lowering.ty == Type::Deferred {
+            return EvaluationResult::unsupported();
         }
 
         if !self.allow_unresolved_type_terms

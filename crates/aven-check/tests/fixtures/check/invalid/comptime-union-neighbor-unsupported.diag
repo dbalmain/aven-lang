@@ -1,0 +1,3 @@
+error comptime.evaluation-unsupported: this comptime binding's value cannot be evaluated at compile time
+  label 62..70: this comptime binding needs evaluation
+  note: comptime bindings support literal types and values, type expressions, and calls to comptime type functions (keysOf, pick, omit, typeOf, or user-defined mapped types such as partial); move other computation to a lowercase runtime binding

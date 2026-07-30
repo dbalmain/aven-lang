@@ -1,0 +1,29 @@
+Color = @Red | @Green | @Blue
+ColorSet = @{@Red, @Green, @Blue}
+
+color : Color = @Red
+colorSet : ColorSet = color
+sameColor : Color = colorSet
+
+Outcome = @Ok(Int) | @Err(Text)
+
+ok : Outcome = @Ok(1)
+err : Outcome = @Err("no")
+
+Numbers = 1 | 2
+NumberSet = @{1, 2}
+
+number : Numbers = 1
+numberSet : NumberSet = number
+sameNumber : Numbers = numberSet
+
+Modes = "a" | "b"
+ModeSet = @{"a", "b"}
+
+mode : Modes = "a"
+modeSet : ModeSet = mode
+sameMode : Modes = modeSet
+
+Parenthesized = (@Open | @Closed)
+
+parenthesized : Parenthesized = @Open

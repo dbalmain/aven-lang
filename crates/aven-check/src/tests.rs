@@ -846,6 +846,41 @@ fn comptime_tagsof_variant_reifies_sorted_literal_union() {
 }
 
 #[test]
+fn comptime_pipe_unions_lower_to_the_same_types_as_set_literals() {
+    let output = parse_module(
+        "Color = @Red | @Green | @Blue\n\
+         ColorSet = @{@Red, @Green, @Blue}\n\
+         Outcome = @Ok(Int) | @Err(Text)\n\
+         OutcomeSet = @{@Ok(Int), @Err(Text)}\n\
+         Numbers = 1 | 2\n\
+         NumberSet = @{1, 2}\n\
+         Modes = \"a\" | \"b\"\n\
+         ModeSet = @{\"a\", \"b\"}\n\
+         Parenthesized = (@Open | @Closed)\n\
+         ParenthesizedSet = @{@Open, @Closed}\n",
+    );
+    let known_types = known_type_names(&output.module);
+    let definitions = type_definitions(&output.module, &known_types);
+
+    for (pipe, set) in [
+        ("Color", "ColorSet"),
+        ("Outcome", "OutcomeSet"),
+        ("Numbers", "NumberSet"),
+        ("Modes", "ModeSet"),
+        ("Parenthesized", "ParenthesizedSet"),
+    ] {
+        let Some(pipe_type) = definitions.get(pipe) else {
+            panic!("expected a type definition for {pipe}");
+        };
+        let Some(set_type) = definitions.get(set) else {
+            panic!("expected a type definition for {set}");
+        };
+        assert_eq!(pipe_type, set_type);
+        assert_ne!(pipe_type, &Type::Deferred);
+    }
+}
+
+#[test]
 fn comptime_param_call_infers_reflection_domain_for_runtime_binding() {
     // A comptime `@param` whose domain reflects on a runtime parameter's type
     // (`tagsOf(v)`) infers a concrete literal-union type for the runtime

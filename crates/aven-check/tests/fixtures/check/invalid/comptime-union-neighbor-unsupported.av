@@ -1,0 +1,5 @@
+Allowed = 1 | 2
+allowed : Allowed = 1
+
+base = 1
+Unsupported = base + 1
