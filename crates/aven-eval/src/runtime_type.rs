@@ -151,6 +151,13 @@ impl RuntimeType {
         self.wrap(RuntimeTypeDescriptor::Nullable)
     }
 
+    /// Build a type application while preserving its recursive-type graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when two inputs carry different non-empty graphs. Graph
+    /// node IDs are artifact-local, so combining those graphs would require
+    /// remapping every recursive reference rather than simply joining the maps.
     pub fn apply(callee: Self, args: Vec<Self>) -> Result<Self, String> {
         let graph = common_runtime_type_graph(std::iter::once(&callee).chain(args.iter()))?;
         Ok(Self::with_graph(
@@ -162,6 +169,13 @@ impl RuntimeType {
         ))
     }
 
+    /// Build a record type while preserving its recursive-type graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when two fields carry different non-empty graphs. Graph
+    /// node IDs are artifact-local, so the graphs cannot be safely merged
+    /// without remapping their recursive references.
     pub fn record(fields: Vec<(String, Self)>) -> Result<Self, String> {
         let graph = common_runtime_type_graph(fields.iter().map(|(_, ty)| ty))?;
         Ok(Self::with_graph(
@@ -195,6 +209,12 @@ impl RuntimeType {
 fn common_runtime_type_graph<'a>(
     types: impl IntoIterator<Item = &'a RuntimeType>,
 ) -> Result<Rc<RuntimeTypeGraph>, String> {
+    // Checked reification gives every recursive type in one artifact the same
+    // graph, while types assembled directly from builtins carry an empty graph.
+    // Consequently normal source evaluation cannot reach the mismatch below.
+    // The guard protects the public Rust construction API (and future
+    // cross-artifact composition), where identical numeric IDs from independent
+    // graphs need not identify the same recursive type.
     let mut graph: Option<Rc<RuntimeTypeGraph>> = None;
     for ty in types {
         if ty.graph.is_empty() {
