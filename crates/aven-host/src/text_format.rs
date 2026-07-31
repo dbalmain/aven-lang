@@ -175,28 +175,19 @@ fn decode_at(
     path: &FormatPath,
     format_name: &str,
 ) -> Result<Value, DecodeError> {
-    match target {
-        Value::Type(RuntimeType::Named(name)) => decode_named(value, name, path, format_name),
-        Value::Type(RuntimeType::Optional(inner)) => decode_at(value, inner, path, format_name),
-        Value::Type(RuntimeType::Nullable(inner)) => {
-            if matches!(value, FormatValue::Null) {
-                Ok(Value::Null)
-            } else {
-                decode_at(value, inner, path, format_name)
-            }
-        }
-        Value::Type(RuntimeType::Array(inner)) => decode_array(value, inner, path, format_name),
-        Value::Type(RuntimeType::Recursive(reference)) => {
-            decode_recursive_at(value, reference.id, &reference.graph, path, format_name)
-        }
-        Value::Record(fields) if runtime_type_target(target) => {
-            decode_record(value, fields, path, format_name)
-        }
-        other => Err(DecodeError::InvalidTarget(format!(
+    let target = RuntimeType::from_value(target).map_err(|_| {
+        DecodeError::InvalidTarget(format!(
             "{format_name}.decode target must be a type value or record of type values, got {}",
-            aven_value_type_name(other)
-        ))),
-    }
+            aven_value_type_name(target)
+        ))
+    })?;
+    decode_descriptor_at(
+        value,
+        target.descriptor(),
+        target.graph(),
+        path,
+        format_name,
+    )
 }
 
 fn decode_recursive_at(
@@ -233,8 +224,26 @@ fn decode_descriptor_at(
                 decode_descriptor_at(value, inner, graph, path, format_name)
             }
         }
-        RuntimeTypeDescriptor::Array(inner) => {
-            decode_descriptor_array(value, inner, graph, path, format_name)
+        RuntimeTypeDescriptor::Apply { callee, args }
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if name == "Array")
+                && args.len() == 1 =>
+        {
+            decode_descriptor_array(value, &args[0], graph, path, format_name, false)
+        }
+        RuntimeTypeDescriptor::Apply { callee, args }
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if name == "Set")
+                && args.len() == 1 =>
+        {
+            decode_descriptor_array(value, &args[0], graph, path, format_name, true)
+        }
+        RuntimeTypeDescriptor::Apply { callee, args }
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if name == "Map")
+                && args.len() == 2 =>
+        {
+            decode_descriptor_map(value, &args[0], &args[1], graph, path, format_name)
+        }
+        RuntimeTypeDescriptor::Tuple(items) => {
+            decode_descriptor_tuple(value, items, graph, path, format_name)
         }
         RuntimeTypeDescriptor::Record(fields) => {
             decode_descriptor_record(value, fields, graph, path, format_name)
@@ -242,10 +251,10 @@ fn decode_descriptor_at(
         RuntimeTypeDescriptor::Recursive { id, .. } => {
             decode_recursive_at(value, *id, graph, path, format_name)
         }
-        RuntimeTypeDescriptor::Map(_, _)
-        | RuntimeTypeDescriptor::Tuple(_)
-        | RuntimeTypeDescriptor::Variant(_)
-        | RuntimeTypeDescriptor::Unsupported(_) => Err(DecodeError::InvalidTarget(format!(
+        RuntimeTypeDescriptor::Apply { .. }
+        | RuntimeTypeDescriptor::Function { .. }
+        | RuntimeTypeDescriptor::SlotRecord { .. }
+        | RuntimeTypeDescriptor::Variant(_) => Err(DecodeError::InvalidTarget(format!(
             "{format_name}.decode cannot decode target type {target}"
         ))),
     }
@@ -442,46 +451,6 @@ fn deprecated_dynamic_target_name(ty: &Type) -> Option<&str> {
     }
 }
 
-fn decode_record(
-    value: &FormatValue,
-    fields: &[(String, Value)],
-    path: &FormatPath,
-    format_name: &str,
-) -> Result<Value, DecodeError> {
-    let FormatValue::Object(object) = value else {
-        return Err(shape_error(path, "Record", value));
-    };
-
-    let mut output = Vec::with_capacity(fields.len());
-    for (name, target) in fields {
-        if !runtime_type_target(target) {
-            return Err(DecodeError::InvalidTarget(format!(
-                "{format_name}.decode target field `{name}` must be a type value, got {}",
-                aven_value_type_name(target)
-            )));
-        }
-
-        let field_path = path.field(name);
-        let field = match object
-            .iter()
-            .find_map(|(field_name, field_value)| (field_name == name).then_some(field_value))
-        {
-            Some(field_value) => decode_at(field_value, target, &field_path, format_name)?,
-            None if target_is_optional(target) => Value::Undefined,
-            None => {
-                return Err(DecodeError::Shape(ShapeError {
-                    path: field_path.0,
-                    expected: target_display(target),
-                    found: "Undefined".to_owned(),
-                }));
-            }
-        };
-        output.push((name.clone(), field));
-    }
-
-    Ok(Value::record(output))
-}
-
 fn decode_descriptor_record(
     value: &FormatValue,
     fields: &[(String, RuntimeTypeDescriptor)],
@@ -524,39 +493,21 @@ fn decode_descriptor_record(
     Ok(Value::record(output))
 }
 
-fn decode_array(
-    value: &FormatValue,
-    target: &Value,
-    path: &FormatPath,
-    format_name: &str,
-) -> Result<Value, DecodeError> {
-    let FormatValue::Array(items) = value else {
-        return Err(shape_error(path, &target_display_array(target), value));
-    };
-    if !runtime_type_target(target) {
-        return Err(DecodeError::InvalidTarget(format!(
-            "{format_name}.decode Array target must be a type value, got {}",
-            aven_value_type_name(target)
-        )));
-    }
-
-    let mut output = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
-        output.push(decode_at(item, target, &path.index(index), format_name)?);
-    }
-
-    Ok(Value::Array(Rc::new(output)))
-}
-
 fn decode_descriptor_array(
     value: &FormatValue,
     target: &RuntimeTypeDescriptor,
     graph: &RuntimeTypeGraph,
     path: &FormatPath,
     format_name: &str,
+    set: bool,
 ) -> Result<Value, DecodeError> {
     let FormatValue::Array(items) = value else {
-        return Err(shape_error(path, &format!("Array({target})"), value));
+        let constructor = if set { "Set" } else { "Array" };
+        return Err(shape_error(
+            path,
+            &format!("{constructor}({target})"),
+            value,
+        ));
     };
     if !runtime_descriptor_target(target, graph) {
         return Err(DecodeError::InvalidTarget(format!(
@@ -575,7 +526,90 @@ fn decode_descriptor_array(
         )?);
     }
 
-    Ok(Value::Array(Rc::new(output)))
+    if set {
+        let mut unique = Vec::with_capacity(output.len());
+        for value in output {
+            if !unique.contains(&value) {
+                unique.push(value);
+            }
+        }
+        Ok(Value::Set(Rc::new(unique)))
+    } else {
+        Ok(Value::Array(Rc::new(output)))
+    }
+}
+
+fn decode_descriptor_tuple(
+    value: &FormatValue,
+    targets: &[RuntimeTypeDescriptor],
+    graph: &RuntimeTypeGraph,
+    path: &FormatPath,
+    format_name: &str,
+) -> Result<Value, DecodeError> {
+    let FormatValue::Array(items) = value else {
+        return Err(shape_error(path, "Tuple", value));
+    };
+    if !targets
+        .iter()
+        .all(|target| runtime_descriptor_target(target, graph))
+    {
+        return Err(DecodeError::InvalidTarget(format!(
+            "{format_name}.decode Tuple target contains a non-decodable type"
+        )));
+    }
+    if items.len() != targets.len() {
+        return Err(DecodeError::Shape(ShapeError {
+            path: path.0.clone(),
+            expected: format!("Tuple with {} items", targets.len()),
+            found: format!("Array with {} items", items.len()),
+        }));
+    }
+    items
+        .iter()
+        .zip(targets)
+        .enumerate()
+        .map(|(index, (item, target))| {
+            decode_descriptor_at(item, target, graph, &path.index(index), format_name)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|values| Value::Tuple(Rc::new(values)))
+}
+
+fn decode_descriptor_map(
+    value: &FormatValue,
+    key_target: &RuntimeTypeDescriptor,
+    value_target: &RuntimeTypeDescriptor,
+    graph: &RuntimeTypeGraph,
+    path: &FormatPath,
+    format_name: &str,
+) -> Result<Value, DecodeError> {
+    let FormatValue::Object(object) = value else {
+        return Err(shape_error(path, "Map", value));
+    };
+    if !runtime_descriptor_target(key_target, graph)
+        || !runtime_descriptor_target(value_target, graph)
+    {
+        return Err(DecodeError::InvalidTarget(format!(
+            "{format_name}.decode Map target contains a non-decodable type"
+        )));
+    }
+    object
+        .iter()
+        .map(|(key, value)| {
+            let entry_path = path.field(key);
+            Ok((
+                decode_descriptor_at(
+                    &FormatValue::Text(key.clone()),
+                    key_target,
+                    graph,
+                    &entry_path,
+                    format_name,
+                )?,
+                decode_descriptor_at(value, value_target, graph, &entry_path, format_name)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, DecodeError>>()
+        .map(|entries| Value::Map(Rc::new(entries)))
 }
 
 fn descriptor_is_optional(target: &RuntimeTypeDescriptor, graph: &RuntimeTypeGraph) -> bool {
@@ -607,11 +641,25 @@ fn runtime_descriptor_target_inner(
 ) -> bool {
     match target {
         RuntimeTypeDescriptor::Named(_) => true,
-        RuntimeTypeDescriptor::Optional(inner)
-        | RuntimeTypeDescriptor::Nullable(inner)
-        | RuntimeTypeDescriptor::Array(inner) => {
+        RuntimeTypeDescriptor::Optional(inner) | RuntimeTypeDescriptor::Nullable(inner) => {
             runtime_descriptor_target_inner(inner, graph, visited)
         }
+        RuntimeTypeDescriptor::Apply { callee, args }
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if matches!(name.as_str(), "Array" | "Set"))
+                && args.len() == 1 =>
+        {
+            runtime_descriptor_target_inner(&args[0], graph, visited)
+        }
+        RuntimeTypeDescriptor::Apply { callee, args }
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if name == "Map")
+                && args.len() == 2 =>
+        {
+            args.iter()
+                .all(|arg| runtime_descriptor_target_inner(arg, graph, visited))
+        }
+        RuntimeTypeDescriptor::Tuple(items) => items
+            .iter()
+            .all(|item| runtime_descriptor_target_inner(item, graph, visited)),
         RuntimeTypeDescriptor::Record(fields) => fields
             .iter()
             .all(|(_, field)| runtime_descriptor_target_inner(field, graph, visited)),
@@ -619,40 +667,11 @@ fn runtime_descriptor_target_inner(
             .unfolding(*id)
             .is_some_and(|head| runtime_descriptor_target_inner(head, graph, visited)),
         RuntimeTypeDescriptor::Recursive { .. } => true,
-        RuntimeTypeDescriptor::Map(_, _)
-        | RuntimeTypeDescriptor::Tuple(_)
-        | RuntimeTypeDescriptor::Variant(_)
-        | RuntimeTypeDescriptor::Unsupported(_) => false,
+        RuntimeTypeDescriptor::Apply { .. }
+        | RuntimeTypeDescriptor::Function { .. }
+        | RuntimeTypeDescriptor::SlotRecord { .. }
+        | RuntimeTypeDescriptor::Variant(_) => false,
     }
-}
-
-fn target_is_optional(target: &Value) -> bool {
-    match target {
-        Value::Type(RuntimeType::Optional(_)) => true,
-        Value::Type(RuntimeType::Recursive(reference)) => reference
-            .graph
-            .unfolding(reference.id)
-            .is_some_and(|head| descriptor_is_optional(head, &reference.graph)),
-        _ => false,
-    }
-}
-
-fn runtime_type_target(value: &Value) -> bool {
-    match value {
-        Value::Type(_) => true,
-        Value::Record(fields) => fields
-            .iter()
-            .all(|(_, field_value)| runtime_type_target(field_value)),
-        _ => false,
-    }
-}
-
-fn target_display(target: &Value) -> String {
-    target.to_string()
-}
-
-fn target_display_array(target: &Value) -> String {
-    format!("Array({})", target_display(target))
 }
 
 fn shape_error(path: &FormatPath, expected: &str, found: &FormatValue) -> DecodeError {
@@ -748,6 +767,46 @@ mod tests {
     }
 
     #[test]
+    fn canonical_compound_descriptors_decode_without_value_shape_walkers() {
+        let named = |name: &str| RuntimeTypeDescriptor::Named(name.to_owned());
+        let apply = |name: &str, args| RuntimeTypeDescriptor::Apply {
+            callee: Box::new(named(name)),
+            args,
+        };
+        let target = Value::Type(RuntimeType::new(RuntimeTypeDescriptor::Tuple(vec![
+            apply("Set", vec![named("Text")]),
+            apply("Map", vec![named("Text"), named("Int")]),
+        ])));
+        let value = FormatValue::Array(vec![
+            FormatValue::Array(vec![
+                FormatValue::Text("a".to_owned()),
+                FormatValue::Text("a".to_owned()),
+            ]),
+            FormatValue::Object(vec![(
+                "answer".to_owned(),
+                FormatValue::Number(FormatNumber::Int(Int::from(42))),
+            )]),
+        ]);
+
+        let decoded = match decode_value(&value, &target, "Json") {
+            Ok(decoded) => decoded,
+            Err(DecodeError::Shape(error)) => panic!("unexpected shape error: {error:?}"),
+            Err(DecodeError::InvalidTarget(message)) => panic!("{message}"),
+        };
+
+        assert_eq!(
+            decoded,
+            Value::Tuple(Rc::new(vec![
+                Value::Set(Rc::new(vec![Value::Text("a".to_owned())])),
+                Value::Map(Rc::new(vec![(
+                    Value::Text("answer".to_owned()),
+                    Value::int(42),
+                )])),
+            ]))
+        );
+    }
+
+    #[test]
     fn recursive_descriptor_decodes_one_hundred_finite_levels() {
         let id = RuntimeTypeId(0);
         let graph = Rc::new(RuntimeTypeGraph::new([(
@@ -759,10 +818,13 @@ mod tests {
                 ),
                 (
                     "children".to_owned(),
-                    RuntimeTypeDescriptor::Array(Box::new(RuntimeTypeDescriptor::Recursive {
-                        id,
-                        name: "Tree".to_owned(),
-                    })),
+                    RuntimeTypeDescriptor::Apply {
+                        callee: Box::new(RuntimeTypeDescriptor::Named("Array".to_owned())),
+                        args: vec![RuntimeTypeDescriptor::Recursive {
+                            id,
+                            name: "Tree".to_owned(),
+                        }],
+                    },
                 ),
             ]),
         )]));

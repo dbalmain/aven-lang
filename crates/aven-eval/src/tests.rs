@@ -1203,10 +1203,13 @@ fn map_type_application_yields_composite_type_value() {
     // record index of the (type-valued) `Map`.
     assert_module_value(
         "Map(Text, Int)\n",
-        Value::Type(RuntimeType::Map(
-            Box::new(Value::named_type("Text")),
-            Box::new(Value::named_type("Int")),
-        )),
+        Value::Type(
+            RuntimeType::apply(
+                RuntimeType::named("Map"),
+                vec![RuntimeType::named("Text"), RuntimeType::named("Int")],
+            )
+            .expect("builtin type arguments share an empty graph"),
+        ),
     );
 }
 
@@ -2663,22 +2666,27 @@ fn type_values_compare_by_name() {
 fn composite_type_expressions_evaluate_to_type_values() {
     assert_module_value(
         "?Text\n",
-        Value::Type(super::RuntimeType::Optional(Box::new(Value::named_type(
-            "Text",
-        )))),
+        Value::Type(super::RuntimeType::named("Text").optional()),
     );
     assert_module_value(
         "Text?\n",
-        Value::Type(super::RuntimeType::Nullable(Box::new(Value::named_type(
-            "Text",
-        )))),
+        Value::Type(super::RuntimeType::named("Text").nullable()),
     );
     assert_module_value(
         "Array({ name: Text })\n",
-        Value::Type(super::RuntimeType::Array(Box::new(record_value(vec![(
-            "name",
-            Value::named_type("Text"),
-        )])))),
+        Value::Type(
+            super::RuntimeType::apply(
+                super::RuntimeType::named("Array"),
+                vec![
+                    super::RuntimeType::record(vec![(
+                        "name".to_owned(),
+                        super::RuntimeType::named("Text"),
+                    )])
+                    .expect("record fields share an empty graph"),
+                ],
+            )
+            .expect("builtin type arguments share an empty graph"),
+        ),
     );
 }
 

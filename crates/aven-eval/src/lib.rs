@@ -272,7 +272,7 @@ struct ClosureParam {
 ///
 /// The checker-to-runtime adapter assigns these compact keys while copying a
 /// checked unfolding table. They are meaningful only together with the
-/// [`RuntimeTypeGraph`] carried by a [`RuntimeTypeReference`].
+/// [`RuntimeTypeGraph`] carried by a [`RuntimeType`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RuntimeTypeId(pub u32);
 
@@ -284,15 +284,28 @@ pub struct RuntimeTypeId(pub u32);
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeTypeDescriptor {
     Named(String),
+    Apply {
+        callee: Box<Self>,
+        args: Vec<Self>,
+    },
+    Function {
+        params: Vec<Self>,
+        result: Box<Self>,
+        required: usize,
+    },
     Optional(Box<Self>),
     Nullable(Box<Self>),
-    Array(Box<Self>),
-    Map(Box<Self>, Box<Self>),
     Tuple(Vec<Self>),
     Record(Vec<(String, Self)>),
+    SlotRecord {
+        data: Vec<(String, Self)>,
+        slots: Vec<(String, Self)>,
+    },
     Variant(Vec<RuntimeVariantDescriptor>),
-    Recursive { id: RuntimeTypeId, name: String },
-    Unsupported(String),
+    Recursive {
+        id: RuntimeTypeId,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -301,7 +314,7 @@ pub enum RuntimeVariantDescriptor {
         name: String,
         payload: Vec<RuntimeTypeDescriptor>,
     },
-    Literal(String),
+    Literal(Literal),
 }
 
 /// Shared one-level heads for a finite recursive descriptor graph.
@@ -332,28 +345,140 @@ impl RuntimeTypeGraph {
     }
 }
 
-/// A keyed recursive descriptor plus the finite graph that resolves it.
-/// Cloning this artifact clones only two strings/words and an [`Rc`].
+/// The canonical runtime representation of a reified type.
+///
+/// Every shape, including non-recursive compound types, uses the same
+/// descriptor tree. Recursive nodes resolve through the finite graph shared by
+/// the root. Keeping the graph out of child nodes makes recursive values finite
+/// without maintaining a second, graph-less `Value` representation.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RuntimeTypeReference {
-    pub id: RuntimeTypeId,
-    pub name: Rc<str>,
-    pub graph: Rc<RuntimeTypeGraph>,
+pub struct RuntimeType {
+    descriptor: RuntimeTypeDescriptor,
+    graph: Rc<RuntimeTypeGraph>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum RuntimeType {
-    Named(String),
-    Optional(Box<Value>),
-    Nullable(Box<Value>),
-    Array(Box<Value>),
-    Map(Box<Value>, Box<Value>),
-    Recursive(RuntimeTypeReference),
+impl RuntimeType {
+    pub fn new(descriptor: RuntimeTypeDescriptor) -> Self {
+        Self::with_graph(descriptor, Rc::new(RuntimeTypeGraph::default()))
+    }
+
+    pub fn with_graph(descriptor: RuntimeTypeDescriptor, graph: Rc<RuntimeTypeGraph>) -> Self {
+        Self { descriptor, graph }
+    }
+
+    pub fn named(name: impl Into<String>) -> Self {
+        Self::new(RuntimeTypeDescriptor::Named(name.into()))
+    }
+
+    pub fn recursive(
+        id: RuntimeTypeId,
+        name: impl Into<String>,
+        graph: Rc<RuntimeTypeGraph>,
+    ) -> Self {
+        Self::with_graph(
+            RuntimeTypeDescriptor::Recursive {
+                id,
+                name: name.into(),
+            },
+            graph,
+        )
+    }
+
+    pub fn descriptor(&self) -> &RuntimeTypeDescriptor {
+        &self.descriptor
+    }
+
+    pub fn graph(&self) -> &RuntimeTypeGraph {
+        &self.graph
+    }
+
+    pub fn named_name(&self) -> Option<&str> {
+        match &self.descriptor {
+            RuntimeTypeDescriptor::Named(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    pub fn with_descriptor(&self, descriptor: RuntimeTypeDescriptor) -> Self {
+        Self::with_graph(descriptor, Rc::clone(&self.graph))
+    }
+
+    fn wrap(self, wrap: impl FnOnce(Box<RuntimeTypeDescriptor>) -> RuntimeTypeDescriptor) -> Self {
+        Self::with_graph(wrap(Box::new(self.descriptor)), self.graph)
+    }
+
+    pub fn optional(self) -> Self {
+        self.wrap(RuntimeTypeDescriptor::Optional)
+    }
+
+    pub fn nullable(self) -> Self {
+        self.wrap(RuntimeTypeDescriptor::Nullable)
+    }
+
+    pub fn apply(callee: Self, args: Vec<Self>) -> Result<Self, String> {
+        let graph = common_runtime_type_graph(std::iter::once(&callee).chain(args.iter()))?;
+        Ok(Self::with_graph(
+            RuntimeTypeDescriptor::Apply {
+                callee: Box::new(callee.descriptor),
+                args: args.into_iter().map(|arg| arg.descriptor).collect(),
+            },
+            graph,
+        ))
+    }
+
+    pub fn record(fields: Vec<(String, Self)>) -> Result<Self, String> {
+        let graph = common_runtime_type_graph(fields.iter().map(|(_, ty)| ty))?;
+        Ok(Self::with_graph(
+            RuntimeTypeDescriptor::Record(
+                fields
+                    .into_iter()
+                    .map(|(name, ty)| (name, ty.descriptor))
+                    .collect(),
+            ),
+            graph,
+        ))
+    }
+
+    /// Canonicalize an evaluator value used in type position. Record-shaped
+    /// source expressions are accepted for compatibility, but consumers only
+    /// receive the descriptor representation.
+    pub fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Type(ty) => Ok(ty.clone()),
+            Value::Record(fields) | Value::NamedRecord { fields, .. } => Self::record(
+                fields
+                    .iter()
+                    .map(|(name, field)| Ok((name.clone(), Self::from_value(field)?)))
+                    .collect::<Result<_, String>>()?,
+            ),
+            _ => Err(format!("expected Type, got {}", value.type_name())),
+        }
+    }
 }
 
-/// Checked runtime type bindings which replace evaluation of their source
-/// type expressions. This is necessary for recursive bindings: evaluating the
-/// source expression eagerly would try to build an infinite boxed value.
+fn common_runtime_type_graph<'a>(
+    types: impl IntoIterator<Item = &'a RuntimeType>,
+) -> Result<Rc<RuntimeTypeGraph>, String> {
+    let mut graph: Option<Rc<RuntimeTypeGraph>> = None;
+    for ty in types {
+        if ty.graph.is_empty() {
+            continue;
+        }
+        match &graph {
+            None => graph = Some(Rc::clone(&ty.graph)),
+            Some(current) if current.as_ref() == ty.graph.as_ref() => {}
+            Some(_) => {
+                return Err("cannot combine runtime types from different recursive graphs".into());
+            }
+        }
+    }
+    Ok(graph.unwrap_or_else(|| Rc::new(RuntimeTypeGraph::default())))
+}
+
+/// Checked runtime type bindings which replace evaluation of reifiable source
+/// type expressions with their canonical descriptor-backed values. This is
+/// essential for recursive bindings, whose source expressions cannot be
+/// evaluated eagerly without trying to build an infinite value.
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeTypeBindings {
     values: HashMap<String, Value>,
@@ -530,7 +655,7 @@ pub enum ResultMethod {
 /// targets can evaluate to the minimal composite type values these need at
 /// runtime. Each type carrying statics (`Map.from`, `Json.decode`) resolves the
 /// static through a `"Type.static"`-keyed global (see [`eval_field_access`]).
-const TYPE_VALUE_NAMES: [&str; 13] = [
+const TYPE_VALUE_NAMES: [&str; 15] = [
     "Array",
     "Bool",
     "Data",
@@ -539,6 +664,8 @@ const TYPE_VALUE_NAMES: [&str; 13] = [
     "Json",
     "Map",
     "Null",
+    "Result",
+    "Set",
     "Text",
     "Toml",
     "Undefined",
@@ -765,7 +892,7 @@ impl Value {
     }
 
     pub fn named_type(name: impl Into<String>) -> Self {
-        Self::Type(RuntimeType::Named(name.into()))
+        Self::Type(RuntimeType::named(name))
     }
 
     pub fn recursive_type(
@@ -773,11 +900,7 @@ impl Value {
         name: impl Into<String>,
         graph: Rc<RuntimeTypeGraph>,
     ) -> Self {
-        Self::Type(RuntimeType::Recursive(RuntimeTypeReference {
-            id,
-            name: Rc::from(name.into()),
-            graph,
-        }))
+        Self::Type(RuntimeType::recursive(id, name, graph))
     }
 
     pub fn unit() -> Self {
@@ -814,29 +937,58 @@ impl Value {
             Self::Null => "Null",
         }
     }
+
+    fn as_type_name(&self) -> Option<&str> {
+        match self {
+            Self::Type(ty) => ty.named_name(),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for RuntimeType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Named(name) => write!(f, "{name}"),
-            Self::Optional(inner) => write!(f, "?{inner}"),
-            Self::Nullable(inner) => write!(f, "{inner}?"),
-            Self::Array(inner) => write!(f, "Array({inner})"),
-            Self::Map(key, value) => write!(f, "Map({key}, {value})"),
-            Self::Recursive(reference) => write!(f, "{}", reference.name),
-        }
+        write!(f, "{}", self.descriptor)
     }
 }
 
 impl fmt::Display for RuntimeTypeDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Named(name) | Self::Unsupported(name) => write!(f, "{name}"),
+            Self::Named(name) => write!(f, "{name}"),
+            Self::Apply { callee, args } => {
+                write!(f, "{callee}(")?;
+                for (index, arg) in args.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Function {
+                params,
+                result,
+                required,
+            } => {
+                if params.len() == 1 && *required == 1 {
+                    write!(f, "{} -> {result}", params[0])
+                } else {
+                    write!(f, "(")?;
+                    for (index, param) in params.iter().enumerate() {
+                        if index > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{param}")?;
+                        if index >= *required {
+                            write!(f, " = _")?;
+                        }
+                    }
+                    write!(f, ") -> {result}")
+                }
+            }
             Self::Optional(inner) => write!(f, "?{inner}"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
-            Self::Array(inner) => write!(f, "Array({inner})"),
-            Self::Map(key, value) => write!(f, "Map({key}, {value})"),
             Self::Tuple(items) => {
                 write!(f, "(")?;
                 for (index, item) in items.iter().enumerate() {
@@ -850,20 +1002,45 @@ impl fmt::Display for RuntimeTypeDescriptor {
             Self::Record(fields) => {
                 write!(f, "{{")?;
                 for (index, (name, ty)) in fields.iter().enumerate() {
-                    if index > 0 {
+                    if index == 0 {
+                        write!(f, " ")?;
+                    } else {
                         write!(f, ", ")?;
                     }
                     write!(f, "{name}: {ty}")?;
+                }
+                if !fields.is_empty() {
+                    write!(f, " ")?;
+                }
+                write!(f, "}}")
+            }
+            Self::SlotRecord { data, slots } => {
+                write!(f, "{{")?;
+                for (index, (name, ty)) in data.iter().chain(slots).enumerate() {
+                    if index == 0 {
+                        write!(f, " ")?;
+                    } else {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{name}: {ty}")?;
+                }
+                if !data.is_empty() || !slots.is_empty() {
+                    write!(f, " ")?;
                 }
                 write!(f, "}}")
             }
             Self::Variant(entries) => {
                 write!(f, "@{{")?;
                 for (index, entry) in entries.iter().enumerate() {
-                    if index > 0 {
+                    if index == 0 {
+                        write!(f, " ")?;
+                    } else {
                         write!(f, ", ")?;
                     }
                     write!(f, "{entry}")?;
+                }
+                if !entries.is_empty() {
+                    write!(f, " ")?;
                 }
                 write!(f, "}}")
             }
@@ -886,7 +1063,12 @@ impl fmt::Display for RuntimeVariantDescriptor {
                 }
                 write!(f, ")")
             }
-            Self::Literal(value) => write!(f, "{value}"),
+            Self::Literal(value) => match value {
+                Literal::Bool(value) => write!(f, "{value}"),
+                Literal::Number(value) | Literal::String(value) | Literal::Regex(value) => {
+                    write!(f, "{value}")
+                }
+            },
         }
     }
 }
@@ -1326,18 +1508,29 @@ fn intrinsics() -> Vec<(String, Value)> {
                 return Err(format!("keysOf expects 1 argument, got {}", args.len()));
             }
 
-            let Value::Record(fields) = &args[0] else {
-                return Err(format!(
-                    "keysOf expects a Record, got {}",
-                    args[0].type_name()
-                ));
+            let names: Vec<String> = match &args[0] {
+                Value::Record(fields) => fields.iter().map(|(name, _)| name.clone()).collect(),
+                Value::Type(ty) => match ty.descriptor() {
+                    RuntimeTypeDescriptor::Record(fields) => {
+                        fields.iter().map(|(name, _)| name.clone()).collect()
+                    }
+                    _ => {
+                        return Err(format!(
+                            "keysOf expects a Record, got {}",
+                            args[0].type_name()
+                        ));
+                    }
+                },
+                _ => {
+                    return Err(format!(
+                        "keysOf expects a Record, got {}",
+                        args[0].type_name()
+                    ));
+                }
             };
 
             Ok(Value::Set(Rc::new(
-                fields
-                    .iter()
-                    .map(|(name, _)| Value::Text(name.clone()))
-                    .collect(),
+                names.into_iter().map(Value::Text).collect(),
             )))
         }),
     ));
@@ -1428,13 +1621,6 @@ fn select_record_fields(name: &str, args: &[Value], keep_matched: bool) -> Resul
         return Err(format!("{name} expects 2 arguments, got {}", args.len()));
     }
 
-    let Value::Record(fields) = &args[0] else {
-        return Err(format!(
-            "{name} expects a Record, got {}",
-            args[0].type_name()
-        ));
-    };
-
     let Value::Set(members) = &args[1] else {
         return Err(format!(
             "{name} expects a Set of labels, got {}",
@@ -1453,13 +1639,36 @@ fn select_record_fields(name: &str, args: &[Value], keep_matched: bool) -> Resul
         })
         .collect::<Result<HashSet<_>, _>>()?;
 
-    Ok(Value::Record(Rc::new(
-        fields
-            .iter()
-            .filter(|(field, _)| labels.contains(field.as_str()) == keep_matched)
-            .cloned()
-            .collect(),
-    )))
+    match &args[0] {
+        Value::Record(fields) => Ok(Value::Record(Rc::new(
+            fields
+                .iter()
+                .filter(|(field, _)| labels.contains(field.as_str()) == keep_matched)
+                .cloned()
+                .collect(),
+        ))),
+        Value::Type(ty) => {
+            let RuntimeTypeDescriptor::Record(fields) = ty.descriptor() else {
+                return Err(format!(
+                    "{name} expects a Record, got {}",
+                    args[0].type_name()
+                ));
+            };
+            Ok(Value::Type(
+                ty.with_descriptor(RuntimeTypeDescriptor::Record(
+                    fields
+                        .iter()
+                        .filter(|(field, _)| labels.contains(field.as_str()) == keep_matched)
+                        .cloned()
+                        .collect(),
+                )),
+            ))
+        }
+        _ => Err(format!(
+            "{name} expects a Record, got {}",
+            args[0].type_name()
+        )),
+    }
 }
 
 /// Evaluate a sequence of items, collecting `Flow::Fail` diagnostics across them
@@ -1821,10 +2030,10 @@ fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
             .ok_or_else(|| one_diagnostic(unbound_name(name, expr.span))),
         ExprKind::Group(inner) => eval_expr_many(inner, env),
         ExprKind::Optional(inner) => {
-            eval_type_wrapper(inner, expr.span, env, RuntimeType::Optional)
+            eval_type_wrapper(inner, expr.span, env, RuntimeType::optional)
         }
         ExprKind::Nullable(inner) => {
-            eval_type_wrapper(inner, expr.span, env, RuntimeType::Nullable)
+            eval_type_wrapper(inner, expr.span, env, RuntimeType::nullable)
         }
         ExprKind::Unary {
             operator, value, ..
@@ -3516,10 +3725,18 @@ fn field_access_value(
         // resolves the `"Type.static"`-keyed global bound alongside the type.
         // Concrete scalar builtins also publish unbound methods (`Int.+`,
         // `Int.div`) as first-class values for base delegation.
-        Value::Type(RuntimeType::Named(name)) => env
-            .lookup(&format!("{name}.{field}"))
-            .or_else(|| unbound_builtin_type_method(name, field))
-            .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
+        Value::Type(ty) => match ty.descriptor() {
+            RuntimeTypeDescriptor::Named(name) => env
+                .lookup(&format!("{name}.{field}"))
+                .or_else(|| unbound_builtin_type_method(name, field))
+                .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
+            RuntimeTypeDescriptor::Record(fields) => fields
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, field_ty)| Value::Type(ty.with_descriptor(field_ty.clone())))
+                .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
+            _ => Err(one_diagnostic(missing_field(field, field_span))),
+        },
         value => builtin_method(value, field, env).ok_or_else(|| {
             one_diagnostic(record_type_error(
                 receiver_span,
@@ -3551,10 +3768,14 @@ fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
                 || ambient_record_method(value, field, env).is_some()
         }
         Value::NamedFamily(descriptor) => descriptor.methods.contains_key(field),
-        Value::Type(RuntimeType::Named(name)) => {
-            env.lookup(&format!("{name}.{field}")).is_some()
-                || unbound_builtin_type_method(name, field).is_some()
-        }
+        Value::Type(ty) => match ty.descriptor() {
+            RuntimeTypeDescriptor::Named(name) => {
+                env.lookup(&format!("{name}.{field}")).is_some()
+                    || unbound_builtin_type_method(name, field).is_some()
+            }
+            RuntimeTypeDescriptor::Record(fields) => fields.iter().any(|(name, _)| name == field),
+            _ => false,
+        },
         value => builtin_method(value, field, env).is_some(),
     }
 }
@@ -5027,7 +5248,7 @@ fn eval_type_application(
     let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &callee.kind else {
         return None;
     };
-    if !matches!(name.as_str(), "Array" | "Map") {
+    if !matches!(name.as_str(), "Array" | "Map" | "Result" | "Set") {
         return None;
     }
 
@@ -5039,9 +5260,7 @@ fn eval_type_application(
     // `Map` is overloaded by arity in value position:
     // - `Map(K, V)` — type application (two type arguments) → composite type
     // - `Map(pairs)` — construction from `Array((k, v))` (same as `Map.from`)
-    if let Value::Type(RuntimeType::Named(name)) = &callee_value
-        && name == "Map"
-    {
+    if matches!(callee_value.as_type_name(), Some("Map")) {
         match args {
             [key_expr, value_expr] => {
                 let key = match eval_expr_many(key_expr, env) {
@@ -5052,20 +5271,23 @@ fn eval_type_application(
                     Ok(value) => value,
                     Err(diagnostics) => return Some(Err(diagnostics)),
                 };
-                for (arg_value, arg) in [(&key, key_expr), (&value, value_expr)] {
-                    if !runtime_type_target(arg_value) {
+                let mut type_args = Vec::with_capacity(2);
+                for (arg_value, arg) in [(key, key_expr), (value, value_expr)] {
+                    let Ok(arg_type) = RuntimeType::from_value(&arg_value) else {
                         return Some(Err(one_diagnostic(record_type_error(
                             arg.span,
                             "map type construction",
                             arg_value.type_name(),
                             "Type",
                         ))));
-                    }
+                    };
+                    type_args.push(arg_type);
                 }
-                return Some(Ok(Value::Type(RuntimeType::Map(
-                    Box::new(key),
-                    Box::new(value),
-                ))));
+                return Some(
+                    RuntimeType::apply(RuntimeType::named("Map"), type_args)
+                        .map(Value::Type)
+                        .map_err(|message| one_diagnostic(platform_error(span, message))),
+                );
             }
             [pairs_expr] => {
                 let pairs = match eval_expr_many(pairs_expr, env) {
@@ -5086,31 +5308,35 @@ fn eval_type_application(
         }
     }
 
-    if let Value::Type(RuntimeType::Named(name)) = &callee_value
-        && name == "Array"
-    {
-        let [arg] = args else {
+    if let Some(name @ ("Array" | "Set" | "Result")) = callee_value.as_type_name() {
+        let arity = if name == "Result" { 2 } else { 1 };
+        if args.len() != arity {
             return Some(Err(one_diagnostic(unsupported_expr(
                 span,
-                "Array type application takes one type argument (Array(element))",
+                &format!("{name} type application takes {arity} type argument(s)"),
             ))));
-        };
-        let arg_value = match eval_expr_many(arg, env) {
-            Ok(value) => value,
-            Err(diagnostics) => return Some(Err(diagnostics)),
-        };
-        if runtime_type_target(&arg_value) {
-            return Some(Ok(Value::Type(RuntimeType::Array(Box::new(
-                arg_value.clone(),
-            )))));
         }
-
-        return Some(Err(one_diagnostic(record_type_error(
-            arg.span,
-            "array type construction",
-            arg_value.type_name(),
-            "Type",
-        ))));
+        let mut type_args = Vec::with_capacity(args.len());
+        for arg in args {
+            let arg_value = match eval_expr_many(arg, env) {
+                Ok(value) => value,
+                Err(diagnostics) => return Some(Err(diagnostics)),
+            };
+            let Ok(arg_type) = RuntimeType::from_value(&arg_value) else {
+                return Some(Err(one_diagnostic(record_type_error(
+                    arg.span,
+                    &format!("{} type construction", name.to_ascii_lowercase()),
+                    arg_value.type_name(),
+                    "Type",
+                ))));
+            };
+            type_args.push(arg_type);
+        }
+        return Some(
+            RuntimeType::apply(RuntimeType::named(name), type_args)
+                .map(Value::Type)
+                .map_err(|message| one_diagnostic(platform_error(span, message))),
+        );
     }
 
     None
@@ -5195,6 +5421,29 @@ fn eval_index(
                 .cloned()
                 .ok_or_else(|| one_diagnostic(missing_field(&key, args[0].span)))
         }
+        Value::Type(ty) => {
+            let Value::Text(key) = arg_value else {
+                return Err(one_diagnostic(record_type_error(
+                    args[0].span,
+                    "record type indexing",
+                    arg_value.type_name(),
+                    "Text",
+                )));
+            };
+            let RuntimeTypeDescriptor::Record(fields) = ty.descriptor() else {
+                return Err(one_diagnostic(record_type_error(
+                    callee.span,
+                    "indexing",
+                    "Type",
+                    "Record type",
+                )));
+            };
+            fields
+                .iter()
+                .find(|(name, _)| name == &key)
+                .map(|(_, field_ty)| Value::Type(ty.with_descriptor(field_ty.clone())))
+                .ok_or_else(|| one_diagnostic(missing_field(&key, args[0].span)))
+        }
         Value::Map(entries) => {
             // `m[key]` sugars to `m.get(key)`: reuse the method's native
             // closure rather than duplicating the lookup.
@@ -5217,29 +5466,24 @@ fn eval_type_wrapper(
     inner: &Expr,
     span: Span,
     env: &Environment,
-    wrap: fn(Box<Value>) -> RuntimeType,
+    wrap: fn(RuntimeType) -> RuntimeType,
 ) -> Eval {
     let value = eval_expr_many(inner, env)?;
-    if runtime_type_target(&value) {
-        Ok(Value::Type(wrap(Box::new(value))))
-    } else {
-        Err(one_diagnostic(record_type_error(
-            span,
-            "type construction",
-            value.type_name(),
-            "Type",
-        )))
-    }
+    RuntimeType::from_value(&value)
+        .map(wrap)
+        .map(Value::Type)
+        .map_err(|_| {
+            one_diagnostic(record_type_error(
+                span,
+                "type construction",
+                value.type_name(),
+                "Type",
+            ))
+        })
 }
 
 fn runtime_type_target(value: &Value) -> bool {
-    match value {
-        Value::Type(_) => true,
-        Value::Record(fields) | Value::NamedRecord { fields, .. } => fields
-            .iter()
-            .all(|(_, field_value)| runtime_type_target(field_value)),
-        _ => false,
-    }
+    RuntimeType::from_value(value).is_ok()
 }
 
 /// Resolve a Python-style index: `i < 0` → `length + i`.
@@ -5457,7 +5701,12 @@ fn eval_unary(operator: &str, value: &Expr, span: Span, env: &Environment) -> Ev
         ("!", Value::Bool(value)) => Ok(Value::Bool(!value)),
         // Type position: `!T` strips the outer `Optional` (the runtime mirror
         // of the checker's N5 rule), so mapped types like `required` evaluate.
-        ("!", Value::Type(RuntimeType::Optional(inner))) => Ok(*inner),
+        ("!", Value::Type(ty)) if matches!(ty.descriptor(), RuntimeTypeDescriptor::Optional(_)) => {
+            let RuntimeTypeDescriptor::Optional(inner) = ty.descriptor() else {
+                unreachable!("guard matches Optional")
+            };
+            Ok(Value::Type(ty.with_descriptor((**inner).clone())))
+        }
         ("!", value) if runtime_type_target(&value) => Ok(value),
         ("!", value) => Err(one_diagnostic(unary_type_error(
             span,

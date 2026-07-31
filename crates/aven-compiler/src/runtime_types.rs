@@ -6,22 +6,17 @@ use aven_eval::{
     RuntimeType, RuntimeTypeBindings, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId,
     RuntimeVariantDescriptor, Value,
 };
-use aven_parser::Literal;
-
-/// Convert checked recursive types into finite evaluator artifacts.
+/// Convert checked types into canonical finite evaluator artifacts.
 ///
-/// The graph stores graph-free one-level heads, while every recursive runtime
-/// value carries an `Rc` to that graph. Parameterized type functions become
-/// natives selecting the already-checked specialization instead of evaluating
-/// their recursive source bodies eagerly.
+/// The graph stores graph-free one-level recursive heads, while every runtime
+/// type value carries an `Rc` to that graph. Parameterized recursive type
+/// functions become natives selecting the already-checked specialization
+/// instead of evaluating their recursive source bodies eagerly.
 pub(crate) fn runtime_type_bindings(
     type_definitions: &HashMap<String, Type>,
     recursive_type_unfoldings: &HashMap<RecursiveTypeId, Type>,
+    named_family_aliases: &HashMap<String, String>,
 ) -> RuntimeTypeBindings {
-    if recursive_type_unfoldings.is_empty() {
-        return RuntimeTypeBindings::default();
-    }
-
     let identities = recursive_type_unfoldings
         .keys()
         .enumerate()
@@ -30,20 +25,28 @@ pub(crate) fn runtime_type_bindings(
             (*id, (runtime_id, Type::Recursive(*id).render()))
         })
         .collect::<HashMap<_, _>>();
-    let graph = Rc::new(RuntimeTypeGraph::new(recursive_type_unfoldings.iter().map(
-        |(id, head)| {
+    let graph = Rc::new(RuntimeTypeGraph::new(
+        recursive_type_unfoldings.iter().filter_map(|(id, head)| {
             let runtime_id = identities[id].0;
-            (runtime_id, descriptor_from_type(head, &identities))
-        },
-    )));
+            descriptor_from_type(head, &identities).map(|head| (runtime_id, head))
+        }),
+    ));
 
     let mut bindings = RuntimeTypeBindings::default();
     for (name, ty) in type_definitions {
-        if type_contains_recursive(ty) {
-            bindings.insert(
-                name.clone(),
-                value_from_type(ty, &identities, Rc::clone(&graph)),
-            );
+        // Named families and their transparent aliases are runtime
+        // constructors, not structural type artifacts. Their declarations are
+        // materialized by the evaluator's named-family path.
+        if named_family_aliases.contains_key(name) {
+            continue;
+        }
+        if let Some(descriptor) = descriptor_from_type(ty, &identities) {
+            let runtime_type = if descriptor_contains_recursive(&descriptor) {
+                RuntimeType::with_graph(descriptor, Rc::clone(&graph))
+            } else {
+                RuntimeType::new(descriptor)
+            };
+            bindings.insert(name.clone(), Value::Type(runtime_type));
         }
     }
 
@@ -83,191 +86,203 @@ pub(crate) fn runtime_type_bindings(
     bindings
 }
 
-fn value_from_type(
-    ty: &Type,
-    identities: &HashMap<RecursiveTypeId, (RuntimeTypeId, String)>,
-    graph: Rc<RuntimeTypeGraph>,
-) -> Value {
-    match ty {
-        Type::Named(name) => Value::named_type(name),
-        Type::Recursive(id) => {
-            let Some((runtime_id, display)) = identities.get(id) else {
-                return Value::named_type(ty.render());
-            };
-            Value::recursive_type(*runtime_id, display, graph)
-        }
-        Type::Optional(inner) => Value::Type(RuntimeType::Optional(Box::new(value_from_type(
-            inner, identities, graph,
-        )))),
-        Type::Nullable(inner) => Value::Type(RuntimeType::Nullable(Box::new(value_from_type(
-            inner, identities, graph,
-        )))),
-        Type::Apply { callee, args }
-            if matches!(callee.as_ref(), Type::Named(name) if name == "Array")
-                && args.len() == 1 =>
-        {
-            Value::Type(RuntimeType::Array(Box::new(value_from_type(
-                &args[0], identities, graph,
-            ))))
-        }
-        Type::Apply { callee, args }
-            if matches!(callee.as_ref(), Type::Named(name) if name == "Map") && args.len() == 2 =>
-        {
-            Value::Type(RuntimeType::Map(
-                Box::new(value_from_type(&args[0], identities, Rc::clone(&graph))),
-                Box::new(value_from_type(&args[1], identities, graph)),
-            ))
-        }
-        Type::Record(row) if row.tail == RowTail::Closed => Value::record(
-            row.entries
-                .iter()
-                .filter_map(|entry| match entry {
-                    RowEntry::Field { name, ty } => Some((
-                        name.clone(),
-                        value_from_type(ty, identities, Rc::clone(&graph)),
-                    )),
-                    RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
-                })
-                .collect(),
-        ),
-        Type::Error
-        | Type::Deferred
-        | Type::Variable(_)
-        | Type::Meta(_)
-        | Type::Apply { .. }
-        | Type::Function { .. }
-        | Type::Tuple(_)
-        | Type::Record(_)
-        | Type::SlotRecord { .. }
-        | Type::Variant(_) => Value::named_type(ty.render()),
-    }
-}
-
 fn descriptor_from_type(
     ty: &Type,
     identities: &HashMap<RecursiveTypeId, (RuntimeTypeId, String)>,
-) -> RuntimeTypeDescriptor {
+) -> Option<RuntimeTypeDescriptor> {
     match ty {
-        Type::Named(name) => RuntimeTypeDescriptor::Named(name.clone()),
-        Type::Recursive(id) => identities.get(id).map_or_else(
-            || RuntimeTypeDescriptor::Unsupported(ty.render()),
-            |(runtime_id, display)| RuntimeTypeDescriptor::Recursive {
-                id: *runtime_id,
-                name: display.clone(),
-            },
-        ),
-        Type::Optional(inner) => {
-            RuntimeTypeDescriptor::Optional(Box::new(descriptor_from_type(inner, identities)))
+        Type::Named(name) => Some(RuntimeTypeDescriptor::Named(name.clone())),
+        Type::Recursive(id) => {
+            identities
+                .get(id)
+                .map(|(runtime_id, display)| RuntimeTypeDescriptor::Recursive {
+                    id: *runtime_id,
+                    name: display.clone(),
+                })
         }
-        Type::Nullable(inner) => {
-            RuntimeTypeDescriptor::Nullable(Box::new(descriptor_from_type(inner, identities)))
-        }
-        Type::Apply { callee, args }
-            if matches!(callee.as_ref(), Type::Named(name) if name == "Array")
-                && args.len() == 1 =>
-        {
-            RuntimeTypeDescriptor::Array(Box::new(descriptor_from_type(&args[0], identities)))
-        }
-        Type::Apply { callee, args }
-            if matches!(callee.as_ref(), Type::Named(name) if name == "Map") && args.len() == 2 =>
-        {
-            RuntimeTypeDescriptor::Map(
-                Box::new(descriptor_from_type(&args[0], identities)),
-                Box::new(descriptor_from_type(&args[1], identities)),
-            )
-        }
-        Type::Tuple(items) => RuntimeTypeDescriptor::Tuple(
+        Type::Apply { callee, args } => Some(RuntimeTypeDescriptor::Apply {
+            callee: Box::new(descriptor_from_type(callee, identities)?),
+            args: args
+                .iter()
+                .map(|arg| descriptor_from_type(arg, identities))
+                .collect::<Option<_>>()?,
+        }),
+        Type::Function {
+            params,
+            result,
+            required,
+        } => Some(RuntimeTypeDescriptor::Function {
+            params: params
+                .iter()
+                .map(|param| descriptor_from_type(param, identities))
+                .collect::<Option<_>>()?,
+            result: Box::new(descriptor_from_type(result, identities)?),
+            required: *required,
+        }),
+        Type::Optional(inner) => Some(RuntimeTypeDescriptor::Optional(Box::new(
+            descriptor_from_type(inner, identities)?,
+        ))),
+        Type::Nullable(inner) => Some(RuntimeTypeDescriptor::Nullable(Box::new(
+            descriptor_from_type(inner, identities)?,
+        ))),
+        Type::Tuple(items) => Some(RuntimeTypeDescriptor::Tuple(
             items
                 .iter()
                 .map(|item| descriptor_from_type(item, identities))
-                .collect(),
-        ),
-        Type::Record(row) if row.tail == RowTail::Closed => {
-            let fields = row
-                .entries
-                .iter()
-                .map(|entry| match entry {
-                    RowEntry::Field { name, ty } => {
-                        Some((name.clone(), descriptor_from_type(ty, identities)))
-                    }
-                    RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
-                })
-                .collect::<Option<Vec<_>>>();
-            fields.map_or_else(
-                || RuntimeTypeDescriptor::Unsupported(ty.render()),
-                RuntimeTypeDescriptor::Record,
-            )
-        }
-        Type::Variant(row) if row.tail == RowTail::Closed => RuntimeTypeDescriptor::Variant(
+                .collect::<Option<_>>()?,
+        )),
+        Type::Record(row) => Some(RuntimeTypeDescriptor::Record(record_fields(
+            row, identities,
+        )?)),
+        Type::SlotRecord { data, slots } => Some(RuntimeTypeDescriptor::SlotRecord {
+            data: record_fields(data, identities)?,
+            slots: record_fields(slots, identities)?,
+        }),
+        Type::Variant(row) if row.tail == RowTail::Closed => Some(RuntimeTypeDescriptor::Variant(
             row.entries
                 .iter()
                 .map(|entry| match entry {
-                    RowEntry::Tag { name, payload } => RuntimeVariantDescriptor::Tag {
+                    RowEntry::Tag { name, payload } => Some(RuntimeVariantDescriptor::Tag {
                         name: name.clone(),
                         payload: payload
                             .iter()
                             .map(|ty| descriptor_from_type(ty, identities))
-                            .collect(),
-                    },
+                            .collect::<Option<_>>()?,
+                    }),
                     RowEntry::Literal { value } => {
-                        RuntimeVariantDescriptor::Literal(render_literal(value).to_owned())
+                        Some(RuntimeVariantDescriptor::Literal(value.clone()))
                     }
-                    RowEntry::Field { .. } => {
-                        RuntimeVariantDescriptor::Literal("<record-field>".to_owned())
-                    }
+                    RowEntry::Field { .. } => None,
                 })
-                .collect(),
-        ),
-        Type::Error
-        | Type::Deferred
-        | Type::Variable(_)
-        | Type::Meta(_)
-        | Type::Apply { .. }
-        | Type::Function { .. }
-        | Type::Record(_)
-        | Type::SlotRecord { .. }
-        | Type::Variant(_) => RuntimeTypeDescriptor::Unsupported(ty.render()),
+                .collect::<Option<_>>()?,
+        )),
+        Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Variant(_) => None,
     }
 }
 
-fn type_contains_recursive(ty: &Type) -> bool {
-    match ty {
-        Type::Recursive(_) => true,
-        Type::Apply { callee, args } => {
-            type_contains_recursive(callee) || args.iter().any(type_contains_recursive)
-        }
-        Type::Function { params, result, .. } => {
-            params.iter().any(type_contains_recursive) || type_contains_recursive(result)
-        }
-        Type::Optional(inner) | Type::Nullable(inner) => type_contains_recursive(inner),
-        Type::Tuple(items) => items.iter().any(type_contains_recursive),
-        Type::Record(row) | Type::Variant(row) => row.entries.iter().any(|entry| match entry {
-            RowEntry::Field { ty, .. } => type_contains_recursive(ty),
-            RowEntry::Tag { payload, .. } => payload.iter().any(type_contains_recursive),
-            RowEntry::Literal { .. } => false,
-        }),
-        Type::SlotRecord { data, slots } => [data, slots].into_iter().any(|row| {
-            row.entries.iter().any(|entry| match entry {
-                RowEntry::Field { ty, .. } => type_contains_recursive(ty),
-                RowEntry::Tag { payload, .. } => payload.iter().any(type_contains_recursive),
-                RowEntry::Literal { .. } => false,
-            })
-        }),
-        Type::Error | Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => false,
+fn record_fields(
+    row: &aven_check::Row,
+    identities: &HashMap<RecursiveTypeId, (RuntimeTypeId, String)>,
+) -> Option<Vec<(String, RuntimeTypeDescriptor)>> {
+    if row.tail != RowTail::Closed {
+        return None;
     }
+    row.entries
+        .iter()
+        .map(|entry| match entry {
+            RowEntry::Field { name, ty } => {
+                Some((name.clone(), descriptor_from_type(ty, identities)?))
+            }
+            RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+        })
+        .collect()
 }
 
-fn render_literal(literal: &Literal) -> &str {
-    match literal {
-        Literal::Bool(true) => "true",
-        Literal::Bool(false) => "false",
-        Literal::Number(value) | Literal::String(value) | Literal::Regex(value) => value,
+fn descriptor_contains_recursive(descriptor: &RuntimeTypeDescriptor) -> bool {
+    match descriptor {
+        RuntimeTypeDescriptor::Recursive { .. } => true,
+        RuntimeTypeDescriptor::Apply { callee, args } => {
+            descriptor_contains_recursive(callee) || args.iter().any(descriptor_contains_recursive)
+        }
+        RuntimeTypeDescriptor::Function { params, result, .. } => {
+            params.iter().any(descriptor_contains_recursive)
+                || descriptor_contains_recursive(result)
+        }
+        RuntimeTypeDescriptor::Optional(inner) | RuntimeTypeDescriptor::Nullable(inner) => {
+            descriptor_contains_recursive(inner)
+        }
+        RuntimeTypeDescriptor::Tuple(items) => items.iter().any(descriptor_contains_recursive),
+        RuntimeTypeDescriptor::Record(fields) => fields
+            .iter()
+            .any(|(_, ty)| descriptor_contains_recursive(ty)),
+        RuntimeTypeDescriptor::SlotRecord { data, slots } => data
+            .iter()
+            .chain(slots)
+            .any(|(_, ty)| descriptor_contains_recursive(ty)),
+        RuntimeTypeDescriptor::Variant(entries) => entries.iter().any(|entry| match entry {
+            RuntimeVariantDescriptor::Tag { payload, .. } => {
+                payload.iter().any(descriptor_contains_recursive)
+            }
+            RuntimeVariantDescriptor::Literal(_) => false,
+        }),
+        RuntimeTypeDescriptor::Named(_) => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_closed_checked_type_shape_has_a_runtime_descriptor() {
+        let closed_row = |entries| aven_check::Row {
+            entries,
+            tail: RowTail::Closed,
+        };
+        let variant = Type::Variant(closed_row(vec![
+            RowEntry::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Type::Tuple(vec![
+                    Type::Named("Int".to_owned()),
+                    Type::Nullable(Box::new(Type::Named("Text".to_owned()))),
+                ])],
+            },
+            RowEntry::Literal {
+                value: aven_parser::Literal::Bool(false),
+            },
+        ]));
+        let ty = Type::SlotRecord {
+            data: Box::new(closed_row(vec![RowEntry::Field {
+                name: "values".to_owned(),
+                ty: Type::Apply {
+                    callee: Box::new(Type::Named("Map".to_owned())),
+                    args: vec![Type::Named("Text".to_owned()), variant],
+                },
+            }])),
+            slots: Box::new(closed_row(vec![RowEntry::Field {
+                name: "load".to_owned(),
+                ty: Type::Function {
+                    params: vec![Type::Optional(Box::new(Type::Named("Int".to_owned())))],
+                    result: Box::new(Type::Record(closed_row(vec![RowEntry::Field {
+                        name: "done".to_owned(),
+                        ty: Type::Named("Bool".to_owned()),
+                    }]))),
+                    required: 0,
+                },
+            }])),
+        };
+
+        let descriptor = descriptor_from_type(&ty, &HashMap::new())
+            .expect("all closed checked type forms are reifiable");
+        assert!(matches!(
+            descriptor,
+            RuntimeTypeDescriptor::SlotRecord { data, slots }
+                if data.len() == 1 && slots.len() == 1
+        ));
+    }
+
+    #[test]
+    fn non_recursive_aliases_do_not_inherit_an_unrelated_recursive_graph() {
+        let parsed = aven_parser::parse_module(
+            "Node = { next: ?Node }\n\
+             Alias = Text\n\
+             Alias == Text\n",
+        );
+        let checked = aven_check::check_module(&parsed.module);
+        assert!(checked.diagnostics.is_empty(), "program checks");
+        let bindings = runtime_type_bindings(
+            &checked.type_definitions,
+            &checked.recursive_type_unfoldings,
+            &checked.named_family_aliases,
+        );
+        let outcome = aven_eval::eval_module_with_options(
+            &parsed.module,
+            aven_eval::EvalModuleOptions::default().with_runtime_types(&bindings),
+        );
+
+        assert!(outcome.diagnostics.is_empty(), "program evaluates");
+        assert_eq!(outcome.value, Some(Value::Bool(true)));
+    }
 
     #[test]
     fn parameterized_recursive_binding_builds_a_finite_graph() {
@@ -286,6 +301,7 @@ mod tests {
         let bindings = runtime_type_bindings(
             &checked.type_definitions,
             &checked.recursive_type_unfoldings,
+            &checked.named_family_aliases,
         );
         let outcome = aven_eval::eval_module_with_options(
             &parsed.module,
@@ -302,11 +318,14 @@ mod tests {
         let [target, selected] = values.as_slice() else {
             panic!("program returns two runtime type artifacts");
         };
-        let Value::Type(RuntimeType::Recursive(reference)) = target else {
+        let Value::Type(reference) = target else {
             panic!("named specialization is a recursive reference");
         };
-        assert_eq!(reference.name.as_ref(), "Chain(Int)");
-        assert_eq!(reference.graph.len(), 1);
+        assert!(matches!(
+            reference.descriptor(),
+            RuntimeTypeDescriptor::Recursive { name, .. } if name == "Chain(Int)"
+        ));
+        assert_eq!(reference.graph().len(), 1);
         assert_eq!(selected, target);
     }
 
@@ -328,6 +347,7 @@ mod tests {
         let bindings = runtime_type_bindings(
             &checked.type_definitions,
             &checked.recursive_type_unfoldings,
+            &checked.named_family_aliases,
         );
         let outcome = aven_eval::eval_module_with_options(
             &parsed.module,
@@ -338,10 +358,13 @@ mod tests {
             "program evaluates: {:?}",
             outcome.diagnostics
         );
-        let Some(Value::Type(RuntimeType::Recursive(reference))) = outcome.value else {
+        let Some(Value::Type(reference)) = outcome.value else {
             panic!("applied specialization evaluates to a recursive type");
         };
-        assert_eq!(reference.name.as_ref(), "Chain(Int)");
-        assert_eq!(reference.graph.len(), 1);
+        assert!(matches!(
+            reference.descriptor(),
+            RuntimeTypeDescriptor::Recursive { name, .. } if name == "Chain(Int)"
+        ));
+        assert_eq!(reference.graph().len(), 1);
     }
 }

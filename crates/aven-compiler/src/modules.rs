@@ -621,6 +621,7 @@ fn eval_path_impl(
         let runtime_types = runtime_type_bindings(
             &semantic.type_definitions,
             &semantic.recursive_type_unfoldings,
+            &semantic.named_family_aliases,
         );
         check_exports[node_id] = if semantic.diagnostics.iter().any(Diagnostic::is_error) {
             CheckExport::HasErrors
