@@ -20,10 +20,10 @@ pub use host_comptime::{
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
 pub use ty::{
-    MethodConstraint, QualifiedType, RecordField, RecursiveTypeId, Row, RowEntry, RowTail, Type,
-    function_required_arity, function_signature, is_text_type, literal_union_members,
-    might_contain_float, record_fields, render_type, type_contains_deferred, type_contains_error,
-    type_contains_hole, variant_tags,
+    FunctionParams, MethodConstraint, QualifiedType, RecordField, RecursiveTypeId, Row, RowEntry,
+    RowTail, Type, function_required_arity, function_signature, is_text_type,
+    literal_union_members, might_contain_float, record_fields, render_type, type_contains_deferred,
+    type_contains_error, type_contains_hole, variant_tags,
 };
 
 /// Clone the completed one-level head for a recursive reference. Nested
@@ -151,8 +151,7 @@ pub fn builtin_method_fields(
         fields.push(RecordField {
             name: method.member.clone(),
             ty: Type::Function {
-                required: params.len(),
-                params,
+                params: FunctionParams::all_required(params),
                 result: Box::new(result),
             },
         });

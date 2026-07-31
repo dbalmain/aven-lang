@@ -1550,8 +1550,7 @@ impl<'a> Checker<'a> {
         }
         let result = lower(self, return_annotation);
         Some(LocalValueType::Known(Type::Function {
-            required: param_types.len(),
-            params: param_types,
+            params: FunctionParams::all_required(param_types),
             result: Box::new(result),
         }))
     }
@@ -2702,15 +2701,13 @@ fn alpha_equivalent_type(
             Type::Function {
                 params: left_params,
                 result: left_result,
-                required: left_required,
             },
             Type::Function {
                 params: right_params,
                 result: right_result,
-                required: right_required,
             },
         ) => {
-            left_required == right_required
+            left_params.required_len() == right_params.required_len()
                 && left_params.len() == right_params.len()
                 && left_params
                     .iter()

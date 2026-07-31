@@ -3,6 +3,81 @@ use std::collections::{HashMap, HashSet};
 use aven_core::{BuiltinType, Span};
 use aven_parser::{Expr, ExprKind, Literal};
 
+/// Function parameters whose required prefix and optional suffix are valid by
+/// construction.
+///
+/// Keeping the arity next to the parameter list prevents a `Type::Function`
+/// from carrying a required count greater than its total parameter count.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FunctionParams {
+    params: Vec<Type>,
+    required: usize,
+}
+
+impl FunctionParams {
+    pub fn all_required(params: Vec<Type>) -> Self {
+        let required = params.len();
+        Self { params, required }
+    }
+
+    pub fn with_optional(required: Vec<Type>, optional: Vec<Type>) -> Self {
+        let required_arity = required.len();
+        Self {
+            params: required.into_iter().chain(optional).collect(),
+            required: required_arity,
+        }
+    }
+
+    pub fn try_from_parts(params: Vec<Type>, required: usize) -> Option<Self> {
+        (required <= params.len()).then_some(Self { params, required })
+    }
+
+    pub fn required_len(&self) -> usize {
+        self.required
+    }
+
+    pub fn as_slice(&self) -> &[Type] {
+        &self.params
+    }
+
+    pub fn to_vec(&self) -> Vec<Type> {
+        self.params.clone()
+    }
+
+    pub fn map(&self, mut map: impl FnMut(&Type) -> Type) -> Self {
+        Self {
+            params: self.params.iter().map(&mut map).collect(),
+            required: self.required,
+        }
+    }
+}
+
+impl std::ops::Deref for FunctionParams {
+    type Target = [Type];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl IntoIterator for FunctionParams {
+    type Item = Type;
+    type IntoIter = std::vec::IntoIter<Type>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.params.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a FunctionParams {
+    type Item = &'a Type;
+    type IntoIter = std::slice::Iter<'a, Type>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.params.iter()
+    }
+}
+
 /// Interned identity of one canonical recursive comptime specialization.
 ///
 /// The completed one-level body is intentionally kept in [`crate::CheckOutput`]
@@ -36,12 +111,8 @@ pub enum Type {
         args: Vec<Type>,
     },
     Function {
-        params: Vec<Type>,
+        params: FunctionParams,
         result: Box<Type>,
-        /// Number of leading required params. `params[required..]` are the
-        /// optional (defaulted) trailing params. Invariant: `required <=
-        /// params.len()`.
-        required: usize,
     },
     Optional(Box<Type>),
     Nullable(Box<Type>),
@@ -533,11 +604,9 @@ fn array_apply(element: Type) -> Type {
 }
 
 fn function(params: Vec<Type>, result: Type) -> Type {
-    let required = params.len();
     Type::Function {
-        params,
+        params: FunctionParams::all_required(params),
         result: Box::new(result),
-        required,
     }
 }
 
@@ -606,7 +675,7 @@ pub fn function_signature(ty: &Type) -> Option<(Vec<Type>, Type)> {
         return None;
     };
 
-    Some((params.clone(), result.as_ref().clone()))
+    Some((params.to_vec(), result.as_ref().clone()))
 }
 
 /// The required-arity of a function type (peeling `?`/`?`-style wrappers like
@@ -618,7 +687,7 @@ pub fn function_required_arity(ty: &Type) -> Option<usize> {
     }
 
     match ty {
-        Type::Function { required, .. } => Some(*required),
+        Type::Function { params, .. } => Some(params.required_len()),
         _ => None,
     }
 }
@@ -845,15 +914,11 @@ impl TypeRenderer {
                     .join(", ");
                 format!("{rendered_callee}({rendered_args})")
             }
-            Type::Function {
-                params,
-                result,
-                required,
-            } => {
+            Type::Function { params, result } => {
                 // Only an all-required single param uses the bare form; an
                 // optional param needs both its ` = _` marker and parens so
                 // `Int = _ -> Unit` cannot be misread.
-                let rendered_params = if params.len() == 1 && *required == 1 {
+                let rendered_params = if params.len() == 1 && params.required_len() == 1 {
                     self.render_function_param(&params[0])
                 } else {
                     format!(
@@ -863,7 +928,7 @@ impl TypeRenderer {
                             .enumerate()
                             .map(|(index, param)| {
                                 let rendered = self.render_type(param);
-                                if index < *required {
+                                if index < params.required_len() {
                                     rendered
                                 } else {
                                     format!("{rendered} = _")
@@ -955,12 +1020,7 @@ impl TypeRenderer {
         parts.extend(slots.entries.iter().map(|entry| match entry {
             RowEntry::Field {
                 name,
-                ty:
-                    Type::Function {
-                        params,
-                        result,
-                        required: _,
-                    },
+                ty: Type::Function { params, result },
             } => format!(
                 "{name}({}): {}",
                 params
@@ -1059,17 +1119,9 @@ pub(crate) fn map_type_with_rows(
                 .map(|arg| map_type_with_rows(arg, leaf, tail))
                 .collect(),
         },
-        Type::Function {
-            params,
-            result,
-            required,
-        } => Type::Function {
-            params: params
-                .iter()
-                .map(|param| map_type_with_rows(param, leaf, tail))
-                .collect(),
+        Type::Function { params, result } => Type::Function {
+            params: params.map(|param| map_type_with_rows(param, leaf, tail)),
             result: Box::new(map_type_with_rows(result, leaf, tail)),
-            required: *required,
         },
         Type::Optional(inner) => Type::Optional(Box::new(map_type_with_rows(inner, leaf, tail))),
         Type::Nullable(inner) => Type::Nullable(Box::new(map_type_with_rows(inner, leaf, tail))),
@@ -1501,7 +1553,7 @@ pub(crate) fn display_inferred_type(ty: &Type) -> Type {
 /// representation the checker uses; `check_module_with_globals` consumes the
 /// `Type`s they produce.
 pub mod build {
-    use super::{Row, RowEntry, RowTail, Type};
+    use super::{FunctionParams, Row, RowEntry, RowTail, Type};
     use aven_core::BuiltinType;
 
     /// A named type such as `Text` or a user/host-defined type name.
@@ -1553,11 +1605,9 @@ pub mod build {
 
     /// A function type `(params...) -> result` where every param is required.
     pub fn function(params: Vec<Type>, result: Type) -> Type {
-        let required = params.len();
         Type::Function {
-            params,
+            params: FunctionParams::all_required(params),
             result: Box::new(result),
-            required,
         }
     }
 
@@ -1566,11 +1616,9 @@ pub mod build {
     /// vec![open_record(vec![])], unit())` for one required `Text` and one
     /// optional fields record.
     pub fn function_opt(required: Vec<Type>, optional: Vec<Type>, result: Type) -> Type {
-        let required_arity = required.len();
         Type::Function {
-            params: required.into_iter().chain(optional).collect(),
+            params: FunctionParams::with_optional(required, optional),
             result: Box::new(result),
-            required: required_arity,
         }
     }
 
@@ -1755,7 +1803,7 @@ pub(crate) fn is_null_value(value: &Expr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Type, build};
+    use super::{FunctionParams, Type, build};
 
     #[test]
     fn build_array_round_trips_through_apply() {
@@ -1765,6 +1813,22 @@ mod tests {
                 callee: Box::new(Type::Named("Array".to_owned())),
                 args: vec![build::text()],
             }
+        );
+    }
+
+    #[test]
+    fn function_params_reject_an_impossible_required_arity() {
+        assert!(FunctionParams::try_from_parts(vec![build::text()], 2).is_none());
+    }
+
+    #[test]
+    fn function_params_keep_the_required_prefix_with_optional_suffix() {
+        let params =
+            FunctionParams::with_optional(vec![build::text()], vec![build::int(), build::bool()]);
+        assert_eq!(params.required_len(), 1);
+        assert_eq!(
+            params.as_slice(),
+            &[build::text(), build::int(), build::bool()]
         );
     }
 }

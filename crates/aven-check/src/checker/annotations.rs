@@ -189,17 +189,9 @@ impl<'a> Checker<'a> {
                     .map(|arg| self.unfold_recursive_type_for_demand(arg, visited))
                     .collect(),
             },
-            Type::Function {
-                params,
-                result,
-                required,
-            } => Type::Function {
-                params: params
-                    .iter()
-                    .map(|param| self.unfold_recursive_type_for_demand(param, visited))
-                    .collect(),
+            Type::Function { params, result } => Type::Function {
+                params: params.map(|param| self.unfold_recursive_type_for_demand(param, visited)),
                 result: Box::new(self.unfold_recursive_type_for_demand(result, visited)),
-                required: *required,
             },
             Type::Optional(inner) => Type::Optional(Box::new(
                 self.unfold_recursive_type_for_demand(inner, visited),
@@ -282,14 +274,9 @@ impl<'a> Checker<'a> {
                 callee: Box::new(self.normalize_with_visited(callee, visited.clone())),
                 args: self.normalize_types(args, &visited),
             },
-            Type::Function {
-                params,
-                result,
-                required,
-            } => Type::Function {
-                params: self.normalize_types(params, &visited),
+            Type::Function { params, result } => Type::Function {
+                params: params.map(|param| self.normalize_with_visited(param, visited.clone())),
                 result: Box::new(self.normalize_with_visited(result, visited)),
-                required: *required,
             },
             Type::Optional(inner) => self.normalize_optional(inner, visited),
             Type::Nullable(inner) => self.normalize_nullable(inner, visited),
@@ -431,11 +418,9 @@ impl<'a> Checker<'a> {
                 // A function-type annotation has no defaults: all params are
                 // required. Standalone function-type default syntax is deferred.
                 let lowered = self.lower_annotations(params);
-                let required = lowered.len();
                 Type::Function {
-                    params: lowered,
+                    params: FunctionParams::all_required(lowered),
                     result: Box::new(self.lower_annotation(result)),
-                    required,
                 }
             }
             ExprKind::Tuple(items) => Type::Tuple(self.lower_annotations(items)),

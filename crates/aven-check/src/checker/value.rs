@@ -148,14 +148,11 @@ impl<'a> Checker<'a> {
         // `infer_call`; retaining these probe obligations would leave an
         // unrelated fresh candidate that can never discharge.
         let _ = self.take_method_obligations_since(callee_obligation_marker);
-        let Type::Function {
-            params, required, ..
-        } = &callee_type
-        else {
+        let Type::Function { params, .. } = &callee_type else {
             self.check_value_exprs(args);
             return;
         };
-        let required = *required;
+        let required = params.required_len();
         if !is_concrete_type(&callee_type) {
             if required <= args.len() && args.len() <= params.len() {
                 let diagnostics_start = self.diagnostics.len();
@@ -176,7 +173,7 @@ impl<'a> Checker<'a> {
 
         // Omitted trailing optional params are simply not supplied; check each
         // provided argument against its corresponding param.
-        let params = params.clone();
+        let params = params.to_vec();
         for (expected, arg) in params.iter().zip(args) {
             self.check_call_arg_against_param(expected, arg);
         }

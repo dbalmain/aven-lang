@@ -321,11 +321,7 @@ impl Checker<'_> {
                     diagnostics,
                 )
             }
-            Type::Function {
-                params,
-                result,
-                required,
-            } => {
+            Type::Function { params, result } => {
                 let mut diagnostics = Vec::new();
                 let mut resolved_params = Vec::with_capacity(params.len());
                 for param in params {
@@ -337,9 +333,12 @@ impl Checker<'_> {
                 diagnostics.extend(nested);
                 (
                     Type::Function {
-                        params: resolved_params,
+                        params: FunctionParams::try_from_parts(
+                            resolved_params,
+                            params.required_len(),
+                        )
+                        .expect("resolving preserves function parameter arity"),
                         result: Box::new(result),
-                        required: *required,
                     },
                     diagnostics,
                 )

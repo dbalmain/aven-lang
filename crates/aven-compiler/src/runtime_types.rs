@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+#[cfg(test)]
+use aven_check::FunctionParams;
 use aven_check::{RecursiveTypeId, RowEntry, RowTail, Type};
 use aven_eval::{
     RuntimeType, RuntimeTypeBindings, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId,
@@ -107,17 +109,13 @@ fn descriptor_from_type(
                 .map(|arg| descriptor_from_type(arg, identities))
                 .collect::<Option<_>>()?,
         }),
-        Type::Function {
-            params,
-            result,
-            required,
-        } => Some(RuntimeTypeDescriptor::Function {
+        Type::Function { params, result } => Some(RuntimeTypeDescriptor::Function {
             params: params
                 .iter()
                 .map(|param| descriptor_from_type(param, identities))
                 .collect::<Option<_>>()?,
             result: Box::new(descriptor_from_type(result, identities)?),
-            required: *required,
+            required: params.required_len(),
         }),
         Type::Optional(inner) => Some(RuntimeTypeDescriptor::Optional(Box::new(
             descriptor_from_type(inner, identities)?,
@@ -242,12 +240,14 @@ mod tests {
             slots: Box::new(closed_row(vec![RowEntry::Field {
                 name: "load".to_owned(),
                 ty: Type::Function {
-                    params: vec![Type::Optional(Box::new(Type::Named("Int".to_owned())))],
+                    params: FunctionParams::with_optional(
+                        vec![],
+                        vec![Type::Optional(Box::new(Type::Named("Int".to_owned())))],
+                    ),
                     result: Box::new(Type::Record(closed_row(vec![RowEntry::Field {
                         name: "done".to_owned(),
                         ty: Type::Named("Bool".to_owned()),
                     }]))),
-                    required: 0,
                 },
             }])),
         };

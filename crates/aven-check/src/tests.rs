@@ -83,11 +83,9 @@ fn apply(callee: Type, args: Vec<Type>) -> Type {
 }
 
 fn function(params: Vec<Type>, result: Type) -> Type {
-    let required = params.len();
     Type::Function {
-        params,
+        params: FunctionParams::all_required(params),
         result: Box::new(result),
-        required,
     }
 }
 

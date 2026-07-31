@@ -76,13 +76,11 @@ impl<'a> Checker<'a> {
                         return Type::Deferred;
                     }
                     let params = self.lower_annotations(params);
-                    let required = params.len();
                     slots.entries.push(RowEntry::Field {
                         name: name.clone(),
                         ty: Type::Function {
-                            params,
+                            params: FunctionParams::all_required(params),
                             result: Box::new(self.lower_annotation(result)),
-                            required,
                         },
                     });
                 }

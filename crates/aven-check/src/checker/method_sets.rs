@@ -440,7 +440,7 @@ pub(crate) fn effective_base_methods(
             methods.push((
                 field.name.clone(),
                 NamedMethodType {
-                    params,
+                    params: params.to_vec(),
                     result,
                     constraints: Vec::new(),
                     variables,
@@ -668,7 +668,7 @@ impl Checker<'_> {
                 return None;
             };
             return Some(MethodSignature {
-                params: params.clone(),
+                params: params.to_vec(),
                 result: result.as_ref().clone(),
                 predicates: Vec::new(),
             });

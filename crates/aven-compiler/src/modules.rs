@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use aven_check::{
-    ComptimeExport, ComptimeModuleIdentity, ModuleImports as CheckModuleImports, NamedFamilyType,
-    QualifiedType, RecursiveTypeId, RowTail, Type,
+    ComptimeExport, ComptimeModuleIdentity, FunctionParams, ModuleImports as CheckModuleImports,
+    NamedFamilyType, QualifiedType, RecursiveTypeId, RowTail, Type,
 };
 use aven_core::{Diagnostic, DiagnosticReport, FileId, Label, SourceFile, SourceMap, Span, codes};
 use aven_eval::{ModuleImports as EvalModuleImports, Value};
@@ -1563,9 +1563,11 @@ fn check_export_for_node(
 
 fn comptime_function_export_type(export: &ComptimeExport) -> Type {
     Type::Function {
-        params: vec![Type::Named("Type".to_owned()); export.params.len()],
+        params: FunctionParams::all_required(vec![
+            Type::Named("Type".to_owned());
+            export.params.len()
+        ]),
         result: Box::new(Type::Named("Type".to_owned())),
-        required: export.params.len(),
     }
 }
 

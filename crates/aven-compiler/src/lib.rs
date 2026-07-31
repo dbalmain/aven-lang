@@ -13,11 +13,12 @@ use aven_parser::{
 };
 
 pub use aven_check::{
-    BuiltinMethodEnvironment, COMPTIME_BUILTIN_FUNCTIONS, HostGlobals, InferredType,
-    ModuleImports as CheckModuleImports, NamedFamilyType, NamedMethodOrigin, NamedMethodType,
-    RecordField, RecursiveTypeId, Type, builtin_method_fields, function_signature, is_text_type,
-    literal_union_members, record_fields, type_contains_deferred, type_contains_error,
-    type_contains_hole, type_statics, unfold_recursive_type_once, variant_tags,
+    BuiltinMethodEnvironment, COMPTIME_BUILTIN_FUNCTIONS, FunctionParams, HostGlobals,
+    InferredType, ModuleImports as CheckModuleImports, NamedFamilyType, NamedMethodOrigin,
+    NamedMethodType, RecordField, RecursiveTypeId, Type, builtin_method_fields, function_signature,
+    is_text_type, literal_union_members, record_fields, type_contains_deferred,
+    type_contains_error, type_contains_hole, type_statics, unfold_recursive_type_once,
+    variant_tags,
 };
 
 mod modules;

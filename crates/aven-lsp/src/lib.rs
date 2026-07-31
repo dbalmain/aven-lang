@@ -1867,17 +1867,17 @@ fn format_method_type(member: &str) -> Option<aven_compiler::Type> {
 
     match member {
         "encode" => Some(aven_compiler::Type::Function {
-            params: vec![aven_compiler::Type::Variable("fmt".to_owned())],
+            params: aven_compiler::FunctionParams::all_required(vec![
+                aven_compiler::Type::Variable("fmt".to_owned()),
+            ]),
             result: Box::new(aven_compiler::Type::Named("Text".to_owned())),
-            required: 1,
         }),
         "decode" => Some(aven_compiler::Type::Function {
-            params: vec![
-                aven_compiler::Type::Variable("fmt".to_owned()),
-                aven_compiler::Type::Variable("target".to_owned()),
-            ],
+            params: aven_compiler::FunctionParams::with_optional(
+                vec![aven_compiler::Type::Variable("fmt".to_owned())],
+                vec![aven_compiler::Type::Variable("target".to_owned())],
+            ),
             result: Box::new(aven_compiler::Type::Variable("decoded".to_owned())),
-            required: 1,
         }),
         _ => None,
     }

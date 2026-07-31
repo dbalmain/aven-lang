@@ -1334,9 +1334,9 @@ impl<'a> Checker<'a> {
         };
 
         let lambda_type = Type::Function {
-            params: param_types,
+            params: FunctionParams::try_from_parts(param_types, required)
+                .expect("lambda defaults form a trailing optional suffix"),
             result: Box::new(result_type),
-            required,
         };
         self.finalize_lambda_requirements(obligation_marker, requirements, assumptions);
         self.pop_method_assumptions();
@@ -1576,8 +1576,7 @@ impl<'a> Checker<'a> {
             params.push(Type::Named(owner));
             params.extend(signature.params);
             return Type::Function {
-                required: params.len(),
-                params,
+                params: FunctionParams::all_required(params),
                 result: Box::new(signature.result),
             };
         }
@@ -1616,8 +1615,7 @@ impl<'a> Checker<'a> {
             self.push_method_obligations_at(signature.predicates, field_span);
             self.simplify_method_obligations(false);
             return Type::Function {
-                required: signature.params.len(),
-                params: signature.params,
+                params: FunctionParams::all_required(signature.params),
                 result: Box::new(signature.result),
             };
         }
@@ -1845,12 +1843,8 @@ impl<'a> Checker<'a> {
         // later lambda before its parameters are checked. Keep the function's
         // own result so an omitted trailing optional param remains valid.
         let resolved = self.unifier.resolve(&callee_type);
-        if let Type::Function {
-            params,
-            result,
-            required,
-        } = &resolved
-            && *required <= args.len()
+        if let Type::Function { params, result } = &resolved
+            && params.required_len() <= args.len()
             && args.len() <= params.len()
         {
             let arg_types = self.infer_call_args_against_params(
@@ -1886,9 +1880,8 @@ impl<'a> Checker<'a> {
         );
         let result_type = self.unifier.fresh();
         let expected_callee = Type::Function {
-            params: arg_types,
+            params: FunctionParams::all_required(arg_types),
             result: Box::new(result_type.clone()),
-            required: args.len(),
         };
 
         if self.unifier.unify(&callee_type, &expected_callee).is_err() {
@@ -2330,8 +2323,7 @@ impl<'a> Checker<'a> {
         );
         let result = self.normalize(&self.resolve_and_default(result));
         let ty = Type::Function {
-            required: params.len(),
-            params,
+            params: FunctionParams::all_required(params),
             result: Box::new(result),
         };
         self.record_local_value_type(field_span, &LocalValueType::Known(ty));
@@ -2472,12 +2464,10 @@ impl<'a> Checker<'a> {
         let resolved = self.unifier.resolve(&ty);
         self.unifier.restore(snapshot);
 
-        let Type::Function {
-            params, required, ..
-        } = resolved
-        else {
+        let Type::Function { params, .. } = resolved else {
             return false;
         };
+        let required = params.required_len();
         if required <= arg_count && arg_count <= params.len() {
             return false;
         }
@@ -2674,12 +2664,10 @@ impl<'a> Checker<'a> {
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
         let resolved = self.unifier.resolve(&callee_type);
 
-        let Type::Function {
-            params, required, ..
-        } = resolved
-        else {
+        let Type::Function { params, .. } = resolved else {
             return Some(Type::Deferred);
         };
+        let required = params.required_len();
         if required > arg_types.len() || arg_types.len() > params.len() {
             self.report_function_arity_mismatch(
                 required,
@@ -2828,14 +2816,10 @@ impl<'a> Checker<'a> {
         let scheme = self.statics.get("Map")?.get("from")?.clone();
         let from_type = self.instantiate_scheme_at(&scheme, callee.span);
         let resolved = self.unifier.resolve(&from_type);
-        let Type::Function {
-            params,
-            result,
-            required,
-        } = resolved
-        else {
+        let Type::Function { params, result } = resolved else {
             return None;
         };
+        let required = params.required_len();
         if required > args.len() || args.len() > params.len() {
             return None;
         }

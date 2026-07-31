@@ -446,7 +446,7 @@ impl<'a> Checker<'a> {
                 [MethodPredicate {
                     candidate: actual.clone(),
                     member: name.clone(),
-                    params: params.clone(),
+                    params: params.to_vec(),
                     result: result.as_ref().clone(),
                     operator_span: value.span,
                     divisor_context: None,
@@ -901,17 +901,18 @@ impl<'a> Checker<'a> {
         self.local_types.pop();
         self.pop_inline_lambda_type_var_scope();
 
+        let required = params
+            .iter()
+            .position(|param| param.default.is_some())
+            .unwrap_or(params.len());
         Type::Function {
-            params: param_types,
+            params: FunctionParams::try_from_parts(param_types, required)
+                .expect("lambda defaults form a trailing optional suffix"),
             result: Box::new(if return_annotation.is_some() {
                 body_expected
             } else {
                 body_type
             }),
-            required: params
-                .iter()
-                .position(|param| param.default.is_some())
-                .unwrap_or(params.len()),
         }
     }
 

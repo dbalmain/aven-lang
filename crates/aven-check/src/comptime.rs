@@ -85,14 +85,10 @@ impl From<&Type> for CanonicalType {
                 callee: Box::new(Self::from(callee.as_ref())),
                 args: args.iter().map(Self::from).collect(),
             },
-            Type::Function {
-                params,
-                result,
-                required,
-            } => Self::Function {
+            Type::Function { params, result } => Self::Function {
                 params: params.iter().map(Self::from).collect(),
                 result: Box::new(Self::from(result.as_ref())),
-                required: *required,
+                required: params.required_len(),
             },
             Type::Optional(inner) => Self::Optional(Box::new(Self::from(inner.as_ref()))),
             Type::Nullable(inner) => Self::Nullable(Box::new(Self::from(inner.as_ref()))),

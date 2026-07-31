@@ -24,8 +24,8 @@ use crate::lower::{
     declared_annotation_for_declaration,
 };
 use crate::ty::{
-    IntegerDivisorContext, LiteralBase, MethodPredicate, RecursiveTypeId, Row, RowEntry, RowKind,
-    RowMergeSource, RowTail, Type, TypeScheme, builtin_collection_method_type,
+    FunctionParams, IntegerDivisorContext, LiteralBase, MethodPredicate, RecursiveTypeId, Row,
+    RowEntry, RowKind, RowMergeSource, RowTail, Type, TypeScheme, builtin_collection_method_type,
     display_inferred_type, free_metas, generalize, is_concrete_type, is_meta_type, is_null_value,
     is_resolved_value_type, is_text_type, is_undefined_value, literal_base, literal_variant_base,
     map_type, mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
@@ -1631,11 +1631,9 @@ fn map_statics() -> Vec<(String, Type)> {
 }
 
 fn function_type(params: Vec<Type>, result: Type) -> Type {
-    let required = params.len();
     Type::Function {
-        params,
+        params: FunctionParams::all_required(params),
         result: Box::new(result),
-        required,
     }
 }
 
