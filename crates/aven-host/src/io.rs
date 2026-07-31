@@ -29,7 +29,7 @@ use std::rc::Rc;
 use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, Type};
 use aven_eval::Value;
 
-use crate::Host;
+use crate::{Host, HostResult};
 
 impl Host {
     /// Register the bare process-stream IO natives `write`/`writeLine`/
@@ -43,11 +43,7 @@ impl Host {
             bare_write_native(true),
             crate::io_write_line_type(),
         );
-        self.register(
-            "readLine",
-            bare_read_line_native(),
-            crate::io_read_line_type(),
-        );
+        self.register_fn("readLine", bare_read_line);
         self.register("readAll", bare_read_all_native(), crate::io_read_all_type());
     }
 
@@ -88,12 +84,8 @@ fn bare_write_native(newline: bool) -> Value {
     })
 }
 
-fn bare_read_line_native() -> Value {
-    Value::native(|args| {
-        if !args.is_empty() {
-            return Err(format!("readLine expects 0 arguments, got {}", args.len()));
-        }
-
+fn bare_read_line() -> HostResult<Option<String>> {
+    (|| {
         flush_stdout_before_read();
 
         let mut line = String::new();
@@ -102,12 +94,13 @@ fn bare_read_line_native() -> Value {
             .read_line(&mut line)
             .map_err(|error| error.to_string())?;
         if bytes == 0 {
-            return Ok(Value::Undefined);
+            return Ok(None);
         }
         strip_trailing_newline(&mut line);
 
-        Ok(Value::Text(line))
-    })
+        Ok(Some(line))
+    })()
+    .into()
 }
 
 fn bare_read_all_native() -> Value {

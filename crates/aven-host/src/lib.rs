@@ -26,7 +26,7 @@ use aven_core::BuiltinType;
 
 pub use aven_eval::Int;
 pub use aven_parser::{OperatorAssociativity, OperatorPrecedence};
-pub use marshal::{AvenMarshal, IntoHostFn};
+pub use marshal::{AvenMarshal, HostFnReturn, HostResult, IntoHostFn};
 /// The Aven type of the platform `now` value: `() -> Instant`.
 pub use temporal::now_type;
 /// The Aven type of the platform `zone` value: `(Text) -> Result(Zone, Text)`.

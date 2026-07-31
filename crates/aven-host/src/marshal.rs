@@ -4,8 +4,10 @@
 //!
 //! [`AvenMarshal`] is the single source pairing a Rust type with its Aven type
 //! and the value conversions in both directions. [`IntoHostFn`] lifts a
-//! `Fn(A0, ..) -> R` (arities 0..=4, every type [`AvenMarshal`]) into the
+//! `Fn(A0, ..) -> R` (arities 0..=4, every argument [`AvenMarshal`]) into the
 //! `(Type, Value)` pair [`crate::Host::register_fn`] feeds to `register`.
+//! Ordinary returns marshal as Aven values; [`HostResult`] preserves a native
+//! runtime failure without changing the function's Aven result type.
 //!
 //! Deferred: generic host fns (e.g. `dbg : (a) -> a`, needing a `Value`
 //! passthrough mapped to a type variable plus scheme support), a derive/helper
@@ -28,6 +30,45 @@ pub trait AvenMarshal: Sized {
     fn aven_type() -> Type;
     fn to_value(self) -> Value;
     fn from_value(value: &Value) -> Result<Self, String>;
+}
+
+/// A typed host function result which may abort evaluation with a platform
+/// error. Unlike Rust's ordinary [`Result`], which marshals to Aven's
+/// `Result(ok, err)` value, this wrapper keeps `T` as the Aven return type and
+/// propagates `Err(String)` through the evaluator's native-call boundary.
+#[derive(Debug)]
+pub struct HostResult<T>(Result<T, String>);
+
+impl<T> From<Result<T, String>> for HostResult<T> {
+    fn from(result: Result<T, String>) -> Self {
+        Self(result)
+    }
+}
+
+/// Return-side conversion used by [`IntoHostFn`].
+pub trait HostFnReturn: Sized {
+    fn return_type() -> Type;
+    fn into_host_value(self) -> Result<Value, String>;
+}
+
+impl<T: AvenMarshal> HostFnReturn for T {
+    fn return_type() -> Type {
+        T::aven_type()
+    }
+
+    fn into_host_value(self) -> Result<Value, String> {
+        Ok(self.to_value())
+    }
+}
+
+impl<T: AvenMarshal> HostFnReturn for HostResult<T> {
+    fn return_type() -> Type {
+        T::aven_type()
+    }
+
+    fn into_host_value(self) -> Result<Value, String> {
+        self.0.map(AvenMarshal::to_value)
+    }
 }
 
 /// Error for a `from_value` shape mismatch, e.g. "expected Int, got Text".
@@ -350,7 +391,7 @@ mod sealed {
 /// A Rust closure that lifts into the `(Type, Value)` pair
 /// [`crate::Host::register_fn`] registers. Sealed: implemented (via a macro)
 /// only for `Fn(A0, ..) -> R + 'static` where every `Ai: AvenMarshal` and
-/// `R: AvenMarshal`, arities 0..=4.
+/// `R: HostFnReturn`, arities 0..=4.
 pub trait IntoHostFn<Args>: sealed::Sealed<Args> {
     /// Derive the function [`Type`] (all params required) and a
     /// [`Value::native`] that arity-checks, unmarshals each argument, calls the
@@ -372,17 +413,17 @@ macro_rules! impl_into_host_fn {
         where
             F: Fn($($arg),*) -> R + 'static,
             $($arg: AvenMarshal,)*
-            R: AvenMarshal,
+            R: HostFnReturn,
         {}
 
         impl<F, R, $($arg),*> IntoHostFn<($($arg,)*)> for F
         where
             F: Fn($($arg),*) -> R + 'static,
             $($arg: AvenMarshal,)*
-            R: AvenMarshal,
+            R: HostFnReturn,
         {
             fn into_host_fn(self) -> (Type, Value) {
-                let ty = build::function(vec![$($arg::aven_type()),*], R::aven_type());
+                let ty = build::function(vec![$($arg::aven_type()),*], R::return_type());
                 #[allow(unused_variables, unused_mut)]
                 let native = Value::native(move |args| {
                     const ARITY: usize = <[()]>::len(&[$(replace_expr!($arg ())),*]);
@@ -396,7 +437,7 @@ macro_rules! impl_into_host_fn {
                     let result = self(
                         $($arg::from_value(iter.next().expect("arity checked above"))?,)*
                     );
-                    Ok(result.to_value())
+                    result.into_host_value()
                 });
                 (ty, native)
             }
@@ -593,6 +634,15 @@ mod tests {
             call_native(&value, &[Value::int(0)]),
             Err("expected 0 arguments, got 1".to_owned())
         );
+    }
+
+    #[test]
+    fn host_result_keeps_the_success_type_and_propagates_native_errors() {
+        let (ty, value) =
+            (|| HostResult::<Option<String>>::from(Err("read failed".to_owned()))).into_host_fn();
+
+        assert_eq!(ty, build::function(vec![], build::optional(build::text())));
+        assert_eq!(call_native(&value, &[]), Err("read failed".to_owned()));
     }
 
     #[test]
