@@ -10,11 +10,10 @@ version.workspace = true
 workspace = true
 
 [dependencies]
-num-bigint = "0.4.6"
+num-bigint = "0.5.1"
 num-traits = "0.2.19"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-
