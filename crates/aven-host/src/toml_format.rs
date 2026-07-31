@@ -1,95 +1,30 @@
 use aven_eval::{Int, Value};
 
 use crate::Host;
-use crate::io::{aven_value_type_name, err_value, ok_value};
 use crate::temporal::{
     format_temporal_from_toml, format_temporal_from_value, temporal_iso_text,
     toml_datetime_from_format_temporal,
 };
-use crate::text_format::{
-    DecodeError, FormatNumber, FormatValue, decode_value, encode_error_value, parse_error_value,
-    shape_error_value,
-};
+use crate::text_format::{FormatNumber, FormatValue, TextFormat, register_text_format};
 
 impl Host {
     /// Register the `Toml` type artifact carrying `encode`/`decode` statics.
     pub fn register_toml(&mut self) {
-        self.register_data_type();
-        self.register_type_statics(
-            "Toml",
-            vec![
-                (
-                    "encode".to_owned(),
-                    crate::toml_encode_type(),
-                    encode_native(),
-                ),
-                (
-                    "encodeText".to_owned(),
-                    crate::toml_encode_text_type(),
-                    encode_text_native(),
-                ),
-                (
-                    "decode".to_owned(),
-                    crate::toml_decode_base_type(),
-                    decode_native(),
-                ),
-            ],
-        );
-        self.register_type_definition("TomlError", crate::toml_error_type());
-        self.register_type_definition("TomlEncodeError", crate::toml_encode_error_type());
-        self.register_comptime_resolver("Toml.decode", vec![1], decode_comptime_resolver());
-        self.register_comptime_type_resolver(
-            "Toml.encodeText",
-            vec![0],
-            crate::text_format::encode_text_comptime_resolver("Toml"),
-        );
+        register_text_format(self, TextFormat::Toml, parse_toml, encode_to_text);
     }
 }
 
-pub(crate) fn decode_comptime_resolver() -> std::rc::Rc<dyn aven_check::HostComptimeFn> {
-    crate::text_format::decode_comptime_resolver("TomlError")
-}
-
-fn decode_native() -> Value {
-    Value::native(|args| {
-        if args.len() > 2 {
-            return Err(format!(
-                "Toml.decode expects 1 or 2 arguments, got {}",
-                args.len()
-            ));
-        }
-        let (text, target) = match args {
-            [Value::Text(text)] => (text, None),
-            [Value::Text(text), target] => (text, Some(target)),
-            [other] | [other, ..] => {
-                return Err(format!(
-                    "Toml.decode expects Text input, got {}",
-                    aven_value_type_name(other)
-                ));
-            }
-            [] => {
-                return Err("Toml.decode expects at least 1 argument, got 0".to_owned());
-            }
-        };
-
-        let parsed = match text.parse::<::toml::Table>() {
-            Ok(table) => FormatValue::Object(
+fn parse_toml(text: &str) -> Result<FormatValue, String> {
+    text.parse::<::toml::Table>()
+        .map(|table| {
+            FormatValue::Object(
                 table
                     .into_iter()
                     .map(|(key, value)| (key, toml_to_format_value(value)))
                     .collect(),
-            ),
-            Err(error) => return Ok(err_value(parse_error_value(error.to_string()))),
-        };
-
-        let default_target = Value::named_type("Data");
-        let target = target.unwrap_or(&default_target);
-        match decode_value(&parsed, target, "Toml") {
-            Ok(value) => Ok(ok_value(value)),
-            Err(DecodeError::Shape(error)) => Ok(err_value(shape_error_value(error))),
-            Err(DecodeError::InvalidTarget(message)) => Err(message),
-        }
-    })
+            )
+        })
+        .map_err(|error| error.to_string())
 }
 
 fn toml_to_format_value(value: ::toml::Value) -> FormatValue {
@@ -114,37 +49,6 @@ fn toml_to_format_value(value: ::toml::Value) -> FormatValue {
                 .collect(),
         ),
     }
-}
-
-fn encode_native() -> Value {
-    Value::native(|args| {
-        let [value] = args else {
-            return Err(format!(
-                "Toml.encode expects 1 argument, got {}",
-                args.len()
-            ));
-        };
-
-        Ok(match encode_to_text(value) {
-            Ok(text) => ok_value(Value::Text(text)),
-            Err(error) => err_value(encode_error_value(error)),
-        })
-    })
-}
-
-fn encode_text_native() -> Value {
-    Value::native(|args| {
-        let [value] = args else {
-            return Err(format!(
-                "Toml.encodeText expects 1 argument, got {}",
-                args.len()
-            ));
-        };
-        let text = encode_to_text(value).unwrap_or_else(|error| {
-            panic!("Toml.encodeText Float-free type invariant failed: {error}")
-        });
-        Ok(Value::Text(text))
-    })
 }
 
 fn encode_to_text(value: &Value) -> Result<String, String> {

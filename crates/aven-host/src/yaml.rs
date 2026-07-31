@@ -5,87 +5,14 @@ use serde::de::{self, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use crate::Host;
-use crate::io::{aven_value_type_name, err_value, ok_value};
 use crate::temporal::temporal_iso_text;
-use crate::text_format::{
-    DecodeError, FormatNumber, FormatValue, decode_value, encode_error_value, parse_error_value,
-    shape_error_value,
-};
+use crate::text_format::{FormatNumber, FormatValue, TextFormat, register_text_format};
 
 impl Host {
     /// Register the `Yaml` type artifact carrying `encode`/`decode` statics.
     pub fn register_yaml(&mut self) {
-        self.register_data_type();
-        self.register_type_statics(
-            "Yaml",
-            vec![
-                (
-                    "encode".to_owned(),
-                    crate::yaml_encode_type(),
-                    encode_native(),
-                ),
-                (
-                    "encodeText".to_owned(),
-                    crate::yaml_encode_text_type(),
-                    encode_text_native(),
-                ),
-                (
-                    "decode".to_owned(),
-                    crate::yaml_decode_base_type(),
-                    decode_native(),
-                ),
-            ],
-        );
-        self.register_type_definition("YamlError", crate::yaml_error_type());
-        self.register_type_definition("YamlEncodeError", crate::yaml_encode_error_type());
-        self.register_comptime_resolver("Yaml.decode", vec![1], decode_comptime_resolver());
-        self.register_comptime_type_resolver(
-            "Yaml.encodeText",
-            vec![0],
-            crate::text_format::encode_text_comptime_resolver("Yaml"),
-        );
+        register_text_format(self, TextFormat::Yaml, parse_yaml, encode_to_text);
     }
-}
-
-pub(crate) fn decode_comptime_resolver() -> std::rc::Rc<dyn aven_check::HostComptimeFn> {
-    crate::text_format::decode_comptime_resolver("YamlError")
-}
-
-fn decode_native() -> Value {
-    Value::native(|args| {
-        if args.len() > 2 {
-            return Err(format!(
-                "Yaml.decode expects 1 or 2 arguments, got {}",
-                args.len()
-            ));
-        }
-        let (text, target) = match args {
-            [Value::Text(text)] => (text, None),
-            [Value::Text(text), target] => (text, Some(target)),
-            [other] | [other, ..] => {
-                return Err(format!(
-                    "Yaml.decode expects Text input, got {}",
-                    aven_value_type_name(other)
-                ));
-            }
-            [] => {
-                return Err("Yaml.decode expects at least 1 argument, got 0".to_owned());
-            }
-        };
-
-        let parsed = match parse_yaml(text) {
-            Ok(value) => value,
-            Err(error) => return Ok(err_value(parse_error_value(error))),
-        };
-
-        let default_target = Value::named_type("Data");
-        let target = target.unwrap_or(&default_target);
-        match decode_value(&parsed, target, "Yaml") {
-            Ok(value) => Ok(ok_value(value)),
-            Err(DecodeError::Shape(error)) => Ok(err_value(shape_error_value(error))),
-            Err(DecodeError::InvalidTarget(message)) => Err(message),
-        }
-    })
 }
 
 struct YamlValue(FormatValue);
@@ -246,37 +173,6 @@ fn parse_yaml(text: &str) -> Result<FormatValue, String> {
     serde_norway::from_str::<YamlValue>(text)
         .map(|YamlValue(value)| value)
         .map_err(|error| error.to_string())
-}
-
-fn encode_native() -> Value {
-    Value::native(|args| {
-        let [value] = args else {
-            return Err(format!(
-                "Yaml.encode expects 1 argument, got {}",
-                args.len()
-            ));
-        };
-
-        Ok(match encode_to_text(value) {
-            Ok(text) => ok_value(Value::Text(text)),
-            Err(error) => err_value(encode_error_value(error)),
-        })
-    })
-}
-
-fn encode_text_native() -> Value {
-    Value::native(|args| {
-        let [value] = args else {
-            return Err(format!(
-                "Yaml.encodeText expects 1 argument, got {}",
-                args.len()
-            ));
-        };
-        let text = encode_to_text(value).unwrap_or_else(|error| {
-            panic!("Yaml.encodeText Float-free type invariant failed: {error}")
-        });
-        Ok(Value::Text(text))
-    })
 }
 
 fn encode_to_text(value: &Value) -> Result<String, String> {

@@ -1,13 +1,14 @@
 use std::{collections::HashSet, rc::Rc};
 
 use aven_check::{
-    ComptimeArg, ComptimeError, ComptimeTypeContext, HostComptimeFn, RowEntry, Type,
-    might_contain_float,
+    ComptimeArg, ComptimeError, ComptimeTypeContext, HostComptimeFn, HostComptimeFnSpec, RowEntry,
+    Type, might_contain_float,
 };
 use aven_core::BuiltinType;
 use aven_eval::{Int, RuntimeType, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId, Value};
 
-use crate::io::aven_value_type_name;
+use crate::Host;
+use crate::io::{aven_value_type_name, err_value, ok_value};
 use crate::temporal::{
     Date, DateTime, Duration, Instant, Time, date_value, datetime_value, duration_value,
     instant_value, time_value,
@@ -73,6 +74,238 @@ pub(crate) struct ShapeError {
 pub(crate) enum DecodeError {
     Shape(ShapeError),
     InvalidTarget(String),
+}
+
+/// The common host-facing contract shared by the text codecs. Parsing and
+/// serialization stay in the format modules; registration, arity checks,
+/// result wrapping, and typed decoding live here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextFormat {
+    Json,
+    Yaml,
+    Toml,
+}
+
+impl TextFormat {
+    pub(crate) const ALL: [Self; 3] = [Self::Json, Self::Yaml, Self::Toml];
+
+    pub(crate) const fn name(self) -> &'static str {
+        self.builtin().name()
+    }
+
+    const fn builtin(self) -> BuiltinType {
+        match self {
+            Self::Json => BuiltinType::Json,
+            Self::Yaml => BuiltinType::Yaml,
+            Self::Toml => BuiltinType::Toml,
+        }
+    }
+
+    pub(crate) const fn decode_error_name(self) -> &'static str {
+        self.decode_error_builtin().name()
+    }
+
+    const fn decode_error_builtin(self) -> BuiltinType {
+        match self {
+            Self::Json => BuiltinType::JsonError,
+            Self::Yaml => BuiltinType::YamlError,
+            Self::Toml => BuiltinType::TomlError,
+        }
+    }
+
+    pub(crate) const fn encode_error_name(self) -> &'static str {
+        match self {
+            Self::Json => "JsonEncodeError",
+            Self::Yaml => "YamlEncodeError",
+            Self::Toml => "TomlEncodeError",
+        }
+    }
+
+    pub(crate) fn encode_type(self) -> Type {
+        crate::build::function(
+            vec![crate::build::var("a")],
+            crate::build::result(
+                crate::build::text(),
+                crate::build::named(self.encode_error_name()),
+            ),
+        )
+    }
+
+    pub(crate) fn encode_text_type(self) -> Type {
+        crate::build::function(vec![crate::build::var("a")], crate::build::text())
+    }
+
+    pub(crate) fn decode_base_type(self) -> Type {
+        crate::build::function_opt(
+            vec![crate::build::text()],
+            vec![Type::Deferred],
+            Type::Deferred,
+        )
+    }
+
+    pub(crate) fn statics(self) -> Vec<(String, Type)> {
+        vec![
+            ("encode".to_owned(), self.encode_type()),
+            ("encodeText".to_owned(), self.encode_text_type()),
+            ("decode".to_owned(), self.decode_base_type()),
+        ]
+    }
+
+    pub(crate) fn type_definitions(self) -> [(String, Type); 2] {
+        [
+            (
+                self.decode_error_name().to_owned(),
+                crate::format_error_type(),
+            ),
+            (
+                self.encode_error_name().to_owned(),
+                crate::format_encode_error_type(),
+            ),
+        ]
+    }
+
+    pub(crate) fn comptime_specs(self) -> [(String, HostComptimeFnSpec); 2] {
+        [
+            (
+                format!("{}.decode", self.name()),
+                HostComptimeFnSpec::new(self.decode_resolver(), vec![1]),
+            ),
+            (
+                format!("{}.encodeText", self.name()),
+                HostComptimeFnSpec::new_type_of(self.encode_text_resolver(), vec![0]),
+            ),
+        ]
+    }
+
+    pub(crate) fn decode_resolver(self) -> Rc<dyn HostComptimeFn> {
+        decode_comptime_resolver(self.decode_error_name())
+    }
+
+    pub(crate) fn encode_text_resolver(self) -> Rc<dyn HostComptimeFn> {
+        encode_text_comptime_resolver(self.name())
+    }
+}
+
+pub(crate) fn register_text_format(
+    host: &mut Host,
+    format: TextFormat,
+    parse: fn(&str) -> Result<FormatValue, String>,
+    encode: fn(&Value) -> Result<String, String>,
+) {
+    host.register_data_type();
+    host.register_type_statics(
+        format.name(),
+        vec![
+            (
+                "encode".to_owned(),
+                format.encode_type(),
+                encode_native(format, encode),
+            ),
+            (
+                "encodeText".to_owned(),
+                format.encode_text_type(),
+                encode_text_native(format, encode),
+            ),
+            (
+                "decode".to_owned(),
+                format.decode_base_type(),
+                decode_native(format, parse),
+            ),
+        ],
+    );
+    host.register_type_definition(format.decode_error_name(), crate::format_error_type());
+    host.register_type_definition(
+        format.encode_error_name(),
+        crate::format_encode_error_type(),
+    );
+    host.register_comptime_resolver(
+        format!("{}.decode", format.name()),
+        vec![1],
+        format.decode_resolver(),
+    );
+    host.register_comptime_type_resolver(
+        format!("{}.encodeText", format.name()),
+        vec![0],
+        format.encode_text_resolver(),
+    );
+}
+
+fn encode_native(format: TextFormat, encode: fn(&Value) -> Result<String, String>) -> Value {
+    Value::native(move |args| {
+        let [value] = args else {
+            return Err(format!(
+                "{}.encode expects 1 argument, got {}",
+                format.name(),
+                args.len()
+            ));
+        };
+
+        Ok(match encode(value) {
+            Ok(text) => ok_value(Value::Text(text)),
+            Err(error) => err_value(encode_error_value(error)),
+        })
+    })
+}
+
+fn encode_text_native(format: TextFormat, encode: fn(&Value) -> Result<String, String>) -> Value {
+    Value::native(move |args| {
+        let [value] = args else {
+            return Err(format!(
+                "{}.encodeText expects 1 argument, got {}",
+                format.name(),
+                args.len()
+            ));
+        };
+        let text = encode(value).unwrap_or_else(|error| {
+            panic!(
+                "{}.encodeText Float-free type invariant failed: {error}",
+                format.name()
+            )
+        });
+        Ok(Value::Text(text))
+    })
+}
+
+fn decode_native(format: TextFormat, parse: fn(&str) -> Result<FormatValue, String>) -> Value {
+    Value::native(move |args| {
+        if args.len() > 2 {
+            return Err(format!(
+                "{}.decode expects 1 or 2 arguments, got {}",
+                format.name(),
+                args.len()
+            ));
+        }
+        let (text, target) = match args {
+            [Value::Text(text)] => (text, None),
+            [Value::Text(text), target] => (text, Some(target)),
+            [other] | [other, ..] => {
+                return Err(format!(
+                    "{}.decode expects Text input, got {}",
+                    format.name(),
+                    aven_value_type_name(other)
+                ));
+            }
+            [] => {
+                return Err(format!(
+                    "{}.decode expects at least 1 argument, got 0",
+                    format.name()
+                ));
+            }
+        };
+
+        let parsed = match parse(text) {
+            Ok(value) => value,
+            Err(error) => return Ok(err_value(parse_error_value(error))),
+        };
+
+        let default_target = Value::named_type(BuiltinType::Data.name());
+        let target = target.unwrap_or(&default_target);
+        match decode_value(&parsed, target, format.name()) {
+            Ok(value) => Ok(ok_value(value)),
+            Err(DecodeError::Shape(error)) => Ok(err_value(shape_error_value(error))),
+            Err(DecodeError::InvalidTarget(message)) => Err(message),
+        }
+    })
 }
 
 struct DecodeComptimeResolver {
@@ -738,6 +971,29 @@ pub(crate) fn shape_error_value(error: ShapeError) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_format_contract_covers_each_codec_once() {
+        let names = TextFormat::ALL
+            .into_iter()
+            .map(TextFormat::name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from(["Json", "Toml", "Yaml"])
+        );
+
+        for format in TextFormat::ALL {
+            let static_names = format
+                .statics()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            assert_eq!(static_names, ["encode", "encodeText", "decode"]);
+            assert!(format.decode_error_name().starts_with(format.name()));
+            assert!(format.encode_error_name().starts_with(format.name()));
+        }
+    }
 
     #[test]
     fn dynamic_decode_accepts_data_target() {

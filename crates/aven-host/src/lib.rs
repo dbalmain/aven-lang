@@ -702,68 +702,55 @@ pub fn data_type() -> Type {
     ])
 }
 
-fn format_decode_base_type() -> Type {
-    build::function_opt(vec![build::text()], vec![Type::Deferred], Type::Deferred)
-}
-
 /// `(a) -> Result(Text, JsonEncodeError)` — `Json.encode` accepts any checked
 /// value and validates JSON encodability at runtime.
 pub fn json_encode_type() -> Type {
-    build::function(
-        vec![build::var("a")],
-        build::result(build::text(), build::named("JsonEncodeError")),
-    )
+    text_format::TextFormat::Json.encode_type()
 }
 
 /// `(a) -> Text` — `Json.encodeText` is additionally gated by a host comptime
 /// resolver which proves `a` cannot contain a `Float`.
 pub fn json_encode_text_type() -> Type {
-    build::function(vec![build::var("a")], build::text())
+    text_format::TextFormat::Json.encode_text_type()
 }
 
 /// The base `Json.decode` type: `(Text, ? = _) -> ?`. The checker uses it for
 /// arity and the input text argument; the host comptime resolver refines the
 /// result from the optional trailing type argument, defaulting to `Data`.
 pub fn json_decode_base_type() -> Type {
-    format_decode_base_type()
+    text_format::TextFormat::Json.decode_base_type()
 }
 
 /// `(a) -> Result(Text, YamlEncodeError)` — `Yaml.encode` mirrors
 /// `Json.encode`'s type shape.
 pub fn yaml_encode_type() -> Type {
-    build::function(
-        vec![build::var("a")],
-        build::result(build::text(), build::named("YamlEncodeError")),
-    )
+    text_format::TextFormat::Yaml.encode_type()
 }
 
 /// `(a) -> Text`; the comptime resolver rejects types that may contain Float.
 pub fn yaml_encode_text_type() -> Type {
-    build::function(vec![build::var("a")], build::text())
+    text_format::TextFormat::Yaml.encode_text_type()
 }
 
 /// The base `Yaml.decode` type: `(Text, ? = _) -> ?`.
 pub fn yaml_decode_base_type() -> Type {
-    format_decode_base_type()
+    text_format::TextFormat::Yaml.decode_base_type()
 }
 
 /// `(a) -> Result(Text, TomlEncodeError)` — `Toml.encode` mirrors
 /// `Json.encode`'s type shape.
 pub fn toml_encode_type() -> Type {
-    build::function(
-        vec![build::var("a")],
-        build::result(build::text(), build::named("TomlEncodeError")),
-    )
+    text_format::TextFormat::Toml.encode_type()
 }
 
 /// `(a) -> Text`; the comptime resolver rejects types that may contain Float.
 pub fn toml_encode_text_type() -> Type {
-    build::function(vec![build::var("a")], build::text())
+    text_format::TextFormat::Toml.encode_text_type()
 }
 
 /// The base `Toml.decode` type: `(Text, ? = _) -> ?`.
 pub fn toml_decode_base_type() -> Type {
-    format_decode_base_type()
+    text_format::TextFormat::Toml.decode_base_type()
 }
 
 /// The base `open` type: `(Text, "r" | "w" | "a" | "rw") -> ?`. The checker
@@ -923,132 +910,72 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ("zone".to_owned(), zone_type()),
     ];
 
-    HostGlobals::new(
-        types,
-        vec![
-            (
-                "File.open".to_owned(),
-                HostComptimeFnSpec::new(io::open_comptime_resolver(), vec![1]),
-            ),
-            (
-                "Json.decode".to_owned(),
-                HostComptimeFnSpec::new(json::decode_comptime_resolver(), vec![1]),
-            ),
-            (
-                "Json.encodeText".to_owned(),
-                HostComptimeFnSpec::new_type_of(
-                    text_format::encode_text_comptime_resolver("Json"),
-                    vec![0],
-                ),
-            ),
-            (
-                "Yaml.decode".to_owned(),
-                HostComptimeFnSpec::new(yaml::decode_comptime_resolver(), vec![1]),
-            ),
-            (
-                "Yaml.encodeText".to_owned(),
-                HostComptimeFnSpec::new_type_of(
-                    text_format::encode_text_comptime_resolver("Yaml"),
-                    vec![0],
-                ),
-            ),
-            (
-                "Toml.decode".to_owned(),
-                HostComptimeFnSpec::new(toml_format::decode_comptime_resolver(), vec![1]),
-            ),
-            (
-                "Toml.encodeText".to_owned(),
-                HostComptimeFnSpec::new_type_of(
-                    text_format::encode_text_comptime_resolver("Toml"),
-                    vec![0],
-                ),
-            ),
-            (
-                "Http.get".to_owned(),
-                HostComptimeFnSpec::new_type_of(
-                    http::comptime_resolver(http::HttpMethod::Get),
-                    vec![1],
-                ),
-            ),
-            (
-                "Http.post".to_owned(),
-                HostComptimeFnSpec::new_type_of(
-                    http::comptime_resolver(http::HttpMethod::Post),
-                    vec![1],
-                ),
-            ),
-            (
-                "Http.put".to_owned(),
-                HostComptimeFnSpec::new_type_of(
-                    http::comptime_resolver(http::HttpMethod::Put),
-                    vec![1],
-                ),
-            ),
-            (
-                "Http.delete".to_owned(),
-                HostComptimeFnSpec::new_type_of(
-                    http::comptime_resolver(http::HttpMethod::Delete),
-                    vec![1],
-                ),
-            ),
-            (
-                "Http.patch".to_owned(),
-                HostComptimeFnSpec::new_type_of(
-                    http::comptime_resolver(http::HttpMethod::Patch),
-                    vec![1],
-                ),
-            ),
-        ],
+    let comptime_functions = std::iter::once((
+        "File.open".to_owned(),
+        HostComptimeFnSpec::new(io::open_comptime_resolver(), vec![1]),
+    ))
+    .chain(
+        text_format::TextFormat::ALL
+            .into_iter()
+            .flat_map(text_format::TextFormat::comptime_specs),
     )
-    .with_type_definitions(
-        std::iter::once((BuiltinType::Data.name().to_owned(), data_type()))
-            .chain([
-                (BuiltinType::JsonError.name().to_owned(), json_error_type()),
-                ("JsonEncodeError".to_owned(), json_encode_error_type()),
-                (BuiltinType::YamlError.name().to_owned(), yaml_error_type()),
-                ("YamlEncodeError".to_owned(), yaml_encode_error_type()),
-                (BuiltinType::TomlError.name().to_owned(), toml_error_type()),
-                ("TomlEncodeError".to_owned(), toml_encode_error_type()),
-            ])
-            .chain(temporal::temporal_type_definitions())
-            .collect(),
-    )
-    .with_statics(
-        std::iter::once((BuiltinType::Json.name().to_owned(), json_statics()))
-            .chain([
-                (BuiltinType::Yaml.name().to_owned(), yaml_statics()),
-                (BuiltinType::Toml.name().to_owned(), toml_statics()),
-            ])
-            .chain(temporal::temporal_statics_table())
-            .collect(),
-    )
-}
+    .chain([
+        (
+            "Http.get".to_owned(),
+            HostComptimeFnSpec::new_type_of(
+                http::comptime_resolver(http::HttpMethod::Get),
+                vec![1],
+            ),
+        ),
+        (
+            "Http.post".to_owned(),
+            HostComptimeFnSpec::new_type_of(
+                http::comptime_resolver(http::HttpMethod::Post),
+                vec![1],
+            ),
+        ),
+        (
+            "Http.put".to_owned(),
+            HostComptimeFnSpec::new_type_of(
+                http::comptime_resolver(http::HttpMethod::Put),
+                vec![1],
+            ),
+        ),
+        (
+            "Http.delete".to_owned(),
+            HostComptimeFnSpec::new_type_of(
+                http::comptime_resolver(http::HttpMethod::Delete),
+                vec![1],
+            ),
+        ),
+        (
+            "Http.patch".to_owned(),
+            HostComptimeFnSpec::new_type_of(
+                http::comptime_resolver(http::HttpMethod::Patch),
+                vec![1],
+            ),
+        ),
+    ])
+    .collect();
 
-/// The statics the `Json` type carries: `encode`/`encodeText`/`decode`. Shared by the
-/// hand-built [`standard_check_host_globals`] and [`Host::register_json`] so the
-/// two registration paths can't drift.
-pub(crate) fn json_statics() -> Vec<(String, Type)> {
-    vec![
-        ("encode".to_owned(), json_encode_type()),
-        ("encodeText".to_owned(), json_encode_text_type()),
-        ("decode".to_owned(), json_decode_base_type()),
-    ]
-}
-
-pub(crate) fn yaml_statics() -> Vec<(String, Type)> {
-    vec![
-        ("encode".to_owned(), yaml_encode_type()),
-        ("encodeText".to_owned(), yaml_encode_text_type()),
-        ("decode".to_owned(), yaml_decode_base_type()),
-    ]
-}
-
-pub(crate) fn toml_statics() -> Vec<(String, Type)> {
-    vec![
-        ("encode".to_owned(), toml_encode_type()),
-        ("encodeText".to_owned(), toml_encode_text_type()),
-        ("decode".to_owned(), toml_decode_base_type()),
-    ]
+    HostGlobals::new(types, comptime_functions)
+        .with_type_definitions(
+            std::iter::once((BuiltinType::Data.name().to_owned(), data_type()))
+                .chain(
+                    text_format::TextFormat::ALL
+                        .into_iter()
+                        .flat_map(text_format::TextFormat::type_definitions),
+                )
+                .chain(temporal::temporal_type_definitions())
+                .collect(),
+        )
+        .with_statics(
+            text_format::TextFormat::ALL
+                .into_iter()
+                .map(|format| (format.name().to_owned(), format.statics()))
+                .chain(temporal::temporal_statics_table())
+                .collect(),
+        )
 }
 
 #[cfg(test)]

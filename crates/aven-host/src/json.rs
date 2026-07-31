@@ -9,12 +9,11 @@ use serde::de;
 use serde::{Deserialize, Deserializer};
 
 use crate::Host;
-use crate::io::{aven_value_type_name, err_value, ok_value};
+use crate::io::aven_value_type_name;
 use crate::temporal::temporal_iso_text;
-use crate::text_format::{
-    DecodeError, FormatNumber, FormatValue, decode_value, encode_error_value, parse_error_value,
-    shape_error_value,
-};
+#[cfg(test)]
+use crate::text_format::decode_value;
+use crate::text_format::{FormatNumber, FormatValue, TextFormat, register_text_format};
 
 type JsonValue = FormatValue;
 type JsonNumber = FormatNumber;
@@ -23,35 +22,7 @@ impl Host {
     /// Register the `Json` type artifact (carrying `encode`/`decode` statics),
     /// the shared `Data` dynamic type, and the named `JsonError` type.
     pub fn register_json(&mut self) {
-        self.register_data_type();
-        self.register_type_statics(
-            "Json",
-            vec![
-                (
-                    "encode".to_owned(),
-                    crate::json_encode_type(),
-                    encode_native(),
-                ),
-                (
-                    "encodeText".to_owned(),
-                    crate::json_encode_text_type(),
-                    encode_text_native(),
-                ),
-                (
-                    "decode".to_owned(),
-                    crate::json_decode_base_type(),
-                    decode_native(),
-                ),
-            ],
-        );
-        self.register_type_definition("JsonError", crate::json_error_type());
-        self.register_type_definition("JsonEncodeError", crate::json_encode_error_type());
-        self.register_comptime_resolver("Json.decode", vec![1], decode_comptime_resolver());
-        self.register_comptime_type_resolver(
-            "Json.encodeText",
-            vec![0],
-            crate::text_format::encode_text_comptime_resolver("Json"),
-        );
+        register_text_format(self, TextFormat::Json, parse_json, encode_to_text);
     }
 }
 
@@ -96,82 +67,14 @@ where
     }
 }
 
-pub(crate) fn decode_comptime_resolver() -> std::rc::Rc<dyn aven_check::HostComptimeFn> {
-    crate::text_format::decode_comptime_resolver("JsonError")
-}
-
-fn encode_native() -> Value {
-    Value::native(|args| {
-        let [value] = args else {
-            return Err(format!(
-                "Json.encode expects 1 argument, got {}",
-                args.len()
-            ));
-        };
-
-        Ok(match encode_to_text(value) {
-            Ok(text) => ok_value(Value::Text(text)),
-            Err(error) => err_value(encode_error_value(error)),
-        })
-    })
-}
-
-fn encode_text_native() -> Value {
-    Value::native(|args| {
-        let [value] = args else {
-            return Err(format!(
-                "Json.encodeText expects 1 argument, got {}",
-                args.len()
-            ));
-        };
-        let text = encode_to_text(value).unwrap_or_else(|error| {
-            panic!("Json.encodeText Float-free type invariant failed: {error}")
-        });
-        Ok(Value::Text(text))
-    })
+fn parse_json(text: &str) -> Result<FormatValue, String> {
+    serde_json::from_str::<JsonValue>(text).map_err(|error| error.to_string())
 }
 
 pub(crate) fn encode_to_text(value: &Value) -> Result<String, String> {
     let mut output = String::new();
     encode_value(value, EncodePosition::TopLevel, &mut output)?;
     Ok(output)
-}
-
-fn decode_native() -> Value {
-    Value::native(|args| {
-        if args.len() > 2 {
-            return Err(format!(
-                "Json.decode expects 1 or 2 arguments, got {}",
-                args.len()
-            ));
-        }
-        let (text, target) = match args {
-            [Value::Text(text)] => (text, None),
-            [Value::Text(text), target] => (text, Some(target)),
-            [other] | [other, ..] => {
-                return Err(format!(
-                    "Json.decode expects Text input, got {}",
-                    aven_value_type_name(other)
-                ));
-            }
-            [] => {
-                return Err("Json.decode expects at least 1 argument, got 0".to_owned());
-            }
-        };
-
-        let parsed = match serde_json::from_str::<JsonValue>(text) {
-            Ok(value) => value,
-            Err(error) => return Ok(err_value(parse_error_value(error.to_string()))),
-        };
-
-        let default_target = Value::named_type("Data");
-        let target = target.unwrap_or(&default_target);
-        match decode_value(&parsed, target, "Json") {
-            Ok(value) => Ok(ok_value(value)),
-            Err(DecodeError::Shape(error)) => Ok(err_value(shape_error_value(error))),
-            Err(DecodeError::InvalidTarget(message)) => Err(message),
-        }
-    })
 }
 
 #[derive(Clone, Copy)]
