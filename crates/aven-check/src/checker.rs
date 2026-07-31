@@ -30,7 +30,8 @@ use crate::ty::{
     is_resolved_value_type, is_text_type, is_undefined_value, literal_base, literal_variant_base,
     map_type, mismatched_literal_kind, named_builtin, named_type_mismatch, named_type_name,
     numeric_type_name, open_literal_variant_base, render_literal_value, render_type_scheme,
-    type_contains_deferred, type_contains_variable, type_is_uninhabited, type_variable_names,
+    type_contains_deferred, type_contains_error, type_contains_hole, type_contains_variable,
+    type_is_uninhabited, type_variable_names,
 };
 use crate::unify::Unifier;
 use crate::{
@@ -1753,14 +1754,17 @@ fn export_method_constraints(
 fn applied_type_constructor_mismatch(expected: &Type, actual: &Type) -> bool {
     match (expected, actual) {
         (Type::Named(expected), Type::Named(actual)) => expected != actual,
-        (Type::Deferred | Type::Variable(_) | Type::Meta(_), _)
-        | (_, Type::Deferred | Type::Variable(_) | Type::Meta(_)) => false,
+        (Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_), _)
+        | (_, Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_)) => false,
         _ => expected != actual,
     }
 }
 
 fn reportable_type_shape(ty: &Type) -> bool {
-    !matches!(ty, Type::Deferred | Type::Variable(_) | Type::Meta(_))
+    !matches!(
+        ty,
+        Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_)
+    )
 }
 
 fn literal_pattern_value(pattern: &Expr) -> Option<(&Literal, Span)> {

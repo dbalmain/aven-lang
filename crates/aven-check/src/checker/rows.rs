@@ -663,7 +663,8 @@ impl<'a> Checker<'a> {
                 };
                 Some(RowSource::Open(row))
             }
-            Type::Deferred
+            Type::Error
+            | Type::Deferred
             | Type::Named(_)
             | Type::Variable(_)
             | Type::Recursive(_)

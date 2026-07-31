@@ -48,7 +48,8 @@ pub(crate) fn is_productive(
         // Deferred forms, variables, metas, names, recursive references outside
         // the current SCC, and non-collection applications are intentionally
         // conservative: productivity diagnostics must not false-positive.
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)

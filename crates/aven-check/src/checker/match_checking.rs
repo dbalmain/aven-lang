@@ -172,7 +172,7 @@ impl<'a> Checker<'a> {
         subject_type: &Type,
     ) {
         let subject_type = self.normalize_for_demand(subject_type);
-        if type_contains_deferred(&subject_type) {
+        if type_contains_hole(&subject_type) {
             return;
         }
         let (empty_values, payload_type) = peel_empty_values(&subject_type);
@@ -350,7 +350,11 @@ impl<'a> Checker<'a> {
                 },
             },
             Type::Variant(row) => Self::literal_base_kind_name(literal_variant_base(row)?),
-            Type::Deferred | Type::Variable(_) | Type::Meta(_) | Type::Recursive(_) => None,
+            Type::Error
+            | Type::Deferred
+            | Type::Variable(_)
+            | Type::Meta(_)
+            | Type::Recursive(_) => None,
             Type::Optional(inner) | Type::Nullable(inner) => {
                 self.match_subject_literal_kind_name(inner)
             }

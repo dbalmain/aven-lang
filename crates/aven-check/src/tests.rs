@@ -7403,7 +7403,7 @@ fn computed_value_index_with_runtime_key_reports_not_comptime() {
         checker
             .infer_top_level_scheme("value")
             .map(|scheme| scheme.ty),
-        Some(Type::Deferred)
+        Some(Type::Error)
     );
     assert_eq!(
         matching_codes(&checker.diagnostics, codes::ty::RECORD_INDEX_NOT_COMPTIME),
@@ -7424,7 +7424,7 @@ fn computed_value_index_with_non_record_receiver_reports_not_indexable() {
         checker
             .infer_top_level_scheme("value")
             .map(|scheme| scheme.ty),
-        Some(Type::Deferred)
+        Some(Type::Error)
     );
     assert_eq!(
         matching_codes(&checker.diagnostics, codes::ty::NOT_INDEXABLE),
@@ -10046,7 +10046,8 @@ fn unresolved_top_level_runtime_binding_reports_when_value_stays_deferred() {
 
 #[test]
 fn bare_placeholder_runtime_binding_remains_clean() {
-    let output = parse_module("runtime = _\n");
+    let source = "runtime = _\n";
+    let output = parse_module(source);
     let check = check_module(&output.module);
 
     assert!(
@@ -10054,6 +10055,13 @@ fn bare_placeholder_runtime_binding_remains_clean() {
         "bare placeholder should stay valid: {:?}",
         check.diagnostics
     );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let scheme = checker
+        .infer_top_level_scheme("runtime")
+        .expect("placeholder binding has an internal scheme");
+    assert_eq!(scheme.ty, Type::Deferred);
 }
 
 #[test]
@@ -10073,7 +10081,8 @@ fn comptime_deferred_binding_does_not_report_unresolved_binding() {
 
 #[test]
 fn binding_with_upstream_diagnostic_does_not_double_report_unresolved_binding() {
-    let output = parse_module("x = y\n");
+    let source = "x = y\n";
+    let output = parse_module(source);
     let check = check_module(&output.module);
 
     assert_eq!(check.diagnostics.len(), 1, "{:?}", check.diagnostics);
@@ -10082,6 +10091,15 @@ fn binding_with_upstream_diagnostic_does_not_double_report_unresolved_binding() 
         &check.diagnostics,
         codes::ty::UNRESOLVED_BINDING
     ));
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let scheme = checker
+        .infer_top_level_scheme_reporting_unbound_names("x")
+        .expect("failed binding has an internal recovery scheme");
+    assert_eq!(scheme.ty, Type::Error);
+    assert!(type_contains_error(&scheme.ty));
+    assert!(!type_contains_deferred(&scheme.ty));
 }
 
 #[test]

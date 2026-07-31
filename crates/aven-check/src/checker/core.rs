@@ -998,7 +998,7 @@ impl<'a> Checker<'a> {
                 self.memo.insert(name.clone(), scheme.clone());
                 types.insert(name.clone(), Some(scheme));
             } else if let Some(inferred) = self.infer_top_level_without_unbound_names(&name)
-                && !type_contains_deferred(&inferred.ty)
+                && !type_contains_hole(&inferred.ty)
             {
                 types.insert(name.clone(), Some(inferred));
             }
@@ -1597,7 +1597,9 @@ impl<'a> Checker<'a> {
             let diagnostics_start = self.diagnostics.len();
             self.check_value_expr(&binding.value);
             self.report_unresolved_runtime_binding_if_stuck(binding, &scheme.ty, diagnostics_start);
-            if type_contains_deferred(&scheme.ty) {
+            if type_contains_error(&scheme.ty) {
+                LocalValueType::Known(Type::Error)
+            } else if type_contains_deferred(&scheme.ty) {
                 LocalValueType::Unknown
             } else {
                 LocalValueType::Scheme(scheme)
@@ -1938,7 +1940,7 @@ impl<'a> Checker<'a> {
             return false;
         };
 
-        !type_contains_deferred(&ty) && is_non_liftable_artifact_type(&ty)
+        !type_contains_hole(&ty) && is_non_liftable_artifact_type(&ty)
     }
 
     pub(super) fn lower_clean_normalized_type(&self, value: &Expr) -> Option<Type> {
@@ -2097,7 +2099,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn record_inferred_type(&mut self, name_span: Span, ty: Type) {
-        if type_contains_deferred(&ty) {
+        if type_contains_hole(&ty) {
             return;
         }
 
@@ -2113,7 +2115,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn record_scheme_type(&mut self, name_span: Span, scheme: &TypeScheme) {
-        if type_contains_deferred(&scheme.ty) {
+        if type_contains_hole(&scheme.ty) {
             return;
         }
         self.inferred_types.push(InferredType {

@@ -138,6 +138,7 @@ impl Unifier {
         let right = self.resolve(right);
 
         match (&left, &right) {
+            (Type::Error, _) | (_, Type::Error) => Ok(()),
             (Type::Meta(left), Type::Meta(right)) if left == right => Ok(()),
             (Type::Recursive(left), Type::Recursive(right)) => {
                 (left == right).then_some(()).ok_or(())
@@ -756,7 +757,8 @@ fn visit_type_row_tails(ty: &Type, visit: &mut impl FnMut(RowTail)) {
             visit_row_tails(data, visit);
             visit_row_tails(slots, visit);
         }
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)

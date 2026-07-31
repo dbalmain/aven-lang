@@ -130,7 +130,8 @@ fn value_from_type(
                 })
                 .collect(),
         ),
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Variable(_)
         | Type::Meta(_)
         | Type::Apply { .. }
@@ -217,7 +218,8 @@ fn descriptor_from_type(
                 })
                 .collect(),
         ),
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Variable(_)
         | Type::Meta(_)
         | Type::Apply { .. }
@@ -251,7 +253,7 @@ fn type_contains_recursive(ty: &Type) -> bool {
                 RowEntry::Literal { .. } => false,
             })
         }),
-        Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => false,
+        Type::Error | Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => false,
     }
 }
 

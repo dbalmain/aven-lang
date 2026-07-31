@@ -22,7 +22,8 @@ pub use ty::build;
 pub use ty::{
     MethodConstraint, QualifiedType, RecordField, RecursiveTypeId, Row, RowEntry, RowTail, Type,
     function_required_arity, function_signature, is_text_type, literal_union_members,
-    might_contain_float, record_fields, render_type, type_contains_deferred, variant_tags,
+    might_contain_float, record_fields, render_type, type_contains_deferred, type_contains_error,
+    type_contains_hole, variant_tags,
 };
 
 /// Clone the completed one-level head for a recursive reference. Nested

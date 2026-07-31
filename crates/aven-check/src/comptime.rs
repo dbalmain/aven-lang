@@ -46,6 +46,7 @@ impl From<&ComptimeValue> for CanonicalComptimeValue {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum CanonicalType {
+    Error,
     Deferred,
     Named(String),
     Variable(String),
@@ -74,6 +75,7 @@ enum CanonicalType {
 impl From<&Type> for CanonicalType {
     fn from(ty: &Type) -> Self {
         match ty {
+            Type::Error => Self::Error,
             Type::Deferred => Self::Deferred,
             Type::Named(name) => Self::Named(name.clone()),
             Type::Variable(name) => Self::Variable(name.clone()),

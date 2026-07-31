@@ -1250,13 +1250,13 @@ fn declaration_detail(
     // Prefer an exact name-span type (value bindings). Comptime type aliases
     // such as `User = { name: Text }` only appear in type_definitions.
     if let Some(inferred) = document.inferred_type_at_exact_span(declaration.name_span)
-        && !aven_compiler::type_contains_deferred(&inferred.ty)
+        && !aven_compiler::type_contains_hole(&inferred.ty)
     {
         return Some(inferred.render());
     }
     document
         .type_definition(&declaration.name)
-        .filter(|ty| !aven_compiler::type_contains_deferred(ty))
+        .filter(|ty| !aven_compiler::type_contains_hole(ty))
         .map(aven_compiler::Type::render)
 }
 
@@ -2488,7 +2488,7 @@ fn push_inlay_hint_for_name_span(
     let Some(inferred) = document.inferred_type_at_exact_span(name_span) else {
         return;
     };
-    if aven_compiler::type_contains_deferred(&inferred.ty) {
+    if aven_compiler::type_contains_hole(&inferred.ty) {
         return;
     }
 
@@ -3058,7 +3058,7 @@ fn comptime_hover_value(
     if let Some(ty) = document.type_definition(&identifier.name) {
         // Deferred definitions (e.g. `Bad = partial(missing)`) get no hover;
         // `Bad = <deferred>` would only restate that resolution failed.
-        return (!aven_compiler::type_contains_deferred(ty))
+        return (!aven_compiler::type_contains_hole(ty))
             .then(|| format!("```aven\n{} = {}\n```", identifier.name, ty.render()));
     }
 

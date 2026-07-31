@@ -84,7 +84,7 @@ impl<'a> Checker<'a> {
         {
             let env = self.local_types.inference_env();
             let actual = self.infer_name_reference(&env, name, value.span);
-            if !type_contains_deferred(&actual) {
+            if !type_contains_hole(&actual) {
                 self.check_type_against_type(expected, &actual, value.span);
             }
             return;
@@ -144,7 +144,7 @@ impl<'a> Checker<'a> {
             (ExprKind::Name(name) | ExprKind::ComptimeName(name), _) => {
                 let env = self.local_types.inference_env();
                 let actual = self.infer_name_reference(&env, name, value.span);
-                if !type_contains_deferred(&actual) {
+                if !type_contains_hole(&actual) {
                     self.check_type_against_type(expected, &actual, value.span);
                 }
             }
@@ -218,7 +218,7 @@ impl<'a> Checker<'a> {
                 let env = self.local_types.inference_env();
                 if let Some(actual) = self.infer_record_selection_builtin_call(&env, callee, args) {
                     self.record_expr_type(value.span, &actual);
-                    if !type_contains_deferred(&actual) {
+                    if !type_contains_hole(&actual) {
                         self.check_type_against_type(expected, &actual, value.span);
                     }
                 } else {
@@ -316,7 +316,10 @@ impl<'a> Checker<'a> {
             );
             return;
         }
-        if matches!(actual, Type::Deferred | Type::Variable(_) | Type::Meta(_)) {
+        if matches!(
+            actual,
+            Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_)
+        ) {
             let source_name = self
                 .slot_source_variable_name(&actual)
                 .or_else(|| self.slot_source_variable_from_expr(value))
@@ -1673,7 +1676,7 @@ impl<'a> Checker<'a> {
 
         let env = self.local_types.inference_env();
         let actual = self.infer_record_entries(&env, value_entries);
-        if !type_contains_deferred(&actual) {
+        if !type_contains_hole(&actual) {
             self.check_type_against_type(&Type::Record(row.clone()), &actual, value_span);
         }
         self.walk_value_record_values(value_entries);

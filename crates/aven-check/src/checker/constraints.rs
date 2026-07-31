@@ -106,6 +106,7 @@ impl<'a> Checker<'a> {
 
             match &predicate.candidate {
                 Type::Meta(_) | Type::Variable(_) => self.method_obligations.push(predicate),
+                Type::Error => {}
                 // A `Deferred` receiver is the checker's own "I declined to infer
                 // this", not an ambiguity the author left behind. When an
                 // uninferred local is in scope the deferral is explained by it —

@@ -96,6 +96,19 @@ impl<'a> Checker<'a> {
         self.infer_top_level(name)
     }
 
+    #[cfg(test)]
+    pub(crate) fn infer_top_level_scheme_reporting_unbound_names(
+        &mut self,
+        name: &str,
+    ) -> Option<TypeScheme> {
+        let previous = self.report_unbound_names;
+        self.report_unbound_names = true;
+        self.memo.remove(name);
+        let scheme = self.infer_top_level(name);
+        self.report_unbound_names = previous;
+        scheme
+    }
+
     pub(super) fn infer_local_value(&mut self, env: &TypeEnv, value: &Expr) -> Option<Type> {
         let ty = self.infer(env, value);
         self.resolve_if_concrete(&ty)
@@ -351,8 +364,12 @@ impl<'a> Checker<'a> {
             }
             ok_ty.clone()
         } else {
-            self.report_propagate_not_result_if_concrete(&resolved, value.span);
-            Type::Deferred
+            if is_resolved_value_type(&resolved) {
+                self.report_propagate_not_result_if_concrete(&resolved, value.span);
+                Type::Error
+            } else {
+                Type::Deferred
+            }
         }
     }
 
@@ -394,7 +411,7 @@ impl<'a> Checker<'a> {
                     "rewrite this use as `left.{operator}(right)`, or move the expression into the designated entry"
                 )),
             );
-            return Type::Deferred;
+            return Type::Error;
         }
 
         if operator == "|>" {
@@ -1144,8 +1161,8 @@ impl<'a> Checker<'a> {
                 }
             }
             (Type::Recursive(_), _) | (_, Type::Recursive(_)) => EqualityCompatibility::Unknown,
-            (Type::Deferred | Type::Variable(_) | Type::Meta(_), _)
-            | (_, Type::Deferred | Type::Variable(_) | Type::Meta(_)) => {
+            (Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_), _)
+            | (_, Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_)) => {
                 EqualityCompatibility::Unknown
             }
             (Type::Optional(_) | Type::Nullable(_), _)
@@ -1181,7 +1198,7 @@ impl<'a> Checker<'a> {
                 match operator {
                     "-" if binary_operand_is_float(&value_type) => named_builtin("Float"),
                     "-" if binary_operand_is_numeric(&value_type) => named_builtin("Int"),
-                    _ => Type::Deferred,
+                    _ => Type::Error,
                 }
             } else {
                 Type::Deferred
@@ -1576,7 +1593,7 @@ impl<'a> Checker<'a> {
             && self.is_parameterized_type_constructor_name(env, name)
         {
             self.report_unbound_method_parameterized_owner(name, field, field_span);
-            return Type::Deferred;
+            return Type::Error;
         }
 
         if let Some(scheme) = self.imported_field_scheme(env, receiver, field, field_span) {
@@ -2030,7 +2047,7 @@ impl<'a> Checker<'a> {
             for arg in args {
                 self.infer(env, arg);
             }
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         }
         if known.is_none() && !constrained {
             return None;
@@ -2145,16 +2162,16 @@ impl<'a> Checker<'a> {
 
         let Some(arg) = args.first() else {
             self.report_dynamic_import(callee.span);
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         };
         if args.len() != 1 {
             self.report_dynamic_import(callee.span);
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         }
 
         let ExprKind::Literal(Literal::String(raw)) = &ungroup_expr(arg).kind else {
             self.report_dynamic_import(arg.span);
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         };
         let specifier = decode_string_literal(raw);
         match self.imports.get(&specifier) {
@@ -2162,11 +2179,11 @@ impl<'a> Checker<'a> {
             Some(None) => Some(Type::Deferred),
             None if aven_core::is_local_import_specifier(&specifier) => {
                 self.report_unresolved_import(&specifier, arg.span);
-                Some(Type::Deferred)
+                Some(Type::Error)
             }
             None => {
                 self.report_unsupported_import_root(&specifier, arg.span);
-                Some(Type::Deferred)
+                Some(Type::Error)
             }
         }
     }
@@ -2203,11 +2220,11 @@ impl<'a> Checker<'a> {
 
         let Some(format) = args.first() else {
             self.report_decode_missing_format(*field_span);
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         };
         let Some(format_name) = self.format_member_name(env, format, "decode") else {
             self.report_decode_invalid_format(format);
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         };
 
         // Build the equivalent `Fmt.decode(receiver, ...rest)` and reuse the
@@ -2253,11 +2270,11 @@ impl<'a> Checker<'a> {
 
         let Some(format) = args.first() else {
             self.report_encode_missing_format(field_span);
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         };
         let Some(format_name) = self.format_member_name(env, format, "encode") else {
             self.report_encode_invalid_format(format);
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         };
 
         let mut synth_args = Vec::with_capacity(args.len());
@@ -2271,7 +2288,7 @@ impl<'a> Checker<'a> {
             synth_args.len(),
             callee.span,
         ) {
-            return Some(Type::Deferred);
+            return Some(Type::Error);
         }
 
         let synth_callee = Expr {
@@ -2732,7 +2749,7 @@ impl<'a> Checker<'a> {
             Ok(ty) => Some(ty),
             Err(error) => {
                 self.report_host_comptime_error(error, error_span);
-                Some(Type::Deferred)
+                Some(Type::Error)
             }
         }
     }
@@ -3354,7 +3371,7 @@ impl<'a> Checker<'a> {
                 // a non-indexable core (e.g. `?Int?[0]`) reports the core.
                 let reported = if null_safe { &core } else { &callee_type };
                 self.report_not_indexable(reported, callee, args);
-                Type::Deferred
+                Type::Error
             }
             _ => Type::Deferred,
         };
@@ -3393,7 +3410,7 @@ impl<'a> Checker<'a> {
                 return Type::Deferred;
             }
             self.report_record_index_not_comptime(arg.span);
-            return Type::Deferred;
+            return Type::Error;
         };
         if let Some(ty) = row_field_type(row, &label) {
             return ty.clone();
@@ -3401,7 +3418,11 @@ impl<'a> Checker<'a> {
         if row.tail == RowTail::Closed {
             self.report_missing_field(&label, arg.span);
         }
-        Type::Deferred
+        if row.tail == RowTail::Closed {
+            Type::Error
+        } else {
+            Type::Deferred
+        }
     }
 
     /// Tuple projection requires a comptime-known integer index and returns the
@@ -3409,13 +3430,13 @@ impl<'a> Checker<'a> {
     pub(super) fn infer_tuple_index(&mut self, elements: &[Type], arg: &Expr) -> Type {
         let Some(index) = comptime_known_tuple_index(arg) else {
             self.report_tuple_index_not_comptime(arg.span);
-            return Type::Deferred;
+            return Type::Error;
         };
         match elements.get(index) {
             Some(ty) => ty.clone(),
             None => {
                 self.report_tuple_index_out_of_range(arg.span, index, elements.len());
-                Type::Deferred
+                Type::Error
             }
         }
     }
@@ -3615,8 +3636,13 @@ impl<'a> Checker<'a> {
             return Type::Deferred;
         }
 
+        let diagnosed = self.report_unbound_names;
         self.report_unbound_name(name, span);
-        Type::Deferred
+        if diagnosed {
+            Type::Error
+        } else {
+            Type::Deferred
+        }
     }
 
     pub(super) fn report_unbound_name(&mut self, name: &str, span: Span) {
@@ -3675,6 +3701,9 @@ impl<'a> Checker<'a> {
         for arg in args {
             let arg_type = self.infer(env, arg);
             let arg_type = self.unifier.resolve(&arg_type);
+            if type_contains_error(&arg_type) {
+                return Type::Error;
+            }
             if type_contains_deferred(&arg_type) {
                 return Type::Deferred;
             }
@@ -3817,7 +3846,9 @@ impl<'a> Checker<'a> {
                                 obligation_marker,
                                 Some(&binding.name),
                             );
-                            if type_contains_deferred(&scheme.ty) {
+                            if type_contains_error(&scheme.ty) {
+                                LocalValueType::Known(Type::Error)
+                            } else if type_contains_deferred(&scheme.ty) {
                                 LocalValueType::Unknown
                             } else {
                                 LocalValueType::Scheme(scheme)
@@ -4144,7 +4175,8 @@ fn equality_base_kind(ty: &Type) -> Option<EqualityBaseKind> {
             Some(LiteralBase::Number) => Some(EqualityBaseKind::Number),
             None => None,
         },
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)
@@ -4231,7 +4263,8 @@ fn type_has_open_row(ty: &Type) -> bool {
                     RowEntry::Literal { .. } => false,
                 })
         }),
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)

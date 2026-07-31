@@ -382,7 +382,8 @@ impl Checker<'_> {
                     diagnostics,
                 )
             }
-            Type::Deferred
+            Type::Error
+            | Type::Deferred
             | Type::Named(_)
             | Type::Variable(_)
             | Type::Meta(_)

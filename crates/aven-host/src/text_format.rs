@@ -433,7 +433,8 @@ fn deprecated_dynamic_target_name(ty: &Type) -> Option<&str> {
                 RowEntry::Literal { .. } => None,
             })
         }),
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)

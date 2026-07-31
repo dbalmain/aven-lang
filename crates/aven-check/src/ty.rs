@@ -13,6 +13,11 @@ pub struct RecursiveTypeId(pub(crate) u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
+    /// Error-recovery poison produced after the checker has already emitted a
+    /// diagnostic. It unifies permissively to avoid cascades, but unlike
+    /// [`Type::Deferred`] it never means that a later comptime phase may still
+    /// resolve the type.
+    Error,
     /// A type expression that is valid to keep for a later comptime/type phase
     /// but is not part of the core lowered type grammar yet.
     Deferred,
@@ -150,7 +155,8 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
                 .collect(),
         ),
         Type::Apply { .. } | Type::Variant(_) | Type::Named(_) => builtin_collection_fields(ty),
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Variable(_)
         | Type::Meta(_)
         | Type::Recursive(_)
@@ -808,6 +814,7 @@ impl TypeRenderer {
         match ty {
             // `?` is intentionally honest: the checker accepted a syntactic
             // type shape but deferred its real meaning to a later phase.
+            Type::Error => "<error>".to_owned(),
             Type::Deferred => "?".to_owned(),
             Type::Named(name) => name.rfind('\0').map_or_else(
                 || name.clone(),
@@ -1066,7 +1073,8 @@ pub(crate) fn map_type_with_rows(
             slots: Box::new(map_row(slots, leaf, tail)),
         },
         Type::Variant(row) => Type::Variant(map_row(row, leaf, tail)),
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)
@@ -1160,7 +1168,8 @@ fn visit_type_with_rows(
                 visit_tail(row.tail);
             }
         }
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)
@@ -1244,7 +1253,10 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
     visit_type_with_rows(
         ty,
         &mut |node| {
-            if matches!(node, Type::Deferred | Type::Variable(_) | Type::Meta(_)) {
+            if matches!(
+                node,
+                Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_)
+            ) {
                 concrete_types = false;
             }
         },
@@ -1261,6 +1273,31 @@ pub fn type_contains_deferred(ty: &Type) -> bool {
     let mut found = false;
     visit_type(ty, &mut |node| {
         if matches!(node, Type::Deferred) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Whether `ty` contains error-recovery poison.
+///
+/// This is intentionally distinct from [`type_contains_deferred`]: callers can
+/// now tell a diagnosed failure from a valid type term awaiting comptime work.
+pub fn type_contains_error(ty: &Type) -> bool {
+    let mut found = false;
+    visit_type(ty, &mut |node| {
+        if matches!(node, Type::Error) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Whether `ty` contains any non-semantic recovery or pending leaf.
+pub fn type_contains_hole(ty: &Type) -> bool {
+    let mut found = false;
+    visit_type(ty, &mut |node| {
+        if matches!(node, Type::Error | Type::Deferred) {
             found = true;
         }
     });
@@ -1287,7 +1324,7 @@ pub fn might_contain_float(ty: &Type, context: &crate::ComptimeTypeContext<'_>) 
         recursive: &mut HashSet<RecursiveTypeId>,
     ) -> bool {
         match ty {
-            Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
+            Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
             Type::Named(name) if name == "Float" => true,
             Type::Named(name) => {
                 let Some(owner) = context.named_family_aliases.get(name) else {
@@ -1398,7 +1435,7 @@ pub(crate) fn open_literal_variant_base(row: &Row) -> Option<LiteralBase> {
 
 pub(crate) fn is_resolved_value_type(ty: &Type) -> bool {
     match ty {
-        Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
+        Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_) => false,
         Type::Named(_) | Type::Recursive(_) => true,
         Type::Apply { callee, args } => {
             is_resolved_value_type(callee) && args.iter().all(is_resolved_value_type)
@@ -1622,7 +1659,8 @@ pub(crate) fn render_literal_value(literal: &Literal) -> &str {
 pub(crate) fn named_type_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::Named(name) => Some(name),
-        Type::Deferred
+        Type::Error
+        | Type::Deferred
         | Type::Variable(_)
         | Type::Meta(_)
         | Type::Recursive(_)

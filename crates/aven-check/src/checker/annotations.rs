@@ -52,7 +52,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn reflection_subject_is_unresolved(&self, ty: &Type) -> bool {
         match ty {
-            Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
+            Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
             Type::Named(name) => !BUILTIN_TYPES.contains(&name.as_str()),
             Type::Recursive(_) => false,
             Type::Apply { callee, args } => {
@@ -219,7 +219,9 @@ impl<'a> Checker<'a> {
                 slots: Box::new(self.unfold_recursive_row_for_demand(slots, visited)),
             },
             Type::Variant(row) => Type::Variant(self.unfold_recursive_row_for_demand(row, visited)),
-            Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => ty.clone(),
+            Type::Error | Type::Deferred | Type::Named(_) | Type::Variable(_) | Type::Meta(_) => {
+                ty.clone()
+            }
         }
     }
 
@@ -271,6 +273,7 @@ impl<'a> Checker<'a> {
                 next_visited.insert(name.clone());
                 self.normalize_with_visited(definition, next_visited)
             }
+            Type::Error => Type::Error,
             Type::Deferred => Type::Deferred,
             Type::Variable(name) => Type::Variable(name.clone()),
             Type::Meta(id) => Type::Meta(*id),
