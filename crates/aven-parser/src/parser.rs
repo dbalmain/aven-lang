@@ -115,6 +115,10 @@ pub const METHOD_RECEIVER_NAME: &str = "\0aven.method.receiver";
 pub enum ExprKind {
     Missing,
     Literal(Literal),
+    /// Reserved slash-delimited regex syntax. Kept outside [`Literal`] until
+    /// regexes have a checked/runtime type so typed literal consumers cannot
+    /// accidentally treat them as ordinary singleton literals.
+    Regex(String),
     Interpolation(Vec<InterpolationSegment>),
     Undefined,
     Null,
@@ -315,7 +319,6 @@ pub enum Literal {
     Bool(bool),
     Number(String),
     String(String),
-    Regex(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1800,7 +1803,10 @@ impl Parser<'_> {
             TokenKind::InterpolationStart(text) => self.parse_interpolation(text, token.span),
             TokenKind::RegexLiteral(regex) => {
                 self.advance();
-                literal_expr(Literal::Regex(regex), token.span)
+                Expr {
+                    kind: ExprKind::Regex(regex),
+                    span: token.span,
+                }
             }
             TokenKind::Operator(operator)
                 if operator == "@" && self.next_is(TokenKind::OpenBrace) =>

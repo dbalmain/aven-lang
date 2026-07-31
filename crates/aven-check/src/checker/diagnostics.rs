@@ -84,12 +84,11 @@ impl<'a> Checker<'a> {
         );
     }
 
-    pub(super) fn report_unsupported_regex_literals(&mut self, expr: &Expr) {
-        if matches!(expr.kind, ExprKind::Literal(Literal::Regex(_))) {
-            self.report_regex_literal_unsupported(expr.span);
-        }
-        walk_expr_children(expr, &mut |child| {
-            self.report_unsupported_regex_literals(child);
+    pub(super) fn report_unsupported_regex_literals(&mut self, module: &Module) {
+        walk_module_exprs(module, &mut |expr| {
+            if matches!(expr.kind, ExprKind::Regex(_)) {
+                self.report_regex_literal_unsupported(expr.span);
+            }
         });
     }
 

@@ -1051,6 +1051,8 @@ impl<'a> Checker<'a> {
     }
 
     pub(crate) fn check_module(&mut self, module: &Module) {
+        self.report_unsupported_regex_literals(module);
+
         // Top-level declared annotations go through declarations so inline and
         // adjacent signature+binding forms share one lookup path.
         for declaration in collect_declarations(module) {
@@ -1696,7 +1698,6 @@ impl<'a> Checker<'a> {
         value: &Expr,
         env: &TypeEnv,
     ) -> Vec<(String, LocalValueType)> {
-        self.report_unsupported_regex_literals(pattern);
         self.check_value_expr(value);
         let inferred = self.infer(env, value);
         let resolved = self.normalize(&self.resolve_and_default(&inferred));
@@ -2001,6 +2002,7 @@ impl<'a> Checker<'a> {
                 args.iter().all(Self::literal_or_tag_value_shape)
             }
             ExprKind::Missing
+            | ExprKind::Regex(_)
             | ExprKind::PrimitiveFamily { .. }
             | ExprKind::Interpolation(_)
             | ExprKind::Name(_)

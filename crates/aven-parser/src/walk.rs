@@ -1,7 +1,42 @@
 use aven_core::Span;
 
-use crate::parser::{Expr, ExprKind, InterpolationSegment, Item, RecordEntry};
+use crate::parser::{Expr, ExprKind, InterpolationSegment, Item, Module, RecordEntry};
 use crate::resolve::pattern_bindings;
+
+/// Visit every expression in a module, including item roots and all nested
+/// children, in source-tree order.
+pub fn walk_module_exprs<'a>(module: &'a Module, visit: &mut impl FnMut(&'a Expr)) {
+    fn walk_expr<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
+        visit(expr);
+        walk_expr_children(expr, &mut |child| walk_expr(child, visit));
+    }
+
+    fn walk_entries<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMut(&'a Expr)) {
+        walk_record_entry_exprs(entries, &mut |expr| walk_expr(expr, visit));
+    }
+
+    for item in &module.items {
+        match item {
+            Item::Binding(binding) => {
+                if let Some(annotation) = &binding.annotation {
+                    walk_expr(annotation, visit);
+                }
+                walk_expr(&binding.value, visit);
+            }
+            Item::PatternBinding(binding) => {
+                walk_expr(&binding.pattern, visit);
+                walk_expr(&binding.value, visit);
+            }
+            Item::SpreadBinding(binding) => walk_expr(&binding.value, visit),
+            Item::Signature(signature) => walk_expr(&signature.annotation, visit),
+            Item::MethodAttachment(attachment) => {
+                walk_expr(&attachment.owner, visit);
+                walk_entries(&attachment.members, visit);
+            }
+            Item::Expr(expr) => walk_expr(expr, visit),
+        }
+    }
+}
 
 /// How a binder name is introduced in the AST.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +280,7 @@ pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) 
         }
         ExprKind::Missing
         | ExprKind::Literal(_)
+        | ExprKind::Regex(_)
         | ExprKind::Undefined
         | ExprKind::Null
         | ExprKind::Name(_)

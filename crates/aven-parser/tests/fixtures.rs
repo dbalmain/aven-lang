@@ -434,6 +434,10 @@ fn render_expr_ast(output: &mut String, expr: &Expr, indent: usize) {
             let _ = writeln!(output, "missing");
         }
         ExprKind::Literal(literal) => render_literal_ast(output, literal, indent),
+        ExprKind::Regex(regex) => {
+            write_indent(output, indent);
+            let _ = writeln!(output, "regex {regex}");
+        }
         ExprKind::Interpolation(segments) => {
             write_indent(output, indent);
             let _ = writeln!(output, "interpolation");
@@ -790,9 +794,6 @@ fn render_literal_ast(output: &mut String, literal: &Literal, indent: usize) {
         }
         Literal::String(text) => {
             let _ = writeln!(output, "string {text}");
-        }
-        Literal::Regex(regex) => {
-            let _ = writeln!(output, "regex {regex}");
         }
     }
 }

@@ -676,6 +676,7 @@ fn collect_pattern_references(pattern: &Expr, references: &mut Vec<Reference>) {
         | ExprKind::PrimitiveFamily { .. }
         | ExprKind::Missing
         | ExprKind::Literal(_)
+        | ExprKind::Regex(_)
         | ExprKind::Undefined
         | ExprKind::Null
         | ExprKind::Name(_)

@@ -68,8 +68,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
-        if matches!(value.kind, ExprKind::Literal(Literal::Regex(_))) {
-            self.report_regex_literal_unsupported(value.span);
+        if matches!(value.kind, ExprKind::Regex(_)) {
             return;
         }
         if let Type::SlotRecord { data, slots } = expected {
@@ -1877,7 +1876,6 @@ fn primitive_literal_base_name(literal: &Literal) -> Option<&'static str> {
         Literal::String(_) => Some("Text"),
         Literal::Number(number) if super::inference::is_float_literal_text(number) => Some("Float"),
         Literal::Number(_) => Some("Int"),
-        Literal::Regex(_) => None,
     }
 }
 

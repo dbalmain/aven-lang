@@ -355,7 +355,7 @@ impl fmt::Display for RuntimeVariantDescriptor {
             }
             Self::Literal(value) => match value {
                 Literal::Bool(value) => write!(f, "{value}"),
-                Literal::Number(value) | Literal::String(value) | Literal::Regex(value) => {
+                Literal::Number(value) | Literal::String(value) => {
                     write!(f, "{value}")
                 }
             },

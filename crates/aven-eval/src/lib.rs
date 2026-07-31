@@ -1645,6 +1645,10 @@ fn primitive_base_accepts_payload(base: Option<&str>, payload: &str) -> bool {
 fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
     match &expr.kind {
         ExprKind::Literal(literal) => eval_literal(literal, expr.span).map_err(one_diagnostic),
+        ExprKind::Regex(_) => Err(one_diagnostic(unsupported_expr(
+            expr.span,
+            "regex literals are reserved syntax but have no runtime implementation yet",
+        ))),
         ExprKind::Interpolation(segments) => eval_interpolation(segments, env),
         ExprKind::Undefined => Ok(Value::Undefined),
         ExprKind::Null => Ok(Value::Null),
@@ -1842,6 +1846,10 @@ fn match_pattern(
         ExprKind::Undefined => Ok((value == &Value::Undefined).then_some(Vec::new())),
         ExprKind::Null => Ok((value == &Value::Null).then_some(Vec::new())),
         ExprKind::Literal(literal) => match_literal_pattern(literal, pattern.span, value),
+        ExprKind::Regex(_) => Err(unsupported_expr(
+            pattern.span,
+            "regex literals are reserved syntax but have no runtime implementation yet",
+        )),
         ExprKind::Binary {
             left,
             operator,
@@ -2008,7 +2016,7 @@ fn match_literal_pattern(
     value: &Value,
 ) -> Result<Option<Vec<(String, Value)>>, Diagnostic> {
     match literal {
-        Literal::Bool(_) | Literal::Number(_) | Literal::String(_) | Literal::Regex(_) => {
+        Literal::Bool(_) | Literal::Number(_) | Literal::String(_) => {
             let literal_value = eval_literal(literal, span)?;
             Ok((literal_value == *value).then_some(Vec::new()))
         }
@@ -5265,10 +5273,6 @@ fn eval_literal(literal: &Literal, span: Span) -> Result<Value, Diagnostic> {
         Literal::Bool(value) => Ok(Value::Bool(*value)),
         Literal::Number(text) => eval_number_literal(text, span),
         Literal::String(text) => Ok(Value::Text(decode_string_literal(text))),
-        Literal::Regex(_) => Err(unsupported_expr(
-            span,
-            "regex literals are reserved syntax but have no runtime implementation yet",
-        )),
     }
 }
 

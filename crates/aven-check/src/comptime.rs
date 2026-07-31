@@ -173,7 +173,6 @@ enum CanonicalLiteral {
     Float(u64),
     InvalidNumber(String),
     String(String),
-    Regex(String),
 }
 
 impl From<&Literal> for CanonicalLiteral {
@@ -182,7 +181,6 @@ impl From<&Literal> for CanonicalLiteral {
             Literal::Bool(value) => Self::Bool(*value),
             Literal::Number(text) => canonical_number(text),
             Literal::String(text) => Self::String(decode_string_literal(text)),
-            Literal::Regex(text) => Self::Regex(text.clone()),
         }
     }
 }
@@ -650,7 +648,7 @@ pub(crate) fn evaluate_runtime_value(
         }
         ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
         ExprKind::Missing
-        | ExprKind::Literal(_)
+        | ExprKind::Regex(_)
         | ExprKind::PrimitiveFamily { .. }
         | ExprKind::Interpolation(_)
         | ExprKind::Undefined
@@ -813,7 +811,7 @@ where
             ExprKind::Match { subject, arms, .. } => self.evaluate_match(subject, arms, env),
             ExprKind::Group(_) => unreachable!("group expressions are removed before evaluation"),
             ExprKind::Missing
-            | ExprKind::Literal(_)
+            | ExprKind::Regex(_)
             | ExprKind::PrimitiveFamily { .. }
             | ExprKind::Interpolation(_)
             | ExprKind::Undefined

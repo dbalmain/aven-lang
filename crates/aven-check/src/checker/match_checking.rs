@@ -22,7 +22,6 @@ impl<'a> Checker<'a> {
 
         let mut body_types = Vec::new();
         for arm in arms {
-            self.report_unsupported_regex_literals(&arm.pattern);
             self.local_types.push();
             let local_types = checked_pattern_local_types(
                 self.pattern_type_context(),

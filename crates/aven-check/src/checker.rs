@@ -7,7 +7,7 @@ use aven_parser::{
     MatchArm, MergedItem, Module, ModuleRole, Param, PatternBinding, PropagationMode, RecordEntry,
     Requirement, Signature, SpreadBinding, collect_declarations, decode_string_literal,
     is_comptime_identifier_name, is_custom_operator_token, is_method_operator, lambda_parts,
-    merged_items, pattern_bindings, walk_expr_children,
+    merged_items, pattern_bindings, walk_expr_children, walk_module_exprs,
 };
 
 use crate::BUILTIN_TYPES;
@@ -1338,7 +1338,6 @@ fn literal_kind_name(literal: &Literal) -> &'static str {
         Literal::Bool(_) => "bool literal",
         Literal::String(_) => "text literal",
         Literal::Number(_) => "number literal",
-        Literal::Regex(_) => "regex literal",
     }
 }
 

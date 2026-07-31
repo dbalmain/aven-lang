@@ -139,7 +139,7 @@ fn row_label(entry: &RowEntry) -> &str {
         RowEntry::Literal { value } => match value {
             Literal::Bool(true) => "true",
             Literal::Bool(false) => "false",
-            Literal::Number(value) | Literal::String(value) | Literal::Regex(value) => value,
+            Literal::Number(value) | Literal::String(value) => value,
         },
     }
 }
@@ -10177,8 +10177,10 @@ fn regex_literals_are_rejected_once_in_every_semantic_position() {
     for source in [
         "pattern = /a+/\npattern\n",
         "pattern: Text = /a+/\n",
+        "pattern = { nested: /a+/ }\npattern\n",
         "Pattern = /a+/\n",
         "Pattern = @{ /a+/ }\n",
+        "Pattern = { nested: /a+/ }\n",
         "value = \"a\" ?>\n  /a+/ => true\n  _ => false\nvalue\n",
     ] {
         let parsed = parse_module(source);

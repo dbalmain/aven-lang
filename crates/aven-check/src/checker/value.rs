@@ -51,10 +51,8 @@ impl<'a> Checker<'a> {
             ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
                 self.check_name_reference(name, expr.span);
             }
-            ExprKind::Literal(Literal::Regex(_)) => {
-                self.report_regex_literal_unsupported(expr.span);
-            }
-            ExprKind::Missing
+            ExprKind::Regex(_)
+            | ExprKind::Missing
             | ExprKind::Literal(_)
             | ExprKind::Undefined
             | ExprKind::Null

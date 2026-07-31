@@ -447,10 +447,7 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Literal(Literal::Bool(_) | Literal::Number(_) | Literal::String(_))
             | ExprKind::Tag(_) => self.lower_singleton_variant_annotation(annotation),
-            ExprKind::Literal(Literal::Regex(_)) => {
-                self.report_regex_literal_unsupported(annotation.span);
-                Type::Error
-            }
+            ExprKind::Regex(_) => Type::Error,
             ExprKind::Call { callee, args } => {
                 if matches!(&callee.kind, ExprKind::Tag(_)) {
                     return self.lower_singleton_variant_annotation(annotation);
