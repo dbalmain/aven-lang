@@ -1697,6 +1697,7 @@ impl<'a> Checker<'a> {
         value: &Expr,
         env: &TypeEnv,
     ) -> Vec<(String, LocalValueType)> {
+        self.report_unsupported_regex_literals(pattern);
         self.check_value_expr(value);
         let inferred = self.infer(env, value);
         let resolved = self.normalize(&self.resolve_and_default(&inferred));

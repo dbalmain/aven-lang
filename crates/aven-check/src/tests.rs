@@ -10174,6 +10174,36 @@ fn matching_codes(diagnostics: &[Diagnostic], code: &str) -> usize {
         .count()
 }
 
+#[test]
+fn regex_literals_are_rejected_once_in_every_semantic_position() {
+    for source in [
+        "pattern = /a+/\npattern\n",
+        "pattern: Text = /a+/\n",
+        "Pattern = /a+/\n",
+        "Pattern = @{ /a+/ }\n",
+        "value = \"a\" ?>\n  /a+/ => true\n  _ => false\nvalue\n",
+    ] {
+        let parsed = parse_module(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "regex syntax parses: {:?}",
+            parsed.diagnostics
+        );
+        let checked = check_module(&parsed.module);
+        assert_eq!(
+            matching_codes(&checked.diagnostics, codes::ty::REGEX_LITERAL_UNSUPPORTED),
+            1,
+            "expected one deliberate regex diagnostic for {source:?}: {:?}",
+            checked.diagnostics
+        );
+        assert_eq!(
+            matching_codes(&checked.diagnostics, codes::ty::UNRESOLVED_BINDING),
+            0,
+            "the regex diagnostic should explain the failed type"
+        );
+    }
+}
+
 fn singleton_number(raw: &str) -> Type {
     Type::Variant(Row {
         entries: vec![literal_number(raw)],

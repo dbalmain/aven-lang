@@ -2928,6 +2928,19 @@ fn eval_error(source: &str) -> aven_core::Diagnostic {
     eval_source(source).expect_err("expected evaluation error")
 }
 
+#[test]
+fn unchecked_regex_values_and_patterns_fail_explicitly_at_runtime() {
+    for source in ["/a+/", "\"a\" ?> /a+/ => true, _ => false"] {
+        let diagnostic = eval_error(source);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::UNSUPPORTED)
+        );
+        assert_eq!(diagnostic.message, "unsupported runtime expression");
+        assert!(diagnostic.labels[0].message.contains("regex literals"));
+    }
+}
+
 fn module_error(source: &str) -> aven_core::Diagnostic {
     let module = parse_ok(source);
     let mut diagnostics = eval_module(&module).diagnostics;

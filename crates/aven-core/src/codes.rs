@@ -158,6 +158,7 @@ pub mod ty {
     pub const PROPAGATE_NEEDS_RESULT: &str = "type.propagate-needs-result";
     pub const PROPAGATE_NOT_RESULT: &str = "type.propagate-not-result";
     pub const RECORD_INDEX_NOT_COMPTIME: &str = "type.record-index-not-comptime";
+    pub const REGEX_LITERAL_UNSUPPORTED: &str = "type.regex-literal-unsupported";
     pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
     pub const REPLACE_ABSENT_FIELD: &str = "type.replace-absent-field";
     pub const SPREAD_SHAPE_UNKNOWN: &str = "type.spread-shape-unknown";
@@ -302,6 +303,7 @@ pub const ALL: &[&str] = &[
     ty::PROPAGATE_NEEDS_RESULT,
     ty::PROPAGATE_NOT_RESULT,
     ty::RECORD_INDEX_NOT_COMPTIME,
+    ty::REGEX_LITERAL_UNSUPPORTED,
     ty::RENAME_ABSENT_FIELD,
     ty::REPLACE_ABSENT_FIELD,
     ty::SPREAD_SHAPE_UNKNOWN,

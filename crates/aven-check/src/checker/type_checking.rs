@@ -68,6 +68,10 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
+        if matches!(value.kind, ExprKind::Literal(Literal::Regex(_))) {
+            self.report_regex_literal_unsupported(value.span);
+            return;
+        }
         if let Type::SlotRecord { data, slots } = expected {
             match &value.kind {
                 ExprKind::Group(inner) => self.check_value_against(expected, inner),

@@ -116,7 +116,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::lex::UNTERMINATED_REGEX,
-        text: "A regex literal was opened but not closed. Add the closing /, or use Regex.compile(pattern) when the pattern is dynamic.",
+        text: "A regex literal was opened but not closed. Add the closing /. Regex values are reserved but not implemented yet, so use Text when the pattern must execute today.",
     },
     DiagnosticExplanation {
         code: codes::lex::UNTERMINATED_STRING,
@@ -497,6 +497,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::RECORD_INDEX_NOT_COMPTIME,
         text: "Record fields are selected with a comptime-known string. Use a literal or comptime key, or use a Map when the key is chosen at runtime.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::REGEX_LITERAL_UNSUPPORTED,
+        text: "Regex literal syntax is reserved and preserved by the lexer, parser, formatter, and language server, but regex values are not implemented yet. Use Text for the pattern until the Regex runtime type and operations are available.",
     },
     DiagnosticExplanation {
         code: codes::ty::RENAME_ABSENT_FIELD,

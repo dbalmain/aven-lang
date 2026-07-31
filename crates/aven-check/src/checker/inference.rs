@@ -236,6 +236,10 @@ impl<'a> Checker<'a> {
             ExprKind::Literal(
                 literal @ (Literal::Bool(_) | Literal::Number(_) | Literal::String(_)),
             ) => self.open_literal_variant(literal),
+            ExprKind::Literal(Literal::Regex(_)) => {
+                self.report_regex_literal_unsupported(expr.span);
+                Type::Error
+            }
             ExprKind::Undefined => named_builtin("Undefined"),
             ExprKind::Null => named_builtin("Null"),
             ExprKind::Tag(name) => Type::Variant(Row {
@@ -325,7 +329,6 @@ impl<'a> Checker<'a> {
                 mode,
             } => self.infer_propagate(env, value, *operator_span, *mode),
             ExprKind::Missing
-            | ExprKind::Literal(_)
             | ExprKind::PrimitiveFamily { .. }
             | ExprKind::Optional(_)
             | ExprKind::Nullable(_)

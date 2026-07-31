@@ -860,6 +860,10 @@ impl<'a> Checker<'a> {
             ) => Some(RowEntry::Literal {
                 value: literal.clone(),
             }),
+            ExprKind::Literal(Literal::Regex(_)) => {
+                self.report_regex_literal_unsupported(tag.span);
+                None
+            }
             ExprKind::Name(name) => {
                 self.report_lowercase_variant_tag(name, tag.span);
                 Some(RowEntry::Tag {

@@ -73,6 +73,26 @@ impl<'a> Checker<'a> {
         self.diagnostics.push(diagnostic);
     }
 
+    pub(super) fn report_regex_literal_unsupported(&mut self, span: Span) {
+        self.push_unique_diagnostic(
+            Diagnostic::error("regex literals are not supported yet")
+                .with_code(codes::ty::REGEX_LITERAL_UNSUPPORTED)
+                .with_label(Label::primary(span, "this reserved literal has no runtime type"))
+                .with_note(
+                    "use a Text pattern for now; regex syntax is preserved for future language support",
+                ),
+        );
+    }
+
+    pub(super) fn report_unsupported_regex_literals(&mut self, expr: &Expr) {
+        if matches!(expr.kind, ExprKind::Literal(Literal::Regex(_))) {
+            self.report_regex_literal_unsupported(expr.span);
+        }
+        walk_expr_children(expr, &mut |child| {
+            self.report_unsupported_regex_literals(child);
+        });
+    }
+
     pub(super) fn deduplicate_diagnostics_since(&mut self, start: usize) {
         let mut index = start;
         while index < self.diagnostics.len() {

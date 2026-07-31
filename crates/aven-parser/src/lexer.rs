@@ -705,7 +705,7 @@ impl Lexer<'_> {
                     Span::new(start, self.offset),
                     "regex starts here",
                 ))
-                .with_note("close the regex with `/`, or use `Regex.compile(pattern)` for a dynamic pattern."),
+                .with_note("close the regex with `/`; use a Text pattern until regex values are implemented."),
         );
         self.push(
             TokenKind::RegexLiteral(self.source[start..self.offset].to_owned()),
