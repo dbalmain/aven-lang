@@ -305,14 +305,7 @@ impl Host {
         comptime_params: Vec<usize>,
         resolver: Rc<dyn HostComptimeFn>,
     ) {
-        self.comptime_resolvers.push(ComptimeResolverEntry {
-            key: key.into(),
-            resolver,
-            comptime_params: comptime_params
-                .into_iter()
-                .map(HostComptimeParam::Value)
-                .collect(),
-        });
+        self.register_comptime_spec(key, HostComptimeFnSpec::new(resolver, comptime_params));
     }
 
     /// Register a comptime resolver whose arguments are the inferred static
@@ -323,13 +316,17 @@ impl Host {
         comptime_params: Vec<usize>,
         resolver: Rc<dyn HostComptimeFn>,
     ) {
+        self.register_comptime_spec(
+            key,
+            HostComptimeFnSpec::new_type_of(resolver, comptime_params),
+        );
+    }
+
+    fn register_comptime_spec(&mut self, key: impl Into<String>, spec: HostComptimeFnSpec) {
         self.comptime_resolvers.push(ComptimeResolverEntry {
             key: key.into(),
-            resolver,
-            comptime_params: comptime_params
-                .into_iter()
-                .map(HostComptimeParam::TypeOf)
-                .collect(),
+            resolver: spec.resolver,
+            comptime_params: spec.comptime_params,
         });
     }
 
@@ -649,36 +646,6 @@ fn format_encode_error_type() -> Type {
     )])
 }
 
-/// The closed `JsonError` variant returned by `Json.decode`.
-pub fn json_error_type() -> Type {
-    format_error_type()
-}
-
-/// The closed `JsonEncodeError` variant returned by `Json.encode`.
-pub fn json_encode_error_type() -> Type {
-    format_encode_error_type()
-}
-
-/// The closed `YamlError` variant returned by `Yaml.decode`.
-pub fn yaml_error_type() -> Type {
-    format_error_type()
-}
-
-/// The closed `YamlEncodeError` variant returned by `Yaml.encode`.
-pub fn yaml_encode_error_type() -> Type {
-    format_encode_error_type()
-}
-
-/// The closed `TomlError` variant returned by `Toml.decode`.
-pub fn toml_error_type() -> Type {
-    format_error_type()
-}
-
-/// The closed `TomlEncodeError` variant returned by `Toml.encode`.
-pub fn toml_encode_error_type() -> Type {
-    format_encode_error_type()
-}
-
 /// The recursive dynamic data value shape returned by one-argument format
 /// decodes.
 pub fn data_type() -> Type {
@@ -700,57 +667,6 @@ pub fn data_type() -> Type {
             )],
         ),
     ])
-}
-
-/// `(a) -> Result(Text, JsonEncodeError)` — `Json.encode` accepts any checked
-/// value and validates JSON encodability at runtime.
-pub fn json_encode_type() -> Type {
-    text_format::TextFormat::Json.encode_type()
-}
-
-/// `(a) -> Text` — `Json.encodeText` is additionally gated by a host comptime
-/// resolver which proves `a` cannot contain a `Float`.
-pub fn json_encode_text_type() -> Type {
-    text_format::TextFormat::Json.encode_text_type()
-}
-
-/// The base `Json.decode` type: `(Text, ? = _) -> ?`. The checker uses it for
-/// arity and the input text argument; the host comptime resolver refines the
-/// result from the optional trailing type argument, defaulting to `Data`.
-pub fn json_decode_base_type() -> Type {
-    text_format::TextFormat::Json.decode_base_type()
-}
-
-/// `(a) -> Result(Text, YamlEncodeError)` — `Yaml.encode` mirrors
-/// `Json.encode`'s type shape.
-pub fn yaml_encode_type() -> Type {
-    text_format::TextFormat::Yaml.encode_type()
-}
-
-/// `(a) -> Text`; the comptime resolver rejects types that may contain Float.
-pub fn yaml_encode_text_type() -> Type {
-    text_format::TextFormat::Yaml.encode_text_type()
-}
-
-/// The base `Yaml.decode` type: `(Text, ? = _) -> ?`.
-pub fn yaml_decode_base_type() -> Type {
-    text_format::TextFormat::Yaml.decode_base_type()
-}
-
-/// `(a) -> Result(Text, TomlEncodeError)` — `Toml.encode` mirrors
-/// `Json.encode`'s type shape.
-pub fn toml_encode_type() -> Type {
-    text_format::TextFormat::Toml.encode_type()
-}
-
-/// `(a) -> Text`; the comptime resolver rejects types that may contain Float.
-pub fn toml_encode_text_type() -> Type {
-    text_format::TextFormat::Toml.encode_text_type()
-}
-
-/// The base `Toml.decode` type: `(Text, ? = _) -> ?`.
-pub fn toml_decode_base_type() -> Type {
-    text_format::TextFormat::Toml.decode_base_type()
 }
 
 /// The base `open` type: `(Text, "r" | "w" | "a" | "rw") -> ?`. The checker
@@ -1539,19 +1455,14 @@ mod tests {
                 "Other".to_owned()
             ])
         );
-        for error_type in [json_error_type(), yaml_error_type(), toml_error_type()] {
-            assert_eq!(
-                variant_tags(&error_type),
-                Some(vec!["Parse".to_owned(), "Shape".to_owned()])
-            );
-        }
-        for error_type in [
-            json_encode_error_type(),
-            yaml_encode_error_type(),
-            toml_encode_error_type(),
-        ] {
-            assert_eq!(variant_tags(&error_type), Some(vec!["Encode".to_owned()]));
-        }
+        assert_eq!(
+            variant_tags(&format_error_type()),
+            Some(vec!["Parse".to_owned(), "Shape".to_owned()])
+        );
+        assert_eq!(
+            variant_tags(&format_encode_error_type()),
+            Some(vec!["Encode".to_owned()])
+        );
         assert_eq!(
             variant_tags(&data_type()),
             Some(vec![

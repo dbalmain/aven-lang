@@ -195,39 +195,23 @@ pub(crate) fn register_text_format(
     host.register_data_type();
     host.register_type_statics(
         format.name(),
-        vec![
-            (
-                "encode".to_owned(),
-                format.encode_type(),
+        format
+            .statics()
+            .into_iter()
+            .zip([
                 encode_native(format, encode),
-            ),
-            (
-                "encodeText".to_owned(),
-                format.encode_text_type(),
                 encode_text_native(format, encode),
-            ),
-            (
-                "decode".to_owned(),
-                format.decode_base_type(),
                 decode_native(format, parse),
-            ),
-        ],
+            ])
+            .map(|((name, ty), value)| (name, ty, value))
+            .collect(),
     );
-    host.register_type_definition(format.decode_error_name(), crate::format_error_type());
-    host.register_type_definition(
-        format.encode_error_name(),
-        crate::format_encode_error_type(),
-    );
-    host.register_comptime_resolver(
-        format!("{}.decode", format.name()),
-        vec![1],
-        format.decode_resolver(),
-    );
-    host.register_comptime_type_resolver(
-        format!("{}.encodeText", format.name()),
-        vec![0],
-        format.encode_text_resolver(),
-    );
+    for (name, ty) in format.type_definitions() {
+        host.register_type_definition(name, ty);
+    }
+    for (key, spec) in format.comptime_specs() {
+        host.register_comptime_spec(key, spec);
+    }
 }
 
 fn encode_native(format: TextFormat, encode: fn(&Value) -> Result<String, String>) -> Value {
@@ -973,26 +957,72 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shared_format_contract_covers_each_codec_once() {
-        let names = TextFormat::ALL
-            .into_iter()
-            .map(TextFormat::name)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            names,
-            std::collections::BTreeSet::from(["Json", "Toml", "Yaml"])
-        );
+    fn runtime_registration_matches_the_standard_checker_contract() {
+        let mut host = Host::new();
+        host.register_json();
+        host.register_yaml();
+        host.register_toml();
+        let registered = host.check_host_globals();
+        let standard = crate::standard_check_host_globals();
 
         for format in TextFormat::ALL {
-            let static_names = format
-                .statics()
-                .into_iter()
-                .map(|(name, _)| name)
-                .collect::<Vec<_>>();
-            assert_eq!(static_names, ["encode", "encodeText", "decode"]);
-            assert!(format.decode_error_name().starts_with(format.name()));
-            assert!(format.encode_error_name().starts_with(format.name()));
+            let expected_statics = format.statics();
+            assert_eq!(statics_for(&registered, format.name()), &expected_statics);
+            assert_eq!(statics_for(&standard, format.name()), &expected_statics);
+
+            for (name, expected) in format.type_definitions() {
+                assert_eq!(type_definition(&registered, &name), &expected);
+                assert_eq!(type_definition(&standard, &name), &expected);
+            }
+
+            for (key, expected) in format.comptime_specs() {
+                let expected = comptime_param_shape(&expected);
+                assert_eq!(comptime_spec_shape(&registered, &key), expected);
+                assert_eq!(comptime_spec_shape(&standard, &key), expected);
+            }
         }
+    }
+
+    fn statics_for<'a>(
+        globals: &'a aven_check::HostGlobals,
+        name: &str,
+    ) -> &'a Vec<(String, Type)> {
+        &globals
+            .statics
+            .iter()
+            .find(|(type_name, _)| type_name == name)
+            .unwrap_or_else(|| panic!("missing statics for {name}"))
+            .1
+    }
+
+    fn type_definition<'a>(globals: &'a aven_check::HostGlobals, name: &str) -> &'a Type {
+        globals
+            .type_definitions
+            .iter()
+            .find_map(|(type_name, ty)| (type_name == name).then_some(ty))
+            .unwrap_or_else(|| panic!("missing type definition {name}"))
+    }
+
+    fn comptime_spec_shape(
+        globals: &aven_check::HostGlobals,
+        key: &str,
+    ) -> Vec<(&'static str, usize)> {
+        let spec = globals
+            .comptime_fns
+            .iter()
+            .find_map(|(candidate, spec)| (candidate == key).then_some(spec))
+            .unwrap_or_else(|| panic!("missing comptime spec {key}"));
+        comptime_param_shape(spec)
+    }
+
+    fn comptime_param_shape(spec: &HostComptimeFnSpec) -> Vec<(&'static str, usize)> {
+        spec.comptime_params
+            .iter()
+            .map(|param| match param {
+                aven_check::HostComptimeParam::Value(index) => ("value", *index),
+                aven_check::HostComptimeParam::TypeOf(index) => ("type", *index),
+            })
+            .collect()
     }
 
     #[test]
