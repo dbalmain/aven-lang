@@ -19,7 +19,7 @@ serde_json.workspace = true
 serde_norway = "0.9.42"
 toml.workspace = true
 tz-rs = "0.7.3"
-ureq = "3"
+ureq = "3.3.0"
 
 [dev-dependencies]
 aven-parser.workspace = true
