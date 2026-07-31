@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use aven_core::{Diagnostic, Int, Label, Span, codes};
+use aven_core::{BuiltinType, Diagnostic, Int, Label, Span, codes};
 use aven_parser::{Expr, ExprKind, Literal, MatchArm, Param, decode_string_literal};
 
 use crate::checker::string_literal_label;
@@ -1279,7 +1279,7 @@ fn comptime_pattern_matches(pattern: &Expr, value: &ComptimeValue) -> bool {
 }
 
 fn is_type_kind_annotation(ty: &Type) -> bool {
-    matches!(ty, Type::Named(name) if name == "Type")
+    ty.is_builtin(BuiltinType::Type)
 }
 
 fn bound_mismatch_diagnostic(

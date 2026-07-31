@@ -58,7 +58,7 @@ impl AnnotationLowerer {
 pub(crate) fn known_type_names(module: &Module) -> HashSet<String> {
     let mut names: HashSet<_> = BUILTIN_TYPES
         .iter()
-        .map(|name| (*name).to_owned())
+        .map(|builtin| builtin.name().to_owned())
         .collect();
 
     for declaration in collect_declarations(module) {

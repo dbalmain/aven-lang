@@ -4,6 +4,7 @@ use aven_check::{
     ComptimeArg, ComptimeError, ComptimeTypeContext, HostComptimeFn, RowEntry, Type,
     might_contain_float,
 };
+use aven_core::BuiltinType;
 use aven_eval::{Int, RuntimeType, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId, Value};
 
 use crate::io::aven_value_type_name;
@@ -225,19 +226,19 @@ fn decode_descriptor_at(
             }
         }
         RuntimeTypeDescriptor::Apply { callee, args }
-            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if name == "Array")
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if BuiltinType::from_name(name) == Some(BuiltinType::Array))
                 && args.len() == 1 =>
         {
             decode_descriptor_array(value, &args[0], graph, path, format_name, false)
         }
         RuntimeTypeDescriptor::Apply { callee, args }
-            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if name == "Set")
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if BuiltinType::from_name(name) == Some(BuiltinType::Set))
                 && args.len() == 1 =>
         {
             decode_descriptor_array(value, &args[0], graph, path, format_name, true)
         }
         RuntimeTypeDescriptor::Apply { callee, args }
-            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if name == "Map")
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if BuiltinType::from_name(name) == Some(BuiltinType::Map))
                 && args.len() == 2 =>
         {
             decode_descriptor_map(value, &args[0], &args[1], graph, path, format_name)
@@ -266,47 +267,50 @@ fn decode_named(
     path: &FormatPath,
     format_name: &str,
 ) -> Result<Value, DecodeError> {
-    match name {
-        "Data" => return Ok(decode_dynamic_data(value)),
-        "Json" | "Yaml" | "Toml" => {
+    match BuiltinType::from_name(name) {
+        Some(BuiltinType::Data) => return Ok(decode_dynamic_data(value)),
+        Some(BuiltinType::Json | BuiltinType::Yaml | BuiltinType::Toml) => {
             return Err(DecodeError::InvalidTarget(format!(
                 "{format_name}.decode target {name} is a format type; use Data for dynamic values"
             )));
         }
-        "Text" => match value {
+        Some(BuiltinType::Text) => match value {
             FormatValue::Text(text) => Some(Value::Text(text.clone())),
             FormatValue::Temporal(temporal) => Some(Value::Text(temporal.iso_text())),
             _ => None,
         },
-        "Int" => match value {
+        Some(BuiltinType::Int) => match value {
             FormatValue::Number(FormatNumber::Int(value)) => Some(Value::Int(value.clone())),
             _ => None,
         },
-        "Float" => match value {
+        Some(BuiltinType::Float) => match value {
             FormatValue::Number(FormatNumber::Int(value)) => value.to_f64().map(Value::Float),
             FormatValue::Number(FormatNumber::Float(value)) => Some(Value::Float(*value)),
             _ => None,
         },
-        "Bool" => match value {
+        Some(BuiltinType::Bool) => match value {
             FormatValue::Bool(value) => Some(Value::Bool(*value)),
             _ => None,
         },
-        "Null" if matches!(value, FormatValue::Null) => Some(Value::Null),
-        "Null" => None,
-        "Undefined" => None,
-        "Instant" => return decode_temporal_target(value, TemporalTarget::Instant, path),
-        "DateTime" => return decode_temporal_target(value, TemporalTarget::DateTime, path),
-        "Date" => return decode_temporal_target(value, TemporalTarget::Date, path),
-        "Time" => return decode_temporal_target(value, TemporalTarget::Time, path),
-        "Duration" => return decode_duration_target(value, path),
-        "Array" => {
+        Some(BuiltinType::Null) if matches!(value, FormatValue::Null) => Some(Value::Null),
+        Some(BuiltinType::Null | BuiltinType::Undefined) => None,
+        Some(BuiltinType::Array) => {
             return Err(DecodeError::InvalidTarget(format!(
                 "{format_name}.decode target Array must be written as Array(T)"
             )));
         }
-        unsupported => {
+        None if name == "Instant" => {
+            return decode_temporal_target(value, TemporalTarget::Instant, path);
+        }
+        None if name == "DateTime" => {
+            return decode_temporal_target(value, TemporalTarget::DateTime, path);
+        }
+        None if name == "Date" => return decode_temporal_target(value, TemporalTarget::Date, path),
+        None if name == "Time" => return decode_temporal_target(value, TemporalTarget::Time, path),
+        None if name == "Duration" => return decode_duration_target(value, path),
+        _ => {
             return Err(DecodeError::InvalidTarget(format!(
-                "{format_name}.decode cannot decode target type {unsupported}"
+                "{format_name}.decode cannot decode target type {name}"
             )));
         }
     }
@@ -413,7 +417,12 @@ fn data_tag(name: &str, payload: Vec<Value>) -> Value {
 
 fn deprecated_dynamic_target_name(ty: &Type) -> Option<&str> {
     match ty {
-        Type::Named(name) if matches!(name.as_str(), "Json" | "Yaml" | "Toml") => {
+        Type::Named(name)
+            if matches!(
+                BuiltinType::from_name(name),
+                Some(BuiltinType::Json | BuiltinType::Yaml | BuiltinType::Toml)
+            ) =>
+        {
             Some(name.as_str())
         }
         Type::Apply { callee, args } => deprecated_dynamic_target_name(callee)
@@ -645,13 +654,13 @@ fn runtime_descriptor_target_inner(
             runtime_descriptor_target_inner(inner, graph, visited)
         }
         RuntimeTypeDescriptor::Apply { callee, args }
-            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if matches!(name.as_str(), "Array" | "Set"))
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if matches!(BuiltinType::from_name(name), Some(BuiltinType::Array | BuiltinType::Set)))
                 && args.len() == 1 =>
         {
             runtime_descriptor_target_inner(&args[0], graph, visited)
         }
         RuntimeTypeDescriptor::Apply { callee, args }
-            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if name == "Map")
+            if matches!(callee.as_ref(), RuntimeTypeDescriptor::Named(name) if BuiltinType::from_name(name) == Some(BuiltinType::Map))
                 && args.len() == 2 =>
         {
             args.iter()

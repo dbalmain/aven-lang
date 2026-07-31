@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 
-use aven_core::{Diagnostic, Int, Label, Span, codes};
+use aven_core::{BuiltinType, Diagnostic, Int, Label, Span, codes};
 use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
     MatchArm, MergedItem, Module, ModuleRole, Param, PatternBinding, PropagationMode, RecordEntry,
@@ -1171,9 +1171,7 @@ fn literal_type(literal: Literal) -> Type {
 fn literal_union_domain_row(domain: &Type) -> Option<&Row> {
     match domain {
         Type::Variant(row) => Some(row),
-        Type::Apply { callee, args }
-            if matches!(callee.as_ref(), Type::Named(name) if name == "Set") && args.len() == 1 =>
-        {
+        Type::Apply { callee, args } if callee.is_builtin(BuiltinType::Set) && args.len() == 1 => {
             match &args[0] {
                 Type::Variant(row) => Some(row),
                 _ => None,
@@ -1212,7 +1210,7 @@ fn subject_variant_row<'a>(ty: &'a Type, context: PatternTypeContext<'a>) -> Opt
         }
     }
 
-    if matches!(ty, Type::Named(name) if name == "Bool") {
+    if ty.is_builtin(BuiltinType::Bool) {
         return Some(Cow::Owned(Row {
             entries: vec![
                 RowEntry::Literal {
@@ -1452,14 +1450,11 @@ fn is_indexable_type(ty: &Type) -> bool {
     match ty {
         Type::Record(_) | Type::Tuple(_) => true,
         Type::Apply { callee, args }
-            if args.len() == 1
-                && matches!(callee.as_ref(), Type::Named(name) if name == "Array") =>
+            if args.len() == 1 && callee.is_builtin(BuiltinType::Array) =>
         {
             true
         }
-        Type::Apply { callee, args }
-            if args.len() == 2 && matches!(callee.as_ref(), Type::Named(name) if name == "Map") =>
-        {
+        Type::Apply { callee, args } if args.len() == 2 && callee.is_builtin(BuiltinType::Map) => {
             true
         }
         _ => is_text_type(ty),
@@ -1504,14 +1499,15 @@ fn name_is_placeholder(name: &str) -> bool {
 }
 
 fn builtin_value_name_is_bound(name: &str) -> bool {
-    name == "Map" || crate::COMPTIME_BUILTIN_FUNCTIONS.contains(&name)
+    BuiltinType::from_name(name) == Some(BuiltinType::Map)
+        || crate::COMPTIME_BUILTIN_FUNCTIONS.contains(&name)
 }
 
 fn is_map_receiver_type(ty: &Type) -> bool {
     matches!(
         ty,
         Type::Apply { callee, args }
-            if args.len() == 2 && matches!(callee.as_ref(), Type::Named(name) if name == "Map")
+            if args.len() == 2 && callee.is_builtin(BuiltinType::Map)
     )
 }
 
@@ -1519,7 +1515,7 @@ fn is_array_receiver_type(ty: &Type) -> bool {
     matches!(
         ty,
         Type::Apply { callee, args }
-            if args.len() == 1 && matches!(callee.as_ref(), Type::Named(name) if name == "Array")
+            if args.len() == 1 && callee.is_builtin(BuiltinType::Array)
     )
 }
 
@@ -1862,10 +1858,8 @@ fn is_result_type(ty: &Type) -> bool {
 }
 
 fn result_type_args(ty: &Type) -> Option<(&Type, &Type)> {
-    let Type::Apply { callee, args } = ty else {
-        return None;
-    };
-    if args.len() == 2 && matches!(callee.as_ref(), Type::Named(name) if name == "Result") {
+    let (builtin, args) = ty.applied_builtin()?;
+    if builtin == BuiltinType::Result && args.len() == 2 {
         Some((&args[0], &args[1]))
     } else {
         None
@@ -1873,10 +1867,7 @@ fn result_type_args(ty: &Type) -> Option<(&Type, &Type)> {
 }
 
 fn result_type(ok_ty: Type, error_ty: Type) -> Type {
-    Type::Apply {
-        callee: Box::new(Type::Named("Result".to_owned())),
-        args: vec![ok_ty, error_ty],
-    }
+    crate::build::result(ok_ty, error_ty)
 }
 
 fn empty_variant_type() -> Type {

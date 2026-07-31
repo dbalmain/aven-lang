@@ -1,4 +1,5 @@
 pub mod agent_render;
+mod builtin;
 pub mod codes;
 pub mod diagnostic;
 pub mod explain;
@@ -9,6 +10,7 @@ pub mod source;
 pub mod span;
 
 pub use agent_render::{render_agent_diagnostic, render_agent_report};
+pub use builtin::BuiltinType;
 pub use diagnostic::{Diagnostic, DiagnosticReport, Label, Severity};
 pub use explain::{DiagnosticExplanation, explain};
 pub use int::Int;

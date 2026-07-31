@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use aven_core::BuiltinType;
+
 use crate::ty::{RecursiveTypeId, RowEntry, RowTail, Type};
 
 /// Apply the recursive-type productivity constructor rules to one completed
@@ -16,7 +18,16 @@ pub(crate) fn is_productive(
 
     match ty {
         Type::Optional(_) | Type::Nullable(_) | Type::Function { .. } => true,
-        Type::Apply { callee, .. } if matches!(callee.as_ref(), Type::Named(name) if matches!(name.as_str(), "Array" | "Map" | "Set" | "Stream")) => {
+        Type::Apply { callee, .. }
+            if matches!(
+                callee.as_ref(),
+                Type::Named(name)
+                    if matches!(
+                        BuiltinType::from_name(name),
+                        Some(BuiltinType::Array | BuiltinType::Map | BuiltinType::Set)
+                    ) || name == "Stream"
+            ) =>
+        {
             true
         }
         Type::Tuple(items) => items

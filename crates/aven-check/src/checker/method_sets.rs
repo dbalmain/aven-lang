@@ -1,7 +1,7 @@
 use super::Checker;
 use std::collections::{HashMap, HashSet};
 
-use aven_core::{Diagnostic, Label, Span, codes};
+use aven_core::{BuiltinType, Diagnostic, Label, Span, codes};
 use aven_parser::Literal;
 
 use crate::env::TypeEnv;
@@ -18,37 +18,12 @@ pub(crate) struct MethodSignature {
     pub(crate) predicates: Vec<MethodPredicate>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BuiltinType {
-    Bool,
-    Float,
-    Int,
-    Text,
+fn scalar_builtin_from_type(ty: &Type) -> Option<BuiltinType> {
+    ty.as_builtin().filter(|builtin| builtin.is_scalar())
 }
 
-impl BuiltinType {
-    fn from_type(ty: &Type) -> Option<Self> {
-        let Type::Named(name) = ty else {
-            return None;
-        };
-        match name.as_str() {
-            "Bool" => Some(Self::Bool),
-            "Float" => Some(Self::Float),
-            "Int" => Some(Self::Int),
-            "Text" => Some(Self::Text),
-            _ => None,
-        }
-    }
-
-    fn to_type(self) -> Type {
-        let name = match self {
-            Self::Bool => "Bool",
-            Self::Float => "Float",
-            Self::Int => "Int",
-            Self::Text => "Text",
-        };
-        named_builtin(name)
-    }
+fn builtin_type(builtin: BuiltinType) -> Type {
+    named_builtin(builtin.name())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +35,8 @@ enum BuiltinResult {
 impl BuiltinResult {
     fn to_type(self) -> Type {
         match self {
-            Self::Plain(ty) => ty.to_type(),
-            Self::Optional(ty) => Type::Optional(Box::new(ty.to_type())),
+            Self::Plain(ty) => builtin_type(ty),
+            Self::Optional(ty) => Type::Optional(Box::new(builtin_type(ty))),
         }
     }
 }
@@ -392,12 +367,16 @@ const BUILTIN_METHODS: &[BuiltinMethodEntry] = &[
 /// keeps the method set canonical: `Int.+` remains `Int -> Int`, while a mixed
 /// `Int + Float` operation selects `Float.+` after promotion.
 pub(crate) fn builtin_method_signature(owner: &Type, member: &str) -> Option<MethodSignature> {
-    let owner = BuiltinType::from_type(owner)?;
+    let owner = scalar_builtin_from_type(owner)?;
     let entry = BUILTIN_METHODS
         .iter()
         .find(|entry| entry.owner == owner && entry.member == member)?;
     Some(MethodSignature {
-        params: entry.params.iter().map(|param| param.to_type()).collect(),
+        params: entry
+            .params
+            .iter()
+            .map(|param| builtin_type(*param))
+            .collect(),
         result: entry.result.to_type(),
         predicates: Vec::new(),
     })
@@ -471,7 +450,7 @@ pub(crate) fn effective_base_methods(
         }
     }
 
-    if let Some(owner_kind) = BuiltinType::from_type(owner) {
+    if let Some(owner_kind) = scalar_builtin_from_type(owner) {
         for entry in BUILTIN_METHODS
             .iter()
             .filter(|entry| entry.owner == owner_kind)
@@ -479,7 +458,11 @@ pub(crate) fn effective_base_methods(
             if !seen.insert(entry.member.to_owned()) {
                 continue;
             }
-            let params = entry.params.iter().map(|param| param.to_type()).collect();
+            let params = entry
+                .params
+                .iter()
+                .map(|param| builtin_type(*param))
+                .collect();
             let result = entry.result.to_type();
             methods.push((
                 entry.member.to_owned(),
@@ -613,7 +596,9 @@ impl Checker<'_> {
         if let Some(owner) = self.named_family_aliases.get(name) {
             return Some(owner.clone());
         }
-        matches!(name, "Int" | "Float" | "Text" | "Bool").then(|| name.to_owned())
+        BuiltinType::from_name(name)
+            .is_some_and(BuiltinType::is_scalar)
+            .then(|| name.to_owned())
     }
 
     /// True when `name` is a type-level function / type constructor that takes
@@ -940,8 +925,8 @@ fn operator_operand_fits(source: &Type, target: &Type) -> bool {
     source == target
         || matches!(
             (
-                BuiltinType::from_type(source),
-                BuiltinType::from_type(target)
+                scalar_builtin_from_type(source),
+                scalar_builtin_from_type(target)
             ),
             (Some(BuiltinType::Int), Some(BuiltinType::Float))
         )

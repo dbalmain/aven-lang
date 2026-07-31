@@ -6,7 +6,7 @@ use std::{
     rc::Rc,
 };
 
-use aven_core::{Diagnostic, Label, Span, codes};
+use aven_core::{BuiltinType, Diagnostic, Label, Span, codes};
 use aven_parser::{
     Expr, ExprKind, InterpolationSegment, Item, Literal, MatchArm, Module, PropagationMode,
     RecordEntry, decode_string_literal, is_method_operator, is_method_requirement_row,
@@ -649,29 +649,6 @@ pub enum ResultMethod {
     IsOk,
     IsErr,
 }
-
-/// Type names bound as `Value::Type` intrinsics. `Array`/`Data`/`Map` are
-/// included so `Array(T)`/`Map(K, V)` type application and dynamic format decode
-/// targets can evaluate to the minimal composite type values these need at
-/// runtime. Each type carrying statics (`Map.from`, `Json.decode`) resolves the
-/// static through a `"Type.static"`-keyed global (see [`eval_field_access`]).
-const TYPE_VALUE_NAMES: [&str; 15] = [
-    "Array",
-    "Bool",
-    "Data",
-    "Float",
-    "Int",
-    "Json",
-    "Map",
-    "Null",
-    "Result",
-    "Set",
-    "Text",
-    "Toml",
-    "Undefined",
-    "Unit",
-    "Yaml",
-];
 
 pub const MAP_METHOD_NAMES: &[&str] = &[
     "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
@@ -1496,9 +1473,9 @@ fn bind_intrinsics(env: &Environment) {
 }
 
 fn intrinsics() -> Vec<(String, Value)> {
-    let mut intrinsics: Vec<(String, Value)> = TYPE_VALUE_NAMES
+    let mut intrinsics: Vec<(String, Value)> = BuiltinType::RUNTIME_VALUES
         .iter()
-        .map(|name| ((*name).to_owned(), Value::named_type(*name)))
+        .map(|builtin| (builtin.name().to_owned(), Value::named_type(builtin.name())))
         .collect();
 
     intrinsics.push((
@@ -1535,7 +1512,7 @@ fn intrinsics() -> Vec<(String, Value)> {
         }),
     ));
 
-    // `Map` binds to a type value (see `TYPE_VALUE_NAMES`); its statics resolve
+    // `Map` binds to a type value (see `BuiltinType::RUNTIME_VALUES`); its statics resolve
     // through `"Map.static"`-keyed globals consulted on `Value::Type` field
     // access.
     intrinsics.push(("Map.empty".to_owned(), Value::native(map_empty_intrinsic)));
@@ -5247,9 +5224,8 @@ fn eval_type_application(
     let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &callee.kind else {
         return None;
     };
-    if !matches!(name.as_str(), "Array" | "Map" | "Result" | "Set") {
-        return None;
-    }
+    let source_builtin = BuiltinType::from_name(name)?;
+    source_builtin.application_arity()?;
 
     let callee_value = match eval_expr_many(callee, env) {
         Ok(value) => value,
@@ -5259,7 +5235,7 @@ fn eval_type_application(
     // `Map` is overloaded by arity in value position:
     // - `Map(K, V)` — type application (two type arguments) → composite type
     // - `Map(pairs)` — construction from `Array((k, v))` (same as `Map.from`)
-    if matches!(callee_value.as_type_name(), Some("Map")) {
+    if callee_value.as_type_name().and_then(BuiltinType::from_name) == Some(BuiltinType::Map) {
         match args {
             [key_expr, value_expr] => {
                 let key = match eval_expr_many(key_expr, env) {
@@ -5283,7 +5259,7 @@ fn eval_type_application(
                     type_args.push(arg_type);
                 }
                 return Some(
-                    RuntimeType::apply(RuntimeType::named("Map"), type_args)
+                    RuntimeType::apply(RuntimeType::named(BuiltinType::Map.name()), type_args)
                         .map(Value::Type)
                         .map_err(|message| one_diagnostic(platform_error(span, message))),
                 );
@@ -5307,8 +5283,13 @@ fn eval_type_application(
         }
     }
 
-    if let Some(name @ ("Array" | "Set" | "Result")) = callee_value.as_type_name() {
-        let arity = if name == "Result" { 2 } else { 1 };
+    if let Some(builtin @ (BuiltinType::Array | BuiltinType::Set | BuiltinType::Result)) =
+        callee_value.as_type_name().and_then(BuiltinType::from_name)
+    {
+        let name = builtin.name();
+        let arity = builtin
+            .application_arity()
+            .expect("type application builtin has an arity");
         if args.len() != arity {
             return Some(Err(one_diagnostic(unsupported_expr(
                 span,

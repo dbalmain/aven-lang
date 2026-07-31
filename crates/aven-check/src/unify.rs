@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use aven_core::Span;
+use aven_core::{BuiltinType, Span};
 
 use crate::ty::{
     LiteralBase, MethodPredicate, RecursiveTypeId, Row, RowEntry, RowMergeConstraint,
@@ -264,7 +264,11 @@ impl Unifier {
 
         if self.numeric.contains(&id) {
             match &ty {
-                Type::Named(name) if name == "Int" || name == "Float" => {}
+                Type::Named(name)
+                    if matches!(
+                        BuiltinType::from_name(name),
+                        Some(BuiltinType::Int | BuiltinType::Float)
+                    ) => {}
                 Type::Meta(other) => {
                     self.numeric.insert(*other);
                 }

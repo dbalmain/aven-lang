@@ -9,7 +9,7 @@ mod unify;
 
 use std::collections::{HashMap, HashSet};
 
-use aven_core::{Diagnostic, Span};
+use aven_core::{BuiltinType, Diagnostic, Span};
 use aven_parser::{Expr, ExprKind, Item, Module, ModuleRole, RecordEntry};
 
 pub use comptime::{ComptimeExport, ComptimeModuleIdentity, ComptimeOrigin, SpecializationKey};
@@ -42,28 +42,7 @@ pub const COMPTIME_BUILTIN_FUNCTIONS: &[&str] = &["keysOf", "tagsOf", "typeOf", 
 pub(crate) use checker::Checker;
 pub(crate) use lower::{known_type_names, reserved_type_diagnostic, type_definitions};
 
-const BUILTIN_TYPES: &[&str] = &[
-    "Bool",
-    "Float",
-    "Int",
-    "Null",
-    "Text",
-    "Type",
-    "Undefined",
-    "Unit",
-    // Seeded std names until import resolution provides them.
-    "Array",
-    "Data",
-    "Json",
-    "JsonError",
-    "Map",
-    "Result",
-    "Set",
-    "Toml",
-    "TomlError",
-    "Yaml",
-    "YamlError",
-];
+const BUILTIN_TYPES: &[BuiltinType] = BuiltinType::ALL;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckOutput {
@@ -549,7 +528,7 @@ pub fn check_module_with_host_globals_and_imports_in_role(
 ) -> CheckOutput {
     let mut reserved_type_names: HashSet<_> = BUILTIN_TYPES
         .iter()
-        .map(|name| (*name).to_owned())
+        .map(|builtin| builtin.name().to_owned())
         .collect();
     reserved_type_names.extend(
         globals
@@ -708,7 +687,7 @@ fn record_pattern_entries(expr: &Expr) -> Option<&[RecordEntry]> {
 pub fn type_fits_boundary(expected: &Type, actual: &Type) -> bool {
     let known_types = BUILTIN_TYPES
         .iter()
-        .map(|name| (*name).to_owned())
+        .map(|builtin| builtin.name().to_owned())
         .collect();
     let mut checker = Checker::with_type_definitions(known_types, Default::default());
     checker.type_fits_boundary_without_reporting(expected, actual)

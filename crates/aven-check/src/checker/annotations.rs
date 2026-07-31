@@ -53,7 +53,7 @@ impl<'a> Checker<'a> {
     pub(super) fn reflection_subject_is_unresolved(&self, ty: &Type) -> bool {
         match ty {
             Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
-            Type::Named(name) => !BUILTIN_TYPES.contains(&name.as_str()),
+            Type::Named(name) => BuiltinType::from_name(name).is_none(),
             Type::Recursive(_) => false,
             Type::Apply { callee, args } => {
                 self.reflection_subject_is_unresolved(callee)
@@ -573,7 +573,7 @@ impl<'a> Checker<'a> {
             return false;
         };
 
-        BUILTIN_TYPES.contains(&name)
+        BuiltinType::from_name(name).is_some()
             || self.known_types.contains(name)
             || name.chars().next().is_some_and(char::is_uppercase)
     }
@@ -682,7 +682,11 @@ pub(super) fn call_callee_name(callee: &Expr) -> Option<&str> {
 fn is_collection_type_sugar(callee: &Expr, args: &[Expr]) -> bool {
     matches!(
         &ungroup_expr(callee).kind,
-        ExprKind::ComptimeName(name) if matches!(name.as_str(), "Array" | "Set")
+        ExprKind::ComptimeName(name)
+            if matches!(
+                BuiltinType::from_name(name),
+                Some(BuiltinType::Array | BuiltinType::Set)
+            )
     ) && args.len() == 1
         && callee.span.start >= args[0].span.end
 }

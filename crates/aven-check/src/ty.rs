@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use aven_core::Span;
+use aven_core::{BuiltinType, Span};
 use aven_parser::{Expr, ExprKind, Literal};
 
 /// Interned identity of one canonical recursive comptime specialization.
@@ -60,6 +60,24 @@ pub enum Type {
 impl Type {
     pub fn render(&self) -> String {
         render_type(self)
+    }
+
+    pub fn as_builtin(&self) -> Option<BuiltinType> {
+        match self {
+            Self::Named(name) => BuiltinType::from_name(name),
+            _ => None,
+        }
+    }
+
+    pub fn is_builtin(&self, builtin: BuiltinType) -> bool {
+        self.as_builtin() == Some(builtin)
+    }
+
+    pub fn applied_builtin(&self) -> Option<(BuiltinType, &[Type])> {
+        match self {
+            Self::Apply { callee, args } => Some((callee.as_builtin()?, args)),
+            _ => None,
+        }
     }
 }
 
@@ -420,48 +438,41 @@ fn builtin_collection_fields(receiver: &Type) -> Option<Vec<RecordField>> {
 }
 
 fn map_type_args(ty: &Type) -> Option<(&Type, &Type)> {
-    let Type::Apply { callee, args } = ty else {
-        return None;
-    };
-    if !matches!(callee.as_ref(), Type::Named(name) if name == "Map") {
+    let (builtin, args) = ty.applied_builtin()?;
+    if builtin != BuiltinType::Map {
         return None;
     }
-    let [key, value] = args.as_slice() else {
+    let [key, value] = args else {
         return None;
     };
     Some((key, value))
 }
 
 fn array_type_arg(ty: &Type) -> Option<&Type> {
-    let Type::Apply { callee, args } = ty else {
-        return None;
-    };
-    if !matches!(callee.as_ref(), Type::Named(name) if name == "Array") {
+    let (builtin, args) = ty.applied_builtin()?;
+    if builtin != BuiltinType::Array {
         return None;
     }
-    let [element] = args.as_slice() else {
+    let [element] = args else {
         return None;
     };
     Some(element)
 }
 
 fn set_type_arg(ty: &Type) -> Option<&Type> {
-    let Type::Apply { callee, args } = ty else {
-        return None;
-    };
-    if !matches!(callee.as_ref(), Type::Named(name) if name == "Set") {
+    let (builtin, args) = ty.applied_builtin()?;
+    if builtin != BuiltinType::Set {
         return None;
     }
-    let [element] = args.as_slice() else {
+    let [element] = args else {
         return None;
     };
     Some(element)
 }
 
 fn result_type_args(ty: &Type) -> Option<(Type, Type)> {
-    if let Type::Apply { callee, args } = ty
-        && let [ok, error] = args.as_slice()
-        && matches!(callee.as_ref(), Type::Named(name) if name == "Result")
+    if let Some((BuiltinType::Result, args)) = ty.applied_builtin()
+        && let [ok, error] = args
     {
         return Some((ok.clone(), error.clone()));
     }
@@ -555,7 +566,7 @@ pub fn variant_tags(ty: &Type) -> Option<Vec<String>> {
 /// variant row (its base kind is `Text`).
 pub fn is_text_type(ty: &Type) -> bool {
     match ty {
-        Type::Named(name) => name == "Text",
+        Type::Named(_) => ty.is_builtin(BuiltinType::Text),
         Type::Variant(row) => literal_variant_base(row) == Some(LiteralBase::Text),
         _ => false,
     }
@@ -734,11 +745,12 @@ pub(crate) enum LiteralBase {
 
 impl LiteralBase {
     pub(crate) fn matches_named(self, name: &str) -> bool {
-        match self {
-            Self::Bool => name == "Bool",
-            Self::Text => name == "Text",
-            Self::Number => matches!(name, "Int" | "Float"),
-        }
+        matches!(
+            (self, BuiltinType::from_name(name)),
+            (Self::Bool, Some(BuiltinType::Bool))
+                | (Self::Text, Some(BuiltinType::Text))
+                | (Self::Number, Some(BuiltinType::Int | BuiltinType::Float))
+        )
     }
 }
 
@@ -1325,7 +1337,7 @@ pub fn might_contain_float(ty: &Type, context: &crate::ComptimeTypeContext<'_>) 
     ) -> bool {
         match ty {
             Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
-            Type::Named(name) if name == "Float" => true,
+            Type::Named(name) if BuiltinType::from_name(name) == Some(BuiltinType::Float) => true,
             Type::Named(name) => {
                 let Some(owner) = context.named_family_aliases.get(name) else {
                     return false;
@@ -1490,10 +1502,15 @@ pub(crate) fn display_inferred_type(ty: &Type) -> Type {
 /// `Type`s they produce.
 pub mod build {
     use super::{Row, RowEntry, RowTail, Type};
+    use aven_core::BuiltinType;
 
     /// A named type such as `Text` or a user/host-defined type name.
     pub fn named(name: &str) -> Type {
         Type::Named(name.to_owned())
+    }
+
+    pub fn builtin(builtin: BuiltinType) -> Type {
+        named(builtin.name())
     }
 
     /// A named type variable, used by generic host/global signatures.
@@ -1502,7 +1519,7 @@ pub mod build {
     }
 
     pub fn text() -> Type {
-        named("Text")
+        builtin(BuiltinType::Text)
     }
 
     /// A closed literal-union type `"a" | "b" | ...` (text singletons).
@@ -1519,19 +1536,19 @@ pub mod build {
     }
 
     pub fn int() -> Type {
-        named("Int")
+        builtin(BuiltinType::Int)
     }
 
     pub fn float() -> Type {
-        named("Float")
+        builtin(BuiltinType::Float)
     }
 
     pub fn bool() -> Type {
-        named("Bool")
+        builtin(BuiltinType::Bool)
     }
 
     pub fn unit() -> Type {
-        named("Unit")
+        builtin(BuiltinType::Unit)
     }
 
     /// A function type `(params...) -> result` where every param is required.
@@ -1593,7 +1610,7 @@ pub mod build {
     /// inhabits it with `@Ok(ok)` / `@Err(err)` tag values.
     pub fn result(ok: Type, err: Type) -> Type {
         Type::Apply {
-            callee: Box::new(named("Result")),
+            callee: Box::new(builtin(BuiltinType::Result)),
             args: vec![ok, err],
         }
     }
@@ -1601,7 +1618,7 @@ pub mod build {
     /// The applied `Map(key, value)` type.
     pub fn map(key: Type, value: Type) -> Type {
         Type::Apply {
-            callee: Box::new(named("Map")),
+            callee: Box::new(builtin(BuiltinType::Map)),
             args: vec![key, value],
         }
     }
@@ -1609,7 +1626,15 @@ pub mod build {
     /// The collection type `Array elem` (`Apply Named("Array") [elem]`).
     pub fn array(element: Type) -> Type {
         Type::Apply {
-            callee: Box::new(Type::Named("Array".to_owned())),
+            callee: Box::new(builtin(BuiltinType::Array)),
+            args: vec![element],
+        }
+    }
+
+    /// The applied `Set(element)` type.
+    pub fn set(element: Type) -> Type {
+        Type::Apply {
+            callee: Box::new(builtin(BuiltinType::Set)),
             args: vec![element],
         }
     }
@@ -1676,9 +1701,9 @@ pub(crate) fn named_type_name(ty: &Type) -> Option<&str> {
 }
 
 pub(crate) fn numeric_type_name(ty: &Type) -> Option<&'static str> {
-    match named_type_name(ty) {
-        Some("Int") => Some("Int"),
-        Some("Float") => Some("Float"),
+    match ty.as_builtin() {
+        Some(BuiltinType::Int) => Some(BuiltinType::Int.name()),
+        Some(BuiltinType::Float) => Some(BuiltinType::Float.name()),
         _ => None,
     }
 }

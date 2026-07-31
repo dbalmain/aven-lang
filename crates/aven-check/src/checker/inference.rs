@@ -640,10 +640,10 @@ impl<'a> Checker<'a> {
 
     fn operator_operand_resolves_to_int(&self, ty: &Type) -> bool {
         let ty = self.normalize(&self.resolve_and_default(ty));
-        matches!(&ty, Type::Named(name) if name == "Int")
+        ty.is_builtin(BuiltinType::Int)
             || self
                 .primitive_family_base_view(&ty)
-                .is_some_and(|base| matches!(base, Type::Named(name) if name == "Int"))
+                .is_some_and(|base| base.is_builtin(BuiltinType::Int))
             || matches!(&ty, Type::Variant(row)
                 if literal_variant_base(row) == Some(LiteralBase::Number)
                     && !row.entries.iter().any(|entry| matches!(entry,
@@ -920,13 +920,13 @@ impl<'a> Checker<'a> {
         if let Some(base) = self.primitive_family_base_view(&resolved) {
             return base;
         }
-        if name == "Text"
+        if BuiltinType::from_name(name) == Some(BuiltinType::Text)
             && let Type::Variant(row) = &resolved
             && literal_variant_base(row) == Some(LiteralBase::Text)
         {
             return named_builtin("Text");
         }
-        if name == "Bool"
+        if BuiltinType::from_name(name) == Some(BuiltinType::Bool)
             && let Type::Variant(row) = &resolved
             && literal_variant_base(row) == Some(LiteralBase::Bool)
         {
@@ -2813,7 +2813,7 @@ impl<'a> Checker<'a> {
         args: &[Expr],
     ) -> Option<Type> {
         let name = call_callee_name(callee)?;
-        if name != "Map" {
+        if BuiltinType::from_name(name) != Some(BuiltinType::Map) {
             return None;
         }
         // Same shadowing rule as statics / host comptime: a user binding of
@@ -3342,8 +3342,7 @@ impl<'a> Checker<'a> {
             Type::Record(row) => self.infer_record_index(row, arg),
             Type::Tuple(elements) => self.infer_tuple_index(elements, arg),
             Type::Apply { callee, args }
-                if args.len() == 1
-                    && matches!(callee.as_ref(), Type::Named(name) if name == "Array") =>
+                if args.len() == 1 && callee.is_builtin(BuiltinType::Array) =>
             {
                 // Array indexing accepts a runtime index that may be out of
                 // bounds, so the result is optional (`?a`): an absent element
@@ -3352,8 +3351,7 @@ impl<'a> Checker<'a> {
                 Type::Optional(Box::new(args[0].clone()))
             }
             Type::Apply { callee, args }
-                if args.len() == 2
-                    && matches!(callee.as_ref(), Type::Named(name) if name == "Map") =>
+                if args.len() == 2 && callee.is_builtin(BuiltinType::Map) =>
             {
                 // `m[key]` sugars to `m.get(key)`: the index unifies with the
                 // key type, and the result is optional (`?v`) since a missing
@@ -3390,7 +3388,7 @@ impl<'a> Checker<'a> {
     /// concrete mismatches point to the index expression.
     fn check_value_index_arg(&mut self, env: &TypeEnv, arg: &Expr, expected: Type) {
         let actual = self.infer(env, arg);
-        if matches!(&expected, Type::Named(name) if name == "Int") {
+        if expected.is_builtin(BuiltinType::Int) {
             let actual = self.widen_numeric_operand(&actual);
             if self.unifier.unify(&actual, &expected).is_err() {
                 let expected = self.normalize(&self.resolve_and_default(&expected));
@@ -3800,8 +3798,7 @@ impl<'a> Checker<'a> {
         let resolved = self.resolve_and_default(ty);
         match self.normalize(&resolved) {
             Type::Apply { callee, args }
-                if args.len() == 1
-                    && matches!(callee.as_ref(), Type::Named(name) if name == "Set") =>
+                if args.len() == 1 && callee.is_builtin(BuiltinType::Set) =>
             {
                 Some(args[0].clone())
             }
@@ -4169,9 +4166,12 @@ enum EqualityBaseKind {
 
 fn equality_base_kind(ty: &Type) -> Option<EqualityBaseKind> {
     match ty {
-        Type::Named(name) if name == "Bool" => Some(EqualityBaseKind::Bool),
-        Type::Named(name) if name == "Text" => Some(EqualityBaseKind::Text),
-        Type::Named(name) if name == "Int" || name == "Float" => Some(EqualityBaseKind::Number),
+        Type::Named(name) => match BuiltinType::from_name(name) {
+            Some(BuiltinType::Bool) => Some(EqualityBaseKind::Bool),
+            Some(BuiltinType::Text) => Some(EqualityBaseKind::Text),
+            Some(BuiltinType::Int | BuiltinType::Float) => Some(EqualityBaseKind::Number),
+            _ => None,
+        },
         Type::Variant(row) => match literal_variant_base(row) {
             Some(LiteralBase::Bool) => Some(EqualityBaseKind::Bool),
             Some(LiteralBase::Text) => Some(EqualityBaseKind::Text),
@@ -4180,7 +4180,6 @@ fn equality_base_kind(ty: &Type) -> Option<EqualityBaseKind> {
         },
         Type::Error
         | Type::Deferred
-        | Type::Named(_)
         | Type::Variable(_)
         | Type::Meta(_)
         | Type::Recursive(_)
@@ -4211,7 +4210,7 @@ fn equality_sequence_compatibility(
 }
 
 fn is_array_constructor(ty: &Type) -> bool {
-    matches!(ty, Type::Named(name) if name == "Array")
+    ty.is_builtin(BuiltinType::Array)
 }
 
 fn row_field_type<'r>(row: &'r Row, field: &str) -> Option<&'r Type> {
@@ -4234,8 +4233,8 @@ fn coalesce_left_can_be_empty(ty: &Type) -> bool {
         return true;
     }
     matches!(
-        core,
-        Type::Named(name) if name == "Null" || name == "Undefined"
+        core.as_builtin(),
+        Some(BuiltinType::Null | BuiltinType::Undefined)
     )
 }
 
@@ -4287,7 +4286,7 @@ fn operator_operand_note(operator: &str) -> &'static str {
 }
 
 fn binary_operand_is_text(ty: &Type) -> bool {
-    matches!(named_type_name(ty), Some("Text"))
+    ty.is_builtin(BuiltinType::Text)
         || matches!(ty, Type::Variant(row) if literal_variant_base(row) == Some(LiteralBase::Text))
 }
 

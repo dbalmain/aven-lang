@@ -245,9 +245,7 @@ impl<'a> Checker<'a> {
                     callee,
                     args: element_types,
                 },
-            ) if matches!(callee.as_ref(), Type::Named(name) if name == "Array")
-                && element_types.len() == 1 =>
-            {
+            ) if callee.is_builtin(BuiltinType::Array) && element_types.len() == 1 => {
                 self.report_value_record_markers(entries);
                 self.check_collection_entries_against(expected, &element_types[0], entries);
             }
@@ -257,9 +255,7 @@ impl<'a> Checker<'a> {
                     callee,
                     args: element_types,
                 },
-            ) if matches!(callee.as_ref(), Type::Named(name) if name == "Set")
-                && element_types.len() == 1 =>
-            {
+            ) if callee.is_builtin(BuiltinType::Set) && element_types.len() == 1 => {
                 self.report_value_record_markers(entries);
                 self.check_collection_entries_against(expected, &element_types[0], entries);
             }
@@ -1054,8 +1050,8 @@ impl<'a> Checker<'a> {
             | (Type::Nullable(expected_inner), Type::Nullable(actual_inner)) => {
                 self.check_type_against_type(expected_inner, actual_inner, span);
             }
-            (Type::Optional(_), Type::Named(name)) if name == "Undefined" => {}
-            (Type::Nullable(_), Type::Named(name)) if name == "Null" => {}
+            (Type::Optional(_), actual) if actual.is_builtin(BuiltinType::Undefined) => {}
+            (Type::Nullable(_), actual) if actual.is_builtin(BuiltinType::Null) => {}
             (Type::Optional(inner), _) => self.check_type_against_type(inner, actual, span),
             (Type::Nullable(inner), _) => self.check_type_against_type(inner, actual, span),
             (Type::Named(expected), Type::Named(actual))

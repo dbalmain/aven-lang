@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 aven-check.workspace = true
+aven-core.workspace = true
 aven-eval.workspace = true
 aven-parser.workspace = true
 serde.workspace = true
@@ -21,6 +22,5 @@ tz-rs = "0.7.3"
 ureq = "3"
 
 [dev-dependencies]
-aven-core.workspace = true
 aven-parser.workspace = true
 proptest.workspace = true

@@ -22,6 +22,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use aven_check::{HostComptimeFn, HostComptimeFnSpec, HostComptimeParam, HostGlobals, Type};
+use aven_core::BuiltinType;
 
 pub use aven_eval::Int;
 pub use aven_parser::{OperatorAssociativity, OperatorPrecedence};
@@ -265,12 +266,12 @@ impl Host {
         if self
             .type_definitions
             .iter()
-            .any(|entry| entry.name == "Data")
+            .any(|entry| BuiltinType::from_name(&entry.name) == Some(BuiltinType::Data))
         {
             return;
         }
 
-        self.register_type_definition("Data", data_type());
+        self.register_type_definition(BuiltinType::Data.name(), data_type());
     }
 
     /// Register a host function whose ordinary base type binds the name and
@@ -687,10 +688,16 @@ pub fn data_type() -> Type {
         ("Int", vec![build::int()]),
         ("Float", vec![build::float()]),
         ("Text", vec![build::text()]),
-        ("Array", vec![build::array(build::named("Data"))]),
+        (
+            "Array",
+            vec![build::array(build::named(BuiltinType::Data.name()))],
+        ),
         (
             "Object",
-            vec![build::map(build::text(), build::named("Data"))],
+            vec![build::map(
+                build::text(),
+                build::named(BuiltinType::Data.name()),
+            )],
         ),
     ])
 }
@@ -994,23 +1001,23 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ],
     )
     .with_type_definitions(
-        std::iter::once(("Data".to_owned(), data_type()))
+        std::iter::once((BuiltinType::Data.name().to_owned(), data_type()))
             .chain([
-                ("JsonError".to_owned(), json_error_type()),
+                (BuiltinType::JsonError.name().to_owned(), json_error_type()),
                 ("JsonEncodeError".to_owned(), json_encode_error_type()),
-                ("YamlError".to_owned(), yaml_error_type()),
+                (BuiltinType::YamlError.name().to_owned(), yaml_error_type()),
                 ("YamlEncodeError".to_owned(), yaml_encode_error_type()),
-                ("TomlError".to_owned(), toml_error_type()),
+                (BuiltinType::TomlError.name().to_owned(), toml_error_type()),
                 ("TomlEncodeError".to_owned(), toml_encode_error_type()),
             ])
             .chain(temporal::temporal_type_definitions())
             .collect(),
     )
     .with_statics(
-        std::iter::once(("Json".to_owned(), json_statics()))
+        std::iter::once((BuiltinType::Json.name().to_owned(), json_statics()))
             .chain([
-                ("Yaml".to_owned(), yaml_statics()),
-                ("Toml".to_owned(), toml_statics()),
+                (BuiltinType::Yaml.name().to_owned(), yaml_statics()),
+                (BuiltinType::Toml.name().to_owned(), toml_statics()),
             ])
             .chain(temporal::temporal_statics_table())
             .collect(),

@@ -169,7 +169,7 @@ impl<'a> Checker<'a> {
 
         let mut reserved_names: HashSet<_> = BUILTIN_TYPES
             .iter()
-            .map(|name| (*name).to_owned())
+            .map(|builtin| builtin.name().to_owned())
             .collect();
         reserved_names.extend(
             globals
@@ -2398,12 +2398,10 @@ impl<'a> Checker<'a> {
 /// Parameterized owners (`Array`, `Map`, …) return a positive count; scalar
 /// owners return `Some(0)`. Non-owners return `None`.
 pub(crate) fn builtin_owner_arity(name: &str) -> Option<usize> {
-    match name {
-        "Array" | "Set" => Some(1),
-        "Map" | "Result" => Some(2),
-        "Bool" | "Float" | "Int" | "Text" => Some(0),
-        _ => None,
-    }
+    let builtin = BuiltinType::from_name(name)?;
+    builtin
+        .application_arity()
+        .or_else(|| builtin.is_scalar().then_some(0))
 }
 
 fn builtin_attachment_member_span(member: &RecordEntry) -> Span {
@@ -2468,22 +2466,22 @@ fn intrinsic_builtin_method_collides(owner: &Type, member: &str) -> bool {
         },
         _ => return false,
     };
-    match head {
-        "Array" => {
+    match BuiltinType::from_name(head) {
+        Some(BuiltinType::Array) => {
             crate::ty::ARRAY_METHOD_NAMES.contains(&member)
                 || (member == "joinWith"
                     && builtin_owner_patterns_overlap(
                         owner,
                         &Type::Apply {
-                            callee: Box::new(Type::Named("Array".to_owned())),
-                            args: vec![Type::Named("Text".to_owned())],
+                            callee: Box::new(Type::Named(BuiltinType::Array.name().to_owned())),
+                            args: vec![Type::Named(BuiltinType::Text.name().to_owned())],
                         },
                     ))
         }
-        "Map" => crate::ty::MAP_METHOD_NAMES.contains(&member),
-        "Set" => crate::ty::SET_METHOD_NAMES.contains(&member),
-        "Text" => crate::ty::TEXT_METHOD_NAMES.contains(&member),
-        "Bool" | "Float" | "Int" => {
+        Some(BuiltinType::Map) => crate::ty::MAP_METHOD_NAMES.contains(&member),
+        Some(BuiltinType::Set) => crate::ty::SET_METHOD_NAMES.contains(&member),
+        Some(BuiltinType::Text) => crate::ty::TEXT_METHOD_NAMES.contains(&member),
+        Some(BuiltinType::Bool | BuiltinType::Float | BuiltinType::Int) => {
             super::method_sets::builtin_method_signature(owner, member).is_some()
         }
         _ => false,
@@ -2496,14 +2494,14 @@ fn is_named_family_provider(value: &Expr) -> bool {
 
 fn primitive_family_base_is_supported(base: &Type) -> bool {
     match base {
-        Type::Named(name) => matches!(name.as_str(), "Int" | "Float" | "Text" | "Bool"),
+        Type::Named(name) => BuiltinType::from_name(name).is_some_and(BuiltinType::is_scalar),
         Type::Apply { callee, args } => {
-            let Type::Named(name) = callee.as_ref() else {
+            let Some(builtin) = callee.as_builtin() else {
                 return false;
             };
-            let expected_arity = match name.as_str() {
-                "Array" | "Set" => 1,
-                "Map" => 2,
+            let expected_arity = match builtin {
+                BuiltinType::Array | BuiltinType::Set => 1,
+                BuiltinType::Map => 2,
                 _ => return false,
             };
             args.len() == expected_arity && is_concrete_type(base)

@@ -284,7 +284,7 @@ where
     T: AvenMarshal + Ord,
 {
     fn aven_type() -> Type {
-        build::apply("Set", vec![T::aven_type()])
+        build::set(T::aven_type())
     }
 
     fn to_value(self) -> Value {
@@ -489,10 +489,7 @@ mod tests {
             BTreeSet::<String>::from_value(&set.clone().to_value()),
             Ok(set)
         );
-        assert_eq!(
-            BTreeSet::<String>::aven_type(),
-            build::apply("Set", vec![build::text()])
-        );
+        assert_eq!(BTreeSet::<String>::aven_type(), build::set(build::text()));
     }
 
     #[test]
