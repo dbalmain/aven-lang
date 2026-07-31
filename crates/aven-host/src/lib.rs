@@ -335,7 +335,9 @@ impl Host {
     /// Register a typed Rust closure: derive both its Aven [`Type`] and a
     /// marshalling [`Value::native`] from the signature so the value and type
     /// can't drift, then register them through the normal [`Host::register`]
-    /// path. Monomorphic primitives only — see [`AvenMarshal`].
+    /// path. Supports monomorphic primitives and compound `AvenMarshal`
+    /// implementations such as `Vec`, `Option`, `Result`, tuples, maps, and
+    /// sets.
     pub fn register_fn<F, Args>(&mut self, name: impl Into<String>, f: F)
     where
         F: IntoHostFn<Args>,

@@ -8,16 +8,20 @@
 //! `(Type, Value)` pair [`crate::Host::register_fn`] feeds to `register`.
 //!
 //! Deferred: generic host fns (e.g. `dbg : (a) -> a`, needing a `Value`
-//! passthrough mapped to a type variable plus scheme support), compound
-//! marshalling (records↔structs, `Vec`↔Array, `Option`↔`?T`, `Result`↔Aven
-//! `Result`), optional params via the adapter, and arities above 4.
+//! passthrough mapped to a type variable plus scheme support), a derive/helper
+//! for records↔structs, optional params via the adapter, and arities above 4.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 use aven_check::{Type, build};
 use aven_eval::{Int, Value};
 
 /// A Rust type that marshals to/from an Aven [`Value`] and knows its Aven
 /// [`Type`]. Implemented for the primitive scalars, arbitrary-precision
-/// [`Int`], and unit only;
+/// [`Int`], unit, and the standard compound containers;
 /// [`from_value`](AvenMarshal::from_value) reports a clear shape mismatch on the
 /// wrong runtime shape.
 pub trait AvenMarshal: Sized {
@@ -158,6 +162,187 @@ impl AvenMarshal for () {
     }
 }
 
+impl<T: AvenMarshal> AvenMarshal for Vec<T> {
+    fn aven_type() -> Type {
+        build::array(T::aven_type())
+    }
+
+    fn to_value(self) -> Value {
+        Value::Array(Rc::new(
+            self.into_iter().map(AvenMarshal::to_value).collect(),
+        ))
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        let Value::Array(values) = value else {
+            return Err(mismatch("Array", value));
+        };
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                T::from_value(value).map_err(|error| format!("at Array[{index}]: {error}"))
+            })
+            .collect()
+    }
+}
+
+impl<T: AvenMarshal> AvenMarshal for Option<T> {
+    fn aven_type() -> Type {
+        build::optional(T::aven_type())
+    }
+
+    fn to_value(self) -> Value {
+        self.map_or(Value::Undefined, AvenMarshal::to_value)
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        if matches!(value, Value::Undefined) {
+            Ok(None)
+        } else {
+            T::from_value(value).map(Some)
+        }
+    }
+}
+
+impl<T: AvenMarshal, E: AvenMarshal> AvenMarshal for Result<T, E> {
+    fn aven_type() -> Type {
+        build::result(T::aven_type(), E::aven_type())
+    }
+
+    fn to_value(self) -> Value {
+        let (name, payload) = match self {
+            Ok(value) => ("Ok", value.to_value()),
+            Err(error) => ("Err", error.to_value()),
+        };
+        Value::Tag {
+            name: name.to_owned(),
+            payload: vec![payload],
+        }
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        let Value::Tag { name, payload } = value else {
+            return Err(mismatch("Result", value));
+        };
+        let [payload] = payload.as_slice() else {
+            return Err(format!(
+                "expected Result tag with 1 payload, got @{name} with {} payloads",
+                payload.len()
+            ));
+        };
+        match name.as_str() {
+            "Ok" => T::from_value(payload)
+                .map(Ok)
+                .map_err(|error| format!("at @Ok payload: {error}")),
+            "Err" => E::from_value(payload)
+                .map(Err)
+                .map_err(|error| format!("at @Err payload: {error}")),
+            _ => Err(format!("expected @Ok or @Err, got @{name}")),
+        }
+    }
+}
+
+impl<K, V> AvenMarshal for BTreeMap<K, V>
+where
+    K: AvenMarshal + Ord,
+    V: AvenMarshal,
+{
+    fn aven_type() -> Type {
+        build::map(K::aven_type(), V::aven_type())
+    }
+
+    fn to_value(self) -> Value {
+        Value::Map(Rc::new(
+            self.into_iter()
+                .map(|(key, value)| (key.to_value(), value.to_value()))
+                .collect(),
+        ))
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        let Value::Map(entries) = value else {
+            return Err(mismatch("Map", value));
+        };
+        entries
+            .iter()
+            .enumerate()
+            .map(|(index, (key, value))| {
+                Ok((
+                    K::from_value(key)
+                        .map_err(|error| format!("at Map entry {index} key: {error}"))?,
+                    V::from_value(value)
+                        .map_err(|error| format!("at Map entry {index} value: {error}"))?,
+                ))
+            })
+            .collect()
+    }
+}
+
+impl<T> AvenMarshal for BTreeSet<T>
+where
+    T: AvenMarshal + Ord,
+{
+    fn aven_type() -> Type {
+        build::apply("Set", vec![T::aven_type()])
+    }
+
+    fn to_value(self) -> Value {
+        Value::Set(Rc::new(
+            self.into_iter().map(AvenMarshal::to_value).collect(),
+        ))
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        let Value::Set(values) = value else {
+            return Err(mismatch("Set", value));
+        };
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                T::from_value(value).map_err(|error| format!("at Set[{index}]: {error}"))
+            })
+            .collect()
+    }
+}
+
+macro_rules! impl_tuple_marshal {
+    ($length:expr; $($index:tt => $item:ident),+) => {
+        impl<$($item: AvenMarshal),+> AvenMarshal for ($($item,)+) {
+            fn aven_type() -> Type {
+                Type::Tuple(vec![$($item::aven_type()),+])
+            }
+
+            fn to_value(self) -> Value {
+                Value::Tuple(Rc::new(vec![$(self.$index.to_value()),+]))
+            }
+
+            fn from_value(value: &Value) -> Result<Self, String> {
+                let Value::Tuple(values) = value else {
+                    return Err(mismatch("Tuple", value));
+                };
+                if values.len() != $length {
+                    return Err(format!(
+                        "expected Tuple with {} items, got Tuple with {} items",
+                        $length,
+                        values.len()
+                    ));
+                }
+                Ok(($(
+                    $item::from_value(&values[$index])
+                        .map_err(|error| format!("at Tuple[{}]: {error}", $index))?,
+                )+))
+            }
+        }
+    };
+}
+
+impl_tuple_marshal!(1; 0 => T0);
+impl_tuple_marshal!(2; 0 => T0, 1 => T1);
+impl_tuple_marshal!(3; 0 => T0, 1 => T1, 2 => T2);
+impl_tuple_marshal!(4; 0 => T0, 1 => T1, 2 => T2, 3 => T3);
+
 mod sealed {
     pub trait Sealed<Args> {}
 }
@@ -224,6 +409,7 @@ impl_into_host_fn!(A0);
 impl_into_host_fn!(A0, A1);
 impl_into_host_fn!(A0, A1, A2);
 impl_into_host_fn!(A0, A1, A2, A3);
+impl_into_host_fn!(A0, A1, A2, A3, A4);
 
 #[cfg(test)]
 mod tests {
@@ -252,6 +438,83 @@ mod tests {
         assert_eq!(String::aven_type(), build::text());
         assert_eq!(bool::aven_type(), build::bool());
         assert_eq!(<()>::aven_type(), build::unit());
+    }
+
+    #[test]
+    fn arrays_optionals_results_and_tuples_round_trip() {
+        let array = vec![Some(1_i64), None, Some(3)];
+        assert_eq!(
+            Vec::<Option<i64>>::from_value(&array.clone().to_value()),
+            Ok(array)
+        );
+        assert_eq!(
+            Vec::<Option<i64>>::aven_type(),
+            build::array(build::optional(build::int()))
+        );
+
+        let ok: Result<(i64, String), bool> = Ok((7, "seven".to_owned()));
+        assert_eq!(
+            Result::<(i64, String), bool>::from_value(&ok.clone().to_value()),
+            Ok(ok)
+        );
+        assert_eq!(
+            Result::<(i64, String), bool>::aven_type(),
+            build::result(
+                Type::Tuple(vec![build::int(), build::text()]),
+                build::bool(),
+            )
+        );
+
+        let err: Result<(i64, String), bool> = Err(true);
+        assert_eq!(
+            Result::<(i64, String), bool>::from_value(&err.clone().to_value()),
+            Ok(err)
+        );
+    }
+
+    #[test]
+    fn ordered_maps_and_sets_round_trip() {
+        let map = BTreeMap::from([("a".to_owned(), 1_i64), ("b".to_owned(), 2)]);
+        assert_eq!(
+            BTreeMap::<String, i64>::from_value(&map.clone().to_value()),
+            Ok(map)
+        );
+        assert_eq!(
+            BTreeMap::<String, i64>::aven_type(),
+            build::map(build::text(), build::int())
+        );
+
+        let set = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
+        assert_eq!(
+            BTreeSet::<String>::from_value(&set.clone().to_value()),
+            Ok(set)
+        );
+        assert_eq!(
+            BTreeSet::<String>::aven_type(),
+            build::apply("Set", vec![build::text()])
+        );
+    }
+
+    #[test]
+    fn compound_mismatches_report_the_nested_location() {
+        assert_eq!(
+            Vec::<i64>::from_value(&Value::Array(Rc::new(vec![
+                Value::int(1),
+                Value::Text("x".to_owned()),
+            ]))),
+            Err("at Array[1]: expected Int, got Text".to_owned())
+        );
+        assert_eq!(
+            Result::<i64, String>::from_value(&Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::Bool(true)],
+            }),
+            Err("at @Ok payload: expected Int, got Bool".to_owned())
+        );
+        assert_eq!(
+            <(i64, bool)>::from_value(&Value::Tuple(Rc::new(vec![Value::int(1)]))),
+            Err("expected Tuple with 2 items, got Tuple with 1 items".to_owned())
+        );
     }
 
     #[test]
@@ -332,6 +595,52 @@ mod tests {
         assert_eq!(
             call_native(&value, &[Value::int(0)]),
             Err("expected 0 arguments, got 1".to_owned())
+        );
+    }
+
+    #[test]
+    fn compound_and_five_argument_functions_derive_types_and_marshal() {
+        let (ty, native) = (|values: Vec<i64>, fallback: Option<i64>| -> Result<i64, String> {
+            values
+                .into_iter()
+                .next()
+                .or(fallback)
+                .ok_or("empty".to_owned())
+        })
+        .into_host_fn();
+        assert_eq!(
+            ty,
+            build::function(
+                vec![build::array(build::int()), build::optional(build::int())],
+                build::result(build::int(), build::text()),
+            )
+        );
+        assert_eq!(
+            call_native(
+                &native,
+                &[Value::Array(Rc::new(vec![Value::int(4)])), Value::Undefined],
+            ),
+            Ok(Value::Tag {
+                name: "Ok".to_owned(),
+                payload: vec![Value::int(4)],
+            })
+        );
+
+        let (ty, native) =
+            (|a: i64, b: i64, c: i64, d: i64, e: i64| a + b + c + d + e).into_host_fn();
+        assert_eq!(ty, build::function(vec![build::int(); 5], build::int()));
+        assert_eq!(
+            call_native(
+                &native,
+                &[
+                    Value::int(1),
+                    Value::int(2),
+                    Value::int(3),
+                    Value::int(4),
+                    Value::int(5),
+                ],
+            ),
+            Ok(Value::int(15))
         );
     }
 }
