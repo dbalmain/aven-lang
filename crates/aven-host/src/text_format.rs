@@ -114,10 +114,14 @@ impl TextFormat {
     }
 
     pub(crate) const fn encode_error_name(self) -> &'static str {
+        self.encode_error_builtin().name()
+    }
+
+    const fn encode_error_builtin(self) -> BuiltinType {
         match self {
-            Self::Json => "JsonEncodeError",
-            Self::Yaml => "YamlEncodeError",
-            Self::Toml => "TomlEncodeError",
+            Self::Json => BuiltinType::JsonEncodeError,
+            Self::Yaml => BuiltinType::YamlEncodeError,
+            Self::Toml => BuiltinType::TomlEncodeError,
         }
     }
 

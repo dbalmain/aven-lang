@@ -1119,8 +1119,10 @@ fn bind_intrinsics(env: &Environment) {
 }
 
 fn intrinsics() -> Vec<(String, Value)> {
-    let mut intrinsics: Vec<(String, Value)> = BuiltinType::RUNTIME_VALUES
+    let mut intrinsics: Vec<(String, Value)> = BuiltinType::ALL
         .iter()
+        .copied()
+        .filter(|builtin| builtin.has_runtime_value())
         .map(|builtin| (builtin.name().to_owned(), Value::named_type(builtin.name())))
         .collect();
 
@@ -1158,7 +1160,7 @@ fn intrinsics() -> Vec<(String, Value)> {
         }),
     ));
 
-    // `Map` binds to a type value (see `BuiltinType::RUNTIME_VALUES`); its statics resolve
+    // `Map` binds to a type value (see `BuiltinType::has_runtime_value`); its statics resolve
     // through `"Map.static"`-keyed globals consulted on `Value::Type` field
     // access.
     intrinsics.push(("Map.empty".to_owned(), Value::native(map_empty_intrinsic)));

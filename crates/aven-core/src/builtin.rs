@@ -1,136 +1,90 @@
 use std::fmt;
 
-/// Stable identities for the builtin type names understood across the
-/// parser/checker/evaluator boundary.
-///
-/// Source syntax and host registries still use strings at their boundaries;
-/// internal dispatch should parse them once and match this enum so inventories
-/// and constructor arities cannot drift between crates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum BuiltinType {
-    Array,
-    Bool,
-    Data,
-    Float,
-    Int,
-    Json,
-    JsonError,
-    Map,
-    Null,
-    Result,
-    Set,
-    Text,
-    Toml,
-    TomlError,
-    Type,
-    Undefined,
-    Unit,
-    Yaml,
-    YamlError,
+macro_rules! define_builtin_types {
+    (
+        $(
+            $variant:ident => {
+                name: $name:literal,
+                runtime_value: $runtime_value:literal,
+                application_arity: $application_arity:expr,
+                scalar: $scalar:literal $(,)?
+            }
+        ),+ $(,)?
+    ) => {
+        /// Stable identities for the builtin type names understood across the
+        /// parser/checker/evaluator boundary.
+        ///
+        /// Source syntax and host registries still use strings at their
+        /// boundaries; internal dispatch parses them once and matches this enum.
+        /// The declaration below is the single inventory for names and builtin
+        /// metadata, so adding a variant cannot leave a parallel list stale.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum BuiltinType {
+            $($variant),+
+        }
+
+        impl BuiltinType {
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name),+
+                }
+            }
+
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            /// Whether the evaluator materializes this builtin as a `Type`
+            /// value in its intrinsic environment.
+            pub const fn has_runtime_value(self) -> bool {
+                match self {
+                    $(Self::$variant => $runtime_value),+
+                }
+            }
+
+            pub const fn application_arity(self) -> Option<usize> {
+                match self {
+                    $(Self::$variant => $application_arity),+
+                }
+            }
+
+            pub const fn is_scalar(self) -> bool {
+                match self {
+                    $(Self::$variant => $scalar),+
+                }
+            }
+        }
+    };
 }
 
-impl BuiltinType {
-    pub const ALL: &'static [Self] = &[
-        Self::Array,
-        Self::Bool,
-        Self::Data,
-        Self::Float,
-        Self::Int,
-        Self::Json,
-        Self::JsonError,
-        Self::Map,
-        Self::Null,
-        Self::Result,
-        Self::Set,
-        Self::Text,
-        Self::Toml,
-        Self::TomlError,
-        Self::Type,
-        Self::Undefined,
-        Self::Unit,
-        Self::Yaml,
-        Self::YamlError,
-    ];
-
-    /// Builtins which are materialized as evaluator `Type` values.
-    pub const RUNTIME_VALUES: &'static [Self] = &[
-        Self::Array,
-        Self::Bool,
-        Self::Data,
-        Self::Float,
-        Self::Int,
-        Self::Json,
-        Self::Map,
-        Self::Null,
-        Self::Result,
-        Self::Set,
-        Self::Text,
-        Self::Toml,
-        Self::Undefined,
-        Self::Unit,
-        Self::Yaml,
-    ];
-
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Array => "Array",
-            Self::Bool => "Bool",
-            Self::Data => "Data",
-            Self::Float => "Float",
-            Self::Int => "Int",
-            Self::Json => "Json",
-            Self::JsonError => "JsonError",
-            Self::Map => "Map",
-            Self::Null => "Null",
-            Self::Result => "Result",
-            Self::Set => "Set",
-            Self::Text => "Text",
-            Self::Toml => "Toml",
-            Self::TomlError => "TomlError",
-            Self::Type => "Type",
-            Self::Undefined => "Undefined",
-            Self::Unit => "Unit",
-            Self::Yaml => "Yaml",
-            Self::YamlError => "YamlError",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "Array" => Some(Self::Array),
-            "Bool" => Some(Self::Bool),
-            "Data" => Some(Self::Data),
-            "Float" => Some(Self::Float),
-            "Int" => Some(Self::Int),
-            "Json" => Some(Self::Json),
-            "JsonError" => Some(Self::JsonError),
-            "Map" => Some(Self::Map),
-            "Null" => Some(Self::Null),
-            "Result" => Some(Self::Result),
-            "Set" => Some(Self::Set),
-            "Text" => Some(Self::Text),
-            "Toml" => Some(Self::Toml),
-            "TomlError" => Some(Self::TomlError),
-            "Type" => Some(Self::Type),
-            "Undefined" => Some(Self::Undefined),
-            "Unit" => Some(Self::Unit),
-            "Yaml" => Some(Self::Yaml),
-            "YamlError" => Some(Self::YamlError),
-            _ => None,
-        }
-    }
-
-    pub const fn application_arity(self) -> Option<usize> {
-        match self {
-            Self::Array | Self::Set => Some(1),
-            Self::Map | Self::Result => Some(2),
-            _ => None,
-        }
-    }
-
-    pub const fn is_scalar(self) -> bool {
-        matches!(self, Self::Bool | Self::Float | Self::Int | Self::Text)
-    }
+define_builtin_types! {
+    Array => { name: "Array", runtime_value: true, application_arity: Some(1), scalar: false },
+    Bool => { name: "Bool", runtime_value: true, application_arity: None, scalar: true },
+    Data => { name: "Data", runtime_value: true, application_arity: None, scalar: false },
+    Float => { name: "Float", runtime_value: true, application_arity: None, scalar: true },
+    Int => { name: "Int", runtime_value: true, application_arity: None, scalar: true },
+    Json => { name: "Json", runtime_value: true, application_arity: None, scalar: false },
+    JsonError => { name: "JsonError", runtime_value: false, application_arity: None, scalar: false },
+    JsonEncodeError => { name: "JsonEncodeError", runtime_value: false, application_arity: None, scalar: false },
+    Map => { name: "Map", runtime_value: true, application_arity: Some(2), scalar: false },
+    Null => { name: "Null", runtime_value: true, application_arity: None, scalar: false },
+    Result => { name: "Result", runtime_value: true, application_arity: Some(2), scalar: false },
+    Set => { name: "Set", runtime_value: true, application_arity: Some(1), scalar: false },
+    Text => { name: "Text", runtime_value: true, application_arity: None, scalar: true },
+    Toml => { name: "Toml", runtime_value: true, application_arity: None, scalar: false },
+    TomlError => { name: "TomlError", runtime_value: false, application_arity: None, scalar: false },
+    TomlEncodeError => { name: "TomlEncodeError", runtime_value: false, application_arity: None, scalar: false },
+    Type => { name: "Type", runtime_value: false, application_arity: None, scalar: false },
+    Undefined => { name: "Undefined", runtime_value: true, application_arity: None, scalar: false },
+    Unit => { name: "Unit", runtime_value: true, application_arity: None, scalar: false },
+    Yaml => { name: "Yaml", runtime_value: true, application_arity: None, scalar: false },
+    YamlError => { name: "YamlError", runtime_value: false, application_arity: None, scalar: false },
+    YamlEncodeError => { name: "YamlEncodeError", runtime_value: false, application_arity: None, scalar: false },
 }
 
 impl fmt::Display for BuiltinType {
@@ -144,15 +98,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_names_round_trip_and_stay_unique() {
+    fn builtin_names_are_unique() {
         let names = BuiltinType::ALL
             .iter()
             .map(|builtin| builtin.name())
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(names.len(), BuiltinType::ALL.len());
-        for builtin in BuiltinType::ALL {
-            assert_eq!(BuiltinType::from_name(builtin.name()), Some(*builtin));
-        }
     }
 
     #[test]
