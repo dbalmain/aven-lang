@@ -1,0 +1,2 @@
+T = @Box(Int)
+x : T = @Box("hi")

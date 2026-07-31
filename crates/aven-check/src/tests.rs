@@ -846,10 +846,12 @@ fn comptime_tagsof_variant_reifies_sorted_literal_union() {
 }
 
 #[test]
-fn comptime_pipe_unions_lower_to_the_same_types_as_set_literals() {
+fn comptime_singleton_set_and_pipe_variants_lower_to_the_same_types() {
     let output = parse_module(
         "Color = @Red | @Green | @Blue\n\
          ColorSet = @{@Red, @Green, @Blue}\n\
+         OutcomeSingleton = @Ok(Int)\n\
+         OutcomeSingletonSet = @{@Ok(Int)}\n\
          Outcome = @Ok(Int) | @Err(Text)\n\
          OutcomeSet = @{@Ok(Int), @Err(Text)}\n\
          Numbers = 1 | 2\n\
@@ -862,21 +864,53 @@ fn comptime_pipe_unions_lower_to_the_same_types_as_set_literals() {
     let known_types = known_type_names(&output.module);
     let definitions = type_definitions(&output.module, &known_types);
 
-    for (pipe, set) in [
+    for (left, right) in [
         ("Color", "ColorSet"),
+        ("OutcomeSingleton", "OutcomeSingletonSet"),
         ("Outcome", "OutcomeSet"),
         ("Numbers", "NumberSet"),
         ("Modes", "ModeSet"),
         ("Parenthesized", "ParenthesizedSet"),
     ] {
-        let Some(pipe_type) = definitions.get(pipe) else {
-            panic!("expected a type definition for {pipe}");
+        let Some(left_type) = definitions.get(left) else {
+            panic!("expected a type definition for {left}");
         };
-        let Some(set_type) = definitions.get(set) else {
-            panic!("expected a type definition for {set}");
+        let Some(right_type) = definitions.get(right) else {
+            panic!("expected a type definition for {right}");
         };
-        assert_eq!(pipe_type, set_type);
-        assert_ne!(pipe_type, &Type::Deferred);
+        assert_eq!(left_type, right_type);
+        assert_ne!(left_type, &Type::Deferred);
+    }
+}
+
+#[test]
+fn comptime_payload_variant_spellings_agree_on_payload_checking() {
+    for binding in ["@Box(Int)", "@{@Box(Int)}", "@Box(Int) | @Other"] {
+        let matching = parse_module(&format!("T = {binding}\nx : T = @Box(1)\n"));
+        let matching_check = check_module(&matching.module);
+        assert!(
+            matching_check.diagnostics.is_empty(),
+            "{binding:?}: {:?}",
+            matching_check.diagnostics
+        );
+
+        let mismatched = parse_module(&format!("T = {binding}\nx : T = @Box(\"hi\")\n"));
+        let mismatched_check = check_module(&mismatched.module);
+        assert_eq!(
+            matching_codes(&mismatched_check.diagnostics, codes::ty::MISMATCH),
+            1,
+            "{binding:?}: {:?}",
+            mismatched_check.diagnostics
+        );
+        assert_eq!(
+            matching_codes(
+                &mismatched_check.diagnostics,
+                codes::comptime::EVALUATION_UNSUPPORTED,
+            ),
+            0,
+            "{binding:?}: {:?}",
+            mismatched_check.diagnostics
+        );
     }
 }
 

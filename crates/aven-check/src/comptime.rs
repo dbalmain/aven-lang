@@ -787,6 +787,9 @@ where
 
                 self.evaluate_type_term(expr, env)
             }
+            ExprKind::Call { callee, .. } if matches!(&ungroup(callee).kind, ExprKind::Tag(_)) => {
+                self.evaluate_type_term(expr, env)
+            }
             ExprKind::Call { callee, args } => {
                 self.evaluate_application(expr.span, callee, args, env)
             }

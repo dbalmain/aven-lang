@@ -1,0 +1,13 @@
+Marker = @Marker
+IntBox = @Box(Int)
+TextBox = @Box(Text)
+RecordBox = @Box({ a: Int })
+BracedIntBox = @{@Box(Int)}
+UnionIntBox = @Box(Int) | @Other
+
+marker : Marker = @Marker
+intBox : IntBox = @Box(1)
+textBox : TextBox = @Box("hi")
+recordBox : RecordBox = @Box({ a: 1 })
+bracedIntBox : BracedIntBox = @Box(1)
+unionIntBox : UnionIntBox = @Box(1)
