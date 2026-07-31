@@ -569,6 +569,7 @@ impl<'a> Checker<'a> {
                         result: predicate.result,
                     })
                     .collect::<Vec<_>>();
+                let param_types = function_params_from_syntax(params, param_types);
                 let variables = named_method_variables(&param_types, &result, &constraints);
                 self.rigid_type_var_scopes.pop();
                 let mut signature = NamedMethodType {
@@ -697,7 +698,7 @@ impl<'a> Checker<'a> {
                 };
 
                 let mut complete = true;
-                let params = params
+                let param_types = params
                     .iter()
                     .filter_map(|param| {
                         let Some(annotation) = &param.annotation else {
@@ -724,7 +725,7 @@ impl<'a> Checker<'a> {
                 let lowered_result = self.lower_annotation(result);
                 let result = self.normalize(&lowered_result);
                 if let Some(variables) = self.rigid_type_var_scopes.last_mut() {
-                    for ty in params.iter().chain(std::iter::once(&result)) {
+                    for ty in param_types.iter().chain(std::iter::once(&result)) {
                         variables.extend(type_variable_names(ty));
                     }
                 }
@@ -738,6 +739,7 @@ impl<'a> Checker<'a> {
                         result: predicate.result,
                     })
                     .collect::<Vec<_>>();
+                let params = function_params_from_syntax(params, param_types);
                 let entry = BuiltinMethodType {
                     owner: owner.clone(),
                     owner_variables: owner_variables.clone(),
@@ -1238,7 +1240,7 @@ impl<'a> Checker<'a> {
                             aven_parser::METHOD_RECEIVER_NAME,
                             LocalValueType::Known(Type::Named(owner.to_owned())),
                         );
-                        for (param, ty) in params.iter().zip(&signature.params) {
+                        for (param, ty) in params.iter().zip(signature.params.iter()) {
                             self.local_types
                                 .define(&param.name, LocalValueType::Known(ty.clone()));
                             self.record_inferred_type(param.name_span, ty.clone());
@@ -1399,7 +1401,7 @@ impl<'a> Checker<'a> {
                 aven_parser::METHOD_RECEIVER_NAME,
                 LocalValueType::Known(entry_owner.clone()),
             );
-            for (param, ty) in params.iter().zip(&signature.params) {
+            for (param, ty) in params.iter().zip(signature.params.iter()) {
                 self.local_types
                     .define(&param.name, LocalValueType::Known(ty.clone()));
                 self.record_inferred_type(param.name_span, ty.clone());
@@ -2528,17 +2530,13 @@ fn lift_inherited_method(
 ) -> NamedMethodType {
     let lifted_params = method.params.iter().map(|param| param == base).collect();
     let lifted_result = method.result == *base;
-    method.params = method
-        .params
-        .into_iter()
-        .map(|param| {
-            if param == *base {
-                family.clone()
-            } else {
-                param
-            }
-        })
-        .collect();
+    method.params = method.params.map(|param| {
+        if param == base {
+            family.clone()
+        } else {
+            param.clone()
+        }
+    });
     method.result = if method.result == *base {
         family.clone()
     } else {
@@ -2600,7 +2598,8 @@ fn named_method_schemes_alpha_equivalent(
     inherited: &NamedMethodType,
     declared: &NamedMethodType,
 ) -> bool {
-    if inherited.params.len() != declared.params.len()
+    if inherited.params.required_len() != declared.params.required_len()
+        || inherited.params.len() != declared.params.len()
         || inherited.variables.len() != declared.variables.len()
         || inherited.constraints.len() != declared.constraints.len()
     {
@@ -2611,7 +2610,7 @@ fn named_method_schemes_alpha_equivalent(
     if !inherited
         .params
         .iter()
-        .zip(&declared.params)
+        .zip(declared.params.iter())
         .all(|(left, right)| alpha_equivalent_type(left, right, &mut forward, &mut reverse))
         || !alpha_equivalent_type(
             &inherited.result,
@@ -2713,7 +2712,7 @@ fn alpha_equivalent_type(
                 && left_params.len() == right_params.len()
                 && left_params
                     .iter()
-                    .zip(right_params)
+                    .zip(right_params.iter())
                     .all(|(left, right)| alpha_equivalent_type(left, right, forward, reverse))
                 && alpha_equivalent_type(left_result, right_result, forward, reverse)
         }

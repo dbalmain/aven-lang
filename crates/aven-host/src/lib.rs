@@ -898,7 +898,7 @@ pub fn standard_check_host_globals() -> HostGlobals {
 mod tests {
     use super::*;
 
-    use aven_check::{function_required_arity, function_signature, record_fields, variant_tags};
+    use aven_check::{FunctionSignature, function_signature, record_fields, variant_tags};
 
     struct NullSink;
 
@@ -1078,10 +1078,11 @@ mod tests {
         let check = host.check_globals();
         assert_eq!(check.len(), 1);
         assert_eq!(check[0].0, "add");
-        let (params, result) = function_signature(&check[0].1).expect("add is a function");
-        assert_eq!(params, vec![build::int(), build::int()]);
+        let FunctionSignature { params, result } =
+            function_signature(&check[0].1).expect("add is a function");
+        assert_eq!(&params[..], &[build::int(), build::int()]);
         assert_eq!(result, build::int());
-        assert_eq!(function_required_arity(&check[0].1), Some(2));
+        assert_eq!(params.required_len(), 2);
 
         let eval = host.eval_globals();
         assert_eq!(eval.len(), 1);
@@ -1190,11 +1191,12 @@ mod tests {
             .iter()
             .find(|field| field.name == "info")
             .expect("logger has an info method");
-        let (params, result) = function_signature(&info.ty).expect("info is a function");
+        let FunctionSignature { params, result } =
+            function_signature(&info.ty).expect("info is a function");
         assert_eq!(params.len(), 2);
         assert_eq!(
-            function_required_arity(&info.ty),
-            Some(1),
+            params.required_len(),
+            1,
             "info takes one required message, fields optional"
         );
         assert_eq!(result, build::unit());
@@ -1238,44 +1240,58 @@ mod tests {
         );
 
         let logger_info = record_field_type(logger, "info");
-        let (info_params, info_result) =
-            function_signature(&logger_info).expect("logger.info is a function");
-        assert_eq!(function_required_arity(&logger_info), Some(1));
+        let FunctionSignature {
+            params: info_params,
+            result: info_result,
+        } = function_signature(&logger_info).expect("logger.info is a function");
+        assert_eq!(info_params.required_len(), 1);
         assert_eq!(info_params.len(), 2);
         assert_eq!(info_params[0], build::text());
         assert!(record_fields(&info_params[1]).is_some());
         assert_eq!(info_result, build::unit());
 
         let dbg = global_type(&globals, "dbg");
-        let (dbg_params, dbg_result) = function_signature(dbg).expect("dbg is a function");
-        assert_eq!(function_required_arity(dbg), Some(1));
-        assert_eq!(dbg_params, vec![build::var("a")]);
+        let FunctionSignature {
+            params: dbg_params,
+            result: dbg_result,
+        } = function_signature(dbg).expect("dbg is a function");
+        assert_eq!(dbg_params.required_len(), 1);
+        assert_eq!(&dbg_params[..], &[build::var("a")]);
         assert_eq!(dbg_result, build::var("a"));
 
         let write = global_type(&globals, "write");
-        let (write_params, write_result) = function_signature(write).expect("write is a function");
-        assert_eq!(function_required_arity(write), Some(1));
-        assert_eq!(write_params, vec![build::text()]);
+        let FunctionSignature {
+            params: write_params,
+            result: write_result,
+        } = function_signature(write).expect("write is a function");
+        assert_eq!(write_params.required_len(), 1);
+        assert_eq!(&write_params[..], &[build::text()]);
         assert_eq!(write_result, build::empty_record());
 
         let write_line = global_type(&globals, "writeLine");
-        let (write_line_params, write_line_result) =
-            function_signature(write_line).expect("writeLine is a function");
-        assert_eq!(function_required_arity(write_line), Some(1));
-        assert_eq!(write_line_params, vec![build::text()]);
+        let FunctionSignature {
+            params: write_line_params,
+            result: write_line_result,
+        } = function_signature(write_line).expect("writeLine is a function");
+        assert_eq!(write_line_params.required_len(), 1);
+        assert_eq!(&write_line_params[..], &[build::text()]);
         assert_eq!(write_line_result, build::empty_record());
 
         let read_line = global_type(&globals, "readLine");
-        let (read_line_params, read_line_result) =
-            function_signature(read_line).expect("readLine is a function");
-        assert_eq!(function_required_arity(read_line), Some(0));
+        let FunctionSignature {
+            params: read_line_params,
+            result: read_line_result,
+        } = function_signature(read_line).expect("readLine is a function");
+        assert_eq!(read_line_params.required_len(), 0);
         assert!(read_line_params.is_empty());
         assert_eq!(read_line_result, build::optional(build::text()));
 
         let read_all = global_type(&globals, "readAll");
-        let (read_all_params, read_all_result) =
-            function_signature(read_all).expect("readAll is a function");
-        assert_eq!(function_required_arity(read_all), Some(0));
+        let FunctionSignature {
+            params: read_all_params,
+            result: read_all_result,
+        } = function_signature(read_all).expect("readAll is a function");
+        assert_eq!(read_all_params.required_len(), 0);
         assert!(read_all_params.is_empty());
         assert_eq!(read_all_result, build::text());
 
@@ -1288,12 +1304,14 @@ mod tests {
         assert_eq!(file_field_names, vec!["open"]);
 
         let open = record_field_type(file, "open");
-        let (open_params, open_result) =
-            function_signature(&open).expect("File.open is a function");
-        assert_eq!(function_required_arity(&open), Some(2));
+        let FunctionSignature {
+            params: open_params,
+            result: open_result,
+        } = function_signature(&open).expect("File.open is a function");
+        assert_eq!(open_params.required_len(), 2);
         assert_eq!(
-            open_params,
-            vec![build::text(), build::text_literals(&["r", "w", "a", "rw"])]
+            &open_params[..],
+            &[build::text(), build::text_literals(&["r", "w", "a", "rw"])]
         );
         assert_eq!(open_result, Type::Deferred);
 
@@ -1309,10 +1327,10 @@ mod tests {
         );
         for method in http_field_names {
             let method_type = record_field_type(http, method);
-            let (params, result) =
+            let FunctionSignature { params, result } =
                 function_signature(&method_type).expect("Http method is a function");
-            assert_eq!(function_required_arity(&method_type), Some(1));
-            assert_eq!(params, vec![build::text(), build::open_record(vec![])]);
+            assert_eq!(params.required_len(), 1);
+            assert_eq!(&params[..], &[build::text(), build::open_record(vec![])]);
             assert_eq!(
                 result,
                 build::result(http_response_type(), http_error_type())
@@ -1357,27 +1375,36 @@ mod tests {
             assert_eq!(static_names, vec!["encode", "encodeText", "decode"]);
 
             let encode = static_type(&statics, "encode");
-            let (encode_params, encode_result) = function_signature(&encode)
+            let FunctionSignature {
+                params: encode_params,
+                result: encode_result,
+            } = function_signature(&encode)
                 .unwrap_or_else(|| panic!("{format}.encode is a function"));
-            assert_eq!(function_required_arity(&encode), Some(1));
-            assert_eq!(encode_params, vec![build::var("a")]);
+            assert_eq!(encode_params.required_len(), 1);
+            assert_eq!(&encode_params[..], &[build::var("a")]);
             assert_eq!(
                 encode_result,
                 build::result(build::text(), build::named(error))
             );
 
             let encode_text = static_type(&statics, "encodeText");
-            let (encode_text_params, encode_text_result) = function_signature(&encode_text)
+            let FunctionSignature {
+                params: encode_text_params,
+                result: encode_text_result,
+            } = function_signature(&encode_text)
                 .unwrap_or_else(|| panic!("{format}.encodeText is a function"));
-            assert_eq!(function_required_arity(&encode_text), Some(1));
-            assert_eq!(encode_text_params, vec![build::var("a")]);
+            assert_eq!(encode_text_params.required_len(), 1);
+            assert_eq!(&encode_text_params[..], &[build::var("a")]);
             assert_eq!(encode_text_result, build::text());
 
             let decode = static_type(&statics, "decode");
-            let (decode_params, decode_result) = function_signature(&decode)
+            let FunctionSignature {
+                params: decode_params,
+                result: decode_result,
+            } = function_signature(&decode)
                 .unwrap_or_else(|| panic!("{format}.decode is a function"));
-            assert_eq!(function_required_arity(&decode), Some(1));
-            assert_eq!(decode_params, vec![build::text(), Type::Deferred]);
+            assert_eq!(decode_params.required_len(), 1);
+            assert_eq!(&decode_params[..], &[build::text(), Type::Deferred]);
             assert_eq!(decode_result, Type::Deferred);
         }
     }
@@ -1407,24 +1434,30 @@ mod tests {
         // The methods return `Result`, not the bare `{}` the top-level `write`
         // returns — this is the boundary the handle tier introduces.
         let stdout = global_type(&globals, "stdout");
-        let (write_params, write_result) =
-            function_signature(&record_field_type(stdout, "write")).expect("write is a function");
-        assert_eq!(write_params, vec![build::text()]);
+        let FunctionSignature {
+            params: write_params,
+            result: write_result,
+        } = function_signature(&record_field_type(stdout, "write")).expect("write is a function");
+        assert_eq!(&write_params[..], &[build::text()]);
         assert_eq!(
             write_result,
             build::result(build::empty_record(), write_error_type())
         );
 
         let stdin = global_type(&globals, "stdin");
-        let (_, read_line_result) =
-            function_signature(&record_field_type(stdin, "readLine")).expect("readLine is a fn");
+        let FunctionSignature {
+            result: read_line_result,
+            ..
+        } = function_signature(&record_field_type(stdin, "readLine")).expect("readLine is a fn");
         assert_eq!(
             read_line_result,
             build::result(build::optional(build::text()), read_error_type())
         );
 
-        let (_, flush_result) =
-            function_signature(&record_field_type(stdout, "flush")).expect("flush is a function");
+        let FunctionSignature {
+            result: flush_result,
+            ..
+        } = function_signature(&record_field_type(stdout, "flush")).expect("flush is a function");
         assert_eq!(
             flush_result,
             build::result(build::empty_record(), io_error_type())
@@ -1502,12 +1535,15 @@ mod tests {
     fn bare_write_and_handle_write_lock_the_result_boundary() {
         // Bare `write` returns `{}`; `stdout.write` returns `Result` — the two
         // shapes pinned together so the boundary can't silently drift.
-        let (_, bare_result) = function_signature(&io_write_type()).expect("write is a function");
+        let bare_result = function_signature(&io_write_type())
+            .expect("write is a function")
+            .result;
         assert_eq!(bare_result, build::empty_record());
 
         let handle_write = record_field_type(&stdout_handle_type(), "write");
-        let (_, handle_result) =
-            function_signature(&handle_write).expect("stdout.write is a function");
+        let handle_result = function_signature(&handle_write)
+            .expect("stdout.write is a function")
+            .result;
         assert_eq!(
             handle_result,
             build::result(build::empty_record(), write_error_type())

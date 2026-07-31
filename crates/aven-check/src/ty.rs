@@ -36,19 +36,17 @@ impl FunctionParams {
         self.required
     }
 
-    pub fn as_slice(&self) -> &[Type] {
-        &self.params
-    }
-
-    pub fn to_vec(&self) -> Vec<Type> {
-        self.params.clone()
-    }
-
     pub fn map(&self, mut map: impl FnMut(&Type) -> Type) -> Self {
         Self {
             params: self.params.iter().map(&mut map).collect(),
             required: self.required,
         }
+    }
+
+    pub fn prepend_required(mut self, param: Type) -> Self {
+        self.params.insert(0, param);
+        self.required += 1;
+        self
     }
 }
 
@@ -56,7 +54,7 @@ impl std::ops::Deref for FunctionParams {
     type Target = [Type];
 
     fn deref(&self) -> &Self::Target {
-        self.as_slice()
+        &self.params
     }
 }
 
@@ -66,15 +64,6 @@ impl IntoIterator for FunctionParams {
 
     fn into_iter(self) -> Self::IntoIter {
         self.params.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a FunctionParams {
-    type Item = &'a Type;
-    type IntoIter = std::slice::Iter<'a, Type>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.params.iter()
     }
 }
 
@@ -665,7 +654,13 @@ pub fn literal_union_members(ty: &Type) -> Option<Vec<String>> {
         .collect()
 }
 
-pub fn function_signature(ty: &Type) -> Option<(Vec<Type>, Type)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionSignature {
+    pub params: FunctionParams,
+    pub result: Type,
+}
+
+pub fn function_signature(ty: &Type) -> Option<FunctionSignature> {
     let mut ty = ty;
     while let Type::Optional(inner) | Type::Nullable(inner) = ty {
         ty = inner;
@@ -675,21 +670,10 @@ pub fn function_signature(ty: &Type) -> Option<(Vec<Type>, Type)> {
         return None;
     };
 
-    Some((params.to_vec(), result.as_ref().clone()))
-}
-
-/// The required-arity of a function type (peeling `?`/`?`-style wrappers like
-/// [`function_signature`]). `None` for non-function types.
-pub fn function_required_arity(ty: &Type) -> Option<usize> {
-    let mut ty = ty;
-    while let Type::Optional(inner) | Type::Nullable(inner) = ty {
-        ty = inner;
-    }
-
-    match ty {
-        Type::Function { params, .. } => Some(params.required_len()),
-        _ => None,
-    }
+    Some(FunctionSignature {
+        params: params.clone(),
+        result: result.as_ref().clone(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1824,9 +1808,6 @@ mod tests {
         let params =
             FunctionParams::with_optional(vec![build::text()], vec![build::int(), build::bool()]);
         assert_eq!(params.required_len(), 1);
-        assert_eq!(
-            params.as_slice(),
-            &[build::text(), build::int(), build::bool()]
-        );
+        assert_eq!(&params[..], &[build::text(), build::int(), build::bool()]);
     }
 }

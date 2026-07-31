@@ -1761,7 +1761,7 @@ fn signature_help_at_host_record_field_call_returns_member_signature() {
     assert!(
         help.signatures[0]
             .label
-            .starts_with("Http.get(Text, { .. })"),
+            .starts_with("Http.get(Text, { .. } = _)"),
         "unexpected signature label: {}",
         help.signatures[0].label
     );
@@ -1836,8 +1836,6 @@ fn signature_help_outside_call_returns_none() {
 
 #[test]
 fn signature_help_at_optional_host_param_locks_active_index() {
-    // Host defaults render as `= _` in hover, but signature help labels are
-    // built from function_signature param types only (no default encoding).
     let document = parsed_document_with_semantics("res = Http.get(\"u\")\n");
     let Some(help) = signature_help_at_position(&document, position(0, 15)) else {
         panic!("expected signature help inside Http.get(");
@@ -1846,13 +1844,8 @@ fn signature_help_at_optional_host_param_locks_active_index() {
     assert!(
         help.signatures[0]
             .label
-            .starts_with("Http.get(Text, { .. })"),
+            .starts_with("Http.get(Text, { .. } = _)"),
         "unexpected label: {}",
-        help.signatures[0].label
-    );
-    assert!(
-        !help.signatures[0].label.contains("= _"),
-        "signature help currently omits default markers; got {}",
         help.signatures[0].label
     );
     assert_no_type_hole_in(&help.signatures[0].label, "Http.get signature help");
@@ -1865,13 +1858,8 @@ fn signature_help_at_optional_host_param_locks_active_index() {
     assert!(
         help.signatures[0]
             .label
-            .starts_with("Http.get(Text, { .. })"),
+            .starts_with("Http.get(Text, { .. } = _)"),
         "unexpected label: {}",
-        help.signatures[0].label
-    );
-    assert!(
-        !help.signatures[0].label.contains("= _"),
-        "signature help currently omits default markers; got {}",
         help.signatures[0].label
     );
     assert_no_type_hole_in(

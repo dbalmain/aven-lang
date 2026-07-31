@@ -219,6 +219,15 @@ struct OrPatternBindingTypeConflict {
     conflicting_ty: Type,
 }
 
+fn function_params_from_syntax(params: &[Param], types: Vec<Type>) -> FunctionParams {
+    let required = params
+        .iter()
+        .take_while(|param| param.default.is_none())
+        .count();
+    FunctionParams::try_from_parts(types, required)
+        .expect("lowered parameter types correspond to the parsed parameter list")
+}
+
 enum MatchArmCombination {
     Joined(Type),
     Conflict(MatchArmTypeConflict),
@@ -1077,7 +1086,7 @@ fn collect_comptime_type_bindings(
                 ..
             },
         ) if params.len() == actual_params.len() => {
-            for (param, actual_param) in params.iter().zip(actual_params) {
+            for (param, actual_param) in params.iter().zip(actual_params.iter()) {
                 collect_comptime_type_bindings(param, actual_param, bindings);
             }
             collect_comptime_type_bindings(result, actual_result, bindings);

@@ -444,7 +444,7 @@ impl<'a> Checker<'a> {
             && let Some(signature) = self.exact_method_signature(&left_owner, operator)
         {
             self.push_method_obligations_at(signature.predicates, operator_span);
-            if let [param] = signature.params.as_slice() {
+            if let [param] = &signature.params[..] {
                 self.check_call_arg_against_param(param, right);
             }
             self.simplify_method_obligations(false);
@@ -667,7 +667,7 @@ impl<'a> Checker<'a> {
         let owner = self.normalize(&self.unifier.resolve(left));
         if self.is_named_family_owner(&owner)
             && let Some(signature) = self.exact_method_signature(&owner, operator)
-            && let [param] = signature.params.as_slice()
+            && let [param] = &signature.params[..]
             && self.unifier.unify(param, right).is_ok()
         {
             return Some(signature.result);
@@ -1569,11 +1569,9 @@ impl<'a> Checker<'a> {
             && let Some(signature) = self.exact_method_signature(&Type::Named(owner.clone()), field)
         {
             self.push_method_obligations_at(signature.predicates, field_span);
-            let mut params = Vec::with_capacity(signature.params.len() + 1);
-            params.push(Type::Named(owner));
-            params.extend(signature.params);
+            let params = signature.params.prepend_required(Type::Named(owner));
             return Type::Function {
-                params: FunctionParams::all_required(params),
+                params,
                 result: Box::new(signature.result),
             };
         }
@@ -1612,7 +1610,7 @@ impl<'a> Checker<'a> {
             self.push_method_obligations_at(signature.predicates, field_span);
             self.simplify_method_obligations(false);
             return Type::Function {
-                params: FunctionParams::all_required(signature.params),
+                params: signature.params,
                 result: Box::new(signature.result),
             };
         }
@@ -2048,9 +2046,10 @@ impl<'a> Checker<'a> {
 
         if let Some(signature) = known {
             self.push_method_obligations_at(signature.predicates, *field_span);
-            if signature.params.len() != args.len() {
+            let required = signature.params.required_len();
+            if args.len() < required || args.len() > signature.params.len() {
                 self.report_function_arity_mismatch(
-                    signature.params.len(),
+                    required,
                     signature.params.len(),
                     args.len(),
                     callee.span,

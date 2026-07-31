@@ -20,8 +20,8 @@ pub use host_comptime::{
 pub use lower::{AnnotationLowerer, DeclaredAnnotation, TypeLowering};
 pub use ty::build;
 pub use ty::{
-    FunctionParams, MethodConstraint, QualifiedType, RecordField, RecursiveTypeId, Row, RowEntry,
-    RowTail, Type, function_required_arity, function_signature, is_text_type,
+    FunctionParams, FunctionSignature, MethodConstraint, QualifiedType, RecordField,
+    RecursiveTypeId, Row, RowEntry, RowTail, Type, function_signature, is_text_type,
     literal_union_members, might_contain_float, record_fields, render_type, type_contains_deferred,
     type_contains_error, type_contains_hole, variant_tags,
 };
@@ -146,12 +146,12 @@ pub fn builtin_method_fields(
                 _ => None,
             })
         };
-        let params = method.params.iter().map(instantiate).collect::<Vec<_>>();
+        let params = method.params.map(instantiate);
         let result = instantiate(&method.result);
         fields.push(RecordField {
             name: method.member.clone(),
             ty: Type::Function {
-                params: FunctionParams::all_required(params),
+                params,
                 result: Box::new(result),
             },
         });
@@ -219,7 +219,7 @@ pub struct BuiltinMethodType {
     pub owner: Type,
     pub owner_variables: Vec<String>,
     pub member: String,
-    pub params: Vec<Type>,
+    pub params: FunctionParams,
     pub result: Type,
     pub constraints: Vec<MethodConstraint>,
     pub owner_span: Span,
@@ -228,7 +228,7 @@ pub struct BuiltinMethodType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedMethodType {
-    pub params: Vec<Type>,
+    pub params: FunctionParams,
     pub result: Type,
     pub constraints: Vec<MethodConstraint>,
     pub variables: Vec<String>,

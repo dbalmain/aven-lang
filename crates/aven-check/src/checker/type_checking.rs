@@ -445,7 +445,7 @@ impl<'a> Checker<'a> {
                 [MethodPredicate {
                     candidate: actual.clone(),
                     member: name.clone(),
-                    params: params.to_vec(),
+                    params: params.iter().cloned().collect(),
                     result: result.as_ref().clone(),
                     operator_span: value.span,
                     divisor_context: None,
@@ -656,7 +656,7 @@ impl<'a> Checker<'a> {
             aven_parser::METHOD_RECEIVER_NAME,
             LocalValueType::Known(data_type.clone()),
         );
-        for (param, expected) in params.iter().zip(expected_params) {
+        for (param, expected) in params.iter().zip(expected_params.iter()) {
             if let Some(annotation) = &param.annotation {
                 let actual = self.lower_normalized_annotation(annotation);
                 self.check_type_against_type(&actual, expected, annotation.span);
@@ -828,7 +828,7 @@ impl<'a> Checker<'a> {
 
         self.push_inline_lambda_type_var_scope();
         let mut param_types = Vec::new();
-        for (param, expected) in params.iter().zip(expected_params) {
+        for (param, expected) in params.iter().zip(expected_params.iter()) {
             let actual = param
                 .annotation
                 .as_ref()
@@ -1137,7 +1137,7 @@ impl<'a> Checker<'a> {
                         );
                     }
                 } else {
-                    for (expected, actual) in expected_params.iter().zip(actual_params) {
+                    for (expected, actual) in expected_params.iter().zip(actual_params.iter()) {
                         // Function parameters are contravariant: the actual
                         // function may accept a wider type than callers of the
                         // expected function promise to pass.
@@ -1413,7 +1413,7 @@ impl<'a> Checker<'a> {
             ) => {
                 expected_params
                     .iter()
-                    .zip(actual_params)
+                    .zip(actual_params.iter())
                     .any(|(expected, actual)| {
                         self.contains_nested_primitive_family_widening(expected, actual)
                     })

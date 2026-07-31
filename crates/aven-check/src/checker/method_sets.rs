@@ -6,14 +6,14 @@ use aven_parser::Literal;
 
 use crate::env::TypeEnv;
 use crate::ty::{
-    LiteralBase, MethodPredicate, RowEntry, Type, builtin_collection_method_type,
+    FunctionParams, LiteralBase, MethodPredicate, RowEntry, Type, builtin_collection_method_type,
     literal_variant_base, map_type, named_builtin, record_fields, type_variable_names,
 };
 use crate::{MethodConstraint, NamedMethodOrigin, NamedMethodType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MethodSignature {
-    pub(crate) params: Vec<Type>,
+    pub(crate) params: FunctionParams,
     pub(crate) result: Type,
     pub(crate) predicates: Vec<MethodPredicate>,
 }
@@ -372,11 +372,13 @@ pub(crate) fn builtin_method_signature(owner: &Type, member: &str) -> Option<Met
         .iter()
         .find(|entry| entry.owner == owner && entry.member == member)?;
     Some(MethodSignature {
-        params: entry
-            .params
-            .iter()
-            .map(|param| builtin_type(*param))
-            .collect(),
+        params: FunctionParams::all_required(
+            entry
+                .params
+                .iter()
+                .map(|param| builtin_type(*param))
+                .collect(),
+        ),
         result: entry.result.to_type(),
         predicates: Vec::new(),
     })
@@ -440,7 +442,7 @@ pub(crate) fn effective_base_methods(
             methods.push((
                 field.name.clone(),
                 NamedMethodType {
-                    params: params.to_vec(),
+                    params: params.clone(),
                     result,
                     constraints: Vec::new(),
                     variables,
@@ -458,11 +460,13 @@ pub(crate) fn effective_base_methods(
             if !seen.insert(entry.member.to_owned()) {
                 continue;
             }
-            let params = entry
-                .params
-                .iter()
-                .map(|param| builtin_type(*param))
-                .collect();
+            let params = FunctionParams::all_required(
+                entry
+                    .params
+                    .iter()
+                    .map(|param| builtin_type(*param))
+                    .collect(),
+            );
             let result = entry.result.to_type();
             methods.push((
                 entry.member.to_owned(),
@@ -496,11 +500,7 @@ pub(crate) fn effective_base_methods(
                 _ => None,
             })
         };
-        let params = entry
-            .params
-            .iter()
-            .map(instantiate_owner)
-            .collect::<Vec<_>>();
+        let params = entry.params.map(instantiate_owner);
         let result = instantiate_owner(&entry.result);
         let constraints = entry
             .constraints
@@ -668,7 +668,7 @@ impl Checker<'_> {
                 return None;
             };
             return Some(MethodSignature {
-                params: params.to_vec(),
+                params: params.clone(),
                 result: result.as_ref().clone(),
                 predicates: Vec::new(),
             });
@@ -711,7 +711,7 @@ impl Checker<'_> {
                 })
             };
             return Some(MethodSignature {
-                params: signature.params.iter().map(instantiate).collect(),
+                params: signature.params.map(instantiate),
                 result: instantiate(&signature.result),
                 predicates: signature
                     .constraints
@@ -789,7 +789,7 @@ impl Checker<'_> {
                 _ => None,
             })
         };
-        let params = entry.params.iter().map(instantiate).collect();
+        let params = entry.params.map(instantiate);
         let result = instantiate(&entry.result);
         let predicates = entry
             .constraints
@@ -913,7 +913,7 @@ pub(crate) fn resolve_builtin_operator_signature(
     let float = named_builtin("Float");
     if operator_operand_fits(left, &float) && operator_operand_fits(right, &float) {
         let signature = builtin_method_signature(&float, member)?;
-        if signature.params.as_slice() == [float] {
+        if signature.params[..] == [float] {
             return Some(signature);
         }
     }
@@ -1015,7 +1015,7 @@ mod tests {
                 assert_eq!(
                     resolve_builtin_operator_signature(left, member, right),
                     Some(MethodSignature {
-                        params: vec![float.clone()],
+                        params: FunctionParams::all_required(vec![float.clone()]),
                         result: expected_result.clone(),
                         predicates: Vec::new(),
                     })
@@ -1033,7 +1033,7 @@ mod tests {
         assert_eq!(
             builtin_method_signature(&named_builtin(owner), member),
             Some(MethodSignature {
-                params: vec![named_builtin(param)],
+                params: FunctionParams::all_required(vec![named_builtin(param)]),
                 result: named_builtin(result),
                 predicates: Vec::new(),
             })
@@ -1044,7 +1044,7 @@ mod tests {
         assert_eq!(
             builtin_method_signature(&named_builtin(owner), member),
             Some(MethodSignature {
-                params: vec![named_builtin(param)],
+                params: FunctionParams::all_required(vec![named_builtin(param)]),
                 result: Type::Optional(Box::new(named_builtin(result))),
                 predicates: Vec::new(),
             })
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(
             builtin_method_signature(&named_builtin(owner), member),
             Some(MethodSignature {
-                params: vec![],
+                params: FunctionParams::all_required(vec![]),
                 result: named_builtin(result),
                 predicates: Vec::new(),
             })

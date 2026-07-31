@@ -324,7 +324,7 @@ impl Checker<'_> {
             Type::Function { params, result } => {
                 let mut diagnostics = Vec::new();
                 let mut resolved_params = Vec::with_capacity(params.len());
-                for param in params {
+                for param in params.iter() {
                     let (param, nested) = self.resolve_prelowered_type_head(param, span);
                     resolved_params.push(param);
                     diagnostics.extend(nested);

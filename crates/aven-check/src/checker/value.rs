@@ -171,7 +171,7 @@ impl<'a> Checker<'a> {
 
         // Omitted trailing optional params are simply not supplied; check each
         // provided argument against its corresponding param.
-        let params = params.to_vec();
+        let params = params.iter().cloned().collect::<Vec<_>>();
         for (expected, arg) in params.iter().zip(args) {
             self.check_call_arg_against_param(expected, arg);
         }

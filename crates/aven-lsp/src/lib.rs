@@ -1702,8 +1702,8 @@ fn argument_literal_completion_at_position(
     let call = enclosing_call_at_offset(&significant_tokens, offset)?;
     let active_parameter =
         active_parameter_for_call(&significant_tokens, call.open_index, offset) as usize;
-    let (params, _) = function_signature_for_call(document, &call)?;
-    let members = aven_compiler::literal_union_members(params.get(active_parameter)?)?;
+    let signature = function_signature_for_call(document, &call)?;
+    let members = aven_compiler::literal_union_members(signature.params.get(active_parameter)?)?;
 
     // Completing `"r"` etc. inserts the whole quoted literal. Replace any quote
     // (and partial text) the user has already typed so the result never doubles
@@ -2125,15 +2125,15 @@ fn signature_help_at_position(
     let offset = position_to_offset(document, position)?;
     let significant_tokens = significant_tokens(document);
     let call = enclosing_call_at_offset(&significant_tokens, offset)?;
-    let (params, result) = function_signature_for_call(document, &call)?;
+    let signature = function_signature_for_call(document, &call)?;
     let callee_label = callee_label_for_call(document, &call);
     let active_parameter = active_parameter_for_call(&significant_tokens, call.open_index, offset);
 
     Some(SignatureHelp {
         signatures: vec![signature_information(
             callee_label.as_deref(),
-            &params,
-            &result,
+            &signature.params,
+            &signature.result,
             active_parameter,
         )],
         active_signature: Some(0),
@@ -2144,7 +2144,7 @@ fn signature_help_at_position(
 fn function_signature_for_call(
     document: &ParsedDocument,
     call: &CallAtPosition,
-) -> Option<(Vec<aven_compiler::Type>, aven_compiler::Type)> {
+) -> Option<aven_compiler::FunctionSignature> {
     let callee_type = callee_type_for_call(document, call)?;
     aven_compiler::function_signature(&callee_type)
 }
@@ -2179,7 +2179,7 @@ fn callee_type_for_call(
 
 fn signature_information(
     callee_label: Option<&str>,
-    params: &[aven_compiler::Type],
+    params: &aven_compiler::FunctionParams,
     result: &aven_compiler::Type,
     active_parameter: u32,
 ) -> SignatureInformation {
@@ -2197,6 +2197,9 @@ fn signature_information(
 
         let start = signature_label_offset(&label);
         label.push_str(&param.render());
+        if index >= params.required_len() {
+            label.push_str(" = _");
+        }
         let end = signature_label_offset(&label);
         parameters.push(ParameterInformation {
             label: ParameterLabel::LabelOffsets([start, end]),
@@ -3464,7 +3467,14 @@ fn render_named_method_signature(method: &aven_compiler::NamedMethodType) -> Str
     let params = method
         .params
         .iter()
-        .map(aven_compiler::Type::render)
+        .enumerate()
+        .map(|(index, param)| {
+            let mut rendered = param.render();
+            if index >= method.params.required_len() {
+                rendered.push_str(" = _");
+            }
+            rendered
+        })
         .collect::<Vec<_>>();
     let result = method.result.render();
     if params.is_empty() {

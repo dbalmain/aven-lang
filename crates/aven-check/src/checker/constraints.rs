@@ -242,7 +242,8 @@ impl<'a> Checker<'a> {
         };
 
         let snapshot = self.unifier.snapshot();
-        let matches = actual.params.len() == predicate.params.len()
+        let matches = actual.params.required_len() <= predicate.params.len()
+            && predicate.params.len() <= actual.params.len()
             && actual
                 .params
                 .iter()
@@ -596,7 +597,7 @@ impl<'a> Checker<'a> {
         ))
         .with_note(format!(
             "actual: `{}`",
-            render_method_signature(&actual.params, &actual.result)
+            render_declared_method_signature(&actual.params, &actual.result)
         ))
         .with_note(format!(
             "expected after substituting `{owner}` for `Self`: `{}`",
@@ -821,6 +822,14 @@ fn render_method_signature(params: &[Type], result: &Type) -> String {
         )
     };
     format!("{params} -> {}", result.render())
+}
+
+fn render_declared_method_signature(params: &FunctionParams, result: &Type) -> String {
+    Type::Function {
+        params: params.clone(),
+        result: Box::new(result.clone()),
+    }
+    .render()
 }
 
 pub(super) fn widen_literal_method_owner(ty: &Type) -> Type {

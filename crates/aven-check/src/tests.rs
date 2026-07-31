@@ -582,7 +582,10 @@ fn literal_union_members_rejects_open_rows_and_tag_variants() {
 #[test]
 fn function_signature_query_returns_params_and_result_and_peels_wrappers() {
     let signature = function(vec![named("Int"), named("Text")], named("Bool"));
-    let expected = Some((vec![named("Int"), named("Text")], named("Bool")));
+    let expected = Some(FunctionSignature {
+        params: FunctionParams::all_required(vec![named("Int"), named("Text")]),
+        result: named("Bool"),
+    });
 
     assert_eq!(function_signature(&signature), expected.clone());
     assert_eq!(
@@ -9888,7 +9891,13 @@ fn lambda_default_infers_required_arity() {
         .type_at(nth_span(source, "f", 0))
         .expect("f should have an inferred type");
     assert_eq!(f_type.render(), "(Int, Int = _) -> Int");
-    assert_eq!(function_required_arity(f_type), Some(1));
+    assert_eq!(
+        function_signature(f_type)
+            .expect("f is a function")
+            .params
+            .required_len(),
+        1
+    );
 }
 
 #[test]
@@ -11599,6 +11608,29 @@ fn provider_method_without_return_annotation_reports_clear_diagnostic() {
 }
 
 #[test]
+fn named_method_signatures_preserve_optional_parameters() {
+    let parsed = parse_module(concat!(
+        "Tags = Array(Text) {\n",
+        "  joined(separator: Text = \",\"): Text => .joinWith(separator)\n",
+        "}\n",
+        "tags = Tags([\"a\", \"b\"])\n",
+        "short: Text = tags.joined()\n",
+        "full: Text = tags.joined(\"-\")\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let owner = check
+        .named_family_aliases
+        .get("Tags")
+        .expect("Tags family owner");
+    let params = &check.named_families[owner].methods["joined"].params;
+    assert_eq!(params.required_len(), 0);
+    assert_eq!(&params[..], &[named("Text")]);
+}
+
+#[test]
 fn named_primitive_family_core_checks_construction_lifting_and_widening() {
     let parsed = parse_module(concat!(
         "Money = Int {\n",
@@ -11628,17 +11660,17 @@ fn named_primitive_family_core_checks_construction_lifting_and_widening() {
     assert_eq!(money.methods["div"].result.render(), "?Int");
     assert!(money.methods.contains_key("toText"));
     assert_eq!(money.methods["toGrouped"].result.render(), "Text");
-    assert_eq!(money.methods["toGrouped"].params, vec![named("Text")]);
+    assert_eq!(&money.methods["toGrouped"].params[..], &[named("Text")]);
     // Same-base Int results/params lift to Money (like `+`); foreign results stay.
     assert_eq!(money.methods["abs"].result, named(owner));
-    assert_eq!(money.methods["abs"].params, Vec::<Type>::new());
-    assert_eq!(money.methods["min"].params, vec![named(owner)]);
+    assert!(money.methods["abs"].params.is_empty());
+    assert_eq!(&money.methods["min"].params[..], &[named(owner)]);
     assert_eq!(money.methods["min"].result, named(owner));
     assert_eq!(
-        money.methods["clamp"].params,
-        vec![named(owner), named(owner)]
+        &money.methods["clamp"].params[..],
+        &[named(owner), named(owner)]
     );
-    assert_eq!(money.methods["pow"].params, vec![named(owner)]);
+    assert_eq!(&money.methods["pow"].params[..], &[named(owner)]);
     assert_eq!(money.methods["sign"].result, named(owner));
     assert_eq!(money.methods["toFloat"].result.render(), "Float");
 }
