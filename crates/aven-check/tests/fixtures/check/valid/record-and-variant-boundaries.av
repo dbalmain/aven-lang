@@ -7,6 +7,8 @@ exactRecord: RecordType = { a: 1 }
 red: Color = @Red
 ok: Outcome = @Ok(1)
 recordOk: RecordOutcome = @RecordOk({ a: 1 })
+identity: (Int) -> Int = (value) => value
+pair: (Int, Int) = (1, 2)
 
 wideRecord = { a: 1, b: 2 }
 narrowBoundary: RecordType = wideRecord

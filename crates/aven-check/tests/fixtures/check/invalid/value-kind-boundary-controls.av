@@ -1,0 +1,17 @@
+RecordType = { a: Int }
+Colors = @Red | @Green
+Boxes = @Box(Int) | @Other
+
+recordInt: RecordType = 5
+recordText: RecordType = "hi"
+recordArray: RecordType = [1, 2]
+
+variantInt: Colors = 5
+variantText: Colors = "hi"
+variantArray: Colors = [1]
+variantWrongTag: Colors = @Blue
+variantWrongPayload: Boxes = @Box("hi")
+
+recordExtra: RecordType = { a: 1, b: 2 }
+functionWrongResult: (Int) -> Text = (value: Int) => value
+tupleWrongItems: (Int, Int) = ("a", "b")

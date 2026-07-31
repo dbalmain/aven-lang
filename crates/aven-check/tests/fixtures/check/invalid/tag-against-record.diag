@@ -1,0 +1,6 @@
+error type.mismatch: expected `{ a: Int }`, found `@Red`
+  label 44..48: this value has type `@Red`
+  note: change the value to produce `{ a: Int }`, or change the annotation to `@Red`
+error type.mismatch: expected `{ a: Int }`, found `@Box(1 | ..)`
+  label 71..78: this value has type `@Box(1 | ..)`
+  note: change the value to produce `{ a: Int }`, or change the annotation to `@Box(1 | ..)`

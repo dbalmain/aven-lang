@@ -1,0 +1,15 @@
+RecordType = { a: Int }
+Colors = @Red | @Green
+
+asInt: Int = (value) => value
+asText: Text = (value) => value
+asArray: Array(Int) = (value) => value
+asRecord: RecordType = (value) => value
+asVariant: Colors = (value) => value
+
+takeInt = (value: Int): Int => value
+asArgument = takeInt((value) => value)
+asReturn = (): Int => (value) => value
+
+typedIdentity = (value: Int): Int => value
+boundFunctionAsVariant: Colors = typedIdentity

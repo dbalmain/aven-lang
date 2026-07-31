@@ -1,0 +1,24 @@
+error type.mismatch: expected `Int`, found `a -> a`
+  label 285..301: this value has type `a -> a`
+  note: change the value to produce `Int`, or change the annotation to `a -> a`
+error type.mismatch: expected `Int`, found `a -> a`
+  label 61..77: this value has type `a -> a`
+  note: change the value to produce `Int`, or change the annotation to `a -> a`
+error type.mismatch: expected `Text`, found `a -> a`
+  label 93..109: this value has type `a -> a`
+  note: change the value to produce `Text`, or change the annotation to `a -> a`
+error type.mismatch: expected `Array(Int)`, found `a -> a`
+  label 132..148: this value has type `a -> a`
+  note: change the value to produce `Array(Int)`, or change the annotation to `a -> a`
+error type.mismatch: expected `{ a: Int }`, found `a -> a`
+  label 172..188: this value has type `a -> a`
+  note: change the value to produce `{ a: Int }`, or change the annotation to `a -> a`
+error type.mismatch: expected `@Red | @Green`, found `a -> a`
+  label 209..225: this value has type `a -> a`
+  note: change the value to produce `@Red | @Green`, or change the annotation to `a -> a`
+error type.mismatch: expected `Int`, found `a -> a`
+  label 325..341: this value has type `a -> a`
+  note: change the value to produce `Int`, or change the annotation to `a -> a`
+error type.mismatch: expected `@Red | @Green`, found `Int -> Int`
+  label 419..432: this value has type `Int -> Int`
+  note: change the value to produce `@Red | @Green`, or change the annotation to `Int -> Int`

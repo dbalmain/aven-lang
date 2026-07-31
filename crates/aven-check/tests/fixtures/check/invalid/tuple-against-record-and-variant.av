@@ -1,0 +1,7 @@
+RecordType = { a: Int }
+Colors = @Red | @Green
+Numbers = 1 | 2
+
+asRecord: RecordType = (1, 2)
+asTags: Colors = (1, 2)
+asLiterals: Numbers = (1, 2)

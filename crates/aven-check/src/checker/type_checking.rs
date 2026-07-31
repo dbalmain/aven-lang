@@ -135,6 +135,12 @@ impl<'a> Checker<'a> {
                     (expected_params, expected_result),
                 );
             }
+            (ExprKind::Lambda { .. }, _) => {
+                self.check_value_expr(value);
+                let env = self.local_types.inference_env();
+                let actual = self.infer(&env, value);
+                self.check_type_against_type(expected, &actual, value.span);
+            }
             (ExprKind::Name(name) | ExprKind::ComptimeName(name), _) => {
                 let env = self.local_types.inference_env();
                 let actual = self.infer_name_reference(&env, name, value.span);
@@ -1177,9 +1183,6 @@ impl<'a> Checker<'a> {
             (Type::Named(expected), Type::Variant(actual)) => {
                 self.check_variant_type_against_named(expected, actual, span);
             }
-            (expected @ Type::Variant(_), actual @ Type::Record(_)) => {
-                self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
-            }
             (
                 expected @ (Type::Record(_) | Type::Tuple(_) | Type::Function { .. }),
                 Type::Variant(actual),
@@ -1216,6 +1219,20 @@ impl<'a> Checker<'a> {
             }
             (Type::Variant(expected), Type::Variant(actual)) => {
                 self.check_variant_type_against_type(expected, actual, span);
+            }
+            // The same-kind arms above own structural comparison. Different
+            // concrete value kinds can never subsume one another.
+            (
+                expected @ (Type::Record(_)
+                | Type::Tuple(_)
+                | Type::Function { .. }
+                | Type::Variant(_)),
+                actual @ (Type::Record(_)
+                | Type::Tuple(_)
+                | Type::Function { .. }
+                | Type::Variant(_)),
+            ) => {
+                self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
             }
             // Rigid annotation variables (from an enclosing polymorphic
             // function signature) unify only with themselves. Free variables

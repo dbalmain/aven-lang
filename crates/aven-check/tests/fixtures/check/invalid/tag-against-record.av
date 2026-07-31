@@ -1,0 +1,4 @@
+RecordType = { a: Int }
+
+bare: RecordType = @Red
+payload: RecordType = @Box(1)
