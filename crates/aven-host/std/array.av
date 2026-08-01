@@ -63,11 +63,12 @@ dropGo = (xs, index, toSkip, acc) =>
         false => dropGo(xs, index + 1, 0, acc.push(xs[index]))
     false => acc
 
-# Half-open `[start, end)`. Negative indexes wrap from the end first
-# (`length + v`), then both ends clamp to `[0, length]`. After wrap+clamp,
-# `start >= end` → `[]`. Partially/fully out of range → only what is in range.
-# Examples (xs length 3): `xs.slice(0, -1)` → all but last; `xs.slice(-2, 99)`
-# → last two; `xs.slice(3, 2)` → `[]`.
+# Half-open `[start, end)`; omitting `end` slices through to the end. Negative
+# indexes wrap from the end first (`length + v`), then both ends clamp to
+# `[0, length]`. After wrap+clamp, `start >= end` → `[]`. Partially/fully out of
+# range → only what is in range.
+# Examples (xs length 3): `xs.slice(1)` → all but first; `xs.slice(0, -1)` → all
+# but last; `xs.slice(-2, 99)` → last two; `xs.slice(3, 2)` → `[]`.
 clampIndex : (Int, Int) -> Int
 clampIndex = (i, n) =>
   zero: Int = 0
@@ -269,10 +270,10 @@ Array(a) {
     seed: Array(a) = []
     dropGo(., 0, n, seed)
 
-  slice(start: Int, end: Int): Array(a) =>
+  slice(start: Int, end: ?Int = undefined): Array(a) =>
     n = .length()
     s = normalizeSliceIndex(start, n)
-    e = normalizeSliceIndex(end, n)
+    e = normalizeSliceIndex(end ?? n, n)
     seed: Array(a) = []
     sliceGo(., s, e, seed)
 

@@ -1,3 +1,3 @@
-error type.mismatch: method `slice` on `Text` takes 2 parameters, found 1
-  label 171..177: `slice` does not accept 1 argument
-  note: pass 2 arguments to `slice`
+error type.mismatch: method `slice` on `Text` takes between 1 and 2 parameters, found 3
+  label 177..183: `slice` does not accept 3 arguments
+  note: pass between 1 and 2 arguments to `slice`

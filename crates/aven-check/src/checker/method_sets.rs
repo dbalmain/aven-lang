@@ -921,7 +921,7 @@ impl Checker<'_> {
             }
             let matches = actual.params.iter().zip(expected_params.iter()).all(
                 |(actual_param, expected_param)| {
-                    self.unifier.unify(actual_param, expected_param).is_ok()
+                    self.unify_row_argument(actual_param, expected_param)
                 },
             ) && self.unifier.unify(&actual.result, expected_result).is_ok();
             if !matches {
@@ -932,6 +932,18 @@ impl Checker<'_> {
         }
         self.simplify_method_obligations(false);
         true
+    }
+
+    /// Unify one supplied argument against an ambient method's parameter.
+    ///
+    /// A supplied value widens into an optional parameter the same way it does
+    /// at an ordinary call site, so `xs.slice(1, 3)` matches
+    /// `slice(start: Int, end: ?Int)`.
+    fn unify_row_argument(&mut self, param: &Type, argument: &Type) -> bool {
+        if self.unifier.unify(param, argument).is_ok() {
+            return true;
+        }
+        matches!(param, Type::Optional(inner) if self.unifier.unify(inner, argument).is_ok())
     }
 
     pub(crate) fn attached_builtin_method_required_owner(

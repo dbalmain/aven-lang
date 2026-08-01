@@ -5695,7 +5695,7 @@ fn text_method_field_query_returns_typed_methods() {
         .expect("chars method");
     assert_eq!(reverse.ty.render(), "() -> Text");
     assert_eq!(index_of.ty.render(), "Text -> ?Int");
-    assert_eq!(slice.ty.render(), "(Int, Int) -> Text");
+    assert_eq!(slice.ty.render(), "(Int, ?Int = _) -> Text");
     assert_eq!(capitalize.ty.render(), "() -> Text");
     assert_eq!(length.ty.render(), "() -> Int");
     assert_eq!(chars.ty.render(), "() -> Array(Text)");

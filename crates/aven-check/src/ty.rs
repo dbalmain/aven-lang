@@ -432,10 +432,14 @@ fn text_method_type(name: &str) -> Option<Type> {
             vec![text],
             Type::Optional(Box::new(named_builtin("Int"))),
         )),
-        "slice" => Some(function(
-            vec![named_builtin("Int"), named_builtin("Int")],
-            text,
-        )),
+        // `end` is optional: omitting it slices through to the end.
+        "slice" => Some(Type::Function {
+            params: FunctionParams::with_optional(
+                vec![named_builtin("Int")],
+                vec![Type::Optional(Box::new(named_builtin("Int")))],
+            ),
+            result: Box::new(text),
+        }),
         _ => None,
     }
 }

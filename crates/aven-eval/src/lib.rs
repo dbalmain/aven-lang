@@ -4438,9 +4438,9 @@ fn clamp_char_index(index: &Int, len: usize) -> usize {
 
 fn text_slice_method(text: String) -> Value {
     Value::native(move |args| {
-        if args.len() != 2 {
+        if args.is_empty() || args.len() > 2 {
             return Err(format!(
-                "Text.slice expects 2 arguments, got {}",
+                "Text.slice expects 1 or 2 arguments, got {}",
                 args.len()
             ));
         }
@@ -4450,13 +4450,18 @@ fn text_slice_method(text: String) -> Value {
                 args[0].type_name()
             ));
         };
-        let Value::Int(end) = &args[1] else {
-            return Err(format!(
-                "Text.slice expects Int end, got {}",
-                args[1].type_name()
-            ));
+        // Omitting `end` slices through to the end of the text.
+        let end = match args.get(1) {
+            None | Some(Value::Undefined) => Int::from(text.chars().count()),
+            Some(Value::Int(end)) => end.clone(),
+            Some(other) => {
+                return Err(format!(
+                    "Text.slice expects Int end, got {}",
+                    other.type_name()
+                ));
+            }
         };
-        Ok(Value::Text(text_slice(&text, start, end)))
+        Ok(Value::Text(text_slice(&text, start, &end)))
     })
 }
 

@@ -1390,6 +1390,11 @@ fn std_array_combinators_run_via_import() {
         "  sliceNegInverted: xs.slice(-1, -3),\n",
         "  sliceEmptyArr: empty.slice(0, 1),\n",
         "  sliceEmptyNeg: empty.slice(-1, 0),\n",
+        "  sliceOpen: xs.slice(1),\n",
+        "  sliceOpenZero: xs.slice(0),\n",
+        "  sliceOpenNeg: xs.slice(-2),\n",
+        "  sliceOpenPastEnd: xs.slice(99),\n",
+        "  sliceOpenEmpty: empty.slice(0),\n",
         "  zipShort: [1, 2, 3].zip([10, 20]),\n",
         "  zipLeftEmpty: empty.zip(xs),\n",
         "  zipRightEmpty: xs.zip(empty),\n",
@@ -1526,6 +1531,21 @@ fn std_array_combinators_run_via_import() {
                 ("sliceNegInverted", array_value(vec![])),
                 ("sliceEmptyArr", array_value(vec![])),
                 ("sliceEmptyNeg", array_value(vec![])),
+                // Omitting `end` slices through to the end.
+                (
+                    "sliceOpen",
+                    array_value(vec![Value::int(20), Value::int(30)])
+                ),
+                (
+                    "sliceOpenZero",
+                    array_value(vec![Value::int(10), Value::int(20), Value::int(30)]),
+                ),
+                (
+                    "sliceOpenNeg",
+                    array_value(vec![Value::int(20), Value::int(30)]),
+                ),
+                ("sliceOpenPastEnd", array_value(vec![])),
+                ("sliceOpenEmpty", array_value(vec![])),
                 (
                     "zipShort",
                     array_value(vec![
@@ -2112,6 +2132,7 @@ fn text_reverse_index_of_slice_capitalize() {
     // reverse: scalar-order reverse; empty stays empty.
     // indexOf: char-offset; missing → undefined.
     // slice: clamp into [0,len]; start>end → empty; no negative indexing.
+    //   omitting `end` slices through to the end.
     // capitalize: first scalar uppercased; empty unchanged.
     assert_module_value(
         "[\
@@ -2120,6 +2141,7 @@ fn text_reverse_index_of_slice_capitalize() {
            \"a☕b\".indexOf(\"☕\") ?? -1, \"a☕b\".indexOf(\"b\") ?? -1, \
            \"hello\".slice(1, 4), \"hello\".slice(-2, 99), \"hello\".slice(3, 1), \
            \"\".slice(0, 1), \"hello\".slice(0, 0), \
+           \"hello\".slice(1), \"hello\".slice(0), \"hello\".slice(99), \"\".slice(0), \
            \"hello\".capitalize(), \"\".capitalize(), \"école\".capitalize()\
          ]\n",
         array_value(vec![
@@ -2133,6 +2155,11 @@ fn text_reverse_index_of_slice_capitalize() {
             Value::Text("ell".to_owned()),
             Value::Text("hello".to_owned()),
             Value::Text(String::new()),
+            Value::Text(String::new()),
+            Value::Text(String::new()),
+            // Omitting `end` slices through to the end.
+            Value::Text("ello".to_owned()),
+            Value::Text("hello".to_owned()),
             Value::Text(String::new()),
             Value::Text(String::new()),
             Value::Text("Hello".to_owned()),
