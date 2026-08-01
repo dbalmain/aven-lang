@@ -259,6 +259,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A closing delimiter does not match the most recent open delimiter. Change it to the expected delimiter or fix the nested grouping.",
     },
     DiagnosticExplanation {
+        code: codes::parse::MISPLACED_MATCH_ARM,
+        text: "A match arm appeared inside another arm's body. When arms start on the ?> line, separate them with commas; otherwise put each arm on its own line under ?>. An arm body may be a same-line expression or an indented block, but further arms do not go inside that block.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::MISSING_BINDING_NAME,
         text: "A binding is missing the name before =. Add a name such as value = expression.",
     },

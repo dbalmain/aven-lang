@@ -1,0 +1,3 @@
+error parse.misplaced-match-arm: match arm is nested inside another arm's body
+  label 68..76: another match arm cannot start inside an arm body
+  note: separate arms with commas when they start on the `?>` line (`pat => …, pat => …`), or put each arm on its own line under `?>`

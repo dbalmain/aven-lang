@@ -1,0 +1,7 @@
+f = (n: Int): Int =>
+  n > 0 ?> true =>
+    k = n + 1
+    k * 2
+    false => 0
+
+{ f }
