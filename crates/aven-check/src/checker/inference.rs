@@ -541,11 +541,11 @@ impl<'a> Checker<'a> {
             self.restore_diagnostic_snapshot(diagnostic_snapshot);
             if is_resolved_operator_operand(&left_type) && is_resolved_operator_operand(&right_type)
             {
-                if matches!(operator, "==" | "!=")
-                    && let (Type::Record(left_row), Type::Record(right_row)) =
-                        (&left_type, &right_type)
-                {
-                    let compatibility = self.record_equality_compatibility(left_row, right_row);
+                // After resolve-and-default, re-check structural equality so
+                // open literal rows closed by defaulting still accept Int/Float
+                // at every container depth (and recover to Bool).
+                if matches!(operator, "==" | "!=") {
+                    let compatibility = self.equality_compatibility(&left_type, &right_type);
                     if compatibility != EqualityCompatibility::Mismatched
                         || self.expr_references_unresolved_comptime_param(left)
                         || self.expr_references_unresolved_comptime_param(right)
@@ -937,12 +937,8 @@ impl<'a> Checker<'a> {
         let left = self.widen_equality_operand(left);
         let right = self.widen_equality_operand(right);
 
-        if let (Type::Record(left), Type::Record(right)) = (&left, &right) {
-            return (self.record_equality_compatibility(left, right)
-                != EqualityCompatibility::Mismatched)
-                .then(|| named_builtin("Bool"));
-        }
-
+        // Meta operands still need unification side effects (binding free
+        // variables). Keep those branches ahead of the structural check.
         if is_meta_type(&left) && is_meta_type(&right) {
             if self.unifier.is_numeric_meta(&left) || self.unifier.is_numeric_meta(&right) {
                 return self
@@ -974,25 +970,20 @@ impl<'a> Checker<'a> {
                 .map(|()| named_builtin("Bool"));
         }
 
-        if is_concrete_type(&left) && is_concrete_type(&right) {
-            let snapshot = self.unifier.snapshot();
-            if self.unifier.unify(&left, &right).is_ok() {
-                return Some(named_builtin("Bool"));
-            }
-            self.unifier.restore(snapshot);
-            if left.render() == right.render() {
-                return Some(named_builtin("Bool"));
-            }
-            if self.type_fits_boundary_without_reporting(&left, &right)
-                || self.type_fits_boundary_without_reporting(&right, &left)
-            {
-                return Some(named_builtin("Bool"));
-            }
-        }
-
-        None
+        // Structural equality for records, arrays, tuples, and nested
+        // combinations. Int/Float share one numeric kind at the leaves.
+        // Accept Comparable and Unknown; only Mismatched is a type error.
+        // Unification is intentionally not used here — it is stricter than
+        // runtime equality (e.g. Array(Int) vs Array(Float)).
+        (self.equality_compatibility(&left, &right) != EqualityCompatibility::Mismatched)
+            .then(|| named_builtin("Bool"))
     }
 
+    /// Widen top-level literal operands for equality (Bool/Text bases, numeric
+    /// metas). Does not walk into containers: structural comparison uses
+    /// [`Self::equality_compatibility`], which already treats number-literal
+    /// variants as one numeric kind. Rewriting container elements to fresh
+    /// metas would erase that base-kind information.
     pub(super) fn widen_equality_operand(&mut self, ty: &Type) -> Type {
         let resolved = self.unifier.resolve(ty);
         if let Type::Variant(row) = &resolved {
@@ -1002,16 +993,6 @@ impl<'a> Checker<'a> {
                 Some(LiteralBase::Number) => return self.widen_numeric_operand(&resolved),
                 None => {}
             }
-        }
-
-        if let Type::Apply { callee, args } = &resolved {
-            return Type::Apply {
-                callee: callee.clone(),
-                args: args
-                    .iter()
-                    .map(|arg| self.widen_equality_operand(arg))
-                    .collect(),
-            };
         }
 
         resolved
@@ -1100,25 +1081,31 @@ impl<'a> Checker<'a> {
             };
         }
 
-        if !is_concrete_type(left) || !is_concrete_type(right) {
-            return EqualityCompatibility::Unknown;
-        }
-
+        // Recurse into structural containers before the concreteness gate.
+        // Open number/text literal rows inside arrays, tuples, and records are
+        // not fully concrete, but their base kinds still decide comparability
+        // (e.g. Array(1 | ..) vs Array("a" | ..) is a mismatch).
         match (left, right) {
             (Type::Record(left), Type::Record(right)) => {
-                self.record_equality_compatibility(left, right)
+                return self.record_equality_compatibility(left, right);
             }
-            (Type::Record(_), _) | (_, Type::Record(_)) => EqualityCompatibility::Mismatched,
-            (Type::SlotRecord { .. }, Type::SlotRecord { .. }) => EqualityCompatibility::Unknown,
+            (Type::Record(_), _) | (_, Type::Record(_)) => {
+                return EqualityCompatibility::Mismatched;
+            }
+            (Type::SlotRecord { .. }, Type::SlotRecord { .. }) => {
+                return EqualityCompatibility::Unknown;
+            }
             (Type::SlotRecord { .. }, _) | (_, Type::SlotRecord { .. }) => {
-                EqualityCompatibility::Mismatched
+                return EqualityCompatibility::Mismatched;
             }
             (Type::Tuple(left), Type::Tuple(right)) => {
-                equality_sequence_compatibility(left, right, |left, right| {
+                return equality_sequence_compatibility(left, right, |left, right| {
                     self.equality_compatibility(left, right)
-                })
+                });
             }
-            (Type::Tuple(_), _) | (_, Type::Tuple(_)) => EqualityCompatibility::Mismatched,
+            (Type::Tuple(_), _) | (_, Type::Tuple(_)) => {
+                return EqualityCompatibility::Mismatched;
+            }
             (
                 Type::Apply {
                     callee: left_callee,
@@ -1128,24 +1115,30 @@ impl<'a> Checker<'a> {
                     callee: right_callee,
                     args: right_args,
                 },
-            ) if is_array_constructor(left_callee) && is_array_constructor(right_callee) => {
-                match (left_args.as_slice(), right_args.as_slice()) {
-                    ([left], [right]) => self.equality_compatibility(left, right),
-                    _ => EqualityCompatibility::Unknown,
-                }
+            ) => {
+                return if apply_constructors_match(left_callee, right_callee) {
+                    equality_sequence_compatibility(left_args, right_args, |left, right| {
+                        self.equality_compatibility(left, right)
+                    })
+                } else {
+                    EqualityCompatibility::Mismatched
+                };
             }
-            (Type::Apply { callee, .. }, _) if is_array_constructor(callee) => {
-                EqualityCompatibility::Mismatched
+            (Type::Apply { .. }, _) | (_, Type::Apply { .. }) => {
+                return EqualityCompatibility::Mismatched;
             }
-            (_, Type::Apply { callee, .. }) if is_array_constructor(callee) => {
-                EqualityCompatibility::Mismatched
-            }
+            _ => {}
+        }
+
+        if !is_concrete_type(left) || !is_concrete_type(right) {
+            return EqualityCompatibility::Unknown;
+        }
+
+        match (left, right) {
             (Type::Variant(_), _)
             | (_, Type::Variant(_))
             | (Type::Function { .. }, _)
-            | (_, Type::Function { .. })
-            | (Type::Apply { .. }, _)
-            | (_, Type::Apply { .. }) => EqualityCompatibility::Unknown,
+            | (_, Type::Function { .. }) => EqualityCompatibility::Unknown,
             (Type::Named(left), Type::Named(right)) => {
                 if left == right {
                     EqualityCompatibility::Comparable
@@ -1169,6 +1162,15 @@ impl<'a> Checker<'a> {
             | (_, Type::Optional(_) | Type::Nullable(_)) => {
                 unreachable!("empty-value wrappers were peeled")
             }
+            // Structural forms are handled above, before the concreteness gate.
+            (
+                Type::Record(_) | Type::SlotRecord { .. } | Type::Tuple(_) | Type::Apply { .. },
+                _,
+            )
+            | (
+                _,
+                Type::Record(_) | Type::SlotRecord { .. } | Type::Tuple(_) | Type::Apply { .. },
+            ) => unreachable!("structural equality handled above"),
         }
     }
 
@@ -4202,8 +4204,13 @@ fn equality_sequence_compatibility(
         })
 }
 
-fn is_array_constructor(ty: &Type) -> bool {
-    ty.is_builtin(BuiltinType::Array)
+/// Whether two type constructors denote the same applied type head for
+/// structural equality (Array/Set/Map and equal named heads).
+fn apply_constructors_match(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (Type::Named(left), Type::Named(right)) => left == right,
+        _ => left == right,
+    }
 }
 
 fn row_field_type<'r>(row: &'r Row, field: &str) -> Option<&'r Type> {
