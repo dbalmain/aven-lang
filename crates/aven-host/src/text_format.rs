@@ -76,6 +76,42 @@ pub(crate) enum DecodeError {
     InvalidTarget(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextFormatStatic {
+    Encode,
+    EncodeText,
+    Decode,
+}
+
+impl TextFormatStatic {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Encode => "encode",
+            Self::EncodeText => "encodeText",
+            Self::Decode => "decode",
+        }
+    }
+
+    fn type_entry(self, ty: Type) -> (String, Type) {
+        (self.name().to_owned(), ty)
+    }
+
+    fn runtime_entry(
+        self,
+        ty: Type,
+        format: TextFormat,
+        parse: fn(&str) -> Result<FormatValue, String>,
+        encode: fn(&Value) -> Result<String, String>,
+    ) -> (String, Type, Value) {
+        let value = match self {
+            Self::Encode => encode_native(format, encode),
+            Self::EncodeText => encode_text_native(format, encode),
+            Self::Decode => decode_native(format, parse),
+        };
+        (self.name().to_owned(), ty, value)
+    }
+}
+
 /// The common host-facing contract shared by the text codecs. Parsing and
 /// serialization stay in the format modules; registration, arity checks,
 /// result wrapping, and typed decoding live here.
@@ -147,12 +183,19 @@ impl TextFormat {
         )
     }
 
-    pub(crate) fn statics(self) -> Vec<(String, Type)> {
-        vec![
-            ("encode".to_owned(), self.encode_type()),
-            ("encodeText".to_owned(), self.encode_text_type()),
-            ("decode".to_owned(), self.decode_base_type()),
+    fn statics(self) -> [(TextFormatStatic, Type); 3] {
+        [
+            (TextFormatStatic::Encode, self.encode_type()),
+            (TextFormatStatic::EncodeText, self.encode_text_type()),
+            (TextFormatStatic::Decode, self.decode_base_type()),
         ]
+    }
+
+    pub(crate) fn static_types(self) -> Vec<(String, Type)> {
+        self.statics()
+            .into_iter()
+            .map(|(static_, ty)| static_.type_entry(ty))
+            .collect()
     }
 
     pub(crate) fn type_definitions(self) -> [(String, Type); 2] {
@@ -202,12 +245,7 @@ pub(crate) fn register_text_format(
         format
             .statics()
             .into_iter()
-            .zip([
-                encode_native(format, encode),
-                encode_text_native(format, encode),
-                decode_native(format, parse),
-            ])
-            .map(|((name, ty), value)| (name, ty, value))
+            .map(|(static_, ty)| static_.runtime_entry(ty, format, parse, encode))
             .collect(),
     );
     for (name, ty) in format.type_definitions() {
@@ -970,7 +1008,7 @@ mod tests {
         let standard = crate::standard_check_host_globals();
 
         for format in TextFormat::ALL {
-            let expected_statics = format.statics();
+            let expected_statics = format.static_types();
             assert_eq!(statics_for(&registered, format.name()), &expected_statics);
             assert_eq!(statics_for(&standard, format.name()), &expected_statics);
 

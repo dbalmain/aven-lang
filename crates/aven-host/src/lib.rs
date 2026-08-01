@@ -888,7 +888,7 @@ pub fn standard_check_host_globals() -> HostGlobals {
         .with_statics(
             text_format::TextFormat::ALL
                 .into_iter()
-                .map(|format| (format.name().to_owned(), format.statics()))
+                .map(|format| (format.name().to_owned(), format.static_types()))
                 .chain(temporal::temporal_statics_table())
                 .collect(),
         )
