@@ -1911,6 +1911,50 @@ fn array_traversal_preserves_undefined_and_null_elements() {
         eval("xs: Array(Int?) = [1, null, 3]\nxs.indexOf(null)\n"),
         Value::int(1),
     );
+
+    // compact peels empties; result is the non-empty slots in order.
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.compact()\n"),
+        array_value(vec![Value::int(1), Value::int(3)]),
+    );
+    assert_eq!(
+        eval("xs: Array(Int?) = [1, null, 3]\nxs.compact()\n"),
+        array_value(vec![Value::int(1), Value::int(3)]),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [undefined, undefined]\nxs.compact()\n"),
+        array_value(vec![]),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.compact().sum()\n"),
+        Value::int(4),
+    );
+    assert_eq!(
+        eval("xs: Array(Int?) = [1, null, 3]\nxs.compact().sum()\n"),
+        Value::int(4),
+    );
+
+    // findIndex: position of first match, or undefined. Distinguishes a
+    // found-empty from a miss on Array(?T) (unlike find, which collapses).
+    assert_eq!(
+        eval(
+            "xs: Array(?Int) = [1, undefined, 3]\n\
+             xs.findIndex((x) => x ?> undefined => true, _ => false)\n",
+        ),
+        Value::int(1),
+    );
+    assert_eq!(
+        eval("xs: Array(Int) = [10, 20, 30]\nxs.findIndex((x) => x == 20)\n"),
+        Value::int(1),
+    );
+    assert_eq!(
+        eval("xs: Array(Int) = [10, 20, 30]\nxs.findIndex((x) => x == 99)\n"),
+        Value::Undefined,
+    );
+    assert_eq!(
+        eval("xs: Array(Int) = []\nxs.findIndex((x) => x == 1)\n"),
+        Value::Undefined,
+    );
 }
 
 #[test]
@@ -3781,49 +3825,112 @@ proptest! {
         }
     }
 
-    /// Open design: how should `sortBy` / `sortWith` order stored empties relative
-    /// to numbers? Runtime `<` rejects `undefined`/`null` operands today.
+    /// Policy: empty-bearing arrays are rejected for sort/sum/min/max at the
+    /// type checker (`Array(Int).sum`, `a: Ordered` on min/max/sortBy). The
+    /// repair is `.compact()` then the method. Eval has no typecheck, so these
+    /// properties lock the compact route; static rejection is in aven-cli.
     #[test]
-    #[ignore = "design: sort order of undefined/null vs Int (and whether sort may error)"]
-    fn ambient_array_optional_sort_with_empties_open(
-        xs in opt_int_vec_strategy(),
-    ) {
+    fn ambient_array_optional_compact_then_sort_by(xs in opt_int_vec_strategy()) {
         let source = format!(
             "xs: Array(?Int) = {}\n\
-             xs.sortBy((x) => x)\n",
+             xs.compact().sortBy((x) => x)\n",
             render_opt_ints(&xs),
         );
-        let _ = eval_with_builtins(&source);
-        prop_assert!(false, "unreachable: property is ignored pending design");
+        let result = eval_with_builtins(&source);
+        let mut expected: Vec<i64> = xs
+            .iter()
+            .filter_map(|x| match x {
+                OptInt::Int(n) => Some(*n),
+                OptInt::Undefined => None,
+            })
+            .collect();
+        expected.sort_unstable();
+        let got = ints(&result).expect("compact().sortBy yields Array(Int)");
+        prop_assert_eq!(got, expected);
     }
 
-    /// Open design: `sum` is typed `Array(Int) -> Int`. Over `?Int`/`Int?`
-    /// elements, should missing slots be skipped, yield empty, or reject?
     #[test]
-    #[ignore = "design: sum over arrays containing undefined/null"]
-    fn ambient_array_sum_with_empties_open(xs in opt_int_vec_strategy()) {
+    fn ambient_array_optional_compact_then_sum(xs in opt_int_vec_strategy()) {
         let source = format!(
             "xs: Array(?Int) = {}\n\
-             xs.sum()\n",
+             xs.compact().sum()\n",
             render_opt_ints(&xs),
         );
-        let _ = eval_with_builtins(&source);
-        prop_assert!(false, "unreachable: property is ignored pending design");
+        let result = eval_with_builtins(&source);
+        let expected: i64 = xs
+            .iter()
+            .filter_map(|x| match x {
+                OptInt::Int(n) => Some(*n),
+                OptInt::Undefined => None,
+            })
+            .sum();
+        prop_assert_eq!(result, Value::int(expected));
     }
 
-    /// Open design: `minimum`/`maximum` need a total order. `<` on empties errors
-    /// today; should empties be least, greatest, skipped, or rejected?
     #[test]
-    #[ignore = "design: minimum/maximum order or rejection of undefined/null elements"]
-    fn ambient_array_minmax_with_empties_open(xs in opt_int_vec_strategy()) {
-        prop_assume!(!xs.is_empty());
+    fn ambient_array_nullable_compact_then_sum(xs in null_int_vec_strategy()) {
+        let source = format!(
+            "xs: Array(Int?) = {}\n\
+             xs.compact().sum()\n",
+            render_null_ints(&xs),
+        );
+        let result = eval_with_builtins(&source);
+        let expected: i64 = xs
+            .iter()
+            .filter_map(|x| match x {
+                NullInt::Int(n) => Some(*n),
+                NullInt::Null => None,
+            })
+            .sum();
+        prop_assert_eq!(result, Value::int(expected));
+    }
+
+    #[test]
+    fn ambient_array_optional_compact_then_minmax(xs in opt_int_vec_strategy()) {
+        let present: Vec<i64> = xs
+            .iter()
+            .filter_map(|x| match x {
+                OptInt::Int(n) => Some(*n),
+                OptInt::Undefined => None,
+            })
+            .collect();
+        prop_assume!(!present.is_empty());
         let source = format!(
             "xs: Array(?Int) = {}\n\
-             {{ min: xs.minimum(), max: xs.maximum() }}\n",
+             {{ min: xs.compact().minimum(), max: xs.compact().maximum() }}\n",
             render_opt_ints(&xs),
         );
-        let _ = eval_with_builtins(&source);
-        prop_assert!(false, "unreachable: property is ignored pending design");
+        let result = eval_with_builtins(&source);
+        let min = record_field(&result, "min")?;
+        let max = record_field(&result, "max")?;
+        let expected_min = *present.iter().min().expect("non-empty");
+        let expected_max = *present.iter().max().expect("non-empty");
+        prop_assert_eq!(min, &Value::int(expected_min));
+        prop_assert_eq!(max, &Value::int(expected_max));
+    }
+
+    /// `findIndex` is the unambiguous alternative when `find` on `Array(?T)`
+    /// would collapse found-`undefined` with miss. Locks index-of-first-empty.
+    #[test]
+    fn ambient_array_optional_find_index_of_undefined(xs in opt_int_vec_strategy()) {
+        let source = format!(
+            "xs: Array(?Int) = {}\n\
+             xs.findIndex((x) => x ?> undefined => true, _ => false)\n",
+            render_opt_ints(&xs),
+        );
+        let result = eval_with_builtins(&source);
+        match xs.iter().position(|x| *x == OptInt::Undefined) {
+            Some(i) => prop_assert_eq!(
+                &result,
+                &Value::int(i),
+                "findIndex missed first undefined"
+            ),
+            None => prop_assert_eq!(
+                &result,
+                &Value::Undefined,
+                "findIndex should be undefined on miss"
+            ),
+        }
     }
 
     /// Open design: `find` returns `?a`. When `a` is already `?Int`, a found
@@ -3833,7 +3940,7 @@ proptest! {
     fn ambient_array_find_optional_element_open(xs in opt_int_vec_strategy()) {
         let source = format!(
             "xs: Array(?Int) = {}\n\
-             xs.find((x) => x == undefined)\n",
+             xs.find((x) => x ?> undefined => true, _ => false)\n",
             render_opt_ints(&xs),
         );
         let _ = eval_with_builtins(&source);

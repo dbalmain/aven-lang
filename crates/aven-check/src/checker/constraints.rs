@@ -547,6 +547,7 @@ impl<'a> Checker<'a> {
     }
 
     fn report_missing_method(&mut self, owner: &Type, predicate: &MethodPredicate) {
+        let admits_empty = crate::ty::type_admits_empty(owner);
         let owner = display_inferred_type(owner).render();
         let required = render_predicate_requirement(predicate);
         let primary_span = predicate.call_span.unwrap_or(predicate.operator_span);
@@ -573,6 +574,19 @@ impl<'a> Checker<'a> {
             diagnostic = diagnostic.with_note(format!(
                 "required while instantiating generic binding `{binding}` at this call site"
             ));
+        }
+        // Array methods with an `Ordered` (or similar) constraint on the element
+        // type fail here when the element admits empty. Point at the repair
+        // without rewriting the general missing-method path for non-empty types.
+        if admits_empty
+            && matches!(
+                predicate.binding.as_deref(),
+                Some("minimum" | "maximum" | "sortBy")
+            )
+        {
+            diagnostic = diagnostic.with_note(
+                "array elements that admit `undefined` or `null` are not ordered; call `.compact()` first",
+            );
         }
         self.push_unique_diagnostic(diagnostic);
     }

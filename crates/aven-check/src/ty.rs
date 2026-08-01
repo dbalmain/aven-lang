@@ -520,6 +520,16 @@ fn array_type_arg(ty: &Type) -> Option<&Type> {
     Some(element)
 }
 
+/// `true` when `ty` is optional and/or nullable (admits `undefined` and/or `null`).
+pub(crate) fn type_admits_empty(ty: &Type) -> bool {
+    matches!(ty, Type::Optional(_) | Type::Nullable(_))
+}
+
+/// `true` when `ty` is `Array(e)` and `e` admits empty.
+pub(crate) fn array_element_admits_empty(ty: &Type) -> bool {
+    array_type_arg(ty).is_some_and(type_admits_empty)
+}
+
 fn set_type_arg(ty: &Type) -> Option<&Type> {
     let (builtin, args) = ty.applied_builtin()?;
     if builtin != BuiltinType::Set {

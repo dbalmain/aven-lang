@@ -113,7 +113,13 @@ allPos = xs.all((x) => x > 0)
 has20 = xs.any((x) => x == 20)
 hit = xs.find((x) => x == 20)
 miss = xs.find((x) => x == 99)
+foundAt = xs.findIndex((x) => x == 20)
+missAt = xs.findIndex((x) => x == 99)
 idx = xs.indexOf(20)
+optionalSlots: Array(?Int) = [1, undefined, 3]
+nullableSlots: Array(Int?) = [1, null, 3]
+compacted = optionalSlots.compact()
+nullableCompacted = nullableSlots.compact()
 mapped = xs.map((x) => x + 1)
 flatMapped = xs.flatMap((x) => [x, x + 1])
 filtered = xs.filter((x) => x > 15)
@@ -131,7 +137,7 @@ users = [{name: "bob", age: 30}, {name: "alice", age: 25}, {name: "carol", age: 
 byAge = users.sortBy((u) => u.age)
 lo = xs.minimum()
 hi = xs.maximum()
-{ range, len, emptyFlag, head, tail, folded, frequencies, total, n, allPos, has20, hit, miss, idx, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
+{ range, len, emptyFlag, head, tail, folded, frequencies, total, n, allPos, has20, hit, miss, foundAt, missAt, idx, compacted, nullableCompacted, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
 "#,
     );
 
@@ -286,6 +292,93 @@ writeLine("${empty.maximum()}")
         stdout(&output),
         "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[10, 20]\n[20, 30]\n[10, 20]\n[]\n[]\n[]\n[]\n30\n10\nundefined\nundefined\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\n[1, 2, 3, 4]\n[]\n[]\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n[{ name: alice, age: 25 }, { name: bob, age: 30 }, { name: carol, age: 30 }]\n[{ age: 1 }, { age: 2 }]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
     );
+}
+
+/// `compact` peels one empty wrapper (`Array(?a) -> Array(a)`,
+/// `Array(a?) -> Array(a)`); `findIndex` returns a non-collapsing index.
+#[test]
+fn std_array_compact_and_find_index_run() {
+    let dir = TempDir::new("std-array-compact");
+    let entry = dir.write(
+        "main.av",
+        r#"u: Array(?Int) = [1, undefined, 3]
+n: Array(Int?) = [1, null, 3]
+writeLine("${u.compact()}")
+writeLine("${n.compact()}")
+writeLine("${u.compact().sum()}")
+writeLine("${n.compact().sum()}")
+writeLine("${u.compact().minimum()}")
+writeLine("${u.compact().sortBy((x) => x)}")
+writeLine("${u.findIndex((x) => x ?> undefined => true, _ => false)}")
+writeLine("${[10, 20, 30].findIndex((x) => x == 20)}")
+writeLine("${[10, 20, 30].findIndex((x) => x == 99)}")
+"#,
+    );
+
+    let checked = aven(&["check", entry.to_str().expect("temp path is UTF-8")]);
+    assert!(
+        checked.status.success(),
+        "aven check failed:\n{}\n{}",
+        stdout(&checked),
+        stderr(&checked)
+    );
+
+    let output = aven(&["run", entry.to_str().expect("temp path is UTF-8")]);
+    assert!(
+        output.status.success(),
+        "aven run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(
+        stdout(&output),
+        "[1, 3]\n[1, 3]\n4\n4\n1\n[1, 3]\n1\n1\nundefined\n"
+    );
+}
+
+/// sum / minimum / sortBy on empty-bearing arrays are rejected statically,
+/// with a note pointing at `.compact()`.
+#[test]
+fn std_array_empty_bearing_ops_rejected_with_compact_note() {
+    let dir = TempDir::new("std-array-empty-reject");
+    let sum = dir.write("sum.av", "u: Array(?Int) = [1, undefined, 3]\nu.sum()\n");
+    let minimum = dir.write(
+        "minimum.av",
+        "u: Array(?Int) = [1, undefined, 3]\nu.minimum()\n",
+    );
+    let sort_by = dir.write(
+        "sort_by.av",
+        "u: Array(?Int) = [1, undefined, 3]\nu.sortBy((x) => x)\n",
+    );
+    let nullable_sum = dir.write(
+        "nullable_sum.av",
+        "u: Array(Int?) = [1, null, 3]\nu.sum()\n",
+    );
+
+    for (path, code_substr) in [
+        (sum, "type.mismatch"),
+        (minimum, "type.invalid-operator-operands"),
+        (sort_by, "type.invalid-operator-operands"),
+        (nullable_sum, "type.mismatch"),
+    ] {
+        let output = aven(&["check", path.to_str().expect("temp path is UTF-8")]);
+        assert!(
+            !output.status.success(),
+            "expected check failure for {}",
+            path.display()
+        );
+        let err = stderr(&output);
+        assert!(
+            err.contains(code_substr),
+            "expected {code_substr} in stderr for {}:\n{err}",
+            path.display()
+        );
+        assert!(
+            err.contains("compact"),
+            "expected compact repair note for {}:\n{err}",
+            path.display()
+        );
+    }
 }
 
 #[test]
