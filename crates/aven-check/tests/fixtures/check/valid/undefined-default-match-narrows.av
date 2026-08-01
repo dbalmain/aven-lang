@@ -1,0 +1,24 @@
+# Unannotated `= undefined` is optional (`?a`), not monomorphic `Undefined`.
+# Matching on `undefined` peels the optional so the residual arm can use fields,
+# including when those fields feed a typed call (directed checking).
+
+id = (n: Int): Int => n
+takeUsers = (names: Array(Text)): Array(Text) => names
+
+# Minimal: residual binder under a typed call.
+get = (payload = undefined) =>
+  payload ?>
+    undefined => 0
+    p => id(p.count)
+
+# Nested match, record-returning arms, leading unannotated params — the shape
+# that shows up in real programs (e.g. REST handlers with an optional body).
+handler = (database, url, payload = undefined) =>
+  url == "/users" ?>
+    true =>
+      payload ?>
+        undefined => { users: database.users }
+        p => { users: takeUsers(p.users) }
+    false => { users: database.users }
+
+{ get, handler }
