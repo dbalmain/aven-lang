@@ -1,0 +1,17 @@
+# Single inline arm with an indented block body (the destructuring-let shape).
+f = (p: (Int, Int)): Int =>
+  p ?> (v, j) =>
+    k = v + j
+    k * 2
+
+# Same-line inline body still works.
+g = (p: (Int, Int)): Int =>
+  p ?> (v, j) => (v + j) * 2
+
+# Arms under a newline after `?>` may use indented block bodies.
+h = (n: Int): Int =>
+  n > 0 ?>
+    true =>
+      k = n + 1
+      k * 2
+    false => 0

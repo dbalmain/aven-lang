@@ -1,0 +1,3 @@
+error parse.missing-match-body: match arm is missing a body
+  label 28..28: expected an expression or indented block after `=>`
+  note: a match arm body is an expression on the same line, or an indented block
