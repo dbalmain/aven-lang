@@ -11055,6 +11055,84 @@ fn record_equality_accepts_possibly_equal_structures() {
     );
 }
 
+/// Structural `==` treats Int and Float as one numeric kind at every depth,
+/// including fully monomorphic `Array(Int)` vs `Array(Float)`.
+#[test]
+fn structural_equality_accepts_int_float_through_containers() {
+    let source = concat!(
+        // Fully monomorphic arrays — the case strict unification rejects.
+        "left_ints: Array(Int) = [1, 0]\n",
+        "right_floats: Array(Float) = [1.0, 0.0]\n",
+        "arrays: Bool = left_ints == right_floats\n",
+        "arrays_ne: Bool = left_ints != right_floats\n",
+        // Literals and nesting.
+        "literal_arrays: Bool = [1, 0] == [1.0, 0.0]\n",
+        "nested: Bool = [[1], [0.0]] == [[1.0], [0]]\n",
+        "tuples: Bool = (1, 0.0) == (1.0, 0)\n",
+        "records: Bool = { x: 1, y: [0] } == { x: 1.0, y: [0.0] }\n",
+        // Annotated monomorphic record / tuple fields.
+        "rec_int: { x: Int } = { x: 1 }\n",
+        "rec_float: { x: Float } = { x: 1.0 }\n",
+        "rec_eq: Bool = rec_int == rec_float\n",
+        "tup_int: (Int, Int) = (1, 0)\n",
+        "tup_float: (Float, Float) = (1.0, 0.0)\n",
+        "tup_eq: Bool = tup_int == tup_float\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "Int/Float structural equality should type-check: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn structural_equality_rejects_int_text_mismatches() {
+    for source in [
+        "bad = 1 == \"1\"\nquiet: Bool = bad && true\n",
+        "bad = [1] == [\"1\"]\nquiet: Bool = bad && true\n",
+        concat!(
+            "left: Array(Int) = [1]\n",
+            "right: Array(Text) = [\"1\"]\n",
+            "bad = left == right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+        concat!(
+            "left: { x: Int } = { x: 1 }\n",
+            "right: { x: Text } = { x: \"1\" }\n",
+            "bad = left == right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+        concat!(
+            "left: (Int,) = (1,)\n",
+            "right: (Text,) = (\"1\",)\n",
+            "bad = left == right\n",
+            "quiet: Bool = bad && true\n",
+        ),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::INVALID_OPERATOR_OPERANDS),
+            1,
+            "expected one invalid-operator diagnostic for {source:?}: {:?}",
+            check.diagnostics
+        );
+        assert_eq!(
+            check
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .count(),
+            1,
+            "equality should recover to Bool for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
 #[test]
 fn record_equality_reports_each_provable_mismatch_once_and_recovers_to_bool() {
     for source in [
