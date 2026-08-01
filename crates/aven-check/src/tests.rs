@@ -9966,6 +9966,55 @@ fn unannotated_default_infers_parameter_type() {
 }
 
 #[test]
+fn unannotated_undefined_default_is_optional_not_monomorphic_undefined() {
+    // `payload = undefined` must mean `?a`, not bare `Undefined`. Otherwise the
+    // residual arm of `payload ?> undefined => …; p => …` binds `p` as
+    // `Undefined` and field access fails under directed call checking.
+    let source = concat!(
+        "f = (n: Int): Int => n\n",
+        "get = (payload = undefined) =>\n",
+        "  payload ?>\n",
+        "    undefined => 0\n",
+        "    p => f(p.count)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+
+    let get_type = check
+        .type_at(nth_span(source, "get", 0))
+        .expect("get should have an inferred type");
+    // Param is optional of an open record with `count`, not monomorphic Undefined.
+    assert_eq!(
+        get_type.render(),
+        "(?{ count: Int, .. } = _) -> 0",
+        "undefined default should publish an optional param type"
+    );
+}
+
+#[test]
+fn unannotated_null_default_is_nullable_not_monomorphic_null() {
+    let source = concat!(
+        "f = (n: Int): Int => n\n",
+        "get = (payload = null) =>\n",
+        "  payload ?>\n",
+        "    null => 0\n",
+        "    p => f(p.count)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn default_mismatching_annotation_is_a_type_error() {
     let output = parse_module("h = (x: Int = \"no\") => x\n");
     let check = check_module(&output.module);

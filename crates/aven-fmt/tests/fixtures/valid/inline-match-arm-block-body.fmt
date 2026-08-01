@@ -1,0 +1,4 @@
+f = (p: (Int, Int)): Int =>
+  p ?> (v, j) =>
+    k = v + j
+    k * 2

@@ -224,15 +224,6 @@ pub struct MatchArm {
     pub span: Span,
 }
 
-/// Whether a match arm body may be an indented block (`AllowBlock`, used under
-/// a `?>` newline/indent layout) or must be a single same-line expression
-/// (`ExpressionOnly`, used for comma-separated inline arms).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MatchArmBodyStyle {
-    AllowBlock,
-    ExpressionOnly,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordEntry {
     Field {
@@ -1521,7 +1512,7 @@ impl Parser<'_> {
                 continue;
             }
 
-            arms.push(self.parse_match_arm(MatchArmBodyStyle::AllowBlock));
+            arms.push(self.parse_match_arm());
             self.consume_newline();
         }
 
@@ -1532,14 +1523,16 @@ impl Parser<'_> {
         arms
     }
 
-    /// Inline arms are comma-separated on the same line as `?>`. A trailing
-    /// comma with no following arm is a diagnostic; arms that continue on the
-    /// next line after a comma are also rejected (mixed layout).
+    /// Arms that start on the same line as `?>` are comma-separated. Each arm
+    /// body may be a same-line expression or an indented block (same rule as
+    /// arms under a newline/`?>` layout). A trailing comma with no following
+    /// arm is a diagnostic; a second arm that continues on the next line
+    /// without a comma is mixed layout and is rejected by outer layout.
     fn parse_inline_match_arms(&mut self) -> Vec<MatchArm> {
         let mut arms = Vec::new();
 
         loop {
-            arms.push(self.parse_match_arm(MatchArmBodyStyle::ExpressionOnly));
+            arms.push(self.parse_match_arm());
 
             if !self.current_is(TokenKind::Comma) {
                 break;
@@ -1578,7 +1571,7 @@ impl Parser<'_> {
             || self.current_is_operator("=>")
     }
 
-    fn parse_match_arm(&mut self, body_style: MatchArmBodyStyle) -> MatchArm {
+    fn parse_match_arm(&mut self) -> MatchArm {
         let pattern = self.parse_match_pattern_term();
         let mut guards = Vec::new();
 
@@ -1603,28 +1596,21 @@ impl Parser<'_> {
             };
         }
 
-        let body = match body_style {
-            MatchArmBodyStyle::AllowBlock => {
-                if self.current_is(TokenKind::Newline) {
-                    self.advance();
-                    if self.current_is(TokenKind::Indent) {
-                        self.parse_block(self.current_span())
-                    } else {
-                        self.report_missing_match_body(self.previous_end())
-                    }
-                } else if self.at_item_boundary() {
-                    self.report_missing_match_body(self.previous_end())
-                } else {
-                    self.parse_expression()
-                }
+        // Arm body: same-line expression, or newline + indented block (as with
+        // lambda bodies). Layout already separates multi-arm forms: further
+        // arms need a comma after this body; a line at outer indent after a
+        // block body is the enclosing item, not another arm.
+        let body = if self.current_is(TokenKind::Newline) {
+            self.advance();
+            if self.current_is(TokenKind::Indent) {
+                self.parse_block(self.current_span())
+            } else {
+                self.report_missing_match_body(self.previous_end())
             }
-            MatchArmBodyStyle::ExpressionOnly => {
-                if self.current_is(TokenKind::Newline) || self.at_item_boundary() {
-                    self.report_missing_match_body(self.previous_end())
-                } else {
-                    self.parse_expression()
-                }
-            }
+        } else if self.at_item_boundary() {
+            self.report_missing_match_body(self.previous_end())
+        } else {
+            self.parse_expression()
         };
 
         MatchArm {
@@ -2843,7 +2829,9 @@ impl Parser<'_> {
                     span,
                     "expected an expression or indented block after `=>`",
                 ))
-                .with_note("add the expression that should run when this pattern matches"),
+                .with_note(
+                    "a match arm body is an expression on the same line, or an indented block",
+                ),
         );
         missing_expr(span)
     }
@@ -4886,6 +4874,26 @@ mod tests {
         };
         assert_eq!(arms.len(), 1);
         assert!(matches!(&arms[0].body.kind, ExprKind::Name(name) if name == "x"));
+    }
+
+    #[test]
+    fn parses_inline_match_arm_with_indented_block_body() {
+        let output = parse_module("value = result ?> @Ok(x) =>\n  y = x + 1\n  y\n");
+
+        assert!(
+            output.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            output.diagnostics
+        );
+        let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
+            panic!("expected match expression");
+        };
+        assert_eq!(arms.len(), 1);
+        assert!(
+            matches!(&arms[0].body.kind, ExprKind::Block(items) if items.len() == 2),
+            "expected two-item block body, got {:?}",
+            arms[0].body.kind
+        );
     }
 
     #[test]

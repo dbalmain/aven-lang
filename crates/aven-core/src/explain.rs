@@ -276,7 +276,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::parse::MISSING_MATCH_BODY,
-        text: "A match arm has a pattern and => but no body expression. Add the expression returned by that arm.",
+        text: "A match arm has a pattern and => but no body. Add a same-line expression, or an indented block on the following lines.",
     },
     DiagnosticExplanation {
         code: codes::parse::MISSING_METHOD_BOUND_OPEN,

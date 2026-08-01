@@ -350,6 +350,8 @@ impl PartialEq for PrimitivePayload {
         match (self, other) {
             (Self::Int(left), Self::Int(right)) => left == right,
             (Self::Float(left), Self::Float(right)) => float_eq(*left, *right),
+            (Self::Int(left), Self::Float(right)) => int_float_eq(left, *right),
+            (Self::Float(left), Self::Int(right)) => int_float_eq(right, *left),
             (Self::Text(left), Self::Text(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::Array(left), Self::Array(right)) => left == right,
@@ -510,11 +512,17 @@ impl fmt::Debug for Value {
     }
 }
 
+/// Structural equality for values, including Int/Float numeric coercion.
+///
+/// Language `==` and collection identity (set members, map keys, `.has`) all
+/// use this so a single rule covers scalars and every structural container.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Int(left), Self::Int(right)) => left == right,
             (Self::Float(left), Self::Float(right)) => float_eq(*left, *right),
+            (Self::Int(left), Self::Float(right)) => int_float_eq(left, *right),
+            (Self::Float(left), Self::Int(right)) => int_float_eq(right, *left),
             (Self::Text(left), Self::Text(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::Array(left), Self::Array(right)) => left == right,
@@ -577,6 +585,8 @@ fn primitive_payload_matches_value(payload: &PrimitivePayload, value: &Value) ->
     match (payload, value) {
         (PrimitivePayload::Int(left), Value::Int(right)) => left == right,
         (PrimitivePayload::Float(left), Value::Float(right)) => float_eq(*left, *right),
+        (PrimitivePayload::Int(left), Value::Float(right)) => int_float_eq(left, *right),
+        (PrimitivePayload::Float(left), Value::Int(right)) => int_float_eq(right, *left),
         (PrimitivePayload::Text(left), Value::Text(right)) => left == right,
         (PrimitivePayload::Bool(left), Value::Bool(right)) => left == right,
         (PrimitivePayload::Array(left), Value::Array(right)) => left == right,
@@ -5597,35 +5607,42 @@ fn equality(left: Value, operator: &str, right: Value, span: Span) -> Result<Val
         return Err(closure_equality_error(span, operator));
     }
 
-    let equal = match (&left, &right) {
-        (Value::Int(left), Value::Int(right)) => left == right,
-        (Value::Float(left), Value::Float(right)) => float_eq(*left, *right),
-        (Value::Int(left), Value::Float(right)) => float_eq(int_to_f64(left), *right),
-        (Value::Float(left), Value::Int(right)) => float_eq(*left, int_to_f64(right)),
-        (Value::Text(left), Value::Text(right)) => left == right,
-        (Value::Bool(left), Value::Bool(right)) => left == right,
-        (Value::Array(_), Value::Array(_)) => left == right,
-        (Value::Tuple(_), Value::Tuple(_)) => left == right,
-        (Value::Set(_), Value::Set(_)) => left == right,
-        (Value::Map(_), Value::Map(_)) => left == right,
-        (Value::Record(_), Value::Record(_)) => left == right,
-        (Value::Tag { .. }, Value::Tag { .. }) => left == right,
-        (Value::Type(left), Value::Type(right)) => left == right,
-        (Value::Native(_), Value::Native(_)) => false,
-        (Value::Undefined, Value::Undefined) => true,
-        (Value::Null, Value::Null) => true,
-        _ => {
-            return Err(binary_type_error(
-                span,
-                operator,
-                left.type_name(),
-                right.type_name(),
-                "matching value kinds",
-            ));
-        }
-    };
+    // Kind gate only: Int/Float may cross; everything else needs matching kinds.
+    // The actual comparison is `PartialEq`, which carries the numeric rule into
+    // arrays, tuples, records, sets, maps, and tag payloads.
+    if !equality_kinds_compatible(&left, &right) {
+        return Err(binary_type_error(
+            span,
+            operator,
+            left.type_name(),
+            right.type_name(),
+            "matching value kinds",
+        ));
+    }
 
+    let equal = left == right;
     Ok(Value::Bool(if operator == "==" { equal } else { !equal }))
+}
+
+fn equality_kinds_compatible(left: &Value, right: &Value) -> bool {
+    matches!(
+        (left, right),
+        (
+            Value::Int(_) | Value::Float(_),
+            Value::Int(_) | Value::Float(_)
+        ) | (Value::Text(_), Value::Text(_))
+            | (Value::Bool(_), Value::Bool(_))
+            | (Value::Array(_), Value::Array(_))
+            | (Value::Tuple(_), Value::Tuple(_))
+            | (Value::Set(_), Value::Set(_))
+            | (Value::Map(_), Value::Map(_))
+            | (Value::Record(_), Value::Record(_))
+            | (Value::Tag { .. }, Value::Tag { .. })
+            | (Value::Type(_), Value::Type(_))
+            | (Value::Native(_), Value::Native(_))
+            | (Value::Undefined, Value::Undefined)
+            | (Value::Null, Value::Null)
+    )
 }
 
 fn numeric_comparison(
@@ -5668,6 +5685,11 @@ fn numeric_value_ordering(left: &Value, right: &Value) -> Option<Ordering> {
 /// Aven Float equality: NaN equals itself; `-0.0` equals `0.0` (IEEE).
 fn float_eq(left: f64, right: f64) -> bool {
     (left.is_nan() && right.is_nan()) || left == right
+}
+
+/// Int/Float equality: promote the integer to f64, then use [`float_eq`].
+fn int_float_eq(int: &Int, float: f64) -> bool {
+    float_eq(int_to_f64(int), float)
 }
 
 /// Total order for Aven Float: `-Infinity < finite < Infinity < NaN`.

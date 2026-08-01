@@ -175,6 +175,44 @@ fn float_equality_treats_nan_as_equal_and_keeps_signed_zero() {
     assert_eval("[0.0 / 0.0].has(0.0 / 0.0)", Value::Bool(true));
 }
 
+/// Int and Float compare by numeric value, including inside structural containers
+/// and collection identity (set members, map keys, `.has`).
+#[test]
+fn numeric_equality_coerces_int_and_float_structurally() {
+    // Scalars (baseline already used by expectEq).
+    assert_eval("0 == 0.0", Value::Bool(true));
+    assert_eval("5.0 == 5", Value::Bool(true));
+    assert_eval("1 == 1.5", Value::Bool(false));
+
+    // Arrays: the reported defect.
+    assert_eval("[0.5, 0.0] == [0.5, 0]", Value::Bool(true));
+    assert_eval("[1.0, 0.0] == [1, 0]", Value::Bool(true));
+    assert_eval("[1.0, 0.0] != [1, 0]", Value::Bool(false));
+
+    // Nested containers share the same rule.
+    assert_eval("[[1.0], [0]] == [[1], [0.0]]", Value::Bool(true));
+    assert_eval("(1.0, 0) == (1, 0.0)", Value::Bool(true));
+    assert_eval("{ x: 1 } == { x: 1.0 }", Value::Bool(true));
+    assert_eval("@{1, 2.0} == @{1.0, 2}", Value::Bool(true));
+    assert_eval("@Ok(1) == @Ok(1.0)", Value::Bool(true));
+
+    // Set construction and membership: first occurrence wins; Int/Float collide.
+    assert_eval("@{1, 1.0}", set_value(vec![Value::int(1)]));
+    assert_eval("@{1}.has(1.0)", Value::Bool(true));
+    assert_eval("[1.0].has(1)", Value::Bool(true));
+
+    // Map keys use the same identity.
+    assert_module_value(
+        "m = Map.from([(1, \"a\")])\nm.get(1.0)\n",
+        Value::Text("a".to_owned()),
+    );
+
+    // Non-numeric mismatches stay unequal; bare Int vs Text is a type error.
+    assert_eval("[1] == [\"1\"]", Value::Bool(false));
+    let diagnostic = eval_error("1 == \"1\"");
+    assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+}
+
 #[test]
 fn float_comparisons_use_total_order_with_nan_last() {
     assert_eval("(0.0 / 0.0) < (0.0 / 0.0)", Value::Bool(false));

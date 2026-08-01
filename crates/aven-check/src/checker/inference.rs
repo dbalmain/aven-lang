@@ -1267,8 +1267,21 @@ impl<'a> Checker<'a> {
                 // diagnostic on the default); an unannotated param infers its
                 // type from the default. The default cannot reference the param
                 // itself, so neither local environment contains it yet.
+                //
+                // Bare `undefined` / `null` are special: they mean "optional /
+                // nullable of an unknown payload", not monomorphic
+                // `Undefined` / `Null`. Pinning the param to `Undefined` made
+                // `payload ?> undefined => …; p => p.field` bind `p` as
+                // `Undefined`, so field access on the residual arm failed even
+                // though runtime always supplies a present value on that arm.
                 if param.annotation.is_some() {
                     self.check_value_against(&ty, default);
+                } else if is_undefined_value(default) {
+                    let payload = self.unifier.fresh();
+                    let _ = self.unifier.unify(&ty, &Type::Optional(Box::new(payload)));
+                } else if is_null_value(default) {
+                    let payload = self.unifier.fresh();
+                    let _ = self.unifier.unify(&ty, &Type::Nullable(Box::new(payload)));
                 } else {
                     let inferred = self.infer(&next_env, default);
                     let _ = self.unifier.unify(&ty, &inferred);
