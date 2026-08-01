@@ -1,0 +1,4 @@
+# Free receivers resolve to ambient/collection owners through deferred method
+# obligations. `Text.slice` is a language-level collection method.
+g = (t) => t.slice(1, 3)
+value = g("abcd")

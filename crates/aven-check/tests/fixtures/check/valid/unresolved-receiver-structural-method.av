@@ -1,0 +1,10 @@
+# Structural records remain a legitimate resolution for method calls on free
+# receivers. An open-row field is not required once the call becomes a deferred
+# method obligation; discharge finds the concrete field method.
+r = { slice: (n: Int) => n + 1 }
+g = (x) => x.slice(1)
+value = g(r)
+
+Widget = { length: (a: Int, b: Int) => a + b }
+h = (w) => w.length(1, 2)
+total = h({ length: (a: Int, b: Int) => a + b })

@@ -2107,7 +2107,7 @@ impl<'a> Checker<'a> {
             operator_span: *field_span,
             divisor_context: None,
             binding: None,
-            call_span: None,
+            call_span: Some(callee.span),
             obligation_id: None,
         }]);
         self.simplify_method_obligations(false);
@@ -2667,7 +2667,17 @@ impl<'a> Checker<'a> {
                 let actual = inferred.unwrap_or_else(|| self.infer(env, arg));
                 if self.unifier.unify(&actual, &expected).is_err() {
                     let expected = self.normalize(&self.resolve_and_default(&expected));
-                    self.check_call_arg_against_param(&expected, arg);
+                    let actual_resolved = self.normalize(&self.resolve_and_default(&actual));
+                    // Free-receiver method calls publish open method rows. An
+                    // ambient owner (Array/Text/…) never unifies with that row
+                    // structurally; satisfy it through the owner's methods.
+                    if !self.try_satisfy_method_row_with_owner(
+                        &actual_resolved,
+                        &expected,
+                        arg.span,
+                    ) {
+                        self.check_call_arg_against_param(&expected, arg);
+                    }
                 }
                 actual
             };
@@ -3996,6 +4006,9 @@ fn export_generic_name(index: usize) -> String {
         .unwrap_or_else(|| format!("t{index}"))
 }
 
+/// Receiver shapes that have not been pinned to a concrete owner yet. Method
+/// calls on these record a deferred obligation instead of an open-row field
+/// constraint, so a later ambient or structural owner can still discharge.
 fn receiver_type_carries_member(ty: &Type, member: &str) -> bool {
     if builtin_collection_method_type(ty, member).is_some() {
         return true;

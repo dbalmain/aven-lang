@@ -968,6 +968,14 @@ impl<'a> Checker<'a> {
             self.check_type_against_type(expected, &data, span);
             return;
         }
+        // Open method rows from free-receiver inference are satisfied by
+        // ambient owners that supply matching methods (see
+        // `try_satisfy_method_row_with_owner`).
+        if matches!(expected, Type::Record(_))
+            && self.try_satisfy_method_row_with_owner(actual, expected, span)
+        {
+            return;
+        }
         if let Type::Named(owner) = expected
             && self.named_family_data_view(expected).is_some()
             && matches!(actual, Type::Record(_))

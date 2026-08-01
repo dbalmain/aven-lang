@@ -588,6 +588,53 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// Arity mismatch when an open method row (from a free-receiver call) is
+    /// checked against a concrete ambient owner whose method rejects the
+    /// supplied argument count. Names the method and the repair.
+    pub(super) fn report_method_arity_on_owner(
+        &mut self,
+        owner: &Type,
+        member: &str,
+        required: usize,
+        total: usize,
+        found: usize,
+        span: Span,
+    ) {
+        let owner =
+            display_inferred_type(&super::constraints::widen_literal_method_owner(owner)).render();
+        let (message, note) = if required == total {
+            (
+                format!(
+                    "method `{member}` on `{owner}` takes {total} parameter{}, found {found}",
+                    if total == 1 { "" } else { "s" },
+                ),
+                format!(
+                    "pass {total} argument{} to `{member}`",
+                    if total == 1 { "" } else { "s" },
+                ),
+            )
+        } else {
+            (
+                format!(
+                    "method `{member}` on `{owner}` takes between {required} and {total} parameters, found {found}"
+                ),
+                format!("pass between {required} and {total} arguments to `{member}`"),
+            )
+        };
+        self.push_unique_diagnostic(
+            Diagnostic::error(message)
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(
+                    span,
+                    format!(
+                        "`{member}` does not accept {found} argument{}",
+                        if found == 1 { "" } else { "s" }
+                    ),
+                ))
+                .with_note(note),
+        );
+    }
+
     pub(super) fn report_variant_tag_mismatch(&mut self, tag: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("unexpected variant tag `{tag}`"))

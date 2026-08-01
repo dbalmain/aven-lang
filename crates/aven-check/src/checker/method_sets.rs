@@ -6,8 +6,9 @@ use aven_parser::Literal;
 
 use crate::env::TypeEnv;
 use crate::ty::{
-    FunctionParams, LiteralBase, MethodPredicate, RowEntry, Type, builtin_collection_method_type,
-    literal_variant_base, map_type, named_builtin, record_fields, type_variable_names,
+    FunctionParams, LiteralBase, MethodPredicate, RowEntry, RowTail, Type,
+    builtin_collection_method_type, literal_variant_base, map_type, named_builtin, record_fields,
+    type_variable_names,
 };
 use crate::{MethodConstraint, NamedMethodOrigin, NamedMethodType};
 
@@ -736,6 +737,46 @@ impl Checker<'_> {
         builtin_method_signature(owner, member)
     }
 
+    /// Method lookup used when an open method row is satisfied by a concrete
+    /// owner. Broader than [`Self::exact_method_signature`]: also includes
+    /// language-level collection methods and ordinary structural record fields.
+    /// Kept separate so those paths do not change ordinary known-receiver call
+    /// selection (which still routes collection methods through field access).
+    fn method_signature_for_row_satisfaction(
+        &mut self,
+        owner: &Type,
+        member: &str,
+    ) -> Option<MethodSignature> {
+        if let Some(signature) = self.exact_method_signature(owner, member) {
+            return Some(signature);
+        }
+        if let Type::Record(row) = owner {
+            let ty = row.entries.iter().find_map(|entry| match entry {
+                RowEntry::Field { name, ty } if name == member => Some(ty),
+                RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+            })?;
+            let Type::Function { params, result, .. } = ty else {
+                return None;
+            };
+            return Some(MethodSignature {
+                params: params.clone(),
+                result: result.as_ref().clone(),
+                predicates: Vec::new(),
+            });
+        }
+        let method_type = builtin_collection_method_type(owner, member)?;
+        let method_type =
+            self.instantiate_annotation_type_variables(&method_type, &mut HashMap::new());
+        let Type::Function { params, result, .. } = method_type else {
+            return None;
+        };
+        Some(MethodSignature {
+            params,
+            result: *result,
+            predicates: Vec::new(),
+        })
+    }
+
     fn attached_builtin_method_signature(
         &mut self,
         owner: &Type,
@@ -811,6 +852,86 @@ impl Checker<'_> {
             result,
             predicates,
         })
+    }
+
+    /// When a free-receiver method call infers an open method row
+    /// (`{ slice: (Int, Int) -> a, .. }`) and a later argument is an ambient
+    /// owner (`Array`, `Text`, …), ordinary record unification fails. If every
+    /// row field is a method the owner supplies at a unifiable signature,
+    /// accept the owner and wire the field types to those methods.
+    ///
+    /// Returns:
+    /// - `Ok(true)` — row satisfied (or an arity mismatch was reported)
+    /// - `Ok(false)` — owner does not carry these methods; caller should fall
+    ///   through to the ordinary mismatch path
+    /// - Never `Err` today; reserved if a future path needs rollback signalling
+    pub(crate) fn try_satisfy_method_row_with_owner(
+        &mut self,
+        owner: &Type,
+        expected: &Type,
+        span: Span,
+    ) -> bool {
+        let Type::Record(row) = expected else {
+            return false;
+        };
+        if row.entries.is_empty() {
+            return false;
+        }
+        // Free-receiver inference publishes an *open* method row
+        // (`{ slice: …, ..τ }`). Closed records such as `{ count: () -> Int }`
+        // are ordinary data shapes and must not be ambient-satisfied — that
+        // would collapse the slot-reification boundary between method slots
+        // (`{ count(): Int }`) and function fields.
+        if !matches!(row.tail, RowTail::Var(_) | RowTail::Open) {
+            return false;
+        }
+
+        // Only pure method rows: every field must be a function, and tags or
+        // literals mean this is ordinary structural data, not a method set.
+        let mut fields = Vec::new();
+        for entry in &row.entries {
+            match entry {
+                RowEntry::Field { name, ty } => {
+                    let Type::Function { params, result, .. } = ty else {
+                        return false;
+                    };
+                    fields.push((name.clone(), params.clone(), result.as_ref().clone()));
+                }
+                RowEntry::Tag { .. } | RowEntry::Literal { .. } => return false,
+            }
+        }
+
+        // Snapshot so a partial failure does not leave half-applied unifies.
+        let snapshot = self.unifier.snapshot();
+        for (member, expected_params, expected_result) in &fields {
+            let Some(actual) = self.method_signature_for_row_satisfaction(owner, member) else {
+                self.unifier.restore(snapshot);
+                return false;
+            };
+            let required = actual.params.required_len();
+            let total = actual.params.len();
+            let found = expected_params.len();
+            if found < required || found > total {
+                self.unifier.restore(snapshot);
+                // Build a lightweight predicate-shaped report without a real
+                // deferred obligation: the open-row field already encodes the
+                // call shape that does not match the ambient method.
+                self.report_method_arity_on_owner(owner, member, required, total, found, span);
+                return true;
+            }
+            let matches = actual.params.iter().zip(expected_params.iter()).all(
+                |(actual_param, expected_param)| {
+                    self.unifier.unify(actual_param, expected_param).is_ok()
+                },
+            ) && self.unifier.unify(&actual.result, expected_result).is_ok();
+            if !matches {
+                self.unifier.restore(snapshot);
+                return false;
+            }
+            self.push_method_obligations_at(actual.predicates, span);
+        }
+        self.simplify_method_obligations(false);
+        true
     }
 
     pub(crate) fn attached_builtin_method_required_owner(
