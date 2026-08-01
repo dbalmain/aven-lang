@@ -382,6 +382,7 @@ fn parse_module_with_file_id(
             diagnostics,
             operator_fixities,
             role,
+            match_arm_body_depth: 0,
         };
         let module = parser.parse_module();
         (module, parser.diagnostics)
@@ -407,6 +408,10 @@ struct Parser<'a> {
     diagnostics: Vec<Diagnostic>,
     operator_fixities: &'a OperatorFixityTable,
     role: ModuleRole,
+    /// Nesting depth while parsing a match arm's indented block body. Used to
+    /// detect a following `pattern =>` written at body indent (layout error)
+    /// without rewriting the general unsupported-remainder fallback.
+    match_arm_body_depth: u32,
 }
 
 /// Whether an entry loop is parsing a record `{...}`, a set/variant `@{...}`,
@@ -578,6 +583,14 @@ impl Parser<'_> {
         }
 
         let expr = self.parse_expression();
+        // Inside a match arm body, `pattern => …` at the same indent is a
+        // second arm that was not comma-separated / not laid out under `?>`.
+        if self.match_arm_body_depth > 0 && self.current_is_operator("=>") {
+            let arrow_span = self.current_span();
+            self.report_misplaced_match_arm(expr.span.merge(arrow_span));
+            self.recover_to_next_line();
+            return Some(Item::Expr(expr));
+        }
         self.report_unsupported_remainder();
         self.consume_newline();
 
@@ -1599,11 +1612,16 @@ impl Parser<'_> {
         // Arm body: same-line expression, or newline + indented block (as with
         // lambda bodies). Layout already separates multi-arm forms: further
         // arms need a comma after this body; a line at outer indent after a
-        // block body is the enclosing item, not another arm.
+        // block body is the enclosing item, not another arm. A second arm
+        // written at body indent is reported inside the block (see
+        // `match_arm_body_depth`).
         let body = if self.current_is(TokenKind::Newline) {
             self.advance();
             if self.current_is(TokenKind::Indent) {
-                self.parse_block(self.current_span())
+                self.match_arm_body_depth += 1;
+                let body = self.parse_block(self.current_span());
+                self.match_arm_body_depth -= 1;
+                body
             } else {
                 self.report_missing_match_body(self.previous_end())
             }
@@ -2807,6 +2825,20 @@ impl Parser<'_> {
                 ))
                 .with_note(
                     "inline match arms are comma-separated `pattern => expression` forms; a comma must be followed by another arm",
+                ),
+        );
+    }
+
+    fn report_misplaced_match_arm(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("match arm is nested inside another arm's body")
+                .with_code(codes::parse::MISPLACED_MATCH_ARM)
+                .with_label(Label::primary(
+                    span,
+                    "another match arm cannot start inside an arm body",
+                ))
+                .with_note(
+                    "separate arms with commas when they start on the `?>` line (`pat => …, pat => …`), or put each arm on its own line under `?>`",
                 ),
         );
     }

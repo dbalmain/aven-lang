@@ -90,6 +90,7 @@ pub mod parse {
     pub const MISSING_BINDING_NAME: &str = "parse.missing-binding-name";
     pub const MISSING_BINDING_VALUE: &str = "parse.missing-binding-value";
     pub const MISSING_LAMBDA_BODY: &str = "parse.missing-lambda-body";
+    pub const MISPLACED_MATCH_ARM: &str = "parse.misplaced-match-arm";
     pub const MISSING_MATCH_ARMS: &str = "parse.missing-match-arms";
     pub const MISSING_MATCH_BODY: &str = "parse.missing-match-body";
     pub const MISSING_METHOD_BOUND_OPEN: &str = "parse.missing-method-bound-open";
@@ -243,6 +244,7 @@ pub const ALL: &[&str] = &[
     parse::EXPECTED_TYPE,
     parse::INVALID_BINDING_NAME,
     parse::MISMATCHED_DELIMITER,
+    parse::MISPLACED_MATCH_ARM,
     parse::MISSING_BINDING_NAME,
     parse::MISSING_BINDING_VALUE,
     parse::MISSING_LAMBDA_BODY,
