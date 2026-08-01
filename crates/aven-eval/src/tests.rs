@@ -1844,6 +1844,75 @@ fn array_length_counts_undefined_and_null_elements() {
     assert_module_value("xs: Array(Int?) = [null]\nxs.length()\n", Value::int(1));
 }
 
+/// Ambient traversal must visit every stored slot: a stored `undefined` is not
+/// an end marker, and a stored `null` is a real element (not a match failure).
+#[test]
+fn array_traversal_preserves_undefined_and_null_elements() {
+    let builtin_methods = ambient_array_methods();
+    let eval = |source: &str| {
+        let module = parse_ok(source);
+        eval_module_with_options(
+            &module,
+            EvalModuleOptions::default().with_builtin_methods(&builtin_methods, false),
+        )
+        .value
+        .expect("program yields a value")
+    };
+
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.reverse()\n"),
+        array_value(vec![Value::int(3), Value::Undefined, Value::int(1)]),
+    );
+    assert_eq!(
+        eval("xs: Array(Int?) = [1, null, 3]\nxs.reverse()\n"),
+        array_value(vec![Value::int(3), Value::Null, Value::int(1)]),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.map((x) => x)\n"),
+        array_value(vec![Value::int(1), Value::Undefined, Value::int(3)]),
+    );
+    assert_eq!(
+        eval("xs: Array(Int?) = [1, null, 3]\nxs.map((x) => x)\n"),
+        array_value(vec![Value::int(1), Value::Null, Value::int(3)]),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.take(3)\n"),
+        array_value(vec![Value::int(1), Value::Undefined, Value::int(3)]),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.drop(1)\n"),
+        array_value(vec![Value::Undefined, Value::int(3)]),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.fold(0, (acc, _) => acc + 1)\n"),
+        Value::int(3),
+    );
+    assert_eq!(
+        eval("xs: Array(Int?) = [1, null, 3]\nxs.fold(0, (acc, _) => acc + 1)\n"),
+        Value::int(3),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [undefined]\nxs.isEmpty()\n"),
+        Value::Bool(false),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.indexOf(3)\n"),
+        Value::int(2),
+    );
+    assert_eq!(
+        eval("xs: Array(Int?) = [1, null, 3]\nxs.indexOf(3)\n"),
+        Value::int(2),
+    );
+    assert_eq!(
+        eval("xs: Array(?Int) = [1, undefined, 3]\nxs.indexOf(undefined)\n"),
+        Value::int(1),
+    );
+    assert_eq!(
+        eval("xs: Array(Int?) = [1, null, 3]\nxs.indexOf(null)\n"),
+        Value::int(1),
+    );
+}
+
 #[test]
 fn text_methods_predicates_and_case() {
     assert_module_value(
@@ -3095,6 +3164,131 @@ fn ints(value: &Value) -> Result<Vec<i64>, TestCaseError> {
         .collect()
 }
 
+/// Element of `Array(?Int)`: an `Int` or stored `undefined`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptInt {
+    Int(i64),
+    Undefined,
+}
+
+/// Element of `Array(Int?)`: an `Int` or stored `null`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NullInt {
+    Int(i64),
+    Null,
+}
+
+/// Bounded `Array(?Int)` elements. Length 0..12; ints in -50..=50 so
+/// duplicates appear and shrinks stay readable. Weighted so empties show up
+/// often enough that a pure-int generator could not hide fold truncation.
+fn opt_int_vec_strategy() -> impl Strategy<Value = Vec<OptInt>> {
+    let elem = prop_oneof![
+        3 => (-50i64..=50).prop_map(OptInt::Int),
+        1 => Just(OptInt::Undefined),
+    ];
+    prop::collection::vec(elem, 0..12)
+}
+
+/// Bounded `Array(Int?)` elements. Same size discipline as `opt_int_vec_strategy`.
+fn null_int_vec_strategy() -> impl Strategy<Value = Vec<NullInt>> {
+    let elem = prop_oneof![
+        3 => (-50i64..=50).prop_map(NullInt::Int),
+        1 => Just(NullInt::Null),
+    ];
+    prop::collection::vec(elem, 0..12)
+}
+
+fn render_opt_int(x: OptInt) -> String {
+    match x {
+        OptInt::Int(n) => n.to_string(),
+        OptInt::Undefined => "undefined".to_owned(),
+    }
+}
+
+fn render_null_int(x: NullInt) -> String {
+    match x {
+        NullInt::Int(n) => n.to_string(),
+        NullInt::Null => "null".to_owned(),
+    }
+}
+
+fn render_opt_ints(xs: &[OptInt]) -> String {
+    if xs.is_empty() {
+        return "[]".to_owned();
+    }
+    let body: String = xs
+        .iter()
+        .copied()
+        .map(render_opt_int)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{body}]")
+}
+
+fn render_null_ints(xs: &[NullInt]) -> String {
+    if xs.is_empty() {
+        return "[]".to_owned();
+    }
+    let body: String = xs
+        .iter()
+        .copied()
+        .map(render_null_int)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{body}]")
+}
+
+fn opt_ints(value: &Value) -> Result<Vec<OptInt>, TestCaseError> {
+    let Value::Array(items) = value else {
+        return Err(TestCaseError::fail(format!(
+            "expected Array of ?Int, got {value:?}"
+        )));
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Int(n) => n
+                .to_i64()
+                .map(OptInt::Int)
+                .ok_or_else(|| TestCaseError::fail(format!("Int {n} does not fit i64"))),
+            Value::Undefined => Ok(OptInt::Undefined),
+            other => Err(TestCaseError::fail(format!(
+                "expected Int or undefined, got {other:?}"
+            ))),
+        })
+        .collect()
+}
+
+fn null_ints(value: &Value) -> Result<Vec<NullInt>, TestCaseError> {
+    let Value::Array(items) = value else {
+        return Err(TestCaseError::fail(format!(
+            "expected Array of Int?, got {value:?}"
+        )));
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Int(n) => n
+                .to_i64()
+                .map(NullInt::Int)
+                .ok_or_else(|| TestCaseError::fail(format!("Int {n} does not fit i64"))),
+            Value::Null => Ok(NullInt::Null),
+            other => Err(TestCaseError::fail(format!(
+                "expected Int or null, got {other:?}"
+            ))),
+        })
+        .collect()
+}
+
+fn value_as_i64(value: &Value) -> Result<i64, TestCaseError> {
+    match value {
+        Value::Int(n) => n
+            .to_i64()
+            .ok_or_else(|| TestCaseError::fail(format!("Int {n} does not fit i64"))),
+        other => Err(TestCaseError::fail(format!("expected Int, got {other:?}"))),
+    }
+}
+
 fn record_field<'a>(record: &'a Value, name: &str) -> Result<&'a Value, TestCaseError> {
     let Value::Record(fields) = record else {
         return Err(TestCaseError::fail(format!(
@@ -3247,6 +3441,403 @@ proptest! {
             &Value::Text(s.clone()),
             "chars().joinWith(\"\") does not reconstruct input"
         );
+    }
+
+    /// Structural laws for ambient array builtins over `Array(?Int)`, including
+    /// stored `undefined` elements. These are the laws that would fail against
+    /// index-until-`undefined` folds (truncation at a stored empty).
+    #[test]
+    fn ambient_array_optional_element_laws(
+        xs in opt_int_vec_strategy(),
+        ys in opt_int_vec_strategy(),
+        n in -2i64..15,
+    ) {
+        let source = format!(
+            "xs: Array(?Int) = {xs}\n\
+             ys: Array(?Int) = {ys}\n\
+             {{\n\
+               len: xs.length(),\n\
+               isEmpty: xs.isEmpty(),\n\
+               rev: xs.reverse(),\n\
+               revrev: xs.reverse().reverse(),\n\
+               revLen: xs.reverse().length(),\n\
+               cat: xs.concat(ys),\n\
+               catLen: xs.concat(ys).length(),\n\
+               id: xs.map((x) => x),\n\
+               mapLen: xs.map((x) => x).length(),\n\
+               takeDrop: xs.take({n}).concat(xs.drop({n})),\n\
+               foldCount: xs.fold(0, (acc, _) => acc + 1),\n\
+               filterAll: xs.filter((_) => true),\n\
+               filterNone: xs.filter((_) => false),\n\
+               sliceAll: xs.slice(0, xs.length()),\n\
+               zipLen: xs.zip(ys).length(),\n\
+             }}\n",
+            xs = render_opt_ints(&xs),
+            ys = render_opt_ints(&ys),
+        );
+        let result = eval_with_builtins(&source);
+
+        let rev = opt_ints(record_field(&result, "rev")?)?;
+        let revrev = opt_ints(record_field(&result, "revrev")?)?;
+        let cat = opt_ints(record_field(&result, "cat")?)?;
+        let id = opt_ints(record_field(&result, "id")?)?;
+        let take_drop = opt_ints(record_field(&result, "takeDrop")?)?;
+        let filter_all = opt_ints(record_field(&result, "filterAll")?)?;
+        let filter_none = opt_ints(record_field(&result, "filterNone")?)?;
+        let slice_all = opt_ints(record_field(&result, "sliceAll")?)?;
+        let len = record_field(&result, "len")?;
+        let is_empty = record_field(&result, "isEmpty")?;
+        let rev_len = record_field(&result, "revLen")?;
+        let cat_len = record_field(&result, "catLen")?;
+        let map_len = record_field(&result, "mapLen")?;
+        let fold_count = record_field(&result, "foldCount")?;
+        let zip_len = record_field(&result, "zipLen")?;
+
+        prop_assert_eq!(len, &Value::int(xs.len()), "length() disagrees with Rust len");
+        prop_assert_eq!(
+            is_empty,
+            &Value::Bool(xs.is_empty()),
+            "isEmpty() disagrees with length == 0"
+        );
+        prop_assert_eq!(&revrev, &xs, "reverse∘reverse is not identity");
+        let mut xs_rev = xs.clone();
+        xs_rev.reverse();
+        prop_assert_eq!(&rev, &xs_rev, "reverse does not match Rust reverse");
+        prop_assert_eq!(
+            rev_len,
+            &Value::int(xs.len()),
+            "reverse.length() disagrees with length"
+        );
+        let mut expected_cat = xs.clone();
+        expected_cat.extend_from_slice(&ys);
+        prop_assert_eq!(&cat, &expected_cat, "concat content mismatch");
+        prop_assert_eq!(
+            cat_len,
+            &Value::int(xs.len() + ys.len()),
+            "concat.length() disagrees with xs.len() + ys.len()"
+        );
+        prop_assert_eq!(&id, &xs, "map(id) is not identity");
+        prop_assert_eq!(
+            map_len,
+            &Value::int(xs.len()),
+            "map(id).length() disagrees with length"
+        );
+        prop_assert_eq!(&take_drop, &xs, "take(n) ++ drop(n) is not identity");
+        prop_assert_eq!(
+            fold_count,
+            &Value::int(xs.len()),
+            "fold counting disagrees with length"
+        );
+        prop_assert_eq!(&filter_all, &xs, "filter(true) is not identity");
+        prop_assert_eq!(
+            &filter_none,
+            &Vec::<OptInt>::new(),
+            "filter(false) is not empty"
+        );
+        prop_assert_eq!(&slice_all, &xs, "slice(0, length) is not identity");
+        prop_assert_eq!(
+            zip_len,
+            &Value::int(xs.len().min(ys.len())),
+            "zip.length() disagrees with min lengths"
+        );
+    }
+
+    /// Structural laws for ambient array builtins over `Array(Int?)`, including
+    /// stored `null` elements. Index-until-`undefined` folds fail to match
+    /// `null` (runtime no-match); length-based traversal must not.
+    #[test]
+    fn ambient_array_nullable_element_laws(
+        xs in null_int_vec_strategy(),
+        ys in null_int_vec_strategy(),
+        n in -2i64..15,
+    ) {
+        let source = format!(
+            "xs: Array(Int?) = {xs}\n\
+             ys: Array(Int?) = {ys}\n\
+             {{\n\
+               len: xs.length(),\n\
+               isEmpty: xs.isEmpty(),\n\
+               rev: xs.reverse(),\n\
+               revrev: xs.reverse().reverse(),\n\
+               revLen: xs.reverse().length(),\n\
+               cat: xs.concat(ys),\n\
+               catLen: xs.concat(ys).length(),\n\
+               id: xs.map((x) => x),\n\
+               mapLen: xs.map((x) => x).length(),\n\
+               takeDrop: xs.take({n}).concat(xs.drop({n})),\n\
+               foldCount: xs.fold(0, (acc, _) => acc + 1),\n\
+               filterAll: xs.filter((_) => true),\n\
+               filterNone: xs.filter((_) => false),\n\
+               sliceAll: xs.slice(0, xs.length()),\n\
+               zipLen: xs.zip(ys).length(),\n\
+             }}\n",
+            xs = render_null_ints(&xs),
+            ys = render_null_ints(&ys),
+        );
+        let result = eval_with_builtins(&source);
+
+        let rev = null_ints(record_field(&result, "rev")?)?;
+        let revrev = null_ints(record_field(&result, "revrev")?)?;
+        let cat = null_ints(record_field(&result, "cat")?)?;
+        let id = null_ints(record_field(&result, "id")?)?;
+        let take_drop = null_ints(record_field(&result, "takeDrop")?)?;
+        let filter_all = null_ints(record_field(&result, "filterAll")?)?;
+        let filter_none = null_ints(record_field(&result, "filterNone")?)?;
+        let slice_all = null_ints(record_field(&result, "sliceAll")?)?;
+        let len = record_field(&result, "len")?;
+        let is_empty = record_field(&result, "isEmpty")?;
+        let rev_len = record_field(&result, "revLen")?;
+        let cat_len = record_field(&result, "catLen")?;
+        let map_len = record_field(&result, "mapLen")?;
+        let fold_count = record_field(&result, "foldCount")?;
+        let zip_len = record_field(&result, "zipLen")?;
+
+        prop_assert_eq!(len, &Value::int(xs.len()), "length() disagrees with Rust len");
+        prop_assert_eq!(
+            is_empty,
+            &Value::Bool(xs.is_empty()),
+            "isEmpty() disagrees with length == 0"
+        );
+        prop_assert_eq!(&revrev, &xs, "reverse∘reverse is not identity");
+        let mut xs_rev = xs.clone();
+        xs_rev.reverse();
+        prop_assert_eq!(&rev, &xs_rev, "reverse does not match Rust reverse");
+        prop_assert_eq!(
+            rev_len,
+            &Value::int(xs.len()),
+            "reverse.length() disagrees with length"
+        );
+        let mut expected_cat = xs.clone();
+        expected_cat.extend_from_slice(&ys);
+        prop_assert_eq!(&cat, &expected_cat, "concat content mismatch");
+        prop_assert_eq!(
+            cat_len,
+            &Value::int(xs.len() + ys.len()),
+            "concat.length() disagrees with xs.len() + ys.len()"
+        );
+        prop_assert_eq!(&id, &xs, "map(id) is not identity");
+        prop_assert_eq!(
+            map_len,
+            &Value::int(xs.len()),
+            "map(id).length() disagrees with length"
+        );
+        prop_assert_eq!(&take_drop, &xs, "take(n) ++ drop(n) is not identity");
+        prop_assert_eq!(
+            fold_count,
+            &Value::int(xs.len()),
+            "fold counting disagrees with length"
+        );
+        prop_assert_eq!(&filter_all, &xs, "filter(true) is not identity");
+        prop_assert_eq!(
+            &filter_none,
+            &Vec::<NullInt>::new(),
+            "filter(false) is not empty"
+        );
+        prop_assert_eq!(&slice_all, &xs, "slice(0, length) is not identity");
+        prop_assert_eq!(
+            zip_len,
+            &Value::int(xs.len().min(ys.len())),
+            "zip.length() disagrees with min lengths"
+        );
+    }
+
+    /// `indexOf` / `count` / `has` over arrays that may store empties. Target is
+    /// always an `Int`. Count peels empties before `==` because Aven equality
+    /// rejects cross-kind pairs (`undefined`/`null` vs `Int`); `indexOf` uses
+    /// the same membership rule as `Array.has`.
+    #[test]
+    fn ambient_array_optional_search_laws(
+        xs in opt_int_vec_strategy(),
+        target in -50i64..=50,
+    ) {
+        let source = format!(
+            "xs: Array(?Int) = {xs}\n\
+             {{\n\
+               indexOf: xs.indexOf({target}),\n\
+               count: xs.count((x) => x ?> undefined => false, n => n == {target}),\n\
+               has: xs.has({target}),\n\
+             }}\n",
+            xs = render_opt_ints(&xs),
+        );
+        let result = eval_with_builtins(&source);
+        let index_of = record_field(&result, "indexOf")?;
+        let count = value_as_i64(record_field(&result, "count")?)?;
+        let has = record_field(&result, "has")?;
+
+        let expected_index = xs.iter().position(|x| *x == OptInt::Int(target));
+        match expected_index {
+            Some(i) => prop_assert_eq!(
+                index_of,
+                &Value::int(i),
+                "indexOf missed first Int match"
+            ),
+            None => prop_assert_eq!(
+                index_of,
+                &Value::Undefined,
+                "indexOf should be undefined on miss"
+            ),
+        }
+        let expected_count = xs
+            .iter()
+            .filter(|x| **x == OptInt::Int(target))
+            .count();
+        prop_assert_eq!(count as usize, expected_count, "count disagrees with multiset");
+        prop_assert_eq!(
+            has,
+            &Value::Bool(expected_count > 0),
+            "has disagrees with membership"
+        );
+    }
+
+    #[test]
+    fn ambient_array_nullable_search_laws(
+        xs in null_int_vec_strategy(),
+        target in -50i64..=50,
+    ) {
+        let source = format!(
+            "xs: Array(Int?) = {xs}\n\
+             {{\n\
+               indexOf: xs.indexOf({target}),\n\
+               count: xs.count((x) => x ?> null => false, n => n == {target}),\n\
+               has: xs.has({target}),\n\
+             }}\n",
+            xs = render_null_ints(&xs),
+        );
+        let result = eval_with_builtins(&source);
+        let index_of = record_field(&result, "indexOf")?;
+        let count = value_as_i64(record_field(&result, "count")?)?;
+        let has = record_field(&result, "has")?;
+
+        let expected_index = xs.iter().position(|x| *x == NullInt::Int(target));
+        match expected_index {
+            Some(i) => prop_assert_eq!(
+                index_of,
+                &Value::int(i),
+                "indexOf missed first Int match"
+            ),
+            None => prop_assert_eq!(
+                index_of,
+                &Value::Undefined,
+                "indexOf should be undefined on miss"
+            ),
+        }
+        let expected_count = xs
+            .iter()
+            .filter(|x| **x == NullInt::Int(target))
+            .count();
+        prop_assert_eq!(count as usize, expected_count, "count disagrees with multiset");
+        prop_assert_eq!(
+            has,
+            &Value::Bool(expected_count > 0),
+            "has disagrees with membership"
+        );
+    }
+
+    /// `indexOf(null)` on `Array(Int?)` — equality on `null` is defined, so the
+    /// first matching index is a structural fact, not a design question.
+    #[test]
+    fn ambient_array_nullable_index_of_null(xs in null_int_vec_strategy()) {
+        let source = format!(
+            "xs: Array(Int?) = {}\n\
+             xs.indexOf(null)\n",
+            render_null_ints(&xs),
+        );
+        let result = eval_with_builtins(&source);
+        match xs.iter().position(|x| *x == NullInt::Null) {
+            Some(i) => prop_assert_eq!(
+                &result,
+                &Value::int(i),
+                "indexOf(null) missed first null"
+            ),
+            None => prop_assert_eq!(
+                &result,
+                &Value::Undefined,
+                "indexOf(null) should be undefined on miss"
+            ),
+        }
+    }
+
+    /// `indexOf(undefined)` on `Array(?Int)` — same structural claim for the
+    /// other empty.
+    #[test]
+    fn ambient_array_optional_index_of_undefined(xs in opt_int_vec_strategy()) {
+        let source = format!(
+            "xs: Array(?Int) = {}\n\
+             xs.indexOf(undefined)\n",
+            render_opt_ints(&xs),
+        );
+        let result = eval_with_builtins(&source);
+        match xs.iter().position(|x| *x == OptInt::Undefined) {
+            Some(i) => prop_assert_eq!(
+                &result,
+                &Value::int(i),
+                "indexOf(undefined) missed first undefined"
+            ),
+            None => prop_assert_eq!(
+                &result,
+                &Value::Undefined,
+                "indexOf(undefined) should be undefined on miss"
+            ),
+        }
+    }
+
+    /// Open design: how should `sortBy` / `sortWith` order stored empties relative
+    /// to numbers? Runtime `<` rejects `undefined`/`null` operands today.
+    #[test]
+    #[ignore = "design: sort order of undefined/null vs Int (and whether sort may error)"]
+    fn ambient_array_optional_sort_with_empties_open(
+        xs in opt_int_vec_strategy(),
+    ) {
+        let source = format!(
+            "xs: Array(?Int) = {}\n\
+             xs.sortBy((x) => x)\n",
+            render_opt_ints(&xs),
+        );
+        let _ = eval_with_builtins(&source);
+        prop_assert!(false, "unreachable: property is ignored pending design");
+    }
+
+    /// Open design: `sum` is typed `Array(Int) -> Int`. Over `?Int`/`Int?`
+    /// elements, should missing slots be skipped, yield empty, or reject?
+    #[test]
+    #[ignore = "design: sum over arrays containing undefined/null"]
+    fn ambient_array_sum_with_empties_open(xs in opt_int_vec_strategy()) {
+        let source = format!(
+            "xs: Array(?Int) = {}\n\
+             xs.sum()\n",
+            render_opt_ints(&xs),
+        );
+        let _ = eval_with_builtins(&source);
+        prop_assert!(false, "unreachable: property is ignored pending design");
+    }
+
+    /// Open design: `minimum`/`maximum` need a total order. `<` on empties errors
+    /// today; should empties be least, greatest, skipped, or rejected?
+    #[test]
+    #[ignore = "design: minimum/maximum order or rejection of undefined/null elements"]
+    fn ambient_array_minmax_with_empties_open(xs in opt_int_vec_strategy()) {
+        prop_assume!(!xs.is_empty());
+        let source = format!(
+            "xs: Array(?Int) = {}\n\
+             {{ min: xs.minimum(), max: xs.maximum() }}\n",
+            render_opt_ints(&xs),
+        );
+        let _ = eval_with_builtins(&source);
+        prop_assert!(false, "unreachable: property is ignored pending design");
+    }
+
+    /// Open design: `find` returns `?a`. When `a` is already `?Int`, a found
+    /// `undefined` is indistinguishable from "not found".
+    #[test]
+    #[ignore = "design: find on Array(?T) cannot distinguish found-undefined from miss"]
+    fn ambient_array_find_optional_element_open(xs in opt_int_vec_strategy()) {
+        let source = format!(
+            "xs: Array(?Int) = {}\n\
+             xs.find((x) => x == undefined)\n",
+            render_opt_ints(&xs),
+        );
+        let _ = eval_with_builtins(&source);
+        prop_assert!(false, "unreachable: property is ignored pending design");
     }
 }
 

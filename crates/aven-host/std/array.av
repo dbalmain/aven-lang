@@ -1,61 +1,67 @@
 # Array combinators and ambient Array methods. Pure Aven — no host natives.
 # Ambient methods load through the trusted standard-library root without
 # entering user scope. Import this module only for the residual producer
-# `range`. Iterate by index recursion terminating on out-of-bounds `undefined`.
-# Array building uses language primitives: spread `[..xs, x]` and `.push(x)`.
-# Helpers are module-private (local recursion is not bound in the checker).
+# `range`. Array building uses language primitives: spread `[..xs, x]` and
+# `.push(x)`. Helpers are module-private (local recursion is not bound in
+# the checker).
+#
+# Traversal terminates on `index < xs.length()`, not on an indexed
+# `undefined`. Indexing past the end yields `undefined`, which is
+# indistinguishable from a stored `undefined` element of an `Array(?T)`,
+# so index-until-undefined would silently truncate (and would fail to match
+# a stored `null` of an `Array(T?)`). In-bounds `xs[index]` is the element.
 
 foldGo : (Array(a), Int, b, (b, a) -> b) -> b
 foldGo = (xs, index, acc, f) =>
-  next = xs[index]
-  next ?>
-    undefined => acc
-    element => foldGo(xs, index + 1, f(acc, element), f)
+  index < xs.length() ?>
+    true => foldGo(xs, index + 1, f(acc, xs[index]), f)
+    false => acc
 
 # Own recursive helper so a hit returns without scanning the rest.
 findGo : (Array(a), Int, (a) -> Bool) -> ?a
 findGo = (xs, index, pred) =>
-  next = xs[index]
-  next ?>
-    undefined => undefined
-    element =>
+  index < xs.length() ?>
+    true =>
+      element: a = xs[index]
       pred(element) ?>
         true => element
         false => findGo(xs, index + 1, pred)
+    false => undefined
 
 # Own recursive helper so a hit returns without scanning the rest.
+# Membership via `[element].has(target)` (same PartialEq as `Array.has`) so a
+# stored empty compared with a non-empty target is false, not a kind error —
+# Aven `==` rejects cross-kind pairs such as `undefined` vs `Int`.
 indexOfGo : (Array(a), Int, a) -> ?Int
 indexOfGo = (xs, index, target) =>
-  next = xs[index]
-  next ?>
-    undefined => undefined
-    element =>
-      element == target ?>
+  index < xs.length() ?>
+    true =>
+      element: a = xs[index]
+      [element].has(target) ?>
         true => index
         false => indexOfGo(xs, index + 1, target)
+    false => undefined
 
-# First `n` elements. `n <= 0` → []; `n >= length` → whole array (via OOB stop).
+# First `n` elements. `n <= 0` → []; `n >= length` → whole array.
 takeGo : (Array(a), Int, Int, Array(a)) -> Array(a)
 takeGo = (xs, index, remaining, acc) =>
   remaining > 0 ?>
     true =>
-      next = xs[index]
-      next ?>
-        undefined => acc
-        element => takeGo(xs, index + 1, remaining - 1, acc.push(element))
+      index < xs.length() ?>
+        true => takeGo(xs, index + 1, remaining - 1, acc.push(xs[index]))
+        false => acc
     false => acc
 
 # All but the first `n`. `n <= 0` → whole array; `n >= length` → [].
 # Negative `toSkip` never satisfies `toSkip > 0`, so nothing is skipped.
 dropGo : (Array(a), Int, Int, Array(a)) -> Array(a)
 dropGo = (xs, index, toSkip, acc) =>
-  next = xs[index]
-  next ?>
-    undefined => acc
-    element =>
+  index < xs.length() ?>
+    true =>
       toSkip > 0 ?>
         true => dropGo(xs, index + 1, toSkip - 1, acc)
-        false => dropGo(xs, index + 1, 0, acc.push(element))
+        false => dropGo(xs, index + 1, 0, acc.push(xs[index]))
+    false => acc
 
 # Half-open `[start, end)`. Negative indexes wrap from the end first
 # (`length + v`), then both ends clamp to `[0, length]`. After wrap+clamp,
@@ -85,24 +91,15 @@ normalizeSliceIndex = (i, n) =>
 sliceGo : (Array(a), Int, Int, Array(a)) -> Array(a)
 sliceGo = (xs, index, end, acc) =>
   index < end ?>
-    true =>
-      next = xs[index]
-      next ?>
-        undefined => acc
-        element => sliceGo(xs, index + 1, end, acc.push(element))
+    true => sliceGo(xs, index + 1, end, acc.push(xs[index]))
     false => acc
 
 # Pairs up to the shorter length.
 zipGo : (Array(a), Array(b), Int, Array((a, b))) -> Array((a, b))
 zipGo = (xs, ys, index, acc) =>
-  x = xs[index]
-  x ?>
-    undefined => acc
-    xv =>
-      y = ys[index]
-      y ?>
-        undefined => acc
-        yv => zipGo(xs, ys, index + 1, acc.push((xv, yv)))
+  index < xs.length() && index < ys.length() ?>
+    true => zipGo(xs, ys, index + 1, acc.push((xs[index], ys[index])))
+    false => acc
 
 # Half-open `[start, end)`. Step is always 1. `start >= end` → [].
 rangeGo : (Int, Int, Array(Int)) -> Array(Int)
@@ -119,32 +116,31 @@ range = (start, end) =>
 # Copy `sorted[index..]` onto `acc`.
 copyFromGo : (Array(a), Int, Array(a)) -> Array(a)
 copyFromGo = (sorted, index, acc) =>
-  next = sorted[index]
-  next ?>
-    undefined => acc
-    y => copyFromGo(sorted, index + 1, acc.push(y))
+  index < sorted.length() ?>
+    true => copyFromGo(sorted, index + 1, acc.push(sorted[index]))
+    false => acc
 
 # Insert `x` into sorted `acc` prefix so equals stay after existing equals (stable).
 insertGo : (Array(a), Int, a, (a, a) -> Bool, Array(a)) -> Array(a)
 insertGo = (sorted, index, x, isLess, acc) =>
-  next = sorted[index]
-  next ?>
-    undefined => acc.push(x)
-    y =>
+  index < sorted.length() ?>
+    true =>
+      y: a = sorted[index]
       isLess(x, y) ?>
         true => copyFromGo(sorted, index, acc.push(x))
         false => insertGo(sorted, index + 1, x, isLess, acc.push(y))
+    false => acc.push(x)
 
 # Stable insertion sort. `isLess(a, b)` is true when `a` sorts strictly before `b`.
 sortWithGo : (Array(a), Int, Array(a), (a, a) -> Bool) -> Array(a)
 sortWithGo = (xs, index, sorted, isLess) =>
-  next = xs[index]
-  next ?>
-    undefined => sorted
-    element =>
+  index < xs.length() ?>
+    true =>
+      element: a = xs[index]
       seed: Array(a) = []
       inserted = insertGo(sorted, 0, element, isLess, seed)
       sortWithGo(xs, index + 1, inserted, isLess)
+    false => sorted
 
 Ordered = {
   <(Self): Bool
@@ -155,36 +151,33 @@ minGo : (Array(t), Int, t) -> t
 minGo = (xs: Array(t), index: Int, best: t): t
   t: Ordered
 =>
-  next = xs[index]
-  next ?>
-    undefined => best
-    item =>
-      current: t = item
-      current < best ?>
-        true => minGo(xs, index + 1, current)
+  index < xs.length() ?>
+    true =>
+      item: t = xs[index]
+      item < best ?>
+        true => minGo(xs, index + 1, item)
         false => minGo(xs, index + 1, best)
+    false => best
 
 maxGo : (Array(t), Int, t) -> t
 maxGo = (xs: Array(t), index: Int, best: t): t
   t: Ordered
 =>
-  next = xs[index]
-  next ?>
-    undefined => best
-    item =>
-      current: t = item
-      best < current ?>
-        true => maxGo(xs, index + 1, current)
+  index < xs.length() ?>
+    true =>
+      item: t = xs[index]
+      best < item ?>
+        true => maxGo(xs, index + 1, item)
         false => maxGo(xs, index + 1, best)
+    false => best
 
 Array(a) {
   # `length()` is a language native on Array (backing `Vec` size), same path as
   # `push` / `has` / `joinWith`.
 
   isEmpty(): Bool =>
-    .[0] ?>
-      undefined => true
-      _ => false
+    zero: Int = 0
+    .length() == zero
 
   first(): ?a => .[0]
 
@@ -266,18 +259,24 @@ Array(a) {
   minimum(): ?a
     a: Ordered
   =>
-    head = .[0]
-    head ?>
-      undefined => undefined
-      first => minGo(., 1, first)
+    n = .length()
+    zero: Int = 0
+    n == zero ?>
+      true => undefined
+      false =>
+        first: a = .[0]
+        minGo(., 1, first)
 
   maximum(): ?a
     a: Ordered
   =>
-    head = .[0]
-    head ?>
-      undefined => undefined
-      first => maxGo(., 1, first)
+    n = .length()
+    zero: Int = 0
+    n == zero ?>
+      true => undefined
+      false =>
+        first: a = .[0]
+        maxGo(., 1, first)
 }
 
 Array(Int) {
