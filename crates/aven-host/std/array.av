@@ -142,6 +142,35 @@ sortWithGo = (xs, index, sorted, isLess) =>
       sortWithGo(xs, index + 1, inserted, isLess)
     false => sorted
 
+
+# Drop every `undefined` and `null` element. Used by specialized `compact`
+# owners that peel one empty wrapper from the element type
+# (`Array(?a) -> Array(a)`, `Array(a?) -> Array(a)`). Bodies drop both empties
+# because runtime ambient dispatch keys only on the owner head (`Array`), not
+# the type argument — the first installed body runs for every compact call.
+# For `Array(?a?)`, call `compact` twice to peel both wrappers.
+compactGo : (Array(a), Int, Array(b)) -> Array(b)
+compactGo = (xs, index, acc) =>
+  index < xs.length() ?>
+    true =>
+      element = xs[index]
+      element ?>
+        undefined => compactGo(xs, index + 1, acc)
+        null => compactGo(xs, index + 1, acc)
+        value => compactGo(xs, index + 1, acc.push(value))
+    false => acc
+
+# Own recursive helper so a hit returns without scanning the rest.
+findIndexGo : (Array(a), Int, (a) -> Bool) -> ?Int
+findIndexGo = (xs, index, pred) =>
+  index < xs.length() ?>
+    true =>
+      element: a = xs[index]
+      pred(element) ?>
+        true => index
+        false => findIndexGo(xs, index + 1, pred)
+    false => undefined
+
 Ordered = {
   <(Self): Bool
   ..
@@ -200,6 +229,11 @@ Array(a) {
     .fold(start, (acc, x) => acc || pred(x))
 
   find(pred: (a) -> Bool): ?a => findGo(., 0, pred)
+
+  # Index of the first element matching `pred`, or `undefined` when none match.
+  # Prefer this over `find` when the element type already admits `undefined`
+  # (`Array(?T)`): a found empty and a miss are indistinguishable in `?a`.
+  findIndex(pred: (a) -> Bool): ?Int => findIndexGo(., 0, pred)
 
   indexOf(target: a): ?Int =>
     zero: Int = 0
@@ -289,6 +323,19 @@ Array(Array(a)) {
   flatten(): Array(a) =>
     seed: Array(a) = []
     .fold(seed, (acc, xs) => [..acc, ..xs])
+}
+
+
+Array(?a) {
+  compact(): Array(a) =>
+    seed: Array(a) = []
+    compactGo(., 0, seed)
+}
+
+Array(a?) {
+  compact(): Array(a) =>
+    seed: Array(a) = []
+    compactGo(., 0, seed)
 }
 
 { range }

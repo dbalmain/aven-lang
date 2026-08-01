@@ -749,6 +749,8 @@ impl<'a> Checker<'a> {
         right: &Type,
         span: Span,
     ) {
+        let left_admits_empty = crate::ty::type_admits_empty(left);
+        let right_admits_empty = crate::ty::type_admits_empty(right);
         let left = operator_operand_type(left);
         let right = operator_operand_type(right);
         let attempted_right_fallback =
@@ -769,6 +771,15 @@ impl<'a> Checker<'a> {
             ))
             .with_note(
                 "reverse the operands only when doing so preserves the operation's intended semantics",
+            );
+        }
+        // Relational ops on empty-bearing operands (e.g. `sortWith` comparators
+        // over `Array(?T)` elements). Keep the general message; add the array
+        // repair only when an operand admits empty.
+        if matches!(operator, "<" | "<=" | ">" | ">=") && (left_admits_empty || right_admits_empty)
+        {
+            diagnostic = diagnostic.with_note(
+                "empty values are not ordered; for arrays, call `.compact()` before comparing elements",
             );
         }
         self.diagnostics.push(diagnostic);
@@ -2036,20 +2047,24 @@ impl<'a> Checker<'a> {
             && !constrained
             && let Some(required) = self.attached_builtin_method_required_owner(&probed, field)
         {
-            self.diagnostics.push(
-                Diagnostic::error(format!(
-                    "`{field}` requires receiver `{}`",
-                    required.render()
-                ))
-                .with_code(codes::ty::MISMATCH)
-                .with_label(Label::primary(
-                    *field_span,
-                    format!("receiver is `{}`", probed.render()),
-                ))
-                .with_note(
-                    "fixed owner-pattern components never infer an unresolved receiver type",
-                ),
-            );
+            let mut diagnostic = Diagnostic::error(format!(
+                "`{field}` requires receiver `{}`",
+                required.render()
+            ))
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(
+                *field_span,
+                format!("receiver is `{}`", probed.render()),
+            ))
+            .with_note("fixed owner-pattern components never infer an unresolved receiver type");
+            // Specialized owners such as `Array(Int).sum` reject empty-bearing
+            // element types; point at the type-narrowing repair.
+            if crate::ty::array_element_admits_empty(&probed) {
+                diagnostic = diagnostic.with_note(
+                    "array elements admit `undefined` or `null`; call `.compact()` first",
+                );
+            }
+            self.diagnostics.push(diagnostic);
             for arg in args {
                 self.infer(env, arg);
             }
