@@ -151,7 +151,7 @@ pub const MAP_METHOD_NAMES: &[&str] = &[
     "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
 ];
 
-pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "push"];
+pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "length", "push"];
 
 pub const SET_METHOD_NAMES: &[&str] = &["has"];
 
@@ -303,6 +303,7 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
     if let Some(element) = array_type_arg(receiver) {
         return match name {
             "has" => Some(function(vec![element.clone()], named_builtin("Bool"))),
+            "length" => Some(function(Vec::new(), named_builtin("Int"))),
             "push" => Some(function(
                 vec![element.clone()],
                 array_apply(element.clone()),

@@ -1808,6 +1808,42 @@ fn array_push_returns_new_array_without_mutating_receiver() {
     );
 }
 
+/// `Array.length` is a language native (same path as `push`/`has`): O(1) on the
+/// backing collection, available without ambient `std/array` attachments.
+#[test]
+fn array_length_is_native_on_empty_and_nontrivial_arrays() {
+    assert_module_value("[].length()\n", Value::int(0));
+    assert_module_value("[10, 20, 30].length()\n", Value::int(3));
+    assert_module_value(
+        "xs = [1]\nys = xs.push(2).push(3)\n[xs.length(), ys.length()]\n",
+        array_value(vec![Value::int(1), Value::int(3)]),
+    );
+}
+
+/// Native length counts every stored slot, including `undefined` / `null`
+/// elements. Indexing cannot distinguish a stored `undefined` from OOB, so a
+/// fold that stops on `undefined` would undercount; the native does not.
+#[test]
+fn array_length_counts_undefined_and_null_elements() {
+    assert_module_value(
+        "xs: Array(?Int) = [1, undefined, 3]\nxs.length()\n",
+        Value::int(3),
+    );
+    assert_module_value(
+        "xs: Array(?Int) = [undefined]\nxs.length()\n",
+        Value::int(1),
+    );
+    assert_module_value(
+        "xs: Array(?Int) = [undefined, 1]\nxs.length()\n",
+        Value::int(2),
+    );
+    assert_module_value(
+        "xs: Array(Int?) = [1, null, 3]\nxs.length()\n",
+        Value::int(3),
+    );
+    assert_module_value("xs: Array(Int?) = [null]\nxs.length()\n", Value::int(1));
+}
+
 #[test]
 fn text_methods_predicates_and_case() {
     assert_module_value(

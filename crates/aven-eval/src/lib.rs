@@ -3619,6 +3619,7 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         ),
         (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),
         (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
+        (Value::Array(items), "length") => Some(array_length_method(Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
         (Value::Array(items), "joinWith") => Some(array_join_with_method(Rc::clone(items))),
         (Value::Map(entries), "get") => Some(map_get_method(Rc::clone(entries))),
@@ -4738,6 +4739,19 @@ fn collection_has_method(kind: &'static str, items: Rc<Vec<Value>>) -> Value {
         }
 
         Ok(Value::Bool(contains_value(&items, &args[0])))
+    })
+}
+
+fn array_length_method(items: Rc<Vec<Value>>) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!(
+                "Array.length expects 0 arguments, got {}",
+                args.len()
+            ));
+        }
+
+        Ok(Value::int(items.len()))
     })
 }
 

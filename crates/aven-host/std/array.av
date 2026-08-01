@@ -178,9 +178,8 @@ maxGo = (xs: Array(t), index: Int, best: t): t
         false => maxGo(xs, index + 1, best)
 
 Array(a) {
-  length(): Int =>
-    zero: Int = 0
-    .fold(zero, (acc, _) => acc + 1)
+  # `length()` is a language native on Array (backing `Vec` size), same path as
+  # `push` / `has` / `joinWith`.
 
   isEmpty(): Bool =>
     .[0] ?>
