@@ -1,0 +1,4 @@
+# When a free-receiver method call later monomorphizes to a concrete owner,
+# wrong arity is rejected with a repair that names the method.
+g = (t) => t.slice(1)
+value = g("abcd")

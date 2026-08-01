@@ -6536,6 +6536,106 @@ fn inferred_operator_scheme_renders_qualified_requirement() {
 }
 
 #[test]
+fn unresolved_receiver_method_call_resolves_to_ambient_array() {
+    let ambient =
+        check_trusted_builtin_methods("Array(a) { slice(start: Int, end: Int): Array(a) => . }\n");
+    assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+
+    let source = "g = (xs) => xs.slice(1, 3)\nvalue = g([1, 2, 3, 4])\n";
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+    assert!(
+        check.diagnostics.is_empty(),
+        "free receiver should resolve to Array through the ambient method: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn unresolved_receiver_method_call_rejects_ambient_arity_mismatch() {
+    let ambient =
+        check_trusted_builtin_methods("Array(a) { slice(start: Int, end: Int): Array(a) => . }\n");
+    assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+
+    let source = "g = (xs) => xs.slice(1)\nvalue = g([1, 2, 3, 4])\n";
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+    let diagnostic = &check.diagnostics[0];
+    assert!(
+        diagnostic.message.contains("slice") && diagnostic.message.contains("2"),
+        "arity diagnostic should name the method and required count: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("pass 2 argument")),
+        "repair should name the argument count: {:?}",
+        diagnostic.notes
+    );
+}
+
+#[test]
+fn unresolved_receiver_method_call_accepts_structural_record() {
+    let source = concat!(
+        "r = { slice: (n: Int) => n + 1 }\n",
+        "g = (x) => x.slice(1)\n",
+        "value = g(r)\n",
+        "Widget = { length: (a: Int, b: Int) => a + b }\n",
+        "h = (w) => w.length(1, 2)\n",
+        "total = h({ length: (a: Int, b: Int) => a + b })\n",
+    );
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "structural record fields must still discharge free-receiver method calls: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn unresolved_receiver_method_scheme_is_open_method_row() {
+    let source = "g = (xs) => xs.slice(1, 3)\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let rendered = check
+        .inferred_type_at(nth_span(source, "g", 0))
+        .map(InferredType::render);
+    // Free receivers still publish an open method row; ambient owners satisfy
+    // that row at monomorphization sites rather than as a qualified requirement.
+    assert!(
+        rendered
+            .as_deref()
+            .is_some_and(|ty| ty.contains("slice") && ty.contains("..")),
+        "free-receiver method call should publish an open method row, got {rendered:?}"
+    );
+}
+
+#[test]
 fn infer_value_synthesizes_literal_record_types() {
     let output = parse_module("other = { id: 1, name: \"Ada\" }\n");
     let known_types = known_type_names(&output.module);
