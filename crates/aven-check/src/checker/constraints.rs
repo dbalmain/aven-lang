@@ -118,7 +118,7 @@ impl<'a> Checker<'a> {
                 //     b
                 //
                 // See `binding_value_reads_uninferred_local` for the same rule on
-                // the binding-level half of this diagnostic.
+                // `type.unresolved-binding`.
                 Type::Deferred if finalizing => {
                     if !self.has_uninferred_locals() {
                         self.report_unresolved_method_receiver(&predicate);
@@ -632,13 +632,13 @@ impl<'a> Checker<'a> {
                 "operator `{}` has an unresolved receiver",
                 predicate.member
             ))
-            .with_code(codes::ty::UNRESOLVED_BINDING)
+            .with_code(codes::ty::UNRESOLVED_METHOD_RECEIVER)
             .with_label(Label::primary(
                 predicate.operator_span,
                 "the left operand's type is still unknown here",
             ))
             .with_note(
-                "add a concrete annotation or a method requirement to the surrounding binding",
+                "annotate the left operand so its type is known, or add a method requirement for this operator on a surrounding generic",
             ),
         );
     }
