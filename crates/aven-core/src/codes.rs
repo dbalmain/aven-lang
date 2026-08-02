@@ -178,6 +178,7 @@ pub mod ty {
     pub const UNKNOWN_MODULE_TYPE: &str = "type.unknown-module-type";
     pub const UNREACHABLE_MATCH_ARM: &str = "type.unreachable-match-arm";
     pub const UNRESOLVED_BINDING: &str = "type.unresolved-binding";
+    pub const UNRESOLVED_METHOD_RECEIVER: &str = "type.unresolved-method-receiver";
     pub const UNUSED_RESULT: &str = "type.unused-result";
     pub const WIDE_VALUE_INTO_LITERAL_UNION: &str = "type.wide-value-into-literal-union";
 }
@@ -321,6 +322,7 @@ pub const ALL: &[&str] = &[
     ty::UNPRODUCTIVE_RECURSION,
     ty::UNREACHABLE_MATCH_ARM,
     ty::UNRESOLVED_BINDING,
+    ty::UNRESOLVED_METHOD_RECEIVER,
     ty::UNUSED_RESULT,
     ty::UPPERCASE_PATTERN_BINDER_UNSUPPORTED,
     ty::WIDE_VALUE_INTO_LITERAL_UNION,

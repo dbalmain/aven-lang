@@ -1,9 +1,9 @@
-error type.unresolved-binding: operator `+` has an unresolved receiver
+error type.unresolved-method-receiver: operator `+` has an unresolved receiver
   label 183..184: the left operand's type is still unknown here
-  note: add a concrete annotation or a method requirement to the surrounding binding
-error type.unresolved-binding: operator `+` has an unresolved receiver
+  note: annotate the left operand so its type is known, or add a method requirement for this operator on a surrounding generic
+error type.unresolved-method-receiver: operator `+` has an unresolved receiver
   label 191..192: the left operand's type is still unknown here
-  note: add a concrete annotation or a method requirement to the surrounding binding
+  note: annotate the left operand so its type is known, or add a method requirement for this operator on a surrounding generic
 error name.unbound: unbound name `x`
   label 181..182: this name is not bound
   note: check the spelling, or define `x` before it is used

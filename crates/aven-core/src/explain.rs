@@ -567,6 +567,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A runtime binding reached the end of checking without a concrete inferred type and without another diagnostic explaining why. Add a type annotation, or change the value so inference can resolve it.",
     },
     DiagnosticExplanation {
+        code: codes::ty::UNRESOLVED_METHOD_RECEIVER,
+        text: "An operator method was used whose left operand still has no known type. Annotate the left operand's binding so its type is known, or add a method requirement for this operator on a surrounding generic.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::UNUSED_RESULT,
         text: "A Result value was produced in statement position and then dropped. Unwrap it with `?!` when an `@Err` should panic, propagate it with `?^`, handle it explicitly, or assign it to `_` to document an intentional discard.",
     },

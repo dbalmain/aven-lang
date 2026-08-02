@@ -10190,6 +10190,10 @@ fn unresolved_top_level_runtime_binding_reports_when_value_stays_deferred() {
     );
     assert!(!has_diagnostic_code(
         &check.diagnostics,
+        codes::ty::UNRESOLVED_METHOD_RECEIVER
+    ));
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
         codes::name::UNBOUND
     ));
     let diagnostic = check
@@ -10198,6 +10202,37 @@ fn unresolved_top_level_runtime_binding_reports_when_value_stays_deferred() {
         .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNRESOLVED_BINDING))
         .expect("expected unresolved-binding diagnostic");
     assert_eq!(diagnostic.labels[0].span, nth_span(source, "x", 0));
+}
+
+#[test]
+fn unresolved_operator_receiver_reports_distinct_code() {
+    // Self-reference on a non-lambda binding: `x` is unbound, so `+` never sees
+    // a concrete left operand. That is `type.unresolved-method-receiver`, not
+    // the binding-level unresolved rule.
+    let source = "f = (n: Int): Int =>\n  x = x + 1\n  x + n\n{ f }\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        matching_codes(&check.diagnostics, codes::ty::UNRESOLVED_METHOD_RECEIVER) >= 1,
+        "expected unresolved-method-receiver: {:?}",
+        check.diagnostics
+    );
+    assert_ne!(
+        codes::ty::UNRESOLVED_BINDING,
+        codes::ty::UNRESOLVED_METHOD_RECEIVER
+    );
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::UNRESOLVED_METHOD_RECEIVER)
+        })
+        .expect("expected unresolved-method-receiver diagnostic");
+    assert!(
+        diagnostic.message.contains("unresolved receiver"),
+        "{diagnostic:?}"
+    );
 }
 
 #[test]
