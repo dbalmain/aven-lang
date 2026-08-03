@@ -677,7 +677,7 @@ fn failed_import_reports_only_the_dependency_fault() {
 }
 
 #[test]
-fn missing_module_exports_use_module_vocabulary() {
+fn repeated_missing_module_export_collapses_across_calls() {
     let dir = TempDir::new("missing-module-export");
     write(
         dir.path(),
@@ -688,9 +688,14 @@ fn missing_module_exports_use_module_vocabulary() {
         dir.path(),
         "solution_test.av",
         concat!(
-            "solution = import(\"./solution.av\")\n",
+            "solution = import(\"./solution.av\")\n\n",
             "r0 = solution.simulateGame(0)\n",
             "r1 = solution.simulateGame(1)\n",
+            "r2 = solution.simulateGame(2)\n",
+            "r3 = solution.simulateGame(3)\n",
+            "r4 = solution.simulateGame(4)\n",
+            "r5 = solution.simulateGame(5)\n\n",
+            "{ r0 }\n",
         ),
     );
 
@@ -705,21 +710,24 @@ fn missing_module_exports_use_module_vocabulary() {
         .flat_map(|report| &report.diagnostics)
         .collect::<Vec<_>>();
 
-    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
-    for diagnostic in diagnostics {
-        assert_eq!(
-            diagnostic.code.as_deref(),
-            Some(codes::module::MISSING_EXPORT)
-        );
-        assert_eq!(
-            diagnostic.message,
-            "`simulateGame` is not exported from module `./solution.av`"
-        );
-        assert_eq!(
-            diagnostic.notes,
-            ["include `simulateGame` in the literal record at the end of `./solution.av`"]
-        );
-    }
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    let diagnostic = diagnostics[0];
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::module::MISSING_EXPORT)
+    );
+    assert_eq!(
+        diagnostic.message,
+        "`simulateGame` is not exported from module `./solution.av`"
+    );
+    assert_eq!(diagnostic.labels.len(), 6, "{diagnostic:#?}");
+    assert_eq!(
+        diagnostic.notes,
+        [
+            "include `simulateGame` in the literal record at the end of `./solution.av`",
+            "also occurs at 5 other locations",
+        ]
+    );
 }
 
 #[test]
@@ -728,7 +736,11 @@ fn ordinary_record_missing_fields_keep_record_vocabulary() {
     write(
         dir.path(),
         "main.av",
-        "record = { helper: (n: Int) => n + 1 }\nr = record.simulateGame(0)\n",
+        concat!(
+            "record = { helper: (n: Int) => n + 1 }\n",
+            "r0 = record.simulateGame(0)\n",
+            "r1 = record.playGame(1)\n",
+        ),
     );
 
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
@@ -739,7 +751,7 @@ fn ordinary_record_missing_fields_keep_record_vocabulary() {
         .flat_map(|report| &report.diagnostics)
         .collect::<Vec<_>>();
 
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
     assert_eq!(
         diagnostics[0].code.as_deref(),
         Some(codes::ty::MISSING_FIELD)
@@ -749,6 +761,11 @@ fn ordinary_record_missing_fields_keep_record_vocabulary() {
         diagnostics[0].notes,
         ["add `simulateGame: ...`, or make the field type optional with `?T`"]
     );
+    assert_eq!(
+        diagnostics[1].code.as_deref(),
+        Some(codes::ty::MISSING_FIELD)
+    );
+    assert_eq!(diagnostics[1].message, "missing field `playGame`");
 }
 
 #[test]

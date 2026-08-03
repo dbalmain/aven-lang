@@ -2169,6 +2169,29 @@ fn parsed_documents_include_check_diagnostics() {
 }
 
 #[test]
+fn lsp_collapses_repeated_diagnostics_and_reports_the_other_lines() {
+    let document = parsed_document_with_semantics(concat!(
+        "record = { helper: 1 }\n",
+        "r0 = record.run(0)\n",
+        "r1 = record.run(1)\n",
+        "r2 = record.run(2)\n",
+    ));
+
+    let diagnostics = document_diagnostics(&document)
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic.code == Some(NumberOrString::String("type.missing-field".to_owned()))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].message,
+        "missing field `run`\n\nAlso at lines 3, 4."
+    );
+}
+
+#[test]
 fn spread_overwrite_code_action_inserts_colon_for_type_spread_collision() {
     let uri = test_uri();
     let document =

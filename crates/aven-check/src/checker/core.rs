@@ -2194,7 +2194,7 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        self.report_unresolved_binding(binding.name_span);
+        self.report_unresolved_binding(binding);
     }
 
     /// Does this binding's value read a local the checking pass declined to infer?

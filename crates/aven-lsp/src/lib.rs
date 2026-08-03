@@ -28,6 +28,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use aven_core::{
     Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile, SourcePosition, Span, codes,
+    diagnostic::REPEATED_OCCURRENCE_LABEL,
 };
 use aven_parser::RecordEntry;
 
@@ -1037,7 +1038,9 @@ fn module_graph_cache(
 
 fn document_diagnostics(document: &ParsedDocument) -> Vec<Diagnostic> {
     document
-        .diagnostics()
+        .diagnostic_report()
+        .diagnostics
+        .iter()
         .map(|diagnostic| to_lsp_diagnostic(document.file(), diagnostic))
         .collect()
 }
@@ -1061,11 +1064,36 @@ fn to_lsp_diagnostic(document: &SourceFile, diagnostic: &AvenDiagnostic) -> Diag
             .clone()
             .map(tower_lsp::lsp_types::NumberOrString::String),
         source: Some("aven".to_owned()),
-        message: diagnostic.message.clone(),
+        message: lsp_diagnostic_message(document, diagnostic),
         related_information: None,
         tags: None,
         code_description: None,
         data: None,
+    }
+}
+
+fn lsp_diagnostic_message(document: &SourceFile, diagnostic: &AvenDiagnostic) -> String {
+    let lines = diagnostic
+        .labels
+        .iter()
+        .filter(|label| label.message == REPEATED_OCCURRENCE_LABEL)
+        .map(|label| {
+            document
+                .line_index()
+                .offset_to_position(document.source(), label.span.start)
+                .line
+                .saturating_add(1)
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        diagnostic.message.clone()
+    } else {
+        format!(
+            "{}\n\nAlso at lines {}.",
+            diagnostic.message,
+            lines.join(", ")
+        )
     }
 }
 

@@ -1,3 +1,4 @@
-error type.unresolved-binding: cannot determine a type for this binding
-  label 279..289: this binding's type could not be inferred
-  note: add a type annotation, or change the value so its type resolves
+error type.unresolved-binding: cannot determine `nameRecord` from the result of `tagNames()`
+  label 279..289: binding `nameRecord` needs a known value type
+  label 292..300: this call has no known result type
+  note: give `tagNames` a function result type, or annotate `nameRecord`

@@ -1,5 +1,11 @@
 use super::*;
 
+struct UnresolvedCall {
+    target: String,
+    target_span: Span,
+    argument_spans: Vec<Span>,
+}
+
 impl<'a> Checker<'a> {
     pub(super) fn report_bracket_type_application(&mut self, span: Span) {
         self.push_unique_diagnostic(
@@ -318,16 +324,129 @@ impl<'a> Checker<'a> {
         );
     }
 
-    pub(super) fn report_unresolved_binding(&mut self, name_span: Span) {
-        self.diagnostics.push(
-            Diagnostic::error("cannot determine a type for this binding")
+    pub(super) fn report_unresolved_binding(&mut self, binding: &Binding) {
+        let Some(call) = self.unresolved_named_call(&binding.value) else {
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "cannot determine a type for binding `{}`",
+                    binding.name
+                ))
                 .with_code(codes::ty::UNRESOLVED_BINDING)
                 .with_label(Label::primary(
-                    name_span,
-                    "this binding's type could not be inferred",
+                    binding.name_span,
+                    format!("binding `{}` needs a type annotation", binding.name),
                 ))
-                .with_note("add a type annotation, or change the value so its type resolves"),
-        );
+                .with_note(format!("add a type annotation to `{}`", binding.name)),
+            );
+            return;
+        };
+
+        let mut diagnostic = Diagnostic::error(format!(
+            "cannot determine `{}` from the result of `{}()`",
+            binding.name, call.target
+        ))
+        .with_code(codes::ty::UNRESOLVED_BINDING)
+        .with_label(Label::primary(
+            binding.name_span,
+            format!("binding `{}` needs a known value type", binding.name),
+        ))
+        .with_label(Label::primary(
+            call.target_span,
+            "this call has no known result type",
+        ));
+
+        diagnostic = match self.coalesce_call_annotation(&binding.value, &call) {
+            Some(annotation) => {
+                diagnostic.with_note(format!("annotate the call target as `{annotation}`"))
+            }
+            None => diagnostic.with_note(format!(
+                "give `{}` a function result type, or annotate `{}`",
+                call.target, binding.name
+            )),
+        };
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn coalesce_call_annotation(&self, value: &Expr, call: &UnresolvedCall) -> Option<String> {
+        let ExprKind::Binary {
+            left,
+            operator,
+            right,
+            ..
+        } = &ungroup_expr(value).kind
+        else {
+            return None;
+        };
+        if operator != "??" || !left.span.contains(call.target_span) {
+            return None;
+        }
+        let target_is_placeholder = self
+            .bindings
+            .get(&call.target)
+            .and_then(|binding| *binding)
+            .is_some_and(|binding| Self::binding_value_is_bare_placeholder(&binding.value));
+        if !target_is_placeholder {
+            return None;
+        }
+
+        let result = self.inferred_type_at_exact_span(right.span)?;
+        let arguments = call
+            .argument_spans
+            .iter()
+            .map(|span| {
+                self.inferred_type_at_exact_span(*span)
+                    .map(|ty| ty.render())
+            })
+            .collect::<Option<Vec<_>>>()?
+            .join(", ");
+        Some(format!(
+            "{}: ({arguments}) -> ?{} = _",
+            call.target,
+            result.render()
+        ))
+    }
+
+    fn inferred_type_at_exact_span(&self, span: Span) -> Option<Type> {
+        self.inferred_types
+            .iter()
+            .rev()
+            .find(|inferred| inferred.name_span == span && is_resolved_value_type(&inferred.ty))
+            .map(|inferred| super::constraints::widen_literal_method_owner(&inferred.ty))
+    }
+
+    fn unresolved_named_call(&self, value: &Expr) -> Option<UnresolvedCall> {
+        let value = ungroup_expr(value);
+        if let ExprKind::Call { callee, args } = &value.kind
+            && let ExprKind::Name(target) = &ungroup_expr(callee).kind
+            && self.name_has_unresolved_type(target)
+        {
+            return Some(UnresolvedCall {
+                target: target.clone(),
+                target_span: callee.span,
+                argument_spans: args.iter().map(|arg| arg.span).collect(),
+            });
+        }
+
+        let mut call = None;
+        walk_expr_children(value, &mut |child| {
+            if call.is_none() {
+                call = self.unresolved_named_call(child);
+            }
+        });
+        call
+    }
+
+    fn name_has_unresolved_type(&self, name: &str) -> bool {
+        let local_type = self.local_types.get(name).map(|local| match local {
+            LocalValueType::Known(ty) => type_contains_deferred(ty),
+            LocalValueType::Scheme(scheme) => type_contains_deferred(&scheme.ty),
+            LocalValueType::Unknown => true,
+        });
+        local_type.unwrap_or_else(|| {
+            self.memo
+                .get(name)
+                .is_some_and(|scheme| type_contains_deferred(&scheme.ty))
+        })
     }
 
     pub(super) fn report_spread_shape_unknown(&mut self, span: Span) {

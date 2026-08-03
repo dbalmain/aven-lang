@@ -1,6 +1,7 @@
 error type.unresolved-method-receiver: operator `+` has an unresolved receiver
   label 490..491: the left operand's type is still unknown here
   note: annotate the left operand so its type is known, or add a method requirement for this operator on a surrounding generic
-error type.unresolved-binding: cannot determine a type for this binding
-  label 467..468: this binding's type could not be inferred
-  note: add a type annotation, or change the value so its type resolves
+error type.unresolved-binding: cannot determine `x` from the result of `g()`
+  label 467..468: binding `x` needs a known value type
+  label 471..472: this call has no known result type
+  note: give `g` a function result type, or annotate `x`

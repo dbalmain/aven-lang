@@ -10287,6 +10287,35 @@ fn unresolved_top_level_runtime_binding_reports_when_value_stays_deferred() {
         .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNRESOLVED_BINDING))
         .expect("expected unresolved-binding diagnostic");
     assert_eq!(diagnostic.labels[0].span, nth_span(source, "x", 0));
+    assert_eq!(
+        diagnostic.message,
+        "cannot determine `x` from the result of `someUndefinedName()`"
+    );
+    assert_eq!(
+        diagnostic.notes,
+        ["give `someUndefinedName` a function result type, or annotate `x`"]
+    );
+}
+
+#[test]
+fn unresolved_coalesce_call_suggests_the_derived_function_annotation() {
+    let source = "fallback = _\nz = fallback() ?? 3\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNRESOLVED_BINDING))
+        .expect("expected unresolved-binding diagnostic");
+    assert_eq!(
+        diagnostic.message,
+        "cannot determine `z` from the result of `fallback()`"
+    );
+    assert_eq!(
+        diagnostic.notes,
+        ["annotate the call target as `fallback: () -> ?Int = _`"]
+    );
 }
 
 #[test]
