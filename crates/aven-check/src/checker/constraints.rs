@@ -627,6 +627,30 @@ impl<'a> Checker<'a> {
     }
 
     fn report_unresolved_method_receiver(&mut self, predicate: &MethodPredicate) {
+        if let Some((parameter, parameter_span)) =
+            self.method_receiver_source_parameter(predicate.operator_span)
+        {
+            self.push_unique_diagnostic(
+                Diagnostic::error(format!(
+                    "operator `{}` needs a concrete receiver type from parameter `{parameter}`",
+                    predicate.member
+                ))
+                .with_code(codes::ty::UNRESOLVED_METHOD_RECEIVER)
+                .with_label(Label::primary(
+                    predicate.operator_span,
+                    "the left operand's type depends on this parameter",
+                ))
+                .with_label(Label::primary(
+                    parameter_span,
+                    format!("parameter `{parameter}` has no type annotation"),
+                ))
+                .with_note(format!(
+                    "add a type annotation to `{parameter}` that fixes the value type used by this callback"
+                )),
+            );
+            return;
+        }
+
         self.push_unique_diagnostic(
             Diagnostic::error(format!(
                 "operator `{}` has an unresolved receiver",
@@ -641,6 +665,29 @@ impl<'a> Checker<'a> {
                 "annotate the left operand so its type is known, or add a method requirement for this operator on a surrounding generic",
             ),
         );
+    }
+
+    /// Find the unannotated outer parameter that supplies a higher-order
+    /// callback's unresolved value type. A method chain such as
+    /// `prisms.zip(...).fold(...)` cannot relate the callback element to
+    /// `prisms` until the receiver selects a concrete collection signature.
+    fn method_receiver_source_parameter(&self, operator_span: Span) -> Option<(String, Span)> {
+        let binding = self
+            .bindings
+            .values()
+            .filter_map(|binding| *binding)
+            .find(|binding| binding.value.span.contains(operator_span))?;
+        let ExprKind::Lambda { params, body, .. } = &ungroup_expr(&binding.value).kind else {
+            return None;
+        };
+
+        let receiver = callback_method_receiver(body, operator_span)?;
+        let mut visiting = HashSet::new();
+        let parameter = trace_receiver_parameter(receiver, body, params, &mut visiting)?;
+        parameter
+            .annotation
+            .is_none()
+            .then(|| (parameter.name.clone(), parameter.name_span))
     }
 
     fn report_missing_requirement(&mut self, predicate: &MethodPredicate) {
@@ -754,6 +801,63 @@ impl<'a> Checker<'a> {
                 .with_note("insert `..` before the closing `}`"),
         );
     }
+}
+
+fn callback_method_receiver(expr: &Expr, operator_span: Span) -> Option<&Expr> {
+    if let ExprKind::Call { callee, args } = &ungroup_expr(expr).kind
+        && args.iter().any(|arg| arg.span.contains(operator_span))
+        && let ExprKind::FieldAccess { receiver, .. } = &ungroup_expr(callee).kind
+    {
+        return Some(receiver);
+    }
+
+    let mut receiver = None;
+    walk_expr_children(expr, &mut |child| {
+        if receiver.is_none() && child.span.contains(operator_span) {
+            receiver = callback_method_receiver(child, operator_span);
+        }
+    });
+    receiver
+}
+
+fn trace_receiver_parameter<'a>(
+    expr: &Expr,
+    body: &'a Expr,
+    params: &'a [Param],
+    visiting: &mut HashSet<String>,
+) -> Option<&'a Param> {
+    match &ungroup_expr(expr).kind {
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
+            if let Some(parameter) = params.iter().find(|param| param.name == *name) {
+                return Some(parameter);
+            }
+            if !visiting.insert(name.clone()) {
+                return None;
+            }
+            let value = local_binding_value(body, name)?;
+            trace_receiver_parameter(value, body, params, visiting)
+        }
+        ExprKind::Call { callee, .. } => {
+            let ExprKind::FieldAccess { receiver, .. } = &ungroup_expr(callee).kind else {
+                return None;
+            };
+            trace_receiver_parameter(receiver, body, params, visiting)
+        }
+        ExprKind::FieldAccess { receiver, .. } => {
+            trace_receiver_parameter(receiver, body, params, visiting)
+        }
+        _ => None,
+    }
+}
+
+fn local_binding_value<'a>(body: &'a Expr, name: &str) -> Option<&'a Expr> {
+    let ExprKind::Block(items) = &ungroup_expr(body).kind else {
+        return None;
+    };
+    items.iter().find_map(|item| match item {
+        Item::Binding(binding) if binding.name == name => Some(&binding.value),
+        _ => None,
+    })
 }
 
 fn snapshot_integer_divisor_evidence(mut ty: Type) -> Type {

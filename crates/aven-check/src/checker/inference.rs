@@ -1846,6 +1846,22 @@ impl<'a> Checker<'a> {
         let callee_type = self.infer(env, callee);
         let callee_obligation_end = self.method_obligation_marker();
         let resolved_callee = self.unifier.resolve(&callee_type);
+        // A null-safe field access wraps the selected function in the
+        // receiver's empty values. Invoke the underlying function, then move
+        // those wrappers onto the call result: `s?.method()` is a nullable
+        // result, not an attempt to call a nullable function.
+        let (null_safe_empties, resolved_callee) = if matches!(
+            &ungroup_expr(callee).kind,
+            ExprKind::FieldAccess {
+                null_safe: true,
+                ..
+            }
+        ) {
+            let (empties, callable) = peel_empty_values(&resolved_callee);
+            (empties, callable.clone())
+        } else {
+            (Vec::new(), resolved_callee)
+        };
         let callee_type = if matches!(resolved_callee, Type::Function { .. }) {
             self.instantiate_nonrigid_type_variables(&resolved_callee, &mut HashMap::new())
         } else {
@@ -1882,9 +1898,9 @@ impl<'a> Checker<'a> {
             if let Some(result) =
                 self.infer_or_else_single_constructor_result(env, callee, &arg_types, &result)
             {
-                return result;
+                return rewrap_empty_values(result, &null_safe_empties);
             }
-            return result;
+            return rewrap_empty_values(result, &null_safe_empties);
         }
 
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
@@ -1903,7 +1919,8 @@ impl<'a> Checker<'a> {
             Type::Deferred
         } else {
             self.simplify_method_obligations(false);
-            self.resolve_row_merge_call_result(&result_type)
+            let result = self.resolve_row_merge_call_result(&result_type);
+            rewrap_empty_values(result, &null_safe_empties)
         }
     }
 

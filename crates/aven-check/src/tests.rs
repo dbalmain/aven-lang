@@ -6855,6 +6855,35 @@ fn unresolved_coalesce_left_keeps_the_fallback_type() {
 }
 
 #[test]
+fn null_safe_method_results_keep_their_type_through_coalesce() {
+    for source in [
+        "f = (s: Text?) => (s?.toInt() ?? 0) + 1\n",
+        "f = (t: Text) => (t?.toInt() ?? 0) + 1\n",
+        concat!(
+            "f = (t: Text) =>\n",
+            "  d = t.splitOn(\"-\")\n",
+            "  y = d[0]?.toInt() ?? 0\n",
+            "  y + 1\n",
+        ),
+    ] {
+        let check = check_module(&parse_module(source).module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should retain the Int call result: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn null_safe_method_calls_still_check_argument_types() {
+    let source = "f = (s: Text?) => s?.contains(1)\n";
+    let check = check_module(&parse_module(source).module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+}
+
+#[test]
 fn coalesce_with_a_concrete_wrong_fallback_still_reports_the_fallback() {
     let source = "f = (a: Int[]) => a[0] ?? \"wrong\"\n";
     let check = check_module(&parse_module(source).module);
@@ -11449,6 +11478,68 @@ fn check_trusted_builtin_methods(source: &str) -> CheckOutput {
     let mut imports = ModuleImports::default();
     imports.set_trusted_builtin_method_source(true);
     check_module_with_host_globals_and_imports(&parsed.module, &HostGlobals::default(), &imports)
+}
+
+#[test]
+fn unresolved_fold_callback_points_to_the_collection_parameter() {
+    let ambient = check_trusted_builtin_methods(concat!(
+        "Array(a) {\n",
+        "  zip(other: Array(b)): Array((a, b)) => []\n",
+        "  fold(init: b, f: (b, a) -> b): b => init\n",
+        "}\n",
+    ));
+    assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let globals = HostGlobals::types_only(&[(
+        "range".to_owned(),
+        build::function(vec![build::int(), build::int()], build::array(build::int())),
+    )]);
+    let source = concat!(
+        "pickHit = (cx, cy, d, prisms) =>\n",
+        "  zipped = prisms.zip(range(0, prisms.length()))\n",
+        "  best = zipped.fold({ found: false, index: 0, dist: 0.0 }, (b, pair) =>\n",
+        "    pair ?>\n",
+        "      (p, i) =>\n",
+        "        dx = p.x - cx\n",
+        "        dy = p.y - cy\n",
+        "        cross = dx * d.dy - dy * d.dx\n",
+        "        b)\n",
+    );
+    let parsed = parse_module(source);
+    let check = check_module_with_host_globals_and_imports(&parsed.module, &globals, &imports);
+    let diagnostics = check
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::UNRESOLVED_METHOD_RECEIVER)
+        })
+        .collect::<Vec<_>>();
+    assert!(!diagnostics.is_empty(), "{:?}", check.diagnostics);
+    let parameter_span = nth_span(source, "prisms", 0);
+    for diagnostic in diagnostics {
+        assert!(diagnostic.message.contains("parameter `prisms`"));
+        assert!(
+            diagnostic
+                .labels
+                .iter()
+                .any(|label| label.span == parameter_span),
+            "{diagnostic:?}"
+        );
+        assert_eq!(
+            diagnostic.notes,
+            ["add a type annotation to `prisms` that fixes the value type used by this callback"]
+        );
+    }
+
+    let annotated = source.replacen("prisms) =>", "prisms: Array({ x: Float, y: Float })) =>", 1);
+    let parsed = parse_module(&annotated);
+    let check = check_module_with_host_globals_and_imports(&parsed.module, &globals, &imports);
+    assert!(
+        !has_diagnostic_code(&check.diagnostics, codes::ty::UNRESOLVED_METHOD_RECEIVER),
+        "annotating the collection element type should resolve the callbacks: {:?}",
+        check.diagnostics
+    );
 }
 
 #[test]
