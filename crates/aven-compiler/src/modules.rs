@@ -475,7 +475,7 @@ fn check_path_impl(
             .extend(semantic.diagnostics.clone());
         semantics[node_id] = Some(semantic);
 
-        if semantic_has_errors || file_has_errors(&diagnostics, file_id) {
+        if semantic_has_errors || file_has_errors(&diagnostics, file_id) || imports.has_failed() {
             exports[node_id] = CheckExport::HasErrors;
             continue;
         }
@@ -660,7 +660,7 @@ fn eval_path_impl(
 
         let imports = eval_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
         let file_id = graph.nodes[node_id].file.id;
-        if file_has_errors(&diagnostics, file_id) {
+        if file_has_errors(&diagnostics, file_id) || imports.has_failed() {
             exports[node_id] = EvalExport::HasErrors;
             continue;
         }
@@ -1246,10 +1246,6 @@ fn check_imports_for_node(
             }
             Some(CheckExport::HasErrors) if !import.failed => {
                 imports.insert_failed(import.specifier.clone());
-                diagnostics
-                    .entry(node.file.id)
-                    .or_default()
-                    .push(import_has_errors(import.call_span, &import.specifier));
             }
             _ => {
                 imports.insert_failed(import.specifier.clone());
@@ -1282,10 +1278,6 @@ fn eval_imports_for_node(
             }
             Some(EvalExport::HasErrors) if !import.failed => {
                 imports.insert_failed(import.specifier.clone());
-                diagnostics
-                    .entry(node.file.id)
-                    .or_default()
-                    .push(import_has_errors(import.call_span, &import.specifier));
             }
             _ => {
                 imports.insert_failed(import.specifier.clone());
@@ -2389,16 +2381,6 @@ fn import_cycle(span: Span, cycle: Vec<PathBuf>) -> Diagnostic {
         .with_label(Label::primary(span, "this import closes the cycle"))
         .with_note(render_cycle(&cycle))
         .with_note("break the cycle by moving shared bindings into another module")
-}
-
-fn import_has_errors(span: Span, specifier: &str) -> Diagnostic {
-    Diagnostic::error(format!("imported module `{specifier}` has errors"))
-        .with_code(codes::module::IMPORT_HAS_ERRORS)
-        .with_label(Label::primary(
-            span,
-            "this import depends on a module with errors",
-        ))
-        .with_note("fix the imported module before checking or running this file")
 }
 
 fn not_importable(span: Span, specifier: &str, note: &str) -> Diagnostic {

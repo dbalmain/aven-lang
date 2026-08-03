@@ -139,6 +139,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "An imported module produced errors while being loaded, checked, or evaluated. Fix the dependency first, then check or run the importer again.",
     },
     DiagnosticExplanation {
+        code: codes::module::MISSING_EXPORT,
+        text: "A module record does not export the requested binding. Include the binding in the literal record at the end of the target module.",
+    },
+    DiagnosticExplanation {
         code: codes::module::NOT_FOUND,
         text: "A module import resolved to a path that does not exist. Check the specifier spelling, root, directory, and optional .av extension.",
     },

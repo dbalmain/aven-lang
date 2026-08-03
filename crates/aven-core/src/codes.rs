@@ -39,6 +39,7 @@ pub mod module {
     pub const DYNAMIC_IMPORT: &str = "module.dynamic-import";
     pub const IMPORT_CYCLE: &str = "module.import-cycle";
     pub const IMPORT_HAS_ERRORS: &str = "module.import-has-errors";
+    pub const MISSING_EXPORT: &str = "module.missing-export";
     pub const NOT_FOUND: &str = "module.not-found";
     pub const NOT_IMPORTABLE: &str = "module.not-importable";
     pub const UPPERCASE_EXPORT_NOT_TYPE: &str = "module.uppercase-export-not-type";
@@ -215,6 +216,7 @@ pub const ALL: &[&str] = &[
     module::DYNAMIC_IMPORT,
     module::IMPORT_CYCLE,
     module::IMPORT_HAS_ERRORS,
+    module::MISSING_EXPORT,
     module::NOT_FOUND,
     module::NOT_IMPORTABLE,
     module::ROOT_UNAVAILABLE,

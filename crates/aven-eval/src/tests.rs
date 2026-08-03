@@ -2598,6 +2598,20 @@ fn record_patterns_and_type_statics_still_error_on_absent_fields() {
 }
 
 #[test]
+fn opaque_failed_import_remains_the_only_signal_in_direct_evaluation() {
+    let module = parse_ok("dependency = import(\"./dependency.av\")\n");
+    let imports = ModuleImports::with_failed(["./dependency.av".to_owned()]);
+    let outcome =
+        eval_module_with_options(&module, EvalModuleOptions::default().with_imports(&imports));
+
+    assert_eq!(outcome.diagnostics.len(), 1, "{outcome:#?}");
+    assert_eq!(
+        outcome.diagnostics[0].code.as_deref(),
+        Some(codes::module::IMPORT_HAS_ERRORS)
+    );
+}
+
+#[test]
 fn evaluates_null_coalescing_with_short_circuiting() {
     assert_eval("undefined ?? 5", Value::int(5));
     assert_eval("null ?? 6", Value::int(6));

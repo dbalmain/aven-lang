@@ -1021,6 +1021,10 @@ impl ModuleImports {
         self.values.insert(specifier.into(), None);
     }
 
+    pub fn has_failed(&self) -> bool {
+        self.values.values().any(Option::is_none)
+    }
+
     fn get(&self, specifier: &str) -> Option<Option<Value>> {
         self.values.get(specifier).cloned()
     }

@@ -355,6 +355,10 @@ impl ModuleImports {
         self.types.insert(specifier.into(), None);
     }
 
+    pub fn has_failed(&self) -> bool {
+        self.types.values().any(Option::is_none)
+    }
+
     pub fn insert_type_exports(
         &mut self,
         specifier: impl Into<String>,

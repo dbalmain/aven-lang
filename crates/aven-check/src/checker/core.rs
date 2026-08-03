@@ -2184,6 +2184,7 @@ impl<'a> Checker<'a> {
             || self.binding_value_is_host_comptime_runtime_arg_deferral(&binding.value)
             || self.binding_value_is_open_record_rest_match_unknown(&binding.value)
             || self.binding_value_reads_uninferred_local(&binding.value)
+            || self.binding_value_reads_failed_import(&binding.value)
         {
             return;
         }
@@ -2227,6 +2228,67 @@ impl<'a> Checker<'a> {
         self.uninferred_local_names()
             .iter()
             .any(|name| expr_references_name(value, name))
+    }
+
+    /// Does this binding's value depend on an import the module graph could not
+    /// check? Such a value is deliberately deferred so the dependency's own
+    /// diagnostic can be reported. Blaming this binding cannot identify a
+    /// repair, including when the dependency is reached through another
+    /// top-level binding.
+    pub(super) fn binding_value_reads_failed_import(&self, value: &Expr) -> bool {
+        let mut visiting = HashSet::new();
+        self.value_reads_failed_import(value, &mut visiting)
+    }
+
+    fn value_reads_failed_import(&self, value: &Expr, visiting: &mut HashSet<String>) -> bool {
+        let value = ungroup_expr(value);
+        if aven_parser::static_import_specifier(value)
+            .is_some_and(|specifier| matches!(self.imports.get(&specifier), Some(None)))
+        {
+            return true;
+        }
+
+        if let ExprKind::Name(name) = &value.kind
+            && self.local_types.get(name).is_none()
+            && visiting.insert(name.clone())
+        {
+            let reads_failed_import = self
+                .bindings
+                .get(name)
+                .and_then(|binding| *binding)
+                .is_some_and(|binding| self.value_reads_failed_import(&binding.value, visiting));
+            visiting.remove(name);
+            if reads_failed_import {
+                return true;
+            }
+        }
+
+        let mut reads_failed_import = false;
+        walk_expr_children(value, &mut |child| {
+            reads_failed_import |= self.value_reads_failed_import(child, visiting);
+        });
+        reads_failed_import
+    }
+
+    pub(super) fn imported_module_specifier(
+        &self,
+        env: &TypeEnv,
+        receiver: &Expr,
+    ) -> Option<String> {
+        let receiver = ungroup_expr(receiver);
+        let specifier = aven_parser::static_import_specifier(receiver).or_else(|| {
+            let ExprKind::Name(name) = &receiver.kind else {
+                return None;
+            };
+            if env.get(name).is_some() {
+                return None;
+            }
+            self.bindings
+                .get(name)
+                .and_then(|binding| *binding)
+                .and_then(|binding| aven_parser::static_import_specifier(&binding.value))
+        })?;
+        matches!(self.imports.get(&specifier), Some(Some(_))).then_some(specifier)
     }
 
     /// Locals currently in scope that were bound without an inferable type.

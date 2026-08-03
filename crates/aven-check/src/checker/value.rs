@@ -181,6 +181,8 @@ impl<'a> Checker<'a> {
     /// receiver that lacks the field is a real missing-field error; an
     /// unknown/open receiver stays deferred as before.
     pub(super) fn check_value_field_access(&mut self, receiver: &Expr, field: &str, span: Span) {
+        let env = self.local_types.inference_env();
+        let imported_module = self.imported_module_specifier(&env, receiver);
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind {
             if let Some(owner) = self.unbound_method_owner_name(name)
                 && self
@@ -189,7 +191,6 @@ impl<'a> Checker<'a> {
             {
                 return;
             }
-            let env = self.local_types.inference_env();
             // Statics on type names (`Map.empty`) are valid; only bare method
             // values on parameterized constructors need the dedicated error.
             if self.static_member_scheme(&env, name, field).is_some() {
@@ -240,13 +241,13 @@ impl<'a> Checker<'a> {
                 && !is_array_receiver_type(&receiver_type))
                 || (crate::ty::TEXT_METHOD_NAMES.contains(&field) && !is_text_type(&receiver_type)))
         {
-            self.report_missing_field(field, span);
+            self.report_missing_field_for_receiver(imported_module.as_deref(), field, span);
             return;
         }
 
         let Type::Record(row) = &receiver_type else {
             if is_resolved_value_type(&receiver_type) {
-                self.report_missing_field(field, span);
+                self.report_missing_field_for_receiver(imported_module.as_deref(), field, span);
             }
             return;
         };
@@ -259,6 +260,19 @@ impl<'a> Checker<'a> {
             .iter()
             .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == field));
         if !has_field {
+            self.report_missing_field_for_receiver(imported_module.as_deref(), field, span);
+        }
+    }
+
+    fn report_missing_field_for_receiver(
+        &mut self,
+        imported_module: Option<&str>,
+        field: &str,
+        span: Span,
+    ) {
+        if let Some(specifier) = imported_module {
+            self.report_missing_module_export(specifier, field, span);
+        } else {
             self.report_missing_field(field, span);
         }
     }

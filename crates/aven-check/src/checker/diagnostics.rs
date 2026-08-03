@@ -947,6 +947,22 @@ impl<'a> Checker<'a> {
         );
     }
 
+    pub(super) fn report_missing_module_export(&mut self, specifier: &str, name: &str, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "`{name}` is not exported from module `{specifier}`"
+            ))
+            .with_code(codes::module::MISSING_EXPORT)
+            .with_label(Label::primary(
+                span,
+                format!("this module does not export `{name}`"),
+            ))
+            .with_note(format!(
+                "include `{name}` in the literal record at the end of `{specifier}`"
+            )),
+        );
+    }
+
     pub(super) fn report_unexpected_field(&mut self, name: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("unexpected field `{name}`"))

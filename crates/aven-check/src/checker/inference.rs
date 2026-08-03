@@ -1741,18 +1741,7 @@ impl<'a> Checker<'a> {
         field: &str,
         origin_span: Span,
     ) -> Option<TypeScheme> {
-        let specifier = aven_parser::static_import_specifier(receiver).or_else(|| {
-            let ExprKind::Name(name) = &ungroup_expr(receiver).kind else {
-                return None;
-            };
-            if env.get(name).is_some() {
-                return None;
-            }
-            self.bindings
-                .get(name)
-                .and_then(|binding| *binding)
-                .and_then(|binding| aven_parser::static_import_specifier(&binding.value))
-        })?;
+        let specifier = self.imported_module_specifier(env, receiver)?;
         let qualified = self.imports.qualified_export(&specifier, field)?.clone();
         Some(scheme_from_qualified_type(
             &qualified,

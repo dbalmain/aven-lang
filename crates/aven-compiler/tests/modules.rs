@@ -143,7 +143,7 @@ fn unexported_binding_is_not_on_import_record_type() {
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
         .expect("check should load graph");
 
-    assert_has_code(&output.reports, codes::ty::MISSING_FIELD);
+    assert_has_code(&output.reports, codes::module::MISSING_EXPORT);
 }
 
 #[test]
@@ -607,7 +607,7 @@ fn eval_caches_diamond_dependency_once() {
 }
 
 #[test]
-fn importer_own_errors_surface_alongside_dependency_errors() {
+fn importer_own_errors_surface_alongside_dependency_errors_without_wrapper() {
     let dir = TempDir::new("importer-recovery");
     write(dir.path(), "dep.av", "bad : Int = \"text\"\nx = 1\n{ x }\n");
     write(
@@ -619,8 +619,162 @@ fn importer_own_errors_surface_alongside_dependency_errors() {
     let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
         .expect("check should load graph");
 
-    assert_has_code(&output.reports, codes::module::IMPORT_HAS_ERRORS);
-    assert_has_code(&output.reports, codes::ty::MISMATCH);
+    let diagnostics = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+            .count(),
+        2,
+        "dependency and importer errors should both surface: {diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_deref() != Some(codes::module::IMPORT_HAS_ERRORS)),
+        "dependency diagnostics make an import wrapper redundant: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn failed_import_reports_only_the_dependency_fault() {
+    let dir = TempDir::new("failed-import-cascade");
+    write(
+        dir.path(),
+        "broken.av",
+        "helper = (n: Int) => n + \"oops\"\n\n{ helper }\n",
+    );
+    write(
+        dir.path(),
+        "broken_test.av",
+        concat!(
+            "solution = import(\"./broken.av\")\n",
+            "a = solution.helper(1)\n",
+            "b = solution.helper(2)\n",
+            "{ a, b }\n",
+        ),
+    );
+
+    let output =
+        check_path_with_host_globals(&dir.path().join("broken_test.av"), &HostGlobals::default())
+            .expect("check should load graph");
+    let diagnostics = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].code.as_deref(),
+        Some(codes::ty::INVALID_OPERATOR_OPERANDS),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn missing_module_exports_use_module_vocabulary() {
+    let dir = TempDir::new("missing-module-export");
+    write(
+        dir.path(),
+        "solution.av",
+        "helper = (n: Int) => n + 1\n\n{ helper }\n",
+    );
+    write(
+        dir.path(),
+        "solution_test.av",
+        concat!(
+            "solution = import(\"./solution.av\")\n",
+            "r0 = solution.simulateGame(0)\n",
+            "r1 = solution.simulateGame(1)\n",
+        ),
+    );
+
+    let output = check_path_with_host_globals(
+        &dir.path().join("solution_test.av"),
+        &HostGlobals::default(),
+    )
+    .expect("check should load graph");
+    let diagnostics = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+    for diagnostic in diagnostics {
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::module::MISSING_EXPORT)
+        );
+        assert_eq!(
+            diagnostic.message,
+            "`simulateGame` is not exported from module `./solution.av`"
+        );
+        assert_eq!(
+            diagnostic.notes,
+            ["include `simulateGame` in the literal record at the end of `./solution.av`"]
+        );
+    }
+}
+
+#[test]
+fn ordinary_record_missing_fields_keep_record_vocabulary() {
+    let dir = TempDir::new("ordinary-record-missing-field");
+    write(
+        dir.path(),
+        "main.av",
+        "record = { helper: (n: Int) => n + 1 }\nr = record.simulateGame(0)\n",
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("check should load graph");
+    let diagnostics = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].code.as_deref(),
+        Some(codes::ty::MISSING_FIELD)
+    );
+    assert_eq!(diagnostics[0].message, "missing field `simulateGame`");
+    assert_eq!(
+        diagnostics[0].notes,
+        ["add `simulateGame: ...`, or make the field type optional with `?T`"]
+    );
+}
+
+#[test]
+fn dependency_runtime_error_surfaces_without_import_wrapper() {
+    let dir = TempDir::new("dependency-runtime-error");
+    write(dir.path(), "broken.av", "1 / 0\n");
+    write(
+        dir.path(),
+        "main.av",
+        "broken = import(\"./broken.av\")\n{ broken }\n",
+    );
+
+    let output = eval_path_with_globals(&dir.path().join("main.av"), vec![])
+        .expect("evaluation should load graph");
+    let diagnostics = output
+        .reports
+        .iter()
+        .flat_map(|report| &report.diagnostics)
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(
+        diagnostics[0].code.as_deref(),
+        Some(codes::runtime::DIVISION_BY_ZERO),
+        "{diagnostics:#?}"
+    );
 }
 
 #[test]
