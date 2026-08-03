@@ -54,6 +54,14 @@ mod value;
 
 pub(crate) use aven_parser::is_method_requirement_row;
 
+/// Compiler-only method-row member for runtime collection indexing.
+///
+/// Free-receiver method calls already infer an open method row that concrete
+/// ambient owners satisfy at call sites. Index syntax uses the same machinery,
+/// but needs a distinct member because Array and Text indexing are not
+/// language-visible `.get` methods.
+const VALUE_INDEX_MEMBER: &str = "[index]";
+
 pub(crate) struct Checker<'a> {
     module_role: ModuleRole,
     known_types: HashSet<String>,

@@ -1,4 +1,4 @@
-use super::Checker;
+use super::{Checker, VALUE_INDEX_MEMBER};
 use std::collections::{HashMap, HashSet};
 
 use aven_core::{BuiltinType, Diagnostic, Label, Span, codes};
@@ -747,6 +747,9 @@ impl Checker<'_> {
         owner: &Type,
         member: &str,
     ) -> Option<MethodSignature> {
+        if member == VALUE_INDEX_MEMBER {
+            return value_index_method_signature(owner);
+        }
         if let Some(signature) = self.exact_method_signature(owner, member) {
             return Some(signature);
         }
@@ -960,6 +963,33 @@ impl Checker<'_> {
             })
             .map(|entry| entry.owner.clone())
     }
+}
+
+fn value_index_method_signature(owner: &Type) -> Option<MethodSignature> {
+    let (parameter, result) = match owner {
+        Type::Apply { callee, args }
+            if callee.is_builtin(BuiltinType::Array) && args.len() == 1 =>
+        {
+            (
+                named_builtin("Int"),
+                Type::Optional(Box::new(args[0].clone())),
+            )
+        }
+        Type::Apply { callee, args } if callee.is_builtin(BuiltinType::Map) && args.len() == 2 => {
+            (args[0].clone(), Type::Optional(Box::new(args[1].clone())))
+        }
+        _ if crate::ty::is_text_type(owner) => (
+            named_builtin("Int"),
+            Type::Optional(Box::new(named_builtin("Text"))),
+        ),
+        _ => return None,
+    };
+
+    Some(MethodSignature {
+        params: FunctionParams::all_required(vec![parameter]),
+        result,
+        predicates: Vec::new(),
+    })
 }
 
 fn builtin_owner_head(ty: &Type) -> Option<&str> {

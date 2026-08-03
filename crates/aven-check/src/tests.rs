@@ -6834,6 +6834,58 @@ fn coalesce_never_empty_silent_for_optional_nullable_and_unresolved() {
 }
 
 #[test]
+fn unresolved_coalesce_left_keeps_the_fallback_type() {
+    for source in [
+        "f = (a) => (a[0] ?? 0) + 1\n",
+        "f = (a) => (a.foo() ?? 0) + 1\n",
+        "f = (a) => (a.foo() ?? 0) + 1\nvalue = f({ foo: () => 1 })\n",
+        "f = (a: Int[]) => (a[0] ?? 0) + 1\n",
+    ] {
+        let check = check_module(&parse_module(source).module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should retain the concrete Int fallback: {:?}",
+            check.diagnostics
+        );
+        assert!(!has_diagnostic_code(
+            &check.diagnostics,
+            codes::ty::UNRESOLVED_METHOD_RECEIVER
+        ));
+    }
+}
+
+#[test]
+fn coalesce_with_a_concrete_wrong_fallback_still_reports_the_fallback() {
+    let source = "f = (a: Int[]) => a[0] ?? \"wrong\"\n";
+    let check = check_module(&parse_module(source).module);
+
+    assert_eq!(matching_codes(&check.diagnostics, codes::ty::MISMATCH), 1);
+    let diagnostic = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+        .expect("coalesce fallback mismatch");
+    assert_eq!(
+        diagnostic.labels[0].message,
+        "this fallback has the wrong type"
+    );
+}
+
+#[test]
+fn inferred_array_results_keep_their_element_type_through_coalesce() {
+    let source = concat!(
+        "toZ = (n: Int) => [n, 0]\n",
+        "add = (z1, z2) =>\n",
+        "  a = toZ(z1)\n",
+        "  b = toZ(z2)\n",
+        "  [(a[0] ?? 0) + (b[0] ?? 0)]\n",
+    );
+    let check = check_module(&parse_module(source).module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+}
+
+#[test]
 fn coalesce_never_empty_warns_on_result_left() {
     let source = "r: Result(Int, Text) = @Ok(1)\nv = r ?? @Ok(0)\n";
     let check = check_module(&parse_module(source).module);
@@ -7648,6 +7700,39 @@ fn array_index_infers_optional_element_type() {
         scheme.ty
     );
     assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn unresolved_value_index_reports_the_optional_operator_error() {
+    let source = "f = (a) => a[0] + 1\n";
+    let check = check_module(&parse_module(source).module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::INVALID_OPERATOR_OPERANDS),
+        1,
+        "expected the concrete optional-operand error: {:?}",
+        check.diagnostics
+    );
+    assert!(!has_diagnostic_code(
+        &check.diagnostics,
+        codes::ty::UNRESOLVED_METHOD_RECEIVER
+    ));
+}
+
+#[test]
+fn unresolved_value_index_capability_accepts_runtime_collection_owners() {
+    for source in [
+        "f = (a) => a[0] ?? 0\nvalue = f([1, 2])\n",
+        "f = (a) => a[0] ?? 0\nvalue = f(Map.from([(0, 1)]))\n",
+        "f = (a) => a[0] ?? \"\"\nvalue = f(\"hi\")\n",
+    ] {
+        let check = check_module(&parse_module(source).module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should satisfy the inferred index capability: {:?}",
+            check.diagnostics
+        );
+    }
 }
 
 #[test]

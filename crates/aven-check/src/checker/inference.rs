@@ -539,8 +539,7 @@ impl<'a> Checker<'a> {
             let right_type = self.normalize(&self.resolve_and_default(&right_type));
             self.unifier.restore(snapshot);
             self.restore_diagnostic_snapshot(diagnostic_snapshot);
-            if is_resolved_operator_operand(&left_type) && is_resolved_operator_operand(&right_type)
-            {
+            if operator_receiver_is_known(&left_type) && is_resolved_operator_operand(&right_type) {
                 // After resolve-and-default, re-check structural equality so
                 // open literal rows closed by defaulting still accept Int/Float
                 // at every container depth (and recover to Bool).
@@ -1804,6 +1803,12 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn infer_call(&mut self, env: &TypeEnv, callee: &Expr, args: &[Expr]) -> Type {
+        // `??` makes a direct field read optional, but a call's callee field is
+        // the function being invoked, not the value coalesced by the caller.
+        // Let the call result carry its own inferred emptiness instead of
+        // turning `receiver.method` into an optional function.
+        let _ = std::mem::take(&mut self.coalesce_guarded_field);
+
         if let ExprKind::Tag(tag) = &callee.kind {
             return self.infer_variant_constructor(env, tag, args);
         }
@@ -3394,13 +3399,43 @@ impl<'a> Checker<'a> {
                 self.report_not_indexable(reported, callee, args);
                 Type::Error
             }
-            _ => Type::Deferred,
+            Type::Error | Type::Deferred => Type::Deferred,
+            _ if null_safe => Type::Deferred,
+            _ => self.infer_unresolved_value_index(env, callee, args),
         };
 
         if empties.is_empty() {
             result
         } else {
             rewrap_empty_values(result, &empties)
+        }
+    }
+
+    /// Give an unresolved runtime collection index the same open method-row
+    /// representation as a free-receiver method call. The internal member is
+    /// satisfied by concrete Array, Map, and Text owners at later call sites.
+    fn infer_unresolved_value_index(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Type {
+        let synthetic_callee = Expr {
+            kind: ExprKind::FieldAccess {
+                receiver: Box::new(callee.clone()),
+                field: VALUE_INDEX_MEMBER.to_owned(),
+                field_span: Span::point(callee.span.end),
+                null_safe: false,
+            },
+            span: callee.span.merge(args[0].span),
+        };
+        let result = self.infer_call(env, &synthetic_callee, args);
+        let optional = Type::Optional(Box::new(self.unifier.fresh()));
+
+        if self.unifier.unify(&result, &optional).is_ok() {
+            optional
+        } else {
+            Type::Deferred
         }
     }
 
@@ -4250,6 +4285,14 @@ fn row_field_type<'r>(row: &'r Row, field: &str) -> Option<&'r Type> {
 
 fn is_resolved_operator_operand(ty: &Type) -> bool {
     is_resolved_value_type(ty) && !type_has_open_row(ty)
+}
+
+/// Whether left-biased operator dispatch knows its owner even if a payload is
+/// still open. Empty wrappers own no operators regardless of their payload, so
+/// `?a + Int` is already a definite invalid-owner error rather than an
+/// unresolved receiver.
+fn operator_receiver_is_known(ty: &Type) -> bool {
+    is_resolved_operator_operand(ty) || matches!(ty, Type::Optional(_) | Type::Nullable(_))
 }
 
 /// Whether a resolved left operand of `??` might still be empty at runtime.
