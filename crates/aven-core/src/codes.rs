@@ -86,7 +86,10 @@ pub mod parse {
     pub const EXPECTED_RECORD_ENTRY: &str = "parse.expected-record-entry";
     pub const EXPECTED_RECORD_LABEL: &str = "parse.expected-record-label";
     pub const EXPECTED_TYPE: &str = "parse.expected-type";
+    pub const INTERPOLATED_FIELD_NAME: &str = "parse.interpolated-field-name";
+    pub const INTERPOLATION_CONTINUATION: &str = "parse.interpolation-continuation";
     pub const INVALID_BINDING_NAME: &str = "parse.invalid-binding-name";
+    pub const MATCH_ARM_OUTSIDE_MATCH: &str = "parse.match-arm-outside-match";
     pub const MISMATCHED_DELIMITER: &str = "parse.mismatched-delimiter";
     pub const MISSING_BINDING_NAME: &str = "parse.missing-binding-name";
     pub const MISSING_BINDING_VALUE: &str = "parse.missing-binding-value";
@@ -98,6 +101,7 @@ pub mod parse {
     pub const OPERATOR_ASSOCIATIVITY_CONFLICT: &str = "parse.operator-associativity-conflict";
     pub const OPERATOR_FIXITY_UNDECLARED: &str = "parse.operator-fixity-undeclared";
     pub const OPERATOR_MEMBER_PARAMETER_LIST: &str = "parse.operator-member-parameter-list";
+    pub const PROVIDER_MEMBER: &str = "parse.provider-member";
     pub const QUOTED_METHOD_MEMBER: &str = "parse.quoted-method-member";
     pub const REQUIRED_PARAM_AFTER_DEFAULT: &str = "parse.required-param-after-default";
     pub const SINGLE_ITEM_TUPLE: &str = "parse.single-item-tuple";
@@ -245,7 +249,10 @@ pub const ALL: &[&str] = &[
     parse::EXPECTED_RECORD_ENTRY,
     parse::EXPECTED_RECORD_LABEL,
     parse::EXPECTED_TYPE,
+    parse::INTERPOLATED_FIELD_NAME,
+    parse::INTERPOLATION_CONTINUATION,
     parse::INVALID_BINDING_NAME,
+    parse::MATCH_ARM_OUTSIDE_MATCH,
     parse::MISMATCHED_DELIMITER,
     parse::MISPLACED_MATCH_ARM,
     parse::MISSING_BINDING_NAME,
@@ -257,6 +264,7 @@ pub const ALL: &[&str] = &[
     parse::OPERATOR_ASSOCIATIVITY_CONFLICT,
     parse::OPERATOR_FIXITY_UNDECLARED,
     parse::OPERATOR_MEMBER_PARAMETER_LIST,
+    parse::PROVIDER_MEMBER,
     parse::QUOTED_METHOD_MEMBER,
     parse::REQUIRED_PARAM_AFTER_DEFAULT,
     parse::SINGLE_ITEM_TUPLE,

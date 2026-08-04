@@ -2926,10 +2926,10 @@ impl Parser<'_> {
 
     fn report_variant_method_member(&mut self, span: Span) {
         self.diagnostics.push(
-            Diagnostic::error("variant methods are not supported yet")
+            Diagnostic::error("variant methods are not valid")
                 .with_code(codes::parse::VARIANT_METHOD)
                 .with_label(Label::primary(span, "method declared inside a variant"))
-                .with_note("declare type-carried methods only on a named record in this version"),
+                .with_note("move the type-carried method to a named record declaration"),
         );
     }
 
@@ -2990,7 +2990,7 @@ impl Parser<'_> {
                     (
                         format!("method-bearing records cannot override `{name}`"),
                         "unsupported per-instance or type override",
-                        "providers have one shared implementation per named owner",
+                        "remove the override or define the shared method on the named owner",
                     )
                 } else {
                     (
@@ -3001,7 +3001,7 @@ impl Parser<'_> {
                 };
                 self.diagnostics.push(
                     Diagnostic::error(message)
-                        .with_code(codes::parse::UNSUPPORTED_SYNTAX)
+                        .with_code(codes::parse::PROVIDER_MEMBER)
                         .with_label(Label::primary(*separator_span, label))
                         .with_note(note),
                 );
@@ -3035,7 +3035,7 @@ impl Parser<'_> {
     fn report_interpolated_field_name(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("interpolated string cannot be used as a field name")
-                .with_code(codes::parse::UNSUPPORTED_SYNTAX)
+                .with_code(codes::parse::INTERPOLATED_FIELD_NAME)
                 .with_label(Label::primary(
                     span,
                     "computed field names use `[expr]: value`",
@@ -3101,13 +3101,19 @@ impl Parser<'_> {
             return;
         }
 
+        if matches!(&token.kind, TokenKind::Operator(operator) if operator == "=>") {
+            self.report_match_arm_outside_match(token.span);
+            self.recover_to_next_line();
+            return;
+        }
+
         // Custom operators are binary infix only, so one reaching here has no
         // left operand. Every other token is an ordinary unsupported remainder.
         let note = match &token.kind {
             TokenKind::Operator(operator) if is_custom_operator_token(operator) => format!(
                 "custom operator `{operator}` is binary infix; give it a left operand or write `left.{operator}(right)`"
             ),
-            _ => "this operator cannot appear in this position".to_owned(),
+            _ => "remove this operator or add the expression form it belongs to".to_owned(),
         };
         let span = token.span;
 
@@ -3116,17 +3122,28 @@ impl Parser<'_> {
                 .with_code(codes::parse::UNSUPPORTED_SYNTAX)
                 .with_label(Label::primary(
                     span,
-                    "this syntax is not supported by the core parser yet",
+                    "no expression form accepts this syntax here",
                 ))
                 .with_note(note),
         );
         self.recover_to_next_line();
     }
 
+    fn report_match_arm_outside_match(&mut self, span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("match arm appears outside a match")
+                .with_code(codes::parse::MATCH_ARM_OUTSIDE_MATCH)
+                .with_label(Label::primary(span, "this `=>` starts a bare match arm"))
+                .with_note(
+                    "write `value ?> pattern => expression` to put the arm in a `?>` match, or write `(x) => expression` for a lambda",
+                ),
+        );
+    }
+
     fn report_unsupported_interpolation_continuation(&mut self, span: Span) {
         self.diagnostics.push(
             Diagnostic::error("expected string interpolation continuation")
-                .with_code(codes::parse::UNSUPPORTED_SYNTAX)
+                .with_code(codes::parse::INTERPOLATION_CONTINUATION)
                 .with_label(Label::primary(
                     span,
                     "expected more string text or the end of the interpolated string",

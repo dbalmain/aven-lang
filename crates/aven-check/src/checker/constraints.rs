@@ -711,7 +711,7 @@ impl<'a> Checker<'a> {
     fn report_relational_requirement(&mut self, predicate: &MethodPredicate) {
         self.push_unique_diagnostic(
             Diagnostic::error(format!(
-                "operator `{}` relates more than one generic type, which is not supported in v0",
+                "operator `{}` cannot relate more than one generic type",
                 predicate.member
             ))
             .with_code(codes::ty::MISMATCH)
@@ -719,13 +719,7 @@ impl<'a> Checker<'a> {
                 predicate.operator_span,
                 "this method signature contains a free scheme variable other than its candidate",
             ))
-            .with_note(format!(
-                "the reserved later form is `Op(t, \"{}\", u) = w`",
-                predicate.member
-            ))
-            .with_note(
-                "for v0, pass the operation explicitly as a parameter of type `(t, u) -> w`",
-            ),
+            .with_note("pass the operation explicitly as a parameter of type `(t, u) -> w`"),
         );
     }
 

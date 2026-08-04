@@ -36,7 +36,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::comptime::EVALUATION_UNSUPPORTED,
-        text: "A compile-time binding has a right-hand side that must be evaluated, but the compile-time evaluator is not implemented yet. Use a literal type or value, or move runtime computations to lowercase bindings.",
+        text: "A compile-time binding has a right-hand side outside Aven's compile-time evaluation rules. Use a literal type or value, or move runtime computations to lowercase bindings.",
     },
     DiagnosticExplanation {
         code: codes::comptime::HOST_FUNCTION,
@@ -100,7 +100,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::lex::TAB_INDENTATION,
-        text: "Tabs are not accepted in indentation for v0. Use spaces so layout depth is stable across editors.",
+        text: "Aven indentation uses spaces. Replace tabs with spaces so layout depth is stable across editors.",
     },
     DiagnosticExplanation {
         code: codes::lex::UNEXPECTED_CHARACTER,
@@ -116,11 +116,11 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::lex::UNTERMINATED_REGEX,
-        text: "A regex literal was opened but not closed. Add the closing /. Regex values are reserved but not implemented yet, so use Text when the pattern must execute today.",
+        text: "A regex literal was opened but not closed. Add the closing /. Regex literals have no runtime type, so use Text when the pattern must execute.",
     },
     DiagnosticExplanation {
         code: codes::lex::UNTERMINATED_STRING,
-        text: "A string literal was opened but not closed. Add the closing quote, or use a raw string form once multi-line string support exists.",
+        text: "A string literal was opened but not closed. Add the closing quote.",
     },
     DiagnosticExplanation {
         code: codes::module::CAPABILITY_UNAVAILABLE,
@@ -248,15 +248,27 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::parse::EXPECTED_RECORD_LABEL,
-        text: "A record entry needs a valid field name. Use an identifier-style field name for now; quoted string field names are reserved for a later parser slice.",
+        text: "A record entry needs a valid field name. Use an identifier-style field name, a string literal for a quoted static name, or [expr] for a computed key.",
     },
     DiagnosticExplanation {
         code: codes::parse::EXPECTED_TYPE,
         text: "The parser expected a type annotation term after :. Type syntax uses the same expression grammar as value syntax.",
     },
     DiagnosticExplanation {
+        code: codes::parse::INTERPOLATED_FIELD_NAME,
+        text: "An interpolated string cannot be a static field name. Use a string literal for a static name, or [expr]: value for a computed key.",
+    },
+    DiagnosticExplanation {
+        code: codes::parse::INTERPOLATION_CONTINUATION,
+        text: "An interpolated expression was not followed by more string text or the end of the string. Close the expression with } before continuing the string.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::INVALID_BINDING_NAME,
         text: "A binding name must be a single identifier. Use a lowercase runtime identifier or uppercase compile-time identifier before =.",
+    },
+    DiagnosticExplanation {
+        code: codes::parse::MATCH_ARM_OUTSIDE_MATCH,
+        text: "A pattern => expression arm needs a match subject. Write value ?> pattern => expression for a match, or write (x) => expression for a lambda.",
     },
     DiagnosticExplanation {
         code: codes::parse::MISMATCHED_DELIMITER,
@@ -303,6 +315,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "An operator member must be followed by a parameter list. Write an operator such as <(Self): Bool.",
     },
     DiagnosticExplanation {
+        code: codes::parse::PROVIDER_MEMBER,
+        text: "A method-bearing record accepts shared method implementations and constructor-filled data defaults. Write name: T = value for data, and define one shared method implementation per named owner.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::QUOTED_METHOD_MEMBER,
         text: "Method members use bare lowercase names or bare operator tokens. Remove the quotes from the member name.",
     },
@@ -336,11 +352,11 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::parse::UNSUPPORTED_SYNTAX,
-        text: "The syntax is intentionally not supported by the current parser slice. Rewrite using currently supported operators or wait for the planned syntax milestone.",
+        text: "An operator or token appears where no expression form accepts it. Remove it, add the missing operand, or rewrite the expression using a valid operator form.",
     },
     DiagnosticExplanation {
         code: codes::parse::VARIANT_METHOD,
-        text: "Type-carried methods may be declared only on named records in this version. Variant method carriage is not implemented yet.",
+        text: "Type-carried methods may be declared only on named records. Move the method to a named record declaration.",
     },
     DiagnosticExplanation {
         code: codes::record::REDUNDANT_UNDEFINED,
@@ -360,7 +376,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::runtime::MISSING_FIELD,
-        text: "Runtime evaluation tried to read a record field that is not present on the record value. Add the field before the lookup, change the field name, or handle the absent-field case once optional access exists.",
+        text: "Runtime evaluation tried to read a record field that is not present on the record value. Add the field before the lookup, change the field name, or check the record shape before access.",
     },
     DiagnosticExplanation {
         code: codes::runtime::NO_MATCH,
@@ -368,7 +384,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::runtime::NOT_CALLABLE,
-        text: "Runtime evaluation tried to call a value that is not a function. Only closures produced by lambda expressions and host-injected native functions are callable in the current evaluator.",
+        text: "Runtime evaluation tried to call a value that is not a function. Call a closure produced by a lambda expression or a host-injected native function.",
     },
     DiagnosticExplanation {
         code: codes::runtime::PANIC,
@@ -384,7 +400,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::runtime::TYPE_ERROR,
-        text: "Runtime evaluation reached an operator with operands it cannot accept. Use operands of the expected runtime kind, or add a static check once the relevant language feature exists.",
+        text: "Runtime evaluation reached an operator with operands it cannot accept. Use operands of the expected runtime kind.",
     },
     DiagnosticExplanation {
         code: codes::runtime::UNBOUND_NAME,
@@ -392,7 +408,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::runtime::UNSUPPORTED,
-        text: "Runtime evaluation reached syntax that is parsed but not implemented by the current evaluator slice. Rewrite the program using supported expression forms or wait for the planned evaluator milestone.",
+        text: "The evaluator cannot run this expression form. Rewrite the program using the expression forms named by the diagnostic.",
     },
     DiagnosticExplanation {
         code: codes::test::NON_ZERO_ARITY,
@@ -412,7 +428,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::BRACKET_TYPE_APPLICATION,
-        text: "Bracket type application has been removed. Use ordinary call syntax such as Result(Int, Text); postfix square brackets are reserved for indexing.",
+        text: "Postfix brackets are indexing syntax, not type application. Use ordinary call syntax such as Result(Int, Text).",
     },
     DiagnosticExplanation {
         code: codes::ty::COALESCE_NEVER_EMPTY,
@@ -508,7 +524,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::ty::REGEX_LITERAL_UNSUPPORTED,
-        text: "Regex literal syntax is reserved and preserved by the lexer, parser, formatter, and language server, but regex values are not implemented yet. Use Text for the pattern until the Regex runtime type and operations are available.",
+        text: "Regex literals have no runtime type. Use Text for patterns that must be stored, checked, or evaluated.",
     },
     DiagnosticExplanation {
         code: codes::ty::RENAME_ABSENT_FIELD,

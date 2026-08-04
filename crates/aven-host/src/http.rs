@@ -230,7 +230,7 @@ fn validate_text_value_field_type(kind: &str, name: &str, ty: &Type) -> Result<(
 
     let optional = matches!(ty, Type::Optional(_) | Type::Nullable(_));
     let guard_note = if optional {
-        "; optional header/param fields are not accepted yet, guard or default the value before passing it"
+        "; guard or default the value before passing it"
     } else {
         ""
     };

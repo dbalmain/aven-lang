@@ -58,6 +58,27 @@ fn invalid_parser_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn parser_diagnostics_do_not_use_roadmap_wording() -> Result<(), Box<dyn Error>> {
+    for path in fixture_files(PARSER_FIXTURE_ROOT, "invalid")? {
+        let source = fs::read_to_string(&path)?;
+        let output = aven_parser::parse_module(&source);
+
+        for diagnostic in &output.diagnostics {
+            let rendered = render_diagnostics(std::slice::from_ref(diagnostic));
+            assert!(
+                !rendered
+                    .split(|character: char| !character.is_alphanumeric())
+                    .any(|word| word.eq_ignore_ascii_case("yet")),
+                "{} produced roadmap wording:\n{rendered}",
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
 fn parser_ast_fixtures_match_expected_tree() -> Result<(), Box<dyn Error>> {
     for path in fixture_files(PARSER_AST_FIXTURE_ROOT, "valid")? {
         let source = fs::read_to_string(&path)?;

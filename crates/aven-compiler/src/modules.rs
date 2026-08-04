@@ -2362,7 +2362,7 @@ fn unsupported_root(span: Span, specifier: &str) -> Diagnostic {
             "the host provides no library by this name",
         ))
         .with_note("use a local relative specifier, a root prefix, or a host-registered library")
-        .with_note("versioned packages remain unsupported until package resolution lands")
+        .with_note("versioned package specifiers cannot be resolved")
 }
 
 fn root_unavailable(span: Span, specifier: &str) -> Diagnostic {

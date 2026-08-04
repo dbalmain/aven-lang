@@ -1,0 +1,6 @@
+error parse.match-arm-outside-match: match arm appears outside a match
+  label 24..26: this `=>` starts a bare match arm
+  note: write `value ?> pattern => expression` to put the arm in a `?>` match, or write `(x) => expression` for a lambda
+error parse.match-arm-outside-match: match arm appears outside a match
+  label 39..41: this `=>` starts a bare match arm
+  note: write `value ?> pattern => expression` to put the arm in a `?>` match, or write `(x) => expression` for a lambda

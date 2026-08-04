@@ -1,0 +1,2 @@
+lambda = (x) => x
+match = value ?> @Ok(x) => x, _ => 0

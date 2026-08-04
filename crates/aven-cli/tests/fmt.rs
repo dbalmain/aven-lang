@@ -829,7 +829,7 @@ fn run_log_syslog_reports_not_implemented() {
     assert_failure(&output);
     assert_eq!(stdout(&output), "");
     assert!(
-        stderr(&output).contains("--log syslog is not yet implemented"),
+        stderr(&output).contains("--log syslog is unavailable"),
         "expected syslog stub error, got:\n{}",
         stderr(&output)
     );

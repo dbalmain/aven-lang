@@ -1080,8 +1080,10 @@ impl RunConfig {
         let destination = match self.log.as_str() {
             "stdout" => LogDestination::Stdout,
             "stderr" => LogDestination::Stderr,
-            "syslog" => bail!("--log syslog is not yet implemented"),
-            "journald" => bail!("--log journald is not yet implemented"),
+            "syslog" => bail!("--log syslog is unavailable; use stdout, stderr, or a file path"),
+            "journald" => {
+                bail!("--log journald is unavailable; use stdout, stderr, or a file path")
+            }
             path => LogDestination::File(RefCell::new(
                 fs::OpenOptions::new()
                     .create(true)

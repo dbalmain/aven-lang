@@ -9,7 +9,7 @@ struct UnresolvedCall {
 impl<'a> Checker<'a> {
     pub(super) fn report_bracket_type_application(&mut self, span: Span) {
         self.push_unique_diagnostic(
-            Diagnostic::error("bracket type application has been removed")
+            Diagnostic::error("postfix brackets are indexing, not type application")
                 .with_code(codes::ty::BRACKET_TYPE_APPLICATION)
                 .with_label(Label::primary(span, "these brackets are parsed as indexing"))
                 .with_note(
@@ -81,12 +81,13 @@ impl<'a> Checker<'a> {
 
     pub(super) fn report_regex_literal_unsupported(&mut self, span: Span) {
         self.push_unique_diagnostic(
-            Diagnostic::error("regex literals are not supported yet")
+            Diagnostic::error("regex literals have no runtime type")
                 .with_code(codes::ty::REGEX_LITERAL_UNSUPPORTED)
-                .with_label(Label::primary(span, "this reserved literal has no runtime type"))
-                .with_note(
-                    "use a Text pattern for now; regex syntax is preserved for future language support",
-                ),
+                .with_label(Label::primary(
+                    span,
+                    "this reserved literal has no runtime type",
+                ))
+                .with_note("use a Text value for patterns that must be checked or evaluated"),
         );
     }
 
@@ -126,7 +127,7 @@ impl<'a> Checker<'a> {
         }
 
         self.diagnostics.push(
-            Diagnostic::error("dynamic import is not supported yet")
+            Diagnostic::error("dynamic import specifier")
                 .with_code(codes::module::DYNAMIC_IMPORT)
                 .with_label(Label::primary(
                     span,
@@ -144,14 +145,9 @@ impl<'a> Checker<'a> {
         self.diagnostics.push(
             Diagnostic::error(format!("unsupported import specifier `{specifier}`"))
                 .with_code(codes::module::UNSUPPORTED_ROOT)
-                .with_label(Label::primary(
-                    span,
-                    "this import root is not supported in this milestone",
-                ))
+                .with_label(Label::primary(span, "this import root is unavailable"))
                 .with_note("use a local relative specifier or a root prefix provided by the host")
-                .with_note(
-                    "bare libraries and packages remain unsupported until package resolution lands",
-                ),
+                .with_note("bare library and package specifiers cannot be resolved"),
         );
     }
 
@@ -205,7 +201,7 @@ impl<'a> Checker<'a> {
                         "`Self` is legal only in a class public interface or a method-requirement row",
                     )
                     .with_note(
-                        "named record and variant methods must name their owner type explicitly; carriage-level `Self` is reserved for a later version",
+                        "name the owner type explicitly in named record and variant methods",
                     ),
             );
             return;
@@ -238,7 +234,7 @@ impl<'a> Checker<'a> {
             Diagnostic::error("variant rows cannot mix tags and literal members")
                 .with_code(codes::ty::MIXED_VARIANT_ENTRIES)
                 .with_label(Label::primary(span, label))
-                .with_note("use either variant tags or literal values in one row for now"),
+                .with_note("use either variant tags or literal values in one row"),
         );
     }
 

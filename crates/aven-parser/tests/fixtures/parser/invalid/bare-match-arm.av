@@ -1,0 +1,4 @@
+f = (z: Int) =>
+  g = _ => z
+  h = val => val
+  g(1)

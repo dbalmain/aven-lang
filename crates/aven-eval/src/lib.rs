@@ -1663,7 +1663,7 @@ fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
         ExprKind::Literal(literal) => eval_literal(literal, expr.span).map_err(one_diagnostic),
         ExprKind::Regex(_) => Err(one_diagnostic(unsupported_expr(
             expr.span,
-            "regex literals are reserved syntax but have no runtime implementation yet",
+            "regex literals have no runtime value; use Text for executable patterns",
         ))),
         ExprKind::Interpolation(segments) => eval_interpolation(segments, env),
         ExprKind::Undefined => Ok(Value::Undefined),
@@ -1731,7 +1731,7 @@ fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
         } => eval_propagate(value, *operator_span, *mode, env),
         _ => Err(one_diagnostic(unsupported_expr(
             expr.span,
-            "this expression is not supported by the current evaluator",
+            "the evaluator cannot run this expression form",
         ))),
     }
 }
@@ -1864,7 +1864,7 @@ fn match_pattern(
         ExprKind::Literal(literal) => match_literal_pattern(literal, pattern.span, value),
         ExprKind::Regex(_) => Err(unsupported_expr(
             pattern.span,
-            "regex literals are reserved syntax but have no runtime implementation yet",
+            "regex literals have no runtime value; match a Text value instead",
         )),
         ExprKind::Binary {
             left,
@@ -2968,7 +2968,7 @@ fn eval_array(entries: &[RecordEntry], env: &Environment) -> Eval {
             entry => {
                 return Err(one_diagnostic(unsupported_expr(
                     record_entry_span(entry),
-                    "only element and spread entries are supported in array literals by the current evaluator",
+                    "array literals accept only elements and spreads; remove or rewrite this entry",
                 )));
             }
         }
@@ -3020,7 +3020,7 @@ fn eval_set(entries: &[RecordEntry], env: &Environment) -> Eval {
             entry => {
                 return Err(one_diagnostic(unsupported_expr(
                     record_entry_span(entry),
-                    "only element and spread entries are supported in set literals by the current evaluator",
+                    "set literals accept only elements and spreads; remove or rewrite this entry",
                 )));
             }
         }
@@ -5028,7 +5028,7 @@ fn eval_index(
     if args.len() != 1 {
         return Err(one_diagnostic(unsupported_expr(
             span,
-            "only single-argument indexing is supported by the current evaluator",
+            "indexing takes exactly one argument; pass a single index",
         )));
     }
 
@@ -5381,7 +5381,7 @@ fn eval_unary(operator: &str, value: &Expr, span: Span, env: &Environment) -> Ev
         ))),
         _ => Err(one_diagnostic(unsupported_expr(
             span,
-            "this unary operator is not supported by the current evaluator",
+            "the evaluator cannot apply this unary operator",
         ))),
     }
 }
@@ -5587,7 +5587,7 @@ fn int_arithmetic(
         _ => {
             return Err(unsupported_expr(
                 span,
-                "this integer operator is not supported by the current evaluator",
+                "the evaluator cannot apply this operator to Int values",
             ));
         }
     };
@@ -5615,7 +5615,7 @@ fn float_arithmetic(
         "^" => Ok(Value::Float(left.powf(right))),
         _ => Err(unsupported_expr(
             span,
-            "this numeric operator is not supported by the current evaluator",
+            "the evaluator cannot apply this operator to Float values",
         )),
     }
 }
@@ -5810,7 +5810,7 @@ fn missing_field(field: &str, span: Span) -> Diagnostic {
 }
 
 fn dynamic_import(span: Span) -> Diagnostic {
-    Diagnostic::error("dynamic import is not supported yet")
+    Diagnostic::error("dynamic import specifier")
         .with_code(codes::module::DYNAMIC_IMPORT)
         .with_label(Label::primary(
             span,
@@ -5822,12 +5822,9 @@ fn dynamic_import(span: Span) -> Diagnostic {
 fn unsupported_import_root(specifier: &str, span: Span) -> Diagnostic {
     Diagnostic::error(format!("unsupported import specifier `{specifier}`"))
         .with_code(codes::module::UNSUPPORTED_ROOT)
-        .with_label(Label::primary(
-            span,
-            "this import root is not supported in this milestone",
-        ))
+        .with_label(Label::primary(span, "this import root is unavailable"))
         .with_note("use a local relative specifier or a root prefix provided by the host")
-        .with_note("bare libraries and packages remain unsupported until package resolution lands")
+        .with_note("bare library and package specifiers cannot be resolved")
 }
 
 /// A static relative import evaluated without an injected imports map: this
@@ -5986,7 +5983,7 @@ fn unsupported_expr(span: Span, label: &str) -> Diagnostic {
         .with_code(codes::runtime::UNSUPPORTED)
         .with_label(Label::primary(span, label))
         .with_note(
-            "the evaluator currently supports literals, names, bindings, blocks, lambdas, calls, matches, records, variants, collections, indexes, nullable field access, unary operators, and core binary operators",
+            "rewrite with literals, names, bindings, blocks, lambdas, calls, matches, records, variants, collections, indexes, nullable field access, unary operators, or core binary operators",
         )
 }
 
@@ -6008,14 +6005,12 @@ fn record_entry_span(entry: &RecordEntry) -> Span {
 }
 
 fn unsupported_operator(operator: &str, span: Span) -> Diagnostic {
-    Diagnostic::error(format!(
-        "operator `{operator}` is not supported by the evaluator yet"
-    ))
-    .with_code(codes::runtime::UNSUPPORTED)
-    .with_label(Label::primary(
-        span,
-        "this operator is planned for a later evaluator slice",
-    ))
+    Diagnostic::error(format!("operator `{operator}` has no runtime behavior"))
+        .with_code(codes::runtime::UNSUPPORTED)
+        .with_label(Label::primary(
+            span,
+            "rewrite with a core operator or an explicit function call",
+        ))
 }
 
 fn one_diagnostic(diagnostic: Diagnostic) -> Flow {
