@@ -2950,6 +2950,74 @@ fn bool_base_match_exhaustiveness_uses_true_false_members() {
 }
 
 #[test]
+fn inferred_bool_matches_close_over_the_bool_domain() {
+    for source in [
+        "f = (c: Text) => true ?> true => c, false => \"\"\n",
+        concat!(
+            "f = (c: Text) =>\n",
+            "  flag = 1 > 0\n",
+            "  flag ?> true => c, false => \"\"\n",
+        ),
+        concat!(
+            "f = (c: Text) =>\n",
+            "  flag = true\n",
+            "  flag ?> true => c, false => \"\"\n",
+        ),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "complete inferred Bool match produced diagnostics for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn annotated_and_destructured_bool_matches_remain_exhaustive() {
+    for source in [
+        "f = (b: Bool, c: Text) => b ?> true => c, false => \"\"\n",
+        concat!(
+            "f = (c: Text) =>\n",
+            "  flag: Bool = true\n",
+            "  flag ?> true => c, false => \"\"\n",
+        ),
+        concat!(
+            "f = (b: Bool, c: Text) =>\n",
+            "  st = (\"\", b)\n",
+            "  st ?> (acc, flag) =>\n",
+            "    flag ?> true => acc + c, false => acc\n",
+        ),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "complete annotated Bool match produced diagnostics for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn open_variants_and_partial_bool_matches_remain_non_exhaustive() {
+    for source in [
+        "f = (value: @{@Known, ..}) => value ?> @Known => 1\n",
+        "f = (value: Bool) => value ?> true => 1\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::NON_EXHAUSTIVE_MATCH),
+            1,
+            "non-exhaustive diagnostics for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
 fn base_operations_fold_comptime_singleton_literals() {
     let source = concat!(
         "c = 1 + 2\n",

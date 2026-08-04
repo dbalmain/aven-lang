@@ -224,6 +224,11 @@ impl<'a> Checker<'a> {
         }
 
         if matches!(row.tail, RowTail::Open | RowTail::Var(_)) {
+            if entry_kind == VariantEntryKind::Literal && finite_literal_base_is_covered(row, arms)
+            {
+                return;
+            }
+
             self.report_open_variant_non_exhaustive(subject.span);
             return;
         }
@@ -744,6 +749,26 @@ impl<'a> Checker<'a> {
     pub(super) fn resolved_match_result_type(&self, ty: &Type) -> Type {
         self.normalize(&self.resolve_and_default(ty))
     }
+}
+
+fn finite_literal_base_is_covered(row: &Row, arms: &[MatchArm]) -> bool {
+    let Some(domain) = literal_variant_base(row).and_then(finite_literal_base_row) else {
+        return false;
+    };
+    let covered = arms
+        .iter()
+        .filter(|arm| arm.guards.is_empty())
+        .flat_map(|arm| {
+            arm_covered_literals(&arm.pattern)
+                .into_iter()
+                .map(|(literal, _)| literal)
+        })
+        .collect::<HashSet<_>>();
+
+    domain.entries.iter().all(|entry| match entry {
+        RowEntry::Literal { value } => covered.contains(value),
+        RowEntry::Field { .. } | RowEntry::Tag { .. } => false,
+    })
 }
 
 fn unresolved_pattern_subject(ty: Type) -> Option<Type> {

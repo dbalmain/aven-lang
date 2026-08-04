@@ -1228,17 +1228,7 @@ fn subject_variant_row<'a>(ty: &'a Type, context: PatternTypeContext<'a>) -> Opt
     }
 
     if ty.is_builtin(BuiltinType::Bool) {
-        return Some(Cow::Owned(Row {
-            entries: vec![
-                RowEntry::Literal {
-                    value: Literal::Bool(true),
-                },
-                RowEntry::Literal {
-                    value: Literal::Bool(false),
-                },
-            ],
-            tail: RowTail::Closed,
-        }));
+        return finite_literal_base_row(LiteralBase::Bool).map(Cow::Owned);
     }
 
     let (ok_ty, err_ty) = result_type_args(ty)?;
@@ -1255,6 +1245,21 @@ fn subject_variant_row<'a>(ty: &'a Type, context: PatternTypeContext<'a>) -> Opt
         ],
         tail: RowTail::Closed,
     }))
+}
+
+fn finite_literal_base_row(base: LiteralBase) -> Option<Row> {
+    let members = match base {
+        LiteralBase::Bool => [Literal::Bool(true), Literal::Bool(false)],
+        LiteralBase::Text | LiteralBase::Number => return None,
+    };
+
+    Some(Row {
+        entries: members
+            .into_iter()
+            .map(|value| RowEntry::Literal { value })
+            .collect(),
+        tail: RowTail::Closed,
+    })
 }
 
 pub(crate) fn string_literal_label(text: &str) -> Option<String> {
