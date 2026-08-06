@@ -1,0 +1,5 @@
+numFromData = (d) =>
+  d ?>
+    @Int(v) => v.toFloat()
+    @Float(v) => v
+    _ => 0.0

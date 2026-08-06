@@ -3671,6 +3671,36 @@ fn unannotated_multi_arm_constructor_match_resolves_payload_binders() {
 }
 
 #[test]
+fn unannotated_constructor_match_with_fallback_resolves_payload_binders() {
+    let source = concat!(
+        "numFromData = (d) =>\n",
+        "  d ?>\n",
+        "    @Int(v) => v.toFloat()\n",
+        "    @Float(v) => v\n",
+        "    _ => 0.0\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        check.diagnostics
+    );
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    let inferred = checker
+        .infer_top_level_scheme("numFromData")
+        .expect("inferred numFromData scheme");
+    assert!(
+        !crate::ty::type_contains_deferred(&inferred.ty),
+        "expected a resolved result, got {:?}",
+        inferred.ty
+    );
+}
+
+#[test]
 fn record_match_pattern_binders_use_subject_field_and_rest_types() {
     let output = parse_module(
         "source : { x: Int, y: Text, z: Bool } = value\n\

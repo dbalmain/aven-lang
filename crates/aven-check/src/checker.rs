@@ -905,7 +905,7 @@ fn collect_known_pattern_types(
             let Some(row) = subject_variant_row(expected, context) else {
                 return;
             };
-            let Some(payload) = literal_variant_payload(&row, tag) else {
+            let Some(payload) = variant_payload_lookup(&row, tag).flatten() else {
                 return;
             };
             if payload.len() != args.len() {

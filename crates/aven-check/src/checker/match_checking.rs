@@ -448,15 +448,24 @@ impl<'a> Checker<'a> {
         if self.resolve_if_concrete(subject).is_some() {
             return None;
         }
-        let seed = self.pure_tag_match_subject(arms)?;
+        let seed = self.tag_match_subject_seed(arms)?;
         self.unifier.unify(subject, &seed).ok()?;
         Some(self.normalize(&self.unifier.resolve(&seed)))
     }
 
-    fn pure_tag_match_subject(&mut self, arms: &[MatchArm]) -> Option<Type> {
+    fn tag_match_subject_seed(&mut self, arms: &[MatchArm]) -> Option<Type> {
         let mut tags = Vec::new();
+        let mut open = false;
         for arm in arms {
-            let (name, arity) = pure_tag_pattern(&arm.pattern)?;
+            let Some((name, arity)) = pure_tag_pattern(&arm.pattern) else {
+                if is_catch_all_pattern(&arm.pattern) {
+                    // The named arms still constrain their payloads, while the
+                    // catch-all admits tags outside this inferred seed.
+                    open = true;
+                    continue;
+                }
+                return None;
+            };
             if tags
                 .iter()
                 .any(|(existing, _): &(String, Vec<Type>)| existing == name)
@@ -469,7 +478,11 @@ impl<'a> Checker<'a> {
             ));
         }
 
-        if tags.len() == 2 {
+        if tags.is_empty() {
+            return None;
+        }
+
+        if !open && tags.len() == 2 {
             let ok = tags.iter().find(|(name, _)| name == "Ok");
             let err = tags.iter().find(|(name, _)| name == "Err");
             if let (Some(ok), Some(err)) = (ok, err)
@@ -485,7 +498,7 @@ impl<'a> Checker<'a> {
                 .into_iter()
                 .map(|(name, payload)| RowEntry::Tag { name, payload })
                 .collect(),
-            tail: RowTail::Closed,
+            tail: if open { RowTail::Open } else { RowTail::Closed },
         }))
     }
 

@@ -1,0 +1,11 @@
+Document = @{@Int(Int), @Float(Float), @Text(Text)}
+
+numFromData = (d: Document) =>
+  d ?>
+    @Int(v) => v.toFloat()
+    @Float(v) => v
+    _ => 0.0
+
+use = (x: Document) =>
+  re = numFromData(x)
+  re + 1.0
