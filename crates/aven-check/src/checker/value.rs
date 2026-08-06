@@ -164,7 +164,14 @@ impl<'a> Checker<'a> {
         }
 
         if args.len() < required || args.len() > params.len() {
-            self.report_function_arity_mismatch(required, params.len(), args.len(), callee.span);
+            self.report_call_arity_mismatch(
+                &env,
+                callee,
+                required,
+                params.len(),
+                args.len(),
+                call.span,
+            );
             self.check_value_exprs(args);
             return;
         }
@@ -175,6 +182,32 @@ impl<'a> Checker<'a> {
         for (expected, arg) in params.iter().zip(args) {
             self.check_call_arg_against_param(expected, arg);
         }
+    }
+
+    fn report_call_arity_mismatch(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        required: usize,
+        total: usize,
+        found: usize,
+        call_span: Span,
+    ) {
+        if let ExprKind::FieldAccess {
+            receiver, field, ..
+        } = &ungroup_expr(callee).kind
+        {
+            let inferred = self.infer(env, receiver);
+            let owner = self.normalize(&self.resolve_and_default(&inferred));
+            if self.exact_method_signature(&owner, field).is_some()
+                || builtin_collection_method_type(&owner, field).is_some()
+            {
+                self.report_method_arity_on_owner(&owner, field, required, total, found, call_span);
+                return;
+            }
+        }
+
+        self.report_function_arity_mismatch(required, total, found, callee.span);
     }
 
     /// Check a field-access expression in statement position. A resolved

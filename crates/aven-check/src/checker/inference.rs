@@ -2089,7 +2089,9 @@ impl<'a> Checker<'a> {
             self.push_method_obligations_at(signature.predicates, *field_span);
             let required = signature.params.required_len();
             if args.len() < required || args.len() > signature.params.len() {
-                self.report_function_arity_mismatch(
+                self.report_method_arity_on_owner(
+                    &probed,
+                    field,
                     required,
                     signature.params.len(),
                     args.len(),
