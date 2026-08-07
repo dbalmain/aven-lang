@@ -293,7 +293,9 @@ fn normalize_direct_shebang_argv(args: Vec<OsString>) -> Result<NormalizedArgv> 
     })
 }
 
-#[tokio::main]
+// Two workers keep the CLI's address-space baseline predictable while leaving
+// the LSP one thread to serve I/O when semantic analysis occupies the other.
+#[tokio::main(worker_threads = 2)]
 async fn main() {
     // Single exit funnel: every command returns an exit code (or Err → 1), then
     // we emit the session record once and call `process::exit`. This avoids a

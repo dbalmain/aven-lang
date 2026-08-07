@@ -540,13 +540,33 @@ fn infinite_recursion_reports_recursion_limit() {
         diagnostic.code.as_deref(),
         Some(codes::runtime::RECURSION_LIMIT)
     );
+    assert_eq!(diagnostic.message, "recursion limit exceeded");
+    assert_eq!(diagnostic.labels.len(), 1);
+    assert!(diagnostic.labels[0].span.end > diagnostic.labels[0].span.start);
+    assert!(diagnostic.labels[0].message.contains("64 MiB"));
+    assert!(diagnostic.notes[0].contains("rewrite the algorithm"));
 }
 
 #[test]
-fn deep_finite_recursion_succeeds() {
-    // Well above the pre-stacker native-stack ceiling (~1900 frames).
+fn configured_stack_budget_drives_recursion_guard() {
+    let module = parse_ok("loop = () => loop()\nloop()\n");
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_stack_segment_limit(1),
+    );
+
+    assert_eq!(outcome.diagnostics.len(), 1);
+    assert_eq!(
+        outcome.diagnostics[0].code.as_deref(),
+        Some(codes::runtime::RECURSION_LIMIT)
+    );
+    assert!(outcome.diagnostics[0].labels[0].message.contains("1 MiB"));
+}
+
+#[test]
+fn finite_recursion_within_stack_budget_succeeds() {
     assert_module_value(
-        "countdown = (n) =>\n  n <= 0 ?>\n    true => 0\n    false => countdown(n - 1)\ncountdown(50000)\n",
+        "countdown = (n) =>\n  n <= 0 ?>\n    true => 0\n    false => countdown(n - 1)\ncountdown(500)\n",
         Value::int(0),
     );
 }

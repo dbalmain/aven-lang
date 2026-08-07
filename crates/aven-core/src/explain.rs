@@ -396,7 +396,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::runtime::RECURSION_LIMIT,
-        text: "Runtime evaluation exceeded the maximum call depth. Check that every recursive function has a reachable base case; if the recursion is intentional and deeper than the limit allows, rewrite the algorithm to use less stack or split the work.",
+        text: "Runtime evaluation exhausted its bounded stack-growth budget. Check that every recursive function has a reachable base case; for intentional recursion, rewrite the algorithm to use less stack or split the work.",
     },
     DiagnosticExplanation {
         code: codes::runtime::TYPE_ERROR,

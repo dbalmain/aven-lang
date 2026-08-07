@@ -863,6 +863,7 @@ pub struct Environment {
     primitive_families: Rc<PrimitiveFamilyPlan>,
     family_descriptors: Rc<RefCell<HashMap<String, Rc<NamedFamilyDescriptor>>>>,
     allow_builtin_method_attachments: bool,
+    stack_segment_limit: usize,
 }
 
 struct Scope {
@@ -929,6 +930,7 @@ impl Environment {
             primitive_families: Rc::new(primitive_families),
             family_descriptors: Rc::new(RefCell::new(HashMap::new())),
             allow_builtin_method_attachments,
+            stack_segment_limit: DEFAULT_STACK_SEGMENT_LIMIT,
         }
     }
 
@@ -943,6 +945,7 @@ impl Environment {
             primitive_families: Rc::clone(&self.primitive_families),
             family_descriptors: Rc::clone(&self.family_descriptors),
             allow_builtin_method_attachments: self.allow_builtin_method_attachments,
+            stack_segment_limit: self.stack_segment_limit,
         }
     }
 
@@ -1037,7 +1040,6 @@ pub fn eval_module(module: &Module) -> EvalOutcome {
 }
 
 /// Optional inputs for [`eval_module_with_options`].
-#[derive(Default)]
 pub struct EvalModuleOptions<'a> {
     globals: Vec<(String, Value)>,
     imports: Option<&'a ModuleImports>,
@@ -1046,6 +1048,22 @@ pub struct EvalModuleOptions<'a> {
     allow_builtin_method_attachments: bool,
     elaborations: Option<&'a EvalElaborationPlan>,
     source: Option<Rc<EvalSource>>,
+    stack_segment_limit: usize,
+}
+
+impl Default for EvalModuleOptions<'_> {
+    fn default() -> Self {
+        Self {
+            globals: Vec::new(),
+            imports: None,
+            runtime_types: None,
+            builtin_methods: None,
+            allow_builtin_method_attachments: false,
+            elaborations: None,
+            source: None,
+            stack_segment_limit: DEFAULT_STACK_SEGMENT_LIMIT,
+        }
+    }
 }
 
 impl<'a> EvalModuleOptions<'a> {
@@ -1083,6 +1101,12 @@ impl<'a> EvalModuleOptions<'a> {
         self.source = Some(Rc::new(source));
         self
     }
+
+    #[cfg(test)]
+    fn with_stack_segment_limit(mut self, limit: usize) -> Self {
+        self.stack_segment_limit = limit;
+        self
+    }
 }
 
 /// Evaluate a module with the supplied host bindings and evaluator metadata.
@@ -1098,7 +1122,7 @@ pub fn eval_module_with_options(module: &Module, options: EvalModuleOptions<'_>)
     let runtime_types = options.runtime_types.unwrap_or(&default_runtime_types);
     let builtin_methods = options.builtin_methods.unwrap_or(&default_builtin_methods);
     let elaborations = options.elaborations.unwrap_or(&default_elaborations);
-    let env = Environment::with_imports_builtin_methods_and_reifications(
+    let mut env = Environment::with_imports_builtin_methods_and_reifications(
         imports.clone(),
         builtin_methods.clone(),
         options.allow_builtin_method_attachments,
@@ -1107,6 +1131,7 @@ pub fn eval_module_with_options(module: &Module, options: EvalModuleOptions<'_>)
         elaborations.primitive_families.clone(),
         options.source,
     );
+    env.stack_segment_limit = options.stack_segment_limit;
     bind_intrinsics(&env);
     for (name, value) in options.globals {
         env.bind(name, value);
@@ -2841,42 +2866,47 @@ fn closure_arity(closure: &Closure) -> (usize, usize) {
     (required, total)
 }
 
-/// Maximum nested Aven call frames before evaluation returns
-/// [`codes::runtime::RECURSION_LIMIT`]. Sized so the guard, not the OS stack,
-/// stops runaway recursion; `stacker` grows the stack well past the old ~1900
-/// frame native-stack ceiling.
-const MAX_CALL_DEPTH: usize = 100_000;
-
-/// Remaining stack space that triggers a fresh segment via `stacker::maybe_grow`.
-const STACK_RED_ZONE: usize = 64 * 1024;
+/// Remaining stack space that triggers a fresh segment via `stacker::grow`.
+/// This leaves headroom for evaluator work between instrumented call sites.
+const STACK_RED_ZONE: usize = 256 * 1024;
 
 /// Size of each new stack segment allocated by `stacker` when the red zone is hit.
 const STACK_GROW_SIZE: usize = 1024 * 1024;
 
+/// Maximum memory committed to nested stacker segments during one call chain.
+/// Exact Aven call depth remains body-dependent; the memory backstop does not.
+const STACK_GROW_BUDGET: usize = 64 * 1024 * 1024;
+
+const DEFAULT_STACK_SEGMENT_LIMIT: usize = STACK_GROW_BUDGET / STACK_GROW_SIZE;
+
 thread_local! {
-    static CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static ACTIVE_STACK_SEGMENTS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// RAII guard that increments [`CALL_DEPTH`] on enter and decrements on drop so
-/// early returns via `?`, [`Flow::Fail`], and [`Flow::Propagate`] restore depth.
-struct CallDepthGuard;
+/// Tracks stacker segments that remain live while a recursive call chain is
+/// active. Refusing the next segment before calling stacker keeps its infallible
+/// allocation path away from the host's memory ceiling.
+struct StackSegmentGuard;
 
-impl CallDepthGuard {
-    fn enter(span: Span) -> Result<Self, Flow> {
-        CALL_DEPTH.with(|depth| {
-            let current = depth.get();
-            if current >= MAX_CALL_DEPTH {
-                return Err(one_diagnostic(recursion_limit(span, MAX_CALL_DEPTH)));
+impl StackSegmentGuard {
+    fn enter(span: Span, limit: usize) -> Result<Self, Flow> {
+        ACTIVE_STACK_SEGMENTS.with(|segments| {
+            let current = segments.get();
+            if current >= limit {
+                return Err(one_diagnostic(recursion_limit(
+                    span,
+                    limit * STACK_GROW_SIZE,
+                )));
             }
-            depth.set(current + 1);
+            segments.set(current + 1);
             Ok(Self)
         })
     }
 }
 
-impl Drop for CallDepthGuard {
+impl Drop for StackSegmentGuard {
     fn drop(&mut self) {
-        CALL_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        ACTIVE_STACK_SEGMENTS.with(|segments| segments.set(segments.get() - 1));
     }
 }
 
@@ -2886,8 +2916,6 @@ fn bind_and_eval_closure(
     provided: usize,
     span: Span,
 ) -> Eval {
-    let _depth = CallDepthGuard::enter(span)?;
-
     let call_env = closure.env.child();
     for (param, value) in closure.params.iter().zip(arg_values) {
         call_env.bind(param.name.clone(), value);
@@ -2904,16 +2932,17 @@ fn bind_and_eval_closure(
         call_env.bind(param.name.clone(), value);
     }
 
-    // Grow the OS stack on demand so deep-but-finite recursion does not abort
-    // the process. Same-thread only — compatible with `Rc`-based (`!Send`) values.
-    // The closure body is a propagation boundary: a `?^` `@Err` early-returns the
-    // function, so its `@Err` becomes the call's value. `Flow::Fail` still bubbles.
-    stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || {
-        match eval_expr_many(closure.body.as_ref(), &call_env) {
-            Err(Flow::Propagate(value)) => Ok(*value),
-            other => other,
-        }
-    })
+    let eval_body = || match eval_expr_many(closure.body.as_ref(), &call_env) {
+        Err(Flow::Propagate(value)) => Ok(*value),
+        other => other,
+    };
+
+    if stacker::remaining_stack().is_none_or(|remaining| remaining < STACK_RED_ZONE) {
+        let _segment = StackSegmentGuard::enter(span, closure.env.stack_segment_limit)?;
+        stacker::grow(STACK_GROW_SIZE, eval_body)
+    } else {
+        eval_body()
+    }
 }
 
 /// Evaluate `expr?^` / `expr?!`. `Result` is the ordinary tagged value
@@ -5896,16 +5925,17 @@ fn arity_mismatch(span: Span, required: usize, total: usize, got: usize) -> Diag
         ))
 }
 
-fn recursion_limit(span: Span, limit: usize) -> Diagnostic {
+fn recursion_limit(span: Span, stack_budget: usize) -> Diagnostic {
+    let stack_budget_mib = stack_budget / (1024 * 1024);
     Diagnostic::error("recursion limit exceeded")
         .with_code(codes::runtime::RECURSION_LIMIT)
         .with_label(Label::primary(
             span,
-            format!("call depth exceeded {limit}"),
+            format!("this call exceeds the {stack_budget_mib} MiB evaluator stack budget"),
         ))
-        .with_note(format!(
-            "check for a missing or unreachable base case; if the recursion is intentional and deeper than {limit} frames, rewrite the algorithm to use less stack or split the work"
-        ))
+        .with_note(
+            "check for a missing or unreachable base case; for intentional recursion, rewrite the algorithm to use less stack or split the work",
+        )
 }
 
 fn platform_error(span: Span, message: String) -> Diagnostic {
