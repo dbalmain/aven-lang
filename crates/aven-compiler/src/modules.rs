@@ -2245,13 +2245,12 @@ fn resolve_root_path(specifier: &str, roots: &ModuleRoots) -> Option<PathBuf> {
         (roots.project.as_ref()?.clone(), rest)
     } else if let Some(rest) = specifier.strip_prefix("~/") {
         (roots.home.as_ref()?.clone(), rest)
-    } else if let Some(rest) = specifier.strip_prefix("//") {
+    } else {
+        let rest = specifier.strip_prefix("//")?;
         if !roots.filesystem {
             return None;
         }
         (PathBuf::from("/"), rest)
-    } else {
-        return None;
     };
 
     let path = base.join(rest);
