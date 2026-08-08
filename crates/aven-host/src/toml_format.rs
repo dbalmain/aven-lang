@@ -120,7 +120,7 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
             Err("Toml.encode cannot encode Function".to_owned())
         }
         Value::Closure(_) => Err("Toml.encode cannot encode Function".to_owned()),
-        Value::Native(_) | Value::RangeConstructor => {
+        Value::Native(_) | Value::RangeConstructor { .. } => {
             Err("Toml.encode cannot encode Native".to_owned())
         }
         Value::Type(_) => Err("Toml.encode cannot encode Type".to_owned()),

@@ -6285,13 +6285,14 @@ fn builtin_operator_results_are_inferred() {
 }
 
 #[test]
-fn range_operators_and_function_infer_stream_int() {
+fn range_operators_and_type_statics_infer_their_result_kinds() {
     let host = HostGlobals::default();
     for source in [
         "value = 0 .. 10\n",
         "value = 0 ..= 10\n",
-        "value = range(0, 10)\n",
-        "value = range(0, 10, 2)\n",
+        "value = Stream.range(0, 10)\n",
+        "value = Stream.rangeInclusive(0, 10)\n",
+        "value = Stream.range(0, 10, { step: 2 })\n",
     ] {
         assert_eq!(
             checked_binding_type(source, "value", &host).render(),
@@ -6303,6 +6304,17 @@ fn range_operators_and_function_infer_stream_int() {
         checked_binding_type("value = (x) => x .. 10\n", "value", &host).render(),
         "Int -> Stream(Int)"
     );
+    for source in [
+        "value = Array.range(0, 10)\n",
+        "value = Array.rangeInclusive(0, 10)\n",
+        "value = Array.range(0, 10, { step: 2 })\n",
+    ] {
+        assert_eq!(
+            checked_binding_type(source, "value", &host).render(),
+            "Array(Int)",
+            "for {source:?}"
+        );
+    }
 
     let annotated =
         parse_module("exclusive: Stream(Int) = 0 .. 10\ninclusive: Stream(Int) = 0 ..= 10\n");
@@ -6312,6 +6324,40 @@ fn range_operators_and_function_infer_stream_int() {
         "unexpected range type diagnostics: {:?}",
         checked.diagnostics
     );
+}
+
+#[test]
+fn range_static_options_reject_unknown_fields() {
+    let parsed = parse_module("value = Stream.range(0, 10, { stride: 2 })\n");
+    let checked = check_module(&parsed.module);
+
+    let diagnostics = checked
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNEXPECTED_FIELD))
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 1, "{:?}", checked.diagnostics);
+    assert!(!diagnostics[0].labels.is_empty());
+    assert!(
+        diagnostics[0]
+            .notes
+            .iter()
+            .any(|note| note.contains("remove the field"))
+    );
+}
+
+#[test]
+fn bare_range_is_an_ordinary_unbound_name() {
+    let parsed = parse_module("value = range(0, 5)\n");
+    let checked = check_module(&parsed.module);
+
+    let diagnostics = checked
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::name::UNBOUND))
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 1, "{:?}", checked.diagnostics);
+    assert_eq!(diagnostics[0].message, "unbound name `range`");
 }
 
 #[test]

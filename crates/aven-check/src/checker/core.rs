@@ -148,16 +148,6 @@ impl<'a> Checker<'a> {
                 ),
             ));
         }
-        if !checker.globals.iter().any(|(name, _)| name == "range") {
-            checker.globals.push((
-                "range".to_owned(),
-                crate::ty::build::function_opt(
-                    vec![crate::ty::build::int(), crate::ty::build::int()],
-                    vec![crate::ty::build::int()],
-                    crate::ty::build::stream(crate::ty::build::int()),
-                ),
-            ));
-        }
         checker.imports = imports.clone();
         checker.builtin_methods = imports.builtin_methods.clone();
         checker.trusted_builtin_method_source = imports.trusted_builtin_method_source;

@@ -1619,11 +1619,36 @@ fn variant_pattern_tag(pattern: &Expr) -> Option<&str> {
     }
 }
 
-/// Statics carried by compiler-builtin types. `Map`'s `empty`/`from` are the
-/// only ones today; host-registered types (e.g. `Json`) supply theirs through
-/// [`HostGlobals::statics`].
+/// Statics carried by compiler-builtin types. Host-registered types (e.g.
+/// `Json`) supply theirs through [`HostGlobals::statics`].
 pub(crate) fn builtin_type_statics() -> HostStatics {
-    vec![("Map".to_owned(), map_statics())]
+    vec![
+        ("Map".to_owned(), map_statics()),
+        (
+            "Stream".to_owned(),
+            range_statics(crate::ty::build::stream(crate::ty::build::int())),
+        ),
+        (
+            "Array".to_owned(),
+            range_statics(crate::ty::build::array(crate::ty::build::int())),
+        ),
+    ]
+}
+
+fn range_statics(result: Type) -> Vec<(String, Type)> {
+    let range_type = crate::ty::build::function_opt(
+        vec![crate::ty::build::int(), crate::ty::build::int()],
+        vec![crate::ty::build::record(vec![(
+            "step",
+            crate::ty::build::int(),
+        )])],
+        result,
+    );
+
+    vec![
+        ("range".to_owned(), range_type.clone()),
+        ("rangeInclusive".to_owned(), range_type),
+    ]
 }
 
 fn map_statics() -> Vec<(String, Type)> {

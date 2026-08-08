@@ -63,9 +63,9 @@ fn evaluates_grouping_before_multiplication() {
 }
 
 #[test]
-fn range_operators_and_function_construct_lazy_streams() {
+fn range_operators_and_stream_statics_construct_lazy_streams() {
     let exclusive = eval_stream("0 .. 10");
-    let explicit = eval_stream("range(0, 10)");
+    let explicit = eval_stream("Stream.range(0, 10)");
     assert_eq!(exclusive, explicit);
     assert_eq!(exclusive.start(), &0.into());
     assert_eq!(exclusive.end(), &10.into());
@@ -73,10 +73,40 @@ fn range_operators_and_function_construct_lazy_streams() {
     assert!(!exclusive.is_inclusive());
 
     let inclusive = eval_stream("0 ..= 10");
-    assert!(inclusive.is_inclusive());
+    let explicit_inclusive = eval_stream("Stream.rangeInclusive(0, 10)");
+    assert_eq!(inclusive, explicit_inclusive);
+    assert!(explicit_inclusive.is_inclusive());
 
-    let stepped = eval_stream("range(0, 10, 2)");
+    let stepped = eval_stream("Stream.range(0, 10, { step: 2 })");
     assert_eq!(stepped.increment(), &2.into());
+}
+
+#[test]
+fn array_range_statics_materialize_eagerly() {
+    assert_module_value(
+        "Array.range(0, 5)",
+        array_value(vec![
+            Value::int(0),
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
+            Value::int(4),
+        ]),
+    );
+    assert_module_value(
+        "Array.rangeInclusive(3, 1)",
+        array_value(vec![Value::int(3), Value::int(2), Value::int(1)]),
+    );
+    assert_module_value(
+        "Array.range(0, 10, { step: 3 })",
+        array_value(vec![
+            Value::int(0),
+            Value::int(3),
+            Value::int(6),
+            Value::int(9),
+        ]),
+    );
+    assert_module_value("Array.range(0, 1000000).length()", Value::int(1_000_000));
 }
 
 #[test]
@@ -96,31 +126,41 @@ fn range_streams_step_without_materializing_the_range() {
 
 #[test]
 fn reversed_ranges_descend_and_explicit_direction_is_respected() {
-    let mut reversed = eval_stream("range(3, 0)");
+    let mut reversed = eval_stream("Stream.range(3, 0)");
     assert_eq!(
         reversed.by_ref().collect::<Vec<_>>(),
         vec![Value::int(3), Value::int(2), Value::int(1),]
     );
 
-    let mut away_from_end = eval_stream("range(0, 3, -1)");
+    let mut away_from_end = eval_stream("Stream.range(0, 3, { step: -1 })");
     assert_eq!(away_from_end.next(), None);
 }
 
 #[test]
 fn range_display_describes_without_forcing() {
     let stream = Value::Stream(eval_stream("0 .. 1000000"));
-    assert_eq!(display_text(&stream), Ok("range(0, 1000000)".to_owned()));
-    assert_eq!(repr_text(&stream), "range(0, 1000000)");
-    assert_module_value("(0 .. 5).toText()\n", Value::Text("range(0, 5)".to_owned()));
+    assert_eq!(
+        display_text(&stream),
+        Ok("Stream.range(0, 1000000)".to_owned())
+    );
+    assert_eq!(repr_text(&stream), "Stream.range(0, 1000000)");
+    assert_module_value(
+        "(0 .. 5).toText()\n",
+        Value::Text("Stream.range(0, 5)".to_owned()),
+    );
     assert_eval(
         "\"${0 ..= 5}\"",
-        Value::Text("rangeInclusive(0, 5)".to_owned()),
+        Value::Text("Stream.rangeInclusive(0, 5)".to_owned()),
+    );
+    assert_module_value(
+        "\"${Stream.range(0, 10, { step: 2 })}\"",
+        Value::Text("Stream.range(0, 10, { step: 2 })".to_owned()),
     );
 }
 
 #[test]
 fn zero_range_step_reports_an_actionable_diagnostic() {
-    let outcome = eval_module(&parse_ok("range(0, 10, 0)\n"));
+    let outcome = eval_module(&parse_ok("Stream.range(0, 10, { step: 0 })\n"));
     assert!(outcome.value.is_none());
     let [diagnostic] = outcome.diagnostics.as_slice() else {
         panic!(
@@ -139,6 +179,27 @@ fn zero_range_step_reports_an_actionable_diagnostic() {
             .iter()
             .any(|note| note.contains("non-zero"))
     );
+}
+
+#[test]
+fn range_statics_reject_unknown_options_at_runtime() {
+    let diagnostic = module_error("Stream.range(0, 10, { stride: 2 })");
+
+    assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    assert_eq!(diagnostic.message, "unknown range option `stride`");
+    assert!(!diagnostic.labels.is_empty());
+    assert!(diagnostic.notes.iter().any(|note| note.contains("`step`")));
+}
+
+#[test]
+fn bare_range_is_an_ordinary_unbound_name_at_runtime() {
+    let diagnostic = module_error("range(0, 5)");
+
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::UNBOUND_NAME)
+    );
+    assert_eq!(diagnostic.message, "unbound name `range`");
 }
 
 #[test]
@@ -1537,9 +1598,9 @@ fn std_array_combinators_run_via_import() {
         "  zipRightEmpty: xs.zip(empty),\n",
         "  flatten: [[1, 2], [3], [], [4]].flatten(),\n",
         "  flattenEmpty: emptyNested.flatten(),\n",
-        "  range: range(1, 5),\n",
-        "  rangeEmpty: range(3, 3),\n",
-        "  rangeRev: range(5, 1),\n",
+        "  range: Stream.range(1, 5),\n",
+        "  rangeEmpty: Stream.range(3, 3),\n",
+        "  rangeRev: Stream.range(5, 1),\n",
         "  sort: [3, 1, 2].sortWith((a, b) => a < b),\n",
         "  sortEmpty: empty.sortWith((a, b) => a < b),\n",
         "  sortStable: pairs.sortWith((a, b) => a.k < b.k),\n",

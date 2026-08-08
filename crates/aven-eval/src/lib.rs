@@ -273,7 +273,7 @@ struct ClosureParam {
     default: Option<Rc<Expr>>,
 }
 
-/// A lazy integer stream produced by range syntax or `range(...)`.
+/// A lazy integer stream produced by range syntax or `Stream.range(...)`.
 ///
 /// The descriptor and cursor are a fixed-size handful of arbitrary-precision
 /// integers; the number of values in the range does not affect allocation.
@@ -409,7 +409,10 @@ pub enum Value {
     Native(NativeFn),
     /// Compiler-owned range construction, kept distinct from host natives so
     /// language diagnostics remain structured.
-    RangeConstructor,
+    RangeConstructor {
+        inclusive: bool,
+        materialize: bool,
+    },
     /// A runtime type descriptor. The evaluator keeps this intentionally small:
     /// named types plus the composite shapes format decode needs. Record types
     /// remain ordinary `Value::Record` values whose fields are type values.
@@ -590,7 +593,7 @@ impl fmt::Debug for Value {
             Self::ResultMethod { .. } => f.write_str("ResultMethod(<method>)"),
             Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
             Self::Native(_) => f.write_str("Native(<native>)"),
-            Self::RangeConstructor => f.write_str("RangeConstructor(<intrinsic>)"),
+            Self::RangeConstructor { .. } => f.write_str("RangeConstructor(<intrinsic>)"),
             Self::Type(ty) => f.debug_tuple("Type").field(ty).finish(),
             Self::Undefined => f.write_str("Undefined"),
             Self::Null => f.write_str("Null"),
@@ -663,7 +666,7 @@ impl PartialEq for Value {
             (Self::Undefined, Self::Undefined) | (Self::Null, Self::Null) => true,
             (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
             (Self::Native(_), _) | (_, Self::Native(_)) => false,
-            (Self::RangeConstructor, _) | (_, Self::RangeConstructor) => false,
+            (Self::RangeConstructor { .. }, _) | (_, Self::RangeConstructor { .. }) => false,
             _ => false,
         }
     }
@@ -711,7 +714,7 @@ impl fmt::Display for Value {
             Self::ResultMethod { .. } => write!(f, "<method>"),
             Self::Closure(_) => write!(f, "<function>"),
             Self::Native(_) => write!(f, "<native>"),
-            Self::RangeConstructor => write!(f, "<native>"),
+            Self::RangeConstructor { .. } => write!(f, "<native>"),
             Self::Type(ty) => write!(f, "{ty}"),
             Self::Undefined => write!(f, "undefined"),
             Self::Null => write!(f, "null"),
@@ -783,7 +786,7 @@ impl Value {
             Self::ResultMethod { .. } => "Function",
             Self::Closure(_) => "Function",
             Self::Native(_) => "Native",
-            Self::RangeConstructor => "Native",
+            Self::RangeConstructor { .. } => "Native",
             Self::Type(_) => "Type",
             Self::Undefined => "Undefined",
             Self::Null => "Null",
@@ -862,9 +865,9 @@ fn fmt_set(values: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
 
 fn fmt_stream(stream: &Stream, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let name = if stream.inclusive {
-        "rangeInclusive"
+        "Stream.rangeInclusive"
     } else {
-        "range"
+        "Stream.range"
     };
     let default_step = default_range_step(&stream.start, &stream.end);
     if stream.step == default_step {
@@ -872,7 +875,7 @@ fn fmt_stream(stream: &Stream, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     } else {
         write!(
             f,
-            "{name}({}, {}, {})",
+            "{name}({}, {}, {{ step: {} }})",
             stream.start, stream.end, stream.step
         )
     }
@@ -1283,54 +1286,19 @@ fn bind_intrinsics(env: &Environment) {
     for (name, value) in intrinsics() {
         env.bind(name, value);
     }
-    env.bind(INTRINSIC_RANGE_NAME, Value::RangeConstructor);
-    env.bind(
-        INTRINSIC_RANGE_DEFAULT_STEP_NAME,
-        Value::native(|args| {
-            let [Value::Int(start), Value::Int(end)] = args else {
-                return Err("range default-step expects two Int bounds".to_owned());
-            };
-            Ok(Value::Int(default_range_step(start, end)))
-        }),
-    );
-    env.bind("range", Value::Closure(range_closure(env)));
-}
-
-const INTRINSIC_RANGE_NAME: &str = "\0aven.range";
-const INTRINSIC_RANGE_DEFAULT_STEP_NAME: &str = "\0aven.range.defaultStep";
-
-fn range_closure(env: &Environment) -> Closure {
-    let empty = Span::new(0, 0);
-    let name = |name: &str| Expr {
-        kind: ExprKind::Name(name.to_owned()),
-        span: empty,
-    };
-    let default = Expr {
-        kind: ExprKind::Call {
-            callee: Box::new(name(INTRINSIC_RANGE_DEFAULT_STEP_NAME)),
-            args: vec![name("start"), name("end")],
-        },
-        span: empty,
-    };
-    let params = [("start", None), ("end", None), ("step", Some(default))]
-        .into_iter()
-        .map(|(name, default)| ClosureParam {
-            name: name.to_owned(),
-            default: default.map(Rc::new),
-        })
-        .collect();
-    let body = Expr {
-        kind: ExprKind::Call {
-            callee: Box::new(name(INTRINSIC_RANGE_NAME)),
-            args: vec![name("start"), name("end"), name("step")],
-        },
-        span: empty,
-    };
-
-    Closure {
-        params,
-        body: Rc::new(body),
-        env: env.clone(),
+    for (name, inclusive, materialize) in [
+        ("Stream.range", false, false),
+        ("Stream.rangeInclusive", true, false),
+        ("Array.range", false, true),
+        ("Array.rangeInclusive", true, true),
+    ] {
+        env.bind(
+            name,
+            Value::RangeConstructor {
+                inclusive,
+                materialize,
+            },
+        );
     }
 }
 
@@ -2517,12 +2485,15 @@ fn apply_callee(
             }
             apply_native(function, arg_values, env.native_context(span))
         }
-        Value::RangeConstructor => {
+        Value::RangeConstructor {
+            inclusive,
+            materialize,
+        } => {
             let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
                 arg_values.push(eval_expr_many(arg, env)?);
             }
-            apply_range_constructor(arg_values, span)
+            apply_range_constructor(arg_values, inclusive, materialize, span)
         }
         Value::ResultMethod { receiver, kind } => {
             let mut arg_values = Vec::with_capacity(args.len());
@@ -2574,7 +2545,10 @@ fn apply_callee_values(
     let span = context.span;
     match callee_value {
         Value::Native(function) => apply_native(function, arg_values, context),
-        Value::RangeConstructor => apply_range_constructor(arg_values, span),
+        Value::RangeConstructor {
+            inclusive,
+            materialize,
+        } => apply_range_constructor(arg_values, inclusive, materialize, span),
         Value::ResultMethod { receiver, kind } => {
             apply_result_method(*receiver, kind, arg_values, callee_span, span)
         }
@@ -2958,9 +2932,16 @@ fn apply_native(function: NativeFn, arg_values: Vec<Value>, context: NativeConte
     function(&arg_values, context).map_err(|message| one_diagnostic(platform_error(span, message)))
 }
 
-fn apply_range_constructor(args: Vec<Value>, span: Span) -> Eval {
-    let [start, end, step] = args.as_slice() else {
-        return Err(one_diagnostic(arity_mismatch(span, 3, 3, args.len())));
+fn apply_range_constructor(
+    args: Vec<Value>,
+    inclusive: bool,
+    materialize: bool,
+    span: Span,
+) -> Eval {
+    let (start, end, options) = match args.as_slice() {
+        [start, end] => (start, end, None),
+        [start, end, options] => (start, end, Some(options)),
+        _ => return Err(one_diagnostic(arity_mismatch(span, 2, 3, args.len()))),
     };
     let Value::Int(start) = start else {
         return Err(one_diagnostic(range_bound_type_error(
@@ -2976,6 +2957,33 @@ fn apply_range_constructor(args: Vec<Value>, span: Span) -> Eval {
             end.type_name(),
         )));
     };
+    let step = match options {
+        Some(options) => range_options_step(options, span)?,
+        None => default_range_step(start, end),
+    };
+    range_value(
+        start.clone(),
+        end.clone(),
+        step,
+        inclusive,
+        materialize,
+        span,
+    )
+}
+
+fn range_options_step(options: &Value, span: Span) -> Eval<Int> {
+    let Value::Record(fields) = options else {
+        return Err(one_diagnostic(range_options_type_error(
+            span,
+            options.type_name(),
+        )));
+    };
+    if let Some((field, _)) = fields.iter().find(|(name, _)| name != "step") {
+        return Err(one_diagnostic(range_unknown_option(span, field)));
+    }
+    let Some(step) = record_field_value(fields, "step") else {
+        return Err(one_diagnostic(range_missing_step(span)));
+    };
     let Value::Int(step) = step else {
         return Err(one_diagnostic(range_bound_type_error(
             span,
@@ -2983,7 +2991,7 @@ fn apply_range_constructor(args: Vec<Value>, span: Span) -> Eval {
             step.type_name(),
         )));
     };
-    range_value(start.clone(), end.clone(), step.clone(), false, span)
+    Ok(step.clone())
 }
 
 fn apply_closure(closure: Closure, args: &[Expr], span: Span, env: &Environment) -> Eval {
@@ -5484,7 +5492,7 @@ fn map_key_is_comparable(key: &Value) -> bool {
     match key {
         Value::Closure(_)
         | Value::Native(_)
-        | Value::RangeConstructor
+        | Value::RangeConstructor { .. }
         | Value::Stream(_)
         | Value::ResultMethod { .. }
         | Value::NamedFamily(_)
@@ -5698,7 +5706,7 @@ fn eval_binary(
                 )));
             };
             let step = default_range_step(&start, &end);
-            range_value(start, end, step, operator == "..=", span)
+            range_value(start, end, step, operator == "..=", false, span)
         }
         _ => {
             let left_value = eval_expr_many(left, env)?;
@@ -5715,10 +5723,21 @@ fn eval_binary(
     }
 }
 
-fn range_value(start: Int, end: Int, step: Int, inclusive: bool, span: Span) -> Eval {
-    Stream::range(start, end, step, inclusive)
-        .map(Value::Stream)
-        .map_err(|StreamError::ZeroStep| one_diagnostic(range_step_zero(span)))
+fn range_value(
+    start: Int,
+    end: Int,
+    step: Int,
+    inclusive: bool,
+    materialize: bool,
+    span: Span,
+) -> Eval {
+    let stream = Stream::range(start, end, step, inclusive)
+        .map_err(|StreamError::ZeroStep| one_diagnostic(range_step_zero(span)))?;
+    if materialize {
+        Ok(Value::Array(Rc::new(stream.collect())))
+    } else {
+        Ok(Value::Stream(stream))
+    }
 }
 
 fn eval_null_coalesce(left: &Expr, right: &Expr, env: &Environment) -> Eval {
@@ -6231,14 +6250,41 @@ fn range_bound_type_error(span: Span, bound: &str, found: &str) -> Diagnostic {
             span,
             format!("the {bound} value has type `{found}`"),
         ))
-        .with_note("pass Int values for the start, end, and optional step")
+        .with_note("pass Int bounds and, when needed, an options record such as `{ step: 2 }`")
+}
+
+fn range_options_type_error(span: Span, found: &str) -> Diagnostic {
+    Diagnostic::error("range options must be a record")
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(
+            span,
+            format!("the options value has type `{found}`"),
+        ))
+        .with_note("pass an options record such as `{ step: 2 }`, or omit the third argument")
+}
+
+fn range_unknown_option(span: Span, field: &str) -> Diagnostic {
+    Diagnostic::error(format!("unknown range option `{field}`"))
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(span, "this options record is not supported"))
+        .with_note("remove the unknown field; `step` is the only range option")
+}
+
+fn range_missing_step(span: Span) -> Diagnostic {
+    Diagnostic::error("range options require a `step` field")
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(
+            span,
+            "this options record has no `step` field",
+        ))
+        .with_note("add an Int `step` field, or omit the options record to use the default step")
 }
 
 fn range_step_zero(span: Span) -> Diagnostic {
     Diagnostic::error("range step cannot be zero")
         .with_code(codes::runtime::RANGE_STEP_ZERO)
         .with_label(Label::primary(span, "this range cannot advance"))
-        .with_note("pass a positive or negative non-zero third argument to `range`")
+        .with_note("pass a positive or negative non-zero `step` field in the options record")
 }
 
 fn propagate_type_error(span: Span) -> Diagnostic {

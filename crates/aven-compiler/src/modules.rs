@@ -2335,7 +2335,7 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::Tag { .. } => "Tag",
         Value::ResultMethod { .. } => "Function",
         Value::Closure(_) => "Function",
-        Value::Native(_) | Value::RangeConstructor => "Native",
+        Value::Native(_) | Value::RangeConstructor { .. } => "Native",
         Value::Type(_) => "Type",
         Value::Undefined => "Undefined",
         Value::Null => "Null",

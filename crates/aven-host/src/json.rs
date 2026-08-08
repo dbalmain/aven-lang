@@ -140,7 +140,7 @@ fn encode_value(
             return Err("Json.encode cannot encode Function".to_owned());
         }
         Value::Closure(_) => return Err("Json.encode cannot encode Function".to_owned()),
-        Value::Native(_) | Value::RangeConstructor => {
+        Value::Native(_) | Value::RangeConstructor { .. } => {
             return Err("Json.encode cannot encode Native".to_owned());
         }
         Value::Type(_) => return Err("Json.encode cannot encode Type".to_owned()),

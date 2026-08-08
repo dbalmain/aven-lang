@@ -1264,7 +1264,7 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
             JsonValue::String("<method>".to_owned())
         }
         aven_eval::Value::Closure(_) => JsonValue::String("<function>".to_owned()),
-        aven_eval::Value::Native(_) | aven_eval::Value::RangeConstructor => {
+        aven_eval::Value::Native(_) | aven_eval::Value::RangeConstructor { .. } => {
             JsonValue::String("<native>".to_owned())
         }
         aven_eval::Value::Type(ty) => JsonValue::String(ty.to_string()),

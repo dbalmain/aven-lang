@@ -92,7 +92,7 @@ fn mismatch(expected: &str, got: &Value) -> String {
         | Value::UnboundNamedMethod { .. }
         | Value::Closure(_)
         | Value::Native(_)
-        | Value::RangeConstructor => "Function",
+        | Value::RangeConstructor { .. } => "Function",
         Value::Type(_) | Value::NamedFamily(_) => "Type",
         Value::Undefined => "Undefined",
         Value::Null => "Null",

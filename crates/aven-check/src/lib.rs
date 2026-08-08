@@ -465,7 +465,7 @@ pub fn check_module_with_globals(module: &Module, globals: &[(String, Type)]) ->
 }
 
 /// The statics a named type carries, as record-like `(name, type)` fields:
-/// compiler builtins (`Map.empty`/`Map.from`) merged with the host-registered
+/// compiler builtins merged with the host-registered
 /// statics in `globals`. Tooling (completion, hover) reads these to present a
 /// type's statics the same way it presents record fields. `None` when `name`
 /// carries no statics.

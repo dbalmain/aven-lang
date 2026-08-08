@@ -131,13 +131,13 @@ dropped = xs.drop(1)
 sliced = xs.slice(1, 3)
 zipped = [1, 2, 3].zip([10, 20])
 flat = [[1], [2, 3]].flatten()
-nums = range(1, 4)
+nums = Array.range(1, 4)
 sorted = [3, 1, 2].sortWith((a, b) => a < b)
 users = [{name: "bob", age: 30}, {name: "alice", age: 25}, {name: "carol", age: 30}]
 byAge = users.sortBy((u) => u.age)
 lo = xs.minimum()
 hi = xs.maximum()
-{ range, len, emptyFlag, head, tail, folded, frequencies, total, n, allPos, has20, hit, miss, foundAt, missAt, idx, compacted, nullableCompacted, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
+{ len, emptyFlag, head, tail, folded, frequencies, total, n, allPos, has20, hit, miss, foundAt, missAt, idx, compacted, nullableCompacted, mapped, flatMapped, filtered, rev, joined, composed, taken, dropped, sliced, zipped, flat, nums, sorted, byAge, lo, hi }
 "#,
     );
 
@@ -258,9 +258,9 @@ writeLine("${empty.zip(xs)}")
 writeLine("${xs.zip(empty)}")
 writeLine("${[[1, 2], [3], [], [4]].flatten()}")
 writeLine("${emptyNested.flatten()}")
-writeLine("${range(1, 5)}")
-writeLine("${range(3, 3)}")
-writeLine("${range(5, 1)}")
+writeLine("${Stream.range(1, 5)}")
+writeLine("${Stream.range(3, 3)}")
+writeLine("${Stream.range(5, 1)}")
 writeLine("${[3, 1, 2].sortWith((a, b) => a < b)}")
 writeLine("${empty.sortWith((a, b) => a < b)}")
 pairs = [{k: 2, id: 1}, {k: 1, id: 2}, {k: 2, id: 3}]
@@ -290,7 +290,7 @@ writeLine("${empty.maximum()}")
     // sortBy: by age; already sorted; empty; equal keys keep input order (stable).
     assert_eq!(
         stdout(&output),
-        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[10, 20]\n[20, 30]\n[10, 20]\n[]\n[]\n[]\n[]\n30\n10\nundefined\nundefined\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\nrange(1, 5)\nrange(3, 3)\nrange(5, 1)\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n[{ name: alice, age: 25 }, { name: bob, age: 30 }, { name: carol, age: 30 }]\n[{ age: 1 }, { age: 2 }]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
+        "3\nfalse\ntrue\n10\nundefined\n30\nundefined\n60\n6\n2\ntrue\ntrue\n20\nundefined\n1\nundefined\nundefined\n[11, 21, 31]\n[]\n[10, 11, 20, 21, 30, 31]\n[]\n[]\n[20, 30]\n[]\n[30, 20, 10]\n[]\n[1, 2, 3]\n[10, 20, 30]\n[10, 20, 30]\n[2, 3]\n[10, 20]\n[]\n[]\n[10, 20, 30]\n[]\n[30]\n[10, 20, 30]\n[10, 20, 30]\n[]\n[]\n[20, 30]\n[]\n[10, 20]\n[20, 30]\n[10, 20]\n[20, 30]\n[10, 20]\n[]\n[]\n[]\n[]\n30\n10\nundefined\nundefined\n[(1, 10), (2, 20)]\n[]\n[]\n[1, 2, 3, 4]\n[]\nStream.range(1, 5)\nStream.range(3, 3)\nStream.range(5, 1)\n[1, 2, 3]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n[{ name: alice, age: 25 }, { name: bob, age: 30 }, { name: carol, age: 30 }]\n[{ age: 1 }, { age: 2 }]\n[]\n[{ k: 1, id: 2 }, { k: 2, id: 1 }, { k: 2, id: 3 }]\n10\nundefined\n30\nundefined\n"
     );
 }
 

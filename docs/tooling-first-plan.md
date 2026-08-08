@@ -3075,25 +3075,27 @@ explaining the rule that happens to reject the text.
   reports its own code, labels the whole run, and names `..` (or `:..`, when the
   run started `:...`). The lexer still emits the two-dot operator token with the
   full run's span, so the parser recovers as a spread and the dot count is the
-  only complaint. Infix dot runs are deliberately excluded: `1...5` is a Ruby
-  range and v0 has no range syntax, so `..` is not its repair — those keep
-  `lex.reserved-operator`. The LSP quick fix replaces the whole run with the
-  two-dot form.
+  only complaint. Infix dot runs are deliberately excluded: `1...5` does not
+  identify whether the intended range includes its end, so shortening it to
+  `..` would be an unsafe repair — those keep `lex.reserved-operator`. The LSP
+  quick fix replaces a prefix run with the two-dot spread form.
 
 ## Milestone R — lazy integer ranges
 
 Status: range syntax and the lazy `Stream(Int)` value are complete.
 
-`start .. end` is half-open and `start ..= end` includes the end. Both share
-one runtime range constructor with `range(start, end, step = ...)`; the
-source-level builtin closure evaluates the omitted step through ordinary
-parameter-default machinery. Its default is `1` for ascending/equal bounds and
-`-1` for reversed bounds. An explicit step keeps its direction, and zero
-reports `runtime.range-step-zero`.
+`start .. end` is half-open and `start ..= end` includes the end. They produce
+the same lazy values as `Stream.range(start, end)` and
+`Stream.rangeInclusive(start, end)`. `Array.range` and
+`Array.rangeInclusive` eagerly materialize the corresponding integer values.
+All four statics accept an optional closed options record, such as
+`{ step: 2 }`; unknown fields are rejected. The default step is `1` for
+ascending/equal bounds and `-1` for reversed bounds. An explicit step keeps its
+direction, and zero reports `runtime.range-step-zero`.
 
-Streams render as finite descriptions through the ambient `toText` protocol;
-rendering never consumes or materializes them. Iteration methods and collection
-remain separate slices.
+Streams render as callable `Stream.range(...)` descriptions through the ambient
+`toText` protocol; rendering never consumes or materializes them. Iteration
+methods and collection remain separate slices.
 
 ## To investigate later
 
