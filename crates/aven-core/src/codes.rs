@@ -120,6 +120,7 @@ pub mod record {
 
 pub mod runtime {
     pub const ARITY_MISMATCH: &str = "runtime.arity-mismatch";
+    pub const COLLECTION_TOO_LARGE: &str = "runtime.collection-too-large";
     pub const DIVISION_BY_ZERO: &str = "runtime.division-by-zero";
     pub const INDEX_OUT_OF_BOUNDS: &str = "runtime.index-out-of-bounds";
     pub const MISSING_FIELD: &str = "runtime.missing-field";
@@ -278,6 +279,7 @@ pub const ALL: &[&str] = &[
     parse::VARIANT_METHOD,
     record::REDUNDANT_UNDEFINED,
     runtime::ARITY_MISMATCH,
+    runtime::COLLECTION_TOO_LARGE,
     runtime::DIVISION_BY_ZERO,
     runtime::INDEX_OUT_OF_BOUNDS,
     runtime::MISSING_FIELD,

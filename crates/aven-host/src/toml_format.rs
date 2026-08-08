@@ -115,7 +115,9 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
             }
         },
         Value::Null => Err("Toml.encode cannot encode Null because TOML has no null".to_owned()),
-        Value::ResultMethod { .. } => Err("Toml.encode cannot encode Function".to_owned()),
+        Value::ResultMethod { .. } | Value::StreamMethod { .. } | Value::ArrayFoldMethod(_) => {
+            Err("Toml.encode cannot encode Function".to_owned())
+        }
         Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => {
             Err("Toml.encode cannot encode Function".to_owned())
         }

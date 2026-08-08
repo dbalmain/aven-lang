@@ -243,6 +243,8 @@ fn write_to_text(
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. }
         | Value::ResultMethod { .. }
+        | Value::StreamMethod { .. }
+        | Value::ArrayFoldMethod(_)
         | Value::Closure(_)
         | Value::Native(_)
         | Value::RangeConstructor { .. }
@@ -379,7 +381,9 @@ fn write_repr(out: &mut String, value: &Value) {
         Value::NamedFamily(descriptor) => out.push_str(family_name(&descriptor.owner)),
         Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. }
-        | Value::ResultMethod { .. } => {
+        | Value::ResultMethod { .. }
+        | Value::StreamMethod { .. }
+        | Value::ArrayFoldMethod(_) => {
             out.push_str("<method>");
         }
         Value::Closure(_) => out.push_str("<function>"),

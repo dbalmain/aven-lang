@@ -151,7 +151,9 @@ pub const MAP_METHOD_NAMES: &[&str] = &[
     "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
 ];
 
-pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "length", "push"];
+pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "length", "push", "fold"];
+
+pub const STREAM_METHOD_NAMES: &[&str] = &["map", "filter", "fold", "each", "toArray"];
 
 pub const SET_METHOD_NAMES: &[&str] = &["has"];
 
@@ -301,6 +303,7 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
     }
 
     if let Some(element) = array_type_arg(receiver) {
+        let accumulator = Type::Variable("fold_accumulator".to_owned());
         return match name {
             "has" => Some(function(vec![element.clone()], named_builtin("Bool"))),
             "length" => Some(function(Vec::new(), named_builtin("Int"))),
@@ -308,10 +311,52 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
                 vec![element.clone()],
                 array_apply(element.clone()),
             )),
+            "fold" => Some(function(
+                vec![
+                    accumulator.clone(),
+                    function(
+                        vec![accumulator.clone(), element.clone()],
+                        accumulator.clone(),
+                    ),
+                ],
+                accumulator,
+            )),
             // Roc `Str.join_with` with the list as receiver (`parts.joinWith(", ")`).
             "joinWith" if is_text_type(element) => {
                 Some(function(vec![named_builtin("Text")], named_builtin("Text")))
             }
+            _ => None,
+        };
+    }
+
+    if let Some(element) = stream_type_arg(receiver) {
+        let output = Type::Variable("stream_output".to_owned());
+        let accumulator = Type::Variable("fold_accumulator".to_owned());
+        let unit = Type::Tuple(Vec::new());
+        return match name {
+            "map" => Some(function(
+                vec![function(vec![element.clone()], output.clone())],
+                build::stream(output),
+            )),
+            "filter" => Some(function(
+                vec![function(vec![element.clone()], named_builtin("Bool"))],
+                build::stream(element.clone()),
+            )),
+            "fold" => Some(function(
+                vec![
+                    accumulator.clone(),
+                    function(
+                        vec![accumulator.clone(), element.clone()],
+                        accumulator.clone(),
+                    ),
+                ],
+                accumulator,
+            )),
+            "each" => Some(function(
+                vec![function(vec![element.clone()], unit.clone())],
+                unit,
+            )),
+            "toArray" => Some(function(Vec::new(), array_apply(element.clone()))),
             _ => None,
         };
     }
@@ -470,6 +515,8 @@ fn builtin_collection_fields(receiver: &Type) -> Option<Vec<RecordField>> {
         MAP_METHOD_NAMES
     } else if array_type_arg(receiver).is_some() {
         ARRAY_METHOD_NAMES
+    } else if stream_type_arg(receiver).is_some() {
+        STREAM_METHOD_NAMES
     } else if set_type_arg(receiver).is_some() {
         SET_METHOD_NAMES
     } else if is_text_type(receiver) {
@@ -517,6 +564,17 @@ fn map_type_args(ty: &Type) -> Option<(&Type, &Type)> {
 fn array_type_arg(ty: &Type) -> Option<&Type> {
     let (builtin, args) = ty.applied_builtin()?;
     if builtin != BuiltinType::Array {
+        return None;
+    }
+    let [element] = args else {
+        return None;
+    };
+    Some(element)
+}
+
+fn stream_type_arg(ty: &Type) -> Option<&Type> {
+    let (builtin, args) = ty.applied_builtin()?;
+    if builtin != BuiltinType::Stream {
         return None;
     }
     let [element] = args else {

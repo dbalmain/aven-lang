@@ -2543,6 +2543,7 @@ fn intrinsic_builtin_method_collides(owner: &Type, member: &str) -> bool {
                         },
                     ))
         }
+        Some(BuiltinType::Stream) => crate::ty::STREAM_METHOD_NAMES.contains(&member),
         Some(BuiltinType::Map) => crate::ty::MAP_METHOD_NAMES.contains(&member),
         Some(BuiltinType::Set) => crate::ty::SET_METHOD_NAMES.contains(&member),
         Some(BuiltinType::Text) => crate::ty::TEXT_METHOD_NAMES.contains(&member),

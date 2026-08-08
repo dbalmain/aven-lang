@@ -3819,11 +3819,11 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn infer_array(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
-        self.infer_collection_entries(env, entries, "Array")
+        self.infer_collection_entries(env, entries, "Array", true)
     }
 
     pub(super) fn infer_set(&mut self, env: &TypeEnv, entries: &[RecordEntry]) -> Type {
-        self.infer_collection_entries(env, entries, "Set")
+        self.infer_collection_entries(env, entries, "Set", false)
     }
 
     /// Infer `Array`/`Set` literals from Element + Spread entries (same shape).
@@ -3832,12 +3832,37 @@ impl<'a> Checker<'a> {
         env: &TypeEnv,
         entries: &[RecordEntry],
         name: &str,
+        spreads_accept_stream: bool,
     ) -> Type {
         let element_type = self.unifier.fresh();
         let collection_type = Type::Apply {
             callee: Box::new(Type::Named(name.to_owned())),
             args: vec![element_type.clone()],
         };
+
+        // A spread carries an established collection element type, so let it
+        // constrain the fresh element before singleton literal elements are
+        // joined. Source order remains a runtime concern, not a type-order one.
+        for entry in entries {
+            if let RecordEntry::Spread { value, .. } = entry {
+                let source_type = self.infer(env, value);
+                let expected = if spreads_accept_stream
+                    && matches!(
+                        source_type.applied_builtin(),
+                        Some((BuiltinType::Stream, [_]))
+                    ) {
+                    Type::Apply {
+                        callee: Box::new(Type::Named("Stream".to_owned())),
+                        args: vec![element_type.clone()],
+                    }
+                } else {
+                    collection_type.clone()
+                };
+                if self.unifier.unify(&expected, &source_type).is_err() {
+                    return Type::Deferred;
+                }
+            }
+        }
 
         for entry in entries {
             match entry {
@@ -3847,12 +3872,7 @@ impl<'a> Checker<'a> {
                         return Type::Deferred;
                     }
                 }
-                RecordEntry::Spread { value, .. } => {
-                    let source_type = self.infer(env, value);
-                    if self.unifier.unify(&collection_type, &source_type).is_err() {
-                        return Type::Deferred;
-                    }
-                }
+                RecordEntry::Spread { .. } => {}
                 _ => return Type::Deferred,
             }
         }

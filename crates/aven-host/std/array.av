@@ -11,12 +11,6 @@
 # so index-until-undefined would silently truncate (and would fail to match
 # a stored `null` of an `Array(T?)`). In-bounds `xs[index]` is the element.
 
-foldGo : (Array(a), Int, b, (b, a) -> b) -> b
-foldGo = (xs, index, acc, f) =>
-  index < xs.length() ?>
-    true => foldGo(xs, index + 1, f(acc, xs[index]), f)
-    false => acc
-
 # Own recursive helper so a hit returns without scanning the rest.
 findGo : (Array(a), Int, (a) -> Bool) -> ?a
 findGo = (xs, index, pred) =>
@@ -203,7 +197,7 @@ Array(a) {
   # Non-empty: negative index wraps from the end (`-1` is last).
   last(): ?a => .[-1]
 
-  fold(init: b, f: (b, a) -> b): b => foldGo(., 0, init, f)
+  each(f: (a) -> ()): () => .fold((), (acc, x) => f(x))
 
   count(pred: (a) -> Bool): Int =>
     zero: Int = 0

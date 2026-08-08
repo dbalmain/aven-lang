@@ -2333,7 +2333,9 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::NamedFamily(_) => "Type",
         Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => "Function",
         Value::Tag { .. } => "Tag",
-        Value::ResultMethod { .. } => "Function",
+        Value::ResultMethod { .. } | Value::StreamMethod { .. } | Value::ArrayFoldMethod(_) => {
+            "Function"
+        }
         Value::Closure(_) => "Function",
         Value::Native(_) | Value::RangeConstructor { .. } => "Native",
         Value::Type(_) => "Type",

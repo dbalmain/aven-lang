@@ -246,7 +246,7 @@ impl<'a> Checker<'a> {
                 },
             ) if callee.is_builtin(BuiltinType::Array) && element_types.len() == 1 => {
                 self.report_value_record_markers(entries);
-                self.check_collection_entries_against(expected, &element_types[0], entries);
+                self.check_collection_entries_against(expected, &element_types[0], entries, true);
             }
             (
                 ExprKind::Set(entries),
@@ -256,7 +256,7 @@ impl<'a> Checker<'a> {
                 },
             ) if callee.is_builtin(BuiltinType::Set) && element_types.len() == 1 => {
                 self.report_value_record_markers(entries);
-                self.check_collection_entries_against(expected, &element_types[0], entries);
+                self.check_collection_entries_against(expected, &element_types[0], entries, false);
             }
             _ => {
                 self.check_value_expr(value);
@@ -923,10 +923,31 @@ impl<'a> Checker<'a> {
         expected: &Type,
         element_type: &Type,
         entries: &[RecordEntry],
+        spreads_accept_stream: bool,
     ) {
         for entry in entries {
             match entry {
                 RecordEntry::Element(element) => self.check_value_against(element_type, element),
+                RecordEntry::Spread { value, .. } if spreads_accept_stream => {
+                    self.check_value_expr(value);
+                    let env = self.local_types.inference_env();
+                    let diagnostics_start = self.diagnostics.len();
+                    let actual = self.infer_local_value(&env, value);
+                    self.deduplicate_diagnostics_since(diagnostics_start);
+                    if let Some(actual) = actual {
+                        let spread_expected =
+                            if matches!(actual.applied_builtin(), Some((BuiltinType::Stream, [_])))
+                            {
+                                Type::Apply {
+                                    callee: Box::new(Type::Named("Stream".to_owned())),
+                                    args: vec![element_type.clone()],
+                                }
+                            } else {
+                                expected.clone()
+                            };
+                        self.check_type_against_type(&spread_expected, &actual, value.span);
+                    }
+                }
                 RecordEntry::Spread { value, .. } => self.check_value_against(expected, value),
                 entry => self.walk_value_record_values(std::slice::from_ref(entry)),
             }

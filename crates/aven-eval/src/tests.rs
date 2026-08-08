@@ -112,13 +112,16 @@ fn array_range_statics_materialize_eagerly() {
 #[test]
 fn range_streams_step_without_materializing_the_range() {
     let mut million = eval_stream("0 .. 1000000");
-    assert_eq!(million.next(), Some(Value::int(0)));
-    assert_eq!(million.next(), Some(Value::int(1)));
-    assert_eq!(million.next(), Some(Value::int(2)));
+    assert_eq!(million.next(), Some(Ok(Value::int(0))));
+    assert_eq!(million.next(), Some(Ok(Value::int(1))));
+    assert_eq!(million.next(), Some(Ok(Value::int(2))));
 
     let mut inclusive = eval_stream("0 ..= 2");
     assert_eq!(
-        inclusive.by_ref().collect::<Vec<_>>(),
+        inclusive
+            .by_ref()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("inclusive range iteration succeeds"),
         vec![Value::int(0), Value::int(1), Value::int(2),]
     );
     assert_eq!(inclusive.next(), None);
@@ -128,7 +131,10 @@ fn range_streams_step_without_materializing_the_range() {
 fn reversed_ranges_descend_and_explicit_direction_is_respected() {
     let mut reversed = eval_stream("Stream.range(3, 0)");
     assert_eq!(
-        reversed.by_ref().collect::<Vec<_>>(),
+        reversed
+            .by_ref()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("reversed range iteration succeeds"),
         vec![Value::int(3), Value::int(2), Value::int(1),]
     );
 
@@ -155,6 +161,102 @@ fn range_display_describes_without_forcing() {
     assert_module_value(
         "\"${Stream.range(0, 10, { step: 2 })}\"",
         Value::Text("Stream.range(0, 10, { step: 2 })".to_owned()),
+    );
+}
+
+#[test]
+fn stream_adapters_are_lazy_composable_and_render_opaquely() {
+    assert_module_value(
+        "(0 .. 10).map((x) => x * 2).filter((x) => x % 3 == 0).toArray()",
+        array_value(vec![
+            Value::int(0),
+            Value::int(6),
+            Value::int(12),
+            Value::int(18),
+        ]),
+    );
+    assert_module_value(
+        "(0 .. 5).map((x) => 10 / x).toText()",
+        Value::Text("<stream>".to_owned()),
+    );
+}
+
+#[test]
+fn stream_forcing_methods_iterate_without_aven_recursion() {
+    let module = parse_ok(
+        "(0 .. 1000000).map((x) => x * 2).filter((x) => x % 3 == 0).fold(0, (acc, x) => acc + x)",
+    );
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_failing_stack_growth(),
+    );
+    assert_eq!(outcome.value, Some(Value::int(333_333_666_666_u64)));
+    assert!(outcome.diagnostics.is_empty());
+    assert_module_value("(0 .. 100000).each((x) => ())", Value::unit());
+}
+
+#[test]
+fn streams_materialize_through_method_and_array_spread() {
+    let expected = array_value(vec![
+        Value::int(0),
+        Value::int(1),
+        Value::int(2),
+        Value::int(3),
+        Value::int(4),
+    ]);
+    assert_module_value("(0 .. 5).toArray()", expected.clone());
+    assert_module_value("[..(0 .. 5)]", expected);
+    assert_module_value(
+        "[0, ..(1 .. 4), 9]",
+        array_value(vec![
+            Value::int(0),
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
+            Value::int(9),
+        ]),
+    );
+}
+
+#[test]
+fn absurd_stream_materialization_fails_before_iteration() {
+    for source in ["(0 .. 1000000000).toArray()", "[..(0 .. 1000000000)]"] {
+        let diagnostic = module_error(source);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::COLLECTION_TOO_LARGE)
+        );
+        assert!(!diagnostic.labels.is_empty());
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("fold") && note.contains("each"))
+        );
+    }
+}
+
+#[test]
+fn native_array_fold_handles_large_inputs_without_aven_recursion() {
+    let legacy = eval_module(&parse_ok(concat!(
+        "foldGo = (xs, index, acc, f) => index < xs.length() ?> ",
+        "true => foldGo(xs, index + 1, f(acc, xs[index]), f), false => acc\n",
+        "xs = Array.range(0, 10000)\n",
+        "foldGo(xs, 0, 0, (acc, x) => acc + x)\n",
+    )));
+    assert!(legacy.value.is_none());
+    assert_eq!(
+        legacy.diagnostics[0].code.as_deref(),
+        Some(codes::runtime::RECURSION_LIMIT)
+    );
+
+    assert_module_value(
+        "Array.range(0, 10000).fold(0, (acc, x) => acc + x)",
+        Value::int(49_995_000_u64),
+    );
+    assert_eq!(
+        eval_with_builtins("Array.range(0, 10000).map((x) => x * 2).length()"),
+        Value::int(10_000),
     );
 }
 
@@ -2085,6 +2187,7 @@ fn array_traversal_preserves_undefined_and_null_elements() {
         eval("xs: Array(Int?) = [1, null, 3]\nxs.map((x) => x)\n"),
         array_value(vec![Value::int(1), Value::Null, Value::int(3)]),
     );
+    assert_eq!(eval("[1, 2, 3].each((x) => ())\n"), Value::unit());
     assert_eq!(
         eval("xs: Array(?Int) = [1, undefined, 3]\nxs.take(3)\n"),
         array_value(vec![Value::int(1), Value::Undefined, Value::int(3)]),

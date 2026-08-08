@@ -6327,6 +6327,38 @@ fn range_operators_and_type_statics_infer_their_result_kinds() {
 }
 
 #[test]
+fn stream_methods_and_array_spread_preserve_element_types() {
+    let host = HostGlobals::default();
+    for (source, expected) in [
+        ("value = (0 .. 10).map((x) => \"${x}\")\n", "Stream(Text)"),
+        ("value = (0 .. 10).filter((x) => x > 4)\n", "Stream(Int)"),
+        (
+            "seed: Text = \"\"\nvalue = (0 .. 10).fold(seed, (acc, x) => \"${acc}${x}\")\n",
+            "Text",
+        ),
+        ("value = (0 .. 10).each((x) => ())\n", "()"),
+        ("value = (0 .. 10).toArray()\n", "Array(Int)"),
+        ("value = [0, ..(1 .. 4), 9]\n", "Array(Int)"),
+        ("value = [0 .. 4]\n", "Array(Stream(Int))"),
+    ] {
+        assert_eq!(
+            checked_binding_type(source, "value", &host).render(),
+            expected,
+            "for {source:?}"
+        );
+    }
+
+    let mismatch =
+        parse_module("value: Array(Int) = [..Stream.range(0, 3).map((x) => \"${x}\")]\n");
+    let checked = check_module(&mismatch.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::ty::MISMATCH),
+        "stream spread element mismatch should be diagnosed: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
 fn range_static_options_reject_unknown_fields() {
     let parsed = parse_module("value = Stream.range(0, 10, { stride: 2 })\n");
     let checked = check_module(&parsed.module);
@@ -11681,7 +11713,6 @@ fn unresolved_fold_callback_points_to_the_collection_parameter() {
     let ambient = check_trusted_builtin_methods(concat!(
         "Array(a) {\n",
         "  zip(other: Array(b)): Array((a, b)) => []\n",
-        "  fold(init: b, f: (b, a) -> b): b => init\n",
         "}\n",
     ));
     assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
@@ -11767,20 +11798,10 @@ fn unknown_builtin_method_suggests_nearest_method_at_the_method_span() {
 
 #[test]
 fn unknown_array_method_uses_cross_language_alias_before_edit_distance() {
-    let ambient =
-        check_trusted_builtin_methods("Array(a) { fold(init: b, f: (b, a) -> b): b => init }\n");
-    assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
-    let mut imports = ModuleImports::default();
-    imports.set_builtin_method_environment(ambient.builtin_methods);
-
     let source = "xs: Array(Int) = [1, 2, 3]\ntotal = xs.reduce(0, (acc, _) => acc)\n";
     let parsed = parse_module(source);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let check = check_module_with_host_globals_and_imports(
-        &parsed.module,
-        &HostGlobals::default(),
-        &imports,
-    );
+    let check = check_module(&parsed.module);
 
     let diagnostic = check
         .diagnostics

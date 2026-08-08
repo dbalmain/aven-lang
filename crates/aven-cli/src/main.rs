@@ -1259,7 +1259,9 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
             "tag": name,
             "payload": payload.iter().map(aven_value_json).collect::<Vec<_>>(),
         }),
-        aven_eval::Value::ResultMethod { .. } => JsonValue::String("<method>".to_owned()),
+        aven_eval::Value::ResultMethod { .. }
+        | aven_eval::Value::StreamMethod { .. }
+        | aven_eval::Value::ArrayFoldMethod(_) => JsonValue::String("<method>".to_owned()),
         aven_eval::Value::NamedMethod { .. } | aven_eval::Value::UnboundNamedMethod { .. } => {
             JsonValue::String("<method>".to_owned())
         }

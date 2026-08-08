@@ -88,6 +88,8 @@ fn mismatch(expected: &str, got: &Value) -> String {
         Value::BrandedPrimitive { payload, .. } => payload.type_name(),
         Value::Tag { .. } => "Tag",
         Value::ResultMethod { .. }
+        | Value::StreamMethod { .. }
+        | Value::ArrayFoldMethod(_)
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. }
         | Value::Closure(_)

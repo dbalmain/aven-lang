@@ -367,6 +367,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A runtime function call supplied the wrong number of arguments. Pass exactly the number of arguments declared by the lambda parameters.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::COLLECTION_TOO_LARGE,
+        text: "Materializing a stream would exceed the evaluator's bounded array allocation. Consume the stream with fold or each, or narrow it before collecting or spreading it into an array.",
+    },
+    DiagnosticExplanation {
         code: codes::runtime::DIVISION_BY_ZERO,
         text: "Runtime evaluation tried to divide or take a remainder by zero. Change the right operand of `/` or `%` so it evaluates to a non-zero number before running the program.",
     },

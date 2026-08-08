@@ -12,6 +12,8 @@ use aven_parser::{
     RecordEntry, decode_string_literal, is_method_operator, is_method_requirement_row,
 };
 
+const MAX_MATERIALIZED_ARRAY_BYTES: usize = 256 * 1024 * 1024;
+
 mod display;
 pub mod logging;
 mod runtime_type;
@@ -273,18 +275,49 @@ struct ClosureParam {
     default: Option<Rc<Expr>>,
 }
 
-/// A lazy integer stream produced by range syntax or `Stream.range(...)`.
+/// A lazy stream backed by an integer range and an ordered adapter chain.
 ///
-/// The descriptor and cursor are a fixed-size handful of arbitrary-precision
-/// integers; the number of values in the range does not affect allocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The source cursor is a fixed-size handful of arbitrary-precision integers.
+/// `map` and `filter` append callbacks without consuming the source; forcing
+/// walks the source and stages iteratively, so stream length does not affect
+/// evaluator stack usage.
+#[derive(Clone)]
 pub struct Stream {
     start: Int,
     end: Int,
     step: Int,
     next: Int,
     inclusive: bool,
+    stages: Vec<StreamStage>,
 }
+
+#[derive(Clone)]
+enum StreamStage {
+    Map { callback: Value, identity: Rc<()> },
+    Filter { callback: Value, identity: Rc<()> },
+}
+
+impl PartialEq for StreamStage {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Map { identity: left, .. },
+                Self::Map {
+                    identity: right, ..
+                },
+            )
+            | (
+                Self::Filter { identity: left, .. },
+                Self::Filter {
+                    identity: right, ..
+                },
+            ) => Rc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for StreamStage {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamError {
@@ -302,6 +335,7 @@ impl Stream {
             end,
             step,
             inclusive,
+            stages: Vec::new(),
         })
     }
 
@@ -320,12 +354,28 @@ impl Stream {
     pub fn is_inclusive(&self) -> bool {
         self.inclusive
     }
-}
 
-impl Iterator for Stream {
-    type Item = Value;
+    fn map(mut self, callback: Value) -> Self {
+        self.stages.push(StreamStage::Map {
+            callback,
+            identity: Rc::new(()),
+        });
+        self
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn filter(mut self, callback: Value) -> Self {
+        self.stages.push(StreamStage::Filter {
+            callback,
+            identity: Rc::new(()),
+        });
+        self
+    }
+
+    fn is_range(&self) -> bool {
+        self.stages.is_empty()
+    }
+
+    fn next_source(&mut self) -> Option<Value> {
         let in_bounds = if self.step.is_negative() {
             if self.inclusive {
                 self.next >= self.end
@@ -345,7 +395,123 @@ impl Iterator for Stream {
         self.next = &self.next + &self.step;
         Some(Value::Int(value))
     }
+
+    fn next_value(&mut self, span: Span) -> Eval<Option<Value>> {
+        'source: while let Some(mut value) = self.next_source() {
+            for stage in &self.stages {
+                match stage {
+                    StreamStage::Map { callback, .. } => {
+                        value = apply_callee_values(
+                            callback.clone(),
+                            span,
+                            vec![value],
+                            NativeContext::without_source(span),
+                        )?;
+                    }
+                    StreamStage::Filter { callback, .. } => {
+                        let keep = apply_callee_values(
+                            callback.clone(),
+                            span,
+                            vec![value.clone()],
+                            NativeContext::without_source(span),
+                        )?;
+                        match keep {
+                            Value::Bool(true) => {}
+                            Value::Bool(false) => continue 'source,
+                            other => {
+                                return Err(one_diagnostic(record_type_error(
+                                    span,
+                                    "Stream.filter callback",
+                                    other.type_name(),
+                                    "Bool",
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(Some(value));
+        }
+        Ok(None)
+    }
+
+    fn exact_remaining_len(&self) -> Option<usize> {
+        if self
+            .stages
+            .iter()
+            .any(|stage| matches!(stage, StreamStage::Filter { .. }))
+        {
+            return None;
+        }
+        let in_bounds = if self.step.is_negative() {
+            if self.inclusive {
+                self.next >= self.end
+            } else {
+                self.next > self.end
+            }
+        } else if self.inclusive {
+            self.next <= self.end
+        } else {
+            self.next < self.end
+        };
+        if !in_bounds {
+            return Some(0);
+        }
+
+        let distance = if self.step.is_negative() {
+            &self.next - &self.end
+        } else {
+            &self.end - &self.next
+        };
+        let stride = self.step.abs();
+        let one = Int::from(1);
+        let count = if self.inclusive {
+            &(&distance / &stride) + &one
+        } else {
+            let stride_minus_one = &stride - &one;
+            &(&distance + &stride_minus_one) / &stride
+        };
+        count.to_usize()
+    }
 }
+
+impl Iterator for Stream {
+    type Item = Result<Value, Vec<Diagnostic>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_value(Span::new(0, 0)) {
+            Ok(value) => value.map(Ok),
+            Err(Flow::Fail(diagnostics)) => Some(Err(diagnostics)),
+            Err(Flow::Propagate(value)) => Some(Ok(*value)),
+        }
+    }
+}
+
+impl fmt::Debug for Stream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Stream")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("step", &self.step)
+            .field("next", &self.next)
+            .field("inclusive", &self.inclusive)
+            .field("stages", &self.stages.len())
+            .finish()
+    }
+}
+
+impl PartialEq for Stream {
+    fn eq(&self, other: &Self) -> bool {
+        self.start == other.start
+            && self.end == other.end
+            && self.step == other.step
+            && self.next == other.next
+            && self.inclusive == other.inclusive
+            && self.stages == other.stages
+    }
+}
+
+impl Eq for Stream {}
 
 impl fmt::Display for Stream {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -405,6 +571,11 @@ pub enum Value {
         receiver: Box<Value>,
         kind: ResultMethod,
     },
+    StreamMethod {
+        receiver: Box<Stream>,
+        kind: StreamMethod,
+    },
+    ArrayFoldMethod(Rc<Vec<Value>>),
     Closure(Closure),
     Native(NativeFn),
     /// Compiler-owned range construction, kept distinct from host natives so
@@ -512,6 +683,15 @@ pub enum ResultMethod {
     IsErr,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum StreamMethod {
+    Map,
+    Filter,
+    Fold,
+    Each,
+    ToArray,
+}
+
 pub const MAP_METHOD_NAMES: &[&str] = &[
     "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
 ];
@@ -591,6 +771,8 @@ impl fmt::Debug for Value {
                 .field("payload", payload)
                 .finish(),
             Self::ResultMethod { .. } => f.write_str("ResultMethod(<method>)"),
+            Self::StreamMethod { kind, .. } => f.debug_tuple("StreamMethod").field(kind).finish(),
+            Self::ArrayFoldMethod(_) => f.write_str("ArrayFoldMethod(<method>)"),
             Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
             Self::Native(_) => f.write_str("Native(<native>)"),
             Self::RangeConstructor { .. } => f.write_str("RangeConstructor(<intrinsic>)"),
@@ -660,6 +842,8 @@ impl PartialEq for Value {
             ) => left_name == right_name && left_payload == right_payload,
             (Self::Type(left), Self::Type(right)) => left == right,
             (Self::ResultMethod { .. }, _) | (_, Self::ResultMethod { .. }) => false,
+            (Self::StreamMethod { .. }, _) | (_, Self::StreamMethod { .. }) => false,
+            (Self::ArrayFoldMethod(_), _) | (_, Self::ArrayFoldMethod(_)) => false,
             (Self::NamedFamily(_), _) | (_, Self::NamedFamily(_)) => false,
             (Self::NamedMethod { .. }, _) | (_, Self::NamedMethod { .. }) => false,
             (Self::UnboundNamedMethod { .. }, _) | (_, Self::UnboundNamedMethod { .. }) => false,
@@ -712,6 +896,7 @@ impl fmt::Display for Value {
             Self::UnboundNamedMethod { .. } => write!(f, "<method>"),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::ResultMethod { .. } => write!(f, "<method>"),
+            Self::StreamMethod { .. } | Self::ArrayFoldMethod(_) => write!(f, "<method>"),
             Self::Closure(_) => write!(f, "<function>"),
             Self::Native(_) => write!(f, "<native>"),
             Self::RangeConstructor { .. } => write!(f, "<native>"),
@@ -784,6 +969,7 @@ impl Value {
             Self::UnboundNamedMethod { .. } => "Function",
             Self::Tag { .. } => "Tag",
             Self::ResultMethod { .. } => "Function",
+            Self::StreamMethod { .. } | Self::ArrayFoldMethod(_) => "Function",
             Self::Closure(_) => "Function",
             Self::Native(_) => "Native",
             Self::RangeConstructor { .. } => "Native",
@@ -864,6 +1050,9 @@ fn fmt_set(values: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
 }
 
 fn fmt_stream(stream: &Stream, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if !stream.is_range() {
+        return write!(f, "<stream>");
+    }
     let name = if stream.inclusive {
         "Stream.rangeInclusive"
     } else {
@@ -1655,6 +1844,7 @@ fn attachment_owner_head(owner: &Expr) -> Option<&str> {
 fn runtime_builtin_owner(value: &Value) -> Option<&'static str> {
     match value {
         Value::Array(_) => Some("Array"),
+        Value::Stream(_) => Some("Stream"),
         Value::Set(_) => Some("Set"),
         Value::Map(_) => Some("Map"),
         Value::Text(_) => Some("Text"),
@@ -2502,6 +2692,20 @@ fn apply_callee(
             }
             apply_result_method(*receiver, kind, arg_values, callee_span, span)
         }
+        Value::StreamMethod { receiver, kind } => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_stream_method(*receiver, kind, arg_values, span)
+        }
+        Value::ArrayFoldMethod(items) => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_array_fold(items, arg_values, span)
+        }
         Value::NamedFamily(descriptor) => {
             let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
@@ -2552,6 +2756,10 @@ fn apply_callee_values(
         Value::ResultMethod { receiver, kind } => {
             apply_result_method(*receiver, kind, arg_values, callee_span, span)
         }
+        Value::StreamMethod { receiver, kind } => {
+            apply_stream_method(*receiver, kind, arg_values, span)
+        }
+        Value::ArrayFoldMethod(items) => apply_array_fold(items, arg_values, span),
         Value::NamedFamily(descriptor) => {
             apply_named_family_constructor(descriptor, arg_values, span)
         }
@@ -2927,6 +3135,95 @@ fn apply_result_method(
     }
 }
 
+fn apply_stream_method(stream: Stream, kind: StreamMethod, args: Vec<Value>, span: Span) -> Eval {
+    let expected = match kind {
+        StreamMethod::Map | StreamMethod::Filter | StreamMethod::Each => 1,
+        StreamMethod::Fold => 2,
+        StreamMethod::ToArray => 0,
+    };
+    if args.len() != expected {
+        return Err(one_diagnostic(arity_mismatch(
+            span,
+            expected,
+            expected,
+            args.len(),
+        )));
+    }
+
+    match kind {
+        StreamMethod::Map => Ok(Value::Stream(stream.map(args[0].clone()))),
+        StreamMethod::Filter => Ok(Value::Stream(stream.filter(args[0].clone()))),
+        StreamMethod::Fold => fold_stream(stream, args[0].clone(), args[1].clone(), span),
+        StreamMethod::Each => {
+            let callback = args[0].clone();
+            let mut stream = stream;
+            while let Some(value) = stream.next_value(span)? {
+                apply_callee_values(
+                    callback.clone(),
+                    span,
+                    vec![value],
+                    NativeContext::without_source(span),
+                )?;
+            }
+            Ok(Value::unit())
+        }
+        StreamMethod::ToArray => materialize_stream(stream, span),
+    }
+}
+
+fn fold_stream(mut stream: Stream, mut accumulator: Value, callback: Value, span: Span) -> Eval {
+    while let Some(value) = stream.next_value(span)? {
+        accumulator = apply_callee_values(
+            callback.clone(),
+            span,
+            vec![accumulator, value],
+            NativeContext::without_source(span),
+        )?;
+    }
+    Ok(accumulator)
+}
+
+fn apply_array_fold(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval {
+    let [initial, callback] = args.as_slice() else {
+        return Err(one_diagnostic(arity_mismatch(span, 2, 2, args.len())));
+    };
+    let mut accumulator = initial.clone();
+    for value in items.iter() {
+        accumulator = apply_callee_values(
+            callback.clone(),
+            span,
+            vec![accumulator, value.clone()],
+            NativeContext::without_source(span),
+        )?;
+    }
+    Ok(accumulator)
+}
+
+fn materialize_stream(mut stream: Stream, span: Span) -> Eval {
+    let mut values = Vec::new();
+    append_stream(&mut values, &mut stream, span)?;
+    Ok(Value::Array(Rc::new(values)))
+}
+
+fn append_stream(values: &mut Vec<Value>, stream: &mut Stream, span: Span) -> Eval<()> {
+    let maximum_len = MAX_MATERIALIZED_ARRAY_BYTES / std::mem::size_of::<Value>();
+    if let Some(additional) = stream.exact_remaining_len() {
+        let total = values.len().checked_add(additional);
+        if total.is_none_or(|total| total > maximum_len)
+            || values.try_reserve_exact(additional).is_err()
+        {
+            return Err(one_diagnostic(collection_too_large(span)));
+        }
+    }
+    while let Some(value) = stream.next_value(span)? {
+        if values.len() >= maximum_len || values.try_reserve(1).is_err() {
+            return Err(one_diagnostic(collection_too_large(span)));
+        }
+        values.push(value);
+    }
+    Ok(())
+}
+
 fn apply_native(function: NativeFn, arg_values: Vec<Value>, context: NativeContext) -> Eval {
     let span = context.span;
     function(&arg_values, context).map_err(|message| one_diagnostic(platform_error(span, message)))
@@ -3242,16 +3539,20 @@ fn eval_array(entries: &[RecordEntry], env: &Environment) -> Eval {
                 value: source_expr, ..
             } => {
                 let source = eval_expr_many(source_expr, env)?;
-                let Value::Array(members) = source else {
-                    return Err(one_diagnostic(record_type_error(
-                        source_expr.span,
-                        "spread",
-                        source.type_name(),
-                        "Array",
-                    )));
-                };
-
-                values.extend(members.iter().cloned());
+                match source {
+                    Value::Array(members) => values.extend(members.iter().cloned()),
+                    Value::Stream(mut stream) => {
+                        append_stream(&mut values, &mut stream, source_expr.span)?;
+                    }
+                    other => {
+                        return Err(one_diagnostic(record_type_error(
+                            source_expr.span,
+                            "spread",
+                            other.type_name(),
+                            "Array or Stream",
+                        )));
+                    }
+                }
             }
             entry => {
                 return Err(one_diagnostic(unsupported_expr(
@@ -3913,7 +4214,22 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
         (Value::Array(items), "length") => Some(array_length_method(Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
+        (Value::Array(items), "fold") => Some(Value::ArrayFoldMethod(Rc::clone(items))),
         (Value::Array(items), "joinWith") => Some(array_join_with_method(Rc::clone(items))),
+        (Value::Stream(stream), field) => {
+            let kind = match field {
+                "map" => StreamMethod::Map,
+                "filter" => StreamMethod::Filter,
+                "fold" => StreamMethod::Fold,
+                "each" => StreamMethod::Each,
+                "toArray" => StreamMethod::ToArray,
+                _ => return None,
+            };
+            Some(Value::StreamMethod {
+                receiver: Box::new(stream.clone()),
+                kind,
+            })
+        }
         (Value::Map(entries), "get") => Some(map_get_method(Rc::clone(entries))),
         (Value::Map(entries), "set") => Some(map_set_method(Rc::clone(entries))),
         (Value::Map(entries), "delete") => Some(map_delete_method(Rc::clone(entries))),
@@ -5495,6 +5811,8 @@ fn map_key_is_comparable(key: &Value) -> bool {
         | Value::RangeConstructor { .. }
         | Value::Stream(_)
         | Value::ResultMethod { .. }
+        | Value::StreamMethod { .. }
+        | Value::ArrayFoldMethod(_)
         | Value::NamedFamily(_)
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. } => false,
@@ -5734,7 +6052,7 @@ fn range_value(
     let stream = Stream::range(start, end, step, inclusive)
         .map_err(|StreamError::ZeroStep| one_diagnostic(range_step_zero(span)))?;
     if materialize {
-        Ok(Value::Array(Rc::new(stream.collect())))
+        materialize_stream(stream, span)
     } else {
         Ok(Value::Stream(stream))
     }
@@ -6233,6 +6551,19 @@ fn recursion_limit(span: Span, stack_budget: usize) -> Diagnostic {
         ))
         .with_note(
             "check for a missing or unreachable base case; for intentional recursion, rewrite the algorithm to use less stack or split the work",
+        )
+}
+
+fn collection_too_large(span: Span) -> Diagnostic {
+    let limit_mib = MAX_MATERIALIZED_ARRAY_BYTES / (1024 * 1024);
+    Diagnostic::error("stream is too large to materialize")
+        .with_code(codes::runtime::COLLECTION_TOO_LARGE)
+        .with_label(Label::primary(
+            span,
+            format!("this array would exceed the {limit_mib} MiB materialization limit"),
+        ))
+        .with_note(
+            "consume the stream with `fold` or `each`, or narrow it before calling `toArray` or using array spread",
         )
 }
 

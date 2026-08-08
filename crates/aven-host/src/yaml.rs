@@ -235,7 +235,9 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
                 Err("Yaml.encode cannot encode undefined array elements".to_owned())
             }
         },
-        Value::ResultMethod { .. } => Err("Yaml.encode cannot encode Function".to_owned()),
+        Value::ResultMethod { .. } | Value::StreamMethod { .. } | Value::ArrayFoldMethod(_) => {
+            Err("Yaml.encode cannot encode Function".to_owned())
+        }
         Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => {
             Err("Yaml.encode cannot encode Function".to_owned())
         }
