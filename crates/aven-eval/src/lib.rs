@@ -575,6 +575,7 @@ pub enum Value {
         receiver: Box<Stream>,
         kind: StreamMethod,
     },
+    ArrayFlatMapMethod(Rc<Vec<Value>>),
     ArrayFoldMethod(Rc<Vec<Value>>),
     Closure(Closure),
     Native(NativeFn),
@@ -772,6 +773,7 @@ impl fmt::Debug for Value {
                 .finish(),
             Self::ResultMethod { .. } => f.write_str("ResultMethod(<method>)"),
             Self::StreamMethod { kind, .. } => f.debug_tuple("StreamMethod").field(kind).finish(),
+            Self::ArrayFlatMapMethod(_) => f.write_str("ArrayFlatMapMethod(<method>)"),
             Self::ArrayFoldMethod(_) => f.write_str("ArrayFoldMethod(<method>)"),
             Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
             Self::Native(_) => f.write_str("Native(<native>)"),
@@ -843,6 +845,7 @@ impl PartialEq for Value {
             (Self::Type(left), Self::Type(right)) => left == right,
             (Self::ResultMethod { .. }, _) | (_, Self::ResultMethod { .. }) => false,
             (Self::StreamMethod { .. }, _) | (_, Self::StreamMethod { .. }) => false,
+            (Self::ArrayFlatMapMethod(_), _) | (_, Self::ArrayFlatMapMethod(_)) => false,
             (Self::ArrayFoldMethod(_), _) | (_, Self::ArrayFoldMethod(_)) => false,
             (Self::NamedFamily(_), _) | (_, Self::NamedFamily(_)) => false,
             (Self::NamedMethod { .. }, _) | (_, Self::NamedMethod { .. }) => false,
@@ -896,7 +899,9 @@ impl fmt::Display for Value {
             Self::UnboundNamedMethod { .. } => write!(f, "<method>"),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::ResultMethod { .. } => write!(f, "<method>"),
-            Self::StreamMethod { .. } | Self::ArrayFoldMethod(_) => write!(f, "<method>"),
+            Self::StreamMethod { .. } | Self::ArrayFlatMapMethod(_) | Self::ArrayFoldMethod(_) => {
+                write!(f, "<method>")
+            }
             Self::Closure(_) => write!(f, "<function>"),
             Self::Native(_) => write!(f, "<native>"),
             Self::RangeConstructor { .. } => write!(f, "<native>"),
@@ -969,7 +974,9 @@ impl Value {
             Self::UnboundNamedMethod { .. } => "Function",
             Self::Tag { .. } => "Tag",
             Self::ResultMethod { .. } => "Function",
-            Self::StreamMethod { .. } | Self::ArrayFoldMethod(_) => "Function",
+            Self::StreamMethod { .. } | Self::ArrayFlatMapMethod(_) | Self::ArrayFoldMethod(_) => {
+                "Function"
+            }
             Self::Closure(_) => "Function",
             Self::Native(_) => "Native",
             Self::RangeConstructor { .. } => "Native",
@@ -2699,6 +2706,13 @@ fn apply_callee(
             }
             apply_stream_method(*receiver, kind, arg_values, span)
         }
+        Value::ArrayFlatMapMethod(items) => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_array_flat_map(items, arg_values, span)
+        }
         Value::ArrayFoldMethod(items) => {
             let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
@@ -2759,6 +2773,7 @@ fn apply_callee_values(
         Value::StreamMethod { receiver, kind } => {
             apply_stream_method(*receiver, kind, arg_values, span)
         }
+        Value::ArrayFlatMapMethod(items) => apply_array_flat_map(items, arg_values, span),
         Value::ArrayFoldMethod(items) => apply_array_fold(items, arg_values, span),
         Value::NamedFamily(descriptor) => {
             apply_named_family_constructor(descriptor, arg_values, span)
@@ -3183,6 +3198,29 @@ fn fold_stream(mut stream: Stream, mut accumulator: Value, callback: Value, span
     Ok(accumulator)
 }
 
+fn apply_array_flat_map(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval {
+    let [callback] = args.as_slice() else {
+        return Err(one_diagnostic(arity_mismatch(span, 1, 1, args.len())));
+    };
+    let mut values = Vec::new();
+    for item in items.iter() {
+        let part = apply_callee_values(
+            callback.clone(),
+            span,
+            vec![item.clone()],
+            NativeContext::without_source(span),
+        )?;
+        let Value::Array(part) = part else {
+            return Err(one_diagnostic(array_flat_map_result_type_error(
+                span,
+                part.type_name(),
+            )));
+        };
+        append_array(&mut values, &part, span)?;
+    }
+    Ok(Value::Array(Rc::new(values)))
+}
+
 fn apply_array_fold(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval {
     let [initial, callback] = args.as_slice() else {
         return Err(one_diagnostic(arity_mismatch(span, 2, 2, args.len())));
@@ -3221,6 +3259,16 @@ fn append_stream(values: &mut Vec<Value>, stream: &mut Stream, span: Span) -> Ev
         }
         values.push(value);
     }
+    Ok(())
+}
+
+fn append_array(values: &mut Vec<Value>, part: &[Value], span: Span) -> Eval<()> {
+    let maximum_len = MAX_MATERIALIZED_ARRAY_BYTES / std::mem::size_of::<Value>();
+    let total = values.len().checked_add(part.len());
+    if total.is_none_or(|total| total > maximum_len) || values.try_reserve(part.len()).is_err() {
+        return Err(one_diagnostic(collection_too_large(span)));
+    }
+    values.extend(part.iter().cloned());
     Ok(())
 }
 
@@ -4198,6 +4246,9 @@ fn unbound_float_ieee_equals_method() -> Value {
 }
 
 fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Value> {
+    if let (Value::Array(items), "flatMap") = (receiver, field) {
+        return Some(Value::ArrayFlatMapMethod(Rc::clone(items)));
+    }
     if let Some(implementation) = env.builtin_methods.lookup(receiver, field) {
         return Some(Value::NamedMethod {
             receiver: Box::new(receiver.clone()),
@@ -5812,6 +5863,7 @@ fn map_key_is_comparable(key: &Value) -> bool {
         | Value::Stream(_)
         | Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
+        | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_)
         | Value::NamedFamily(_)
         | Value::NamedMethod { .. }
@@ -6556,15 +6608,25 @@ fn recursion_limit(span: Span, stack_budget: usize) -> Diagnostic {
 
 fn collection_too_large(span: Span) -> Diagnostic {
     let limit_mib = MAX_MATERIALIZED_ARRAY_BYTES / (1024 * 1024);
-    Diagnostic::error("stream is too large to materialize")
+    Diagnostic::error("collection is too large to materialize")
         .with_code(codes::runtime::COLLECTION_TOO_LARGE)
         .with_label(Label::primary(
             span,
             format!("this array would exceed the {limit_mib} MiB materialization limit"),
         ))
         .with_note(
-            "consume the stream with `fold` or `each`, or narrow it before calling `toArray` or using array spread",
+            "produce fewer array elements, or consume a stream with `fold` or `each` instead of materializing it",
         )
+}
+
+fn array_flat_map_result_type_error(span: Span, found: &str) -> Diagnostic {
+    Diagnostic::error("Array.flatMap callback must return an Array")
+        .with_code(codes::runtime::TYPE_ERROR)
+        .with_label(Label::primary(
+            span,
+            format!("this callback returned `{found}`"),
+        ))
+        .with_note("return an Array from every callback path, such as `[value]` or `[]`")
 }
 
 fn platform_error(span: Span, message: String) -> Diagnostic {

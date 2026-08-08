@@ -89,6 +89,7 @@ fn mismatch(expected: &str, got: &Value) -> String {
         Value::Tag { .. } => "Tag",
         Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
+        | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_)
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. }

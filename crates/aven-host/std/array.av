@@ -1,9 +1,10 @@
-# Array combinators and ambient Array methods. Pure Aven — no host natives.
+# Array combinators and ambient Array methods. Method policy is written in Aven;
+# `flatMap` collection and the primitive operations are evaluator natives.
 # Ambient methods load through the trusted standard-library root without
 # entering user scope. Import this module only for the residual producer
-# `range`. Array building uses language primitives: spread `[..xs, x]` and
-# `.push(x)`. Helpers are module-private (local recursion is not bound in
-# the checker).
+# `range`. The evaluator's native `flatMap` appends callback arrays into one
+# backing vector; array-producing methods share it as their linear collector.
+# Helpers are module-private (local recursion is not bound in the checker).
 #
 # Traversal terminates on `index < xs.length()`, not on an indexed
 # `undefined`. Indexing past the end yields `undefined`, which is
@@ -36,27 +37,6 @@ indexOfGo = (xs, index, target) =>
         false => indexOfGo(xs, index + 1, target)
     false => undefined
 
-# First `n` elements. `n <= 0` → []; `n >= length` → whole array.
-takeGo : (Array(a), Int, Int, Array(a)) -> Array(a)
-takeGo = (xs, index, remaining, acc) =>
-  remaining > 0 ?>
-    true =>
-      index < xs.length() ?>
-        true => takeGo(xs, index + 1, remaining - 1, acc.push(xs[index]))
-        false => acc
-    false => acc
-
-# All but the first `n`. `n <= 0` → whole array; `n >= length` → [].
-# Negative `toSkip` never satisfies `toSkip > 0`, so nothing is skipped.
-dropGo : (Array(a), Int, Int, Array(a)) -> Array(a)
-dropGo = (xs, index, toSkip, acc) =>
-  index < xs.length() ?>
-    true =>
-      toSkip > 0 ?>
-        true => dropGo(xs, index + 1, toSkip - 1, acc)
-        false => dropGo(xs, index + 1, 0, acc.push(xs[index]))
-    false => acc
-
 # Half-open `[start, end)`; omitting `end` slices through to the end. Negative
 # indexes wrap from the end first (`length + v`), then both ends clamp to
 # `[0, length]`. After wrap+clamp, `start >= end` → `[]`. Partially/fully out of
@@ -83,36 +63,27 @@ normalizeSliceIndex = (i, n) =>
       false => i
   clampIndex(wrapped, n)
 
-sliceGo : (Array(a), Int, Int, Array(a)) -> Array(a)
-sliceGo = (xs, index, end, acc) =>
-  index < end ?>
-    true => sliceGo(xs, index + 1, end, acc.push(xs[index]))
-    false => acc
-
-# Pairs up to the shorter length.
-zipGo : (Array(a), Array(b), Int, Array((a, b))) -> Array((a, b))
-zipGo = (xs, ys, index, acc) =>
-  index < xs.length() && index < ys.length() ?>
-    true => zipGo(xs, ys, index + 1, acc.push((xs[index], ys[index])))
-    false => acc
-
-# Copy `sorted[index..]` onto `acc`.
-copyFromGo : (Array(a), Int, Array(a)) -> Array(a)
-copyFromGo = (sorted, index, acc) =>
-  index < sorted.length() ?>
-    true => copyFromGo(sorted, index + 1, acc.push(sorted[index]))
-    false => acc
-
-# Insert `x` into sorted `acc` prefix so equals stay after existing equals (stable).
-insertGo : (Array(a), Int, a, (a, a) -> Bool, Array(a)) -> Array(a)
-insertGo = (sorted, index, x, isLess, acc) =>
+# Find where `x` belongs so equals stay before it (stable).
+insertIndexGo : (Array(a), Int, a, (a, a) -> Bool) -> Int
+insertIndexGo = (sorted, index, x, isLess) =>
   index < sorted.length() ?>
     true =>
       y: a = sorted[index]
       isLess(x, y) ?>
-        true => copyFromGo(sorted, index, acc.push(x))
-        false => insertGo(sorted, index + 1, x, isLess, acc.push(y))
-    false => acc.push(x)
+        true => index
+        false => insertIndexGo(sorted, index + 1, x, isLess)
+    false => index
+
+insertSorted : (Array(a), a, (a, a) -> Bool) -> Array(a)
+insertSorted = (sorted, x, isLess) =>
+  at = insertIndexGo(sorted, 0, x, isLess)
+  Array.range(0, sorted.length() + 1).flatMap((index) =>
+    index == at ?>
+      true => [x]
+      false =>
+        sourceIndex: Int = index < at ?> true => index, false => index - 1
+        [sorted[sourceIndex]]
+  )
 
 # Stable insertion sort. `isLess(a, b)` is true when `a` sorts strictly before `b`.
 sortWithGo : (Array(a), Int, Array(a), (a, a) -> Bool) -> Array(a)
@@ -120,8 +91,7 @@ sortWithGo = (xs, index, sorted, isLess) =>
   index < xs.length() ?>
     true =>
       element: a = xs[index]
-      seed: Array(a) = []
-      inserted = insertGo(sorted, 0, element, isLess, seed)
+      inserted = insertSorted(sorted, element, isLess)
       sortWithGo(xs, index + 1, inserted, isLess)
     false => sorted
 
@@ -132,17 +102,6 @@ sortWithGo = (xs, index, sorted, isLess) =>
 # because runtime ambient dispatch keys only on the owner head (`Array`), not
 # the type argument — the first installed body runs for every compact call.
 # For `Array(?a?)`, call `compact` twice to peel both wrappers.
-compactGo : (Array(a), Int, Array(b)) -> Array(b)
-compactGo = (xs, index, acc) =>
-  index < xs.length() ?>
-    true =>
-      element = xs[index]
-      element ?>
-        undefined => compactGo(xs, index + 1, acc)
-        null => compactGo(xs, index + 1, acc)
-        value => compactGo(xs, index + 1, acc.push(value))
-    false => acc
-
 # Own recursive helper so a hit returns without scanning the rest.
 findIndexGo : (Array(a), Int, (a) -> Bool) -> ?Int
 findIndexGo = (xs, index, pred) =>
@@ -222,46 +181,50 @@ Array(a) {
     zero: Int = 0
     indexOfGo(., zero, target)
 
-  # Empty seed annotated so the polymorphic element type is not left open.
   map(f: (a) -> b): Array(b) =>
-    seed: Array(b) = []
-    .fold(seed, (acc, x) => acc.push(f(x)))
+    xs = .
+    xs.flatMap((x) => [f(x)])
 
   flatMap(f: (a) -> Array(b)): Array(b) =>
-    seed: Array(b) = []
-    .fold(seed, (acc, x) => [..acc, ..f(x)])
+    # Evaluator dispatch resolves this native collector before ambient lookup.
+    xs = .
+    xs.flatMap(f)
 
   filter(pred: (a) -> Bool): Array(a) =>
-    seed: Array(a) = []
-    .fold(seed, (acc, x) => pred(x) ?> true => acc.push(x), false => acc)
+    xs = .
+    xs.flatMap((x) => pred(x) ?> true => [x], false => [])
 
-  # Fold pushing to the front.
   reverse(): Array(a) =>
-    seed: Array(a) = []
-    .fold(seed, (acc, x) => [x, ..acc])
+    xs = .
+    n = xs.length()
+    Array.range(0, n).flatMap((index) => [xs[n - index - 1]])
 
   concat(other: Array(a)): Array(a) =>
     xs = .
     [..xs, ..other]
 
   take(n: Int): Array(a) =>
-    seed: Array(a) = []
-    takeGo(., 0, n, seed)
+    xs = .
+    end = clampIndex(n, xs.length())
+    Array.range(0, end).flatMap((index) => [xs[index]])
 
   drop(n: Int): Array(a) =>
-    seed: Array(a) = []
-    dropGo(., 0, n, seed)
+    xs = .
+    start = clampIndex(n, xs.length())
+    Array.range(start, xs.length()).flatMap((index) => [xs[index]])
 
   slice(start: Int, end: ?Int = undefined): Array(a) =>
     n = .length()
     s = normalizeSliceIndex(start, n)
     e = normalizeSliceIndex(end ?? n, n)
-    seed: Array(a) = []
-    sliceGo(., s, e, seed)
+    count = s < e ?> true => e - s, false => 0
+    xs = .
+    Array.range(0, count).flatMap((index) => [xs[s + index]])
 
   zip(other: Array(b)): Array((a, b)) =>
-    seed: Array((a, b)) = []
-    zipGo(., other, 0, seed)
+    xs = .
+    n = xs.length() < other.length() ?> true => xs.length(), false => other.length()
+    Array.range(0, n).flatMap((index) => [(xs[index], other[index])])
 
   sortWith(isLess: (a, a) -> Bool): Array(a) =>
     seed: Array(a) = []
@@ -304,21 +267,31 @@ Array(Int) {
 
 Array(Array(a)) {
   flatten(): Array(a) =>
-    seed: Array(a) = []
-    .fold(seed, (acc, xs) => [..acc, ..xs])
+    xss = .
+    xss.flatMap((xs) => xs)
 }
 
 
 Array(?a) {
   compact(): Array(a) =>
-    seed: Array(a) = []
-    compactGo(., 0, seed)
+    xs = .
+    xs.flatMap((element) =>
+      element ?>
+        undefined => []
+        null => []
+        value => [value]
+    )
 }
 
 Array(a?) {
   compact(): Array(a) =>
-    seed: Array(a) = []
-    compactGo(., 0, seed)
+    xs = .
+    xs.flatMap((element) =>
+      element ?>
+        undefined => []
+        null => []
+        value => [value]
+    )
 }
 
 {}

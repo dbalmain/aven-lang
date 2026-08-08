@@ -1261,6 +1261,7 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
         }),
         aven_eval::Value::ResultMethod { .. }
         | aven_eval::Value::StreamMethod { .. }
+        | aven_eval::Value::ArrayFlatMapMethod(_)
         | aven_eval::Value::ArrayFoldMethod(_) => JsonValue::String("<method>".to_owned()),
         aven_eval::Value::NamedMethod { .. } | aven_eval::Value::UnboundNamedMethod { .. } => {
             JsonValue::String("<method>".to_owned())

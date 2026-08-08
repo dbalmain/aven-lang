@@ -237,7 +237,7 @@ fn absurd_stream_materialization_fails_before_iteration() {
 }
 
 #[test]
-fn native_array_fold_handles_large_inputs_without_aven_recursion() {
+fn native_array_fold_and_flat_map_handle_large_inputs_without_aven_recursion() {
     let legacy = eval_module(&parse_ok(concat!(
         "foldGo = (xs, index, acc, f) => index < xs.length() ?> ",
         "true => foldGo(xs, index + 1, f(acc, xs[index]), f), false => acc\n",
@@ -255,8 +255,30 @@ fn native_array_fold_handles_large_inputs_without_aven_recursion() {
         Value::int(49_995_000_u64),
     );
     assert_eq!(
-        eval_with_builtins("Array.range(0, 10000).map((x) => x * 2).length()"),
-        Value::int(10_000),
+        eval_with_builtins("Array.range(0, 100000).map((x) => x * 2).length()"),
+        Value::int(100_000),
+    );
+}
+
+#[test]
+fn native_array_flat_map_requires_array_callback_results() {
+    let module = parse_ok("[1].flatMap((x) => x)");
+    let builtin_methods = ambient_array_methods();
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default().with_builtin_methods(&builtin_methods, false),
+    );
+    assert!(outcome.value.is_none());
+    let [diagnostic] = outcome.diagnostics.as_slice() else {
+        panic!("expected one flatMap diagnostic: {:?}", outcome.diagnostics);
+    };
+    assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    assert!(!diagnostic.labels.is_empty());
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("return an Array"))
     );
 }
 
@@ -2116,6 +2138,19 @@ fn array_push_returns_new_array_without_mutating_receiver() {
         array_value(vec![
             array_value(vec![Value::int(1)]),
             array_value(vec![Value::int(1), Value::int(2)]),
+        ]),
+    );
+}
+
+#[test]
+fn array_combinators_do_not_mutate_aliased_sources() {
+    assert_eq!(
+        eval_with_builtins(
+            "xs = [1, 2]\naliased = xs\nmapped = xs.map((x) => x * 10)\n[aliased, mapped]\n"
+        ),
+        array_value(vec![
+            array_value(vec![Value::int(1), Value::int(2)]),
+            array_value(vec![Value::int(10), Value::int(20)]),
         ]),
     );
 }

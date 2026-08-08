@@ -244,6 +244,7 @@ fn write_to_text(
         | Value::UnboundNamedMethod { .. }
         | Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
+        | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_)
         | Value::Closure(_)
         | Value::Native(_)
@@ -383,6 +384,7 @@ fn write_repr(out: &mut String, value: &Value) {
         | Value::UnboundNamedMethod { .. }
         | Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
+        | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_) => {
             out.push_str("<method>");
         }

@@ -3101,8 +3101,11 @@ methods and collection remain separate slices.
 
 - **Roc-style opportunistic in-place mutation.** `push` (and spread of a dying
   receiver) may mutate in place when the runtime can prove the source array has
-  no other references (refcount 1), preserving value semantics. Deferred until
-  the evaluator/VM has a story for uniqueness; today `push` always copies.
+  no other references, preserving value semantics. A fold accumulator is still
+  retained by its closure-parameter scope while `acc.push(x)` resolves the
+  receiver, so its backing `Rc` is not unique at the push site. Array combinators
+  use native `flatMap` collection into a private vector; general `push` and spread
+  loops remain candidates for a later evaluator/VM uniqueness design.
 
 - **Braceless multiline set/record literals.** Allow dropping the braces on
   multiline shapes using a trailing sigil that opens a layout block: `@>` for

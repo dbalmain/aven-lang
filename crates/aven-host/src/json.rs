@@ -135,7 +135,10 @@ fn encode_value(
                 "Json.encode cannot encode tag @{name} with payload"
             ));
         }
-        Value::ResultMethod { .. } | Value::StreamMethod { .. } | Value::ArrayFoldMethod(_) => {
+        Value::ResultMethod { .. }
+        | Value::StreamMethod { .. }
+        | Value::ArrayFlatMapMethod(_)
+        | Value::ArrayFoldMethod(_) => {
             return Err("Json.encode cannot encode Function".to_owned());
         }
         Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => {
