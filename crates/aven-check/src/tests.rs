@@ -5265,6 +5265,88 @@ fn map_empty_global_is_generalized() {
 }
 
 #[test]
+fn applied_type_statics_fix_and_check_their_owner_arguments() {
+    let host = HostGlobals::default();
+    for (source, expected) in [
+        ("values = Array(Int).range(0, 5)\n", "Array(Int)"),
+        ("values = Map(Text, Int).empty()\n", "Map(Text, Int)"),
+    ] {
+        assert_eq!(
+            checked_binding_type(source, "values", &host).render(),
+            expected,
+            "for {source:?}"
+        );
+    }
+
+    let annotated = parse_module(
+        "values: Array(Int) = Array(Int).range(0, 5)\n\
+         map: Map(Text, Int) = Map(Text, Int).empty()\n",
+    );
+    let checked = check_module(&annotated.module);
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected applied-static diagnostics: {:?}",
+        checked.diagnostics
+    );
+
+    let wrong_result = parse_module("value: Map(Text, Text) = Map(Text, Int).empty()\n");
+    let checked = check_module(&wrong_result.module);
+    assert_eq!(
+        matching_codes(&checked.diagnostics, codes::ty::MISMATCH),
+        1,
+        "the applied Map arguments must constrain empty's result: {:?}",
+        checked.diagnostics
+    );
+    assert!(!has_diagnostic_code(
+        &checked.diagnostics,
+        codes::ty::UNRESOLVED_BINDING
+    ));
+}
+
+#[test]
+fn incompatible_and_unknown_applied_type_statics_are_actionable() {
+    let source = "values = Array(Text).range(0, 5)\n";
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    let diagnostic = checked
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+        .expect("the applied owner should conflict with the static owner");
+    assert_eq!(
+        diagnostic.message,
+        "static `range` is defined for `Array(Int)`, not `Array(Text)`"
+    );
+    assert_eq!(
+        diagnostic.labels[0].span,
+        nth_span(source, "Array(Text)", 0)
+    );
+    assert_eq!(
+        diagnostic.notes,
+        ["write `Array.range` to use its declared type, or apply `Array(Int)` explicitly"]
+    );
+
+    let source = "values = Array(Int).rang(0, 5)\n";
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    let diagnostic = checked
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::UNKNOWN_STATIC))
+        .expect("an unknown applied static should fail during checking");
+    assert_eq!(diagnostic.message, "`Array` has no static `rang`");
+    assert_eq!(diagnostic.labels[0].span, nth_span(source, "rang", 0));
+    assert_eq!(
+        diagnostic.notes,
+        ["use one of the statics on `Array`: range, rangeInclusive"]
+    );
+    assert!(!has_diagnostic_code(
+        &checked.diagnostics,
+        codes::ty::UNRESOLVED_BINDING
+    ));
+}
+
+#[test]
 fn non_core_named_types_reject_cross_named_and_structural_values() {
     // H6: Data/Map (and other non-core nominals) must not act as top/bottom.
     for source in [
@@ -6291,6 +6373,7 @@ fn range_operators_and_type_statics_infer_their_result_kinds() {
         "value = 0 .. 10\n",
         "value = 0 ..= 10\n",
         "value = Stream.range(0, 10)\n",
+        "value = Stream(Int).range(0, 10)\n",
         "value = Stream.rangeInclusive(0, 10)\n",
         "value = Stream.range(0, 10, { step: 2 })\n",
     ] {

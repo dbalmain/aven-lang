@@ -1048,6 +1048,54 @@ impl<'a> Checker<'a> {
         true
     }
 
+    pub(super) fn report_unknown_static(&mut self, owner: &str, name: &str, span: Span) {
+        let mut members = self
+            .statics
+            .get(owner)
+            .into_iter()
+            .flat_map(|members| members.keys())
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        members.sort_unstable();
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!("`{owner}` has no static `{name}`"))
+                .with_code(codes::ty::UNKNOWN_STATIC)
+                .with_label(Label::primary(span, format!("unknown static on `{owner}`")))
+                .with_note(format!(
+                    "use one of the statics on `{owner}`: {}",
+                    members.join(", ")
+                )),
+        );
+    }
+
+    pub(super) fn report_static_application_mismatch(
+        &mut self,
+        member: &str,
+        applied_owner: &Type,
+        declared_owner: &Type,
+        span: Span,
+    ) {
+        let applied = applied_owner.render();
+        let declared = declared_owner.render();
+        let owner = match declared_owner {
+            Type::Apply { callee, .. } => callee.render(),
+            _ => declared.clone(),
+        };
+        self.push_unique_diagnostic(
+            Diagnostic::error(format!(
+                "static `{member}` is defined for `{declared}`, not `{applied}`"
+            ))
+            .with_code(codes::ty::MISMATCH)
+            .with_label(Label::primary(
+                span,
+                format!("this type application selects `{applied}`"),
+            ))
+            .with_note(format!(
+                "write `{owner}.{member}` to use its declared type, or apply `{declared}` explicitly"
+            )),
+        );
+    }
+
     pub(super) fn report_missing_field(&mut self, name: &str, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("missing field `{name}`"))

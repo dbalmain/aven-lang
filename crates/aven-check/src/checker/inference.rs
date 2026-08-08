@@ -25,6 +25,60 @@ pub(super) fn pipe_call_expr(value: &Expr, target: &Expr) -> Expr {
     }
 }
 
+fn static_owner_application(ty: &Type, owner_name: &str) -> Option<Type> {
+    match ty {
+        Type::Apply { callee, args } if matches!(callee.as_ref(), Type::Named(name) if name == owner_name) => {
+            Some(Type::Apply {
+                callee: callee.clone(),
+                args: args.clone(),
+            })
+        }
+        Type::Apply { callee, args } => {
+            static_owner_application(callee, owner_name).or_else(|| {
+                args.iter()
+                    .find_map(|arg| static_owner_application(arg, owner_name))
+            })
+        }
+        Type::Function { params, result } => params
+            .iter()
+            .find_map(|param| static_owner_application(param, owner_name))
+            .or_else(|| static_owner_application(result, owner_name)),
+        Type::Optional(inner) | Type::Nullable(inner) => {
+            static_owner_application(inner, owner_name)
+        }
+        Type::Tuple(items) => items
+            .iter()
+            .find_map(|item| static_owner_application(item, owner_name)),
+        Type::Record(row) | Type::Variant(row) => {
+            row.entries.iter().find_map(|entry| match entry {
+                RowEntry::Field { ty, .. } => static_owner_application(ty, owner_name),
+                RowEntry::Tag { payload, .. } => payload
+                    .iter()
+                    .find_map(|ty| static_owner_application(ty, owner_name)),
+                RowEntry::Literal { .. } => None,
+            })
+        }
+        Type::SlotRecord { data, slots } => {
+            data.entries
+                .iter()
+                .chain(&slots.entries)
+                .find_map(|entry| match entry {
+                    RowEntry::Field { ty, .. } => static_owner_application(ty, owner_name),
+                    RowEntry::Tag { payload, .. } => payload
+                        .iter()
+                        .find_map(|ty| static_owner_application(ty, owner_name)),
+                    RowEntry::Literal { .. } => None,
+                })
+        }
+        Type::Error
+        | Type::Deferred
+        | Type::Named(_)
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Recursive(_) => None,
+    }
+}
+
 impl<'a> Checker<'a> {
     /// Instantiate and fully resolve a top-level binding's inferred type, used by
     /// white-box synthesis tests. Production code consumes the generalized scheme
@@ -1636,12 +1690,17 @@ impl<'a> Checker<'a> {
             };
         }
 
-        // A static-carrying type name (`Map`, `Json`, ...) resolves the field
-        // through the statics table rather than a namespace record.
-        if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
-            && let Some(scheme) = self.static_member_scheme(env, name, field)
+        // A static-carrying type (`Map`, `Map(k, v)`, `Json`, ...) resolves the
+        // field through the statics table rather than a namespace record.
+        if let Some(ty) = self.infer_static_member_access(env, receiver, field, field_span) {
+            return ty;
+        }
+        if let Some((name, applied)) = self.static_receiver_name(env, receiver)
+            && self.statics.contains_key(&name)
+            && (applied || !self.is_parameterized_type_constructor_name(env, &name))
         {
-            return self.instantiate_scheme_at(&scheme, field_span);
+            self.report_unknown_static(&name, field, field_span);
+            return Type::Error;
         }
 
         // Bare `Array.sortBy` / `Pair.method` — parameterized type constructors
@@ -2871,6 +2930,67 @@ impl<'a> Checker<'a> {
         }
 
         self.statics.get(receiver_name)?.get(field).cloned()
+    }
+
+    /// The unshadowed static owner named by a bare or applied type receiver.
+    /// Builtin calls count as type applications only at their declared arity;
+    /// this keeps value-position `Map(pairs)` on the ordinary value path.
+    pub(super) fn static_receiver_name(
+        &self,
+        env: &TypeEnv,
+        receiver: &Expr,
+    ) -> Option<(String, bool)> {
+        let (name, applied) = match &ungroup_expr(receiver).kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => (name.as_str(), false),
+            ExprKind::Call { callee, args } => {
+                let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) =
+                    &ungroup_expr(callee).kind
+                else {
+                    return None;
+                };
+                let arity = BuiltinType::from_name(name)?.application_arity()?;
+                if args.len() != arity {
+                    return None;
+                }
+                (name.as_str(), true)
+            }
+            _ => return None,
+        };
+        if env.get(name).is_some() || self.bindings.contains_key(name) {
+            return None;
+        }
+        Some((name.to_owned(), applied))
+    }
+
+    pub(super) fn infer_static_member_access(
+        &mut self,
+        env: &TypeEnv,
+        receiver: &Expr,
+        field: &str,
+        field_span: Span,
+    ) -> Option<Type> {
+        let (owner_name, applied) = self.static_receiver_name(env, receiver)?;
+        let scheme = self.static_member_scheme(env, &owner_name, field)?;
+        let member_type = self.instantiate_scheme_at(&scheme, field_span);
+        if !applied {
+            return Some(member_type);
+        }
+
+        let applied_owner = self.lower_normalized_annotation(receiver);
+        let Some(declared_owner) = static_owner_application(&member_type, &owner_name) else {
+            return Some(member_type);
+        };
+        if self.unifier.unify(&applied_owner, &declared_owner).is_err() {
+            self.report_static_application_mismatch(
+                field,
+                &applied_owner,
+                &declared_owner,
+                receiver.span,
+            );
+            return Some(Type::Error);
+        }
+
+        Some(self.unifier.resolve(&member_type))
     }
 
     /// Value-position `Map(pairs)` construction: a single argument of type

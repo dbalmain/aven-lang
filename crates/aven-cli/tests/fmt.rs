@@ -441,6 +441,29 @@ fn check_and_run_support_applied_recursive_type_values() {
 }
 
 #[test]
+fn applied_type_statics_check_and_run_agree() {
+    let file = TempFile::new(
+        "run-applied-type-statics",
+        "applied_array = Array(Int).range(0, 5)\n\
+         annotated_array: Array(Int) = Array(Int).range(0, 3)\n\
+         bare_array = Array.range(0, 2)\n\
+         applied_map = Map(Text, Int).empty()\n\
+         annotated_map: Map(Text, Int) = Map(Text, Int).empty()\n\
+         bare_map: Map(Text, Int) = Map.empty()\n\
+         applied_array.length() + annotated_array.length() + bare_array.length() + applied_map.size() + annotated_map.size() + bare_map.size()\n",
+    );
+
+    let checked = run_aven(["check"], file.path());
+    assert_success(&checked);
+    assert!(!stderr(&checked).contains("runtime.missing-field"));
+
+    let output = run_aven(["run"], file.path());
+    assert_success(&output);
+    assert_eq!(stdout(&output), "10\n");
+    assert!(!stderr(&output).contains("runtime.missing-field"));
+}
+
+#[test]
 fn check_and_run_support_applied_recursive_decode_targets() {
     let file = TempFile::new(
         "run-applied-recursive-decode",

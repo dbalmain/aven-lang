@@ -383,6 +383,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "Runtime evaluation tried to read a record field that is not present on the record value. Add the field before the lookup, change the field name, or check the record shape before access.",
     },
     DiagnosticExplanation {
+        code: codes::runtime::MISSING_TYPE_MEMBER,
+        text: "Runtime evaluation tried to read a static or unbound method that the type does not carry. Use a member declared on that type, or access the intended method on a runtime value instead.",
+    },
+    DiagnosticExplanation {
         code: codes::runtime::NO_MATCH,
         text: "Runtime pattern matching reached the end of the arm list without finding a matching pattern whose guards all passed. Add a default arm, handle the missing case explicitly, or run the checker to catch non-exhaustive matches before evaluation.",
     },
@@ -581,6 +585,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::UNKNOWN_NAME,
         text: "A type annotation references an uppercase name that is not a known builtin or in-scope compile-time declaration. Define it or correct the spelling.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::UNKNOWN_STATIC,
+        text: "A type was accessed with a static name that it does not provide. Use one of the statics listed by the diagnostic or correct the member spelling.",
     },
     DiagnosticExplanation {
         code: codes::ty::UNPRODUCTIVE_RECURSION,

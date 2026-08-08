@@ -66,7 +66,9 @@ fn evaluates_grouping_before_multiplication() {
 fn range_operators_and_stream_statics_construct_lazy_streams() {
     let exclusive = eval_stream("0 .. 10");
     let explicit = eval_stream("Stream.range(0, 10)");
+    let applied = eval_stream("Stream(Int).range(0, 10)");
     assert_eq!(exclusive, explicit);
+    assert_eq!(exclusive, applied);
     assert_eq!(exclusive.start(), &0.into());
     assert_eq!(exclusive.end(), &10.into());
     assert_eq!(exclusive.increment(), &1.into());
@@ -107,6 +109,16 @@ fn array_range_statics_materialize_eagerly() {
         ]),
     );
     assert_module_value("Array.range(0, 1000000).length()", Value::int(1_000_000));
+    assert_module_value(
+        "Array(Int).range(0, 5)",
+        array_value(vec![
+            Value::int(0),
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
+            Value::int(4),
+        ]),
+    );
 }
 
 #[test]
@@ -1387,6 +1399,7 @@ fn tuple_emit_requires_arity_two_tuple() {
 #[test]
 fn map_constructs_empty_and_from_entries() {
     assert_module_value("Map.empty()\n", map_value(vec![]));
+    assert_module_value("Map(Text, Int).empty()\n", map_value(vec![]));
     assert_module_value(
         "Map.from([(\"a\", 1), (\"b\", 2)])\n",
         map_value(vec![
@@ -2921,7 +2934,12 @@ fn record_patterns_and_type_statics_still_error_on_absent_fields() {
     );
     assert_eq!(
         diagnostic.code.as_deref(),
-        Some(codes::runtime::MISSING_FIELD)
+        Some(codes::runtime::MISSING_TYPE_MEMBER)
+    );
+    assert_eq!(diagnostic.message, "type `Map` has no member `nope`");
+    assert_eq!(
+        diagnostic.notes,
+        ["use a static or unbound method declared on `Map`, or access `nope` on a runtime value"]
     );
 }
 

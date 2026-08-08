@@ -124,6 +124,7 @@ pub mod runtime {
     pub const DIVISION_BY_ZERO: &str = "runtime.division-by-zero";
     pub const INDEX_OUT_OF_BOUNDS: &str = "runtime.index-out-of-bounds";
     pub const MISSING_FIELD: &str = "runtime.missing-field";
+    pub const MISSING_TYPE_MEMBER: &str = "runtime.missing-type-member";
     pub const NO_MATCH: &str = "runtime.no-match";
     pub const NOT_CALLABLE: &str = "runtime.not-callable";
     pub const PANIC: &str = "runtime.panic";
@@ -181,6 +182,7 @@ pub mod ty {
     pub const UPPERCASE_PATTERN_BINDER_UNSUPPORTED: &str =
         "type.uppercase-pattern-binder-unsupported";
     pub const UNKNOWN_NAME: &str = "type.unknown-name";
+    pub const UNKNOWN_STATIC: &str = "type.unknown-static";
     pub const UNPRODUCTIVE_RECURSION: &str = "type.unproductive-recursion";
     pub const UNKNOWN_MODULE_TYPE: &str = "type.unknown-module-type";
     pub const UNREACHABLE_MATCH_ARM: &str = "type.unreachable-match-arm";
@@ -283,6 +285,7 @@ pub const ALL: &[&str] = &[
     runtime::DIVISION_BY_ZERO,
     runtime::INDEX_OUT_OF_BOUNDS,
     runtime::MISSING_FIELD,
+    runtime::MISSING_TYPE_MEMBER,
     runtime::NO_MATCH,
     runtime::NOT_CALLABLE,
     runtime::PANIC,
@@ -333,6 +336,7 @@ pub const ALL: &[&str] = &[
     ty::UNKNOWN_METHOD,
     ty::UNKNOWN_MODULE_TYPE,
     ty::UNKNOWN_NAME,
+    ty::UNKNOWN_STATIC,
     ty::UNPRODUCTIVE_RECURSION,
     ty::UNREACHABLE_MATCH_ARM,
     ty::UNRESOLVED_BINDING,

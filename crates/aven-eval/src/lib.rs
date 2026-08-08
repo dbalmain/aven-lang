@@ -3994,32 +3994,52 @@ fn field_access_value(
                 },
             )
         }
-        Value::NamedFamily(descriptor) => descriptor
-            .methods
-            .get(field)
-            .cloned()
-            .map(|implementation| Value::UnboundNamedMethod {
-                descriptor: Rc::clone(descriptor),
-                member: field.to_owned(),
-                implementation,
-            })
-            .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
+        Value::NamedFamily(descriptor) => descriptor.methods.get(field).cloned().map_or_else(
+            || {
+                Err(one_diagnostic(missing_type_member(
+                    &descriptor.owner,
+                    field,
+                    field_span,
+                )))
+            },
+            |implementation| {
+                Ok(Value::UnboundNamedMethod {
+                    descriptor: Rc::clone(descriptor),
+                    member: field.to_owned(),
+                    implementation,
+                })
+            },
+        ),
         // A type value (`Map`, `Json`, ...) carries statics: field access
         // resolves the `"Type.static"`-keyed global bound alongside the type.
         // Concrete scalar builtins also publish unbound methods (`Int.+`,
         // `Int.div`) as first-class values for base delegation.
-        Value::Type(ty) => match ty.descriptor() {
-            RuntimeTypeDescriptor::Named(name) => env
-                .lookup(&format!("{name}.{field}"))
-                .or_else(|| unbound_builtin_type_method(name, field))
-                .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
-            RuntimeTypeDescriptor::Record(fields) => fields
-                .iter()
-                .find(|(name, _)| name == field)
-                .map(|(_, field_ty)| Value::Type(ty.with_descriptor(field_ty.clone())))
-                .ok_or_else(|| one_diagnostic(missing_field(field, field_span))),
-            _ => Err(one_diagnostic(missing_field(field, field_span))),
-        },
+        Value::Type(ty) => {
+            if let Some(owner) = runtime_type_static_owner(ty.descriptor()) {
+                let member = env
+                    .lookup(&format!("{owner}.{field}"))
+                    .or_else(|| unbound_builtin_type_method(owner, field))
+                    .ok_or_else(|| {
+                        one_diagnostic(missing_type_member(&ty.to_string(), field, field_span))
+                    })?;
+                Ok(member)
+            } else {
+                match ty.descriptor() {
+                    RuntimeTypeDescriptor::Record(fields) => fields
+                        .iter()
+                        .find(|(name, _)| name == field)
+                        .map(|(_, field_ty)| Value::Type(ty.with_descriptor(field_ty.clone())))
+                        .ok_or_else(|| {
+                            one_diagnostic(missing_type_member(&ty.to_string(), field, field_span))
+                        }),
+                    _ => Err(one_diagnostic(missing_type_member(
+                        &ty.to_string(),
+                        field,
+                        field_span,
+                    ))),
+                }
+            }
+        }
         value => builtin_method(value, field, env).ok_or_else(|| {
             one_diagnostic(record_type_error(
                 receiver_span,
@@ -4060,6 +4080,21 @@ fn value_carries_member(value: &Value, field: &str, env: &Environment) -> bool {
             _ => false,
         },
         value => builtin_method(value, field, env).is_some(),
+    }
+}
+
+fn runtime_type_static_owner(descriptor: &RuntimeTypeDescriptor) -> Option<&str> {
+    match descriptor {
+        RuntimeTypeDescriptor::Named(name) => Some(name),
+        RuntimeTypeDescriptor::Apply { callee, .. } => runtime_type_static_owner(callee),
+        RuntimeTypeDescriptor::Function { .. }
+        | RuntimeTypeDescriptor::Optional(_)
+        | RuntimeTypeDescriptor::Nullable(_)
+        | RuntimeTypeDescriptor::Tuple(_)
+        | RuntimeTypeDescriptor::Record(_)
+        | RuntimeTypeDescriptor::SlotRecord { .. }
+        | RuntimeTypeDescriptor::Variant(_)
+        | RuntimeTypeDescriptor::Recursive { .. } => None,
     }
 }
 
@@ -5627,8 +5662,12 @@ fn eval_type_application(
         }
     }
 
-    if let Some(builtin @ (BuiltinType::Array | BuiltinType::Set | BuiltinType::Result)) =
-        callee_value.as_type_name().and_then(BuiltinType::from_name)
+    if let Some(
+        builtin @ (BuiltinType::Array
+        | BuiltinType::Set
+        | BuiltinType::Stream
+        | BuiltinType::Result),
+    ) = callee_value.as_type_name().and_then(BuiltinType::from_name)
     {
         let name = builtin.name();
         let arity = builtin
@@ -6504,6 +6543,15 @@ fn missing_field(field: &str, span: Span) -> Diagnostic {
         .with_code(codes::runtime::MISSING_FIELD)
         .with_label(Label::primary(span, "this field is not present at runtime"))
         .with_note("record field lookup only succeeds for fields present on the record value")
+}
+
+fn missing_type_member(owner: &str, member: &str, span: Span) -> Diagnostic {
+    Diagnostic::error(format!("type `{owner}` has no member `{member}`"))
+        .with_code(codes::runtime::MISSING_TYPE_MEMBER)
+        .with_label(Label::primary(span, "this member is not carried by the type"))
+        .with_note(format!(
+            "use a static or unbound method declared on `{owner}`, or access `{member}` on a runtime value"
+        ))
 }
 
 fn dynamic_import(span: Span) -> Diagnostic {

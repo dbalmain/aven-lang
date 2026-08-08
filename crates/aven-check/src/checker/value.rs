@@ -216,6 +216,20 @@ impl<'a> Checker<'a> {
     pub(super) fn check_value_field_access(&mut self, receiver: &Expr, field: &str, span: Span) {
         let env = self.local_types.inference_env();
         let imported_module = self.imported_module_specifier(&env, receiver);
+        if let Some((name, applied)) = self.static_receiver_name(&env, receiver) {
+            if self
+                .statics
+                .get(&name)
+                .is_some_and(|members| members.contains_key(field))
+            {
+                let _ = self.infer_static_member_access(&env, receiver, field, span);
+                return;
+            }
+            if applied && self.statics.contains_key(&name) {
+                self.report_unknown_static(&name, field, span);
+                return;
+            }
+        }
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind {
             if let Some(owner) = self.unbound_method_owner_name(name)
                 && self
