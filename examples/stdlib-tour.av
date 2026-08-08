@@ -6,7 +6,8 @@ result = import("std/result")
 
 # --- std/array ---------------------------------------------------------
 xs = [1, 2, 3, 4, 5, 6, 7]
-writeLine("range(1, 8)        = ${range(1, 8)}")
+# A range is a lazy stream, so it renders as a description of itself.
+writeLine("lazy range          = ${range(1, 8)}")
 writeLine("take/drop           = ${xs.take(3)} ${xs.drop(5)}")
 writeLine("slice(xs, 2, 5)     = ${xs.slice(2, 5)}")
 writeLine("zip with letters    = ${xs.take(3).zip(["a", "b", "c"])}")
