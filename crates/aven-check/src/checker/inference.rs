@@ -422,6 +422,41 @@ impl<'a> Checker<'a> {
             return self.infer_call(env, callee, args);
         }
 
+        if matches!(operator, ".." | "..=") {
+            let left_type = self.infer(env, left);
+            let right_type = self.infer(env, right);
+            let int_type = named_builtin("Int");
+            for (operand, ty) in [(left, &left_type), (right, &right_type)] {
+                let resolved = self.normalize(&self.resolve_and_default(ty));
+                if is_resolved_operator_operand(&resolved) {
+                    if !self.operator_operand_resolves_to_int(&resolved) {
+                        self.diagnostics.push(
+                            Diagnostic::error(format!("operator `{operator}` requires Int bounds"))
+                                .with_code(codes::ty::INVALID_OPERATOR_OPERANDS)
+                                .with_label(Label::primary(
+                                    operand.span,
+                                    format!(
+                                        "this bound has type `{}`",
+                                        display_inferred_type(&resolved).render()
+                                    ),
+                                ))
+                                .with_note("use Int values for both range bounds"),
+                        );
+                    } else if self
+                        .primitive_family_base_view(&resolved)
+                        .is_some_and(|base| base == int_type)
+                        && !operand.span.is_empty()
+                    {
+                        self.primitive_family_coercions
+                            .insert(operand.span, PrimitiveFamilyCoercion::Widen);
+                    }
+                } else {
+                    let _ = self.unifier.unify(ty, &int_type);
+                }
+            }
+            return crate::ty::build::stream(int_type);
+        }
+
         let snapshot = self.unifier.snapshot();
         let diagnostic_snapshot = self.diagnostic_snapshot();
         // `r.field ?? fallback` guards the field, so inferring it as *required*

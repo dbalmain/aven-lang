@@ -1,0 +1,5 @@
+exclusive = 0 .. 10
+inclusive = 0 ..= 10
+precedence = 0 .. n - 1
+array = [a .. b, ..xs, 1]
+record = { ..rec }

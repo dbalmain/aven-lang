@@ -772,7 +772,7 @@ impl Lexer<'_> {
             Some(b'?') => self.scan_reserved_operator("?", &["?.", "??", "?^", "?!", "?>", "?"]),
             Some(b'=') => self.scan_reserved_operator("=", &["=>", "==", "="]),
             Some(b':') => self.scan_reserved_operator(":", &[":..", "::", ":=", ":"]),
-            Some(b'.') => self.scan_reserved_operator(".", &["..", "."]),
+            Some(b'.') => self.scan_reserved_operator(".", &["..=", "..", "."]),
             Some(b'|') => self.scan_reserved_operator("|", &["|>", "||", "|"]),
             _ => self.scan_custom_operator(),
         }
@@ -1024,7 +1024,8 @@ fn reserved_operator_continues(matched: &str, byte: u8) -> bool {
         "." => matches!(byte, b'.' | b'?'),
         // `..` and longer reserved `.` forms still reject custom continuations
         // (`..<`, `...`).
-        ".." => is_custom_operator_continue_byte(byte) || matches!(byte, b'.' | b'?'),
+        ".." => is_custom_operator_continue_byte(byte) || matches!(byte, b'.' | b'?' | b'='),
+        "..=" => is_operator_run_byte(byte),
         "|" | "||" | "|>" => is_operator_run_byte(byte),
         _ => false,
     }

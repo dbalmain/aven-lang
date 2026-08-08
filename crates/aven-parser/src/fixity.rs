@@ -12,6 +12,7 @@ pub enum OperatorPrecedence {
     Union,
     Pipe,
     Coalesce,
+    Range,
     Or,
     And,
     Comparison,
@@ -26,6 +27,7 @@ impl OperatorPrecedence {
             Self::Union => "|",
             Self::Pipe => "|>",
             Self::Coalesce => "??",
+            Self::Range => "..",
             Self::Or => "||",
             Self::And => "&&",
             Self::Comparison => "==",
@@ -40,6 +42,7 @@ impl OperatorPrecedence {
             "|" => Some(Self::Union),
             "|>" => Some(Self::Pipe),
             "??" => Some(Self::Coalesce),
+            ".." => Some(Self::Range),
             "||" => Some(Self::Or),
             "&&" => Some(Self::And),
             "==" => Some(Self::Comparison),
@@ -58,12 +61,13 @@ impl OperatorPrecedence {
             Self::Union => 1,
             Self::Pipe => 2,
             Self::Coalesce => 3,
-            Self::Or => 4,
-            Self::And => 5,
-            Self::Comparison => 6,
-            Self::Additive => 7,
-            Self::Multiplicative => 8,
-            Self::Exponentiation => 9,
+            Self::Range => 4,
+            Self::Or => 5,
+            Self::And => 6,
+            Self::Comparison => 7,
+            Self::Additive => 8,
+            Self::Multiplicative => 9,
+            Self::Exponentiation => 10,
         };
         let right_binding_power = match associativity {
             OperatorAssociativity::Right => precedence,
@@ -316,10 +320,11 @@ mod tests {
         OperatorPrecedence,
     };
 
-    const PRECEDENCES: [OperatorPrecedence; 9] = [
+    const PRECEDENCES: [OperatorPrecedence; 10] = [
         OperatorPrecedence::Union,
         OperatorPrecedence::Pipe,
         OperatorPrecedence::Coalesce,
+        OperatorPrecedence::Range,
         OperatorPrecedence::Or,
         OperatorPrecedence::And,
         OperatorPrecedence::Comparison,

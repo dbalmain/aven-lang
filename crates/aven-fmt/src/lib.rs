@@ -537,7 +537,11 @@ fn needs_space(
         return false;
     }
 
-    if is_binary_operator(current) || is_binary_operator(previous) {
+    if is_binary_operator(current)
+        || is_binary_operator(previous)
+        || is_infix_range_operator(current, Some(previous))
+        || is_infix_range_operator(previous, previous_previous)
+    {
         return true;
     }
 
@@ -616,6 +620,11 @@ fn is_binary_operator(token: &Token) -> bool {
     ))
 }
 
+fn is_infix_range_operator(token: &Token, previous: Option<&Token>) -> bool {
+    matches!(&token.kind, TokenKind::Operator(operator) if operator == "..")
+        && previous.is_some_and(can_end_postfix_operand)
+}
+
 fn is_tight_access_operator(token: &Token) -> bool {
     matches!(&token.kind, TokenKind::Operator(operator) if operator == "." || operator == "?.")
 }
@@ -638,7 +647,8 @@ fn is_tight_postfix_operator(token: &Token, previous: Option<&Token>) -> bool {
 }
 
 fn is_tight_prefix_operator(token: &Token, previous: Option<&Token>, next: Option<&Token>) -> bool {
-    matches!(&token.kind, TokenKind::Operator(operator) if matches!(operator.as_str(), ".." | ":.."))
+    matches!(&token.kind, TokenKind::Operator(operator) if operator == ":..")
+        || matches!(&token.kind, TokenKind::Operator(operator) if operator == ".." && previous.is_none_or(|previous| !can_end_postfix_operand(previous)))
         || matches!(&token.kind, TokenKind::Operator(operator) if operator == "!" && previous.is_none_or(|previous| !can_end_postfix_operand(previous)))
         || matches!(&token.kind, TokenKind::Operator(operator) if operator == "?" && previous.is_none_or(|previous| !can_end_postfix_operand(previous)))
         || is_at_set_marker(token, next)
@@ -659,6 +669,10 @@ fn can_end_postfix_operand(token: &Token) -> bool {
         TokenKind::Keyword(_)
             | TokenKind::Identifier(_)
             | TokenKind::ComptimeIdentifier(_)
+            | TokenKind::Number(_)
+            | TokenKind::StringLiteral(_)
+            | TokenKind::RegexLiteral(_)
+            | TokenKind::Tag(_)
             | TokenKind::InterpolationEnd(_)
             | TokenKind::CloseParen
             | TokenKind::CloseBracket

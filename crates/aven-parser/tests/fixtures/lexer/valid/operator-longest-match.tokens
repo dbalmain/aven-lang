@@ -47,3 +47,11 @@
 141..143 operator `|>`
 144..150 identifier `render`
 150..151 newline
+151..157 identifier `ranges`
+158..159 operator `=`
+160..161 number `0`
+162..164 operator `..`
+165..167 number `10`
+168..171 operator `..=`
+172..174 number `10`
+174..175 newline

@@ -1,7 +1,7 @@
 use super::{
     BuiltinMethodEnvironment, DEFAULT_STACK_SEGMENT_LIMIT, Environment, EvalModuleOptions,
-    EvalOutcome, ModuleImports, RuntimeType, STACK_SEGMENT_SIZE, Value, eval_expr, eval_module,
-    eval_module_with_options, logging, record_field_value,
+    EvalOutcome, ModuleImports, RuntimeType, STACK_SEGMENT_SIZE, Stream, Value, display_text,
+    eval_expr, eval_module, eval_module_with_options, logging, record_field_value, repr_text,
 };
 use aven_core::codes;
 use aven_parser::{
@@ -60,6 +60,85 @@ fn evaluates_and_renders_arbitrary_precision_integers() {
 #[test]
 fn evaluates_grouping_before_multiplication() {
     assert_eval("(1 + 2) * 3", Value::int(9));
+}
+
+#[test]
+fn range_operators_and_function_construct_lazy_streams() {
+    let exclusive = eval_stream("0 .. 10");
+    let explicit = eval_stream("range(0, 10)");
+    assert_eq!(exclusive, explicit);
+    assert_eq!(exclusive.start(), &0.into());
+    assert_eq!(exclusive.end(), &10.into());
+    assert_eq!(exclusive.increment(), &1.into());
+    assert!(!exclusive.is_inclusive());
+
+    let inclusive = eval_stream("0 ..= 10");
+    assert!(inclusive.is_inclusive());
+
+    let stepped = eval_stream("range(0, 10, 2)");
+    assert_eq!(stepped.increment(), &2.into());
+}
+
+#[test]
+fn range_streams_step_without_materializing_the_range() {
+    let mut million = eval_stream("0 .. 1000000");
+    assert_eq!(million.next(), Some(Value::int(0)));
+    assert_eq!(million.next(), Some(Value::int(1)));
+    assert_eq!(million.next(), Some(Value::int(2)));
+
+    let mut inclusive = eval_stream("0 ..= 2");
+    assert_eq!(
+        inclusive.by_ref().collect::<Vec<_>>(),
+        vec![Value::int(0), Value::int(1), Value::int(2),]
+    );
+    assert_eq!(inclusive.next(), None);
+}
+
+#[test]
+fn reversed_ranges_descend_and_explicit_direction_is_respected() {
+    let mut reversed = eval_stream("range(3, 0)");
+    assert_eq!(
+        reversed.by_ref().collect::<Vec<_>>(),
+        vec![Value::int(3), Value::int(2), Value::int(1),]
+    );
+
+    let mut away_from_end = eval_stream("range(0, 3, -1)");
+    assert_eq!(away_from_end.next(), None);
+}
+
+#[test]
+fn range_display_describes_without_forcing() {
+    let stream = Value::Stream(eval_stream("0 .. 1000000"));
+    assert_eq!(display_text(&stream), Ok("range(0, 1000000)".to_owned()));
+    assert_eq!(repr_text(&stream), "range(0, 1000000)");
+    assert_module_value("(0 .. 5).toText()\n", Value::Text("range(0, 5)".to_owned()));
+    assert_eval(
+        "\"${0 ..= 5}\"",
+        Value::Text("rangeInclusive(0, 5)".to_owned()),
+    );
+}
+
+#[test]
+fn zero_range_step_reports_an_actionable_diagnostic() {
+    let outcome = eval_module(&parse_ok("range(0, 10, 0)\n"));
+    assert!(outcome.value.is_none());
+    let [diagnostic] = outcome.diagnostics.as_slice() else {
+        panic!(
+            "expected one zero-step diagnostic: {:?}",
+            outcome.diagnostics
+        );
+    };
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::RANGE_STEP_ZERO)
+    );
+    assert!(!diagnostic.labels.is_empty());
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("non-zero"))
+    );
 }
 
 #[test]
@@ -1389,7 +1468,7 @@ fn std_array_combinators_run_via_import() {
 
     let imports = ModuleImports::new([("std/array".to_owned(), array_export)]);
     let source = concat!(
-        "{ range } = import(\"std/array\")\n",
+        "array = import(\"std/array\")\n",
         "xs = [10, 20, 30]\n",
         "empty = []\n",
         "emptyNested: Array(Array(Int)) = []\n",
@@ -1623,17 +1702,9 @@ fn std_array_combinators_run_via_import() {
                     ])
                 ),
                 ("flattenEmpty", array_value(vec![])),
-                (
-                    "range",
-                    array_value(vec![
-                        Value::int(1),
-                        Value::int(2),
-                        Value::int(3),
-                        Value::int(4)
-                    ])
-                ),
-                ("rangeEmpty", array_value(vec![])),
-                ("rangeRev", array_value(vec![])),
+                ("range", stream_value(1, 5, 1, false)),
+                ("rangeEmpty", stream_value(3, 3, 1, false)),
+                ("rangeRev", stream_value(5, 1, -1, false)),
                 (
                     "sort",
                     array_value(vec![Value::int(1), Value::int(2), Value::int(3)])
@@ -3107,6 +3178,19 @@ fn assert_eval(source: &str, expected: Value) {
     assert_eq!(eval_source(source).expect("evaluation failed"), expected);
 }
 
+fn eval_stream(source: &str) -> Stream {
+    let outcome = eval_module(&parse_ok(source));
+    assert!(
+        outcome.diagnostics.is_empty(),
+        "unexpected range diagnostics: {:?}",
+        outcome.diagnostics
+    );
+    let Some(Value::Stream(stream)) = outcome.value else {
+        panic!("expected Stream value")
+    };
+    stream
+}
+
 fn eval_error(source: &str) -> aven_core::Diagnostic {
     eval_source(source).expect_err("expected evaluation error")
 }
@@ -3169,6 +3253,13 @@ fn tuple_value(values: Vec<Value>) -> Value {
 
 fn set_value(values: Vec<Value>) -> Value {
     Value::Set(Rc::new(values))
+}
+
+fn stream_value(start: i64, end: i64, step: i64, inclusive: bool) -> Value {
+    Value::Stream(
+        Stream::range(start.into(), end.into(), step.into(), inclusive)
+            .expect("test stream step is non-zero"),
+    )
 }
 
 fn map_value(entries: Vec<(Value, Value)>) -> Value {

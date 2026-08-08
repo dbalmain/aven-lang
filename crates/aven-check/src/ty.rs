@@ -394,6 +394,7 @@ fn carries_ambient_to_text(ty: &Type) -> bool {
             map_type_args(ty).is_some()
                 || array_type_arg(ty).is_some()
                 || set_type_arg(ty).is_some()
+                || matches!(ty, Type::Apply { callee, args } if args.len() == 1 && callee.is_builtin(BuiltinType::Stream))
                 || result_type_args(ty).is_some()
         }
     }
@@ -1681,6 +1682,14 @@ pub mod build {
     pub fn set(element: Type) -> Type {
         Type::Apply {
             callee: Box::new(builtin(BuiltinType::Set)),
+            args: vec![element],
+        }
+    }
+
+    /// The applied `Stream(element)` type.
+    pub fn stream(element: Type) -> Type {
+        Type::Apply {
+            callee: Box::new(builtin(BuiltinType::Stream)),
             args: vec![element],
         }
     }

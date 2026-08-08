@@ -82,6 +82,7 @@ fn mismatch(expected: &str, got: &Value) -> String {
         Value::Array(_) => "Array",
         Value::Tuple(_) => "Tuple",
         Value::Set(_) => "Set",
+        Value::Stream(_) => "Stream",
         Value::Map(_) => "Map",
         Value::Record(_) | Value::SlotRecord { .. } | Value::NamedRecord { .. } => "Record",
         Value::BrandedPrimitive { payload, .. } => payload.type_name(),
@@ -90,7 +91,8 @@ fn mismatch(expected: &str, got: &Value) -> String {
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. }
         | Value::Closure(_)
-        | Value::Native(_) => "Function",
+        | Value::Native(_)
+        | Value::RangeConstructor => "Function",
         Value::Type(_) | Value::NamedFamily(_) => "Type",
         Value::Undefined => "Undefined",
         Value::Null => "Null",

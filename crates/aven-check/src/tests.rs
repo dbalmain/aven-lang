@@ -6285,6 +6285,58 @@ fn builtin_operator_results_are_inferred() {
 }
 
 #[test]
+fn range_operators_and_function_infer_stream_int() {
+    let host = HostGlobals::default();
+    for source in [
+        "value = 0 .. 10\n",
+        "value = 0 ..= 10\n",
+        "value = range(0, 10)\n",
+        "value = range(0, 10, 2)\n",
+    ] {
+        assert_eq!(
+            checked_binding_type(source, "value", &host).render(),
+            "Stream(Int)",
+            "for {source:?}"
+        );
+    }
+    assert_eq!(
+        checked_binding_type("value = (x) => x .. 10\n", "value", &host).render(),
+        "Int -> Stream(Int)"
+    );
+
+    let annotated =
+        parse_module("exclusive: Stream(Int) = 0 .. 10\ninclusive: Stream(Int) = 0 ..= 10\n");
+    let checked = check_module(&annotated.module);
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected range type diagnostics: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn range_operator_rejects_non_int_bounds_with_actionable_diagnostic() {
+    let parsed = parse_module("value = 0 .. \"ten\"\n");
+    let checked = check_module(&parsed.module);
+    let diagnostics = checked
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code.as_deref() == Some(codes::ty::INVALID_OPERATOR_OPERANDS)
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 1, "{:?}", checked.diagnostics);
+    assert!(!diagnostics[0].labels.is_empty());
+    assert!(
+        diagnostics[0]
+            .notes
+            .iter()
+            .any(|note| note.contains("Int values"))
+    );
+}
+
+#[test]
 fn integer_division_and_remainder_require_non_zero_literal_divisors() {
     let accepted_source = concat!(
         "x : Int = 7\n",

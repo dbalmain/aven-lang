@@ -3031,20 +3031,9 @@ fn library_interface_renders_std_array_signatures() {
         "# std/array — generated interface (shape view); not the implementation."
     );
     assert_eq!(lines[1], "");
-    // Residual producer only; all transformers are ambient methods.
-    let exported = ["range"];
-    for (index, name) in exported.iter().enumerate() {
-        assert!(
-            lines[index + 2].starts_with(&format!("{name} : ")),
-            "line: {:?}",
-            lines[index + 2]
-        );
-    }
-    for name in exported {
-        let span = interface.export_spans[name];
-        assert_eq!(&interface.text[span.start..span.end], name);
-    }
-    assert_eq!(interface.export_spans.len(), 1);
+    // Array behavior is ambient; the module has no ordinary value exports.
+    assert_eq!(lines.len(), 2);
+    assert!(interface.export_spans.is_empty());
     for method in [
         "length", "isEmpty", "first", "last", "fold", "sum", "count", "all", "any", "find",
         "indexOf", "map", "flatMap", "filter", "reverse", "concat", "take", "drop", "slice", "zip",

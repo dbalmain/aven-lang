@@ -60,7 +60,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::config::OPERATOR_ARGUMENT_MALFORMED,
-        text: "A command-line operator declaration does not have the required --operator=TOKEN:ANCHOR:ASSOCIATIVITY form. Use a valid custom token, one of the nine fixed precedence anchors, and left, right, or none associativity.",
+        text: "A command-line operator declaration does not have the required --operator=TOKEN:ANCHOR:ASSOCIATIVITY form. Use a valid custom token, one of the ten fixed precedence anchors, and left, right, or none associativity.",
     },
     DiagnosticExplanation {
         code: codes::config::OPERATOR_FIXITY_CONFLICT,
@@ -393,6 +393,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::runtime::PLATFORM_ERROR,
         text: "A host-provided platform function reported an error while running. The platform boundary is effectful, so inspect the call and the host error message attached to it.",
+    },
+    DiagnosticExplanation {
+        code: codes::runtime::RANGE_STEP_ZERO,
+        text: "A range step must make progress toward a boundary. Pass a positive or negative non-zero integer as the third argument to range.",
     },
     DiagnosticExplanation {
         code: codes::runtime::RECURSION_LIMIT,

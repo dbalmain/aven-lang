@@ -96,6 +96,7 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
             .collect::<Result<Vec<_>, _>>()
             .map(::toml::Value::Array),
         Value::Map(entries) => toml_table_from_map(entries).map(::toml::Value::Table),
+        Value::Stream(_) => Err("Toml.encode cannot encode Stream".to_owned()),
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
             toml_table_from_record(fields).map(::toml::Value::Table)
         }
@@ -119,7 +120,9 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
             Err("Toml.encode cannot encode Function".to_owned())
         }
         Value::Closure(_) => Err("Toml.encode cannot encode Function".to_owned()),
-        Value::Native(_) => Err("Toml.encode cannot encode Native".to_owned()),
+        Value::Native(_) | Value::RangeConstructor => {
+            Err("Toml.encode cannot encode Native".to_owned())
+        }
         Value::Type(_) => Err("Toml.encode cannot encode Type".to_owned()),
         Value::NamedFamily(_) => Err("Toml.encode cannot encode Type".to_owned()),
     }

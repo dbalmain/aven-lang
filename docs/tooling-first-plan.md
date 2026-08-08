@@ -3080,6 +3080,21 @@ explaining the rule that happens to reject the text.
   `lex.reserved-operator`. The LSP quick fix replaces the whole run with the
   two-dot form.
 
+## Milestone R — lazy integer ranges
+
+Status: range syntax and the lazy `Stream(Int)` value are complete.
+
+`start .. end` is half-open and `start ..= end` includes the end. Both share
+one runtime range constructor with `range(start, end, step = ...)`; the
+source-level builtin closure evaluates the omitted step through ordinary
+parameter-default machinery. Its default is `1` for ascending/equal bounds and
+`-1` for reversed bounds. An explicit step keeps its direction, and zero
+reports `runtime.range-step-zero`.
+
+Streams render as finite descriptions through the ambient `toText` protocol;
+rendering never consumes or materializes them. Iteration methods and collection
+remain separate slices.
+
 ## To investigate later
 
 - **Roc-style opportunistic in-place mutation.** `push` (and spread of a dying

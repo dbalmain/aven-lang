@@ -1,0 +1,4 @@
+error parse.operator-associativity-conflict: operators at this precedence cannot be chained
+  label 10..12: `..` has `none` associativity
+  label 15..17: `..` has `none` associativity
+  note: add parentheses around one operation to state the intended grouping

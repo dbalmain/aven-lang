@@ -102,18 +102,6 @@ zipGo = (xs, ys, index, acc) =>
     true => zipGo(xs, ys, index + 1, acc.push((xs[index], ys[index])))
     false => acc
 
-# Half-open `[start, end)`. Step is always 1. `start >= end` → [].
-rangeGo : (Int, Int, Array(Int)) -> Array(Int)
-rangeGo = (i, end, acc) =>
-  i < end ?>
-    true => rangeGo(i + 1, end, acc.push(i))
-    false => acc
-
-range : (Int, Int) -> Array(Int)
-range = (start, end) =>
-  seed: Array(Int) = []
-  rangeGo(start, end, seed)
-
 # Copy `sorted[index..]` onto `acc`.
 copyFromGo : (Array(a), Int, Array(a)) -> Array(a)
 copyFromGo = (sorted, index, acc) =>
@@ -339,4 +327,4 @@ Array(a?) {
     compactGo(., 0, seed)
 }
 
-{ range }
+{}

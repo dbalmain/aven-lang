@@ -80,6 +80,7 @@ pub(crate) fn carries_ambient_to_text(value: &Value) -> bool {
             | Value::Array(_)
             | Value::Tuple(_)
             | Value::Set(_)
+            | Value::Stream(_)
             | Value::Map(_)
             | Value::Record(_)
             | Value::NamedRecord { .. }
@@ -195,6 +196,9 @@ fn write_to_text(
                 Ok(())
             })?;
         }
+        Value::Stream(stream) => {
+            let _ = write!(out, "{stream}");
+        }
         Value::Map(entries) => {
             write_to_text_braced(out, "Map{", entries.len(), |out| {
                 for (index, (key, value)) in entries.iter().enumerate() {
@@ -241,6 +245,7 @@ fn write_to_text(
         | Value::ResultMethod { .. }
         | Value::Closure(_)
         | Value::Native(_)
+        | Value::RangeConstructor
         | Value::Type(_) => write_repr(out, value),
     }
     Ok(())
@@ -326,6 +331,9 @@ fn write_repr(out: &mut String, value: &Value) {
                 }
             });
         }
+        Value::Stream(stream) => {
+            let _ = write!(out, "{stream}");
+        }
         Value::Map(entries) => {
             write_repr_braced(out, "Map{", entries.len(), |out| {
                 for (index, (key, value)) in entries.iter().enumerate() {
@@ -376,6 +384,7 @@ fn write_repr(out: &mut String, value: &Value) {
         }
         Value::Closure(_) => out.push_str("<function>"),
         Value::Native(_) => out.push_str("<native>"),
+        Value::RangeConstructor => out.push_str("<native>"),
         Value::Type(ty) => {
             let _ = write!(out, "{ty}");
         }

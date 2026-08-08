@@ -3645,6 +3645,7 @@ fn builtin_infix_fixity(operator: &str) -> Option<(OperatorPrecedence, OperatorA
         "|" => (OperatorPrecedence::Union, OperatorAssociativity::Left),
         "|>" => (OperatorPrecedence::Pipe, OperatorAssociativity::Left),
         "??" => (OperatorPrecedence::Coalesce, OperatorAssociativity::Left),
+        ".." | "..=" => (OperatorPrecedence::Range, OperatorAssociativity::None),
         "||" => (OperatorPrecedence::Or, OperatorAssociativity::Left),
         "&&" => (OperatorPrecedence::And, OperatorAssociativity::Left),
         "==" | "!=" | "<" | "<=" | ">" | ">=" => {

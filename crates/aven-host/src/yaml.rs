@@ -217,6 +217,7 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
             .collect::<Result<Vec<_>, _>>()
             .map(serde_norway::Value::Sequence),
         Value::Map(entries) => yaml_mapping_from_map(entries).map(serde_norway::Value::Mapping),
+        Value::Stream(_) => Err("Yaml.encode cannot encode Stream".to_owned()),
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
             yaml_mapping_from_record(fields).map(serde_norway::Value::Mapping)
         }
@@ -239,7 +240,9 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
             Err("Yaml.encode cannot encode Function".to_owned())
         }
         Value::Closure(_) => Err("Yaml.encode cannot encode Function".to_owned()),
-        Value::Native(_) => Err("Yaml.encode cannot encode Native".to_owned()),
+        Value::Native(_) | Value::RangeConstructor => {
+            Err("Yaml.encode cannot encode Native".to_owned())
+        }
         Value::Type(_) => Err("Yaml.encode cannot encode Type".to_owned()),
         Value::NamedFamily(_) => Err("Yaml.encode cannot encode Type".to_owned()),
     }

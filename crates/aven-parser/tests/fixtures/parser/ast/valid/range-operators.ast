@@ -1,0 +1,44 @@
+module
+  binding exclusive
+    value
+      binary ..
+        left
+          number 0
+        right
+          number 10
+  binding inclusive
+    value
+      binary ..=
+        left
+          number 0
+        right
+          number 10
+  binding precedence
+    value
+      binary ..
+        left
+          number 0
+        right
+          binary -
+            left
+              name n
+            right
+              number 1
+  binding array
+    value
+      array
+        element
+          binary ..
+            left
+              name a
+            right
+              name b
+        spread overwrite=false
+          name xs
+        element
+          number 1
+  binding record
+    value
+      record
+        spread overwrite=false
+          name rec

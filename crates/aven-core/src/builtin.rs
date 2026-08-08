@@ -75,6 +75,7 @@ define_builtin_types! {
     Null => { name: "Null", runtime_value: true, application_arity: None, scalar: false },
     Result => { name: "Result", runtime_value: true, application_arity: Some(2), scalar: false },
     Set => { name: "Set", runtime_value: true, application_arity: Some(1), scalar: false },
+    Stream => { name: "Stream", runtime_value: true, application_arity: Some(1), scalar: false },
     Text => { name: "Text", runtime_value: true, application_arity: None, scalar: true },
     Toml => { name: "Toml", runtime_value: true, application_arity: None, scalar: false },
     TomlError => { name: "TomlError", runtime_value: false, application_arity: None, scalar: false },
@@ -112,6 +113,7 @@ mod tests {
         assert_eq!(BuiltinType::Set.application_arity(), Some(1));
         assert_eq!(BuiltinType::Map.application_arity(), Some(2));
         assert_eq!(BuiltinType::Result.application_arity(), Some(2));
+        assert_eq!(BuiltinType::Stream.application_arity(), Some(1));
         assert_eq!(BuiltinType::Text.application_arity(), None);
     }
 }
