@@ -864,6 +864,7 @@ pub struct Environment {
     family_descriptors: Rc<RefCell<HashMap<String, Rc<NamedFamilyDescriptor>>>>,
     allow_builtin_method_attachments: bool,
     stack_segment_limit: usize,
+    stack_growth: StackGrowth,
 }
 
 struct Scope {
@@ -931,6 +932,7 @@ impl Environment {
             family_descriptors: Rc::new(RefCell::new(HashMap::new())),
             allow_builtin_method_attachments,
             stack_segment_limit: DEFAULT_STACK_SEGMENT_LIMIT,
+            stack_growth: StackGrowth::System,
         }
     }
 
@@ -946,6 +948,7 @@ impl Environment {
             family_descriptors: Rc::clone(&self.family_descriptors),
             allow_builtin_method_attachments: self.allow_builtin_method_attachments,
             stack_segment_limit: self.stack_segment_limit,
+            stack_growth: self.stack_growth,
         }
     }
 
@@ -1049,6 +1052,7 @@ pub struct EvalModuleOptions<'a> {
     elaborations: Option<&'a EvalElaborationPlan>,
     source: Option<Rc<EvalSource>>,
     stack_segment_limit: usize,
+    stack_growth: StackGrowth,
 }
 
 impl Default for EvalModuleOptions<'_> {
@@ -1062,6 +1066,7 @@ impl Default for EvalModuleOptions<'_> {
             elaborations: None,
             source: None,
             stack_segment_limit: DEFAULT_STACK_SEGMENT_LIMIT,
+            stack_growth: StackGrowth::System,
         }
     }
 }
@@ -1112,6 +1117,12 @@ impl<'a> EvalModuleOptions<'a> {
         self.stack_segment_limit = limit;
         self
     }
+
+    #[cfg(test)]
+    fn with_failing_stack_growth(mut self) -> Self {
+        self.stack_growth = StackGrowth::Fail;
+        self
+    }
 }
 
 /// Evaluate a module with the supplied host bindings and evaluator metadata.
@@ -1137,6 +1148,7 @@ pub fn eval_module_with_options(module: &Module, options: EvalModuleOptions<'_>)
         options.source,
     );
     env.stack_segment_limit = options.stack_segment_limit;
+    env.stack_growth = options.stack_growth;
     bind_intrinsics(&env);
     for (name, value) in options.globals {
         env.bind(name, value);
@@ -2893,9 +2905,26 @@ thread_local! {
     static ACTIVE_STACK_SEGMENTS: Cell<usize> = const { Cell::new(0) };
 }
 
+#[derive(Clone, Copy)]
+enum StackGrowth {
+    System,
+    #[cfg(test)]
+    Fail,
+}
+
+impl StackGrowth {
+    fn try_grow<R>(self, callback: impl FnOnce() -> R) -> Result<R, ()> {
+        #[cfg(test)]
+        if matches!(self, Self::Fail) {
+            return Err(());
+        }
+        stacker::try_grow(STACK_SEGMENT_SIZE, callback).map_err(|_| ())
+    }
+}
+
 /// Tracks stacker segments that remain live while a recursive call chain is
-/// active. Refusing the next segment before calling stacker keeps its infallible
-/// allocation path away from the host's memory ceiling.
+/// active. The guard enforces the configured policy limit; fallible stack
+/// growth handles a host ceiling below that limit.
 struct StackSegmentGuard;
 
 impl StackSegmentGuard {
@@ -2905,7 +2934,7 @@ impl StackSegmentGuard {
             if current >= limit {
                 return Err(one_diagnostic(recursion_limit(
                     span,
-                    limit * STACK_SEGMENT_SIZE,
+                    limit.saturating_mul(STACK_SEGMENT_SIZE),
                 )));
             }
             segments.set(current + 1);
@@ -2949,7 +2978,15 @@ fn bind_and_eval_closure(
 
     if stacker::remaining_stack().is_none_or(|remaining| remaining < STACK_RED_ZONE) {
         let _segment = StackSegmentGuard::enter(span, closure.env.stack_segment_limit)?;
-        stacker::grow(STACK_SEGMENT_SIZE, eval_body)
+        closure.env.stack_growth.try_grow(eval_body).map_err(|()| {
+            one_diagnostic(recursion_limit(
+                span,
+                closure
+                    .env
+                    .stack_segment_limit
+                    .saturating_mul(STACK_SEGMENT_SIZE),
+            ))
+        })?
     } else {
         eval_body()
     }
@@ -5941,7 +5978,7 @@ fn recursion_limit(span: Span, stack_budget: usize) -> Diagnostic {
         .with_code(codes::runtime::RECURSION_LIMIT)
         .with_label(Label::primary(
             span,
-            format!("this call exceeds the {stack_budget_mib} MiB evaluator stack budget"),
+            format!("this call cannot continue within the {stack_budget_mib} MiB evaluator stack budget"),
         ))
         .with_note(
             "check for a missing or unreachable base case; for intentional recursion, rewrite the algorithm to use less stack or split the work",

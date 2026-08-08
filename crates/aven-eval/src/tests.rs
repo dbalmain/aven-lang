@@ -581,6 +581,27 @@ fn configured_stack_budget_drives_recursion_guard() {
 }
 
 #[test]
+fn stack_allocation_failure_reports_recursion_limit() {
+    let module = parse_ok("loop = () => loop()\nloop()\n");
+    let outcome = eval_module_with_options(
+        &module,
+        EvalModuleOptions::default()
+            .with_stack_segment_limit(1024)
+            .with_failing_stack_growth(),
+    );
+
+    assert_eq!(outcome.diagnostics.len(), 1);
+    let diagnostic = &outcome.diagnostics[0];
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::RECURSION_LIMIT)
+    );
+    assert!(diagnostic.labels[0].span.end > diagnostic.labels[0].span.start);
+    assert!(diagnostic.labels[0].message.contains("1024 MiB"));
+    assert!(diagnostic.notes[0].contains("rewrite the algorithm"));
+}
+
+#[test]
 fn finite_recursion_within_stack_budget_succeeds() {
     assert_module_value(
         "countdown = (n) =>\n  n <= 0 ?>\n    true => 0\n    false => countdown(n - 1)\ncountdown(500)\n",
