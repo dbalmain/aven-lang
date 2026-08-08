@@ -1,7 +1,7 @@
 use super::{
-    BuiltinMethodEnvironment, Environment, EvalModuleOptions, EvalOutcome, ModuleImports,
-    RuntimeType, Value, eval_expr, eval_module, eval_module_with_options, logging,
-    record_field_value,
+    BuiltinMethodEnvironment, DEFAULT_STACK_SEGMENT_LIMIT, Environment, EvalModuleOptions,
+    EvalOutcome, ModuleImports, RuntimeType, STACK_SEGMENT_SIZE, Value, eval_expr, eval_module,
+    eval_module_with_options, logging, record_field_value,
 };
 use aven_core::codes;
 use aven_parser::{
@@ -533,6 +533,16 @@ fn reports_function_arity_mismatch() {
 }
 
 #[test]
+fn default_stack_segment_limit_is_64_mib() {
+    // Library default is a policy pin: embedders that set nothing stay at
+    // 64 MiB. CLI tooling may raise the budget for developer machines.
+    assert_eq!(
+        DEFAULT_STACK_SEGMENT_LIMIT * STACK_SEGMENT_SIZE,
+        64 * 1024 * 1024
+    );
+}
+
+#[test]
 fn infinite_recursion_reports_recursion_limit() {
     let diagnostic = module_error("loop = () => loop()\nloop()\n");
 
@@ -543,7 +553,14 @@ fn infinite_recursion_reports_recursion_limit() {
     assert_eq!(diagnostic.message, "recursion limit exceeded");
     assert_eq!(diagnostic.labels.len(), 1);
     assert!(diagnostic.labels[0].span.end > diagnostic.labels[0].span.start);
-    assert!(diagnostic.labels[0].message.contains("64 MiB"));
+    // Callers that set nothing inherit the library default; the diagnostic
+    // reports that budget honestly.
+    let default_budget_mib = (DEFAULT_STACK_SEGMENT_LIMIT * STACK_SEGMENT_SIZE) / (1024 * 1024);
+    assert!(
+        diagnostic.labels[0]
+            .message
+            .contains(&format!("{default_budget_mib} MiB"))
+    );
     assert!(diagnostic.notes[0].contains("rewrite the algorithm"));
 }
 

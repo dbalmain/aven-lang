@@ -553,9 +553,16 @@ pub fn eval_path_with_host_globals_and_roots(
         &SourceOverlay::default(),
         &OperatorFixityTable::default(),
         roots,
+        None,
     )
 }
 
+/// Evaluate `path` with host check/eval globals, a preloaded entry source, and
+/// operator fixities.
+///
+/// `stack_segment_limit` is the evaluator's active stacker-segment cap. `None`
+/// keeps [`aven_eval::DEFAULT_STACK_SEGMENT_LIMIT`]. The `aven` CLI may raise
+/// it for developer-machine `run`/`test`; other callers should leave it unset.
 pub fn eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
     path: &Path,
     check_globals: &HostGlobals,
@@ -563,6 +570,7 @@ pub fn eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
     entry_source: &str,
     operator_fixities: &OperatorFixityTable,
     roots: &ModuleRoots,
+    stack_segment_limit: Option<usize>,
 ) -> io::Result<ModuleEvalOutput> {
     let overlay = entry_source_overlay(path, entry_source)?;
     eval_path_impl(
@@ -572,6 +580,7 @@ pub fn eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
         &overlay,
         operator_fixities,
         roots,
+        stack_segment_limit,
     )
 }
 
@@ -582,6 +591,7 @@ fn eval_path_impl(
     overlay: &SourceOverlay,
     operator_fixities: &OperatorFixityTable,
     roots: &ModuleRoots,
+    stack_segment_limit: Option<usize>,
 ) -> io::Result<ModuleEvalOutput> {
     let graph = ModuleGraph::load(path, overlay, None, operator_fixities, roots)?;
     let mut diagnostics = parse_diagnostics(&graph);
@@ -694,13 +704,16 @@ fn eval_path_impl(
         // scopes and closures inherit it, so location-aware natives receive
         // the source whose offsets their call span uses.
         let eval_source = eval_source_for_file(&graph.nodes[node_id].file);
-        let options = aven_eval::EvalModuleOptions::default()
+        let mut options = aven_eval::EvalModuleOptions::default()
             .with_globals(node_globals)
             .with_imports(&imports)
             .with_runtime_types(&runtime_types)
             .with_builtin_methods(&runtime_builtin_methods, trusted_ambient)
             .with_elaborations(&elaborations)
             .with_source(eval_source);
+        if let Some(limit) = stack_segment_limit {
+            options = options.with_stack_segment_limit(limit);
+        }
         let outcome =
             aven_eval::eval_module_with_options(&graph.nodes[node_id].parse.module, options);
         entry_value = (node_id == 0).then_some(outcome.value.clone()).flatten();

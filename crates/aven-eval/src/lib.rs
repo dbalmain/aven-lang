@@ -1102,8 +1102,13 @@ impl<'a> EvalModuleOptions<'a> {
         self
     }
 
-    #[cfg(test)]
-    fn with_stack_segment_limit(mut self, limit: usize) -> Self {
+    /// Cap active stacker segments for this evaluation.
+    ///
+    /// Each segment is [`STACK_SEGMENT_SIZE`] bytes. Callers that set nothing
+    /// inherit [`DEFAULT_STACK_SEGMENT_LIMIT`] (64 MiB). Tooling such as
+    /// `aven run` may raise this for developer machines; leaving it unset is
+    /// the right default for constrained host embeddings.
+    pub fn with_stack_segment_limit(mut self, limit: usize) -> Self {
         self.stack_segment_limit = limit;
         self
     }
@@ -2871,13 +2876,18 @@ fn closure_arity(closure: &Closure) -> (usize, usize) {
 const STACK_RED_ZONE: usize = 256 * 1024;
 
 /// Size of each new stack segment allocated by `stacker` when the red zone is hit.
-const STACK_GROW_SIZE: usize = 1024 * 1024;
+///
+/// Public so tooling can convert a byte budget into a segment count without
+/// owning the guard semantics: `budget_bytes / STACK_SEGMENT_SIZE`.
+pub const STACK_SEGMENT_SIZE: usize = 1024 * 1024;
 
-/// Maximum memory committed to nested stacker segments during one call chain.
-/// Exact Aven call depth remains body-dependent; the memory backstop does not.
+/// Maximum memory committed to nested stacker segments during one call chain
+/// when the caller sets no override. Exact Aven call depth remains
+/// body-dependent; the memory backstop does not.
 const STACK_GROW_BUDGET: usize = 64 * 1024 * 1024;
 
-const DEFAULT_STACK_SEGMENT_LIMIT: usize = STACK_GROW_BUDGET / STACK_GROW_SIZE;
+/// Default active-segment cap when [`EvalModuleOptions`] leaves the budget unset.
+pub const DEFAULT_STACK_SEGMENT_LIMIT: usize = STACK_GROW_BUDGET / STACK_SEGMENT_SIZE;
 
 thread_local! {
     static ACTIVE_STACK_SEGMENTS: Cell<usize> = const { Cell::new(0) };
@@ -2895,7 +2905,7 @@ impl StackSegmentGuard {
             if current >= limit {
                 return Err(one_diagnostic(recursion_limit(
                     span,
-                    limit * STACK_GROW_SIZE,
+                    limit * STACK_SEGMENT_SIZE,
                 )));
             }
             segments.set(current + 1);
@@ -2939,7 +2949,7 @@ fn bind_and_eval_closure(
 
     if stacker::remaining_stack().is_none_or(|remaining| remaining < STACK_RED_ZONE) {
         let _segment = StackSegmentGuard::enter(span, closure.env.stack_segment_limit)?;
-        stacker::grow(STACK_GROW_SIZE, eval_body)
+        stacker::grow(STACK_SEGMENT_SIZE, eval_body)
     } else {
         eval_body()
     }

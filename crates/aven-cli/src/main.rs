@@ -686,6 +686,15 @@ fn test(
     Ok(TEST_EXIT_OK)
 }
 
+/// Developer-machine stacker budget for `aven run` / `aven test`.
+///
+/// The library default (64 MiB) stays for embedders that set nothing; this path
+/// is a person running a script on their own machine, so the machine's memory
+/// is the real limit. Segment count is derived from
+/// [`aven_eval::STACK_SEGMENT_SIZE`] so the CLI picks a byte budget and
+/// aven-eval still owns what a segment means.
+const CLI_STACK_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
+
 /// Shared host/root/operator/eval path for `run` and `test`.
 fn eval_entry_module(
     path: &Path,
@@ -707,6 +716,7 @@ fn eval_entry_module(
         format,
     )?;
     session.set_entry_source(configured.file.source());
+    let stack_segment_limit = CLI_STACK_BUDGET_BYTES / aven_eval::STACK_SEGMENT_SIZE;
     aven_compiler::eval_path_with_host_globals_and_entry_source_and_fixities_with_roots(
         path,
         &host.check_host_globals(),
@@ -714,6 +724,7 @@ fn eval_entry_module(
         configured.file.source(),
         &configured.operator_fixities,
         &roots,
+        Some(stack_segment_limit),
     )
     .with_context(|| format!("failed to load {}", path.display()))
 }
