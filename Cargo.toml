@@ -41,7 +41,7 @@ serde_json = { version = "1.0.151", features = ["arbitrary_precision", "float_ro
 thiserror = "2.0.18"
 tokio = { version = "1.53.1", features = ["io-std", "macros", "rt-multi-thread", "time"] }
 toml = "1.1.4"
-tower = { version = "0.4.13", default-features = false }
+tower = { version = "0.5.3", default-features = false }
 tower-lsp = "0.20.0"
 
 [workspace.lints.rust]
