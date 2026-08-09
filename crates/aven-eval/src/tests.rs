@@ -207,8 +207,21 @@ fn stream_forcing_methods_iterate_without_aven_recursion() {
     assert_module_value("(0 .. 100000).each((x) => ())", Value::unit());
 }
 
+/// Every spelling that turns a stream into an array, paired with the same
+/// spelling over a stream too large to hold. All of them go through one
+/// materialization path, so both halves are shared facts.
+const ARRAY_MATERIALIZATIONS: [(&str, &str); 4] = [
+    ("(0 .. 5).toArray()", "(0 .. 1000000000).toArray()"),
+    ("[..(0 .. 5)]", "[..(0 .. 1000000000)]"),
+    (
+        "(0 .. 5).collect(Array)",
+        "(0 .. 1000000000).collect(Array)",
+    ),
+    ("Array.collect(0 .. 5)", "Array.collect(0 .. 1000000000)"),
+];
+
 #[test]
-fn streams_materialize_through_method_and_array_spread() {
+fn streams_materialize_through_method_spread_and_collect() {
     let expected = array_value(vec![
         Value::int(0),
         Value::int(1),
@@ -216,8 +229,9 @@ fn streams_materialize_through_method_and_array_spread() {
         Value::int(3),
         Value::int(4),
     ]);
-    assert_module_value("(0 .. 5).toArray()", expected.clone());
-    assert_module_value("[..(0 .. 5)]", expected);
+    for (source, _) in ARRAY_MATERIALIZATIONS {
+        assert_module_value(source, expected.clone());
+    }
     assert_module_value(
         "[0, ..(1 .. 4), 9]",
         array_value(vec![
@@ -232,7 +246,7 @@ fn streams_materialize_through_method_and_array_spread() {
 
 #[test]
 fn absurd_stream_materialization_fails_before_iteration() {
-    for source in ["(0 .. 1000000000).toArray()", "[..(0 .. 1000000000)]"] {
+    for (_, source) in ARRAY_MATERIALIZATIONS {
         let diagnostic = module_error(source);
         assert_eq!(
             diagnostic.code.as_deref(),
@@ -246,6 +260,56 @@ fn absurd_stream_materialization_fails_before_iteration() {
                 .any(|note| note.contains("fold") && note.contains("each"))
         );
     }
+}
+
+/// The materialization limit is the sharpest observable edge of the shared
+/// path: a spelling that grew its own implementation would report it with its
+/// own wording, or not report it at all. Compare the spellings against each
+/// other rather than against a fixed expectation, so the test fails on
+/// divergence even if all of them are individually reasonable.
+#[test]
+fn array_materialization_spellings_agree_with_each_other() {
+    let mut baseline: Option<(Value, Option<String>, Vec<String>)> = None;
+    for (source, absurd) in ARRAY_MATERIALIZATIONS {
+        let value = module_value(source);
+        let diagnostic = module_error(absurd);
+        let observed = (value, diagnostic.code.clone(), diagnostic.notes.clone());
+        match &baseline {
+            Some(expected) => assert_eq!(&observed, expected, "`{source}` diverged"),
+            None => baseline = Some(observed),
+        }
+    }
+}
+
+#[test]
+fn collect_builds_a_set_from_any_collection() {
+    let expected = set_value(vec![Value::int(1), Value::int(2), Value::int(3)]);
+    for source in [
+        "(1 .. 4).collect(Set)",
+        "Set.collect(1 .. 4)",
+        "[1, 2, 2, 3, 1].collect(Set)",
+        "Set.collect([1, 2, 2, 3, 1])",
+        "@{ 1, 2, 3 }.collect(Set)",
+    ] {
+        assert_module_value(source, expected.clone());
+    }
+}
+
+/// A set iterates in insertion order, so collecting one into an array keeps
+/// that order rather than sorting it.
+#[test]
+fn collect_draws_an_array_from_a_set() {
+    assert_module_value(
+        "@{ 3, 1, 2 }.collect(Array)",
+        array_value(vec![Value::int(3), Value::int(1), Value::int(2)]),
+    );
+}
+
+#[test]
+fn collect_rejects_a_source_that_holds_no_elements() {
+    let diagnostic = module_error("Array.collect(5)");
+    assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+    assert!(!diagnostic.labels.is_empty());
 }
 
 #[test]

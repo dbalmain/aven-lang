@@ -6441,6 +6441,151 @@ fn stream_methods_and_array_spread_preserve_element_types() {
     );
 }
 
+/// `collect` is target-owned, so the target names the type built and the
+/// element rides along from whatever collection is being drained — in either
+/// spelling, since the method form is sugar for the static form.
+#[test]
+fn collect_builds_the_target_type_over_the_source_element() {
+    let host = HostGlobals::default();
+    for (source, expected) in [
+        ("value = (0 .. 10).collect(Array)\n", "Array(Int)"),
+        ("value = Array.collect(0 .. 10)\n", "Array(Int)"),
+        ("value = (0 .. 10).collect(Set)\n", "Set(Int)"),
+        ("value = Set.collect(0 .. 10)\n", "Set(Int)"),
+        (
+            "value = (0 .. 10).map((x) => \"${x}\").collect(Array)\n",
+            "Array(Text)",
+        ),
+        // Literal element types ride through collection unwidened, the same
+        // way they survive any other element-preserving operation.
+        (
+            "value = [\"a\", \"b\"].collect(Set)\n",
+            "Set(\"a\" | \"b\")",
+        ),
+        (
+            "value = Set.collect([\"a\", \"b\"])\n",
+            "Set(\"a\" | \"b\")",
+        ),
+        ("value = @{ 1, 2 }.collect(Array)\n", "Array(1 | 2)"),
+        // An applied target is an inline annotation on the element, not a
+        // different operation.
+        ("value = (0 .. 10).collect(Array(Int))\n", "Array(Int)"),
+    ] {
+        assert_eq!(
+            checked_binding_type(source, "value", &host).render(),
+            expected,
+            "for {source:?}"
+        );
+    }
+}
+
+/// Collecting into the type a value already has yields that value back. The
+/// program means the right thing, so this warns and the build stands; only the
+/// same-constructor case is pointless, and a real conversion says nothing.
+#[test]
+fn collecting_into_the_source_type_warns_without_failing() {
+    for source in [
+        "value = [1, 2].collect(Array)\n",
+        "value = Array.collect([1, 2])\n",
+        "value = @{ 1, 2 }.collect(Set)\n",
+        "value = Set.collect(@{ 1, 2 })\n",
+    ] {
+        let checked = check_module(&parse_module(source).module);
+        let redundant: Vec<_> = checked
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::REDUNDANT_COLLECT))
+            .collect();
+        assert_eq!(
+            redundant.len(),
+            1,
+            "for {source:?}: {:?}",
+            checked.diagnostics
+        );
+        assert_eq!(redundant[0].severity, Severity::Warning, "for {source:?}");
+        assert!(!redundant[0].labels.is_empty(), "for {source:?}");
+        assert!(
+            redundant[0]
+                .notes
+                .iter()
+                .any(|note| note.contains("delete")),
+            "for {source:?}: {:?}",
+            redundant[0].notes
+        );
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error),
+            "for {source:?}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
+fn collecting_between_different_collections_says_nothing() {
+    for source in [
+        "value = [1, 2].collect(Set)\n",
+        "value = Set.collect([1, 2])\n",
+        "value = @{ 1, 2 }.collect(Array)\n",
+        "value = Array.collect(@{ 1, 2 })\n",
+        "value = (0 .. 4).collect(Array)\n",
+        "value = (0 .. 4).collect(Set)\n",
+    ] {
+        let checked = check_module(&parse_module(source).module);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "for {source:?}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
+fn collect_diagnoses_a_bad_annotation_target_or_source() {
+    for (source, code) in [
+        (
+            "value: Array(Text) = (0 .. 4).collect(Array)\n",
+            codes::ty::MISMATCH,
+        ),
+        (
+            "value = (0 .. 4).collect(Array(Text))\n",
+            codes::ty::MISMATCH,
+        ),
+        ("value = (0 .. 4).collect(Int)\n", codes::ty::COLLECT_TARGET),
+        ("value = (0 .. 4).collect()\n", codes::ty::COLLECT_TARGET),
+        ("value = 5.collect(Array)\n", codes::ty::COLLECT_SOURCE),
+        (
+            "value = Array.collect(\"nope\")\n",
+            codes::ty::COLLECT_SOURCE,
+        ),
+    ] {
+        let checked = check_module(&parse_module(source).module);
+        assert!(
+            has_diagnostic_code(&checked.diagnostics, code),
+            "for {source:?}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+/// A receiver carrying its own `collect` keeps ordinary field-call semantics;
+/// the universal sugar only applies where closed lookup finds nothing.
+#[test]
+fn a_receiver_owning_collect_keeps_its_own_member() {
+    let host = HostGlobals::default();
+    assert_eq!(
+        checked_binding_type(
+            "holder = { collect: (target: Text) => target }\nvalue = holder.collect(\"kept\")\n",
+            "value",
+            &host,
+        )
+        .render(),
+        "Text"
+    );
+}
+
 #[test]
 fn range_static_options_reject_unknown_fields() {
     let parsed = parse_module("value = Stream.range(0, 10, { stride: 2 })\n");
