@@ -4461,6 +4461,10 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (Value::Set(members), "size") => Some(set_size_method(Rc::clone(members))),
         (Value::Set(members), "add") => Some(set_add_method(Rc::clone(members))),
         (Value::Set(members), "delete") => Some(set_delete_method(Rc::clone(members))),
+        (Value::Set(members), "union") => Some(set_union_method(Rc::clone(members))),
+        (Value::Set(members), "intersection") => Some(set_intersection_method(Rc::clone(members))),
+        (Value::Set(members), "difference") => Some(set_difference_method(Rc::clone(members))),
+        (Value::Set(members), "isDisjoint") => Some(set_is_disjoint_method(Rc::clone(members))),
         (Value::Array(items), "has") => Some(array_has_method(Rc::clone(items))),
         (Value::Array(items), "length") => Some(array_length_method(Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
@@ -5650,6 +5654,78 @@ fn set_delete_method(members: Rc<SetValue>) -> Value {
         next.remove(&args[0]);
         Ok(Value::Set(Rc::new(next)))
     })
+}
+
+/// `union` is the `|` operator under a name, sharing one implementation so the
+/// two spellings cannot drift on element identity or on which side is adopted.
+fn set_union_method(members: Rc<SetValue>) -> Value {
+    Value::native(move |args| {
+        let other = set_operand(args, "Set.union")?;
+        Ok(set_union(
+            Value::Set(Rc::clone(&members)),
+            Value::Set(other),
+        ))
+    })
+}
+
+/// Both `intersection` and `difference` start from the receiver and remove,
+/// rather than rebuilding into an empty set. Removal is the cheaper direction
+/// (the receiver's trees are shared, and only the dropped members are
+/// rewritten) and it is what keeps the survivors in the receiver's insertion
+/// order without a sort.
+fn set_intersection_method(members: Rc<SetValue>) -> Value {
+    Value::native(move |args| {
+        let other = set_operand(args, "Set.intersection")?;
+        let mut next = members.as_ref().clone();
+        for member in members.iter() {
+            if !other.contains(member) {
+                next.remove(member);
+            }
+        }
+        Ok(Value::Set(Rc::new(next)))
+    })
+}
+
+fn set_difference_method(members: Rc<SetValue>) -> Value {
+    Value::native(move |args| {
+        let other = set_operand(args, "Set.difference")?;
+        let mut next = members.as_ref().clone();
+        for member in other.iter() {
+            next.remove(member);
+        }
+        Ok(Value::Set(Rc::new(next)))
+    })
+}
+
+/// Walks the smaller side and stops at the first shared member, so a pair that
+/// overlaps early costs nothing like a full scan.
+fn set_is_disjoint_method(members: Rc<SetValue>) -> Value {
+    Value::native(move |args| {
+        let other = set_operand(args, "Set.isDisjoint")?;
+        let (walked, probed) = if members.len() <= other.len() {
+            (members.as_ref(), other.as_ref())
+        } else {
+            (other.as_ref(), members.as_ref())
+        };
+        Ok(Value::Bool(
+            !walked.iter().any(|member| probed.contains(member)),
+        ))
+    })
+}
+
+/// The single `Set` argument the binary operations take. The checker rejects a
+/// non-set operand; this is the runtime backstop for an untyped host call.
+fn set_operand(args: &[Value], context: &str) -> Result<Rc<SetValue>, String> {
+    let [Value::Set(other)] = args else {
+        let [other] = args else {
+            return Err(format!("{context} expects 1 argument, got {}", args.len()));
+        };
+        return Err(format!(
+            "{context} expects a Set, got {}",
+            other.type_name()
+        ));
+    };
+    Ok(Rc::clone(other))
 }
 
 fn array_length_method(items: Rc<Vec<Value>>) -> Value {

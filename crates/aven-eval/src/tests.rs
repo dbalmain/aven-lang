@@ -3213,6 +3213,93 @@ fn set_add_and_delete_cross_the_int_float_boundary() {
     );
 }
 
+/// `union` and `|` are one implementation, so they agree on both membership
+/// and the order the combined members land in.
+#[test]
+fn set_union_matches_the_pipe_operator() {
+    assert_module_value(
+        "a = @{ 7, 2 }\n\
+         b = @{ 9, 7 }\n\
+         [repr(a.union(b)), repr(a | b), a.union(b) == (a | b), repr(b.union(a))]\n",
+        array_value(vec![
+            Value::Text("@{ 7, 2, 9 }".to_owned()),
+            Value::Text("@{ 7, 2, 9 }".to_owned()),
+            Value::Bool(true),
+            Value::Text("@{ 9, 7, 2 }".to_owned()),
+        ]),
+    );
+}
+
+/// The survivors of `intersection` and `difference` hold the receiver's
+/// insertion order, which is what building by removal rather than by rebuild
+/// buys.
+#[test]
+fn set_intersection_and_difference_keep_receiver_order() {
+    assert_module_value(
+        "a = @{ 7, 2, 9, 4 }\n\
+         b = @{ 4, 7 }\n\
+         [repr(a.intersection(b)), repr(a.difference(b)), repr(b.difference(a))]\n",
+        array_value(vec![
+            Value::Text("@{ 7, 4 }".to_owned()),
+            Value::Text("@{ 2, 9 }".to_owned()),
+            Value::Text("@{}".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn set_binary_operations_handle_empty_and_disjoint_operands() {
+    assert_module_value(
+        "a = @{ 7, 2 }\n\
+         [repr(a.intersection(@{})), repr(a.difference(@{})), repr(a.union(@{})),\n\
+          repr(a.intersection(@{ 9 })), repr(@{}.difference(a))]\n",
+        array_value(vec![
+            Value::Text("@{}".to_owned()),
+            Value::Text("@{ 7, 2 }".to_owned()),
+            Value::Text("@{ 7, 2 }".to_owned()),
+            Value::Text("@{}".to_owned()),
+            Value::Text("@{}".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn set_is_disjoint_reports_whether_two_sets_share_a_member() {
+    assert_module_value(
+        "a = @{ 7, 2 }\n\
+         [a.isDisjoint(@{ 9, 4 }), a.isDisjoint(@{ 4, 2 }), a.isDisjoint(@{}),\n\
+          @{}.isDisjoint(@{}), a.isDisjoint(a)]\n",
+        array_value(vec![
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::Bool(false),
+        ]),
+    );
+}
+
+/// The binary operations derive new sets and never write through to either
+/// operand.
+#[test]
+fn set_binary_operations_leave_both_operands_unchanged() {
+    assert_module_value(
+        "a = @{ 1, 2, 3 }\n\
+         b = @{ 3, 4 }\n\
+         combined = a.union(b)\n\
+         shared = a.intersection(b)\n\
+         only = a.difference(b)\n\
+         [repr(a), repr(b), repr(combined), repr(shared), repr(only)]\n",
+        array_value(vec![
+            Value::Text("@{ 1, 2, 3 }".to_owned()),
+            Value::Text("@{ 3, 4 }".to_owned()),
+            Value::Text("@{ 1, 2, 3, 4 }".to_owned()),
+            Value::Text("@{ 3 }".to_owned()),
+            Value::Text("@{ 1, 2 }".to_owned()),
+        ]),
+    );
+}
+
 #[test]
 fn set_spread_of_non_set_reports_type_error() {
     let diagnostic = module_error("@{ ..[1, 2] }\n");

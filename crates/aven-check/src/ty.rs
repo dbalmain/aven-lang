@@ -158,7 +158,16 @@ pub const STREAM_METHOD_NAMES: &[&str] = &["map", "filter", "fold", "each", "toA
 /// The `Set` operations the evaluator answers natively. The derived surface
 /// (`map`, `filter`, `each`, `isEmpty`) is written in Aven in `std/set.av` and
 /// arrives through ambient method lookup, the same split `Array` uses.
-pub const SET_METHOD_NAMES: &[&str] = &["has", "size", "add", "delete"];
+pub const SET_METHOD_NAMES: &[&str] = &[
+    "has",
+    "size",
+    "add",
+    "delete",
+    "union",
+    "intersection",
+    "difference",
+    "isDisjoint",
+];
 
 /// Roc-aligned `Str` helpers (camelCase).
 ///
@@ -371,6 +380,13 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
             "size" => Some(function(Vec::new(), named_builtin("Int"))),
             // `add` and `delete` return a new set; the receiver is unchanged.
             "add" | "delete" => Some(function(vec![element.clone()], set)),
+            // The binary operations pair a set with a set of the same element
+            // type, so `@{1}.union(@{"a"})` is a type error rather than a set
+            // of a widened element.
+            "union" | "intersection" | "difference" => {
+                Some(function(vec![set.clone()], set.clone()))
+            }
+            "isDisjoint" => Some(function(vec![set], named_builtin("Bool"))),
             _ => None,
         };
     }
