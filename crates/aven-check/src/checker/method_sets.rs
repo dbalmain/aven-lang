@@ -922,11 +922,30 @@ impl Checker<'_> {
                 self.report_method_arity_on_owner(owner, member, required, total, found, span);
                 return true;
             }
+            // The free receiver hid the divisor from selection-time analysis:
+            // `f = (n) => n.div(2)` reaches its `Int` owner only here. Read the
+            // divisor off the row's own parameter — before unifying it with the
+            // method's `Int`, which would absorb the literal evidence — so this
+            // spelling narrows exactly where an annotated receiver does.
+            let narrowed = expected_params
+                .iter()
+                .next()
+                .filter(|_| expected_params.len() == 1)
+                .and_then(|divisor_type| {
+                    self.checked_integer_division_narrowing(
+                        owner,
+                        member,
+                        &actual.result,
+                        None,
+                        divisor_type,
+                    )
+                });
+            let actual_result = narrowed.unwrap_or_else(|| actual.result.clone());
             let matches = actual.params.iter().zip(expected_params.iter()).all(
                 |(actual_param, expected_param)| {
                     self.unify_row_argument(actual_param, expected_param)
                 },
-            ) && self.unifier.unify(&actual.result, expected_result).is_ok();
+            ) && self.unifier.unify(&actual_result, expected_result).is_ok();
             if !matches {
                 self.unifier.restore(snapshot);
                 return false;

@@ -6760,6 +6760,10 @@ fn checked_integer_division_narrows_on_static_divisors() {
         "from_binding : Int = x.div(n)\n",
         "even : 2 | 4 = 2\n",
         "from_union : Int = x.div(even)\n",
+        // A literal receiver selects the builtin `Int` method through the same
+        // widening method resolution performs, so it narrows on the same
+        // evidence the operator spelling already accepts for `7 / 2`.
+        "literal_receiver : Int = 7.div(2)\n",
         // Narrowing is an option, not an obligation: `?Int` still fits.
         "safe : ?Int = x.div(2)\n",
         // A statically zero divisor is the case the checked spelling exists
@@ -6786,6 +6790,60 @@ fn checked_integer_division_narrows_on_static_divisors() {
         // Only the builtin `Int` pair narrows. A named family carries its own
         // `div`, whose empty case is not the builtin one to rule out.
         "Money = Int {\n  cents(): Int => .\n}\nprice : Money = 2599\nhalf : Int = price.div(2)\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        let diagnostics = check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+            .collect::<Vec<_>>();
+        assert_eq!(diagnostics.len(), 1, "{source}: {:?}", check.diagnostics);
+        assert_eq!(
+            diagnostics[0].message, "expected `Int`, found `?Int`",
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn checked_integer_division_narrows_through_an_unannotated_receiver() {
+    // An unannotated receiver has no type when the method is selected, so the
+    // call publishes an open method row and the owner only arrives at the call
+    // site. The static-divisor analysis runs there as well, or the same literal
+    // divisor narrows through an annotated receiver and not through a free one.
+    let accepted_source = concat!(
+        "half = (n) => n.div(2)\n",
+        "rest = (n) => n.mod(3)\n",
+        "quotient : Int = half(10)\n",
+        "remainder : Int = rest(10)\n",
+        "negated = (n) => n.div(-3)\n",
+        "negative : Int = negated(10)\n",
+        // Narrowing is an option, not an obligation, here too.
+        "optional : ?Int = half(20)\n",
+        // The annotated spelling this rule started from still narrows.
+        "annotated = (n: Int): Int => n.div(2)\n",
+        "from_annotated : Int = annotated(10)\n",
+    );
+    let accepted = parse_module(accepted_source);
+    let accepted = check_module(&accepted.module);
+    assert!(
+        accepted.diagnostics.is_empty(),
+        "{:?}",
+        accepted.diagnostics
+    );
+
+    for source in [
+        // A statically zero divisor is exactly what the checked spelling is
+        // for; blessing it would be the obvious way to get this wrong.
+        "by_zero = (n) => n.div(0)\nvalue : Int = by_zero(10)\n",
+        "by_zero = (n) => n.mod(0)\nvalue : Int = by_zero(10)\n",
+        // An unproven divisor keeps `?Int` on this path too.
+        "divisor : Int = 2\nunproven = (n) => n.div(divisor)\nvalue : Int = unproven(10)\n",
+        "divisor : Int = 2\nunproven = (n) => n.mod(divisor)\nvalue : Int = unproven(10)\n",
+        // The divisor is a parameter of the enclosing lambda, so the body has
+        // no evidence about it at all.
+        "unproven = (n, d) => n.div(d)\nvalue : Int = unproven(10, 2)\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);

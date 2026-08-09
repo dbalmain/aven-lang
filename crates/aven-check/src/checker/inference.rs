@@ -758,39 +758,62 @@ impl<'a> Checker<'a> {
         arg_types: &[Type],
         result: Type,
     ) -> Type {
-        if !owner.is_builtin(BuiltinType::Int) {
-            return result;
-        }
-        if !matches!(field, "div" | "mod") {
-            return result;
-        }
-        let resolved = self.normalize(&self.unifier.resolve(&result));
-        let Type::Optional(payload) = &resolved else {
-            return result;
-        };
-        if !payload.is_builtin(BuiltinType::Int) {
-            return result;
-        }
         let ([divisor], [divisor_type]) = (args, arg_types) else {
             return result;
         };
+        self.checked_integer_division_narrowing(owner, field, &result, Some(divisor), divisor_type)
+            .unwrap_or(result)
+    }
+
+    /// The narrowing rule itself, shared by both spellings of a checked
+    /// division call.
+    ///
+    /// `divisor` carries the argument expression when the caller selected the
+    /// method against a known receiver. The deferred path — a free receiver
+    /// publishes an open method row that an owner satisfies later — holds only
+    /// the argument's type by then, so the syntactic half of the analysis is
+    /// absent there and the divisor's literal type answers instead.
+    ///
+    /// Returns the narrowed `Int` when the rule applies, and `None` when the
+    /// declared `?Int` stands.
+    pub(super) fn checked_integer_division_narrowing(
+        &mut self,
+        owner: &Type,
+        member: &str,
+        result: &Type,
+        divisor: Option<&Expr>,
+        divisor_type: &Type,
+    ) -> Option<Type> {
+        if !matches!(member, "div" | "mod") {
+            return None;
+        }
+        // A literal receiver (`7.div(2)`) selects its base builtin's method, so
+        // read the owner the same way method selection does.
+        if !super::constraints::widen_literal_method_owner(owner).is_builtin(BuiltinType::Int) {
+            return None;
+        }
+        let resolved = self.normalize(&self.unifier.resolve(result));
+        let Type::Optional(payload) = &resolved else {
+            return None;
+        };
+        if !payload.is_builtin(BuiltinType::Int) {
+            return None;
+        }
         // The argument was already checked against the `Int` parameter, which
         // can absorb a literal row's free tail; snapshot the evidence the same
         // way deferred operator obligations do.
         let divisor_type = self.snapshot_integer_divisor_call_arg_type(divisor_type);
         if !self.operator_operand_resolves_to_int(&divisor_type) {
-            return result;
+            return None;
         }
         let context = IntegerDivisorContext {
-            span: divisor.span,
-            literal_is_zero: static_integer_literal_is_zero(divisor),
+            span: divisor.map_or(Span::new(0, 0), |divisor| divisor.span),
+            literal_is_zero: divisor.and_then(static_integer_literal_is_zero),
             right_type: divisor_type,
             parameter_index: None,
         };
-        if self.static_integer_divisor_is_zero(&context).0 == Some(false) {
-            return payload.as_ref().clone();
-        }
-        result
+        (self.static_integer_divisor_is_zero(&context).0 == Some(false))
+            .then(|| payload.as_ref().clone())
     }
 
     fn operator_operand_resolves_to_int(&self, ty: &Type) -> bool {
