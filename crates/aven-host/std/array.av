@@ -156,7 +156,7 @@ Array(a) {
   # Non-empty: negative index wraps from the end (`-1` is last).
   last(): ?a => .[-1]
 
-  each(f: (a) -> ()): () => .fold((), (acc, x) => f(x))
+  each(f: (a) -> ()): () => .fold((), (_, x) => f(x))
 
   count(pred: (a) -> Bool): Int =>
     zero: Int = 0

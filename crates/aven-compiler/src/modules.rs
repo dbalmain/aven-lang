@@ -472,7 +472,10 @@ fn check_path_impl(
         diagnostics
             .entry(file_id)
             .or_default()
-            .extend(semantic.diagnostics.clone());
+            .extend(reportable_diagnostics(
+                &semantic.diagnostics,
+                trusted_ambient,
+            ));
         semantics[node_id] = Some(semantic);
 
         if semantic_has_errors || file_has_errors(&diagnostics, file_id) || imports.has_failed() {
@@ -827,6 +830,21 @@ fn globals_for_node(globals: &HostGlobals, roots: &ModuleRoots, path: &Path) -> 
 fn is_trusted_ambient_node(roots: &ModuleRoots, path: &Path) -> bool {
     library_specifier(path)
         .is_some_and(|specifier| roots.trusted_ambient_modules.contains(&specifier))
+}
+
+/// The diagnostics of one module that belong in the report. A warning raised
+/// inside the trusted standard library describes library source the reader did
+/// not write and cannot edit, so it is noise on every unrelated program; only an
+/// error survives, because that means the toolchain itself cannot be used.
+fn reportable_diagnostics(diagnostics: &[Diagnostic], trusted_ambient: bool) -> Vec<Diagnostic> {
+    if !trusted_ambient {
+        return diagnostics.to_vec();
+    }
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .cloned()
+        .collect()
 }
 
 fn comptime_module_identity(path: &Path) -> ComptimeModuleIdentity {
@@ -2413,6 +2431,25 @@ fn not_importable(span: Span, specifier: &str, note: &str) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trusted_library_warnings_stay_out_of_the_report() {
+        let span = Span::new(0, 1);
+        let warning = Diagnostic::warning("unused parameter `acc`")
+            .with_code(codes::name::UNUSED_BINDING)
+            .with_label(Label::primary(span, "parameter is never used"));
+        let error = Diagnostic::error("something the toolchain cannot run")
+            .with_label(Label::primary(span, "broken"));
+        let both = vec![warning, error.clone()];
+
+        // A program's own warnings are the reader's to act on.
+        assert_eq!(reportable_diagnostics(&both, false).len(), 2);
+
+        // The library's are not, but an unusable library still has to surface.
+        let trusted = reportable_diagnostics(&both, true);
+        assert_eq!(trusted.len(), 1);
+        assert_eq!(trusted[0].message, error.message);
+    }
 
     #[test]
     fn transitive_comptime_reexport_keeps_original_origin() {
