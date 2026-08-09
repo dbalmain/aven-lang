@@ -6596,6 +6596,68 @@ fn integer_division_and_remainder_require_non_zero_literal_divisors() {
 }
 
 #[test]
+fn checked_integer_division_narrows_on_static_divisors() {
+    // `.div()` and `.mod()` are the checked spelling of `/` and `%`, yielding
+    // `?Int` so a divisor that turns out to be zero can be handled. When the
+    // same static analysis the operators use proves the divisor non-zero, the
+    // empty case is unreachable and the call has the plain `Int` type.
+    let accepted_source = concat!(
+        "x : Int = 7\n",
+        "plain_op : Int = x / 2\n",
+        "plain_method : Int = x.div(2)\n",
+        "rem_op : Int = x % 2\n",
+        "rem_method : Int = x.mod(2)\n",
+        "grouped : Int = x.div(((2)))\n",
+        "negative : Int = x.div(-3)\n",
+        // The method spelling reaches the same folded and literal-union
+        // divisors the operator spelling accepts.
+        "n = 10 / 2\n",
+        "from_binding : Int = x.div(n)\n",
+        "even : 2 | 4 = 2\n",
+        "from_union : Int = x.div(even)\n",
+        // Narrowing is an option, not an obligation: `?Int` still fits.
+        "safe : ?Int = x.div(2)\n",
+        // A statically zero divisor is the case the checked spelling exists
+        // for, and it keeps its `?Int`.
+        "by_zero : ?Int = x.div(0)\n",
+    );
+    let accepted = parse_module(accepted_source);
+    let accepted = check_module(&accepted.module);
+    assert!(
+        accepted.diagnostics.is_empty(),
+        "{:?}",
+        accepted.diagnostics
+    );
+
+    for source in [
+        // A divisor that is statically zero never narrows.
+        "x : Int = 7\nvalue : Int = x.div(0)\n",
+        "x : Int = 7\nvalue : Int = x.mod(0)\n",
+        // Neither does one the checker cannot prove non-zero.
+        "x : Int = 7\nn : Int = 2\nvalue : Int = x.div(n)\n",
+        "x : Int = 7\nn : Int = 2\nvalue : Int = x.mod(n)\n",
+        // A union with a zero member is not proven non-zero.
+        "mixed : 2 | 0 = 2\nx : Int = 7\nvalue : Int = x.div(mixed)\n",
+        // Only the builtin `Int` pair narrows. A named family carries its own
+        // `div`, whose empty case is not the builtin one to rule out.
+        "Money = Int {\n  cents(): Int => .\n}\nprice : Money = 2599\nhalf : Int = price.div(2)\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        let diagnostics = check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+            .collect::<Vec<_>>();
+        assert_eq!(diagnostics.len(), 1, "{source}: {:?}", check.diagnostics);
+        assert_eq!(
+            diagnostics[0].message, "expected `Int`, found `?Int`",
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn generic_integer_operator_obligations_keep_static_divisor_rule() {
     let accepted_source = concat!(
         "divide = (x, y) => x / y\n",

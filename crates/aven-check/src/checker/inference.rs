@@ -684,17 +684,7 @@ impl<'a> Checker<'a> {
         }
 
         let checked_method = if operator == "/" { "div" } else { "mod" };
-        // Prefer the syntactic path (plain / grouped / negated literal tokens)
-        // so positions that have not yet formed a literal type still accept.
-        // Fall back to the divisor's resolved type: a number literal variant
-        // whose known members are all non-zero integers is also legal.
-        let (is_zero, zero_from_syntax) = match context.literal_is_zero {
-            Some(is_zero) => (Some(is_zero), true),
-            None => {
-                let right_resolved = self.normalize(&self.resolve_and_default(&context.right_type));
-                (static_integer_divisor_type_is_zero(&right_resolved), false)
-            }
-        };
+        let (is_zero, zero_from_syntax) = self.static_integer_divisor_is_zero(context);
         let diagnostic = match is_zero {
             Some(true) => {
                 let label = if zero_from_syntax {
@@ -721,6 +711,86 @@ impl<'a> Checker<'a> {
                 )),
         };
         self.push_unique_diagnostic(diagnostic);
+    }
+
+    /// Static zero/non-zero analysis for an integer divisor.
+    ///
+    /// `Some(true)` proves the divisor is zero, `Some(false)` proves it
+    /// non-zero, and `None` proves neither. The companion flag reports whether
+    /// the answer came from the syntactic path, which the operator diagnostics
+    /// word differently.
+    ///
+    /// Prefer the syntactic path (plain / grouped / negated literal tokens) so
+    /// positions that have not yet formed a literal type still accept. Fall
+    /// back to the divisor's resolved type: a number literal variant whose
+    /// known members are all non-zero integers is also legal.
+    ///
+    /// Shared by the `/` and `%` operators and by the checked `.div()` /
+    /// `.mod()` methods so both spellings agree on what a static divisor is.
+    fn static_integer_divisor_is_zero(
+        &mut self,
+        context: &IntegerDivisorContext,
+    ) -> (Option<bool>, bool) {
+        match context.literal_is_zero {
+            Some(is_zero) => (Some(is_zero), true),
+            None => {
+                let right_resolved = self.normalize(&self.resolve_and_default(&context.right_type));
+                (static_integer_divisor_type_is_zero(&right_resolved), false)
+            }
+        }
+    }
+
+    /// `.div()` and `.mod()` are the checked spelling of `/` and `%`: they
+    /// yield `?Int` so a divisor that turns out to be zero can be handled. A
+    /// statically non-zero divisor makes that empty case unreachable, so the
+    /// call has the plain `Int` type the operator spelling gives.
+    ///
+    /// A zero or unproven divisor keeps `?Int` untouched.
+    ///
+    /// `owner` is the receiver the method was selected on. Only the builtin
+    /// `Int` pair narrows: a named family is free to define its own `div`
+    /// returning `?Int`, and its empty case is not ours to rule out.
+    fn narrow_checked_integer_division_result(
+        &mut self,
+        owner: &Type,
+        field: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        result: Type,
+    ) -> Type {
+        if !owner.is_builtin(BuiltinType::Int) {
+            return result;
+        }
+        if !matches!(field, "div" | "mod") {
+            return result;
+        }
+        let resolved = self.normalize(&self.unifier.resolve(&result));
+        let Type::Optional(payload) = &resolved else {
+            return result;
+        };
+        if !payload.is_builtin(BuiltinType::Int) {
+            return result;
+        }
+        let ([divisor], [divisor_type]) = (args, arg_types) else {
+            return result;
+        };
+        // The argument was already checked against the `Int` parameter, which
+        // can absorb a literal row's free tail; snapshot the evidence the same
+        // way deferred operator obligations do.
+        let divisor_type = self.snapshot_integer_divisor_call_arg_type(divisor_type);
+        if !self.operator_operand_resolves_to_int(&divisor_type) {
+            return result;
+        }
+        let context = IntegerDivisorContext {
+            span: divisor.span,
+            literal_is_zero: static_integer_literal_is_zero(divisor),
+            right_type: divisor_type,
+            parameter_index: None,
+        };
+        if self.static_integer_divisor_is_zero(&context).0 == Some(false) {
+            return payload.as_ref().clone();
+        }
+        result
     }
 
     fn operator_operand_resolves_to_int(&self, ty: &Type) -> bool {
@@ -2182,7 +2252,7 @@ impl<'a> Checker<'a> {
         if let Some(signature) = known {
             self.push_method_obligations_at(signature.predicates, *field_span);
             let required = signature.params.required_len();
-            if args.len() < required || args.len() > signature.params.len() {
+            let arg_types = if args.len() < required || args.len() > signature.params.len() {
                 self.report_method_arity_on_owner(
                     &probed,
                     field,
@@ -2194,11 +2264,20 @@ impl<'a> Checker<'a> {
                 for arg in args {
                     self.infer(env, arg);
                 }
+                None
             } else {
-                let _ = self.infer_call_args_against_params(env, args, &signature.params, None);
-            }
+                Some(self.infer_call_args_against_params(env, args, &signature.params, None))
+            };
             self.simplify_method_obligations(false);
-            return Some(self.resolve_and_default(&signature.result));
+            let result = self.resolve_and_default(&signature.result);
+            let Some(arg_types) = arg_types else {
+                return Some(result);
+            };
+            return Some(
+                self.narrow_checked_integer_division_result(
+                    &probed, field, args, &arg_types, result,
+                ),
+            );
         }
 
         let arg_types = args
