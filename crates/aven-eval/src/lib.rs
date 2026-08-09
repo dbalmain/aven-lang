@@ -4458,6 +4458,9 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
             ambient_to_text_method(receiver.clone(), env.builtin_methods.clone()),
         ),
         (Value::Set(members), "has") => Some(set_has_method(Rc::clone(members))),
+        (Value::Set(members), "size") => Some(set_size_method(Rc::clone(members))),
+        (Value::Set(members), "add") => Some(set_add_method(Rc::clone(members))),
+        (Value::Set(members), "delete") => Some(set_delete_method(Rc::clone(members))),
         (Value::Array(items), "has") => Some(array_has_method(Rc::clone(items))),
         (Value::Array(items), "length") => Some(array_length_method(Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
@@ -5609,6 +5612,43 @@ fn set_has_method(members: Rc<SetValue>) -> Value {
         }
 
         Ok(Value::Bool(members.contains(&args[0])))
+    })
+}
+
+fn set_size_method(members: Rc<SetValue>) -> Value {
+    Value::native(move |args| {
+        if !args.is_empty() {
+            return Err(format!("Set.size expects 0 arguments, got {}", args.len()));
+        }
+
+        Ok(Value::int(members.len()))
+    })
+}
+
+/// Adding shares the receiver's trees with the result: cloning a `SetValue`
+/// copies two persistent handles, not n members, so a fold that adds in a loop
+/// stays linear and the receiver stays observably unchanged.
+fn set_add_method(members: Rc<SetValue>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Set.add expects 1 argument, got {}", args.len()));
+        }
+
+        let mut next = members.as_ref().clone();
+        next.insert(args[0].clone());
+        Ok(Value::Set(Rc::new(next)))
+    })
+}
+
+fn set_delete_method(members: Rc<SetValue>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Set.delete expects 1 argument, got {}", args.len()));
+        }
+
+        let mut next = members.as_ref().clone();
+        next.remove(&args[0]);
+        Ok(Value::Set(Rc::new(next)))
     })
 }
 

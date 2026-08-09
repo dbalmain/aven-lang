@@ -73,6 +73,31 @@ impl SetValue {
         self.index.insert(fingerprint, ids);
     }
 
+    /// Remove a member. Removing an absent member is a no-op, and the members
+    /// that stay keep their insertion identifiers, so removal never reorders
+    /// the set and a later re-add lands at the end rather than in the hole.
+    pub fn remove(&mut self, value: &Value) {
+        let fingerprint = value_fingerprint(value);
+        let Some(id) = self.member_id_with_fingerprint(value, fingerprint) else {
+            return;
+        };
+        self.members.remove(&id);
+
+        let remaining: Vector<u64> = self
+            .index
+            .get(&fingerprint)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|other| *other != id)
+            .collect();
+        if remaining.is_empty() {
+            self.index.remove(&fingerprint);
+        } else {
+            self.index.insert(fingerprint, remaining);
+        }
+    }
+
     fn member_id(&self, value: &Value) -> Option<u64> {
         self.member_id_with_fingerprint(value, value_fingerprint(value))
     }

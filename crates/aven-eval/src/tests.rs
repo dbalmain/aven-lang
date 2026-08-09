@@ -3140,6 +3140,80 @@ fn set_members_dedup_across_the_int_float_boundary() {
 }
 
 #[test]
+fn set_reports_its_size() {
+    assert_module_value(
+        "[@{}.size(), @{ 7 }.size(), @{ 7, 2, 7 }.size()]\n",
+        array_value(vec![Value::int(0), Value::int(1), Value::int(2)]),
+    );
+}
+
+#[test]
+fn set_add_and_delete_return_new_sets() {
+    assert_module_value(
+        "s = @{ 7, 2, 9 }\n\
+         [repr(s.add(4)), repr(s.delete(2)), repr(s.add(2)), repr(s.delete(99))]\n",
+        array_value(vec![
+            Value::Text("@{ 7, 2, 9, 4 }".to_owned()),
+            Value::Text("@{ 7, 9 }".to_owned()),
+            // Adding a member already present is observably a no-op, and
+            // deleting an absent one leaves the set alone.
+            Value::Text("@{ 7, 2, 9 }".to_owned()),
+            Value::Text("@{ 7, 2, 9 }".to_owned()),
+        ]),
+    );
+}
+
+/// The persistence guarantee: a set held across an `add`/`delete` never
+/// changes, including when a second derivation is taken from it afterwards.
+#[test]
+fn set_add_and_delete_leave_an_aliased_source_unchanged() {
+    assert_module_value(
+        "original = @{ 1, 2 }\n\
+         alias = original\n\
+         added = alias.add(3)\n\
+         removed = alias.delete(1)\n\
+         [repr(original), repr(alias), repr(added), repr(removed), repr(alias.add(4))]\n",
+        array_value(vec![
+            Value::Text("@{ 1, 2 }".to_owned()),
+            Value::Text("@{ 1, 2 }".to_owned()),
+            Value::Text("@{ 1, 2, 3 }".to_owned()),
+            Value::Text("@{ 2 }".to_owned()),
+            Value::Text("@{ 1, 2, 4 }".to_owned()),
+        ]),
+    );
+}
+
+/// Deleting does not renumber the members that stay, so the survivors hold
+/// their order and a re-added member arrives at the end as a new insertion.
+#[test]
+fn set_delete_keeps_the_order_of_surviving_members() {
+    assert_module_value(
+        "s = @{ 7, 2, 9, 4 }\n\
+         [repr(s.delete(2)), repr(s.delete(7).add(7)), repr(s.delete(2).delete(9).add(2))]\n",
+        array_value(vec![
+            Value::Text("@{ 7, 9, 4 }".to_owned()),
+            Value::Text("@{ 2, 9, 4, 7 }".to_owned()),
+            Value::Text("@{ 7, 4, 2 }".to_owned()),
+        ]),
+    );
+}
+
+/// `add` and `delete` settle membership with Aven equality, the same way
+/// `has` and the set literal do, so an `Int` deletes an equal `Float` member.
+#[test]
+fn set_add_and_delete_cross_the_int_float_boundary() {
+    assert_module_value(
+        "s = @{ 1, 2.5 }\n\
+         [repr(s.add(1.0)), repr(s.delete(2.5)), repr(s.delete(1.0))]\n",
+        array_value(vec![
+            Value::Text("@{ 1, 2.5 }".to_owned()),
+            Value::Text("@{ 1 }".to_owned()),
+            Value::Text("@{ 2.5 }".to_owned()),
+        ]),
+    );
+}
+
+#[test]
 fn set_spread_of_non_set_reports_type_error() {
     let diagnostic = module_error("@{ ..[1, 2] }\n");
 

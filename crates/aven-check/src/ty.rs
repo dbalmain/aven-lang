@@ -155,7 +155,10 @@ pub const ARRAY_METHOD_NAMES: &[&str] = &["has", "length", "push", "fold"];
 
 pub const STREAM_METHOD_NAMES: &[&str] = &["map", "filter", "fold", "each", "toArray"];
 
-pub const SET_METHOD_NAMES: &[&str] = &["has"];
+/// The `Set` operations the evaluator answers natively. The derived surface
+/// (`map`, `filter`, `each`, `isEmpty`) is written in Aven in `std/set.av` and
+/// arrives through ambient method lookup, the same split `Array` uses.
+pub const SET_METHOD_NAMES: &[&str] = &["has", "size", "add", "delete"];
 
 /// Roc-aligned `Str` helpers (camelCase).
 ///
@@ -362,8 +365,12 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
     }
 
     if let Some(element) = set_type_arg(receiver) {
+        let set = build::set(element.clone());
         return match name {
             "has" => Some(function(vec![element.clone()], named_builtin("Bool"))),
+            "size" => Some(function(Vec::new(), named_builtin("Int"))),
+            // `add` and `delete` return a new set; the receiver is unchanged.
+            "add" | "delete" => Some(function(vec![element.clone()], set)),
             _ => None,
         };
     }
