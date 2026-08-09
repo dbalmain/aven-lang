@@ -1,0 +1,70 @@
+# `(` suspends layout exactly as `[` and `{` do: between the bracket and its
+# match a line break is ordinary whitespace, so an argument list, a parameter
+# list, or a parenthesised group may be spread over as many lines as it needs.
+# The shapes here are taken from real programs.
+
+# Multi-line call arguments, closing paren on its own line.
+abbreviate = (phrase: Text): Text =>
+  state = phrase.chars().fold(
+    { acronym: "", atWordStart: true },
+    step
+  )
+  state.acronym
+
+# The same, with the closing paren pulled up onto the last argument.
+compact = (phrase: Text): Text =>
+  phrase.chars().fold(
+    "",
+    step)
+
+# Arguments aligned under the open paren rather than indented by two.
+aligned = (xs: Array(Int)): Int =>
+  xs.fold(0,
+          (acc, x) => acc + x)
+
+# A multi-line parameter list, with and without a return annotation.
+keyExchange = (
+  p: Int,
+  g: Int,
+  alicePrivateKey: Text,
+  bobPrivateKey: Text
+): Text =>
+  "${p},${g},${alicePrivateKey},${bobPrivateKey}"
+
+sum3 = (
+  a: Int,
+  b: Int,
+  c: Int
+) => a + b + c
+
+# Parenthesised grouping and tuples.
+scaled = (
+  1 + 2
+) * 3
+
+pair = (
+  1,
+  2
+)
+
+# Nested calls, each wrapped independently.
+nested = (xs: Array(Int), ys: Array(Int)): Int =>
+  xs.fold(
+    0,
+    (acc: Int, x: Int) => acc + ys.fold(
+      x,
+      (inner: Int, y: Int) => inner + y
+    )
+  )
+
+# A block-bodied lambda passed as a wrapped argument still finds its own block
+# boundaries, and the binding after the call is not swallowed.
+mapped = [1, 2, 3].map(
+  (x: Int) =>
+    doubled = x * 2
+    doubled + 1
+)
+
+after = 7
+
+{ abbreviate, compact, aligned, keyExchange, sum3, scaled, pair, nested, mapped, after }

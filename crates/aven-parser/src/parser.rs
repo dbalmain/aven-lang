@@ -424,6 +424,48 @@ enum EntryMode {
     Array,
 }
 
+/// A bracketed group. Between an opening bracket and its match, layout is
+/// suspended: `Newline`, `Indent`, and `Dedent` carry no meaning and an item may
+/// be written across as many lines as the author likes. `[`, `{`, and `(` all
+/// behave this way and differ only in what separates their items.
+#[derive(Debug, Clone)]
+struct GroupSyntax {
+    close: TokenKind,
+    /// Whether a line break alone ends one item and starts the next. Arrays and
+    /// records read that way (`{a: 1` newline `b: 2}`). Parenthesised groups do
+    /// not: arguments and parameters are comma-separated, so a line break there
+    /// is only whitespace. Keeping it that way also stops an unclosed `(` from
+    /// swallowing the lines below it as further arguments.
+    newline_separates: bool,
+    allow_semicolon: bool,
+}
+
+impl GroupSyntax {
+    fn array() -> Self {
+        Self {
+            close: TokenKind::CloseBracket,
+            newline_separates: true,
+            allow_semicolon: false,
+        }
+    }
+
+    fn braced() -> Self {
+        Self {
+            close: TokenKind::CloseBrace,
+            newline_separates: true,
+            allow_semicolon: true,
+        }
+    }
+
+    fn parens() -> Self {
+        Self {
+            close: TokenKind::CloseParen,
+            newline_separates: false,
+            allow_semicolon: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct InfixOperator {
     text: String,
@@ -1050,109 +1092,70 @@ impl Parser<'_> {
     }
 
     fn parse_lambda_params(&mut self) -> Vec<Param> {
-        let mut params = Vec::new();
-
         if self.current_is(TokenKind::CloseParen) {
-            return params;
+            return Vec::new();
         }
 
         // Tracks the most recent defaulted parameter so a later required
         // parameter can be flagged: defaults must be trailing.
         let mut last_default_span: Option<Span> = None;
 
-        loop {
-            match self.current() {
-                Some(Token {
-                    kind: TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name),
-                    span,
-                }) => {
-                    let name = name.clone();
-                    let name_span = *span;
-                    self.advance();
+        self.parse_delimited(&GroupSyntax::parens(), |parser| {
+            parser.parse_lambda_param(&mut last_default_span)
+        })
+    }
 
-                    let annotation = if self.current_is_operator(":") {
-                        self.advance();
-                        Some(self.parse_annotation_term())
-                    } else {
-                        None
-                    };
+    fn parse_lambda_param(&mut self, last_default_span: &mut Option<Span>) -> Option<Param> {
+        let token = self.current()?.clone();
 
-                    let default = self.parse_param_default();
-
-                    let annotation_end = annotation
-                        .as_ref()
-                        .map_or(name_span, |term| name_span.merge(term.span));
-                    let span = default
-                        .as_ref()
-                        .map_or(annotation_end, |value| annotation_end.merge(value.span));
-
-                    self.check_required_after_default(&mut last_default_span, &default, span);
-
-                    params.push(Param {
-                        name,
-                        name_span,
-                        comptime: false,
-                        annotation,
-                        default,
-                        span,
-                    });
-                }
-                Some(Token {
-                    kind: TokenKind::ComptimeParamMarker(name),
-                    span,
-                }) => {
-                    let name = name.clone();
-                    let marker_span = *span;
-                    let name_span = Span::new(marker_span.start + 1, marker_span.end);
-                    self.advance();
-
-                    let annotation = if self.current_is_operator(":") {
-                        self.advance();
-                        Some(self.parse_annotation_term())
-                    } else {
-                        None
-                    };
-
-                    let default = self.parse_param_default();
-
-                    let annotation_end = annotation
-                        .as_ref()
-                        .map_or(marker_span, |term| marker_span.merge(term.span));
-                    let span = default
-                        .as_ref()
-                        .map_or(annotation_end, |value| annotation_end.merge(value.span));
-
-                    self.check_required_after_default(&mut last_default_span, &default, span);
-
-                    params.push(Param {
-                        name,
-                        name_span,
-                        comptime: true,
-                        annotation,
-                        default,
-                        span,
-                    });
-                }
-                Some(token) => {
-                    self.diagnostics.push(
-                        Diagnostic::error("expected lambda parameter")
-                            .with_code(codes::parse::EXPECTED_PARAMETER)
-                            .with_label(Label::primary(token.span, "expected a parameter name"))
-                            .with_note("use an identifier like `x`, or `_` to ignore an argument"),
-                    );
-                    self.advance();
-                }
-                None => break,
+        // The head span covers the whole parameter opener, including a comptime
+        // marker's `@`; the name span covers only the name itself.
+        let (name, name_span, comptime) = match token.kind {
+            TokenKind::Identifier(name) | TokenKind::ComptimeIdentifier(name) => {
+                (name, token.span, false)
             }
-
-            if self.consume_comma() {
-                continue;
+            TokenKind::ComptimeParamMarker(name) => {
+                (name, Span::new(token.span.start + 1, token.span.end), true)
             }
+            _ => {
+                self.diagnostics.push(
+                    Diagnostic::error("expected lambda parameter")
+                        .with_code(codes::parse::EXPECTED_PARAMETER)
+                        .with_label(Label::primary(token.span, "expected a parameter name"))
+                        .with_note("use an identifier like `x`, or `_` to ignore an argument"),
+                );
+                self.advance();
+                return None;
+            }
+        };
+        self.advance();
 
-            break;
-        }
+        let annotation = if self.current_is_operator(":") {
+            self.advance();
+            Some(self.parse_annotation_term())
+        } else {
+            None
+        };
 
-        params
+        let default = self.parse_param_default();
+
+        let annotation_end = annotation
+            .as_ref()
+            .map_or(token.span, |term| token.span.merge(term.span));
+        let span = default
+            .as_ref()
+            .map_or(annotation_end, |value| annotation_end.merge(value.span));
+
+        self.check_required_after_default(last_default_span, &default, span);
+
+        Some(Param {
+            name,
+            name_span,
+            comptime,
+            annotation,
+            default,
+            span,
+        })
     }
 
     fn parse_requirement_lines(&mut self) -> Vec<Requirement> {
@@ -1370,7 +1373,7 @@ impl Parser<'_> {
     fn parse_bracketed_expressions(&mut self) -> (Span, Vec<Expr>) {
         let open_span = self.current_span();
         self.advance();
-        let args = self.parse_expression_list(TokenKind::CloseBracket);
+        let args = self.parse_expression_list(&GroupSyntax::array());
         let end = self.consume_close(TokenKind::CloseBracket);
 
         (Span::new(open_span.start, end), args)
@@ -1399,7 +1402,6 @@ impl Parser<'_> {
     fn finish_call(&mut self, callee: Expr) -> Expr {
         let start = callee.span.start;
         self.advance();
-        let mut args = Vec::new();
 
         if self.current_is(TokenKind::CloseParen) {
             let end = self.current_span().end;
@@ -1407,29 +1409,13 @@ impl Parser<'_> {
             return Expr {
                 kind: ExprKind::Call {
                     callee: Box::new(callee),
-                    args,
+                    args: Vec::new(),
                 },
                 span: Span::new(start, end),
             };
         }
 
-        loop {
-            if self.at_item_boundary() {
-                break;
-            }
-
-            if self.current_is_any_close_delimiter() {
-                break;
-            }
-
-            args.push(self.parse_expression());
-
-            if self.consume_comma() {
-                continue;
-            }
-
-            break;
-        }
+        let args = self.parse_expression_list(&GroupSyntax::parens());
 
         let end = if self.current_is(TokenKind::CloseParen) {
             let span = self.current_span();
@@ -1999,8 +1985,8 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_expression_list(&mut self, close: TokenKind) -> Vec<Expr> {
-        self.parse_delimited(close, false, |parser| Some(parser.parse_expression()))
+    fn parse_expression_list(&mut self, group: &GroupSyntax) -> Vec<Expr> {
+        self.parse_delimited(group, |parser| Some(parser.parse_expression()))
     }
 
     fn parse_record(&mut self) -> Expr {
@@ -2019,25 +2005,22 @@ impl Parser<'_> {
     /// Shared entry loop for `{...}` records, `@{...}` sets/variants, and
     /// `[...]` arrays. Close delimiter and bare-term treatment depend on mode.
     fn parse_entry_list(&mut self, mode: EntryMode) -> Vec<RecordEntry> {
-        let (close, allow_semicolon) = match mode {
-            EntryMode::Array => (TokenKind::CloseBracket, false),
-            EntryMode::Record | EntryMode::Set => (TokenKind::CloseBrace, true),
+        let group = match mode {
+            EntryMode::Array => GroupSyntax::array(),
+            EntryMode::Record | EntryMode::Set => GroupSyntax::braced(),
         };
-        self.parse_delimited(close, allow_semicolon, |parser| {
-            parser.parse_record_entry(mode)
-        })
+        self.parse_delimited(&group, |parser| parser.parse_record_entry(mode))
     }
 
     fn parse_delimited<T>(
         &mut self,
-        close: TokenKind,
-        allow_semicolon: bool,
+        group: &GroupSyntax,
         mut parse_item: impl FnMut(&mut Self) -> Option<T>,
     ) -> Vec<T> {
         let mut items = Vec::new();
         self.skip_collection_trivia();
 
-        while !self.at_end() && !self.current_is(close.clone()) {
+        while !self.at_end() && !self.current_is(group.close.clone()) {
             if self.current_is_any_close_delimiter() {
                 break;
             }
@@ -2046,7 +2029,7 @@ impl Parser<'_> {
                 items.push(item);
             }
 
-            if self.current_is(close.clone()) {
+            if self.current_is(group.close.clone()) {
                 break;
             }
 
@@ -2054,9 +2037,11 @@ impl Parser<'_> {
             // entry (method/lambda) ends by consuming its closing `Dedent`, so
             // the next member sits immediately after with no remaining newline.
             // Treat that boundary like top-level items do (`at_item_boundary`).
-            let had_separator = self.consume_collection_separator(allow_semicolon)
-                || self.previous_is(TokenKind::Dedent);
-            if self.current_is(close.clone()) {
+            // That only holds when an item really does sit there: resting on
+            // trivia means the group is winding down, not continuing.
+            let had_separator = self.consume_collection_separator(group)
+                || (self.previous_is(TokenKind::Dedent) && !self.at_collection_trivia());
+            if self.current_is(group.close.clone()) {
                 break;
             }
 
@@ -2558,28 +2543,21 @@ impl Parser<'_> {
 
     fn parse_method_signature_params(&mut self) -> Vec<Expr> {
         self.advance(); // `(`
-        let mut params = Vec::new();
 
-        while !self.at_end() && !self.current_is(TokenKind::CloseParen) {
-            let param = if matches!(
-                self.current().map(|token| &token.kind),
+        self.parse_delimited(&GroupSyntax::parens(), |parser| {
+            // A named parameter (`count: Int`) contributes only its type; the
+            // label is documentation at this position.
+            if matches!(
+                parser.current().map(|token| &token.kind),
                 Some(TokenKind::Identifier(_))
-            ) && self.next_is_operator(":")
+            ) && parser.next_is_operator(":")
             {
-                self.advance();
-                self.advance();
-                self.parse_annotation_term()
-            } else {
-                self.parse_annotation_term()
-            };
-            params.push(param);
-
-            if !self.consume_comma() {
-                break;
+                parser.advance();
+                parser.advance();
             }
-        }
 
-        params
+            Some(parser.parse_annotation_term())
+        })
     }
 
     fn skip_collection_trivia_from(&self, mut index: usize) -> usize {
@@ -3383,13 +3361,21 @@ impl Parser<'_> {
         );
     }
 
-    fn consume_collection_separator(&mut self, allow_semicolon: bool) -> bool {
+    fn consume_collection_separator(&mut self, group: &GroupSyntax) -> bool {
+        // Where a line break does not separate items, layout trivia is only
+        // worth skipping when a real separator or the closing bracket follows.
+        // Skipping it unconditionally would let an unclosed `(` run past the
+        // end of its line and eat the statements below it.
+        if !group.newline_separates && !self.separator_or_close_follows_trivia(group) {
+            return false;
+        }
+
         let mut consumed = self.skip_collection_trivia();
         let mut seen_separator = false;
 
         loop {
             if self.current_is(TokenKind::Comma)
-                || (allow_semicolon && self.current_is(TokenKind::Semicolon))
+                || (group.allow_semicolon && self.current_is(TokenKind::Semicolon))
             {
                 let span = self.current_span();
                 if seen_separator {
@@ -3407,6 +3393,21 @@ impl Parser<'_> {
         }
 
         consumed
+    }
+
+    fn at_collection_trivia(&self) -> bool {
+        self.skip_collection_trivia_from(self.cursor) != self.cursor
+    }
+
+    /// Whether the next token that is not layout trivia separates two items of
+    /// `group` or closes it.
+    fn separator_or_close_follows_trivia(&self, group: &GroupSyntax) -> bool {
+        let index = self.skip_collection_trivia_from(self.cursor);
+        self.tokens.get(index).is_some_and(|token| {
+            token.kind == group.close
+                || token.kind == TokenKind::Comma
+                || (group.allow_semicolon && token.kind == TokenKind::Semicolon)
+        })
     }
 
     fn skip_collection_trivia(&mut self) -> bool {
@@ -5545,6 +5546,53 @@ mod tests {
             body.kind,
             ExprKind::Name(ref name) if name == METHOD_RECEIVER_NAME
         ));
+    }
+
+    #[test]
+    fn an_unclosed_call_paren_does_not_absorb_the_next_binding() {
+        // A line break inside `(...)` is whitespace, but it never stands in for
+        // the comma between two arguments. Without that rule an unclosed call
+        // would run to the end of the file, taking every later statement with
+        // it and burying the real error.
+        let output = parse_module("x = add(1\ny = 2\n");
+
+        assert_eq!(
+            diagnostic_codes(&output),
+            [codes::parse::UNCLOSED_DELIMITER]
+        );
+        assert_eq!(output.module.items.len(), 2);
+
+        let ExprKind::Call { args, .. } = binding_value(&output, 0) else {
+            panic!("expected a call");
+        };
+        assert_eq!(args.len(), 1);
+        assert!(matches!(binding_value(&output, 1), ExprKind::Literal(_)));
+    }
+
+    #[test]
+    fn parens_suspend_layout_for_arguments_and_parameters() {
+        let output = parse_module(concat!(
+            "f = (\n",
+            "  a: Int,\n",
+            "  b: Int\n",
+            "): Int => a + b\n",
+            "total = xs.fold(\n",
+            "  0,\n",
+            "  (acc, x) => acc + x\n",
+            ")\n",
+        ));
+
+        assert_eq!(diagnostic_codes(&output), Vec::<&str>::new());
+
+        let ExprKind::Lambda { params, .. } = binding_value(&output, 0) else {
+            panic!("expected a lambda");
+        };
+        assert_eq!(params.len(), 2);
+
+        let ExprKind::Call { args, .. } = binding_value(&output, 1) else {
+            panic!("expected a call");
+        };
+        assert_eq!(args.len(), 2);
     }
 
     fn operator_fixities<const N: usize>(
