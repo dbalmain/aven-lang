@@ -91,6 +91,7 @@ fn mismatch(expected: &str, got: &Value) -> String {
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. }
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. }
         | Value::Closure(_)

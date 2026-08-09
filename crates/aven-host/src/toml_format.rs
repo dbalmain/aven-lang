@@ -115,7 +115,8 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
         Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
-        | Value::ArrayFoldMethod(_) => Err("Toml.encode cannot encode Function".to_owned()),
+        | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. } => Err("Toml.encode cannot encode Function".to_owned()),
         Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => {
             Err("Toml.encode cannot encode Function".to_owned())
         }

@@ -2354,7 +2354,8 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
-        | Value::ArrayFoldMethod(_) => "Function",
+        | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. } => "Function",
         Value::Closure(_) => "Function",
         Value::Native(_) | Value::RangeConstructor { .. } | Value::CollectConstructor(_) => {
             "Native"

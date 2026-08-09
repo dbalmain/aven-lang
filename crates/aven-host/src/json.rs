@@ -139,7 +139,8 @@ fn encode_value(
         Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
-        | Value::ArrayFoldMethod(_) => {
+        | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. } => {
             return Err("Json.encode cannot encode Function".to_owned());
         }
         Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => {

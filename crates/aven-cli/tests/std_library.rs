@@ -295,6 +295,93 @@ writeLine("${empty.maximum()}")
     );
 }
 
+/// The ambient `Set` surface through the real binary. Every combinator folds
+/// over insertion order, so the rendered order is part of what is asserted.
+#[test]
+fn std_set_combinators_check_and_run() {
+    let dir = TempDir::new("std-set-combinators");
+    let entry = dir.write(
+        "main.av",
+        r#"s: Set(Int) = @{ 30, 10, 20 }
+empty: Set(Int) = @{}
+zero: Int = 0
+writeLine("${s.size()}")
+writeLine("${empty.size()}")
+writeLine("${s.isEmpty()}")
+writeLine("${empty.isEmpty()}")
+writeLine("${s.has(10)}")
+writeLine("${s.add(40)}")
+writeLine("${s.add(10)}")
+writeLine("${s.delete(10)}")
+writeLine("${s.delete(99)}")
+writeLine("${s}")
+writeLine("${s.toArray()}")
+writeLine("${empty.toArray()}")
+writeLine("${s.fold(zero, (acc, x) => acc + x)}")
+writeLine("${s.map((x) => x + 1)}")
+writeLine("${empty.map((x) => x + 1)}")
+writeLine("${s.filter((x) => x > 15)}")
+writeLine("${empty.filter((x) => x > 15)}")
+writeLine("${s.count((x) => x > 15)}")
+writeLine("${s.all((x) => x > 0)}")
+writeLine("${s.any((x) => x == 20)}")
+writeLine("${empty.any((x) => x == 20)}")
+writeLine("${s.union(@{ 40, 10 })}")
+writeLine("${s.intersection(@{ 20, 30 })}")
+writeLine("${s.difference(@{ 10 })}")
+writeLine("${s.isDisjoint(@{ 99 })}")
+writeLine("${s.isDisjoint(@{ 20 })}")
+"#,
+    );
+
+    let checked = aven(&["check", entry.to_str().expect("temp path is UTF-8")]);
+    assert!(
+        checked.status.success(),
+        "aven check failed:\n{}\n{}",
+        stdout(&checked),
+        stderr(&checked)
+    );
+
+    let output = aven(&["run", entry.to_str().expect("temp path is UTF-8")]);
+    assert!(
+        output.status.success(),
+        "aven run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    // `add`/`delete` derive new sets and leave `s` alone (line 10 re-renders
+    // it unchanged). `map` is kind-preserving over insertion order.
+    assert_eq!(
+        stdout(&output),
+        "3\n0\nfalse\ntrue\ntrue\n@{ 30, 10, 20, 40 }\n@{ 30, 10, 20 }\n@{ 30, 20 }\n@{ 30, 10, 20 }\n@{ 30, 10, 20 }\n[30, 10, 20]\n[]\n60\n@{ 31, 11, 21 }\n@{}\n@{ 30, 20 }\n@{}\n2\ntrue\ntrue\nfalse\n@{ 30, 10, 20, 40 }\n@{ 30, 20 }\n@{ 30, 20 }\ntrue\nfalse\n"
+    );
+}
+
+/// A set holds each result once, so a `map` whose function collides shrinks.
+/// That is inherent to the kind, not a defect, and it carries a test so the
+/// behaviour is pinned rather than discovered.
+#[test]
+fn std_set_map_collapses_colliding_results() {
+    let dir = TempDir::new("std-set-map-shrink");
+    let entry = dir.write(
+        "main.av",
+        r#"s: Set(Int) = @{ 1, 0 - 1, 2 }
+writeLine("${s.map((x) => x * x)}")
+writeLine("${s.map((x) => 7)}")
+writeLine("${s.map((x) => "${x}")}")
+"#,
+    );
+
+    let output = aven(&["run", entry.to_str().expect("temp path is UTF-8")]);
+    assert!(
+        output.status.success(),
+        "aven run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "@{ 1, 4 }\n@{ 7 }\n@{ 1, -1, 2 }\n");
+}
+
 /// `compact` peels one empty wrapper (`Array(?a) -> Array(a)`,
 /// `Array(a?) -> Array(a)`); `findIndex` returns a non-collapsing index.
 #[test]

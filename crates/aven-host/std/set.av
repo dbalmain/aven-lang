@@ -1,0 +1,42 @@
+# Ambient `Set` methods. Method policy is written in Aven; membership, `size`,
+# `add`, `delete`, the four binary operations, `fold` and `toArray` are
+# evaluator natives. Ambient methods load through the trusted standard-library
+# root without entering user scope, so nothing here needs importing.
+#
+# Everything below is expressed as a `fold`, which walks insertion order — the
+# same order `toArray` and rendering yield. Each step derives the accumulator
+# with `add`, which shares the previous set's structure rather than copying it,
+# so a traversal over n members stays linear.
+
+Set(a) {
+  isEmpty(): Bool =>
+    zero: Int = 0
+    .size() == zero
+
+  each(f: (a) -> ()): () => .fold((), (_, x) => f(x))
+
+  # Kind-preserving, and therefore able to shrink: `@{ 1, -1 }.map(abs)` is
+  # `@{ 1 }`, because a set holds each result once. Collect into an `Array`
+  # first when every input needs its own output.
+  map(f: (a) -> b): Set(b) =>
+    seed: Set(b) = @{}
+    .fold(seed, (acc, x) => acc.add(f(x)))
+
+  filter(pred: (a) -> Bool): Set(a) =>
+    seed: Set(a) = @{}
+    .fold(seed, (acc, x) => pred(x) ?> true => acc.add(x), false => acc)
+
+  count(pred: (a) -> Bool): Int =>
+    zero: Int = 0
+    .fold(zero, (acc, x) => pred(x) ?> true => acc + 1, false => acc)
+
+  all(pred: (a) -> Bool): Bool =>
+    start: Bool = true
+    .fold(start, (acc, x) => acc && pred(x))
+
+  any(pred: (a) -> Bool): Bool =>
+    start: Bool = false
+    .fold(start, (acc, x) => acc || pred(x))
+}
+
+{}

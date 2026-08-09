@@ -246,6 +246,7 @@ fn write_to_text(
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. }
         | Value::Closure(_)
         | Value::Native(_)
         | Value::RangeConstructor { .. }
@@ -386,7 +387,8 @@ fn write_repr(out: &mut String, value: &Value) {
         | Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
-        | Value::ArrayFoldMethod(_) => {
+        | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. } => {
             out.push_str("<method>");
         }
         Value::Closure(_) => out.push_str("<function>"),

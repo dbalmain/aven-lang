@@ -62,6 +62,7 @@ fn hash_value(value: &Value, state: &mut impl Hasher) {
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. }
         | Value::Closure(_)
         | Value::Native(_)
         | Value::RangeConstructor { .. }

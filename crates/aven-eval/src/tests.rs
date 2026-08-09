@@ -3300,6 +3300,34 @@ fn set_binary_operations_leave_both_operands_unchanged() {
     );
 }
 
+/// `fold` and `toArray` observe the order the set renders in, so the three
+/// ways of looking at a set's sequence agree.
+#[test]
+fn set_fold_and_to_array_walk_insertion_order() {
+    assert_module_value(
+        "s = @{ 7, 2, 9 }\n\
+         seed: Text = \"\"\n\
+         [repr(s.toArray()), s.fold(seed, (acc, x) => acc + repr(x)), repr(@{}.toArray()),\n\
+          s.delete(7).add(7).fold(seed, (acc, x) => acc + repr(x))]\n",
+        array_value(vec![
+            Value::Text("[7, 2, 9]".to_owned()),
+            Value::Text("729".to_owned()),
+            Value::Text("[]".to_owned()),
+            // Re-adding moves a member to the end, and `fold` sees that.
+            Value::Text("297".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn set_fold_threads_its_accumulator() {
+    assert_module_value(
+        "zero: Int = 0\n\
+         [@{ 7, 2, 9 }.fold(zero, (acc, x) => acc + x), @{}.fold(zero, (acc, x) => acc + x)]\n",
+        array_value(vec![Value::int(18), Value::int(0)]),
+    );
+}
+
 #[test]
 fn set_spread_of_non_set_reports_type_error() {
     let diagnostic = module_error("@{ ..[1, 2] }\n");

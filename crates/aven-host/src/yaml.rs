@@ -235,7 +235,8 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
         Value::ResultMethod { .. }
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
-        | Value::ArrayFoldMethod(_) => Err("Yaml.encode cannot encode Function".to_owned()),
+        | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. } => Err("Yaml.encode cannot encode Function".to_owned()),
         Value::NamedMethod { .. } | Value::UnboundNamedMethod { .. } => {
             Err("Yaml.encode cannot encode Function".to_owned())
         }

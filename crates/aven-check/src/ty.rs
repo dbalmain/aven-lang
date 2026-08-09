@@ -167,6 +167,8 @@ pub const SET_METHOD_NAMES: &[&str] = &[
     "intersection",
     "difference",
     "isDisjoint",
+    "fold",
+    "toArray",
 ];
 
 /// Roc-aligned `Str` helpers (camelCase).
@@ -387,6 +389,20 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
                 Some(function(vec![set.clone()], set.clone()))
             }
             "isDisjoint" => Some(function(vec![set], named_builtin("Bool"))),
+            "fold" => {
+                let accumulator = Type::Variable("fold_accumulator".to_owned());
+                Some(function(
+                    vec![
+                        accumulator.clone(),
+                        function(
+                            vec![accumulator.clone(), element.clone()],
+                            accumulator.clone(),
+                        ),
+                    ],
+                    accumulator,
+                ))
+            }
+            "toArray" => Some(function(Vec::new(), array_apply(element.clone()))),
             _ => None,
         };
     }

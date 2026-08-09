@@ -582,6 +582,10 @@ pub enum Value {
     },
     ArrayFlatMapMethod(Rc<Vec<Value>>),
     ArrayFoldMethod(Rc<Vec<Value>>),
+    SetMethod {
+        receiver: Rc<SetValue>,
+        kind: SetMethod,
+    },
     Closure(Closure),
     Native(NativeFn),
     /// Compiler-owned range construction, kept distinct from host natives so
@@ -700,6 +704,15 @@ pub enum StreamMethod {
     Filter,
     Fold,
     Each,
+    ToArray,
+}
+
+/// The `Set` methods that need more than a value-to-value native: `fold` calls
+/// back into the evaluator, and `toArray` reports the shared materialization
+/// limit as a diagnostic rather than a message.
+#[derive(Debug, Clone, Copy)]
+pub enum SetMethod {
+    Fold,
     ToArray,
 }
 
@@ -823,6 +836,7 @@ impl fmt::Debug for Value {
             Self::StreamMethod { kind, .. } => f.debug_tuple("StreamMethod").field(kind).finish(),
             Self::ArrayFlatMapMethod(_) => f.write_str("ArrayFlatMapMethod(<method>)"),
             Self::ArrayFoldMethod(_) => f.write_str("ArrayFoldMethod(<method>)"),
+            Self::SetMethod { kind, .. } => f.debug_tuple("SetMethod").field(kind).finish(),
             Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
             Self::Native(_) => f.write_str("Native(<native>)"),
             Self::RangeConstructor { .. } => f.write_str("RangeConstructor(<intrinsic>)"),
@@ -898,6 +912,7 @@ impl PartialEq for Value {
             (Self::StreamMethod { .. }, _) | (_, Self::StreamMethod { .. }) => false,
             (Self::ArrayFlatMapMethod(_), _) | (_, Self::ArrayFlatMapMethod(_)) => false,
             (Self::ArrayFoldMethod(_), _) | (_, Self::ArrayFoldMethod(_)) => false,
+            (Self::SetMethod { .. }, _) | (_, Self::SetMethod { .. }) => false,
             (Self::NamedFamily(_), _) | (_, Self::NamedFamily(_)) => false,
             (Self::NamedMethod { .. }, _) | (_, Self::NamedMethod { .. }) => false,
             (Self::UnboundNamedMethod { .. }, _) | (_, Self::UnboundNamedMethod { .. }) => false,
@@ -951,9 +966,10 @@ impl fmt::Display for Value {
             Self::UnboundNamedMethod { .. } => write!(f, "<method>"),
             Self::Tag { name, payload } => fmt_tag(name, payload, f),
             Self::ResultMethod { .. } => write!(f, "<method>"),
-            Self::StreamMethod { .. } | Self::ArrayFlatMapMethod(_) | Self::ArrayFoldMethod(_) => {
-                write!(f, "<method>")
-            }
+            Self::StreamMethod { .. }
+            | Self::ArrayFlatMapMethod(_)
+            | Self::ArrayFoldMethod(_)
+            | Self::SetMethod { .. } => write!(f, "<method>"),
             Self::Closure(_) => write!(f, "<function>"),
             Self::Native(_) => write!(f, "<native>"),
             Self::RangeConstructor { .. } | Self::CollectConstructor(_) => write!(f, "<native>"),
@@ -1026,9 +1042,10 @@ impl Value {
             Self::UnboundNamedMethod { .. } => "Function",
             Self::Tag { .. } => "Tag",
             Self::ResultMethod { .. } => "Function",
-            Self::StreamMethod { .. } | Self::ArrayFlatMapMethod(_) | Self::ArrayFoldMethod(_) => {
-                "Function"
-            }
+            Self::StreamMethod { .. }
+            | Self::ArrayFlatMapMethod(_)
+            | Self::ArrayFoldMethod(_)
+            | Self::SetMethod { .. } => "Function",
             Self::Closure(_) => "Function",
             Self::Native(_) => "Native",
             Self::RangeConstructor { .. } | Self::CollectConstructor(_) => "Native",
@@ -2814,6 +2831,13 @@ fn apply_callee(
             }
             apply_array_fold(items, arg_values, span)
         }
+        Value::SetMethod { receiver, kind } => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_set_method(receiver, kind, arg_values, span)
+        }
         Value::NamedFamily(descriptor) => {
             let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
@@ -2870,6 +2894,7 @@ fn apply_callee_values(
         }
         Value::ArrayFlatMapMethod(items) => apply_array_flat_map(items, arg_values, span),
         Value::ArrayFoldMethod(items) => apply_array_fold(items, arg_values, span),
+        Value::SetMethod { receiver, kind } => apply_set_method(receiver, kind, arg_values, span),
         Value::NamedFamily(descriptor) => {
             apply_named_family_constructor(descriptor, arg_values, span)
         }
@@ -3330,6 +3355,34 @@ fn apply_array_fold(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval
         )?;
     }
     Ok(accumulator)
+}
+
+/// Folding walks insertion order, so `fold`, `each` and `toArray` all observe
+/// the same sequence a set renders in.
+fn apply_set_method(members: Rc<SetValue>, kind: SetMethod, args: Vec<Value>, span: Span) -> Eval {
+    match kind {
+        SetMethod::Fold => {
+            let [initial, callback] = args.as_slice() else {
+                return Err(one_diagnostic(arity_mismatch(span, 2, 2, args.len())));
+            };
+            let mut accumulator = initial.clone();
+            for member in members.iter() {
+                accumulator = apply_callee_values(
+                    callback.clone(),
+                    span,
+                    vec![accumulator, member.clone()],
+                    NativeContext::without_source(span),
+                )?;
+            }
+            Ok(accumulator)
+        }
+        SetMethod::ToArray => {
+            if !args.is_empty() {
+                return Err(one_diagnostic(arity_mismatch(span, 0, 0, args.len())));
+            }
+            collect_into_array(CollectSource::Set(members), span)
+        }
+    }
 }
 
 fn materialize_stream(stream: Stream, span: Span) -> Eval {
@@ -4465,6 +4518,14 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (Value::Set(members), "intersection") => Some(set_intersection_method(Rc::clone(members))),
         (Value::Set(members), "difference") => Some(set_difference_method(Rc::clone(members))),
         (Value::Set(members), "isDisjoint") => Some(set_is_disjoint_method(Rc::clone(members))),
+        (Value::Set(members), "fold") => Some(Value::SetMethod {
+            receiver: Rc::clone(members),
+            kind: SetMethod::Fold,
+        }),
+        (Value::Set(members), "toArray") => Some(Value::SetMethod {
+            receiver: Rc::clone(members),
+            kind: SetMethod::ToArray,
+        }),
         (Value::Array(items), "has") => Some(array_has_method(Rc::clone(items))),
         (Value::Array(items), "length") => Some(array_length_method(Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
@@ -6190,6 +6251,7 @@ fn map_key_is_comparable(key: &Value) -> bool {
         | Value::StreamMethod { .. }
         | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_)
+        | Value::SetMethod { .. }
         | Value::NamedFamily(_)
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. } => false,
