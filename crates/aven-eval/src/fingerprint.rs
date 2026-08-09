@@ -3,9 +3,9 @@
 //! `Value` carries `Rc` collections, streams and closures, so it has neither
 //! `Hash` nor `Ord`, and Aven equality is not a Rust `Eq` relation — `1` and
 //! `1.0` compare equal across kinds. A fingerprint hashes a normalised view of
-//! the value instead: numbers collapse to `f64` bits with signed zero and NaN
-//! folded together, and containers whose order does not affect equality hash
-//! their members order-independently.
+//! the value instead: numbers collapse to their exact value with signed zero
+//! and NaN folded together, and containers whose order does not affect
+//! equality hash their members order-independently.
 //!
 //! Fingerprints are a pre-filter only. They may collide, so every candidate a
 //! lookup finds is confirmed with Aven's own equality.
@@ -16,7 +16,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::{MapValue, PrimitivePayload, SetValue, Value, int_to_f64};
+use crate::{Int, MapValue, PrimitivePayload, SetValue, Value};
 
 pub(crate) fn value_fingerprint(value: &Value) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -26,8 +26,8 @@ pub(crate) fn value_fingerprint(value: &Value) -> u64 {
 
 fn hash_value(value: &Value, state: &mut impl Hasher) {
     match value {
-        Value::Int(value) => hash_number(int_to_f64(value), state),
-        Value::Float(value) => hash_number(*value, state),
+        Value::Int(value) => hash_int(value, state),
+        Value::Float(value) => hash_float(*value, state),
         Value::Text(value) => hash_tagged(1, value, state),
         Value::Bool(value) => hash_tagged(2, value, state),
         Value::Array(values) => hash_sequence(3, values, state),
@@ -70,8 +70,8 @@ fn hash_value(value: &Value, state: &mut impl Hasher) {
 
 fn hash_primitive_payload(payload: &PrimitivePayload, state: &mut impl Hasher) {
     match payload {
-        PrimitivePayload::Int(value) => hash_number(int_to_f64(value), state),
-        PrimitivePayload::Float(value) => hash_number(*value, state),
+        PrimitivePayload::Int(value) => hash_int(value, state),
+        PrimitivePayload::Float(value) => hash_float(*value, state),
         PrimitivePayload::Text(value) => hash_tagged(1, value, state),
         PrimitivePayload::Bool(value) => hash_tagged(2, value, state),
         PrimitivePayload::Array(values) => hash_sequence(3, values, state),
@@ -80,16 +80,29 @@ fn hash_primitive_payload(payload: &PrimitivePayload, state: &mut impl Hasher) {
     }
 }
 
-fn hash_number(value: f64, state: &mut impl Hasher) {
-    0_u8.hash(state);
+/// Numbers hash by exact value rather than by `f64` bits, matching the exact
+/// Int/Float comparison: an integer equals a float only when the float holds
+/// that integer, so every whole number hashes through this one path whichever
+/// kind carries it. Narrowing the integer here instead would hand distinct
+/// integers past 2^53 a single shared slot.
+fn hash_int(value: &Int, state: &mut impl Hasher) {
+    hash_tagged(0, value, state);
+}
+
+fn hash_float(value: f64, state: &mut impl Hasher) {
+    // `-0.0` reads as the integer zero, which folds the signed zeroes.
+    if let Some(value) = Int::from_f64_exact(value) {
+        hash_int(&value, state);
+        return;
+    }
+
+    // NaN equals itself in Aven, so every payload folds onto one.
     let bits = if value.is_nan() {
         f64::NAN.to_bits()
-    } else if value == 0.0 {
-        0.0_f64.to_bits()
     } else {
         value.to_bits()
     };
-    bits.hash(state);
+    hash_tagged(14, &bits, state);
 }
 
 fn hash_tagged(tag: u8, value: &impl Hash, state: &mut impl Hasher) {

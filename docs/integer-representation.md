@@ -20,18 +20,18 @@ obvious and leaves representation optimization to the VM phase.
 dependency and conversion vocabulary in one place while allowing the evaluator,
 checker, and hosts to share the same integer type.
 
-| Layer | Representation |
-| ----- | -------------- |
-| Runtime value | `Value::Int(Int)` |
-| Branded payload | `PrimitivePayload::Int(Int)` |
-| Comptime canonical form | `CanonicalLiteral::Int(Int)` |
-| Format codecs | `FormatNumber::Int(Int)` |
-| AST / tokens | Decimal string lexeme, parsed at the checker/evaluator boundary |
-| Host marshal | Lossless `Int` and checked `i64` implementations |
+| Layer                   | Representation                                                  |
+| ----------------------- | --------------------------------------------------------------- |
+| Runtime value           | `Value::Int(Int)`                                               |
+| Branded payload         | `PrimitivePayload::Int(Int)`                                    |
+| Comptime canonical form | `CanonicalLiteral::Int(Int)`                                    |
+| Format codecs           | `FormatNumber::Int(Int)`                                        |
+| AST / tokens            | Decimal string lexeme, parsed at the checker/evaluator boundary |
+| Host marshal            | Lossless `Int` and checked `i64` implementations                |
 
 The lexer and parser still retain decimal integer text. They do not impose a
-range, and the checker and evaluator both parse integer-shaped lexemes as
-`Int`. This makes `aven check` and `aven run` agree and naturally makes
+range, and the checker and evaluator both parse integer-shaped lexemes as `Int`.
+This makes `aven check` and `aven run` agree and naturally makes
 `-9223372036854775808` writable: the positive operand is representable before
 unary negation is applied.
 
@@ -49,10 +49,21 @@ repeat counts, padding widths, HTTP timeouts, and similar interactions still
 convert to the machine-sized type required by the operation and report a clean
 error when the value cannot be used.
 
-Mixed `Int`/`Float` operations remain explicitly lossy because `Float` is
-`f64`. Conversion of a finite `Int` too large for `f64` produces the
-corresponding infinity. Pure integer operations never convert through
-floating point.
+Mixed `Int`/`Float` _arithmetic_ is explicitly lossy because `Float` is `f64`.
+Conversion of a finite `Int` too large for `f64` produces the corresponding
+infinity. Pure integer operations never convert through floating point.
+
+Mixed `Int`/`Float` _comparison_ is the exception: `==`, the relational
+operators, and the collection identity built on them compare the two exactly,
+splitting the float into its integer part and the fraction that part leaves over
+rather than narrowing the integer. `Int::partial_cmp` against `f64` is where
+that lives, and `NaN` is the only float it declines to order. Comparing through
+`f64` instead would give every integer past 2^53 the same float as its
+neighbours, so two distinct integers would both compare equal to one float and
+equality would stop being transitive — the property `Map`, `Set`, and every sort
+depend on. The fingerprint that gives map keys and set members their identity
+follows the same rule: whole numbers hash by their exact integer value, so an
+`Int` and a `Float` land together exactly when they compare equal.
 
 ## Typed host boundary
 
@@ -61,16 +72,15 @@ The host boundary deliberately supports both common use cases:
 - `AvenMarshal for Int` crosses the boundary losslessly. Host APIs that need
   arbitrary-precision values can accept or return the re-exported
   `aven_host::Int`.
-- `AvenMarshal for i64` remains available for ordinary Rust platform
-  functions. When an Aven value is outside signed 64-bit range,
-  `from_value` returns a platform error such as
-  `Int value 18446744073709551615 does not fit Rust i64`.
+- `AvenMarshal for i64` remains available for ordinary Rust platform functions.
+  When an Aven value is outside signed 64-bit range, `from_value` returns a
+  platform error such as `Int value 18446744073709551615 does not fit Rust i64`.
 
 There is no truncation, wrapping, or implicit float conversion. A host chooses
 its contract through its Rust signature.
 
-Temporal host values remain internally signed 64-bit nanoseconds because that
-is a property of those platform types, not of Aven `Int`. Their constructors
+Temporal host values remain internally signed 64-bit nanoseconds because that is
+a property of those platform types, not of Aven `Int`. Their constructors
 perform checked conversion and retain their documented supported range.
 
 ## Codec boundary
@@ -79,8 +89,8 @@ perform checked conversion and retain their documented supported range.
 
 JSON integer lexemes decode as arbitrary-precision `@Int` values, and encoding
 writes their exact unquoted decimal form. `serde_json` is built with
-`arbitrary_precision` so its intermediate number representation does not
-discard the lexeme before Aven sees it.
+`arbitrary_precision` so its intermediate number representation does not discard
+the lexeme before Aven sees it.
 
 Before this change, the behavior was verified directly:
 
@@ -90,23 +100,22 @@ Json.encode(...)                       # 1.8446744073709552e+19
 ```
 
 That silent precision loss is gone. The same value now decodes as
-`@Int(18446744073709551615)` and round-trips as
-`18446744073709551615`. Fraction or exponent lexemes still decode as `@Float`;
-the split is syntactic rather than range-based.
+`@Int(18446744073709551615)` and round-trips as `18446744073709551615`. Fraction
+or exponent lexemes still decode as `@Float`; the split is syntactic rather than
+range-based.
 
-The CLI's structured JSON output also emits arbitrary-precision Aven integers
-as JSON numbers rather than demoting them to float or string.
+The CLI's structured JSON output also emits arbitrary-precision Aven integers as
+JSON numbers rather than demoting them to float or string.
 
 ### YAML and TOML
 
-YAML signed and unsigned integer inputs both become exact Aven `Int` values.
-The current YAML library's output number API accepts only `i64` or `u64`, so
+YAML signed and unsigned integer inputs both become exact Aven `Int` values. The
+current YAML library's output number API accepts only `i64` or `u64`, so
 encoding an Aven integer beyond those ranges returns a clean codec error.
 
 TOML integers are signed 64-bit by specification and in the library API.
 Decoding produces an Aven `Int`; encoding rejects values outside TOML's range
-with a clean codec error. Neither codec silently truncates or converts to
-float.
+with a clean codec error. Neither codec silently truncates or converts to float.
 
 ## Why this option
 
@@ -119,8 +128,8 @@ lexemes losslessly.
 
 Using `num-bigint` adds allocation and cloning to integer-heavy evaluator code,
 including small integers. That is accepted for the direct evaluator: correctness
-and a small uniform implementation matter more now, and Dave explicitly
-deferred the small-integer optimization to the VM.
+and a small uniform implementation matter more now, and Dave explicitly deferred
+the small-integer optimization to the VM.
 
 ## Deliberately separate work
 
@@ -128,11 +137,10 @@ deferred the small-integer optimization to the VM.
   unimplemented by the lexer even though the language spec lists them.
 - Fixed-width Aven interop types such as `I32` and `U8` remain future work for
   binary protocols and explicitly width-sensitive host APIs.
-- A tagged small/large integer representation remains VM-phase performance
-  work.
+- A tagged small/large integer representation remains VM-phase performance work.
 - Temporal nanoseconds, collection indexes and sizes, HTTP timeouts, Unicode
-  scalar conversion, float formatting precision, and exponent counts retain
-  the finite ranges imposed by the operations they drive.
+  scalar conversion, float formatting precision, and exponent counts retain the
+  finite ranges imposed by the operations they drive.
 
 ## Decision
 

@@ -6415,8 +6415,8 @@ fn numeric_value_ordering(left: &Value, right: &Value) -> Option<Ordering> {
     match (left, right) {
         (Value::Int(left), Value::Int(right)) => Some(left.cmp(right)),
         (Value::Float(left), Value::Float(right)) => Some(float_total_cmp(*left, *right)),
-        (Value::Int(left), Value::Float(right)) => Some(float_total_cmp(int_to_f64(left), *right)),
-        (Value::Float(left), Value::Int(right)) => Some(float_total_cmp(*left, int_to_f64(right))),
+        (Value::Int(left), Value::Float(right)) => Some(int_float_cmp(left, *right)),
+        (Value::Float(left), Value::Int(right)) => Some(int_float_cmp(right, *left).reverse()),
         _ => None,
     }
 }
@@ -6426,9 +6426,18 @@ fn float_eq(left: f64, right: f64) -> bool {
     (left.is_nan() && right.is_nan()) || left == right
 }
 
-/// Int/Float equality: promote the integer to f64, then use [`float_eq`].
+/// Int/Float ordering, from the integer's side.
+///
+/// [`Int`] compares against `f64` exactly, so only NaN needs a decision here,
+/// and [`float_total_cmp`] already places it above every number.
+fn int_float_cmp(int: &Int, float: f64) -> Ordering {
+    int.partial_cmp(&float).unwrap_or(Ordering::Less)
+}
+
+/// Int/Float equality, exact in both directions: an integer equals a float
+/// only when the float carries that integer and nothing more.
 fn int_float_eq(int: &Int, float: f64) -> bool {
-    float_eq(int_to_f64(int), float)
+    *int == float
 }
 
 /// Total order for Aven Float: `-Infinity < finite < Infinity < NaN`.

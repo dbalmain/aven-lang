@@ -3,7 +3,7 @@ use super::{
     EvalOutcome, ModuleImports, RuntimeType, STACK_SEGMENT_SIZE, Stream, Value, display_text,
     eval_expr, eval_module, eval_module_with_options, logging, record_field_value, repr_text,
 };
-use aven_core::codes;
+use aven_core::{Int, codes};
 use aven_parser::{
     Item, Module, ModuleRole, OperatorAssociativity, OperatorFixity, OperatorFixityTable,
     OperatorOrigin, OperatorPrecedence, parse_module, parse_module_with_fixities,
@@ -69,9 +69,9 @@ fn range_operators_and_stream_statics_construct_lazy_streams() {
     let applied = eval_stream("Stream(Int).range(0, 10)");
     assert_eq!(exclusive, explicit);
     assert_eq!(exclusive, applied);
-    assert_eq!(exclusive.start(), &0.into());
-    assert_eq!(exclusive.end(), &10.into());
-    assert_eq!(exclusive.increment(), &1.into());
+    assert_eq!(exclusive.start(), &Int::from(0));
+    assert_eq!(exclusive.end(), &Int::from(10));
+    assert_eq!(exclusive.increment(), &Int::from(1));
     assert!(!exclusive.is_inclusive());
 
     let inclusive = eval_stream("0 ..= 10");
@@ -80,7 +80,7 @@ fn range_operators_and_stream_statics_construct_lazy_streams() {
     assert!(explicit_inclusive.is_inclusive());
 
     let stepped = eval_stream("Stream.range(0, 10, { step: 2 })");
-    assert_eq!(stepped.increment(), &2.into());
+    assert_eq!(stepped.increment(), &Int::from(2));
 }
 
 #[test]
@@ -487,6 +487,102 @@ fn numeric_equality_coerces_int_and_float_structurally() {
     assert_eval("[1] == [\"1\"]", Value::Bool(false));
     let diagnostic = eval_error("1 == \"1\"");
     assert_eq!(diagnostic.code.as_deref(), Some(codes::runtime::TYPE_ERROR));
+}
+
+/// Two adjacent integers either side of 2^53 and the single `Float` both of
+/// them land on when narrowed. Comparing through `f64` makes all three equal to
+/// one another; comparing exactly keeps `a` on its own.
+const PRECISION_TRIPLE: &str = "a = 9007199254740993\n\
+                                b = 9007199254740992\n\
+                                f = 9007199254740992.0\n";
+
+#[test]
+fn int_float_equality_stays_transitive_past_f64_precision() {
+    assert_module_value(
+        &format!("{PRECISION_TRIPLE}[a == b, a == f, f == a, b == f, f == b]\n"),
+        array_value(vec![
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::Bool(true),
+        ]),
+    );
+
+    // Far past the point where consecutive integers share a float.
+    assert_module_value(
+        "big = 123456789012345678901234567890\n\
+         [big == big + 1, big == 1.2345678901234568e29, (big + 1) == 1.2345678901234568e29]\n",
+        array_value(vec![
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::Bool(false),
+        ]),
+    );
+}
+
+#[test]
+fn map_keys_past_f64_precision_stay_distinct_entries() {
+    assert_module_value(
+        &format!(
+            "{PRECISION_TRIPLE}\
+             m = Map.empty().set(a, \"a\").set(b, \"b\").set(f, \"f\")\n\
+             k = m.keys()\n\
+             [m.size(), m.get(a), m.get(b), m.get(f), k[0] == k[1]]\n"
+        ),
+        array_value(vec![
+            Value::int(2),
+            Value::Text("a".to_owned()),
+            Value::Text("f".to_owned()),
+            Value::Text("f".to_owned()),
+            Value::Bool(false),
+        ]),
+    );
+}
+
+#[test]
+fn map_and_set_keep_the_same_survivors() {
+    let Value::Array(keys) = module_value(&format!(
+        "{PRECISION_TRIPLE}Map.empty().set(a, \"a\").set(b, \"b\").set(f, \"f\").keys()\n"
+    )) else {
+        panic!("expected Map.keys to produce an Array");
+    };
+
+    // Each container keeps whichever representative its own write rule picks —
+    // `set` overwrites the key it matched, `@{}` keeps the first occurrence —
+    // so the survivors are compared as Aven values rather than by kind.
+    assert_eq!(
+        Value::Set(Rc::new(keys.iter().cloned().collect())),
+        module_value(&format!("{PRECISION_TRIPLE}@{{ a, b, f }}\n")),
+    );
+}
+
+#[test]
+fn int_float_ordering_past_f64_precision_agrees_with_equality() {
+    assert_module_value(
+        &format!("{PRECISION_TRIPLE}[b == f, b < f, f < b, a == f, a < f, f < a]\n"),
+        array_value(vec![
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::Bool(true),
+        ]),
+    );
+
+    // `sortWith` is a stable insertion sort over `<` alone, so the two equal
+    // values keep their input order and the larger integer lands last.
+    assert_eq!(
+        eval_with_builtins(&format!(
+            "{PRECISION_TRIPLE}[a, f, b].sortWith((x, y) => x < y)\n"
+        )),
+        array_value(vec![
+            Value::Float(9_007_199_254_740_992.0),
+            Value::int(9_007_199_254_740_992_i64),
+            Value::int(9_007_199_254_740_993_i64),
+        ]),
+    );
 }
 
 #[test]
@@ -3542,16 +3638,16 @@ fn chained_propagation_returns_ok_on_happy_path_and_first_err_on_sad_path() {
 }
 
 fn assert_module_value(source: &str, expected: Value) {
-    let module = parse_ok(source);
-    let outcome = eval_module(&module);
+    assert_eq!(module_value(source), expected);
+}
 
-    assert_eq!(
-        outcome,
-        EvalOutcome {
-            value: Some(expected),
-            diagnostics: Vec::new()
-        }
-    );
+fn module_value(source: &str) -> Value {
+    let outcome = eval_module(&parse_ok(source));
+
+    assert_eq!(outcome.diagnostics, Vec::new());
+    outcome
+        .value
+        .expect("a module without diagnostics has a value")
 }
 
 fn assert_eval(source: &str, expected: Value) {
