@@ -1352,6 +1352,18 @@ impl<'a> Checker<'a> {
             ) if self.known_types.contains(expected) => {
                 self.report_type_mismatch_between_types(expected, &actual.render(), span);
             }
+            // A named family is nominal too, but it reaches here by a second
+            // route: a free receiver publishes an open method row, and
+            // `try_satisfy_method_row_with_owner` declined to satisfy it with
+            // this owner. Dropping that silently is what let a wrong annotation
+            // through, so report it — the row is inference's own bookkeeping,
+            // so name the methods instead of rendering it.
+            (Type::Record(row), Type::Named(actual))
+                if self.named_family_aliases.contains_key(actual)
+                    && !self.known_types.contains(actual) =>
+            {
+                self.report_unsatisfied_method_row(actual, row, span);
+            }
             (
                 expected @ (Type::Record(_) | Type::Tuple(_) | Type::Function { .. }),
                 Type::Named(actual),
@@ -1360,6 +1372,54 @@ impl<'a> Checker<'a> {
             }
             _ => {}
         }
+    }
+
+    /// Report an open method row that reached a concrete family owner without
+    /// being satisfied. The row is inference's own bookkeeping — it renders as
+    /// `{ min: 3 | .. -> a, .. }` — so name the method that did not fit and the
+    /// signature the family declares for it.
+    fn report_unsatisfied_method_row(&mut self, owner: &str, row: &Row, span: Span) {
+        let owner_type = Type::Named(owner.to_owned());
+        let owner = display_inferred_type(&owner_type).render();
+        let members = row
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                RowEntry::Field { name, .. } => Some(name.clone()),
+                RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        let diagnostic = if let Some(member) = members
+            .iter()
+            .find(|member| self.exact_method_signature(&owner_type, member).is_none())
+        {
+            Diagnostic::error(format!("`{owner}` has no `{member}` method"))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(span, format!("this receiver is `{owner}`")))
+                .with_note(format!(
+                    "declare `{member}` on `{owner}`, or call a method it already carries"
+                ))
+        } else {
+            let member = members.first().cloned().unwrap_or_default();
+            let declared = self
+                .exact_method_signature(&owner_type, &member)
+                .map(|signature| {
+                    let params = signature
+                        .params
+                        .iter()
+                        .map(Type::render)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({params}) -> {}", signature.result.render())
+                })
+                .unwrap_or_default();
+            Diagnostic::error(format!("`{owner}` does not accept this `{member}` call"))
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(span, format!("this receiver is `{owner}`")))
+                .with_note(format!("`{owner}` declares `{member}{declared}`"))
+        };
+        self.push_type_mismatch_diagnostic(diagnostic);
     }
 
     fn check_primitive_family_literal_branding(&mut self, expected: &Type, value: &Expr) -> bool {

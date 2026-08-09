@@ -7286,6 +7286,59 @@ fn free_receiver_lifted_family_method_accepts_its_true_type() {
     }
 }
 
+/// The same escape reached by the other route: the row does not satisfy at all,
+/// because the owner lacks the method or the argument does not fit it. Declining
+/// to satisfy used to be read as "receiver not known yet", which let the call —
+/// and its annotation — through untested.
+#[test]
+fn free_receiver_unsatisfied_family_method_row_is_reported() {
+    for (call, message) in [
+        ("m.nope(2)", "`Money` has no `nope` method"),
+        ("m.min(\"x\")", "`Money` does not accept this `min` call"),
+    ] {
+        let source = named_family_free_receiver_source(call, "Text");
+        let parsed = parse_module(&source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let check = check_module(&parsed.module);
+
+        assert!(
+            check
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == message),
+            "`{call}` should report `{message}`, got {:?}",
+            check
+                .diagnostics
+                .iter()
+                .map(|diagnostic| &diagnostic.message)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// A committed `Int` is not a literal the family can brand, so it is a mismatch
+/// against the lifted parameter — the same answer an annotated receiver gives.
+#[test]
+fn free_receiver_family_method_rejects_committed_base_argument() {
+    let source = concat!(
+        "Money = Int {\n",
+        "  cents(): Int => .\n",
+        "}\n",
+        "price : Money = 2599\n",
+        "n : Int = 3\n",
+        "f = (m) => m.min(n)\n",
+        "probe : Text = f(price)\n",
+    );
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let check = check_module(&parsed.module);
+
+    assert!(
+        has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+        "a committed `Int` argument must not pass the lifted `Money` parameter"
+    );
+}
+
 #[test]
 fn unresolved_receiver_method_scheme_is_open_method_row() {
     let source = "g = (xs) => xs.slice(1, 3)\n";
