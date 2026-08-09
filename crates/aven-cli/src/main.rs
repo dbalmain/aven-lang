@@ -1226,10 +1226,11 @@ fn aven_value_json(value: &aven_eval::Value) -> JsonValue {
             .unwrap_or_else(|| JsonValue::String(value.to_string())),
         aven_eval::Value::Text(value) => JsonValue::String(value.clone()),
         aven_eval::Value::Bool(value) => JsonValue::Bool(*value),
-        aven_eval::Value::Array(values)
-        | aven_eval::Value::Tuple(values)
-        | aven_eval::Value::Set(values) => {
+        aven_eval::Value::Array(values) | aven_eval::Value::Tuple(values) => {
             JsonValue::Array(values.iter().map(aven_value_json).collect())
+        }
+        aven_eval::Value::Set(members) => {
+            JsonValue::Array(members.iter().map(aven_value_json).collect())
         }
         aven_eval::Value::Map(entries) => JsonValue::Array(
             entries

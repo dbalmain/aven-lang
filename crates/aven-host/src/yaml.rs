@@ -211,11 +211,8 @@ fn yaml_value(value: &Value, position: EncodePosition) -> Result<serde_norway::V
         Value::Text(value) => Ok(serde_norway::Value::String(value.clone())),
         Value::Bool(value) => Ok(serde_norway::Value::Bool(*value)),
         Value::Null => Ok(serde_norway::Value::Null),
-        Value::Array(values) | Value::Tuple(values) | Value::Set(values) => values
-            .iter()
-            .map(|value| yaml_value(value, EncodePosition::ArrayElement))
-            .collect::<Result<Vec<_>, _>>()
-            .map(serde_norway::Value::Sequence),
+        Value::Array(values) | Value::Tuple(values) => yaml_sequence(values.iter()),
+        Value::Set(members) => yaml_sequence(members.iter()),
         Value::Map(entries) => yaml_mapping_from_map(entries).map(serde_norway::Value::Mapping),
         Value::Stream(_) => Err("Yaml.encode cannot encode Stream".to_owned()),
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
@@ -324,6 +321,15 @@ fn yaml_mapping_from_record(fields: &[(String, Value)]) -> Result<serde_norway::
         );
     }
     Ok(mapping)
+}
+
+fn yaml_sequence<'a>(
+    values: impl Iterator<Item = &'a Value>,
+) -> Result<serde_norway::Value, String> {
+    values
+        .map(|value| yaml_value(value, EncodePosition::ArrayElement))
+        .collect::<Result<Vec<_>, _>>()
+        .map(serde_norway::Value::Sequence)
 }
 
 fn yaml_mapping_from_map(entries: &MapValue) -> Result<serde_norway::Mapping, String> {

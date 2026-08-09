@@ -15,9 +15,11 @@ use aven_parser::{
 const MAX_MATERIALIZED_ARRAY_BYTES: usize = 256 * 1024 * 1024;
 
 mod display;
+mod fingerprint;
 pub mod logging;
 mod map;
 mod runtime_type;
+mod set;
 
 pub use aven_core::Int;
 pub use display::{display_text, repr_text};
@@ -26,6 +28,7 @@ pub use runtime_type::{
     RuntimeType, RuntimeTypeBindings, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId,
     RuntimeVariantDescriptor,
 };
+pub use set::SetValue;
 
 /// The evaluator's control-flow channel. Most failures are ordinary runtime
 /// errors ([`Flow::Fail`]); [`Flow::Propagate`] carries an `@Err` value that is
@@ -538,7 +541,7 @@ pub enum Value {
     Bool(bool),
     Array(Rc<Vec<Value>>),
     Tuple(Rc<Vec<Value>>),
-    Set(Rc<Vec<Value>>),
+    Set(Rc<SetValue>),
     Stream(Stream),
     Map(Rc<MapValue>),
     Record(Rc<Vec<(String, Value)>>),
@@ -602,7 +605,7 @@ pub enum PrimitivePayload {
     Text(String),
     Bool(bool),
     Array(Rc<Vec<Value>>),
-    Set(Rc<Vec<Value>>),
+    Set(Rc<SetValue>),
     Map(Rc<MapValue>),
 }
 
@@ -996,8 +999,8 @@ impl Value {
     }
 }
 
-fn sets_equal(left: &[Value], right: &[Value]) -> bool {
-    left.len() == right.len() && left.iter().all(|value| contains_value(right, value))
+fn sets_equal(left: &SetValue, right: &SetValue) -> bool {
+    left == right
 }
 
 fn contains_value(values: &[Value], needle: &Value) -> bool {
@@ -1039,9 +1042,9 @@ fn fmt_sequence(
     write!(f, "{close}")
 }
 
-fn fmt_set(values: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn fmt_set(members: &SetValue, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "@{{")?;
-    for (index, value) in values.iter().enumerate() {
+    for (index, value) in members.iter().enumerate() {
         if index == 0 {
             write!(f, " ")?;
         } else {
@@ -1049,7 +1052,7 @@ fn fmt_set(values: &[Value], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         }
         fmt_nested_value(value, f)?;
     }
-    if !values.is_empty() {
+    if !members.is_empty() {
         write!(f, " ")?;
     }
     write!(f, "}}")
@@ -3624,21 +3627,23 @@ fn eval_tuple(items: &[Expr], env: &Environment) -> Eval {
 }
 
 fn eval_set(entries: &[RecordEntry], env: &Environment) -> Eval {
-    let mut values = Vec::new();
+    // Held back until the first entry lands so that a leading spread can adopt
+    // its source's trees outright. `@{..s, x}` then shares all of `s` and pays
+    // for a single insertion rather than re-inserting every member, which is
+    // what makes folding a set over a sequence linearithmic instead of cubic.
+    let mut members: Option<SetValue> = None;
 
     for entry in entries {
         match entry {
             RecordEntry::Element(expr) => {
                 let value = eval_expr_many(expr, env)?;
-                if !contains_value(&values, &value) {
-                    values.push(value);
-                }
+                members.get_or_insert_default().insert(value);
             }
             RecordEntry::Spread {
                 value: source_expr, ..
             } => {
                 let source = eval_expr_many(source_expr, env)?;
-                let Value::Set(members) = source else {
+                let Value::Set(source_members) = source else {
                     return Err(one_diagnostic(record_type_error(
                         source_expr.span,
                         "spread",
@@ -3647,10 +3652,9 @@ fn eval_set(entries: &[RecordEntry], env: &Environment) -> Eval {
                     )));
                 };
 
-                for member in members.iter() {
-                    if !contains_value(&values, member) {
-                        values.push(member.clone());
-                    }
+                match &mut members {
+                    Some(members) => members.extend(source_members.iter().cloned()),
+                    None => members = Some(Rc::unwrap_or_clone(source_members)),
                 }
             }
             entry => {
@@ -3662,7 +3666,7 @@ fn eval_set(entries: &[RecordEntry], env: &Environment) -> Eval {
         }
     }
 
-    Ok(Value::Set(Rc::new(values)))
+    Ok(Value::Set(Rc::new(members.unwrap_or_default())))
 }
 
 fn eval_record(entries: &[RecordEntry], env: &Environment) -> Eval {
@@ -3854,7 +3858,8 @@ fn fold_record_iteration(
 ) -> Eval<()> {
     let source_value = eval_expr_many(source, env)?;
     let values: Vec<Value> = match source_value {
-        Value::Set(items) | Value::Array(items) => items.iter().cloned().collect(),
+        Value::Set(members) => members.iter().cloned().collect(),
+        Value::Array(items) => items.iter().cloned().collect(),
         Value::Record(source_fields) => source_fields
             .iter()
             .map(|(name, _)| Value::Text(name.clone()))
@@ -4295,8 +4300,8 @@ fn builtin_method(receiver: &Value, field: &str, env: &Environment) -> Option<Va
         (receiver, "toText") if display::carries_ambient_to_text(receiver) => Some(
             ambient_to_text_method(receiver.clone(), env.builtin_methods.clone()),
         ),
-        (Value::Set(items), "has") => Some(collection_has_method("Set", Rc::clone(items))),
-        (Value::Array(items), "has") => Some(collection_has_method("Array", Rc::clone(items))),
+        (Value::Set(members), "has") => Some(set_has_method(Rc::clone(members))),
+        (Value::Array(items), "has") => Some(array_has_method(Rc::clone(items))),
         (Value::Array(items), "length") => Some(array_length_method(Rc::clone(items))),
         (Value::Array(items), "push") => Some(array_push_method(Rc::clone(items))),
         (Value::Array(items), "fold") => Some(Value::ArrayFoldMethod(Rc::clone(items))),
@@ -5430,13 +5435,23 @@ fn array_join_with_method(items: Rc<Vec<Value>>) -> Value {
     })
 }
 
-fn collection_has_method(kind: &'static str, items: Rc<Vec<Value>>) -> Value {
+fn array_has_method(items: Rc<Vec<Value>>) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
-            return Err(format!("{kind}.has expects 1 argument, got {}", args.len()));
+            return Err(format!("Array.has expects 1 argument, got {}", args.len()));
         }
 
         Ok(Value::Bool(contains_value(&items, &args[0])))
+    })
+}
+
+fn set_has_method(members: Rc<SetValue>) -> Value {
+    Value::native(move |args| {
+        if args.len() != 1 {
+            return Err(format!("Set.has expects 1 argument, got {}", args.len()));
+        }
+
+        Ok(Value::Bool(members.contains(&args[0])))
     })
 }
 
@@ -5905,9 +5920,8 @@ fn map_key_is_comparable(key: &Value) -> bool {
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. } => false,
         Value::BrandedPrimitive { .. } => true,
-        Value::Array(values) | Value::Tuple(values) | Value::Set(values) => {
-            values.iter().all(map_key_is_comparable)
-        }
+        Value::Array(values) | Value::Tuple(values) => values.iter().all(map_key_is_comparable),
+        Value::Set(members) => members.iter().all(map_key_is_comparable),
         Value::Map(entries) => entries
             .iter()
             .all(|(key, value)| map_key_is_comparable(key) && map_key_is_comparable(value)),
@@ -6210,25 +6224,18 @@ fn apply_binary(
 
 /// Set union with singleton-promotion: each operand contributes its members if
 /// it is already a `Set`, otherwise it contributes itself as a single element.
-/// Duplicates are removed (first occurrence wins) using `contains_value`, the
-/// same equality `eval_set` uses so `|` and `{..}` agree on element identity.
+/// Duplicates are dropped (first occurrence wins) by `SetValue`, the same
+/// membership `eval_set` uses, so `|` and `@{..}` agree on element identity.
+/// A `Set` on the left is adopted rather than rebuilt, so its structure is
+/// shared with the result.
 fn set_union(left: Value, right: Value) -> Value {
-    let mut members: Vec<Value> = Vec::new();
-    for operand in [left, right] {
-        match operand {
-            Value::Set(items) => {
-                for item in items.iter() {
-                    if !contains_value(&members, item) {
-                        members.push(item.clone());
-                    }
-                }
-            }
-            other => {
-                if !contains_value(&members, &other) {
-                    members.push(other);
-                }
-            }
-        }
+    let mut members = match left {
+        Value::Set(members) => Rc::unwrap_or_clone(members),
+        other => SetValue::from_values([other]),
+    };
+    match right {
+        Value::Set(other) => members.extend(other.iter().cloned()),
+        other => members.insert(other),
     }
     Value::Set(Rc::new(members))
 }

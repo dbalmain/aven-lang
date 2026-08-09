@@ -90,11 +90,8 @@ fn toml_value(value: &Value, position: EncodePosition) -> Result<::toml::Value, 
         Value::Float(value) => Ok(::toml::Value::Float(*value)),
         Value::Text(value) => Ok(::toml::Value::String(value.clone())),
         Value::Bool(value) => Ok(::toml::Value::Boolean(*value)),
-        Value::Array(values) | Value::Tuple(values) | Value::Set(values) => values
-            .iter()
-            .map(|value| toml_value(value, EncodePosition::ArrayElement))
-            .collect::<Result<Vec<_>, _>>()
-            .map(::toml::Value::Array),
+        Value::Array(values) | Value::Tuple(values) => toml_sequence(values.iter()),
+        Value::Set(members) => toml_sequence(members.iter()),
         Value::Map(entries) => toml_table_from_map(entries).map(::toml::Value::Table),
         Value::Stream(_) => Err("Toml.encode cannot encode Stream".to_owned()),
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
@@ -204,6 +201,13 @@ fn toml_table_from_record(fields: &[(String, Value)]) -> Result<::toml::Table, S
         );
     }
     Ok(table)
+}
+
+fn toml_sequence<'a>(values: impl Iterator<Item = &'a Value>) -> Result<::toml::Value, String> {
+    values
+        .map(|value| toml_value(value, EncodePosition::ArrayElement))
+        .collect::<Result<Vec<_>, _>>()
+        .map(::toml::Value::Array)
 }
 
 fn toml_table_from_map(entries: &MapValue) -> Result<::toml::Table, String> {

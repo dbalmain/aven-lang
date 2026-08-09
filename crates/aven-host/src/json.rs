@@ -101,9 +101,10 @@ fn encode_value(
         Value::Bool(true) => output.push_str("true"),
         Value::Bool(false) => output.push_str("false"),
         Value::Null => output.push_str("null"),
-        Value::Array(values) | Value::Tuple(values) | Value::Set(values) => {
-            encode_sequence(values, output)?;
+        Value::Array(values) | Value::Tuple(values) => {
+            encode_sequence(values.iter(), output)?;
         }
+        Value::Set(members) => encode_sequence(members.iter(), output)?,
         Value::Map(_) => return Err("Json.encode cannot encode Map".to_owned()),
         Value::Stream(_) => return Err("Json.encode cannot encode Stream".to_owned()),
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
@@ -318,9 +319,12 @@ fn encode_record(fields: &[(String, Value)], output: &mut String) -> Result<(), 
     Ok(())
 }
 
-fn encode_sequence(values: &[Value], output: &mut String) -> Result<(), String> {
+fn encode_sequence<'a>(
+    values: impl Iterator<Item = &'a Value>,
+    output: &mut String,
+) -> Result<(), String> {
     output.push('[');
-    for (index, value) in values.iter().enumerate() {
+    for (index, value) in values.enumerate() {
         if index > 0 {
             output.push(',');
         }

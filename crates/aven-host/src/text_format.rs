@@ -795,13 +795,7 @@ fn decode_descriptor_array(
     }
 
     if set {
-        let mut unique = Vec::with_capacity(output.len());
-        for value in output {
-            if !unique.contains(&value) {
-                unique.push(value);
-            }
-        }
-        Ok(Value::Set(Rc::new(unique)))
+        Ok(Value::Set(Rc::new(output.into_iter().collect())))
     } else {
         Ok(Value::Array(Rc::new(output)))
     }
@@ -1134,7 +1128,7 @@ mod tests {
         assert_eq!(
             decoded,
             Value::Tuple(Rc::new(vec![
-                Value::Set(Rc::new(vec![Value::Text("a".to_owned())])),
+                Value::Set(Rc::new([Value::Text("a".to_owned())].into_iter().collect(),)),
                 Value::Map(Rc::new(aven_eval::MapValue::from_entries([(
                     Value::Text("answer".to_owned()),
                     Value::int(42),

@@ -2909,6 +2909,76 @@ fn evaluates_set_spread_entries_with_deduplication() {
     );
 }
 
+/// Set equality ignores order, so it cannot witness the ordering guarantee.
+/// These render instead: the members are scrambled relative to every ordering a
+/// hash structure might impose, so hash order would fail the comparison.
+#[test]
+fn set_members_render_in_insertion_order() {
+    assert_module_value(
+        "repr(@{ 7, 2, 9, 0, 5, 1 })\n",
+        Value::Text("@{ 7, 2, 9, 0, 5, 1 }".to_owned()),
+    );
+    assert_module_value(
+        "repr(@{ ..@{ \"pear\", \"fig\" }, \"apple\" } | \"date\")\n",
+        Value::Text("@{ \"pear\", \"fig\", \"apple\", \"date\" }".to_owned()),
+    );
+}
+
+#[test]
+fn set_re_adding_a_member_keeps_its_position() {
+    assert_module_value(
+        "s = @{ 7, 2, 9 }\n\
+         [repr(@{ ..s, 7 }), repr(@{ ..s, 9, 7, 2 }), repr(s | 7)]\n",
+        array_value(vec![
+            Value::Text("@{ 7, 2, 9 }".to_owned()),
+            Value::Text("@{ 7, 2, 9 }".to_owned()),
+            Value::Text("@{ 7, 2, 9 }".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn set_equality_ignores_member_order() {
+    assert_module_value(
+        "built = @{ ..@{ 3, 1 }, 2 }\n\
+         [built == @{ 1, 2, 3 }, built == @{ 3, 2, 1 }, built == @{ 1, 2 }]\n",
+        array_value(vec![
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::Bool(false),
+        ]),
+    );
+}
+
+/// Structural sharing must stay invisible: adding to a copy of a set leaves
+/// every other reference to it untouched.
+#[test]
+fn set_spread_leaves_an_aliased_source_unchanged() {
+    assert_module_value(
+        "original = @{ 1, 2 }\n\
+         alias = original\n\
+         changed = @{ ..alias, 3 }\n\
+         [repr(original), repr(alias), repr(changed), repr(changed | @{ 4, 1 })]\n",
+        array_value(vec![
+            Value::Text("@{ 1, 2 }".to_owned()),
+            Value::Text("@{ 1, 2 }".to_owned()),
+            Value::Text("@{ 1, 2, 3 }".to_owned()),
+            Value::Text("@{ 1, 2, 3, 4 }".to_owned()),
+        ]),
+    );
+}
+
+/// Fingerprints are a pre-filter that Aven equality settles, so members that
+/// hash apart by kind but compare equal still collapse to one, keeping the
+/// position and the value of the first arrival.
+#[test]
+fn set_members_dedup_across_the_int_float_boundary() {
+    assert_module_value(
+        "repr(@{ ..@{ 1, 2.5 }, 1.0, 2.5, 3 })\n",
+        Value::Text("@{ 1, 2.5, 3 }".to_owned()),
+    );
+}
+
 #[test]
 fn set_spread_of_non_set_reports_type_error() {
     let diagnostic = module_error("@{ ..[1, 2] }\n");
@@ -3562,7 +3632,7 @@ fn tuple_value(values: Vec<Value>) -> Value {
 }
 
 fn set_value(values: Vec<Value>) -> Value {
-    Value::Set(Rc::new(values))
+    Value::Set(Rc::new(values.into_iter().collect()))
 }
 
 fn stream_value(start: i64, end: i64, step: i64, inclusive: bool) -> Value {
