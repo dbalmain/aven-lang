@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use aven_check::{ComptimeArg, ComptimeError, HostComptimeFn, RowEntry, Type, type_fits_boundary};
-use aven_eval::Value;
+use aven_eval::{MapValue, Value};
 
 use crate::Host;
 use crate::io::{aven_value_type_name, err_value, ok_value, read_all_value, read_line_value};
@@ -622,7 +622,7 @@ fn http_response_value(response: HttpResponse) -> Value {
     ])
 }
 
-fn response_headers(response: &HttpResponse) -> Rc<Vec<(Value, Value)>> {
+fn response_headers(response: &HttpResponse) -> Rc<MapValue> {
     let mut seen = Vec::new();
     let mut headers = Vec::new();
 
@@ -641,10 +641,10 @@ fn response_headers(response: &HttpResponse) -> Rc<Vec<(Value, Value)>> {
         headers.push((Value::Text(lower), Value::Array(Rc::new(values))));
     }
 
-    Rc::new(headers)
+    Rc::new(MapValue::from_entries(headers))
 }
 
-fn first_header_native(headers: Rc<Vec<(Value, Value)>>) -> Value {
+fn first_header_native(headers: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!("first expects 1 argument, got {}", args.len()));

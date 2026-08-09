@@ -16,10 +16,12 @@ const MAX_MATERIALIZED_ARRAY_BYTES: usize = 256 * 1024 * 1024;
 
 mod display;
 pub mod logging;
+mod map;
 mod runtime_type;
 
 pub use aven_core::Int;
 pub use display::{display_text, repr_text};
+pub use map::MapValue;
 pub use runtime_type::{
     RuntimeType, RuntimeTypeBindings, RuntimeTypeDescriptor, RuntimeTypeGraph, RuntimeTypeId,
     RuntimeVariantDescriptor,
@@ -538,7 +540,7 @@ pub enum Value {
     Tuple(Rc<Vec<Value>>),
     Set(Rc<Vec<Value>>),
     Stream(Stream),
-    Map(Rc<Vec<(Value, Value)>>),
+    Map(Rc<MapValue>),
     Record(Rc<Vec<(String, Value)>>),
     SlotRecord {
         fields: Rc<Vec<(String, Value)>>,
@@ -601,7 +603,7 @@ pub enum PrimitivePayload {
     Bool(bool),
     Array(Rc<Vec<Value>>),
     Set(Rc<Vec<Value>>),
-    Map(Rc<Vec<(Value, Value)>>),
+    Map(Rc<MapValue>),
 }
 
 impl PartialEq for PrimitivePayload {
@@ -1002,11 +1004,8 @@ fn contains_value(values: &[Value], needle: &Value) -> bool {
     values.iter().any(|value| value == needle)
 }
 
-fn maps_equal(left: &[(Value, Value)], right: &[(Value, Value)]) -> bool {
-    left.len() == right.len()
-        && left.iter().all(|(key, value)| {
-            map_entry_value(right, key).is_some_and(|right_value| value == right_value)
-        })
+fn maps_equal(left: &MapValue, right: &MapValue) -> bool {
+    left == right
 }
 
 fn records_equal(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
@@ -1077,7 +1076,7 @@ fn fmt_stream(stream: &Stream, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     }
 }
 
-fn fmt_map(entries: &[(Value, Value)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn fmt_map(entries: &MapValue, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "Map{{")?;
     for (index, (key, value)) in entries.iter().enumerate() {
         if index == 0 {
@@ -1582,7 +1581,7 @@ fn map_empty_intrinsic(args: &[Value]) -> Result<Value, String> {
         return Err(format!("Map.empty expects 0 arguments, got {}", args.len()));
     }
 
-    Ok(Value::Map(Rc::new(Vec::new())))
+    Ok(Value::Map(Rc::new(MapValue::new())))
 }
 
 fn map_from_intrinsic(args: &[Value]) -> Result<Value, String> {
@@ -1602,7 +1601,7 @@ fn map_from_pair_array(arg: &Value, context: &str) -> Result<Value, String> {
         ));
     };
 
-    let mut entries = Vec::new();
+    let mut entries = MapValue::new();
     for item in items.iter() {
         let Value::Tuple(values) = item else {
             return Err(format!(
@@ -1617,7 +1616,7 @@ fn map_from_pair_array(arg: &Value, context: &str) -> Result<Value, String> {
             ));
         };
         ensure_map_key(key, context)?;
-        insert_or_replace_map_entry(&mut entries, key.clone(), value.clone());
+        entries.insert(key.clone(), value.clone());
     }
 
     Ok(Value::Map(Rc::new(entries)))
@@ -5466,20 +5465,18 @@ fn array_push_method(items: Rc<Vec<Value>>) -> Value {
     })
 }
 
-fn map_get_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_get_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!("Map.get expects 1 argument, got {}", args.len()));
         }
         ensure_map_key(&args[0], "Map.get")?;
 
-        Ok(map_entry_value(&entries, &args[0])
-            .cloned()
-            .unwrap_or(Value::Undefined))
+        Ok(entries.get(&args[0]).cloned().unwrap_or(Value::Undefined))
     })
 }
 
-fn map_set_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_set_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if args.len() != 2 {
             return Err(format!("Map.set expects 2 arguments, got {}", args.len()));
@@ -5487,12 +5484,12 @@ fn map_set_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
         ensure_map_key(&args[0], "Map.set")?;
 
         let mut next = entries.as_ref().clone();
-        insert_or_replace_map_entry(&mut next, args[0].clone(), args[1].clone());
+        next.insert(args[0].clone(), args[1].clone());
         Ok(Value::Map(Rc::new(next)))
     })
 }
 
-fn map_delete_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_delete_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!("Map.delete expects 1 argument, got {}", args.len()));
@@ -5500,23 +5497,23 @@ fn map_delete_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
         ensure_map_key(&args[0], "Map.delete")?;
 
         let mut next = entries.as_ref().clone();
-        remove_map_entry(&mut next, &args[0]);
+        next.remove(&args[0]);
         Ok(Value::Map(Rc::new(next)))
     })
 }
 
-fn map_has_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_has_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!("Map.has expects 1 argument, got {}", args.len()));
         }
         ensure_map_key(&args[0], "Map.has")?;
 
-        Ok(Value::Bool(map_entry_value(&entries, &args[0]).is_some()))
+        Ok(Value::Bool(entries.get(&args[0]).is_some()))
     })
 }
 
-fn map_keys_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_keys_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if !args.is_empty() {
             return Err(format!("Map.keys expects 0 arguments, got {}", args.len()));
@@ -5528,7 +5525,7 @@ fn map_keys_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
     })
 }
 
-fn map_values_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_values_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if !args.is_empty() {
             return Err(format!(
@@ -5543,7 +5540,7 @@ fn map_values_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
     })
 }
 
-fn map_entries_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_entries_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if !args.is_empty() {
             return Err(format!(
@@ -5561,7 +5558,7 @@ fn map_entries_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
     })
 }
 
-fn map_size_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_size_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if !args.is_empty() {
             return Err(format!("Map.size expects 0 arguments, got {}", args.len()));
@@ -5571,7 +5568,7 @@ fn map_size_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
     })
 }
 
-fn map_merge_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
+fn map_merge_method(entries: Rc<MapValue>) -> Value {
     Value::native(move |args| {
         if args.len() != 1 {
             return Err(format!("Map.merge expects 1 argument, got {}", args.len()));
@@ -5588,7 +5585,7 @@ fn map_merge_method(entries: Rc<Vec<(Value, Value)>>) -> Value {
         // Mirrors record `:..` overwrite-spread: the right-hand map wins on
         // conflicts while existing left-hand insertion positions are retained.
         for (key, value) in other.iter() {
-            insert_or_replace_map_entry(&mut next, key.clone(), value.clone());
+            next.insert(key.clone(), value.clone());
         }
         Ok(Value::Map(Rc::new(next)))
     })
@@ -5929,30 +5926,6 @@ fn map_key_is_comparable(key: &Value) -> bool {
         | Value::Type(_)
         | Value::Undefined
         | Value::Null => true,
-    }
-}
-
-fn map_entry_index(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
-    entries.iter().position(|(entry_key, _)| entry_key == key)
-}
-
-fn map_entry_value<'a>(entries: &'a [(Value, Value)], key: &Value) -> Option<&'a Value> {
-    entries
-        .iter()
-        .find_map(|(entry_key, value)| (entry_key == key).then_some(value))
-}
-
-fn insert_or_replace_map_entry(entries: &mut Vec<(Value, Value)>, key: Value, value: Value) {
-    if let Some(index) = map_entry_index(entries, &key) {
-        entries[index] = (key, value);
-    } else {
-        entries.push((key, value));
-    }
-}
-
-fn remove_map_entry(entries: &mut Vec<(Value, Value)>, key: &Value) {
-    if let Some(index) = map_entry_index(entries, key) {
-        entries.remove(index);
     }
 }
 

@@ -877,7 +877,7 @@ fn decode_descriptor_map(
             ))
         })
         .collect::<Result<Vec<_>, DecodeError>>()
-        .map(|entries| Value::Map(Rc::new(entries)))
+        .map(|entries| Value::Map(Rc::new(entries.into_iter().collect())))
 }
 
 fn descriptor_is_optional(target: &RuntimeTypeDescriptor, graph: &RuntimeTypeGraph) -> bool {
@@ -1135,10 +1135,10 @@ mod tests {
             decoded,
             Value::Tuple(Rc::new(vec![
                 Value::Set(Rc::new(vec![Value::Text("a".to_owned())])),
-                Value::Map(Rc::new(vec![(
+                Value::Map(Rc::new(aven_eval::MapValue::from_entries([(
                     Value::Text("answer".to_owned()),
                     Value::int(42),
-                )])),
+                )]))),
             ]))
         );
     }

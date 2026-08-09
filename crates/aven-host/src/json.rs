@@ -4,7 +4,7 @@
 //! checker's host-comptime resolver to refine its result type from the optional
 //! trailing target type argument.
 
-use aven_eval::{Int, Value};
+use aven_eval::{Int, MapValue, Value};
 use serde::de;
 use serde::{Deserialize, Deserializer};
 
@@ -223,7 +223,7 @@ fn encode_json_array(values: &[Value], output: &mut String) -> Result<(), String
     Ok(())
 }
 
-fn encode_json_object(entries: &[(Value, Value)], output: &mut String) -> Result<(), String> {
+fn encode_json_object(entries: &MapValue, output: &mut String) -> Result<(), String> {
     output.push('{');
     for (index, (key, value)) in entries.iter().enumerate() {
         if index > 0 {
@@ -1114,7 +1114,10 @@ mod tests {
     /// Boundary: bare `Map` is outside the encode-clean domain.
     #[test]
     fn encode_to_text_rejects_bare_map() {
-        let map = Value::Map(Rc::new(vec![(Value::Text("k".into()), Value::int(1))]));
+        let map = Value::Map(Rc::new(MapValue::from_entries([(
+            Value::Text("k".into()),
+            Value::int(1),
+        )])));
         let err = encode_to_text(&map).expect_err("Map must not encode");
         assert!(
             err.contains("cannot encode Map"),

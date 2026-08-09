@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt, rc::Rc};
+use std::{
+    collections::HashMap,
+    fmt,
+    hash::{Hash, Hasher},
+    rc::Rc,
+};
 
 use aven_parser::Literal;
 
@@ -17,7 +22,7 @@ pub struct RuntimeTypeId(pub u32);
 /// Recursive children are IDs rather than nested descriptor values. The
 /// corresponding one-level heads live in [`RuntimeTypeGraph`], so even mutual
 /// recursion has a finite representation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub enum RuntimeTypeDescriptor {
     Named(String),
     Apply {
@@ -44,7 +49,7 @@ pub enum RuntimeTypeDescriptor {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub enum RuntimeVariantDescriptor {
     Tag {
         name: String,
@@ -57,6 +62,14 @@ pub enum RuntimeVariantDescriptor {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RuntimeTypeGraph {
     unfoldings: HashMap<RuntimeTypeId, RuntimeTypeDescriptor>,
+}
+
+impl Hash for RuntimeTypeGraph {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let mut unfoldings: Vec<_> = self.unfoldings.iter().collect();
+        unfoldings.sort_unstable_by_key(|(id, _)| id.0);
+        unfoldings.hash(state);
+    }
 }
 
 impl RuntimeTypeGraph {
@@ -91,6 +104,13 @@ impl RuntimeTypeGraph {
 pub struct RuntimeType {
     descriptor: RuntimeTypeDescriptor,
     graph: Rc<RuntimeTypeGraph>,
+}
+
+impl Hash for RuntimeType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.descriptor.hash(state);
+        self.graph.hash(state);
+    }
 }
 
 impl RuntimeType {

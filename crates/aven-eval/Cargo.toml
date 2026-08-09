@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 aven-core.workspace = true
 aven-parser.workspace = true
+imbl = "7.0.1"
 # The local patch adds `try_grow`, preserving stacker's switching code while
 # returning platform stack-allocation failures to the evaluator.
 stacker = { path = "../../vendor/stacker" }

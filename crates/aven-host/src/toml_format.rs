@@ -1,4 +1,4 @@
-use aven_eval::{Int, Value};
+use aven_eval::{Int, MapValue, Value};
 
 use crate::Host;
 use crate::temporal::{
@@ -206,9 +206,9 @@ fn toml_table_from_record(fields: &[(String, Value)]) -> Result<::toml::Table, S
     Ok(table)
 }
 
-fn toml_table_from_map(entries: &[(Value, Value)]) -> Result<::toml::Table, String> {
+fn toml_table_from_map(entries: &MapValue) -> Result<::toml::Table, String> {
     let mut table = ::toml::Table::new();
-    for (key, value) in entries {
+    for (key, value) in entries.iter() {
         let Value::Text(key) = key else {
             return Err("Toml.encode expected Map(Text, _) keys".to_owned());
         };
@@ -313,19 +313,16 @@ mod tests {
         payload
     }
 
-    fn map_entries(value: &Value) -> &[(Value, Value)] {
+    fn map_entries(value: &Value) -> &MapValue {
         let [Value::Map(entries)] = tag_payload(value, "Object") else {
             panic!("expected @Object(Map), got {value:?}");
         };
-        entries.as_ref()
+        entries
     }
 
-    fn map_value<'a>(entries: &'a [(Value, Value)], key: &str) -> &'a Value {
+    fn map_value<'a>(entries: &'a MapValue, key: &str) -> &'a Value {
         entries
-            .iter()
-            .find_map(|(entry_key, value)| {
-                (entry_key == &Value::Text(key.to_owned())).then_some(value)
-            })
+            .get(&Value::Text(key.to_owned()))
             .unwrap_or_else(|| panic!("map has key `{key}`"))
     }
 

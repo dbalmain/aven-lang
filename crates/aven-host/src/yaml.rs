@@ -1,6 +1,6 @@
 use std::fmt;
 
-use aven_eval::{Int, Value};
+use aven_eval::{Int, MapValue, Value};
 use serde::de::{self, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
@@ -326,9 +326,9 @@ fn yaml_mapping_from_record(fields: &[(String, Value)]) -> Result<serde_norway::
     Ok(mapping)
 }
 
-fn yaml_mapping_from_map(entries: &[(Value, Value)]) -> Result<serde_norway::Mapping, String> {
+fn yaml_mapping_from_map(entries: &MapValue) -> Result<serde_norway::Mapping, String> {
     let mut mapping = serde_norway::Mapping::new();
-    for (key, value) in entries {
+    for (key, value) in entries.iter() {
         let Value::Text(key) = key else {
             return Err("Yaml.encode expected Map(Text, _) keys".to_owned());
         };

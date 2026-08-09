@@ -1508,6 +1508,21 @@ fn map_from_deduplicates_keys_with_last_value_and_first_order() {
 }
 
 #[test]
+fn map_entries_preserve_an_arbitrary_insertion_order() {
+    assert_module_value(
+        "Map.from([(\"k7\", 7), (\"k2\", 2), (\"k9\", 9), (\"k0\", 0), (\"k5\", 5), (\"k1\", 1)]).keys()\n",
+        array_value(vec![
+            Value::Text("k7".to_owned()),
+            Value::Text("k2".to_owned()),
+            Value::Text("k9".to_owned()),
+            Value::Text("k0".to_owned()),
+            Value::Text("k5".to_owned()),
+            Value::Text("k1".to_owned()),
+        ]),
+    );
+}
+
+#[test]
 fn map_get_hit_and_miss() {
     assert_module_value(
         "m = Map.from([(\"a\", 1)])\n[m.get(\"a\"), m.get(\"z\")]\n",
@@ -1547,6 +1562,31 @@ fn map_set_and_delete_return_new_maps() {
                 Value::Text("b".to_owned()),
                 Value::int(3),
             ])]),
+        ]),
+    );
+}
+
+#[test]
+fn map_set_preserves_aliased_receiver_and_replacement_position() {
+    assert_module_value(
+        "original = Map.from([(\"first\", 1), (\"second\", 2)])\n\
+         alias = original\n\
+         changed = alias.set(\"first\", 10).set(\"third\", 3)\n\
+         [original.entries(), alias.entries(), changed.entries()]\n",
+        array_value(vec![
+            array_value(vec![
+                tuple_value(vec![Value::Text("first".to_owned()), Value::int(1)]),
+                tuple_value(vec![Value::Text("second".to_owned()), Value::int(2)]),
+            ]),
+            array_value(vec![
+                tuple_value(vec![Value::Text("first".to_owned()), Value::int(1)]),
+                tuple_value(vec![Value::Text("second".to_owned()), Value::int(2)]),
+            ]),
+            array_value(vec![
+                tuple_value(vec![Value::Text("first".to_owned()), Value::int(10)]),
+                tuple_value(vec![Value::Text("second".to_owned()), Value::int(2)]),
+                tuple_value(vec![Value::Text("third".to_owned()), Value::int(3)]),
+            ]),
         ]),
     );
 }
@@ -1601,6 +1641,59 @@ fn map_keys_use_structural_equality() {
         "m = Map.from([((\"x\", 1), \"hit\")])\n\
          m.get((\"x\", 1))\n",
         Value::Text("hit".to_owned()),
+    );
+}
+
+#[test]
+fn map_keys_hash_unordered_nested_maps_consistently() {
+    assert_module_value(
+        "key = Map.from([(\"a\", 1), (\"b\", 2)])\n\
+         equivalent = Map.from([(\"b\", 2), (\"a\", 1)])\n\
+         Map.from([(key, \"hit\")]).get(equivalent)\n",
+        Value::Text("hit".to_owned()),
+    );
+}
+
+#[test]
+fn map_keys_hash_other_comparable_structures_consistently() {
+    assert_module_value(
+        "record = Map.from([({ first: 1, second: 2 }, \"record\")]).get({ second: 2, first: 1 })\n\
+         set = Map.from([(@{ 1, 2, 3 }, \"set\")]).get(@{ 3, 1, 2 })\n\
+         ty = Map.from([(Map(Text, Int), \"type\")]).get(Map(Text, Int))\n\
+         [record, set, ty]\n",
+        array_value(vec![
+            Value::Text("record".to_owned()),
+            Value::Text("set".to_owned()),
+            Value::Text("type".to_owned()),
+        ]),
+    );
+}
+
+#[test]
+fn map_numeric_key_collisions_keep_first_matching_position() {
+    assert_module_value(
+        "first = 9007199254740992\n\
+         second = 9007199254740993\n\
+         key = 9007199254740992.0\n\
+         m = Map.from([(first, \"first\"), (second, \"second\")])\n\
+         [m.get(key), m.set(key, \"updated\").values()]\n",
+        array_value(vec![
+            Value::Text("first".to_owned()),
+            array_value(vec![
+                Value::Text("updated".to_owned()),
+                Value::Text("second".to_owned()),
+            ]),
+        ]),
+    );
+}
+
+#[test]
+fn map_nan_keys_follow_aven_float_equality() {
+    assert_module_value(
+        "nan = 0.0 / 0.0\n\
+         m = Map.from([(nan, \"hit\")])\n\
+         [m.get(nan), m.set(nan, \"updated\").size()]\n",
+        array_value(vec![Value::Text("hit".to_owned()), Value::int(1)]),
     );
 }
 
@@ -3480,7 +3573,7 @@ fn stream_value(start: i64, end: i64, step: i64, inclusive: bool) -> Value {
 }
 
 fn map_value(entries: Vec<(Value, Value)>) -> Value {
-    Value::Map(Rc::new(entries))
+    Value::Map(Rc::new(super::MapValue::from_entries(entries)))
 }
 
 fn host_with(name: &str, function: Value) -> Value {
