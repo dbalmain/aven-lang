@@ -1929,7 +1929,7 @@ impl<'a> Checker<'a> {
     }
 }
 
-fn primitive_literal_matches_base(literal: &Literal, base: &Type) -> bool {
+pub(super) fn primitive_literal_matches_base(literal: &Literal, base: &Type) -> bool {
     matches!(base, Type::Named(name) if primitive_literal_base_name(literal) == Some(name))
 }
 

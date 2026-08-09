@@ -7192,6 +7192,100 @@ fn unresolved_receiver_method_call_accepts_structural_record() {
     );
 }
 
+fn named_family_free_receiver_source(call: &str, annotation: &str) -> String {
+    format!(
+        concat!(
+            "Money = Int {{\n",
+            "  cents(): Int => .\n",
+            "}}\n",
+            "price : Money = 2599\n",
+            "f = (m) => {}\n",
+            "bad : {} = f(price)\n",
+        ),
+        call, annotation
+    )
+}
+
+/// A named family lifts its same-base parameters into the family
+/// (`Money.min(Money)`), so a free receiver hands the row an uncommitted
+/// literal where the parameter wants `Money`. Every one of these used to fail
+/// row satisfaction and then reach the binding unchecked, so a `Text`
+/// annotation held an `Int` at run time.
+#[test]
+fn free_receiver_lifted_family_method_checks_its_annotation() {
+    for (call, result) in [
+        ("m.div(2)", "?Int"),
+        ("m.mod(2)", "?Int"),
+        ("m.min(3)", "Money"),
+        ("m.max(3)", "Money"),
+        ("m.pow(2)", "Money"),
+    ] {
+        let source = named_family_free_receiver_source(call, "Text");
+        let parsed = parse_module(&source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let check = check_module(&parsed.module);
+
+        assert!(
+            has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "`{call}` through a free receiver left its annotation untested"
+        );
+        assert!(
+            check
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(result)),
+            "`{call}` should report its real result `{result}`, got {:?}",
+            check
+                .diagnostics
+                .iter()
+                .map(|diagnostic| &diagnostic.message)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// The other direction of the same rule: closing the escape must not reject the
+/// spellings that were always correct. The free receiver and its annotated twin
+/// agree on the result, and the literal argument is admitted by both.
+#[test]
+fn free_receiver_lifted_family_method_accepts_its_true_type() {
+    for source in [
+        named_family_free_receiver_source("m.div(2)", "?Int"),
+        named_family_free_receiver_source("m.mod(2)", "?Int"),
+        named_family_free_receiver_source("m.min(3)", "Money"),
+        named_family_free_receiver_source("m.max(3)", "Money"),
+        named_family_free_receiver_source("m.pow(2)", "Money"),
+        // The annotated twin, which never escaped, keeps checking too.
+        concat!(
+            "Money = Int {\n",
+            "  cents(): Int => .\n",
+            "}\n",
+            "price : Money = 2599\n",
+            "f = (m: Money) => m.div(2)\n",
+            "half : ?Int = f(price)\n",
+        )
+        .to_owned(),
+        // A plain `Int` receiver keeps the unlifted signature.
+        concat!(
+            "f = (m) => m.div(2)\n",
+            "half : ?Int = f(2599)\n",
+            "g = (m) => m.min(3)\n",
+            "low : Int = g(7)\n",
+        )
+        .to_owned(),
+    ] {
+        let parsed = parse_module(&source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let check = check_module(&parsed.module);
+
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should check clean, got {:?}",
+            check.diagnostics
+        );
+    }
+}
+
 #[test]
 fn unresolved_receiver_method_scheme_is_open_method_row() {
     let source = "g = (xs) => xs.slice(1, 3)\n";

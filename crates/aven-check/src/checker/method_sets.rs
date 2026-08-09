@@ -965,7 +965,39 @@ impl Checker<'_> {
         if self.unifier.unify(param, argument).is_ok() {
             return true;
         }
-        matches!(param, Type::Optional(inner) if self.unifier.unify(inner, argument).is_ok())
+        if matches!(param, Type::Optional(inner) if self.unifier.unify(inner, argument).is_ok()) {
+            return true;
+        }
+        self.family_param_admits_literal(param, argument)
+    }
+
+    /// A named family lifts its own methods over the family type, so
+    /// `Money.min` takes a `Money` where `Int.min` takes an `Int`. An annotated
+    /// receiver still holds the argument *expression* when it reaches that
+    /// parameter, so it brands the literal into the family; a free receiver
+    /// reaches the owner only here, with the literal already inferred to an
+    /// uncommitted row (`3 | ..`). Admit exactly the literals the annotated
+    /// spelling admits, so both spellings of `m.min(3)` agree — and a committed
+    /// `Int`, which the annotated spelling rejects, stays a mismatch here too.
+    ///
+    /// Without this the row simply fails to satisfy, and the caller reads that
+    /// failure as "receiver not known yet" and lets the call through unchecked.
+    fn family_param_admits_literal(&mut self, param: &Type, argument: &Type) -> bool {
+        let Some(base) = self.primitive_family_base_view(param) else {
+            return false;
+        };
+        let resolved = self.normalize(&self.unifier.resolve(argument));
+        let Type::Variant(row) = &resolved else {
+            return false;
+        };
+        if row.entries.is_empty() {
+            return false;
+        }
+        let brandable = row.entries.iter().all(|entry| {
+            matches!(entry, RowEntry::Literal { value }
+                if super::type_checking::primitive_literal_matches_base(value, &base))
+        });
+        brandable && self.unifier.unify(&base, &resolved).is_ok()
     }
 
     pub(crate) fn attached_builtin_method_required_owner(
