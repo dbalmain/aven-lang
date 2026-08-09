@@ -590,6 +590,11 @@ pub enum Value {
         inclusive: bool,
         materialize: bool,
     },
+    /// `Array.collect` / `Set.collect`, the target-owned collection statics.
+    /// Compiler-owned like `RangeConstructor` so the call keeps its span and
+    /// the structured materialization diagnostics rather than degrading to a
+    /// host platform error.
+    CollectConstructor(CollectTarget),
     /// A runtime type descriptor. The evaluator keeps this intentionally small:
     /// named types plus the composite shapes format decode needs. Record types
     /// remain ordinary `Value::Record` values whose fields are type values.
@@ -698,6 +703,44 @@ pub enum StreamMethod {
     ToArray,
 }
 
+/// A type that carries a `collect` static. Adding one is adding a variant here
+/// and a static in the checker's table; no collection source needs to know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectTarget {
+    Array,
+    Set,
+}
+
+impl CollectTarget {
+    fn type_name(self) -> &'static str {
+        match self {
+            Self::Array => "Array",
+            Self::Set => "Set",
+        }
+    }
+}
+
+/// A value `collect` can draw elements from. Keeping the set of sources in one
+/// place is what lets `[..source]`, `stream.toArray()`, and `collect` agree:
+/// each decides which sources it accepts, but all of them append through
+/// [`append_collection`].
+enum CollectSource {
+    Array(Rc<Vec<Value>>),
+    Set(Rc<SetValue>),
+    Stream(Stream),
+}
+
+impl CollectSource {
+    fn of(value: Value) -> Option<Self> {
+        match value {
+            Value::Array(values) => Some(Self::Array(values)),
+            Value::Set(members) => Some(Self::Set(members)),
+            Value::Stream(stream) => Some(Self::Stream(stream)),
+            _ => None,
+        }
+    }
+}
+
 pub const MAP_METHOD_NAMES: &[&str] = &[
     "get", "set", "delete", "has", "keys", "values", "entries", "size", "merge",
 ];
@@ -783,6 +826,9 @@ impl fmt::Debug for Value {
             Self::Closure(closure) => f.debug_tuple("Closure").field(closure).finish(),
             Self::Native(_) => f.write_str("Native(<native>)"),
             Self::RangeConstructor { .. } => f.write_str("RangeConstructor(<intrinsic>)"),
+            Self::CollectConstructor(target) => {
+                f.debug_tuple("CollectConstructor").field(target).finish()
+            }
             Self::Type(ty) => f.debug_tuple("Type").field(ty).finish(),
             Self::Undefined => f.write_str("Undefined"),
             Self::Null => f.write_str("Null"),
@@ -859,6 +905,7 @@ impl PartialEq for Value {
             (Self::Closure(_), _) | (_, Self::Closure(_)) => false,
             (Self::Native(_), _) | (_, Self::Native(_)) => false,
             (Self::RangeConstructor { .. }, _) | (_, Self::RangeConstructor { .. }) => false,
+            (Self::CollectConstructor(_), _) | (_, Self::CollectConstructor(_)) => false,
             _ => false,
         }
     }
@@ -909,7 +956,7 @@ impl fmt::Display for Value {
             }
             Self::Closure(_) => write!(f, "<function>"),
             Self::Native(_) => write!(f, "<native>"),
-            Self::RangeConstructor { .. } => write!(f, "<native>"),
+            Self::RangeConstructor { .. } | Self::CollectConstructor(_) => write!(f, "<native>"),
             Self::Type(ty) => write!(f, "{ty}"),
             Self::Undefined => write!(f, "undefined"),
             Self::Null => write!(f, "null"),
@@ -984,7 +1031,7 @@ impl Value {
             }
             Self::Closure(_) => "Function",
             Self::Native(_) => "Native",
-            Self::RangeConstructor { .. } => "Native",
+            Self::RangeConstructor { .. } | Self::CollectConstructor(_) => "Native",
             Self::Type(_) => "Type",
             Self::Undefined => "Undefined",
             Self::Null => "Null",
@@ -1496,6 +1543,14 @@ fn bind_intrinsics(env: &Environment) {
                 inclusive,
                 materialize,
             },
+        );
+    }
+    // `collect` is target-owned: the type being built carries the static, so a
+    // new collectible type is one more entry here and no change to any source.
+    for target in [CollectTarget::Array, CollectTarget::Set] {
+        env.bind(
+            format!("{}.collect", target.type_name()),
+            Value::CollectConstructor(target),
         );
     }
 }
@@ -2615,6 +2670,36 @@ fn eval_call(callee: &Expr, args: &[Expr], span: Span, env: &Environment) -> Eva
         return apply_callee(callee_value, callee.span, args, span, env);
     }
 
+    // `source.collect(Target)` desugars to `Target.collect(source)`, the same
+    // target-owned shape as `encode`. The static form is written directly and
+    // lands on the same `CollectConstructor`, so the two spellings are one
+    // implementation.
+    if let ExprKind::FieldAccess {
+        receiver,
+        field,
+        field_span,
+        null_safe: false,
+    } = &callee.kind
+        && field == "collect"
+    {
+        let receiver_value = eval_expr_many(receiver, env)?;
+        if !value_carries_member(&receiver_value, field, env)
+            && let Some(target) = args.first()
+        {
+            let collect_fn = format_static_value(target, "collect", env)?;
+            let arg_values = receiver_prefixed_arg_values(receiver_value, &args[1..], env)?;
+            return apply_callee_values(
+                collect_fn,
+                target.span,
+                arg_values,
+                env.native_context(span),
+            );
+        }
+        let callee_value =
+            field_access_value(receiver_value, receiver.span, field, *field_span, env)?;
+        return apply_callee(callee_value, callee.span, args, span, env);
+    }
+
     let callee_value = eval_expr_many(callee, env)?;
     apply_callee(callee_value, callee.span, args, span, env)
 }
@@ -2694,6 +2779,13 @@ fn apply_callee(
             }
             apply_range_constructor(arg_values, inclusive, materialize, span)
         }
+        Value::CollectConstructor(target) => {
+            let mut arg_values = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_values.push(eval_expr_many(arg, env)?);
+            }
+            apply_collect_constructor(arg_values, target, span)
+        }
         Value::ResultMethod { receiver, kind } => {
             let mut arg_values = Vec::with_capacity(args.len());
             for arg in args {
@@ -2769,6 +2861,7 @@ fn apply_callee_values(
             inclusive,
             materialize,
         } => apply_range_constructor(arg_values, inclusive, materialize, span),
+        Value::CollectConstructor(target) => apply_collect_constructor(arg_values, target, span),
         Value::ResultMethod { receiver, kind } => {
             apply_result_method(*receiver, kind, arg_values, callee_span, span)
         }
@@ -3239,10 +3332,43 @@ fn apply_array_fold(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval
     Ok(accumulator)
 }
 
-fn materialize_stream(mut stream: Stream, span: Span) -> Eval {
+fn materialize_stream(stream: Stream, span: Span) -> Eval {
+    collect_into_array(CollectSource::Stream(stream), span)
+}
+
+/// The one materialization path. `[..source]`, `stream.toArray()` and
+/// `Array.collect(source)` all reach it, so element order and the
+/// materialization limit are the same fact for all three rather than three
+/// facts that can drift apart.
+fn collect_into_array(source: CollectSource, span: Span) -> Eval {
     let mut values = Vec::new();
-    append_stream(&mut values, &mut stream, span)?;
+    append_collection(&mut values, source, span)?;
     Ok(Value::Array(Rc::new(values)))
+}
+
+/// `Set.collect(source)`. Collecting a set adopts its trees outright rather
+/// than re-inserting every member; anything else drains through the shared
+/// append path first, so a set inherits the same materialization limit an
+/// array gets.
+fn collect_into_set(source: CollectSource, span: Span) -> Eval {
+    if let CollectSource::Set(members) = source {
+        return Ok(Value::Set(members));
+    }
+    let mut values = Vec::new();
+    append_collection(&mut values, source, span)?;
+    let mut members = SetValue::default();
+    members.extend(values);
+    Ok(Value::Set(Rc::new(members)))
+}
+
+fn append_collection(values: &mut Vec<Value>, source: CollectSource, span: Span) -> Eval<()> {
+    match source {
+        CollectSource::Array(part) => append_array(values, &part, span),
+        CollectSource::Set(members) => {
+            append_exact(values, members.len(), members.iter().cloned(), span)
+        }
+        CollectSource::Stream(mut stream) => append_stream(values, &mut stream, span),
+    }
 }
 
 fn append_stream(values: &mut Vec<Value>, stream: &mut Stream, span: Span) -> Eval<()> {
@@ -3265,18 +3391,47 @@ fn append_stream(values: &mut Vec<Value>, stream: &mut Stream, span: Span) -> Ev
 }
 
 fn append_array(values: &mut Vec<Value>, part: &[Value], span: Span) -> Eval<()> {
+    append_exact(values, part.len(), part.iter().cloned(), span)
+}
+
+/// Append a run of known length, holding the same materialization limit
+/// [`append_stream`] enforces element by element.
+fn append_exact(
+    values: &mut Vec<Value>,
+    additional: usize,
+    part: impl Iterator<Item = Value>,
+    span: Span,
+) -> Eval<()> {
     let maximum_len = MAX_MATERIALIZED_ARRAY_BYTES / std::mem::size_of::<Value>();
-    let total = values.len().checked_add(part.len());
-    if total.is_none_or(|total| total > maximum_len) || values.try_reserve(part.len()).is_err() {
+    let total = values.len().checked_add(additional);
+    if total.is_none_or(|total| total > maximum_len) || values.try_reserve(additional).is_err() {
         return Err(one_diagnostic(collection_too_large(span)));
     }
-    values.extend(part.iter().cloned());
+    values.extend(part);
     Ok(())
 }
 
 fn apply_native(function: NativeFn, arg_values: Vec<Value>, context: NativeContext) -> Eval {
     let span = context.span;
     function(&arg_values, context).map_err(|message| one_diagnostic(platform_error(span, message)))
+}
+
+fn apply_collect_constructor(args: Vec<Value>, target: CollectTarget, span: Span) -> Eval {
+    let [source] = <[Value; 1]>::try_from(args)
+        .map_err(|args| one_diagnostic(arity_mismatch(span, 1, 1, args.len())))?;
+    let type_name = source.type_name();
+    let Some(source) = CollectSource::of(source) else {
+        return Err(one_diagnostic(record_type_error(
+            span,
+            "collect",
+            type_name,
+            "Stream, Array, or Set",
+        )));
+    };
+    match target {
+        CollectTarget::Array => collect_into_array(source, span),
+        CollectTarget::Set => collect_into_set(source, span),
+    }
 }
 
 fn apply_range_constructor(
@@ -3589,16 +3744,18 @@ fn eval_array(entries: &[RecordEntry], env: &Environment) -> Eval {
                 value: source_expr, ..
             } => {
                 let source = eval_expr_many(source_expr, env)?;
-                match source {
-                    Value::Array(members) => values.extend(members.iter().cloned()),
-                    Value::Stream(mut stream) => {
-                        append_stream(&mut values, &mut stream, source_expr.span)?;
+                let type_name = source.type_name();
+                // An array literal spreads sequences only; a set reaches an
+                // array through `Set` -> `Array` collection, which says so.
+                match CollectSource::of(source) {
+                    Some(source @ (CollectSource::Array(_) | CollectSource::Stream(_))) => {
+                        append_collection(&mut values, source, source_expr.span)?;
                     }
-                    other => {
+                    _ => {
                         return Err(one_diagnostic(record_type_error(
                             source_expr.span,
                             "spread",
-                            other.type_name(),
+                            type_name,
                             "Array or Stream",
                         )));
                     }
@@ -5911,6 +6068,7 @@ fn map_key_is_comparable(key: &Value) -> bool {
         Value::Closure(_)
         | Value::Native(_)
         | Value::RangeConstructor { .. }
+        | Value::CollectConstructor(_)
         | Value::Stream(_)
         | Value::ResultMethod { .. }
         | Value::StreamMethod { .. }

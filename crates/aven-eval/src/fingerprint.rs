@@ -64,7 +64,8 @@ fn hash_value(value: &Value, state: &mut impl Hasher) {
         | Value::ArrayFoldMethod(_)
         | Value::Closure(_)
         | Value::Native(_)
-        | Value::RangeConstructor { .. } => 255_u8.hash(state),
+        | Value::RangeConstructor { .. }
+        | Value::CollectConstructor(_) => 255_u8.hash(state),
     }
 }
 

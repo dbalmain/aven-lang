@@ -1630,9 +1630,29 @@ pub(crate) fn builtin_type_statics() -> HostStatics {
         ),
         (
             "Array".to_owned(),
-            range_statics(crate::ty::build::array(crate::ty::build::int())),
+            [
+                range_statics(crate::ty::build::array(crate::ty::build::int())),
+                collect_statics(crate::ty::build::array),
+            ]
+            .concat(),
         ),
+        ("Set".to_owned(), collect_statics(crate::ty::build::set)),
     ]
+}
+
+/// `collect` is target-owned: the type being built carries the static, so a
+/// collectible type is added by supplying its own `collect` with no change to
+/// the collection sources. The declared source is `Stream(a)`; the call path
+/// widens it to any collection while keeping the element link.
+fn collect_statics(target: fn(Type) -> Type) -> Vec<(String, Type)> {
+    let element = Type::Variable("collect_element".to_owned());
+    vec![(
+        "collect".to_owned(),
+        function_type(
+            vec![crate::ty::build::stream(element.clone())],
+            target(element),
+        ),
+    )]
 }
 
 fn range_statics(result: Type) -> Vec<(String, Type)> {

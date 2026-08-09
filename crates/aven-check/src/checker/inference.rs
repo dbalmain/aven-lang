@@ -1986,6 +1986,10 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        if let Some(result) = self.infer_collect_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_record_selection_builtin_call(env, callee, args) {
             return result;
         }
@@ -2457,7 +2461,7 @@ impl<'a> Checker<'a> {
         synth_args.extend(args[1..].iter().cloned());
 
         let result = self.infer_call(env, &synth_callee, &synth_args);
-        self.record_format_method_member_type(*field_span, &format_name, &args[1..], &result);
+        self.record_target_owned_member_type(*field_span, &format_name, &args[1..], &result);
         // Record on the `.decode` access so hover shows the resolved call type.
         self.record_expr_type(callee.span, &result);
         Some(result)
@@ -2513,20 +2517,153 @@ impl<'a> Checker<'a> {
         };
 
         let result = self.infer_call(env, &synth_callee, &synth_args);
-        self.record_format_method_member_type(field_span, &format_name, &args[1..], &result);
+        self.record_target_owned_member_type(field_span, &format_name, &args[1..], &result);
         self.record_expr_type(callee.span, &result);
         Some(result)
     }
 
-    fn record_format_method_member_type(
+    /// `collect` is target-owned like `encode`: the type being built carries
+    /// the static, and `source.collect(Target)` is sugar for
+    /// `Target.collect(source)`. Both spellings land here, so they are one
+    /// typing rule rather than two that can drift.
+    ///
+    /// The declared source of a `collect` static is `Stream(a)`, because a
+    /// stream is what collection is *for*. Any collection collects, though, so
+    /// this widens the expectation to the source's own constructor while
+    /// keeping the element link to the target — that is what makes
+    /// `array.collect(Set)` a conversion and `array.collect(Array)` redundant.
+    pub(super) fn infer_collect_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        let (target, source, field_span, sugar) = self.collect_call_parts(env, callee, args)?;
+
+        let Some(target) = target else {
+            self.report_collect_missing_target(field_span);
+            return Some(Type::Error);
+        };
+        let Some((target_name, _)) = self.static_receiver_name(env, target) else {
+            self.report_collect_invalid_target(target);
+            return Some(Type::Error);
+        };
+        if self
+            .static_member_scheme(env, &target_name, "collect")
+            .is_none()
+        {
+            self.report_collect_invalid_target(target);
+            return Some(Type::Error);
+        }
+        if self.report_static_member_arity_mismatch(
+            env,
+            &target_name,
+            "collect",
+            args.len(),
+            callee.span,
+        ) {
+            return Some(Type::Error);
+        }
+        let Some(source) = source else {
+            return Some(Type::Error);
+        };
+
+        let member_type = self.infer_static_member_access(env, target, "collect", field_span)?;
+        let Type::Function { params, result } = self.unifier.resolve(&member_type) else {
+            return Some(Type::Error);
+        };
+        let Some((_, [element])) = params.iter().next().and_then(Type::applied_builtin) else {
+            return Some(Type::Error);
+        };
+        let element = element.clone();
+
+        let source_type = self.infer(env, source);
+        let resolved = self.normalize(&self.unifier.resolve(&source_type));
+        if matches!(resolved, Type::Error | Type::Deferred) {
+            return Some(Type::Error);
+        }
+        let expected_source = match resolved.applied_builtin() {
+            Some((BuiltinType::Array, [_])) => crate::ty::build::array(element),
+            Some((BuiltinType::Set, [_])) => crate::ty::build::set(element),
+            // An as-yet-unconstrained source takes the declared shape: a
+            // stream is what `collect` exists to consume.
+            Some((BuiltinType::Stream, [_])) => crate::ty::build::stream(element),
+            _ if matches!(resolved, Type::Meta(_)) => crate::ty::build::stream(element),
+            _ => {
+                self.report_collect_source(source, &resolved);
+                return Some(Type::Error);
+            }
+        };
+        self.check_call_arg_types_against_params(
+            std::slice::from_ref(source),
+            std::slice::from_ref(&source_type),
+            std::slice::from_ref(&expected_source),
+        );
+        self.simplify_method_obligations(false);
+
+        // Only the same-constructor case is pointless; collecting between
+        // different collections is the whole point of the extension point.
+        // Warn solely on a source that resolved to a concrete collection, so a
+        // correct program never trips this.
+        if resolved
+            .applied_builtin()
+            .is_some_and(|(builtin, _)| builtin.name() == target_name)
+        {
+            self.report_redundant_collect(&target_name, field_span);
+        }
+
+        let result = self.unifier.resolve(&result);
+        if sugar {
+            self.record_target_owned_member_type(field_span, &target_name, &args[1..], &result);
+        }
+        self.record_expr_type(callee.span, &result);
+        Some(result)
+    }
+
+    /// Split a `collect` call into its target type and its source collection,
+    /// whichever way round it was written. `Target.collect(source)` is the
+    /// static form and is spellable directly; `source.collect(Target)` is the
+    /// method sugar. The static form is recognised first, so a target type in
+    /// receiver position is never mistaken for a value being collected.
+    pub(super) fn collect_call_parts<'b>(
+        &mut self,
+        env: &TypeEnv,
+        callee: &'b Expr,
+        args: &'b [Expr],
+    ) -> Option<(Option<&'b Expr>, Option<&'b Expr>, Span, bool)> {
+        let ExprKind::FieldAccess {
+            receiver,
+            field,
+            field_span,
+            null_safe: false,
+        } = &ungroup_expr(callee).kind
+        else {
+            return None;
+        };
+        if field != "collect" {
+            return None;
+        }
+
+        if self.static_member_wins(env, receiver, field) {
+            return Some((Some(receiver.as_ref()), args.first(), *field_span, false));
+        }
+
+        let (receiver, field_span) = self.target_owned_sugar_receiver(env, callee, "collect")?;
+        Some((args.first(), Some(receiver), field_span, true))
+    }
+
+    /// Record the *method-view* type of a target-owned sugar (`encode`,
+    /// `decode`, `collect`) on its field span, so hover reads the way the call
+    /// was written rather than the way it desugars.
+    fn record_target_owned_member_type(
         &mut self,
         field_span: Span,
-        format_name: &str,
+        target_name: &str,
         extra_args: &[Expr],
         result: &Type,
     ) {
         let mut params = Vec::with_capacity(extra_args.len() + 1);
-        params.push(Type::Named(format_name.to_owned()));
+        params.push(Type::Named(target_name.to_owned()));
         params.extend(
             extra_args
                 .iter()
@@ -2546,6 +2683,19 @@ impl<'a> Checker<'a> {
         env: &TypeEnv,
         callee: &'b Expr,
     ) -> Option<(&'b Expr, Span)> {
+        self.target_owned_sugar_receiver(env, callee, "encode")
+    }
+
+    /// The receiver of a universal target-owned sugar call (`x.encode(Fmt)`,
+    /// `x.collect(Type)`), when the sugar applies. A receiver whose own type
+    /// carries the member keeps ordinary field-call semantics, matching the
+    /// closed-lookup rule.
+    pub(super) fn target_owned_sugar_receiver<'b>(
+        &mut self,
+        env: &TypeEnv,
+        callee: &'b Expr,
+        member: &str,
+    ) -> Option<(&'b Expr, Span)> {
         let ExprKind::FieldAccess {
             receiver,
             field,
@@ -2555,7 +2705,7 @@ impl<'a> Checker<'a> {
         else {
             return None;
         };
-        if field != "encode" {
+        if field != member {
             return None;
         }
 
@@ -2564,7 +2714,7 @@ impl<'a> Checker<'a> {
         }
 
         // Probe without leaking the field-sugar decision into the actual
-        // inference pass. A record with an `encode` field keeps ordinary lookup;
+        // inference pass. A record with a matching field keeps ordinary lookup;
         // an unconstrained or non-record receiver still gets the universal sugar.
         let resolved = self.probe_receiver_type(env, receiver);
         if receiver_type_carries_member(&resolved, field) {
@@ -2741,6 +2891,61 @@ impl<'a> Checker<'a> {
                     "not a format type carrying an `encode` implementation",
                 ))
                 .with_note(format!("use a format type such as {hint}")),
+        );
+    }
+
+    fn report_collect_missing_target(&mut self, field_span: Span) {
+        let hint = self.format_member_hint("collect");
+        self.diagnostics.push(
+            Diagnostic::error("`value.collect` needs a target type as its first argument")
+                .with_code(codes::ty::COLLECT_TARGET)
+                .with_label(Label::primary(
+                    field_span,
+                    "missing the type to collect into",
+                ))
+                .with_note(format!(
+                    "pass a collectible type as the first argument, such as {hint}"
+                )),
+        );
+    }
+
+    fn report_collect_invalid_target(&mut self, target: &Expr) {
+        let hint = self.format_member_hint("collect");
+        self.diagnostics.push(
+            Diagnostic::error("the first argument to `value.collect` must be a collectible type")
+                .with_code(codes::ty::COLLECT_TARGET)
+                .with_label(Label::primary(
+                    target.span,
+                    "not a type carrying a `collect` implementation",
+                ))
+                .with_note(format!("use a collectible type such as {hint}")),
+        );
+    }
+
+    fn report_collect_source(&mut self, source: &Expr, found: &Type) {
+        let found = found.render();
+        self.diagnostics.push(
+            Diagnostic::error("`collect` needs a collection to collect from")
+                .with_code(codes::ty::COLLECT_SOURCE)
+                .with_label(Label::primary(
+                    source.span,
+                    format!("this is `{found}`, which holds no elements to collect"),
+                ))
+                .with_note("collect from a `Stream`, an `Array`, or a `Set`"),
+        );
+    }
+
+    fn report_redundant_collect(&mut self, target_name: &str, field_span: Span) {
+        self.diagnostics.push(
+            Diagnostic::warning(format!("collecting `{target_name}` into `{target_name}`"))
+                .with_code(codes::ty::REDUNDANT_COLLECT)
+                .with_label(Label::primary(
+                    field_span,
+                    "this yields a value equal to the one being collected",
+                ))
+                .with_note(format!(
+                    "delete this `collect` call, or name the type you meant to collect into — `{target_name}` is what the value already is"
+                )),
         );
     }
 

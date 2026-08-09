@@ -267,7 +267,9 @@ pub(crate) fn aven_value_type_name(value: &Value) -> &'static str {
         | Value::ArrayFlatMapMethod(_)
         | Value::ArrayFoldMethod(_) => "Function",
         Value::Closure(_) => "Function",
-        Value::Native(_) | Value::RangeConstructor { .. } => "Native",
+        Value::Native(_) | Value::RangeConstructor { .. } | Value::CollectConstructor(_) => {
+            "Native"
+        }
         Value::Type(_) => "Type",
         Value::Undefined => "Undefined",
         Value::Null => "Null",

@@ -5338,7 +5338,7 @@ fn incompatible_and_unknown_applied_type_statics_are_actionable() {
     assert_eq!(diagnostic.labels[0].span, nth_span(source, "rang", 0));
     assert_eq!(
         diagnostic.notes,
-        ["use one of the statics on `Array`: range, rangeInclusive"]
+        ["use one of the statics on `Array`: collect, range, rangeInclusive"]
     );
     assert!(!has_diagnostic_code(
         &checked.diagnostics,

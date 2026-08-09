@@ -447,6 +447,14 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "The left operand of `??` has a type that cannot be `null` or `undefined`, so the fallback expression is dead code. Remove the `??` fallback, or give the left operand an optional/nullable type when emptiness is intended.",
     },
     DiagnosticExplanation {
+        code: codes::ty::COLLECT_SOURCE,
+        text: "A `collect` call was given something that is not a collection to collect from. Pass a `Stream`, `Array`, or `Set` as the value being collected.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::COLLECT_TARGET,
+        text: "A `value.collect(...)` call is missing its target argument or was given a first argument that is not a collectible type. Pass a collectible type such as `Array` or `Set` as the first argument so it can supply the collection.",
+    },
+    DiagnosticExplanation {
         code: codes::ty::CYCLIC_ALIAS,
         text: "A transparent type alias eventually refers back to itself without passing through a type constructor. Wrap one member in a record or variant to make the recursion well-founded, or remove the alias.",
     },
@@ -533,6 +541,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     DiagnosticExplanation {
         code: codes::ty::RECORD_INDEX_NOT_COMPTIME,
         text: "Record fields are selected with a comptime-known string. Use a literal or comptime key, or use a Map when the key is chosen at runtime.",
+    },
+    DiagnosticExplanation {
+        code: codes::ty::REDUNDANT_COLLECT,
+        text: "A value was collected into the type it already has, so the call yields a value equal to its receiver and accomplishes nothing. Delete the `collect` call, or name the type you meant to collect into.",
     },
     DiagnosticExplanation {
         code: codes::ty::REGEX_LITERAL_UNSUPPORTED,

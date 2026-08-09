@@ -128,6 +128,19 @@ impl<'a> Checker<'a> {
             return;
         }
 
+        // `source.collect(Target)` and `Target.collect(source)` are two
+        // spellings of one target-owned rule. Route both through it: the sugar
+        // form would otherwise be read as a missing method on the source, and
+        // the static form would be checked against the declared `Stream`
+        // parameter rather than the widened set of collection sources.
+        if let Some((_, source, _, _)) = self.collect_call_parts(&env, callee, args) {
+            if let Some(source) = source {
+                self.check_value_expr(source);
+            }
+            let _ = self.infer_collect_call(&env, callee, args);
+            return;
+        }
+
         // `text.decode(Fmt, ...)` is format sugar, not a Text method field. Route
         // through the desugar before field-access checking would report missing
         // `decode` on Text (which now has a real method table).

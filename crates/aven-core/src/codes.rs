@@ -146,6 +146,8 @@ pub mod test {
 pub mod ty {
     pub const BRACKET_TYPE_APPLICATION: &str = "type.bracket-type-application";
     pub const COALESCE_NEVER_EMPTY: &str = "type.coalesce-never-empty";
+    pub const COLLECT_SOURCE: &str = "type.collect-source";
+    pub const COLLECT_TARGET: &str = "type.collect-target";
     pub const CYCLIC_ALIAS: &str = "type.cyclic-alias";
     pub const DECODE_FORMAT: &str = "type.decode-format";
     pub const DELETE_ABSENT_FIELD: &str = "type.delete-absent-field";
@@ -167,6 +169,7 @@ pub mod ty {
     pub const PROPAGATE_NEEDS_RESULT: &str = "type.propagate-needs-result";
     pub const PROPAGATE_NOT_RESULT: &str = "type.propagate-not-result";
     pub const RECORD_INDEX_NOT_COMPTIME: &str = "type.record-index-not-comptime";
+    pub const REDUNDANT_COLLECT: &str = "type.redundant-collect";
     pub const REGEX_LITERAL_UNSUPPORTED: &str = "type.regex-literal-unsupported";
     pub const RENAME_ABSENT_FIELD: &str = "type.rename-absent-field";
     pub const REPLACE_ABSENT_FIELD: &str = "type.replace-absent-field";
@@ -301,6 +304,8 @@ pub const ALL: &[&str] = &[
     test::NOT_CALLABLE,
     ty::BRACKET_TYPE_APPLICATION,
     ty::COALESCE_NEVER_EMPTY,
+    ty::COLLECT_SOURCE,
+    ty::COLLECT_TARGET,
     ty::CYCLIC_ALIAS,
     ty::DECODE_FORMAT,
     ty::DELETE_ABSENT_FIELD,
@@ -323,6 +328,7 @@ pub const ALL: &[&str] = &[
     ty::PROPAGATE_NEEDS_RESULT,
     ty::PROPAGATE_NOT_RESULT,
     ty::RECORD_INDEX_NOT_COMPTIME,
+    ty::REDUNDANT_COLLECT,
     ty::REGEX_LITERAL_UNSUPPORTED,
     ty::RENAME_ABSENT_FIELD,
     ty::REPLACE_ABSENT_FIELD,

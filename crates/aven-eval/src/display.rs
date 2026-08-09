@@ -249,6 +249,7 @@ fn write_to_text(
         | Value::Closure(_)
         | Value::Native(_)
         | Value::RangeConstructor { .. }
+        | Value::CollectConstructor(_)
         | Value::Type(_) => write_repr(out, value),
     }
     Ok(())
@@ -390,7 +391,9 @@ fn write_repr(out: &mut String, value: &Value) {
         }
         Value::Closure(_) => out.push_str("<function>"),
         Value::Native(_) => out.push_str("<native>"),
-        Value::RangeConstructor { .. } => out.push_str("<native>"),
+        Value::RangeConstructor { .. } | Value::CollectConstructor(_) => {
+            out.push_str("<native>");
+        }
         Value::Type(ty) => {
             let _ = write!(out, "{ty}");
         }
