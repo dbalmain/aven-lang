@@ -2923,7 +2923,7 @@ impl<'a> Checker<'a> {
     }
 
     fn report_collect_source(&mut self, source: &Expr, found: &Type) {
-        let found = found.render();
+        let found = crate::ty::display_inferred_type(found).render();
         self.diagnostics.push(
             Diagnostic::error("`collect` needs a collection to collect from")
                 .with_code(codes::ty::COLLECT_SOURCE)
