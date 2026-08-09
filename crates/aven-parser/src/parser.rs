@@ -1273,7 +1273,16 @@ impl Parser<'_> {
     fn parse_postfix(&mut self) -> Expr {
         let mut expr = self.parse_atom();
 
+        // Indents opened by leading-`.` continuation lines, owed back as
+        // `Dedent`s once the chain ends.
+        let mut continuation_depth = 0usize;
+
         loop {
+            if let Some(opened) = self.consume_chain_continuation(continuation_depth > 0) {
+                continuation_depth += opened;
+                continue;
+            }
+
             if self.current_is(TokenKind::OpenParen) {
                 expr = self.finish_call(expr);
                 continue;
@@ -1334,7 +1343,76 @@ impl Parser<'_> {
             break;
         }
 
+        self.close_chain_continuation(continuation_depth);
+
         expr
+    }
+
+    /// A line beginning with `.` continues the expression on the line above,
+    /// which is what makes a long method chain readable:
+    ///
+    /// ```text
+    /// names = people
+    ///   .filter((p) => p.active)
+    ///   .map((p) => p.name)
+    /// ```
+    ///
+    /// The continuation must be indented further than the line that starts the
+    /// expression, which is what separates it from receiver focus: a leading
+    /// `.` at the statement's own indentation opens a new statement against the
+    /// hidden receiver, and joining those silently would let a chain swallow
+    /// the statement below it. Once a chain is open, its later lines sit at the
+    /// depth already established and need no further indent.
+    ///
+    /// Returns the number of `Indent`s consumed, or `None` when the cursor is
+    /// not at a continuation.
+    fn consume_chain_continuation(&mut self, chain_open: bool) -> Option<usize> {
+        if !self.current_is(TokenKind::Newline) {
+            return None;
+        }
+
+        let mut index = self.cursor;
+        let mut opened = 0usize;
+        while self.tokens.get(index).is_some_and(|token| {
+            token.kind == TokenKind::Newline || token.kind == TokenKind::Indent
+        }) {
+            if self.tokens[index].kind == TokenKind::Indent {
+                opened += 1;
+            }
+            index += 1;
+        }
+
+        if opened == 0 && !chain_open {
+            return None;
+        }
+
+        if !self
+            .tokens
+            .get(index)
+            .is_some_and(|token| token.is_operator("."))
+        {
+            return None;
+        }
+
+        self.cursor = index;
+        Some(opened)
+    }
+
+    /// Gives back the `Indent`s a chain's continuation lines consumed. Leaving
+    /// the cursor just past the matching `Dedent` marks an item boundary, so
+    /// the statement after the chain is read as a statement of its own.
+    fn close_chain_continuation(&mut self, depth: usize) {
+        for _ in 0..depth {
+            while self.current_is(TokenKind::Newline) {
+                self.advance();
+            }
+
+            if !self.current_is(TokenKind::Dedent) {
+                return;
+            }
+
+            self.advance();
+        }
     }
 
     fn finish_index(&mut self, callee: Expr, null_safe: bool) -> Expr {
@@ -5593,6 +5671,70 @@ mod tests {
             panic!("expected a call");
         };
         assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn an_indented_leading_dot_continues_the_expression_above() {
+        let output = parse_module(concat!(
+            "names = people\n",
+            "  .filter(active)\n",
+            "  .map(name)\n",
+            "next = 7\n",
+        ));
+
+        assert_eq!(diagnostic_codes(&output), Vec::<&str>::new());
+        assert_eq!(output.module.items.len(), 2);
+
+        // The chain is one expression: `people.filter(active).map(name)`.
+        let ExprKind::Call { callee, .. } = binding_value(&output, 0) else {
+            panic!("expected the outer call");
+        };
+        let ExprKind::FieldAccess {
+            receiver, field, ..
+        } = &callee.kind
+        else {
+            panic!("expected a field access");
+        };
+        assert_eq!(field, "map");
+        assert!(matches!(receiver.kind, ExprKind::Call { .. }));
+        assert!(matches!(binding_value(&output, 1), ExprKind::Literal(_)));
+    }
+
+    #[test]
+    fn a_leading_dot_at_the_statements_own_indentation_starts_a_statement() {
+        // Receiver focus already spells a statement this way, so joining it to
+        // the line above would change what a program means and would let a
+        // chain swallow the binding after it. The indentation is the only thing
+        // that separates the two readings.
+        let output = parse_module(concat!(
+            "names = people\n",
+            ".filter(active)\n",
+            "next = 7\n",
+        ));
+
+        assert_eq!(diagnostic_codes(&output), Vec::<&str>::new());
+        assert_eq!(output.module.items.len(), 3);
+        assert!(matches!(binding_value(&output, 0), ExprKind::Name(_)));
+    }
+
+    #[test]
+    fn a_chain_continuation_gives_back_its_indent_inside_a_block() {
+        let output = parse_module(concat!(
+            "f = () =>\n",
+            "  rows = people\n",
+            "    .filter(active)\n",
+            "  rows\n",
+        ));
+
+        assert_eq!(diagnostic_codes(&output), Vec::<&str>::new());
+
+        let ExprKind::Lambda { body, .. } = binding_value(&output, 0) else {
+            panic!("expected a lambda");
+        };
+        let ExprKind::Block(items) = &body.kind else {
+            panic!("expected a block body");
+        };
+        assert_eq!(items.len(), 2);
     }
 
     fn operator_fixities<const N: usize>(

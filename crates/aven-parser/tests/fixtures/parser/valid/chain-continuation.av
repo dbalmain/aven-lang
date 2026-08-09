@@ -1,0 +1,43 @@
+# A line beginning with `.` continues the expression on the line above, as long
+# as it is indented further than the line that starts the expression. These
+# shapes are taken from real programs.
+
+abbreviate = (phrase: Text): Text =>
+  words = phrase.splitOn(" ")
+  letters = words
+    .filter((w) => w.length() > 0)
+    .map((w) => w[0]?.toUpper() ?? "")
+  letters.fold("", (acc, c) => acc + c)
+
+# The statement after a chain is still a statement of its own, at either the
+# chain's starting indentation or further out.
+regroup = (groups: Array(Int), pairs: Int): Array(Int) =>
+  rest = groups.filter((g) => g != 5 && g != 3)
+  combined = rest
+    .concat([pairs])
+    .concat([pairs * 2])
+  combined.length()
+
+# Chains nested inside wrapped call arguments, each giving its indentation back.
+initials = (phrase: Text): Array(Text) =>
+  phrase
+    .splitOn("-")
+    .map((part) =>
+      part.splitOn(" ")
+        .map((word) =>
+          word.chars()
+            .filter((c) => c >= "a")
+            .first()
+        )
+        .filter((c) => c != undefined)
+    )
+    .flatten()
+
+# A chain may step further in on a later line, and closes every level it opened.
+staggered = [1, 2, 3]
+  .map((x) => x + 1)
+      .filter((x) => x > 2)
+
+after = 7
+
+{ abbreviate, regroup, initials, staggered, after }
