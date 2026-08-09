@@ -560,6 +560,34 @@ fn collect_union_annotation_entries(expr: &Expr, entries: &mut Vec<RecordEntry>)
     }
 }
 
+/// Whether a `|` chain reads as set union rather than a type-level union.
+/// The operator is deliberately dual — `"r" | "w"` and `@Red | @Green` build
+/// literal and variant unions — so a set literal somewhere in the chain is what
+/// picks the value reading: `@{1, 2} | 3` unions a set with the promoted
+/// singleton `@{3}`, while a chain of bare operands stays a type.
+fn is_set_union_value_expr(expr: &Expr) -> bool {
+    let ExprKind::Binary { operator, .. } = &ungroup_expr(expr).kind else {
+        return false;
+    };
+
+    operator == "|" && set_union_chain_has_set_literal(expr)
+}
+
+fn set_union_chain_has_set_literal(expr: &Expr) -> bool {
+    match &ungroup_expr(expr).kind {
+        ExprKind::Set(_) => true,
+        ExprKind::Binary {
+            left,
+            operator,
+            right,
+            ..
+        } if operator == "|" => {
+            set_union_chain_has_set_literal(left) || set_union_chain_has_set_literal(right)
+        }
+        _ => false,
+    }
+}
+
 fn value_set_union_parts(expr: &Expr) -> Option<Vec<SetUnionPart<'_>>> {
     let mut parts = Vec::new();
     collect_value_set_union_parts(expr, &mut parts)?;

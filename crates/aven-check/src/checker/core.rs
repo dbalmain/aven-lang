@@ -1892,6 +1892,7 @@ impl<'a> Checker<'a> {
             ExprKind::Name(_) => false,
             _ if Self::literal_or_tag_value_shape(value) => false,
             _ if Self::literal_operation_value_shape(value) => false,
+            _ if is_set_union_value_expr(value) => false,
             // `pick`/`omit` are runtime builtins (they also reify in type
             // position). A direct call is a value computation even when its
             // subject is a type record — not a pure type artifact.

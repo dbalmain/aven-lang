@@ -7236,6 +7236,73 @@ fn infer_value_pipe_union_like_set_literals() {
     assert!(checker.diagnostics.is_empty());
 }
 
+/// `|` is dual: set union on values, literal/variant union on types. A set
+/// literal anywhere in the chain picks the value reading, so a bare operand on
+/// either side promotes to a singleton and the binding holds a runtime set —
+/// while a chain of bare operands stays a compile-time union. Both readings are
+/// asserted together so a later change cannot fix one by breaking the other.
+#[test]
+fn set_union_values_lift_while_bare_unions_stay_types() {
+    let output = parse_module(
+        "spliced = @{1, 2} | @{3, 4}\n\
+         promoted_right = @{1, 2} | 3\n\
+         promoted_left = 3 | @{1, 2}\n\
+         right_literal = @{1, 2, 3}\n\
+         left_literal = @{3, 1, 2}\n\
+         spliced_literal = @{1, 2, 3, 4}\n\
+         Mode = \"r\" | \"w\"\n\
+         mode: Mode = \"w\"\n\
+         Colour = @Red | @Green\n\
+         colour: Colour = @Green\n",
+    );
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+
+    assert_eq!(
+        render_top_level_value(&mut checker, "promoted_right"),
+        render_top_level_value(&mut checker, "right_literal")
+    );
+    assert_eq!(
+        render_top_level_value(&mut checker, "promoted_left"),
+        render_top_level_value(&mut checker, "left_literal")
+    );
+    assert_eq!(
+        render_top_level_value(&mut checker, "spliced"),
+        render_top_level_value(&mut checker, "spliced_literal")
+    );
+    assert!(checker.diagnostics.is_empty());
+}
+
+#[test]
+fn set_union_operands_check_against_the_annotated_element_type() {
+    let output = parse_module("members: Set(Int) = @{1, 2} | \"x\"\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn bare_union_members_still_check_by_literal_membership() {
+    let output = parse_module("Mode = \"r\" | \"w\"\nmode: Mode = \"x\"\n");
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+}
+
 #[test]
 fn optional_spread_patch_fields_preserve_base_shape() {
     let output = parse_module(

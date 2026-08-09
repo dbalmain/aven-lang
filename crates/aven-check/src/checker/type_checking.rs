@@ -258,6 +258,18 @@ impl<'a> Checker<'a> {
                 self.report_value_record_markers(entries);
                 self.check_collection_entries_against(expected, &element_types[0], entries, false);
             }
+            (
+                ExprKind::Binary { .. },
+                Type::Apply {
+                    callee,
+                    args: element_types,
+                },
+            ) if callee.is_builtin(BuiltinType::Set)
+                && element_types.len() == 1
+                && is_set_union_value_expr(value) =>
+            {
+                self.check_set_union_against(&element_types[0], value);
+            }
             _ => {
                 self.check_value_expr(value);
                 let env = self.local_types.inference_env();
@@ -918,6 +930,28 @@ impl<'a> Checker<'a> {
     /// Check array/set-literal entries against an expected collection type:
     /// elements against the element type, spread subjects against the whole
     /// collection type. Other entry kinds fall back to walking values.
+    /// Check a `|` set union against an annotated `Set(T)`. Every element of a
+    /// set operand, and every bare operand promoted to a singleton, is one
+    /// member of the result, so each checks against `T`. An operand whose type
+    /// is only known by inference (a name, a call) splices or promotes
+    /// depending on that type, so it is left to inference rather than guessed
+    /// at here.
+    fn check_set_union_against(&mut self, element_type: &Type, value: &Expr) {
+        self.check_value_expr(value);
+        let Some(parts) = value_set_union_parts(value) else {
+            return;
+        };
+
+        for part in parts {
+            let expr = part.expr();
+            if part.promotes_singleton() || Self::literal_or_tag_value_shape(expr) {
+                let diagnostics_start = self.diagnostics.len();
+                self.check_value_against(element_type, expr);
+                self.deduplicate_diagnostics_since(diagnostics_start);
+            }
+        }
+    }
+
     fn check_collection_entries_against(
         &mut self,
         expected: &Type,
