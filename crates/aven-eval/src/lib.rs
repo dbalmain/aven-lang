@@ -6267,6 +6267,13 @@ fn ensure_set_element(element: &Value, context: &str) -> Result<(), String> {
     }
 }
 
+/// Whether `value` may participate in structural equality (Map keys, Set
+/// elements, nested `==`).
+///
+/// Parallel to `type_contains_function` in `aven-check` for the function case:
+/// containers are non-comparable when any nested position is. The helpers live
+/// in different crates (`Value` vs `Type`) and cannot share one walk cleanly —
+/// keep the structural arms in obvious correspondence when either changes.
 fn value_is_comparable(value: &Value) -> bool {
     match value {
         Value::Closure(_)
