@@ -4,9 +4,9 @@ use aven_core::{BuiltinType, Span};
 
 use crate::ty::{
     LiteralBase, MethodPredicate, RecursiveTypeId, Row, RowEntry, RowMergeConstraint,
-    RowMergeSource, RowTail, Type, TypeScheme, free_row_vars, literal_variant_base, map_type,
-    map_type_with_rows, number_literal_row_fits_named, open_literal_variant_base,
-    render_literal_value, type_contains_meta,
+    RowMergeSource, RowTail, Type, TypeScheme, free_row_vars, literal_row_contains_float,
+    literal_variant_base, map_type, map_type_with_rows, number_literal_row_fits_named,
+    open_literal_variant_base, render_literal_value, type_contains_meta,
 };
 
 #[derive(Debug, Default)]
@@ -294,9 +294,19 @@ impl Unifier {
         let right = self.resolve_row(right);
         if let (Some(left_base), Some(right_base)) =
             (literal_variant_base(&left), literal_variant_base(&right))
-            && left_base != right_base
         {
-            return Err(());
+            if left_base != right_base {
+                return Err(());
+            }
+            // Int-form and float-form number rows share LiteralBase::Number, but
+            // float must not join an int-only open union (and undirected unify
+            // cannot widen int→float here without also allowing the reverse).
+            // Directed checking accepts int-form into float-capable rows.
+            if left_base == LiteralBase::Number
+                && literal_row_contains_float(&left) != literal_row_contains_float(&right)
+            {
+                return Err(());
+            }
         }
         let mut right_entries = right.entries;
         let mut left_only = Vec::new();
@@ -1005,6 +1015,25 @@ mod tests {
 
         assert_eq!(unifier.unify(&left, &right), Err(()));
         assert_eq!(unifier.resolve(&left), left);
+    }
+
+    #[test]
+    fn variant_unification_rejects_int_only_with_float_form_number_rows() {
+        let mut unifier = Unifier::default();
+        let left_tail = unifier.fresh_row_var();
+        let right_tail = unifier.fresh_row_var();
+        let int_only = Type::Variant(Row {
+            entries: vec![literal_number("1")],
+            tail: RowTail::Var(left_tail),
+        });
+        let float_form = Type::Variant(Row {
+            entries: vec![literal_number("1.0")],
+            tail: RowTail::Var(right_tail),
+        });
+
+        assert_eq!(unifier.unify(&int_only, &float_form), Err(()));
+        assert_eq!(unifier.resolve(&int_only), int_only);
+        assert_eq!(unifier.resolve(&float_form), float_form);
     }
 
     #[test]

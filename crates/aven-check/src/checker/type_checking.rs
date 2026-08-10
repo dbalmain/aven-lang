@@ -1605,6 +1605,20 @@ impl<'a> Checker<'a> {
                 return;
             };
 
+            // Int-only number rows reject float-form members even when open —
+            // the open tail admits further *int* keys, not Float.
+            if number_literal_row_is_int_only(&expected)
+                && actual_literals.iter().any(|literal| {
+                    matches!(
+                        literal,
+                        Literal::Number(number) if number_literal_text_is_float(number)
+                    )
+                })
+            {
+                self.report_type_mismatch_between_types("Int", "Float", span);
+                return;
+            }
+
             for literal in actual_literals {
                 if expected.tail == RowTail::Closed && !expected_literals.contains(&literal) {
                     self.report_literal_not_in_union(literal, &expected_literals, span);
@@ -1763,6 +1777,15 @@ impl<'a> Checker<'a> {
             });
         if base_mismatch {
             self.report_literal_not_in_union(literal, &literals, span);
+            return;
+        }
+
+        // Number form is part of open-union membership: float-form must not join
+        // an int-only row (`1 | ..`). Int-form may join a float-capable row.
+        if literal_variant_base(&row) == Some(LiteralBase::Number)
+            && !number_literal_joins_number_row(literal, &row)
+        {
+            self.report_type_mismatch_between_types("Int", "Float", span);
             return;
         }
 
