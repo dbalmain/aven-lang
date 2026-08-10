@@ -1145,11 +1145,6 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            (Type::Tuple(expected), Type::Named(actual))
-                if actual == "Unit" && !expected.is_empty() =>
-            {
-                self.report_tuple_arity_mismatch(expected.len(), 0, span);
-            }
             (
                 Type::Function {
                     params: expected_params,

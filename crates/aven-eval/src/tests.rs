@@ -1,7 +1,8 @@
 use super::{
     BuiltinMethodEnvironment, DEFAULT_STACK_SEGMENT_LIMIT, Environment, EvalModuleOptions,
-    EvalOutcome, ModuleImports, RuntimeType, STACK_SEGMENT_SIZE, Stream, Value, display_text,
-    eval_expr, eval_module, eval_module_with_options, logging, record_field_value, repr_text,
+    EvalOutcome, ModuleImports, RuntimeType, RuntimeTypeDescriptor, STACK_SEGMENT_SIZE, Stream,
+    Value, display_text, eval_expr, eval_module, eval_module_with_options, logging,
+    record_field_value, repr_text,
 };
 use aven_core::{Int, codes};
 use aven_parser::{
@@ -3609,6 +3610,13 @@ fn reports_field_access_on_non_record() {
 fn primitive_type_name_evaluates_to_type_value() {
     assert_module_value("Text\n", Value::named_type("Text"));
     assert_eq!(format!("{}", Value::named_type("Text")), "Text");
+}
+
+#[test]
+fn unit_type_name_evaluates_to_empty_tuple_type() {
+    let unit_type = Value::Type(RuntimeType::new(RuntimeTypeDescriptor::Tuple(Vec::new())));
+    assert_module_value("Unit\n", unit_type.clone());
+    assert_eq!(format!("{unit_type}"), "()");
 }
 
 #[test]

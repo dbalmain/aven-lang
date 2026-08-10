@@ -1555,7 +1555,10 @@ pub(crate) fn type_variable_names(ty: &Type) -> HashSet<String> {
 }
 
 pub(crate) fn named_builtin(name: &str) -> Type {
-    Type::Named(name.to_owned())
+    match BuiltinType::from_name(name) {
+        Some(BuiltinType::Unit) => Type::Tuple(Vec::new()),
+        _ => Type::Named(name.to_owned()),
+    }
 }
 
 pub(crate) fn literal_variant_base(row: &Row) -> Option<LiteralBase> {
@@ -1658,7 +1661,12 @@ pub mod build {
     }
 
     pub fn builtin(builtin: BuiltinType) -> Type {
-        named(builtin.name())
+        match builtin {
+            // `Unit` is the empty tuple by construction — the same type `()`
+            // denotes and a unit expression inhabits.
+            BuiltinType::Unit => unit(),
+            other => named(other.name()),
+        }
     }
 
     /// A named type variable, used by generic host/global signatures.
@@ -1695,14 +1703,12 @@ pub mod build {
         builtin(BuiltinType::Bool)
     }
 
-    /// `()` — the type of functions that return no meaningful value, and the
-    /// only type the unit value inhabits. This is the empty tuple, which is
-    /// what `()` denotes in type position and what a `()` expression infers.
+    /// `()` / `Unit` — the type of functions that return no meaningful value,
+    /// and the only type the unit value inhabits.
     ///
-    /// The named [`BuiltinType::Unit`] is a separate type: the checker has no
-    /// rule making `()` an alias for it, so nothing can produce a `Unit` and a
-    /// host that spelled its no-result positions that way could not be called
-    /// from a `(a) -> ()` position such as `Array.each`.
+    /// `Unit` is the ordinary name; `()` is the same type written in tuple
+    /// shape. Both lower to the empty tuple, so a host signature spelled
+    /// either way is interchangeable with a user annotation spelled the other.
     pub fn unit() -> Type {
         Type::Tuple(Vec::new())
     }
@@ -1876,15 +1882,11 @@ pub(crate) fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Opti
     match (expected, literal) {
         ("Bool", Literal::Bool(_)) => None,
         ("Text", Literal::String(_)) | ("Int" | "Float", Literal::Number(_)) => None,
-        ("Int" | "Float" | "Bool" | "Null" | "Undefined" | "Unit", Literal::String(_)) => {
+        ("Int" | "Float" | "Bool" | "Null" | "Undefined", Literal::String(_)) => {
             Some("text literal")
         }
-        ("Text" | "Bool" | "Null" | "Undefined" | "Unit", Literal::Number(_)) => {
-            Some("number literal")
-        }
-        ("Text" | "Int" | "Float" | "Null" | "Undefined" | "Unit", Literal::Bool(_)) => {
-            Some("bool literal")
-        }
+        ("Text" | "Bool" | "Null" | "Undefined", Literal::Number(_)) => Some("number literal"),
+        ("Text" | "Int" | "Float" | "Null" | "Undefined", Literal::Bool(_)) => Some("bool literal"),
         // Core scalars that accept the literal are handled above. Any other
         // named expectation rejects the literal (including host nominals like
         // `Data` / `Instant`). Callers should only surface this when `expected`

@@ -1580,12 +1580,23 @@ fn default_range_step(start: &Int, end: &Int) -> Int {
     }
 }
 
+fn intrinsic_type_value(builtin: BuiltinType) -> Value {
+    // `Unit` is the empty tuple type — the same type a `()` annotation denotes —
+    // so the runtime type value must reify to that shape, not a bare named type.
+    match builtin {
+        BuiltinType::Unit => {
+            Value::Type(RuntimeType::new(RuntimeTypeDescriptor::Tuple(Vec::new())))
+        }
+        other => Value::named_type(other.name()),
+    }
+}
+
 fn intrinsics() -> Vec<(String, Value)> {
     let mut intrinsics: Vec<(String, Value)> = BuiltinType::ALL
         .iter()
         .copied()
         .filter(|builtin| builtin.has_runtime_value())
-        .map(|builtin| (builtin.name().to_owned(), Value::named_type(builtin.name())))
+        .map(|builtin| (builtin.name().to_owned(), intrinsic_type_value(builtin)))
         .collect();
 
     intrinsics.push((

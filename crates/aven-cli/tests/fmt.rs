@@ -1151,12 +1151,21 @@ fn run_bare_write_returns_unit_while_handle_write_returns_result() {
 /// same `()`. It is exercised on both collections, and through `check` as well
 /// as `run` — `run` never consulted the type, so a checker-only regression here
 /// would otherwise still print the right thing.
+///
+/// The annotated twin spells the callback result `Unit`; that is the
+/// cross-spelling case that matters most, because std declares `each` with
+/// `()` while user prose reaches for `Unit`.
 #[test]
 fn each_over_write_line_checks_and_runs_for_array_and_set() {
     for (label, source, expected) in [
         (
             "array-each-write-line",
             "[1, 2].each((x) => writeLine(\"${x}\"))\n",
+            "1\n2\n",
+        ),
+        (
+            "array-each-write-line-unit-annotation",
+            "[1, 2].each((x: Int): Unit => writeLine(\"${x}\"))\n",
             "1\n2\n",
         ),
         (

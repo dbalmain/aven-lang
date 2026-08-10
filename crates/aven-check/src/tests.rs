@@ -6441,28 +6441,75 @@ fn stream_methods_and_array_spread_preserve_element_types() {
     );
 }
 
-/// [`build::unit`] is the vocabulary a host reaches for when a binding returns
-/// no meaningful value, so it must be the very type a `()` expression has —
-/// otherwise the host's writers are uncallable from every `(a) -> ()` position
-/// in the standard library, `Array.each` and `Set.each` among them.
-///
-/// The named `Unit` builtin is a *different* type: no expression produces one,
-/// so it can only ever appear on the expected side of a mismatch. This pins the
-/// two apart so `build::unit` cannot quietly become the unusable one.
+/// `Unit` is the ordinary name of the empty tuple. The host builder, a `()`
+/// expression, a `Unit` annotation, and a `()` annotation are one type by
+/// construction — not two types reconciled by a unification rule.
 #[test]
-fn unit_builder_is_the_type_of_the_unit_expression_not_the_named_builtin() {
+fn unit_is_the_empty_tuple_by_construction() {
     let host = HostGlobals::default();
     let inferred = checked_binding_type("value = ()\n", "value", &host);
 
-    assert_eq!(inferred, build::unit(), "`()` has the type hosts spell");
+    assert_eq!(inferred, build::unit());
+    assert_eq!(inferred, build::builtin(aven_core::BuiltinType::Unit));
     assert_eq!(inferred.render(), "()");
 
-    let named = build::builtin(aven_core::BuiltinType::Unit);
-    assert_ne!(
-        build::unit(),
-        named,
-        "the named `Unit` is a separate type from `()`"
-    );
+    for source in ["value : Unit = ()\n", "value : () = ()\n"] {
+        let output = parse_module(source);
+        let checked = check_module_with_host_globals(&output.module, &host);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "unexpected diagnostics for {source:?}: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    // Cross-spelling function types: user `Unit` and host/std `()` are one type.
+    for source in [
+        "f : (Int) -> Unit = (n) => ()\n",
+        "f : (Int) -> () = (n) => ()\n",
+        "g : (Int) -> () = (n: Int): Unit => ()\n",
+        "g : (Int) -> Unit = (n: Int): () => ()\n",
+    ] {
+        let output = parse_module(source);
+        let checked = check_module_with_host_globals(&output.module, &host);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "unexpected diagnostics for {source:?}: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    // The alias is not vacuous: non-unit values still mismatch.
+    for source in ["value : Unit = \"hi\"\n", "value : Text = ()\n"] {
+        let output = parse_module(source);
+        let checked = check_module(&output.module);
+        assert!(
+            has_diagnostic_code(&checked.diagnostics, codes::ty::MISMATCH),
+            "{source} should still mismatch: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+/// Comptime type values written `Unit` reify to the empty tuple — the same
+/// type a `()` annotation lowers to — so a binding like `T = Unit` is usable
+/// as a unit annotation.
+#[test]
+fn unit_comptime_type_value_is_the_empty_tuple() {
+    let host = HostGlobals::default();
+    for source in [
+        "T = Unit\nvalue : T = ()\n",
+        "T = ()\nvalue : T = ()\n",
+        "T = Unit\nU = ()\nvalue : T = ()\nother : U = ()\n",
+    ] {
+        let output = parse_module(source);
+        let checked = check_module_with_host_globals(&output.module, &host);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "unexpected diagnostics for {source:?}: {:?}",
+            checked.diagnostics
+        );
+    }
 }
 
 /// `collect` is target-owned, so the target names the type built and the
@@ -11302,12 +11349,12 @@ fn overlapping_label_spread_merge_reports_only_duplicate_label() {
 #[test]
 fn optional_params_render_with_default_marker() {
     assert_eq!(
-        build::function_opt(vec![named("Text")], vec![named("Int")], named("Unit")).render(),
-        "(Text, Int = _) -> Unit"
+        build::function_opt(vec![named("Text")], vec![named("Int")], build::unit()).render(),
+        "(Text, Int = _) -> ()"
     );
     assert_eq!(
-        build::function_opt(vec![], vec![named("Int")], named("Unit")).render(),
-        "(Int = _) -> Unit"
+        build::function_opt(vec![], vec![named("Int")], build::unit()).render(),
+        "(Int = _) -> ()"
     );
 }
 
