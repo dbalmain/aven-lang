@@ -4,6 +4,28 @@ use super::annotations::call_callee_name;
 use super::method_sets::{builtin_method_signature, resolve_builtin_operator_signature};
 use super::*;
 
+/// Meta id to rebind when a free number join widens a collection element to
+/// `Float`. Prefer the element slot of `Array`/`Set`/`Stream` (spread path)
+/// over a top-level meta (element path).
+fn number_join_target_meta(target: &Type) -> Option<u32> {
+    match target {
+        Type::Meta(id) => Some(*id),
+        Type::Apply { callee, args }
+            if args.len() == 1
+                && matches!(
+                    callee.as_ref(),
+                    Type::Named(name) if matches!(name.as_str(), "Array" | "Set" | "Stream")
+                ) =>
+        {
+            match &args[0] {
+                Type::Meta(id) => Some(*id),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Desugar `value |> f(args)` to `f(value, args)` for checking and inference.
 /// Keeping the written subexpressions preserves their source spans in call
 /// diagnostics and inferred-type output.
@@ -4284,7 +4306,7 @@ impl<'a> Checker<'a> {
                 } else {
                     collection_type.clone()
                 };
-                if self.unifier.unify(&expected, &source_type).is_err() {
+                if self.unify_or_number_join(&expected, &source_type).is_err() {
                     return Type::Deferred;
                 }
             }
@@ -4297,7 +4319,10 @@ impl<'a> Checker<'a> {
                     if is_set {
                         self.report_if_incomparable_set_element(&item_type, element.span);
                     }
-                    if self.unifier.unify(&element_type, &item_type).is_err() {
+                    if self
+                        .unify_or_number_join(&element_type, &item_type)
+                        .is_err()
+                    {
                         return Type::Deferred;
                     }
                 }
@@ -4309,6 +4334,80 @@ impl<'a> Checker<'a> {
         collection_type
     }
 
+    /// Free unify, or join mixed number forms to `Float` (recursing into
+    /// tuples / same-head applications so Map value columns and nested arrays
+    /// take the same path as bare `[0, 0.5, 1]`).
+    ///
+    /// Free unify rejects int-form ↔ float-form so directed Map-key checks still
+    /// run when unify fails (`Map.from([(1, …)]).set(1.0, …)`). Collection join
+    /// needs the opposite: Int → Float widening, not undirected equality.
+    pub(super) fn unify_or_number_join(&mut self, target: &Type, item: &Type) -> Result<(), ()> {
+        if self.unifier.unify(target, item).is_ok() {
+            return Ok(());
+        }
+
+        let left = self.unifier.resolve(target);
+        let right = self.unifier.resolve(item);
+        if number_types_join_to_float(&left, &right, |id| {
+            self.unifier.is_numeric_meta(&Type::Meta(id))
+        }) {
+            return self.rebind_join_target(target, named_builtin("Float"));
+        }
+
+        match (&left, &right) {
+            (Type::Tuple(left_parts), Type::Tuple(right_parts))
+                if left_parts.len() == right_parts.len() =>
+            {
+                let mut joined = Vec::with_capacity(left_parts.len());
+                for (left_part, right_part) in left_parts.iter().zip(right_parts) {
+                    let cell = self.unifier.fresh();
+                    self.unify_or_number_join(&cell, left_part)?;
+                    self.unify_or_number_join(&cell, right_part)?;
+                    joined.push(self.unifier.resolve(&cell));
+                }
+                self.rebind_join_target(target, Type::Tuple(joined))
+            }
+            (
+                Type::Apply {
+                    callee: left_callee,
+                    args: left_args,
+                },
+                Type::Apply {
+                    callee: right_callee,
+                    args: right_args,
+                },
+            ) if left_args.len() == right_args.len()
+                && self.unifier.resolve(left_callee) == self.unifier.resolve(right_callee) =>
+            {
+                let mut joined_args = Vec::with_capacity(left_args.len());
+                for (left_arg, right_arg) in left_args.iter().zip(right_args) {
+                    let cell = self.unifier.fresh();
+                    self.unify_or_number_join(&cell, left_arg)?;
+                    self.unify_or_number_join(&cell, right_arg)?;
+                    joined_args.push(self.unifier.resolve(&cell));
+                }
+                self.rebind_join_target(
+                    target,
+                    Type::Apply {
+                        callee: Box::new(self.unifier.resolve(left_callee)),
+                        args: joined_args,
+                    },
+                )
+            }
+            _ => Err(()),
+        }
+    }
+
+    /// Point `target` (a free meta, or the element meta of Array/Set/Stream) at
+    /// a ground join result. Used only after a successful free number join.
+    fn rebind_join_target(&mut self, target: &Type, ty: Type) -> Result<(), ()> {
+        if let Some(id) = number_join_target_meta(target) {
+            self.unifier.force_bind(id, ty);
+            return Ok(());
+        }
+        self.unifier.unify(target, &ty)
+    }
+
     pub(super) fn infer_set_union(&mut self, env: &TypeEnv, expr: &Expr) -> Type {
         let Some(parts) = value_set_union_parts(expr) else {
             return Type::Deferred;
@@ -4318,7 +4417,10 @@ impl<'a> Checker<'a> {
         for part in parts {
             let item_type = self.infer_set_union_part_type(env, part);
             self.report_if_incomparable_set_element(&item_type, part.expr().span);
-            if self.unifier.unify(&element_type, &item_type).is_err() {
+            if self
+                .unify_or_number_join(&element_type, &item_type)
+                .is_err()
+            {
                 return Type::Deferred;
             }
         }

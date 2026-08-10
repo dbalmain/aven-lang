@@ -2496,6 +2496,154 @@ fn open_int_literal_unions_still_reject_text_keys() {
     );
 }
 
+/// Free **join** of mixed int/float literals (no target type) widens to Float.
+/// Directed check against a fixed Int still rejects float-form. These two
+/// behaviours share number form but not the same seam — pin both directions
+/// exhaustively; each has regressed once.
+#[test]
+fn mixed_number_literal_collections_join_to_float() {
+    for (source, name, expected) in [
+        // Unannotated collections: join computes Float.
+        ("weights = [0, 0.5, 1]\n", "weights", "Array(Float)"),
+        ("a = [1, 1.0]\n", "a", "Array(Float)"),
+        ("a = [1.0, 1]\n", "a", "Array(Float)"),
+        ("a = [1, 2, 3.0]\n", "a", "Array(Float)"),
+        ("s = @{1, 1.0}\n", "s", "Set(Float)"),
+        ("s = @{1.0, 1}\n", "s", "Set(Float)"),
+        // Same join through pair elements (Map value column, nested arrays).
+        (
+            "pairs = [(1, 0), (2, 0.5)]\n",
+            "pairs",
+            "Array((1 | 2, Float))",
+        ),
+        (
+            "d = Map.from([(1, 0), (2, 0.5)])\n",
+            "d",
+            "Map(1 | 2, Float)",
+        ),
+        ("nested = [[1], [1.0]]\n", "nested", "Array(Array(Float))"),
+        ("s = @{1} | @{1.0}\n", "s", "Set(Float)"),
+        // Homogeneous number collections keep open literal unions (not Float).
+        ("a = [1, 2]\n", "a", "Array(1 | 2)"),
+        ("a = [1.0, 2.0]\n", "a", "Array(1.0 | 2.0)"),
+        ("s = @{1, 2}\n", "s", "Set(1 | 2)"),
+        // Annotated Float targets still accept int-form and mixed members.
+        ("a : Array(Float) = [1, 2]\n", "a", "Array(Float)"),
+        ("a : Array(Float) = [1, 1.0]\n", "a", "Array(Float)"),
+        ("a : Array(Float) = [1.0, 2.0]\n", "a", "Array(Float)"),
+        ("s : Set(Float) = @{1, 1.0}\n", "s", "Set(Float)"),
+        ("x : Float = 1\n", "x", "Float"),
+        (
+            "d = Map.from([(1, 0), (2, 0.5)])\nx : Map(Int, Float) = d\n",
+            "x",
+            "Map(Int, Float)",
+        ),
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should check cleanly: {:?}",
+            check.diagnostics
+        );
+        assert_eq!(
+            check.type_at(nth_span(source, name, 0)).map(Type::render),
+            Some(expected.to_owned()),
+            "{source} inferred type"
+        );
+    }
+}
+
+#[test]
+fn mixed_number_literal_directed_checks_still_reject_float_into_int() {
+    for source in [
+        "x : Int = 1.0\n",
+        "a : Array(Int) = [1, 2.0]\n",
+        "a : Array(Int) = [1.0]\n",
+        "s : Set(Int) = @{1, 1.0}\n",
+        "m = Map.from([(1, \"a\")])\nr = m.set(1.0, \"b\")\n",
+        "m = Map.from([(1, \"a\")])\nr = m.get(1.0)\n",
+        "m = Map.from([(1, \"a\")])\nf : Float = 1.0\nr = m.set(f, \"b\")\n",
+        "d = Map.from([(1, 0), (2, 0.5)])\nx : Map(Int, Int) = d\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+            "{source} should produce type.mismatch: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn mixed_number_map_keys_and_homogeneous_ops_stay_working() {
+    for source in [
+        "m = Map.from([(1, \"a\")])\nr = m.set(2, \"b\")\n",
+        "m = Map.from([(1.0, \"a\")])\nr = m.set(2.0, \"b\")\n",
+        "m = Map.from([(1.0, \"a\")])\nr = m.set(2, \"b\")\n",
+        "m = Map.from([(1.0, \"a\")])\nr = m.get(2)\n",
+        "a = [1, 2]\n",
+        "a = [1.0, 2.0]\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should remain accepted: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+/// Adjacent forms that do **not** go through collection free-join: tuples are
+/// heterogeneous positions; match arms union literal rows rather than widen to
+/// Named Float. Pin the measured shapes so a later "make everything Float"
+/// pass is deliberate.
+#[test]
+fn mixed_number_tuple_and_match_do_not_collapse_to_named_float() {
+    let tuple_source = "t = (1, 1.0)\n";
+    let tuple = check_module(&parse_module(tuple_source).module);
+    assert!(tuple.diagnostics.is_empty(), "{:?}", tuple.diagnostics);
+    assert_eq!(
+        tuple
+            .type_at(nth_span(tuple_source, "t", 0))
+            .map(Type::render),
+        Some("(1, 1.0)".to_owned())
+    );
+
+    let match_source = concat!(
+        "f = (x) =>\n",
+        "  x ?>\n",
+        "    0 => 1\n",
+        "    _ => 1.0\n",
+        "g = f(0)\n",
+        "asFloat : Float = g\n",
+        "asInt : Int = g\n",
+    );
+    let match_check = check_module(&parse_module(match_source).module);
+    assert_eq!(
+        match_check
+            .type_at(nth_span(match_source, "g", 0))
+            .map(Type::render),
+        Some("1 | 1.0".to_owned())
+    );
+    assert_eq!(
+        matching_codes(&match_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "match 1 | 1.0 into Int must fail; Float must pass: {:?}",
+        match_check.diagnostics
+    );
+    assert!(
+        match_check
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Int") && d.message.contains("Float")),
+        "expected Int/Float mismatch for asInt: {:?}",
+        match_check.diagnostics
+    );
+}
+
 #[test]
 fn lambda_application_results_are_inferred_for_identifier_values() {
     let mismatch = parse_module("f = (x) => x\nresult = f(\"hi\")\nvalue : Int = result\n");

@@ -284,6 +284,16 @@ impl Unifier {
         Ok(())
     }
 
+    /// Overwrite a metavariable's binding (used by free **join** of mixed number
+    /// literals: re-point an element meta from an int-only open row to `Float`).
+    /// Unlike [`Self::bind`], this replaces an existing binding and skips occurs
+    /// checks — callers must only pass a ground type such as Named `Float`.
+    pub(crate) fn force_bind(&mut self, id: u32, ty: Type) {
+        if let Some(slot) = self.substitution.get_mut(id as usize) {
+            *slot = Some(ty);
+        }
+    }
+
     fn unify_rows(
         &mut self,
         left: &Row,

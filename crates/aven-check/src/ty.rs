@@ -1916,6 +1916,54 @@ pub(crate) fn number_literal_joins_number_row(literal: &Literal, row: &Row) -> b
     }
 }
 
+/// Classification of a type for free **join** of mixed number literals.
+///
+/// Free unify rejects int-form ↔ float-form so directed Map-key checks still
+/// fire when unify fails. Collection join (arrays/sets, and the same path for
+/// Map value columns built from pair arrays) uses this instead: when one side
+/// is float-capable and the other is any number, the join is [`BuiltinType::Float`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberJoinSide {
+    /// Named `Int`, int-only open number row, or a numeric meta (defaults to Int).
+    IntOnly,
+    /// Named `Float` or a number row that already carries a float-form member.
+    FloatCapable,
+}
+
+fn number_join_side(ty: &Type, is_numeric_meta: impl Fn(u32) -> bool) -> Option<NumberJoinSide> {
+    match ty {
+        Type::Named(name) if name == "Int" => Some(NumberJoinSide::IntOnly),
+        Type::Named(name) if name == "Float" => Some(NumberJoinSide::FloatCapable),
+        Type::Variant(row) if literal_variant_base(row) == Some(LiteralBase::Number) => {
+            Some(if literal_row_contains_float(row) {
+                NumberJoinSide::FloatCapable
+            } else {
+                NumberJoinSide::IntOnly
+            })
+        }
+        Type::Meta(id) if is_numeric_meta(*id) => Some(NumberJoinSide::IntOnly),
+        _ => None,
+    }
+}
+
+/// True when free unify may fail on int/float form while a **join** should still
+/// produce `Float` (Int → Float widening). One side must be int-only and the
+/// other float-capable. Float → Int remains rejected by directed check sites
+/// that never call this.
+pub(crate) fn number_types_join_to_float(
+    left: &Type,
+    right: &Type,
+    is_numeric_meta: impl Fn(u32) -> bool,
+) -> bool {
+    match (
+        number_join_side(left, &is_numeric_meta),
+        number_join_side(right, &is_numeric_meta),
+    ) {
+        (Some(left), Some(right)) => left != right,
+        _ => false,
+    }
+}
+
 pub(crate) fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static str> {
     match (expected, literal) {
         ("Bool", Literal::Bool(_)) => None,
