@@ -283,7 +283,7 @@ Tasks:
   - spread binding
   - expression item
   - final expression
-- add diagnostics for non-final non-`Unit` expressions later when type checking
+- add diagnostics for non-final non-`()` expressions later when type checking
   exists
 
 Done when:
@@ -622,9 +622,9 @@ Decisions to lock before starting:
   rather than by hover. Revisit only if hover must show normalized/computed
   types rather than the author's written annotation.
 - builtin type set: M7 knows a fixed primitive set (`Int`, `Text`, `Bool`,
-  `Unit`, `Undefined`, ...) and nothing else. Records-as-types, variants/rows,
-  `[a]` application semantics, and comptime type computation stay deferred to
-  their milestones.
+  `Undefined`, ...) and nothing else. Records-as-types, variants/rows, `[a]`
+  application semantics, and comptime type computation stay deferred to their
+  milestones.
 
 Tasks:
 
@@ -1950,9 +1950,9 @@ the later bytecode/runtime work.
   premise (Zig-style, types as values). `aven-eval` adds one opaque
   `Value::Type` (a bare name; the real type IR stays in `aven-check`, no
   dependency added) and binds the atomic primitive type names (`Bool`, `Float`,
-  `Int`, `Null`, `Text`, `Undefined`, `Unit`) as intrinsics next to `keysOf`,
-  seeded before host globals so a user binding may shadow them. Record-as-type
-  reuses `Value::Record`, so `User = { name: Text }` evaluates to a record of
+  `Int`, `Null`, `Text`, `Undefined`) as intrinsics next to `keysOf`, seeded
+  before host globals so a user binding may shadow them. Record-as-type reuses
+  `Value::Record`, so `User = { name: Text }` evaluates to a record of
   type-values and the canonical annotated `pick`/`omit` programs now run
   honestly with no type-alias erasure. `dbg` is a CLI-host native that writes
   each argument's `Display` to stderr and returns its single argument unchanged,
@@ -2052,11 +2052,11 @@ boundary in thin, self-contained slices.
   Rust type with its Aven type (`aven_type()` via `build::*`) and the
   conversions in both directions (`to_value`/`from_value`); implemented for
   lossless arbitrary-precision `Int`, checked `i64`→`Int`, `f64`→`Float`,
-  `String`→`Text`, `bool`→`Bool`, `()`→`Unit`, with `from_value` returning a
-  clear shape-mismatch `Err` ("expected Int, got Text") that surfaces as
-  `runtime.platform-error` through the native path. An Aven integer outside
-  signed 64-bit range passed to an `i64` host parameter similarly returns a
-  clean range error rather than truncating. A sealed
+  `String`→`Text`, `bool`→`Bool`, Rust `()`→the empty tuple, with `from_value`
+  returning a clear shape-mismatch `Err` ("expected Int, got Text") that
+  surfaces as `runtime.platform-error` through the native path. An Aven integer
+  outside signed 64-bit range passed to an `i64` host parameter similarly
+  returns a clean range error rather than truncating. A sealed
   `IntoHostFn<Args>` (macro-implemented for `Fn(A0..A3) -> R + 'static` where
   every type is `AvenMarshal`, arities 0..=4) yields
   `into_host_fn() -> (Type, Value)`: an all-required `Type::Function` plus a
@@ -2179,23 +2179,22 @@ site. Sliced parser-first; semantics follow.
   unaffected (they default their own args in Rust).
 - **D4 done (`aven-host` + `aven-cli`).** `logger` is now **typed** via
   `function_opt`: each level method (`trace`/`debug`/`info`/`warn`/`error`/
-  `fatal`) is `(Text, ?{..}) -> Unit` — one required message, an optional
-  trailing fields record — so `logger.info("msg")` and
-  `logger.info("msg", { .. })` both check, `logger.info(42)` is a
-  `type.mismatch` (Int vs Text), and `logger.info()` is a `type.mismatch` arity
-  error ("expected between 1 and 2 arguments"). The CLI registers `logger`
-  through the typed path (`host.register("logger", …, logger_type())`). This
-  slice also restored a closed `Platform` record at the time, but CLI IO Phase 1
-  later removed `Platform` from the standard globals. The typed host boundary
-  now covers the required logging capability end to end. Remaining P-thread
-  follow-ups: generic host fns via the typed-fn adapter (P2), the recursive
-  `Logger` type (`child` still returns an open record), and expression-position
-  call checking.
+  `fatal`) is `(Text, ?{..}) -> ()` — one required message, an optional trailing
+  fields record — so `logger.info("msg")` and `logger.info("msg", { .. })` both
+  check, `logger.info(42)` is a `type.mismatch` (Int vs Text), and
+  `logger.info()` is a `type.mismatch` arity error ("expected between 1 and 2
+  arguments"). The CLI registers `logger` through the typed path
+  (`host.register("logger", …, logger_type())`). This slice also restored a
+  closed `Platform` record at the time, but CLI IO Phase 1 later removed
+  `Platform` from the standard globals. The typed host boundary now covers the
+  required logging capability end to end. Remaining P-thread follow-ups: generic
+  host fns via the typed-fn adapter (P2), the recursive `Logger` type (`child`
+  still returns an open record), and expression-position call checking.
 
 Deferred: writing a literal default inside a standalone function-_type_
-annotation (e.g. `(Text, Record = {}) -> Unit` as a bare type) is out of scope.
-A function type's optionality will be represented in the D2 type IR, derived
-from the lambda, not from type-annotation syntax.
+annotation (e.g. `(Text, Record = {}) -> ()` as a bare type) is out of scope. A
+function type's optionality will be represented in the D2 type IR, derived from
+the lambda, not from type-annotation syntax.
 
 ## Milestone IO — platform IO
 
@@ -2532,10 +2531,10 @@ Json = @{ @Null, @Bool(Bool), @Int(Int), @Float(Float), @Text(Text),
 
 Arm names reuse the language's own type names. Numbers split `@Int`/`@Float`
 (fraction/exponent-free → `@Int`; decimal fraction/exponent → `@Float`) so
-integer IDs stay exact regardless of magnitude.
-The one-arg form is sugar: `Json.decode(text)` ≡ `Json.decode(text, Json)`,
-result `Result[Json, JsonError]` — no new API shape, just a named type the
-existing target-type machinery understands.
+integer IDs stay exact regardless of magnitude. The one-arg form is sugar:
+`Json.decode(text)` ≡ `Json.decode(text, Json)`, result
+`Result[Json, JsonError]` — no new API shape, just a named type the existing
+target-type machinery understands.
 
 Tasks:
 
@@ -3038,23 +3037,22 @@ variant companion.
 
 Status: done 2026-07-27
 
-`Int` now uses the shared `aven_core::Int` wrapper over
-`num_bigint::BigInt` throughout literal evaluation, checker canonical values
-and constant folding, runtime arithmetic and methods, comparison, hashing,
-rendering, format codecs, and the typed host boundary. There is deliberately no
-small-integer fast path; representation optimization is deferred to the VM.
-The old evaluator overflow diagnostic is gone, and `aven check` / `aven run`
-now agree on integer literals of any decimal magnitude, including the direct
-`-9223372036854775808` spelling.
+`Int` now uses the shared `aven_core::Int` wrapper over `num_bigint::BigInt`
+throughout literal evaluation, checker canonical values and constant folding,
+runtime arithmetic and methods, comparison, hashing, rendering, format codecs,
+and the typed host boundary. There is deliberately no small-integer fast path;
+representation optimization is deferred to the VM. The old evaluator overflow
+diagnostic is gone, and `aven check` / `aven run` now agree on integer literals
+of any decimal magnitude, including the direct `-9223372036854775808` spelling.
 
 Hosts can marshal the re-exported arbitrary-precision `aven_host::Int`
 losslessly. Existing `i64` host signatures remain valid and return a clear
 platform error if the Aven value does not fit, never truncating. JSON integer
-lexemes decode to exact `@Int` values and encode as exact unquoted decimals;
-the previously verified `2^64 - 1` precision loss through `@Float` is covered
-by a round-trip regression. YAML preserves its input library's signed and
-unsigned integer range, while YAML output and TOML report clean errors when
-their underlying format APIs cannot represent an Aven integer.
+lexemes decode to exact `@Int` values and encode as exact unquoted decimals; the
+previously verified `2^64 - 1` precision loss through `@Float` is covered by a
+round-trip regression. YAML preserves its input library's signed and unsigned
+integer range, while YAML output and TOML report clean errors when their
+underlying format APIs cannot represent an Aven integer.
 
 Separate work remains for non-decimal literal prefixes, fixed-width interop
 types, and VM-phase integer performance. Operational conversions for indexes,
@@ -3076,9 +3074,9 @@ explaining the rule that happens to reject the text.
   run started `:...`). The lexer still emits the two-dot operator token with the
   full run's span, so the parser recovers as a spread and the dot count is the
   only complaint. Infix dot runs are deliberately excluded: `1...5` does not
-  identify whether the intended range includes its end, so shortening it to
-  `..` would be an unsafe repair — those keep `lex.reserved-operator`. The LSP
-  quick fix replaces a prefix run with the two-dot spread form.
+  identify whether the intended range includes its end, so shortening it to `..`
+  would be an unsafe repair — those keep `lex.reserved-operator`. The LSP quick
+  fix replaces a prefix run with the two-dot spread form.
 
 ## Milestone R — lazy integer ranges
 
@@ -3086,12 +3084,12 @@ Status: range syntax and the lazy `Stream(Int)` value are complete.
 
 `start .. end` is half-open and `start ..= end` includes the end. They produce
 the same lazy values as `Stream.range(start, end)` and
-`Stream.rangeInclusive(start, end)`. `Array.range` and
-`Array.rangeInclusive` eagerly materialize the corresponding integer values.
-All four statics accept an optional closed options record, such as
-`{ step: 2 }`; unknown fields are rejected. The default step is `1` for
-ascending/equal bounds and `-1` for reversed bounds. An explicit step keeps its
-direction, and zero reports `runtime.range-step-zero`.
+`Stream.rangeInclusive(start, end)`. `Array.range` and `Array.rangeInclusive`
+eagerly materialize the corresponding integer values. All four statics accept an
+optional closed options record, such as `{ step: 2 }`; unknown fields are
+rejected. The default step is `1` for ascending/equal bounds and `-1` for
+reversed bounds. An explicit step keeps its direction, and zero reports
+`runtime.range-step-zero`.
 
 Streams render as callable `Stream.range(...)` descriptions through the ambient
 `toText` protocol; rendering never consumes or materializes them. Iteration
@@ -3103,9 +3101,10 @@ methods and collection remain separate slices.
   receiver) may mutate in place when the runtime can prove the source array has
   no other references, preserving value semantics. A fold accumulator is still
   retained by its closure-parameter scope while `acc.push(x)` resolves the
-  receiver, so its backing `Rc` is not unique at the push site. Array combinators
-  use native `flatMap` collection into a private vector; general `push` and spread
-  loops remain candidates for a later evaluator/VM uniqueness design.
+  receiver, so its backing `Rc` is not unique at the push site. Array
+  combinators use native `flatMap` collection into a private vector; general
+  `push` and spread loops remain candidates for a later evaluator/VM uniqueness
+  design.
 
 - **Braceless multiline set/record literals.** Allow dropping the braces on
   multiline shapes using a trailing sigil that opens a layout block: `@>` for
