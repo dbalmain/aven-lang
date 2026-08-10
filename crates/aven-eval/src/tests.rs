@@ -1900,6 +1900,41 @@ fn map_rejects_function_keys() {
     );
 }
 
+/// Runtime backstop for Set elements that only become functions at evaluation
+/// (the checker rejects the static cases). Mirrors Map's function-key error.
+#[test]
+fn set_rejects_function_elements() {
+    for (source, needle) in [
+        ("@{(x) => x}\n", "Set cannot use Function as a Set element"),
+        (
+            "@{1}.add((x) => x)\n",
+            "Set.add cannot use Function as a Set element",
+        ),
+        (
+            "[(x) => x].collect(Set)\n",
+            "Set.collect cannot use Function as a Set element",
+        ),
+        (
+            "@{1} | (x) => x\n",
+            "Set union cannot use Function as a Set element",
+        ),
+    ] {
+        let diagnostic = module_error(source);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR),
+            "{source}"
+        );
+        assert!(
+            diagnostic
+                .labels
+                .iter()
+                .any(|label| label.message.contains(needle)),
+            "expected label containing {needle:?} in {diagnostic:?} for {source}"
+        );
+    }
+}
+
 #[test]
 fn map_grouping_example_runs() {
     assert_module_value(

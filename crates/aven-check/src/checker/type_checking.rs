@@ -257,6 +257,9 @@ impl<'a> Checker<'a> {
             ) if callee.is_builtin(BuiltinType::Set) && element_types.len() == 1 => {
                 self.report_value_record_markers(entries);
                 self.check_collection_entries_against(expected, &element_types[0], entries, false);
+                // Annotated `s: Set(T) = @{f}` does not re-infer the literal
+                // through `infer_set`, so guard elements here too.
+                self.report_incomparable_set_literal_elements(entries);
             }
             (
                 ExprKind::Binary { .. },
@@ -942,12 +945,25 @@ impl<'a> Checker<'a> {
             return;
         };
 
+        let env = self.local_types.inference_env();
         for part in parts {
             let expr = part.expr();
             if part.promotes_singleton() || Self::literal_or_tag_value_shape(expr) {
                 let diagnostics_start = self.diagnostics.len();
                 self.check_value_against(element_type, expr);
                 self.deduplicate_diagnostics_since(diagnostics_start);
+                let item_type = self.infer(&env, expr);
+                self.report_if_incomparable_set_element(&item_type, expr.span);
+            }
+        }
+    }
+
+    fn report_incomparable_set_literal_elements(&mut self, entries: &[RecordEntry]) {
+        let env = self.local_types.inference_env();
+        for entry in entries {
+            if let RecordEntry::Element(element) = entry {
+                let item_type = self.infer(&env, element);
+                self.report_if_incomparable_set_element(&item_type, element.span);
             }
         }
     }

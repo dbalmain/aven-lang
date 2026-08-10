@@ -12294,6 +12294,67 @@ fn function_equality_reports_statically() {
     );
 }
 
+/// Set membership is equality. A function element is the same question as a
+/// function `==` operand — reject it statically so `@{f}.has(f)` cannot return
+/// false after the set rendered the element.
+#[test]
+fn set_function_elements_report_statically() {
+    for source in [
+        "f = (x: Int): Int => x\ns = @{f}\n",
+        "f = (x: Int): Int => x\ns = @{f, f}\n",
+        "f = (x: Int): Int => x\ns: Set(Int -> Int) = @{f}\n",
+        "f = (x: Int): Int => x\nbase = @{f}\ns = @{..base, f}\n",
+        "f = (x: Int): Int => x\ns = @{f}.add(f)\n",
+        "f = (x: Int): Int => x\nempty: Set(Int -> Int) = @{}\ns = empty.add(f)\n",
+        "f = (x: Int): Int => x\ns = [f].collect(Set)\n",
+        "f = (x: Int): Int => x\ns = Set.collect([f])\n",
+        "f = (x: Int): Int => x\ns = @{1} | f\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+            "expected function-as-set-element error for {source:?}: {:?}",
+            check.diagnostics
+        );
+        assert!(
+            check.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message == "functions are not comparable"
+                    && diagnostic
+                        .labels
+                        .iter()
+                        .any(|label| label.message.contains("set element"))
+            }),
+            "expected a set-element comparability label for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+/// Comparable set elements keep working: numbers, text, tags, records, tuples.
+#[test]
+fn ordinary_set_elements_remain_comparable() {
+    for source in [
+        "s = @{1, 2, 1}\n",
+        "s = @{\"a\", \"b\"}\n",
+        "Color = @{@Red, @Green}\ns: Color = @{@Red, @Green}\n",
+        "s = @{{ x: 1 }, { x: 2 }}\n",
+        "s = @{(1, \"a\"), (2, \"b\")}\n",
+        "s = @{1, 2} | 3\n",
+        "s = @{1}.add(2)\n",
+        "s = [1, 2, 2].collect(Set)\n",
+        "s = @{..@{1}, 2}\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "ordinary set elements should check cleanly for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
 #[test]
 fn record_equality_accepts_possibly_equal_structures() {
     let source = concat!(
