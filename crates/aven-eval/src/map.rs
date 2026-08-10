@@ -46,10 +46,20 @@ impl MapValue {
         self.entries.get(&id).map(|(_, value)| value)
     }
 
+    /// Insert or update. A key already present keeps its original position and
+    /// its original spelling, so only the value changes. Aven equality crosses
+    /// the Int/Float boundary, which means an equal key is not always an
+    /// identical one: `1` and `1.0` match each other, and `keys()`, `entries()`
+    /// and rendering would otherwise report whichever spelling was written
+    /// last. Matching `Set`, the incumbent represents the equivalence class.
     pub fn insert(&mut self, key: Value, value: Value) {
         let fingerprint = value_fingerprint(&key);
         if let Some(id) = self.entry_id_with_fingerprint(&key, fingerprint) {
-            self.entries.insert(id, (key, value));
+            let incumbent = self
+                .entries
+                .get(&id)
+                .map_or_else(|| key.clone(), |(existing, _)| existing.clone());
+            self.entries.insert(id, (incumbent, value));
             return;
         }
 

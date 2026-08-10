@@ -612,9 +612,9 @@ fn map_and_set_keep_the_same_survivors() {
         panic!("expected Map.keys to produce an Array");
     };
 
-    // Each container keeps whichever representative its own write rule picks —
-    // `set` overwrites the key it matched, `@{}` keeps the first occurrence —
-    // so the survivors are compared as Aven values rather than by kind.
+    // Both containers keep the first occurrence as the representative, so the
+    // survivors agree by construction; they are still compared as Aven values
+    // rather than by kind because equality crosses the Int/Float boundary.
     assert_eq!(
         Value::Set(Rc::new(keys.iter().cloned().collect())),
         module_value(&format!("{PRECISION_TRIPLE}@{{ a, b, f }}\n")),
@@ -1654,6 +1654,23 @@ fn map_display_uses_insertion_order() {
         "\"${Map.from([(\"a\", 1), (\"b\", 2)])}\"\n",
         Value::Text("Map{ a: 1, b: 2 }".to_owned()),
     );
+}
+
+#[test]
+fn map_set_keeps_the_incumbent_key_and_agrees_with_set() {
+    // `1` and `1.0` are equal, so `set` matches the entry already there. The
+    // stored key represents the class and only the value changes, which is the
+    // rule `Set` already followed; the two containers now agree on which member
+    // of an equivalence class `keys()`, `entries()` and rendering report.
+    assert_eq!(
+        repr_text(&module_value("Map.from([(1, \"a\")]).set(1.0, \"b\")\n")),
+        "Map{ 1: \"b\" }",
+    );
+    assert_eq!(
+        repr_text(&module_value("Map.from([(1.0, \"a\")]).set(1, \"b\")\n")),
+        "Map{ 1.0: \"b\" }",
+    );
+    assert_eq!(repr_text(&module_value("@{ 1, 1.0 }\n")), "@{ 1 }");
 }
 
 #[test]
