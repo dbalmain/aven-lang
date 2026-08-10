@@ -1,0 +1,28 @@
+# Reference solution, hand-written. Not shown to any model.
+#
+# Aven's Text has no length and no way to get a character list (`splitOn("")`
+# returns the whole string), so both are recovered from `slice`, which clamps
+# out of range and yields "" past the end.
+
+textLength : (Text, Int) -> Int
+textLength = (s, from) =>
+  s.slice(from, from + 1).isEmpty() ?>
+    true => from
+    false => textLength(s, from + 1)
+
+diffGo : (Text, Text, Int, Int) -> Int
+diffGo = (a, b, i, acc) =>
+  left = a.slice(i, i + 1)
+  left.isEmpty() ?>
+    true => acc
+    false =>
+      same = left == b.slice(i, i + 1)
+      diffGo(a, b, i + 1, same ?> true => acc, false => acc + 1)
+
+distance : (Text, Text) -> Result(Int, Text)
+distance = (strand1, strand2) =>
+  textLength(strand1, 0) != textLength(strand2, 0) ?>
+    true => @Err("strands must be of equal length")
+    false => @Ok(diffGo(strand1, strand2, 0, 0))
+
+{ distance }

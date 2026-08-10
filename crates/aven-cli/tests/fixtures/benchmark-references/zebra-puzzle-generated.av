@@ -1,0 +1,126 @@
+# Reference solution, hand-written. Not shown to any model.
+
+array = import("std/array")
+
+Category = { name: Text, values: Array(Text) }
+Constraint = @SameHouse({ a: Text, b: Text }) | @RightOf({ right: Text, left: Text }) | @Adjacent({ a: Text, b: Text }) | @AtPosition({ value: Text, position: Int })
+Query = { subject: Text, category: Text }
+Domains = Map(Text, Array(Int))
+Choice = { value: Text, houses: Array(Int) }
+
+houses: Array(Int) = Array.range(0, 5)
+
+domain: (Domains, Text) -> Array(Int)
+domain = (domains, value) => domains.get(value) ?? []
+
+usedHouses: (Domains, Category, Text) -> Array(Int)
+usedHouses = (domains, category, value) =>
+  category.values.filter((peer) => peer != value).flatMap((peer) =>
+    peerDomain = domain(domains, peer)
+    peerDomain.length() == 1 ?>
+      true => peerDomain
+      false => []
+  )
+
+reduceCategory: (Domains, Category, Int) -> Domains
+reduceCategory = (domains, category, index) =>
+  value = category.values[index]
+  value ?>
+    undefined => domains
+    current =>
+      used = usedHouses(domains, category, current)
+      reduced = domain(domains, current).filter((house) => !used.has(house))
+      reduceCategory(domains.set(current, reduced), category, index + 1)
+
+reduceCategories: (Domains, Array(Category), Int) -> Domains
+reduceCategories = (domains, categories, index) =>
+  category = categories[index]
+  category ?>
+    undefined => domains
+    current => reduceCategories(reduceCategory(domains, current, 0), categories, index + 1)
+
+applyConstraint: (Domains, Constraint) -> Domains
+applyConstraint = (domains, constraint) =>
+  constraint ?>
+    @SameHouse(pair) =>
+      aDomain = domain(domains, pair.a)
+      bDomain = domain(domains, pair.b)
+      domains.set(pair.a, aDomain.filter((house) => bDomain.has(house))).set(pair.b, bDomain.filter((house) => aDomain.has(house)))
+    @RightOf(pair) =>
+      rightDomain = domain(domains, pair.right)
+      leftDomain = domain(domains, pair.left)
+      domains.set(pair.right, rightDomain.filter((house) => leftDomain.has(house - 1))).set(pair.left, leftDomain.filter((house) => rightDomain.has(house + 1)))
+    @Adjacent(pair) =>
+      aDomain = domain(domains, pair.a)
+      bDomain = domain(domains, pair.b)
+      domains.set(pair.a, aDomain.filter((house) => bDomain.has(house - 1) || bDomain.has(house + 1))).set(pair.b, bDomain.filter((house) => aDomain.has(house - 1) || aDomain.has(house + 1)))
+    @AtPosition(fixed) => domains.set(fixed.value, domain(domains, fixed.value).filter((house) => house == fixed.position - 1))
+
+reduceConstraints: (Domains, Array(Constraint), Int) -> Domains
+reduceConstraints = (domains, constraints, index) =>
+  constraint = constraints[index]
+  constraint ?>
+    undefined => domains
+    current => reduceConstraints(applyConstraint(domains, current), constraints, index + 1)
+
+hasEmptyDomain: (Domains, Array(Text)) -> Bool
+hasEmptyDomain = (domains, values) => values.any((value) => domain(domains, value).isEmpty())
+
+propagate: (Domains, Array(Category), Array(Constraint), Array(Text)) -> Domains
+propagate = (domains, categories, constraints, values) =>
+  reduced = reduceConstraints(reduceCategories(domains, categories, 0), constraints, 0)
+  reduced == domains || hasEmptyDomain(reduced, values) ?>
+    true => reduced
+    false => propagate(reduced, categories, constraints, values)
+
+choose: (Domains, Array(Text), Int, Choice) -> Choice
+choose = (domains, values, index, best) =>
+  value = values[index]
+  value ?>
+    undefined => best
+    current =>
+      candidates = domain(domains, current)
+      useful = candidates.length() > 1 && candidates.length() < best.houses.length()
+      next = useful ?>
+        true => { value: current, houses: candidates }
+        false => best
+      choose(domains, values, index + 1, next)
+
+search: (Domains, Array(Category), Array(Constraint), Array(Text)) -> ?Domains
+search = (domains, categories, constraints, values) =>
+  reduced = propagate(domains, categories, constraints, values)
+  hasEmptyDomain(reduced, values) ?>
+    true => undefined
+    false =>
+      sentinel: Choice = { value: "", houses: [0, 1, 2, 3, 4, 5] }
+      choice = choose(reduced, values, 0, sentinel)
+      choice.value == "" ?>
+        true => reduced
+        false => tryHouses(reduced, categories, constraints, values, choice, 0)
+
+tryHouses: (Domains, Array(Category), Array(Constraint), Array(Text), Choice, Int) -> ?Domains
+tryHouses = (domains, categories, constraints, values, choice, index) =>
+  house = choice.houses[index]
+  house ?>
+    undefined => undefined
+    candidate =>
+      solution = search(domains.set(choice.value, [candidate]), categories, constraints, values)
+      solution ?>
+        undefined => tryHouses(domains, categories, constraints, values, choice, index + 1)
+        found => found
+
+answer: (Array(Category), Domains, Query) -> Text
+answer = (categories, domains, query) =>
+  subjectPosition: Int = domain(domains, query.subject)[0] ?? -1
+  category = categories.find((candidate) => candidate.name == query.category) ?? { name: "", values: [] }
+  category.values.find((value) => (domain(domains, value)[0] ?? -2) == subjectPosition) ?? ""
+
+solve: (Array(Category), Array(Constraint), Array(Query)) -> Array(Text)
+solve = (categories, constraints, queries) =>
+  values: Array(Text) = categories.flatMap((category) => category.values)
+  empty: Domains = Map.empty()
+  initial = values.fold(empty, (domains, value) => domains.set(value, houses))
+  domains = search(initial, categories, constraints, values) ?? empty
+  queries.map((query) => answer(categories, domains, query))
+
+{ solve }

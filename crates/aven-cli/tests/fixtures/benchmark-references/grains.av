@@ -1,0 +1,23 @@
+# Reference solution, hand-written. Not shown to any model.
+#
+# `total()` is 2^64 - 1, which does not fit Aven's 64-bit Int, so the ingest
+# omits that case (and square 64) from the Aven suite. The function is still
+# exported because the prompt asks for it; it returns the largest prefix sum
+# that fits.
+
+pow2 : (Int) -> Int
+pow2 = (n) =>
+  n <= 0 ?>
+    true => 1
+    false => 2 * pow2(n - 1)
+
+square : (Int) -> Result(Int, Text)
+square = (square) =>
+  (square < 1 || square > 64) ?>
+    true => @Err("square must be between 1 and 64")
+    false => @Ok(pow2(square - 1))
+
+total : () -> Int
+total = () => pow2(63) - 1 + pow2(63)
+
+{ square, total }

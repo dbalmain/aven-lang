@@ -1,0 +1,18 @@
+# Reference solution, hand-written. Not shown to any model.
+
+stepsGo : (Int, Int) -> Int
+stepsGo = (n, acc) =>
+  n == 1 ?>
+    true => acc
+    false =>
+      n % 2 == 0 ?>
+        true => stepsGo(n / 2, acc + 1)
+        false => stepsGo(3 * n + 1, acc + 1)
+
+steps : (Int) -> Result(Int, Text)
+steps = (number) =>
+  number < 1 ?>
+    true => @Err("Only positive integers are allowed")
+    false => @Ok(stepsGo(number, 0))
+
+{ steps }
