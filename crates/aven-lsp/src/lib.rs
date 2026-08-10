@@ -2558,7 +2558,6 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
     "TomlError",
     "U8",
     "Undefined",
-    "Unit",
     "Yaml",
     "YamlError",
 ];

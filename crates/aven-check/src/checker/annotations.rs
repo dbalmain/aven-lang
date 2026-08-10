@@ -389,7 +389,6 @@ impl<'a> Checker<'a> {
 
                 self.check_type_name(name, annotation.span);
                 match BuiltinType::from_name(name) {
-                    // `Unit` is an alias for the empty tuple — same type as `()`.
                     Some(builtin) => crate::ty::build::builtin(builtin),
                     None => Type::Named(name.clone()),
                 }

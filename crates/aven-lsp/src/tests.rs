@@ -955,7 +955,6 @@ fn completion_at_position_includes_builtin_type_names() {
         "Text",
         "U8",
         "Undefined",
-        "Unit",
     ] {
         let Some(item) = completion_item(&completions, name) else {
             panic!("expected builtin completion for {name}");

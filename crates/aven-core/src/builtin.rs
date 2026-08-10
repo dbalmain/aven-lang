@@ -82,7 +82,6 @@ define_builtin_types! {
     TomlEncodeError => { name: "TomlEncodeError", runtime_value: false, application_arity: None, scalar: false },
     Type => { name: "Type", runtime_value: false, application_arity: None, scalar: false },
     Undefined => { name: "Undefined", runtime_value: true, application_arity: None, scalar: false },
-    Unit => { name: "Unit", runtime_value: true, application_arity: None, scalar: false },
     Yaml => { name: "Yaml", runtime_value: true, application_arity: None, scalar: false },
     YamlError => { name: "YamlError", runtime_value: false, application_arity: None, scalar: false },
     YamlEncodeError => { name: "YamlEncodeError", runtime_value: false, application_arity: None, scalar: false },

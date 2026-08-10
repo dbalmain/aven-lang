@@ -1014,7 +1014,7 @@ impl TypeRenderer {
             Type::Function { params, result } => {
                 // Only an all-required single param uses the bare form; an
                 // optional param needs both its ` = _` marker and parens so
-                // `Int = _ -> Unit` cannot be misread.
+                // `Int = _ -> ()` cannot be misread.
                 let rendered_params = if params.len() == 1 && params.required_len() == 1 {
                     self.render_function_param(&params[0])
                 } else {
@@ -1555,10 +1555,7 @@ pub(crate) fn type_variable_names(ty: &Type) -> HashSet<String> {
 }
 
 pub(crate) fn named_builtin(name: &str) -> Type {
-    match BuiltinType::from_name(name) {
-        Some(BuiltinType::Unit) => Type::Tuple(Vec::new()),
-        _ => Type::Named(name.to_owned()),
-    }
+    Type::Named(name.to_owned())
 }
 
 pub(crate) fn literal_variant_base(row: &Row) -> Option<LiteralBase> {
@@ -1661,12 +1658,7 @@ pub mod build {
     }
 
     pub fn builtin(builtin: BuiltinType) -> Type {
-        match builtin {
-            // `Unit` is the empty tuple by construction — the same type `()`
-            // denotes and a unit expression inhabits.
-            BuiltinType::Unit => unit(),
-            other => named(other.name()),
-        }
+        named(builtin.name())
     }
 
     /// A named type variable, used by generic host/global signatures.
@@ -1703,12 +1695,8 @@ pub mod build {
         builtin(BuiltinType::Bool)
     }
 
-    /// `()` / `Unit` — the type of functions that return no meaningful value,
-    /// and the only type the unit value inhabits.
-    ///
-    /// `Unit` is the ordinary name; `()` is the same type written in tuple
-    /// shape. Both lower to the empty tuple, so a host signature spelled
-    /// either way is interchangeable with a user annotation spelled the other.
+    /// `()` — the empty tuple, and the type of a function that returns no
+    /// meaningful value.
     pub fn unit() -> Type {
         Type::Tuple(Vec::new())
     }

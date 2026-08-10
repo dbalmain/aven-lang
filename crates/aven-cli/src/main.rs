@@ -995,7 +995,7 @@ fn is_err_value(value: &aven_eval::Value) -> bool {
     matches!(value, aven_eval::Value::Tag { name, .. } if name == "Err")
 }
 
-/// Whether a final value carries no information worth printing: `Unit` or the
+/// Whether a final value carries no information worth printing: `()` or the
 /// empty record `{}` (the trivial value the bare IO functions return). Keeps
 /// stdout clean for effect-terminated scripts like `writeLine("hi")`.
 fn is_trivial_value(value: &aven_eval::Value) -> bool {

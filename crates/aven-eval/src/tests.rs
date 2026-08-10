@@ -1,8 +1,7 @@
 use super::{
     BuiltinMethodEnvironment, DEFAULT_STACK_SEGMENT_LIMIT, Environment, EvalModuleOptions,
-    EvalOutcome, ModuleImports, RuntimeType, RuntimeTypeDescriptor, STACK_SEGMENT_SIZE, Stream,
-    Value, display_text, eval_expr, eval_module, eval_module_with_options, logging,
-    record_field_value, repr_text,
+    EvalOutcome, ModuleImports, RuntimeType, STACK_SEGMENT_SIZE, Stream, Value, display_text,
+    eval_expr, eval_module, eval_module_with_options, logging, record_field_value, repr_text,
 };
 use aven_core::{Int, codes};
 use aven_parser::{
@@ -3613,10 +3612,15 @@ fn primitive_type_name_evaluates_to_type_value() {
 }
 
 #[test]
-fn unit_type_name_evaluates_to_empty_tuple_type() {
-    let unit_type = Value::Type(RuntimeType::new(RuntimeTypeDescriptor::Tuple(Vec::new())));
-    assert_module_value("Unit\n", unit_type.clone());
-    assert_eq!(format!("{unit_type}"), "()");
+fn bare_unit_is_not_an_intrinsic_type_value() {
+    // `Unit` is an ordinary uppercase name, not a builtin type. Evaluating it
+    // as a bare expression must not produce a type value the way `Text` does.
+    let diagnostic = eval_error("Unit\n");
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::runtime::UNBOUND_NAME)
+    );
+    assert_eq!(diagnostic.message, "unbound name `Unit`");
 }
 
 #[test]

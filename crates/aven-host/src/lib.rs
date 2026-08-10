@@ -488,7 +488,7 @@ impl Host {
 /// recursive `Logger`. A precise recursive type is deferred until a named
 /// `Logger` type / typed-fn adapter exists.
 pub fn logger_type() -> Type {
-    // `(Text, ?{..}) -> Unit`: one required message, an optional trailing fields
+    // `(Text, ?{..}) -> ()`: one required message, an optional trailing fields
     // record, so both `logger.info("msg")` and `logger.info("msg", { .. })` check.
     let level_method = || {
         build::function_opt(

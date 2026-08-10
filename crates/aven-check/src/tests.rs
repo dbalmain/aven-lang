@@ -2200,7 +2200,6 @@ fn literal_bindings_report_definitive_scalar_mismatches() {
         "value : Int = (\"hi\")\n",
         "value : Bool = \"hi\"\n",
         "value : Undefined = 42\n",
-        "value : Unit = \"hi\"\n",
         "value : { name: Text } = \"hi\"\n",
     ] {
         let output = parse_module(source);
@@ -6441,75 +6440,103 @@ fn stream_methods_and_array_spread_preserve_element_types() {
     );
 }
 
-/// `Unit` is the ordinary name of the empty tuple. The host builder, a `()`
-/// expression, a `Unit` annotation, and a `()` annotation are one type by
-/// construction — not two types reconciled by a unification rule.
+/// `()` is the empty tuple: host builder, expression, and annotation agree.
+/// `Unit` is not a type name — it is an ordinary uppercase identifier free for
+/// user programs, and a bare use reports `type.unknown-name` with a note that
+/// points at the `()` spelling.
 #[test]
-fn unit_is_the_empty_tuple_by_construction() {
+fn empty_tuple_is_the_no_result_type_and_unit_is_unknown() {
     let host = HostGlobals::default();
     let inferred = checked_binding_type("value = ()\n", "value", &host);
 
     assert_eq!(inferred, build::unit());
-    assert_eq!(inferred, build::builtin(aven_core::BuiltinType::Unit));
     assert_eq!(inferred.render(), "()");
 
-    for source in ["value : Unit = ()\n", "value : () = ()\n"] {
-        let output = parse_module(source);
-        let checked = check_module_with_host_globals(&output.module, &host);
-        assert!(
-            checked.diagnostics.is_empty(),
-            "unexpected diagnostics for {source:?}: {:?}",
-            checked.diagnostics
-        );
-    }
+    let ok = parse_module("value : () = ()\n");
+    let checked = check_module_with_host_globals(&ok.module, &host);
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected diagnostics for `value : () = ()`: {:?}",
+        checked.diagnostics
+    );
 
-    // Cross-spelling function types: user `Unit` and host/std `()` are one type.
-    for source in [
-        "f : (Int) -> Unit = (n) => ()\n",
-        "f : (Int) -> () = (n) => ()\n",
-        "g : (Int) -> () = (n: Int): Unit => ()\n",
-        "g : (Int) -> Unit = (n: Int): () => ()\n",
-    ] {
-        let output = parse_module(source);
-        let checked = check_module_with_host_globals(&output.module, &host);
-        assert!(
-            checked.diagnostics.is_empty(),
-            "unexpected diagnostics for {source:?}: {:?}",
-            checked.diagnostics
-        );
-    }
+    let ok_fn = parse_module("f : (Int) -> () = (n) => ()\n");
+    let checked = check_module_with_host_globals(&ok_fn.module, &host);
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected diagnostics for `() -> ()` function: {:?}",
+        checked.diagnostics
+    );
 
-    // The alias is not vacuous: non-unit values still mismatch.
-    for source in ["value : Unit = \"hi\"\n", "value : Text = ()\n"] {
+    let mismatch = parse_module("value : Text = ()\n");
+    let checked = check_module(&mismatch.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::ty::MISMATCH),
+        "`() : Text` should mismatch: {:?}",
+        checked.diagnostics
+    );
+
+    for source in ["value : Unit = ()\n", "value : Unit = \"hi\"\n"] {
         let output = parse_module(source);
         let checked = check_module(&output.module);
         assert!(
-            has_diagnostic_code(&checked.diagnostics, codes::ty::MISMATCH),
-            "{source} should still mismatch: {:?}",
+            has_diagnostic_code(&checked.diagnostics, codes::ty::UNKNOWN_NAME),
+            "{source} should report unknown-name: {:?}",
             checked.diagnostics
+        );
+        let diagnostic = checked
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some(codes::ty::UNKNOWN_NAME))
+            .expect("unknown-name diagnostic");
+        assert!(
+            diagnostic.notes.iter().any(|note| note.contains("`()`")),
+            "Unit unknown-name should name `()` in a note: {:?}",
+            diagnostic.notes
         );
     }
 }
 
-/// Comptime type values written `Unit` reify to the empty tuple — the same
-/// type a `()` annotation lowers to — so a binding like `T = Unit` is usable
-/// as a unit annotation.
+/// A user program may define its own `Unit` type — the name is ordinary.
+/// Comptime `T = ()` still reifies as the empty-tuple annotation target; bare
+/// `T = Unit` is an unknown type name, not a type value.
 #[test]
-fn unit_comptime_type_value_is_the_empty_tuple() {
+fn user_defined_unit_type_is_ordinary_and_bare_unit_is_unknown() {
     let host = HostGlobals::default();
-    for source in [
-        "T = Unit\nvalue : T = ()\n",
-        "T = ()\nvalue : T = ()\n",
-        "T = Unit\nU = ()\nvalue : T = ()\nother : U = ()\n",
-    ] {
-        let output = parse_module(source);
-        let checked = check_module_with_host_globals(&output.module, &host);
-        assert!(
-            checked.diagnostics.is_empty(),
-            "unexpected diagnostics for {source:?}: {:?}",
-            checked.diagnostics
-        );
-    }
+
+    let defined = parse_module("Unit = { value: Int }\nx : Unit = { value: 1 }\n");
+    let checked = check_module_with_host_globals(&defined.module, &host);
+    assert!(
+        checked.diagnostics.is_empty(),
+        "user-defined Unit should check clean: {:?}",
+        checked.diagnostics
+    );
+
+    let alias = parse_module("T = ()\nvalue : T = ()\n");
+    let checked = check_module_with_host_globals(&alias.module, &host);
+    assert!(
+        checked.diagnostics.is_empty(),
+        "`T = ()` should check clean: {:?}",
+        checked.diagnostics
+    );
+
+    let unknown = parse_module("T = Unit\n");
+    let checked = check_module(&unknown.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::ty::UNKNOWN_NAME),
+        "`T = Unit` should be unknown type name, not a type value: {:?}",
+        checked.diagnostics
+    );
+    let diagnostic = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_deref() == Some(codes::ty::UNKNOWN_NAME))
+        .expect("unknown-name diagnostic");
+    assert!(
+        diagnostic.notes.iter().any(|note| note.contains("`()`")),
+        "Unit unknown-name should name `()` in a note: {:?}",
+        diagnostic.notes
+    );
 }
 
 /// `collect` is target-owned, so the target names the type built and the
@@ -10577,7 +10604,7 @@ fn file_style_globals() -> Vec<(String, Type)> {
     vec![("File".to_owned(), file)]
 }
 
-/// A small host-style logger global: `logger : { info: (Text) -> Unit }`.
+/// A small host-style logger global: `logger : { info: (Text) -> () }`.
 fn logger_globals() -> Vec<(String, Type)> {
     vec![(
         "logger".to_owned(),
@@ -10939,7 +10966,7 @@ fn unbound_name_diagnostic_keeps_bound_names_clean() {
 }
 
 /// A host global typed with one required `Text` and one optional trailing
-/// fields record: `f : function_opt([Text], [{..}]) -> Unit`.
+/// fields record: `f : function_opt([Text], [{..}]) -> ()`.
 fn optional_param_globals() -> Vec<(String, Type)> {
     vec![(
         "f".to_owned(),

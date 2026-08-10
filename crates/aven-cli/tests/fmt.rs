@@ -1152,9 +1152,8 @@ fn run_bare_write_returns_unit_while_handle_write_returns_result() {
 /// as `run` — `run` never consulted the type, so a checker-only regression here
 /// would otherwise still print the right thing.
 ///
-/// The annotated twin spells the callback result `Unit`; that is the
-/// cross-spelling case that matters most, because std declares `each` with
-/// `()` while user prose reaches for `Unit`.
+/// The annotated twin spells the callback result `()` explicitly, matching the
+/// std declaration of `each`.
 #[test]
 fn each_over_write_line_checks_and_runs_for_array_and_set() {
     for (label, source, expected) in [
@@ -1165,7 +1164,7 @@ fn each_over_write_line_checks_and_runs_for_array_and_set() {
         ),
         (
             "array-each-write-line-unit-annotation",
-            "[1, 2].each((x: Int): Unit => writeLine(\"${x}\"))\n",
+            "[1, 2].each((x: Int): () => writeLine(\"${x}\"))\n",
             "1\n2\n",
         ),
         (
@@ -1188,7 +1187,7 @@ fn each_over_write_line_checks_and_runs_for_array_and_set() {
 }
 
 /// A bare writer call as a statement stays clean. The spec reserves the right
-/// to reject ignoring a non-`Unit` value; typing the writers `()` is what keeps
+/// to reject ignoring a non-`()` value; typing the writers `()` is what keeps
 /// that rule from firing on the most common statement in the language, so this
 /// pins that the rule is not on today.
 #[test]

@@ -34,7 +34,7 @@ demo = () =>
     @Ok(v) => writeLine("recovered: ${v}")
     @Err(err) => onErr(err)
 
-  boom: Result(Unit, Text) = @Err("demo")
+  boom: Result((), Text) = @Err("demo")
   boom?!
 
 demo()

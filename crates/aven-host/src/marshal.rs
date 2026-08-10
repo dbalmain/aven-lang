@@ -78,7 +78,7 @@ fn mismatch(expected: &str, got: &Value) -> String {
         Value::Float(_) => "Float",
         Value::Text(_) => "Text",
         Value::Bool(_) => "Bool",
-        Value::Tuple(values) if values.is_empty() => "Unit",
+        Value::Tuple(values) if values.is_empty() => "()",
         Value::Array(_) => "Array",
         Value::Tuple(_) => "Tuple",
         Value::Set(_) => "Set",
@@ -205,7 +205,7 @@ impl AvenMarshal for () {
         if value.is_unit() {
             Ok(())
         } else {
-            Err(mismatch("Unit", value))
+            Err(mismatch("()", value))
         }
     }
 }
@@ -574,7 +574,7 @@ mod tests {
         );
         assert_eq!(
             bool::from_value(&Value::unit()),
-            Err("expected Bool, got Unit".to_owned())
+            Err("expected Bool, got ()".to_owned())
         );
         assert!(<()>::from_value(&Value::int(1)).is_err());
     }

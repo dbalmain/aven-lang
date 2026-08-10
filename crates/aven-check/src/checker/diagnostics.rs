@@ -211,7 +211,7 @@ impl<'a> Checker<'a> {
             Diagnostic::error(format!("unknown type name `{name}`"))
                 .with_code(codes::ty::UNKNOWN_NAME)
                 .with_label(Label::primary(span, "type name not found"))
-                .with_note("define the type, import it, or use a lowercase type variable for a generic type"),
+                .with_note(unknown_type_name_note(name)),
         );
     }
 
@@ -1300,6 +1300,16 @@ const METHOD_ALIASES: &[(&str, &str)] = &[
     ("append", "push"),
     ("add", "push"),
 ];
+
+/// Repair note for an unresolved type name. Most names get the generic
+/// define/import guidance; a few well-known reflexes from other languages
+/// point at the Aven spelling instead.
+fn unknown_type_name_note(name: &str) -> &'static str {
+    match name {
+        "Unit" => "the type of a function that returns no meaningful value is written `()`",
+        _ => "define the type, import it, or use a lowercase type variable for a generic type",
+    }
+}
 
 fn suggested_method<'a>(unknown: &str, methods: &'a [String]) -> Option<&'a str> {
     if let Some((_, target)) = METHOD_ALIASES

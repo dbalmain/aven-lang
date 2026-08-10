@@ -39,7 +39,7 @@ module
             args
               name a
         result
-          comptime Unit
+          tuple
   binding optional
     annotation
       optional
