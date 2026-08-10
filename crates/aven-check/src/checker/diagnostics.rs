@@ -704,10 +704,10 @@ impl<'a> Checker<'a> {
     }
 
     /// Functions have no equality (`f == g` is rejected; the evaluator throws).
-    /// The same fact rules them out as Set elements and as `==`/`!=` operands:
-    /// membership and comparison are one question. Deduped by primary span so
-    /// re-inferring a set literal receiver (e.g. `@{f}.add(g)`) does not
-    /// double-report the same element.
+    /// The same fact rules them out as Set elements, Map keys, and `==`/`!=`
+    /// operands: membership, lookup, and comparison are one question. Deduped
+    /// by primary span so re-inferring a set literal receiver (e.g.
+    /// `@{f}.add(g)`) does not double-report the same element.
     pub(super) fn report_functions_not_comparable(&mut self, span: Span, primary_label: &str) {
         self.push_unique_diagnostic(
             Diagnostic::error("functions are not comparable")
@@ -732,6 +732,23 @@ impl<'a> Checker<'a> {
             "this set element is a function"
         } else {
             "this set element contains a function"
+        };
+        self.report_functions_not_comparable(span, label);
+    }
+
+    /// Report when a type used as a Map key embeds a function (top-level or
+    /// nested). Shared by `Map.from` / `Map(pairs)`, `.set`/`.get`/`.delete`/
+    /// `.has`, and `m[key]`. Recurses like the set-element and `==` guards —
+    /// map lookup is equality. Reuses `type_contains_function`; no second walk.
+    pub(super) fn report_if_incomparable_map_key(&mut self, ty: &Type, span: Span) {
+        let resolved = self.normalize(&self.unifier.resolve(ty));
+        if !type_contains_function(&resolved) {
+            return;
+        }
+        let label = if matches!(resolved, Type::Function { .. }) {
+            "this map key is a function"
+        } else {
+            "this map key contains a function"
         };
         self.report_functions_not_comparable(span, label);
     }

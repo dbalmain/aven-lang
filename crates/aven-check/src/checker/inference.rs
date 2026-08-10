@@ -2098,6 +2098,7 @@ impl<'a> Checker<'a> {
                 Some((callee_obligation_start, callee_obligation_end)),
             );
             self.report_incomparable_set_method_args(env, callee, args, &arg_types);
+            self.report_incomparable_map_key_positions(env, callee, args, &arg_types);
             self.simplify_method_obligations(false);
             let result = self.resolve_row_merge_call_result(result);
             if is_to_result_call(callee)
@@ -3367,6 +3368,11 @@ impl<'a> Checker<'a> {
 
         let arg_types: Vec<_> = args.iter().map(|arg| self.infer(env, arg)).collect();
         self.check_call_arg_types_against_params(args, &arg_types, &params);
+        // Same key guard as `Map.from`: the constructor is just the static
+        // under another spelling.
+        if let Some(arg) = args.first() {
+            self.report_incomparable_map_from_keys(env, arg);
+        }
         self.simplify_method_obligations(false);
         Some(self.resolve_row_merge_call_result(&result))
     }
@@ -3880,9 +3886,12 @@ impl<'a> Checker<'a> {
             {
                 // `m[key]` sugars to `m.get(key)`: the index unifies with the
                 // key type, and the result is optional (`?v`) since a missing
-                // key yields `undefined` at runtime.
+                // key yields `undefined` at runtime. Guard the key the same
+                // way `.get` does — lookup is equality.
                 let key_type = args[0].clone();
                 let value_type = args[1].clone();
+                let arg_type = self.infer(env, arg);
+                self.report_if_incomparable_map_key(&arg_type, arg.span);
                 self.check_value_index_arg(env, arg, key_type);
                 Type::Optional(Box::new(value_type))
             }
@@ -4491,6 +4500,148 @@ impl<'a> Checker<'a> {
         }
         for (arg, ty) in args.iter().zip(arg_types) {
             self.report_if_incomparable_set_element(ty, arg.span);
+        }
+    }
+
+    /// Map key positions that take a value by equality: `Map.from` / the
+    /// value-position `Map(pairs)` constructor, and the key argument of
+    /// `.set` / `.get` / `.delete` / `.has`. Functions (and containers that
+    /// embed them) have no equality, so reject them statically the same way
+    /// set elements are rejected. `m[key]` is guarded in `infer_value_index`.
+    pub(super) fn report_incomparable_map_key_positions(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+        arg_types: &[Type],
+    ) {
+        let ExprKind::FieldAccess {
+            receiver, field, ..
+        } = &ungroup_expr(callee).kind
+        else {
+            return;
+        };
+        match field.as_str() {
+            "from" => {
+                // Static `Map.from(pairs)`: each pair's key is a map key.
+                if !self.receiver_is_map_static(env, receiver) {
+                    return;
+                }
+                if let Some(arg) = args.first() {
+                    self.report_incomparable_map_from_keys(env, arg);
+                }
+            }
+            "set" | "get" | "delete" | "has" => {
+                let receiver_type = self.infer(env, receiver);
+                if self.map_operand_key_type(&receiver_type).is_none() {
+                    return;
+                }
+                // Key is the first argument for all four methods.
+                if let Some((arg, ty)) = args.first().zip(arg_types.first()) {
+                    self.report_if_incomparable_map_key(ty, arg.span);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a field-access receiver is the `Map` type (for statics like
+    /// `Map.from`). A user binding of `Map` shadows the builtin, matching the
+    /// constructor / statics rule elsewhere.
+    fn receiver_is_map_static(&self, env: &TypeEnv, receiver: &Expr) -> bool {
+        let name = match &ungroup_expr(receiver).kind {
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => name.as_str(),
+            _ => return false,
+        };
+        if name != "Map" {
+            return false;
+        }
+        env.get("Map").is_none() && !self.bindings.contains_key("Map")
+    }
+
+    /// Walk a `Map.from` / `Map(pairs)` argument and report any pair whose key
+    /// embeds a function. Prefer the key expression's span when the argument
+    /// is an array of pair tuples; fall back to the whole argument when the
+    /// keys are not surface-visible (a non-literal array, a spread, …).
+    pub(super) fn report_incomparable_map_from_keys(&mut self, env: &TypeEnv, arg: &Expr) {
+        if let ExprKind::Array(entries) = &ungroup_expr(arg).kind {
+            let mut saw_pair_key = false;
+            for entry in entries {
+                match entry {
+                    RecordEntry::Element(element) => {
+                        if let ExprKind::Tuple(parts) = &ungroup_expr(element).kind
+                            && let Some(key) = parts.first()
+                        {
+                            saw_pair_key = true;
+                            let key_type = self.infer(env, key);
+                            self.report_if_incomparable_map_key(&key_type, key.span);
+                            continue;
+                        }
+                        // Non-tuple element: still check its inferred key if
+                        // the element type is a pair.
+                        let element_type = self.infer(env, element);
+                        if let Some(key_type) = self.pair_key_type(&element_type) {
+                            saw_pair_key = true;
+                            self.report_if_incomparable_map_key(&key_type, element.span);
+                        }
+                    }
+                    RecordEntry::Spread { value, .. } => {
+                        // A spread carries an established array of pairs; the
+                        // element type's key position is the map key.
+                        let spread_type = self.infer(env, value);
+                        if let Some(key_type) = self.array_pair_key_type(&spread_type) {
+                            saw_pair_key = true;
+                            self.report_if_incomparable_map_key(&key_type, value.span);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if saw_pair_key {
+                return;
+            }
+        }
+
+        // Non-literal array (name, call, …): key type lives in `Array((k, v))`.
+        let arg_type = self.infer(env, arg);
+        if let Some(key_type) = self.array_pair_key_type(&arg_type) {
+            self.report_if_incomparable_map_key(&key_type, arg.span);
+        }
+    }
+
+    pub(super) fn map_operand_key_type(&mut self, ty: &Type) -> Option<Type> {
+        let resolved = self.resolve_and_default(ty);
+        match self.normalize(&resolved) {
+            Type::Apply { callee, args }
+                if args.len() == 2 && callee.is_builtin(BuiltinType::Map) =>
+            {
+                Some(args[0].clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// `Array((k, v))` → `k`. Used when the pairs are not a surface array
+    /// literal (a bound name, a call result, a spread subject).
+    fn array_pair_key_type(&mut self, ty: &Type) -> Option<Type> {
+        let resolved = self.normalize(&self.unifier.resolve(ty));
+        let Type::Apply { callee, args } = &resolved else {
+            return None;
+        };
+        if !callee.is_builtin(BuiltinType::Array) {
+            return None;
+        }
+        let [element] = args.as_slice() else {
+            return None;
+        };
+        self.pair_key_type(element)
+    }
+
+    fn pair_key_type(&mut self, ty: &Type) -> Option<Type> {
+        let resolved = self.normalize(&self.unifier.resolve(ty));
+        match resolved {
+            Type::Tuple(items) if !items.is_empty() => Some(items[0].clone()),
+            _ => None,
         }
     }
 

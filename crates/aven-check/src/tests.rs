@@ -12705,6 +12705,85 @@ fn ordinary_set_elements_remain_comparable() {
     }
 }
 
+/// Map keys use the same equality as Set membership. A function key (or a
+/// container that embeds one) must fail `aven check` — not only the runtime
+/// backstop — so `Map.from([(f, "a")])` is not a silent-acceptance hole.
+///
+/// Cases below are ones that would otherwise typecheck: the key position is a
+/// free/function type, so there is no competing `expected K, found Function`
+/// mismatch to fill the unique-diagnostic slot at the same span.
+#[test]
+fn map_function_keys_report_statically() {
+    for source in [
+        // Table rows from the bug report
+        "f = (x: Int): Int => x\nm = Map.from([(f, \"a\")])\n",
+        "f = (x: Int): Int => x\nm = Map.empty().set(f, \"a\")\n",
+        // Value-position Map constructor shares Map.from
+        "f = (x: Int): Int => x\nm = Map([(f, \"a\")])\n",
+        // Key-taking methods on a free-key map (Map.empty) or an annotated
+        // function-key map — not on Map(Int, …), where a plain type mismatch
+        // already rejects the call at the same span.
+        "f = (x: Int): Int => x\nm = Map.empty().get(f)\n",
+        "f = (x: Int): Int => x\nm = Map.empty().has(f)\n",
+        "f = (x: Int): Int => x\nm = Map.empty().delete(f)\n",
+        "f = (x: Int): Int => x\nm: Map(Int -> Int, Text) = Map.empty()\nr = m.set(f, \"a\")\n",
+        "f = (x: Int): Int => x\nm: Map(Int -> Int, Text) = Map.empty()\nr = m.get(f)\n",
+        // Index sugar for get
+        "f = (x: Int): Int => x\nm = Map.empty()\nv = m[f]\n",
+        // Nested function inside a key (same non-reflexive equality)
+        "f = (x: Int): Int => x\nm = Map.from([({ g: f }, 1)])\n",
+        "f = (x: Int): Int => x\nm = Map.from([((f, 1), \"v\")])\n",
+        "f = (x: Int): Int => x\na = { g: f }\nm = Map.empty().set(a, 1)\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+            "expected function-as-map-key error for {source:?}: {:?}",
+            check.diagnostics
+        );
+        assert!(
+            check.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message == "functions are not comparable"
+                    && diagnostic
+                        .labels
+                        .iter()
+                        .any(|label| label.message.contains("map key"))
+            }),
+            "expected a map-key comparability label for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+/// Comparable map keys keep working: numbers, text, plain records, tuples,
+/// variants. A record key without a function field is fine.
+#[test]
+fn ordinary_map_keys_remain_comparable() {
+    for source in [
+        "m = Map.from([(1, \"a\")])\n",
+        "m = Map.from([(\"k\", 1)])\n",
+        "m = Map.from([({ k: 1 }, \"v\")])\n",
+        "m = Map.from([((1, \"a\"), true)])\n",
+        "m = Map.from([(@Red, 1)])\n",
+        "m = Map([(1, \"a\")])\n",
+        "m = Map.empty().set(1, \"a\")\n",
+        "m = Map.from([(1, \"a\")]).get(1)\n",
+        "m = Map.from([(1, \"a\")]).has(1)\n",
+        "m = Map.from([(1, \"a\")]).delete(1)\n",
+        "m = Map.from([(\"k\", 1)])\nv = m[\"k\"]\n",
+        "m = Map.from([({ k: 1 }, \"v\")]).get({ k: 1 })\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "ordinary map keys should check cleanly for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
 #[test]
 fn record_equality_accepts_possibly_equal_structures() {
     let source = concat!(
