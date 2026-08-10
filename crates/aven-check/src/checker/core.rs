@@ -1888,6 +1888,11 @@ impl<'a> Checker<'a> {
     ) -> bool {
         match &value.kind {
             ExprKind::Group(inner) => self.runtime_rhs_is_artifact(inner, visiting),
+            // Type constructors (`?T` / `T?` / `T!`) are never runtime values.
+            // Classify them before the runtime-name escape: otherwise `y?` and
+            // `f()?` skip the gate because the operand mentions a runtime name,
+            // then die at evaluation with "cannot perform type construction".
+            ExprKind::Optional(_) | ExprKind::Nullable(_) | ExprKind::NonNull(_) => true,
             ExprKind::ComptimeName(name) => self.comptime_reference_is_artifact(name, visiting),
             ExprKind::Name(_) => false,
             _ if Self::literal_or_tag_value_shape(value) => false,

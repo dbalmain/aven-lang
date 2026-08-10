@@ -727,6 +727,60 @@ fn detects_comptime_rhs_artifacts_without_evaluation() {
 }
 
 #[test]
+fn postfix_optional_on_non_literals_is_non_liftable_into_runtime() {
+    // The gate used to fire only for syntactic literals (`5?`). A name or call
+    // operand escaped, then the evaluator died on type construction.
+    for source in [
+        "y = 5\nx : Int = y?\n",
+        "Money = Int { cents(): Int => . }\nprice : Money = 2599\nviaMethod: Int = price.div(2)?\n",
+        "x = 5?\n",
+        "x : Int = 5?\n",
+        "x : Text = \"a\"?\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            has_diagnostic_code(
+                &check.diagnostics,
+                codes::comptime::NON_LIFTABLE_INTO_RUNTIME
+            ),
+            "{source} should report comptime.non-liftable-into-runtime: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn optional_type_position_stays_liftable_as_annotation() {
+    // Prefix `?T` / postfix `T?` in *type* position must keep working — those
+    // are annotations, not runtime RHS type constructions.
+    for source in [
+        "f = (n: Int): ?Int => n\n",
+        "x : ?Int = 5\n",
+        "g = (n: Int): Int? => n\n",
+        "y : Int? = 5\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(
+                &check.diagnostics,
+                codes::comptime::NON_LIFTABLE_INTO_RUNTIME
+            ),
+            "{source} unexpectedly reported non-liftable: {:?}",
+            check.diagnostics
+        );
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} unexpectedly produced diagnostics: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
 fn comptime_rhs_evaluation_check_is_shallow_and_group_unwrapped() {
     for source in [
         "Value = make()\n",
