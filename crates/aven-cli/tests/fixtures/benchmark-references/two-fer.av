@@ -1,0 +1,10 @@
+# Reference solution, hand-written. Used by `bun run verify` to prove the
+# generated suite is real. Not shown to any model.
+
+twoFer : (Text?) -> Text
+twoFer = (name) =>
+  name ?>
+    null => "One for you, one for me."
+    person => "One for ${person}, one for me."
+
+{ twoFer }

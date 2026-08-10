@@ -1,0 +1,12 @@
+# Reference solution, hand-written. Used by `bun run verify` to prove the
+# generated suite is real. Not shown to any model.
+#
+# The suite passes a real function here: the canonical data writes the
+# accumulator as pseudocode text and `adapters/lang/pseudocode.ts` compiles it
+# into an Aven lambda. One case nests — `(x) => accumulate(["1","2","3"], (y) =>
+# x + y)` — so `accumulate` is used at two different instantiations in one
+# suite, which needs let-polymorphism to typecheck.
+
+accumulate = (list, accumulator) => list.map(accumulator)
+
+{ accumulate }

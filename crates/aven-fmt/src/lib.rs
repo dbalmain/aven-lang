@@ -45,13 +45,24 @@ fn format_parsed_source_with_reparse(
     }
 
     let mut formatted = format_lines(source, parse);
+    let mut reparsed = reparse(&formatted);
+    if reparsed.diagnostics.iter().any(Diagnostic::is_error) {
+        return Ok(source.to_owned());
+    }
+
     loop {
-        let reparsed = reparse(&formatted);
         let wrapped = normalize_call_layouts(&formatted, &reparsed);
         if wrapped == formatted {
             return Ok(formatted);
         }
+
+        let wrapped_parse = reparse(&wrapped);
+        if wrapped_parse.diagnostics.iter().any(Diagnostic::is_error) {
+            return Ok(formatted);
+        }
+
         formatted = wrapped;
+        reparsed = wrapped_parse;
     }
 }
 
@@ -124,10 +135,27 @@ struct WhitespaceEdit {
 
 fn normalize_call_layouts(source: &str, parse: &ParseOutput) -> String {
     let line_starts = line_starts(source);
+    let mut interpolation_spans = Vec::new();
+    let mut binary_spans = Vec::new();
+    walk_module_exprs(&parse.module, &mut |expr| {
+        if matches!(expr.kind, ExprKind::Interpolation(_)) {
+            interpolation_spans.push(expr.span);
+        }
+        if matches!(expr.kind, ExprKind::Binary { .. }) {
+            binary_spans.push(expr.span);
+        }
+    });
     let mut calls = Vec::new();
     walk_module_exprs(&parse.module, &mut |expr| {
         if let ExprKind::Call { callee, args } = &expr.kind
             && let Some(call) = call_layout(expr.span, callee, args, &parse.raw_tokens)
+            && call_can_reflow(
+                source,
+                &line_starts,
+                &call,
+                &interpolation_spans,
+                &binary_spans,
+            )
         {
             calls.push(call);
         }
@@ -154,6 +182,33 @@ fn normalize_call_layouts(source: &str, parse: &ParseOutput) -> String {
     }
 
     apply_whitespace_edits(source, edits)
+}
+
+/// Reflow only calls whose surrounding layout cannot contribute meaning.
+/// Long unsafe calls deliberately remain long: the width is a soft budget.
+fn call_can_reflow(
+    source: &str,
+    line_starts: &[usize],
+    call: &CallLayout,
+    interpolation_spans: &[Span],
+    binary_spans: &[Span],
+) -> bool {
+    let arguments_are_single_line = call.argument_spans.iter().all(|span| {
+        line_for_offset(line_starts, span.start)
+            == line_for_offset(line_starts, span.end.saturating_sub(1))
+    });
+    let touches_interpolation = interpolation_spans.iter().any(|interpolation| {
+        interpolation.start < call.span.end && call.span.start < interpolation.end
+    });
+    let is_binary_operand = binary_spans
+        .iter()
+        .any(|binary| binary.start <= call.span.start && call.span.end <= binary.end);
+    let ends_line = source
+        .get(call.close_span.end..)
+        .and_then(|suffix| suffix.lines().next())
+        .is_none_or(|suffix| suffix.trim().is_empty());
+
+    arguments_are_single_line && !touches_interpolation && !is_binary_operand && ends_line
 }
 
 fn call_layout(span: Span, callee: &Expr, args: &[Expr], tokens: &[Token]) -> Option<CallLayout> {

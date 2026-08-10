@@ -1,0 +1,20 @@
+# Reference solution, hand-written. Not shown to any model.
+#
+# `foldl` is `Array.fold`, a left fold taking `(acc, el)` — the same argument
+# order the canonical pseudocode uses — and `foldr` is that fold over a reversed
+# list. The suite passes real functions here: the canonical data writes them as
+# pseudocode text and `adapters/lang/pseudocode.ts` compiles them to Aven lambdas.
+#
+# Note the spread is `..`, not `...`; the three-dot spelling lexes as a reserved
+# `.` operator and the diagnostic talks about custom operators.
+
+append = (list1, list2) => [..list1, ..list2]
+concat = (lists) => lists.fold([], (acc, inner) => [..acc, ..inner])
+filter = (list, function) => list.filter(function)
+length = (list) => list.length()
+map = (list, function) => list.map(function)
+foldl = (list, initial, function) => list.fold(initial, function)
+foldr = (list, initial, function) => list.reverse().fold(initial, function)
+reverse = (list) => list.reverse()
+
+{ append, concat, filter, length, map, foldl, foldr, reverse }

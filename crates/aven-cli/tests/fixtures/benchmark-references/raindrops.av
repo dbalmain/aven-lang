@@ -1,0 +1,16 @@
+# Reference solution, hand-written. Not shown to any model.
+
+drop : (Int, Int, Text) -> Text
+drop = (number, factor, sound) =>
+  number.mod(factor) == 0 ?>
+    true => sound
+    false => ""
+
+convert : (Int) -> Text
+convert = (number) =>
+  sounds = "${drop(number, 3, "Pling")}${drop(number, 5, "Plang")}${drop(number, 7, "Plong")}"
+  sounds.isEmpty() ?>
+    true => "${number}"
+    false => sounds
+
+{ convert }

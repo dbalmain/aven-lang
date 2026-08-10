@@ -1,0 +1,8 @@
+# Reference solution, hand-written. Not shown to any model.
+
+abbreviate : (Text) -> Text
+abbreviate = (phrase) =>
+  words = phrase.replaceEach("-", " ").replaceEach("_", " ").splitOn(" ")
+  words.fold("", (acc, word) => "${acc}${word.slice(0, 1).toUpper()}")
+
+{ abbreviate }

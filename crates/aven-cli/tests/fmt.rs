@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const BENCHMARK_REFERENCE_ROOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/benchmark-references"
+);
+
 #[test]
 fn fmt_check_accepts_formatted_source() {
     let source = "value =\n  item = 1\n";
@@ -148,6 +153,49 @@ fn fmt_wraps_the_call_but_preserves_its_parenthesized_inline_match() {
         fs::read_to_string(file.path()).expect("failed to reread formatted source"),
         once
     );
+}
+
+#[test]
+fn benchmark_references_stay_check_clean_and_idempotent_after_fmt() {
+    let mut paths = fs::read_dir(BENCHMARK_REFERENCE_ROOT)
+        .expect("benchmark reference fixture directory must be readable")
+        .map(|entry| {
+            entry
+                .expect("benchmark reference entry must be readable")
+                .path()
+        })
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("av"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    assert_eq!(paths.len(), 11, "expected the complete reference corpus");
+
+    for path in paths {
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("benchmark reference fixture name must be UTF-8");
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        let file = TempFile::new(name, &source);
+
+        assert_command_success(name, "check input", &run_aven(["check"], file.path()));
+        assert_command_success(name, "format input", &run_aven(["fmt"], file.path()));
+        assert_command_success(
+            name,
+            "check formatted output",
+            &run_aven(["check"], file.path()),
+        );
+
+        let once = fs::read_to_string(file.path())
+            .unwrap_or_else(|error| panic!("failed to read formatted {name}: {error}"));
+        assert_command_success(name, "format twice", &run_aven(["fmt"], file.path()));
+        assert_eq!(
+            fs::read_to_string(file.path())
+                .unwrap_or_else(|error| panic!("failed to reread formatted {name}: {error}")),
+            once,
+            "benchmark reference `{name}` is not formatter-idempotent"
+        );
+    }
 }
 
 #[test]
@@ -1317,6 +1365,16 @@ fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
         "expected success, got status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout(output),
+        stderr(output)
+    );
+}
+
+fn assert_command_success(name: &str, command: &str, output: &Output) {
+    assert!(
+        output.status.success(),
+        "benchmark reference `{name}` failed `{command}` with status {:?}\nstdout:\n{}\nstderr:\n{}",
         output.status.code(),
         stdout(output),
         stderr(output)

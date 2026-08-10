@@ -126,6 +126,57 @@ fn library_only_globals_are_hidden_from_user_modules_but_visible_to_library_modu
 }
 
 #[test]
+fn formatted_standard_library_is_idempotent_and_checks_in_library_context() {
+    let formatted_library = aven_host::standard_std_library()
+        .into_iter()
+        .map(|(specifier, source)| {
+            let formatted = aven_fmt::format_source(source).unwrap_or_else(|diagnostics| {
+                panic!("std module `{specifier}` failed to format: {diagnostics:?}")
+            });
+            assert_eq!(
+                aven_fmt::format_source(&formatted),
+                Ok(formatted.clone()),
+                "std module `{specifier}` is not formatter-idempotent"
+            );
+            let formatted: &'static str = Box::leak(formatted.into_boxed_str());
+            (specifier, formatted)
+        })
+        .collect::<HashMap<_, _>>();
+    assert_eq!(formatted_library.len(), 9);
+
+    let dir = TempDir::new("formatted-standard-library");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "std = import(\"std\")\n",
+            "array = import(\"std/array\")\n",
+            "clock = import(\"std/clock\")\n",
+            "map = import(\"std/map\")\n",
+            "result = import(\"std/result\")\n",
+            "set = import(\"std/set\")\n",
+            "test = import(\"std/test\")\n",
+            "time = import(\"std/time\")\n",
+            "zones = import(\"std/zones\")\n",
+            "{ std, array, clock, map, result, set, test, time, zones }\n",
+        ),
+    );
+    let path = dir.path().join("main.av");
+    let roots = ModuleRoots::discover(&path)
+        .with_library(aven_host::STD_LIBRARY_NAME, formatted_library)
+        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
+        .with_library_only_global_names(aven_host::standard_library_only_global_names());
+
+    let checked = check_path_with_host_globals_and_roots(
+        &path,
+        &aven_host::standard_check_host_globals(),
+        &roots,
+    )
+    .expect("formatted standard library should load");
+    assert_no_errors(&checked.reports);
+}
+
+#[test]
 fn unexported_binding_is_not_on_import_record_type() {
     let dir = TempDir::new("private-binding");
     fs::create_dir_all(dir.path().join("lib")).expect("failed to create lib dir");

@@ -1,0 +1,2 @@
+drop = (number, factor, sound) => sound
+sounds = "${drop(number, 3, "Pling")}${drop(number, 5, "Plang")}${drop(number, 7, "Plong")}"

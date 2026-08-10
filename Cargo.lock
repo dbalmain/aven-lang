@@ -151,6 +151,7 @@ dependencies = [
  "aven-check",
  "aven-core",
  "aven-eval",
+ "aven-fmt",
  "aven-host",
  "aven-parser",
  "serde",
