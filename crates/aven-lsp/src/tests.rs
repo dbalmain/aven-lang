@@ -1254,6 +1254,35 @@ fn completion_at_text_field_access_offers_format_methods() {
 }
 
 #[test]
+fn completion_at_collectible_receivers_offers_collect_method_sugar() {
+    for (kind, source) in [
+        ("Stream", "value = (1 .. 10).|"),
+        ("Array", "value : Array(Int) = [1]\nresult = value.|"),
+        ("Set", "value : Set(Int) = @{ 1 }\nresult = value.|"),
+    ] {
+        let completions = completions_at_marker(source);
+        let matching = completions
+            .iter()
+            .filter(|item| item.label == "collect")
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            matching.len(),
+            1,
+            "expected one collect completion on {kind}, got {completions:?}"
+        );
+        assert_eq!(matching[0].kind, Some(CompletionItemKind::FIELD));
+        assert_eq!(matching[0].detail.as_deref(), Some("target -> collected"));
+    }
+
+    let scalar = completions_at_marker("value : Int = 1\nresult = value.|");
+    assert!(
+        completion_item(&scalar, "collect").is_none(),
+        "collect must stay scoped to collection receivers"
+    );
+}
+
+#[test]
 fn completion_at_text_field_access_returns_builtin_methods() {
     let completions = completions_at_marker("text : Text = \"hi\"\nresult = text.|");
     let labels = completions
@@ -1330,6 +1359,20 @@ fn completion_at_record_field_access_keeps_real_encode_member_detail() {
     };
 
     assert_eq!(encode.detail.as_deref(), Some("Int -> Text"));
+}
+
+#[test]
+fn completion_at_record_field_access_keeps_one_real_collect_member() {
+    let completions = completions_at_marker(
+        "holder : { collect: (Text) -> Text } = current\nresult = holder.|\n",
+    );
+    let matching = completions
+        .iter()
+        .filter(|item| item.label == "collect")
+        .collect::<Vec<_>>();
+
+    assert_eq!(matching.len(), 1, "expected one collect completion");
+    assert_eq!(matching[0].detail.as_deref(), Some("Text -> Text"));
 }
 
 #[test]

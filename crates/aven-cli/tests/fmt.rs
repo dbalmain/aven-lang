@@ -123,7 +123,7 @@ fn fmt_preserves_quoted_uppercase_field_and_stays_check_clean() {
 }
 
 #[test]
-fn fmt_preserves_parenthesized_inline_matches_that_exceed_the_line_width() {
+fn fmt_wraps_the_call_but_preserves_its_parenthesized_inline_match() {
     let file = TempFile::new(
         "parenthesized-inline-match",
         "f = (r: Result(Int, Text)) => r.map((n) => (n >= 0 ?> true => \"quite a long ok payload here\", false => \"quite a long error payload here\"))\n",
@@ -133,7 +133,13 @@ fn fmt_preserves_parenthesized_inline_matches_that_exceed_the_line_width() {
     let once = fs::read_to_string(file.path()).expect("failed to read formatted source");
     assert_eq!(
         once,
-        "f = (r: Result(Int, Text)) => r.map((n) => (n >= 0 ?> true => \"quite a long ok payload here\", false => \"quite a long error payload here\"))\n"
+        concat!(
+            "f = (r: Result(Int, Text)) => r\n",
+            "  .map(\n",
+            "    (n) => (n >= 0 ?> true => \"quite a long ok payload here\", ",
+            "false => \"quite a long error payload here\")\n",
+            "  )\n",
+        )
     );
     assert_success(&run_aven(["check"], file.path()));
 
