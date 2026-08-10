@@ -32,8 +32,8 @@ use crate::ty::{
     named_builtin, named_type_mismatch, named_type_name, number_literal_joins_number_row,
     number_literal_row_is_int_only, number_literal_text_is_float, number_types_join_to_float,
     numeric_type_name, open_literal_variant_base, render_literal_value, render_type_scheme,
-    type_contains_deferred, type_contains_error, type_contains_hole, type_contains_variable,
-    type_is_uninhabited, type_variable_names,
+    type_contains_deferred, type_contains_error, type_contains_function, type_contains_hole,
+    type_contains_variable, type_is_uninhabited, type_variable_names,
 };
 use crate::unify::Unifier;
 use crate::{

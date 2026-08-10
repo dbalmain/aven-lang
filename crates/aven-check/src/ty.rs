@@ -1408,6 +1408,46 @@ pub(crate) fn type_contains_meta(ty: &Type, id: u32) -> bool {
     found
 }
 
+/// Whether a value of this type embeds a function in any structural position.
+///
+/// Structural counterpart of `value_is_comparable` in `aven-eval` for the
+/// function case: a container is non-comparable when any nested position is.
+/// The two live in different crates (`Type` vs `Value`), so they stay parallel
+/// by construction rather than sharing one helper — keep the match arms in
+/// obvious correspondence when either changes.
+///
+/// Slot-record **method slots** are not walked: they are behaviour, not
+/// comparable payload. Runtime `value_is_comparable` does walk slots (because
+/// stored method closures are values); static `Named` owners never expand to
+/// `SlotRecord` here, and treating slots as data would reject every
+/// method-bearing reification on `==`.
+pub(crate) fn type_contains_function(ty: &Type) -> bool {
+    match ty {
+        Type::Function { .. } => true,
+        Type::Optional(inner) | Type::Nullable(inner) => type_contains_function(inner),
+        Type::Tuple(items) => items.iter().any(type_contains_function),
+        Type::Record(row) | Type::Variant(row) => row_contains_function(row),
+        Type::SlotRecord { data, .. } => row_contains_function(data),
+        // Container type args (`Array(T)`, `Set(T)`, `Map(K, V)`, `Result(T, E)`, …)
+        // are value positions; the constructor itself is not.
+        Type::Apply { args, .. } => args.iter().any(type_contains_function),
+        Type::Error
+        | Type::Deferred
+        | Type::Named(_)
+        | Type::Variable(_)
+        | Type::Meta(_)
+        | Type::Recursive(_) => false,
+    }
+}
+
+fn row_contains_function(row: &Row) -> bool {
+    row.entries.iter().any(|entry| match entry {
+        RowEntry::Field { ty, .. } => type_contains_function(ty),
+        RowEntry::Tag { payload, .. } => payload.iter().any(type_contains_function),
+        RowEntry::Literal { .. } => false,
+    })
+}
+
 pub(crate) fn is_concrete_type(ty: &Type) -> bool {
     let mut concrete_types = true;
     let mut concrete_rows = true;

@@ -12547,6 +12547,17 @@ fn function_equality_reports_statically() {
         "expected a function-comparability error: {:?}",
         check.diagnostics
     );
+    assert!(
+        check.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message == "functions are not comparable"
+                && diagnostic
+                    .labels
+                    .iter()
+                    .any(|label| label.message == "this operand is a function")
+        }),
+        "expected a top-level function operand label: {:?}",
+        check.diagnostics
+    );
 
     // Ordinary equality is untouched.
     let passing = parse_module("a = { x: 1 }\nb: Bool = a == { x: 1 }\nc: Bool = 1 == 2\n");
@@ -12556,6 +12567,78 @@ fn function_equality_reports_statically() {
         "sound equality failed: {:?}",
         passing_check.diagnostics
     );
+}
+
+/// Nested functions must not slip past the `==`/`!=` guard: runtime equality
+/// is non-reflexive for any container that embeds a closure (`a == a` is
+/// `false`), so the static walk has to match runtime `value_is_comparable`.
+#[test]
+fn nested_function_equality_reports_statically() {
+    for source in [
+        // Record field
+        "f = (x: Int): Int => x\na = { g: f }\nb: Bool = a == a\n",
+        "f = (x: Int): Int => x\nb: Bool = { g: f } == { g: f }\n",
+        // Tuple element
+        "f = (x: Int): Int => x\nt = (f, 1)\nb: Bool = t == t\n",
+        "f = (x: Int): Int => x\nb: Bool = (f, 1) == (f, 1)\n",
+        // Array element
+        "f = (x: Int): Int => x\narr = [f]\nb: Bool = arr == arr\n",
+        "f = (x: Int): Int => x\nb: Bool = [f] == [f]\n",
+        // Variant / tag payload
+        "f = (x: Int): Int => x\nv = @Some(f)\nb: Bool = v == v\n",
+        // Deep nesting (record of record of function)
+        "f = (x: Int): Int => x\ndeep = { outer: { g: f } }\nb: Bool = deep == deep\n",
+        // `!=` is the same question
+        "f = (x: Int): Int => x\na = { g: f }\nb: Bool = a != a\n",
+        // Type alias still expands under normalize
+        "Handler = Int -> Int\nf: Handler = (x: Int): Int => x\na = { g: f }\nb: Bool = a == a\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+            "expected nested function-comparability error for {source:?}: {:?}",
+            check.diagnostics
+        );
+        assert!(
+            check.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message == "functions are not comparable"
+                    && diagnostic.labels.iter().any(|label| {
+                        label.message == "this operand contains a function"
+                            || label.message == "this operand is a function"
+                    })
+            }),
+            "expected a function-comparability label for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+/// Comparable containers keep working under `==` / `!=` (regression risk for
+/// the recursive walk).
+#[test]
+fn ordinary_structural_equality_remains_comparable() {
+    for source in [
+        "b: Bool = { k: 1 } == { k: 2 }\n",
+        "b: Bool = { k: 1 } != { k: 2 }\n",
+        "b: Bool = (1, \"a\") == (2, \"b\")\n",
+        "b: Bool = [1, 2] == [1, 2]\n",
+        "b: Bool = @Red == @Green\n",
+        "b: Bool = @Some(1) == @Some(2)\n",
+        "b: Bool = { outer: { k: 1 } } == { outer: { k: 2 } }\n",
+        "b: Bool = { x: (1, \"a\") } == { x: (2, \"b\") }\n",
+        "b: Bool = { x: [1] } == { x: [2] }\n",
+        "s = @{{ k: 1 }, { k: 2 }}\n",
+        "Person = { name: Text }\na: Person = { name: \"x\" }\nb: Person = { name: \"x\" }\nc: Bool = a == b\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "ordinary structural equality should check cleanly for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
 }
 
 /// Set membership is equality. A function element is the same question as a
@@ -12573,6 +12656,9 @@ fn set_function_elements_report_statically() {
         "f = (x: Int): Int => x\ns = [f].collect(Set)\n",
         "f = (x: Int): Int => x\ns = Set.collect([f])\n",
         "f = (x: Int): Int => x\ns = @{1} | f\n",
+        // Nested function inside a set element (same non-reflexive equality)
+        "f = (x: Int): Int => x\na = { g: f }\ns = @{a}\n",
+        "f = (x: Int): Int => x\ns = @{(f, 1)}\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);

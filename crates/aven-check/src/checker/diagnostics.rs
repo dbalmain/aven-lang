@@ -719,12 +719,21 @@ impl<'a> Checker<'a> {
         );
     }
 
-    /// Report when a type used as a Set element is a function. Shared by set
-    /// literals, `|` union parts, `.add`, and `collect(Set)`.
+    /// Report when a type used as a Set element embeds a function (top-level or
+    /// nested). Shared by set literals, `|` union parts, `.add`, and
+    /// `collect(Set)`. Recurses like runtime `value_is_comparable` / the `==`
+    /// guard — set membership is equality.
     pub(super) fn report_if_incomparable_set_element(&mut self, ty: &Type, span: Span) {
-        if matches!(self.unifier.resolve(ty), Type::Function { .. }) {
-            self.report_functions_not_comparable(span, "this set element is a function");
+        let resolved = self.normalize(&self.unifier.resolve(ty));
+        if !type_contains_function(&resolved) {
+            return;
         }
+        let label = if matches!(resolved, Type::Function { .. }) {
+            "this set element is a function"
+        } else {
+            "this set element contains a function"
+        };
+        self.report_functions_not_comparable(span, label);
     }
 
     /// Arity mismatch when an open method row (from a free-receiver call) is

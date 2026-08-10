@@ -581,15 +581,25 @@ impl<'a> Checker<'a> {
             return self.open_literal_variant(&literal);
         }
 
-        // Functions have no equality; the evaluator throws on `f == g`. Report
-        // statically and still type the comparison as Bool so downstream
-        // checking stays precise instead of deferring.
+        // Functions have no equality; the evaluator throws on `f == g` and
+        // nested functions silently make structural `==` non-reflexive. Walk
+        // containers the same way runtime `value_is_comparable` does (see
+        // `type_contains_function`), report statically, and still type as Bool
+        // so downstream checking stays precise instead of deferring.
         if matches!(operator, "==" | "!=") {
             let function_operand = [(&left_type, left), (&right_type, right)]
                 .into_iter()
-                .find(|(ty, _)| matches!(self.unifier.resolve(ty), Type::Function { .. }));
-            if let Some((_, operand)) = function_operand {
-                self.report_functions_not_comparable(operand.span, "this operand is a function");
+                .find_map(|(ty, operand)| {
+                    let resolved = self.normalize(&self.unifier.resolve(ty));
+                    type_contains_function(&resolved).then_some((resolved, operand))
+                });
+            if let Some((resolved, operand)) = function_operand {
+                let label = if matches!(resolved, Type::Function { .. }) {
+                    "this operand is a function"
+                } else {
+                    "this operand contains a function"
+                };
+                self.report_functions_not_comparable(operand.span, label);
                 return named_builtin("Bool");
             }
         }
