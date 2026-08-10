@@ -375,8 +375,8 @@ impl<'a> Checker<'a> {
         Some(match base {
             LiteralBase::Bool => "Bool",
             LiteralBase::Text => "Text",
-            // Number-base open/closed rows share Int|Float acceptance in
-            // `mismatched_literal_kind`; report against Int.
+            // Number-base rows: report against Int so float-form patterns are
+            // rejected by `mismatched_literal_kind` (Int does not accept them).
             LiteralBase::Number => "Int",
         })
     }

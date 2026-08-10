@@ -727,6 +727,60 @@ fn detects_comptime_rhs_artifacts_without_evaluation() {
 }
 
 #[test]
+fn postfix_optional_on_non_literals_is_non_liftable_into_runtime() {
+    // The gate used to fire only for syntactic literals (`5?`). A name or call
+    // operand escaped, then the evaluator died on type construction.
+    for source in [
+        "y = 5\nx : Int = y?\n",
+        "Money = Int { cents(): Int => . }\nprice : Money = 2599\nviaMethod: Int = price.div(2)?\n",
+        "x = 5?\n",
+        "x : Int = 5?\n",
+        "x : Text = \"a\"?\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            has_diagnostic_code(
+                &check.diagnostics,
+                codes::comptime::NON_LIFTABLE_INTO_RUNTIME
+            ),
+            "{source} should report comptime.non-liftable-into-runtime: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn optional_type_position_stays_liftable_as_annotation() {
+    // Prefix `?T` / postfix `T?` in *type* position must keep working — those
+    // are annotations, not runtime RHS type constructions.
+    for source in [
+        "f = (n: Int): ?Int => n\n",
+        "x : ?Int = 5\n",
+        "g = (n: Int): Int? => n\n",
+        "y : Int? = 5\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(
+                &check.diagnostics,
+                codes::comptime::NON_LIFTABLE_INTO_RUNTIME
+            ),
+            "{source} unexpectedly reported non-liftable: {:?}",
+            check.diagnostics
+        );
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} unexpectedly produced diagnostics: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
 fn comptime_rhs_evaluation_check_is_shallow_and_group_unwrapped() {
     for source in [
         "Value = make()\n",
@@ -2303,6 +2357,58 @@ fn int_and_float_identifier_values_are_not_interchangeable() {
             matching_codes(&check.diagnostics, codes::ty::MISMATCH),
             1,
             "{source} should produce one type.mismatch"
+        );
+    }
+}
+
+#[test]
+fn float_literals_do_not_subsume_into_int() {
+    // Float-form lexemes and float arithmetic must not inhabit Int. The tell
+    // that this is a defect (not deliberate widening) is `1.5` being accepted.
+    for source in [
+        "x : Int = 1.0\n",
+        "x : Int = 1.5\n",
+        "x : Int = 2.0 + 1.0\n",
+        "x : Int = -1.0\n",
+        "a : Array(Int) = [1, 2.0]\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+            1,
+            "{source} should produce one type.mismatch: {:?}",
+            check.diagnostics
+        );
+        let diagnostic = check
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some(codes::ty::MISMATCH))
+            .expect("type.mismatch");
+        assert!(
+            diagnostic.message.contains("`Int`"),
+            "{source} should name Int as expected: {}",
+            diagnostic.message
+        );
+    }
+}
+
+#[test]
+fn int_literals_still_widen_into_float() {
+    for source in [
+        "x : Float = 1\n",
+        "f = (n: Float) => n\nr = f(1)\n",
+        "a : Array(Float) = [1, 2]\n",
+        "x : Float = 1.0\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} unexpectedly produced type.mismatch: {:?}",
+            check.diagnostics
         );
     }
 }

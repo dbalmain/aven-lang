@@ -1702,6 +1702,19 @@ impl<'a> Checker<'a> {
             return;
         };
 
+        // Number-literal rows: Float accepts any number (widening); Int rejects
+        // float-form members. Folded float arithmetic (`2.0 + 1.0` → `3.0`)
+        // lands here as a singleton open row, not as Named(`Float`).
+        if base == LiteralBase::Number {
+            if expected == "Float" || (expected == "Int" && !literal_row_contains_float(&actual)) {
+                return;
+            }
+            if expected == "Int" {
+                self.report_type_mismatch_between_types(expected, "Float", span);
+                return;
+            }
+        }
+
         if !base.matches_named(expected) {
             self.report_type_mismatch_between_types(
                 expected,

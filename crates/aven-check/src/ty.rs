@@ -1866,10 +1866,45 @@ pub(crate) fn is_meta_type(ty: &Type) -> bool {
     matches!(ty, Type::Meta(_))
 }
 
+/// True when a number lexeme is a float form (`.` or exponent), not a bare int.
+pub(crate) fn number_literal_text_is_float(text: &str) -> bool {
+    text.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
+}
+
+/// True when a literal row carries any float-form number member.
+pub(crate) fn literal_row_contains_float(row: &Row) -> bool {
+    row.entries.iter().any(|entry| {
+        matches!(
+            entry,
+            RowEntry::Literal {
+                value: Literal::Number(number)
+            } if number_literal_text_is_float(number)
+        )
+    })
+}
+
+/// Whether an open/closed number-literal row may stand where `name` is expected.
+/// `Int` rejects float-form members (narrowing); `Float` accepts any number
+/// (widening of bare ints). Other names fall through to [`LiteralBase::matches_named`].
+pub(crate) fn number_literal_row_fits_named(row: &Row, name: &str) -> bool {
+    match name {
+        "Int" => !literal_row_contains_float(row),
+        "Float" => true,
+        _ => false,
+    }
+}
+
 pub(crate) fn mismatched_literal_kind(expected: &str, literal: &Literal) -> Option<&'static str> {
     match (expected, literal) {
         ("Bool", Literal::Bool(_)) => None,
-        ("Text", Literal::String(_)) | ("Int" | "Float", Literal::Number(_)) => None,
+        ("Text", Literal::String(_)) => None,
+        // Float accepts every number lexeme (Int → Float widening). Int rejects
+        // float forms: `1.0` / `1.5` / `1e3` are not Int.
+        ("Float", Literal::Number(_)) => None,
+        ("Int", Literal::Number(number)) if number_literal_text_is_float(number) => {
+            Some("float literal")
+        }
+        ("Int", Literal::Number(_)) => None,
         ("Int" | "Float" | "Bool" | "Null" | "Undefined", Literal::String(_)) => {
             Some("text literal")
         }

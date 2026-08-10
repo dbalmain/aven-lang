@@ -5,7 +5,8 @@ use aven_core::{BuiltinType, Span};
 use crate::ty::{
     LiteralBase, MethodPredicate, RecursiveTypeId, Row, RowEntry, RowMergeConstraint,
     RowMergeSource, RowTail, Type, TypeScheme, free_row_vars, literal_variant_base, map_type,
-    map_type_with_rows, open_literal_variant_base, render_literal_value, type_contains_meta,
+    map_type_with_rows, number_literal_row_fits_named, open_literal_variant_base,
+    render_literal_value, type_contains_meta,
 };
 
 #[derive(Debug, Default)]
@@ -165,7 +166,7 @@ impl Unifier {
             (Type::Meta(id), ty) | (ty, Type::Meta(id)) => self.bind(*id, ty),
             (Type::Named(left), Type::Named(right)) if left == right => Ok(()),
             (Type::Variant(row), Type::Named(name)) | (Type::Named(name), Type::Variant(row))
-                if open_literal_variant_base(row).is_some_and(|base| base.matches_named(name)) =>
+                if open_literal_variant_unifies_named(row, name) =>
             {
                 Ok(())
             }
@@ -606,6 +607,21 @@ impl Unifier {
 
         (ty, predicates)
     }
+}
+
+/// Open number-literal rows unify with `Float` (any number) and with `Int` only
+/// when every member is an int-form lexeme — float forms do not narrow into Int.
+fn open_literal_variant_unifies_named(row: &Row, name: &str) -> bool {
+    let Some(base) = open_literal_variant_base(row) else {
+        return false;
+    };
+    if !base.matches_named(name) {
+        return false;
+    }
+    if base == LiteralBase::Number {
+        return number_literal_row_fits_named(row, name);
+    }
+    true
 }
 
 fn instantiate_type(
