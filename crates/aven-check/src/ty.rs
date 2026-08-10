@@ -1695,8 +1695,16 @@ pub mod build {
         builtin(BuiltinType::Bool)
     }
 
+    /// `()` — the type of functions that return no meaningful value, and the
+    /// only type the unit value inhabits. This is the empty tuple, which is
+    /// what `()` denotes in type position and what a `()` expression infers.
+    ///
+    /// The named [`BuiltinType::Unit`] is a separate type: the checker has no
+    /// rule making `()` an alias for it, so nothing can produce a `Unit` and a
+    /// host that spelled its no-result positions that way could not be called
+    /// from a `(a) -> ()` position such as `Array.each`.
     pub fn unit() -> Type {
-        builtin(BuiltinType::Unit)
+        Type::Tuple(Vec::new())
     }
 
     /// A function type `(params...) -> result` where every param is required.

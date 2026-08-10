@@ -996,7 +996,7 @@ fn completion_at_seeded_logger_field_access_returns_logger_methods() {
         ]
     );
     assert_eq!(info.kind, Some(CompletionItemKind::FIELD));
-    assert_eq!(info.detail.as_deref(), Some("(Text, { .. } = _) -> Unit"));
+    assert_eq!(info.detail.as_deref(), Some("(Text, { .. } = _) -> ()"));
 }
 
 #[test]

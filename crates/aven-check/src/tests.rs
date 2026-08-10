@@ -6441,6 +6441,30 @@ fn stream_methods_and_array_spread_preserve_element_types() {
     );
 }
 
+/// [`build::unit`] is the vocabulary a host reaches for when a binding returns
+/// no meaningful value, so it must be the very type a `()` expression has —
+/// otherwise the host's writers are uncallable from every `(a) -> ()` position
+/// in the standard library, `Array.each` and `Set.each` among them.
+///
+/// The named `Unit` builtin is a *different* type: no expression produces one,
+/// so it can only ever appear on the expected side of a mismatch. This pins the
+/// two apart so `build::unit` cannot quietly become the unusable one.
+#[test]
+fn unit_builder_is_the_type_of_the_unit_expression_not_the_named_builtin() {
+    let host = HostGlobals::default();
+    let inferred = checked_binding_type("value = ()\n", "value", &host);
+
+    assert_eq!(inferred, build::unit(), "`()` has the type hosts spell");
+    assert_eq!(inferred.render(), "()");
+
+    let named = build::builtin(aven_core::BuiltinType::Unit);
+    assert_ne!(
+        build::unit(),
+        named,
+        "the named `Unit` is a separate type from `()`"
+    );
+}
+
 /// `collect` is target-owned, so the target names the type built and the
 /// element rides along from whatever collection is being drained — in either
 /// spelling, since the method form is sugar for the static form.

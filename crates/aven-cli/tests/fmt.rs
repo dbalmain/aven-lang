@@ -1146,6 +1146,57 @@ fn run_bare_write_returns_unit_while_handle_write_returns_result() {
     assert_eq!(stdout(&handle_output), "x@Ok(())\n");
 }
 
+/// The canonical print-every-element loop, through the whole toolchain. `each`
+/// is typed `(a) -> ()`, so this only checks if the writer's result is that
+/// same `()`. It is exercised on both collections, and through `check` as well
+/// as `run` — `run` never consulted the type, so a checker-only regression here
+/// would otherwise still print the right thing.
+#[test]
+fn each_over_write_line_checks_and_runs_for_array_and_set() {
+    for (label, source, expected) in [
+        (
+            "array-each-write-line",
+            "[1, 2].each((x) => writeLine(\"${x}\"))\n",
+            "1\n2\n",
+        ),
+        (
+            "set-each-write-line",
+            "@{ 1, 2 }.each((x) => writeLine(\"${x}\"))\n",
+            "1\n2\n",
+        ),
+    ] {
+        let file = TempFile::new(label, source);
+
+        let checked = run_aven(["check"], file.path());
+        assert_success(&checked);
+
+        let ran = run_aven(["run"], file.path());
+        assert_success(&ran);
+        // Only the loop's own output: the `()` each call yields is trivial and
+        // must not be printed after it.
+        assert_eq!(stdout(&ran), expected, "{label}");
+    }
+}
+
+/// A bare writer call as a statement stays clean. The spec reserves the right
+/// to reject ignoring a non-`Unit` value; typing the writers `()` is what keeps
+/// that rule from firing on the most common statement in the language, so this
+/// pins that the rule is not on today.
+#[test]
+fn bare_write_line_statements_check_clean_in_a_block() {
+    let file = TempFile::new(
+        "bare-write-line-statements",
+        "main = () =>\n  writeLine(\"a\")\n  writeLine(\"b\")\nmain()\n",
+    );
+
+    let checked = run_aven(["check"], file.path());
+    assert_success(&checked);
+
+    let ran = run_aven(["run"], file.path());
+    assert_success(&ran);
+    assert_eq!(stdout(&ran), "a\nb\n");
+}
+
 #[test]
 fn explain_prints_diagnostic_explanations() {
     let output = run_aven_without_path(["explain", "type.unused-result"]);
