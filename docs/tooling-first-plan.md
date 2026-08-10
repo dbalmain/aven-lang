@@ -459,6 +459,11 @@ language spec's comprehension-style guard shape. Parser unit tests cover local
 invariants, and `parser/ast/valid` golden fixtures lock the reusable
 pattern-position tree shape.
 
+Match-arm layout has two uniform forms: all arms may be inline after `?>` and
+comma-separated, or all arms may begin on their own lines under `?>`. A match
+that begins with an inline arm and continues with an arm on a following line
+reports `parse.mixed-match-arm-layout`.
+
 Goal: complete pattern syntax after the expression and type parsers have
 settled.
 
@@ -532,6 +537,23 @@ Decision rule: expression spacing belongs in the raw-token-driven emitter, not
 in a line-string rewrite pass. The emitter can normalize intra-line trivia, but
 line-break and reflow decisions need AST context; do not add those to the
 token-only spacing pass.
+
+### Call wrapping policy
+
+`aven fmt` uses 80 columns as a soft budget. Call wrapping is all-or-nothing per
+call: once a call wraps, every argument starts on its own line. The closing `)`
+also occupies its own line, indented to match the line that starts the call.
+The formatter does not pack as many arguments as possible onto each line.
+
+Leading-`.` chains follow the same wrapping rule. The formatter never joins an
+authored wrapped chain back onto one line. Inside a method body, a leading `.` at
+statement indentation is receiver focus, so unwrapping a chain can change the
+program's meaning.
+
+Wrapping is meaning-preserving. The formatter does not wrap inside a string
+interpolation or where an argument already spans lines. It reparses each edited
+result and discards the edit if parsing fails. The column budget is a target,
+not a guarantee: a line that cannot be wrapped safely remains long.
 
 ## Milestone 6: Name Resolution Skeleton
 
@@ -3016,6 +3038,8 @@ everything pure Aven unless noted:
 - `std/result`: `andThen` (free fn + method); `map`/`unwrapOr`/`isOk`/`isErr`
   gained method forms beside the earlier `mapErr`/`orElse` (shared method table,
   LSP completion picks them up).
+- `std/test`: assertion helpers have type `Result((), Text)` and return
+  `@Ok(())` on success.
 - Text numeric parsing (host builtins): `toInt : () -> ?Int`,
   `toFloat : () -> ?Float` — exact input (no trim); `toInt` accepts arbitrary
   decimal precision and returns `undefined` only for invalid syntax; `toFloat`
