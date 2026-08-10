@@ -35,6 +35,102 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
     format_parsed_source_with_reparse(source, parse, parse_module)
 }
 
+/// Format the recovered mixed-layout match containing `continuation` as a
+/// standard match-arm block. The edit stays scoped to the match expression,
+/// while the replacement itself comes from the ordinary formatter.
+pub fn format_mixed_match_as_block(
+    source: &str,
+    parse: &ParseOutput,
+    continuation: Span,
+) -> Option<(Span, String)> {
+    let line_starts = line_starts(source);
+    let matches = match_expressions(&parse.module);
+    let (target_index, target) = matches.iter().enumerate().find(|(_, expr)| {
+        let ExprKind::Match {
+            operator_span,
+            arms,
+            ..
+        } = &expr.kind
+        else {
+            return false;
+        };
+        expr.span.contains(continuation)
+            && arms.first().is_some_and(|arm| {
+                line_for_offset(&line_starts, operator_span.start)
+                    == line_for_offset(&line_starts, arm.span.start)
+            })
+            && arms
+                .iter()
+                .skip(1)
+                .any(|arm| arm.span.contains(continuation))
+    })?;
+    let ExprKind::Match {
+        operator_span,
+        arms,
+        ..
+    } = &target.kind
+    else {
+        return None;
+    };
+
+    let indent = leading_indent(source, &line_starts, target.span.start) + INDENT_WIDTH;
+    let arm_prefix = format!("\n{}", " ".repeat(indent));
+    let mut edits = Vec::with_capacity(arms.len());
+    push_match_separator_edit(
+        source,
+        &mut edits,
+        Span::new(operator_span.end, arms.first()?.span.start),
+        arm_prefix.clone(),
+    )?;
+    for pair in arms.windows(2) {
+        push_match_separator_edit(
+            source,
+            &mut edits,
+            Span::new(pair[0].span.end, pair[1].span.start),
+            arm_prefix.clone(),
+        )?;
+    }
+
+    let candidate = apply_whitespace_edits(source, edits);
+    let candidate_parse = parse_module(&candidate);
+    let formatted = format_parsed_source(&candidate, &candidate_parse).ok()?;
+    let formatted_parse = parse_module(&formatted);
+    let formatted_match = *match_expressions(&formatted_parse.module).get(target_index)?;
+    let replacement = formatted
+        .get(formatted_match.span.start..formatted_match.span.end)?
+        .to_owned();
+
+    Some((target.span, replacement))
+}
+
+fn match_expressions(module: &Module) -> Vec<&Expr> {
+    let mut matches = Vec::new();
+    walk_module_exprs(module, &mut |expr| {
+        if matches!(expr.kind, ExprKind::Match { .. }) {
+            matches.push(expr);
+        }
+    });
+    matches
+}
+
+fn push_match_separator_edit(
+    source: &str,
+    edits: &mut Vec<WhitespaceEdit>,
+    span: Span,
+    replacement: String,
+) -> Option<()> {
+    let mut content = source
+        .get(span.start..span.end)?
+        .chars()
+        .filter(|character| !character.is_whitespace());
+    match (content.next(), content.next()) {
+        (None, None) | (Some(','), None) => {}
+        _ => return None,
+    }
+    edits.push(WhitespaceEdit { span, replacement });
+    Some(())
+}
+
 fn format_parsed_source_with_reparse(
     source: &str,
     parse: &ParseOutput,
@@ -1279,6 +1375,41 @@ mod tests {
             result,
             Err(diagnostics) if diagnostics.iter().any(Diagnostic::is_error)
         ));
+    }
+
+    #[test]
+    fn mixed_match_fix_uses_the_standard_block_layout() {
+        for (source, expected) in [
+            (
+                "f = (n) => n ?> \"e\" => \"euler\"\n  \"pi\" => \"pi\"\n",
+                "f = (n) => n ?>\n  \"e\" => \"euler\"\n  \"pi\" => \"pi\"\n",
+            ),
+            (
+                "f = (n) => n ?> \"e\" => \"euler\"\n\"pi\" => \"pi\"\n",
+                "f = (n) => n ?>\n  \"e\" => \"euler\"\n  \"pi\" => \"pi\"\n",
+            ),
+            (
+                "f = (n) => n ?> \"e\" => \"euler\", \"tau\" => \"tau\"\n\"pi\" => \"pi\"\n\"phi\" => \"phi\"\n",
+                "f = (n) => n ?>\n  \"e\" => \"euler\"\n  \"tau\" => \"tau\"\n  \"pi\" => \"pi\"\n  \"phi\" => \"phi\"\n",
+            ),
+        ] {
+            let parse = aven_parser::parse_module(source);
+            let diagnostic = parse
+                .diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.code.as_deref() == Some("parse.mixed-match-arm-layout")
+                })
+                .expect("expected mixed match-arm layout diagnostic");
+            let (span, replacement) =
+                format_mixed_match_as_block(source, &parse, diagnostic.labels[0].span)
+                    .expect("expected formatter edit");
+            let mut fixed = source.to_owned();
+            fixed.replace_range(span.start..span.end, &replacement);
+
+            assert_eq!(fixed, expected);
+            assert_eq!(format_source(&fixed), Ok(expected.to_owned()));
+        }
     }
 
     #[test]

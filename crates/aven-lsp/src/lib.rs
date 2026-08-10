@@ -606,6 +606,11 @@ impl LanguageServer for Backend {
             &uri,
             &params.context,
         ));
+        actions.extend(mixed_match_arm_layout_code_actions(
+            &document,
+            &uri,
+            &params.context,
+        ));
         actions.extend(unused_result_code_actions(&uri, &params.context));
         if actions.is_empty() {
             return Ok(None);
@@ -1195,6 +1200,54 @@ fn is_spread_extra_dots_diagnostic(diagnostic: &Diagnostic) -> bool {
     matches!(
         diagnostic.code.as_ref(),
         Some(NumberOrString::String(code)) if code == codes::lex::SPREAD_EXTRA_DOTS
+    )
+}
+
+fn mixed_match_arm_layout_code_actions(
+    document: &ParsedDocument,
+    uri: &Url,
+    context: &CodeActionContext,
+) -> Vec<CodeActionOrCommand> {
+    context
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            if !is_mixed_match_arm_layout_diagnostic(diagnostic) {
+                return None;
+            }
+
+            let start = position_to_offset(document, diagnostic.range.start)?;
+            let end = position_to_offset(document, diagnostic.range.end)?;
+            let (match_span, replacement) = aven_fmt::format_mixed_match_as_block(
+                document.source(),
+                document.parse_output(),
+                Span::new(start, end),
+            )?;
+            let edit = TextEdit {
+                range: span_to_range(document, match_span),
+                new_text: replacement,
+            };
+
+            Some(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Put every match arm on a separate line".to_owned(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diagnostic.clone()]),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                is_preferred: Some(true),
+                ..CodeAction::default()
+            }))
+        })
+        .collect()
+}
+
+fn is_mixed_match_arm_layout_diagnostic(diagnostic: &Diagnostic) -> bool {
+    matches!(
+        diagnostic.code.as_ref(),
+        Some(NumberOrString::String(code)) if code == codes::parse::MIXED_MATCH_ARM_LAYOUT
     )
 }
 
