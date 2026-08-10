@@ -1884,13 +1884,35 @@ pub(crate) fn literal_row_contains_float(row: &Row) -> bool {
 }
 
 /// Whether an open/closed number-literal row may stand where `name` is expected.
-/// `Int` rejects float-form members (narrowing); `Float` accepts any number
-/// (widening of bare ints). Other names fall through to [`LiteralBase::matches_named`].
+/// `Int` rejects float-form members (narrowing). `Float` unifies only with
+/// float-capable rows; int-only open rows reach Float via directed widening
+/// (`check_variant_type_against_named`), not by growing an int-form union into
+/// Float through undirected unify (that would let `Map` keys of `1 | ..` accept
+/// `Float` / `1.0`).
 pub(crate) fn number_literal_row_fits_named(row: &Row, name: &str) -> bool {
     match name {
         "Int" => !literal_row_contains_float(row),
-        "Float" => true,
+        "Float" => literal_row_contains_float(row),
         _ => false,
+    }
+}
+
+/// True when every number member of `row` is int-form (no `.` / exponent).
+pub(crate) fn number_literal_row_is_int_only(row: &Row) -> bool {
+    literal_variant_base(row) == Some(LiteralBase::Number) && !literal_row_contains_float(row)
+}
+
+/// Whether a fresh number literal may join a number-literal row by form.
+/// Float-form joins only float-capable rows; int-form joins any number row
+/// (Int → Float widening into a float-seeded open union).
+pub(crate) fn number_literal_joins_number_row(literal: &Literal, row: &Row) -> bool {
+    let Literal::Number(text) = literal else {
+        return false;
+    };
+    if number_literal_text_is_float(text) {
+        literal_row_contains_float(row)
+    } else {
+        true
     }
 }
 

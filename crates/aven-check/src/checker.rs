@@ -29,7 +29,8 @@ use crate::ty::{
     display_inferred_type, free_metas, generalize, is_concrete_type, is_meta_type, is_null_value,
     is_resolved_value_type, is_text_type, is_undefined_value, literal_base,
     literal_row_contains_float, literal_variant_base, map_type, mismatched_literal_kind,
-    named_builtin, named_type_mismatch, named_type_name, numeric_type_name,
+    named_builtin, named_type_mismatch, named_type_name, number_literal_joins_number_row,
+    number_literal_row_is_int_only, number_literal_text_is_float, numeric_type_name,
     open_literal_variant_base, render_literal_value, render_type_scheme, type_contains_deferred,
     type_contains_error, type_contains_hole, type_contains_variable, type_is_uninhabited,
     type_variable_names,
@@ -1363,13 +1364,14 @@ fn row_entry_variant_kind(entry: &RowEntry) -> Option<VariantEntryKind> {
 }
 
 fn literal_union_accepts_base_type(literals: &[&Literal], base: &str) -> bool {
-    literals.iter().any(|literal| {
-        matches!(
-            (literal, base),
-            (Literal::Bool(_), "Bool")
-                | (Literal::String(_), "Text")
-                | (Literal::Number(_), "Int" | "Float")
-        )
+    literals.iter().any(|literal| match (literal, base) {
+        (Literal::Bool(_), "Bool") | (Literal::String(_), "Text") => true,
+        // Int values inhabit any number-literal union (widening into float-form
+        // unions). Float values only inhabit unions that already carry a
+        // float-form member — int-only open rows must not absorb Float.
+        (Literal::Number(_), "Int") => true,
+        (Literal::Number(number), "Float") => number_literal_text_is_float(number),
+        _ => false,
     })
 }
 

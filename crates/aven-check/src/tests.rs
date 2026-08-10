@@ -2414,6 +2414,89 @@ fn int_literals_still_widen_into_float() {
 }
 
 #[test]
+fn float_literals_do_not_join_open_int_literal_unions() {
+    // Open number-literal key types from unannotated Map.from([(1, …)]) must
+    // reject float-form keys. Same class as Named Int vs float literal.
+    for source in [
+        "m = Map.from([(1, \"a\")])\nr = m.set(1.0, \"b\")\n",
+        "m = Map.from([(1, \"a\")])\nr = m.get(1.0)\n",
+        "m = Map.from([(1, \"a\")])\nf : Float = 1.0\nr = m.set(f, \"b\")\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+            1,
+            "{source} should produce one type.mismatch: {:?}",
+            check.diagnostics
+        );
+        let diagnostic = check
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some(codes::ty::MISMATCH))
+            .expect("type.mismatch");
+        assert!(
+            diagnostic.message.contains("Float")
+                && (diagnostic.message.contains("Int") || diagnostic.message.contains("1")),
+            "{source} should name the Int/Float mismatch: {}",
+            diagnostic.message
+        );
+    }
+}
+
+#[test]
+fn open_int_literal_unions_still_accept_further_int_literals() {
+    // The open tail is for more int-form keys, not a closed singleton.
+    for source in [
+        "m = Map.from([(1, \"a\")])\nr = m.set(2, \"b\")\n",
+        "m = Map.from([(1, \"a\")])\nr = m.get(2)\n",
+        "m = Map.from([(1, \"a\")])\ni : Int = 2\nr = m.set(i, \"b\")\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should accept further int keys: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn open_float_literal_unions_accept_float_and_int_keys() {
+    // Mirror of the int-seeded case: float-form open unions keep accepting
+    // floats, and int-form keys join by Int → Float widening.
+    for source in [
+        "m = Map.from([(1.0, \"a\")])\nr = m.set(2.0, \"b\")\n",
+        "m = Map.from([(1.0, \"a\")])\nr = m.get(2.0)\n",
+        "m = Map.from([(1.0, \"a\")])\nr = m.set(2, \"b\")\n",
+        "m = Map.from([(1.0, \"a\")])\nr = m.get(2)\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source} should accept float-union keys: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
+fn open_int_literal_unions_still_reject_text_keys() {
+    let source = "m = Map.from([(1, \"a\")])\nr = m.set(\"k\", \"b\")\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        1,
+        "text into int open union: {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn lambda_application_results_are_inferred_for_identifier_values() {
     let mismatch = parse_module("f = (x) => x\nresult = f(\"hi\")\nvalue : Int = result\n");
     let mismatch_check = check_module(&mismatch.module);

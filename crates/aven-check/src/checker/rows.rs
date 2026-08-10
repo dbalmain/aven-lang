@@ -775,7 +775,12 @@ impl<'a> Checker<'a> {
             (Type::Variant(base_row), Type::Variant(inner_row))
                 if open_literal_variant_base(base_row).is_some()
                     && open_literal_variant_base(base_row)
-                        == open_literal_variant_base(inner_row) =>
+                        == open_literal_variant_base(inner_row)
+                    // Int-form and float-form number rows share Number base but
+                    // must not merge: float must not join an int-only open default.
+                    && (open_literal_variant_base(base_row) != Some(LiteralBase::Number)
+                        || literal_row_contains_float(base_row)
+                            == literal_row_contains_float(inner_row)) =>
             {
                 let mut entries = base_row.entries.clone();
                 for entry in &inner_row.entries {
