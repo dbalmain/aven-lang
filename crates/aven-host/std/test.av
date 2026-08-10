@@ -1,5 +1,5 @@
 # Test assertions: `import("std/test")`. Pure Aven — no host natives.
-# Each helper returns `Result({}, Text)` so a suite of zero-arg thunks can
+# Each helper returns `Result((), Text)` so a suite of zero-arg thunks can
 # chain with `?^` and report pass/fail without host support.
 
 # Argument order is `(actual, expected)` — the computed value first, matching
@@ -9,16 +9,16 @@
 # Compared values are rendered with `repr` so messages stay unambiguous:
 # Text is quoted, containers keep structure, and a custom `toText` cannot make a
 # failing assertion look correct. Caller-supplied messages (`fail`) stay as-is.
-expectEq : (a, a) -> Result({}, Text)
+expectEq : (a, a) -> Result((), Text)
 expectEq = (actual, expected) =>
   actual == expected ?>
-    true => @Ok({})
+    true => @Ok(())
     false => @Err("expected ${repr(expected)}, got ${repr(actual)}")
 
-expectNe : (a, a) -> Result({}, Text)
+expectNe : (a, a) -> Result((), Text)
 expectNe = (actual, expected) =>
   actual != expected ?>
-    true => @Ok({})
+    true => @Ok(())
     false => @Err("expected values to differ, both were ${repr(actual)}")
 
 # Absolute float comparison. Order is `(actual, expected, tolerance)` — same
@@ -30,37 +30,37 @@ expectNe = (actual, expected) =>
 # check time. Param annotations + trailing default keep both arities sound.
 expectApproxEq = (actual: Float, expected: Float, tolerance: Float = 1.0e-9) =>
   (actual - expected).abs() <= tolerance ?>
-    true => @Ok({})
+    true => @Ok(())
     false => @Err("expected approximately ${repr(expected)} (tolerance ${repr(tolerance)}), got ${repr(actual)}")
 
-expectOk : (Result(a, e)) -> Result({}, Text)
+expectOk : (Result(a, e)) -> Result((), Text)
 expectOk = (result) =>
   result ?>
-    @Ok(_) => @Ok({})
+    @Ok(_) => @Ok(())
     @Err(error) => @Err("expected @Ok, got @Err(${repr(error)})")
 
-expectErr : (Result(a, e)) -> Result({}, Text)
+expectErr : (Result(a, e)) -> Result((), Text)
 expectErr = (result) =>
   result ?>
     @Ok(value) => @Err("expected @Err, got @Ok(${repr(value)})")
-    @Err(_) => @Ok({})
+    @Err(_) => @Ok(())
 
-expectTrue : (Bool) -> Result({}, Text)
+expectTrue : (Bool) -> Result((), Text)
 expectTrue = (value) =>
   value ?>
-    true => @Ok({})
+    true => @Ok(())
     false => @Err("expected true, got false")
 
-expectFalse : (Bool) -> Result({}, Text)
+expectFalse : (Bool) -> Result((), Text)
 expectFalse = (value) =>
   value ?>
     true => @Err("expected false, got true")
-    false => @Ok({})
+    false => @Ok(())
 
-fail : (Text) -> Result({}, Text)
+fail : (Text) -> Result((), Text)
 fail = (message) => @Err(message)
 
-pass : Result({}, Text)
-pass = @Ok({})
+pass : Result((), Text)
+pass = @Ok(())
 
 { expectEq, expectNe, expectApproxEq, expectOk, expectErr, expectTrue, expectFalse, fail, pass }

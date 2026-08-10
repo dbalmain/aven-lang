@@ -787,12 +787,12 @@ fn run_test_case(thunk: &aven_eval::Value) -> TestCaseOutcome {
             Some(outcome) => outcome,
             None => TestCaseOutcome::Error {
                 diagnostics: vec![AvenDiagnostic::error(format!(
-                    "test case returned {}, expected Result(@Ok({{}}) | @Err(Text))",
+                    "test case returned {}, expected Result(@Ok(()) | @Err(Text))",
                     value.type_name()
                 ))
                 .with_code(aven_core::codes::test::NOT_A_RESULT)
                 .with_note(
-                    "return `@Ok({})` on success or `@Err(message)` on failure (see `std/test`)",
+                    "return `@Ok(())` on success or `@Err(message)` on failure (see `std/test`)",
                 )],
             },
         },
