@@ -2308,6 +2308,58 @@ fn int_and_float_identifier_values_are_not_interchangeable() {
 }
 
 #[test]
+fn float_literals_do_not_subsume_into_int() {
+    // Float-form lexemes and float arithmetic must not inhabit Int. The tell
+    // that this is a defect (not deliberate widening) is `1.5` being accepted.
+    for source in [
+        "x : Int = 1.0\n",
+        "x : Int = 1.5\n",
+        "x : Int = 2.0 + 1.0\n",
+        "x : Int = -1.0\n",
+        "a : Array(Int) = [1, 2.0]\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+            1,
+            "{source} should produce one type.mismatch: {:?}",
+            check.diagnostics
+        );
+        let diagnostic = check
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some(codes::ty::MISMATCH))
+            .expect("type.mismatch");
+        assert!(
+            diagnostic.message.contains("`Int`"),
+            "{source} should name Int as expected: {}",
+            diagnostic.message
+        );
+    }
+}
+
+#[test]
+fn int_literals_still_widen_into_float() {
+    for source in [
+        "x : Float = 1\n",
+        "f = (n: Float) => n\nr = f(1)\n",
+        "a : Array(Float) = [1, 2]\n",
+        "x : Float = 1.0\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+
+        assert!(
+            !has_diagnostic_code(&check.diagnostics, codes::ty::MISMATCH),
+            "{source} unexpectedly produced type.mismatch: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+#[test]
 fn lambda_application_results_are_inferred_for_identifier_values() {
     let mismatch = parse_module("f = (x) => x\nresult = f(\"hi\")\nvalue : Int = result\n");
     let mismatch_check = check_module(&mismatch.module);
