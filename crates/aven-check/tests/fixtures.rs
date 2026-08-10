@@ -141,11 +141,11 @@ fn fixture_globals() -> Vec<(String, Type)> {
         ),
         (
             "write".to_owned(),
-            build::function(vec![build::text()], build::empty_record()),
+            build::function(vec![build::text()], build::unit()),
         ),
         (
             "writeLine".to_owned(),
-            build::function(vec![build::text()], build::empty_record()),
+            build::function(vec![build::text()], build::unit()),
         ),
         (
             "readLine".to_owned(),

@@ -730,8 +730,8 @@ fn run_write_line_writes_to_stdout() {
 }
 
 #[test]
-fn run_does_not_print_trivial_empty_record_result() {
-    // A bare effect call as the final expression returns `{}`; that trivial
+fn run_does_not_print_trivial_unit_result() {
+    // A bare effect call as the final expression returns `()`; that trivial
     // value must not be printed after the effect's own output.
     let file = TempFile::new("run-trivial-result", "writeLine(\"hi\")\n");
 
@@ -1085,8 +1085,8 @@ fn run_stdout_write_handle_prints_and_returns_ok() {
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
-    // `write` adds no newline; the non-trivial `@Ok({})` value is then printed.
-    assert_eq!(stdout(&output), "hi@Ok({})\n");
+    // `write` adds no newline; the non-trivial `@Ok(())` value is then printed.
+    assert_eq!(stdout(&output), "hi@Ok(())\n");
     assert_eq!(stderr(&output), "");
 }
 
@@ -1097,7 +1097,7 @@ fn run_stdout_write_line_handle_prints_and_returns_ok() {
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
-    assert_eq!(stdout(&output), "hi\n@Ok({})\n");
+    assert_eq!(stdout(&output), "hi\n@Ok(())\n");
 }
 
 #[test]
@@ -1107,7 +1107,7 @@ fn run_stderr_write_handle_goes_to_stderr() {
     let output = run_aven(["run"], file.path());
 
     assert_success(&output);
-    assert_eq!(stdout(&output), "@Ok({})\n");
+    assert_eq!(stdout(&output), "@Ok(())\n");
     assert_eq!(stderr(&output), "oops");
 }
 
@@ -1132,9 +1132,9 @@ fn run_stdin_read_line_handle_at_eof_returns_ok_undefined() {
 }
 
 #[test]
-fn run_bare_write_returns_record_while_handle_write_returns_result() {
+fn run_bare_write_returns_unit_while_handle_write_returns_result() {
     // The boundary, locked at runtime: bare `write` evaluates to the trivial
-    // `{}` (not printed), while `stdout.write` evaluates to `@Ok({})`.
+    // `()` (not printed), while `stdout.write` evaluates to `@Ok(())`.
     let bare = TempFile::new("run-bare-write-shape", "write(\"x\")\n");
     let bare_output = run_aven(["run"], bare.path());
     assert_success(&bare_output);
@@ -1143,7 +1143,7 @@ fn run_bare_write_returns_record_while_handle_write_returns_result() {
     let handle = TempFile::new("run-handle-write-shape", "stdout.write(\"x\")\n");
     let handle_output = run_aven(["run"], handle.path());
     assert_success(&handle_output);
-    assert_eq!(stdout(&handle_output), "x@Ok({})\n");
+    assert_eq!(stdout(&handle_output), "x@Ok(())\n");
 }
 
 #[test]

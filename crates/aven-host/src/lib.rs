@@ -518,12 +518,12 @@ pub fn dbg_type() -> Type {
 
 /// The Aven type of the standard `write` value.
 pub fn io_write_type() -> Type {
-    build::function(vec![build::text()], build::empty_record())
+    build::function(vec![build::text()], build::unit())
 }
 
 /// The Aven type of the standard `writeLine` value.
 pub fn io_write_line_type() -> Type {
-    build::function(vec![build::text()], build::empty_record())
+    build::function(vec![build::text()], build::unit())
 }
 
 /// The Aven type of the standard `readLine` value.
@@ -684,11 +684,11 @@ pub fn file_type() -> Type {
     build::record(vec![("open", open_base_type())])
 }
 
-/// `(Text) -> Result({}, WriteError)` — a handle `write`/`writeLine` method.
+/// `(Text) -> Result((), WriteError)` — a handle `write`/`writeLine` method.
 fn handle_write_type() -> Type {
     build::function(
         vec![build::text()],
-        build::result(build::empty_record(), write_error_type()),
+        build::result(build::unit(), write_error_type()),
     )
 }
 
@@ -706,17 +706,14 @@ fn handle_read_all_type() -> Type {
     build::function(vec![], build::result(build::text(), read_error_type()))
 }
 
-/// `() -> Result({}, IoError)` — a handle `flush` method.
+/// `() -> Result((), IoError)` — a handle `flush` method.
 fn handle_flush_type() -> Type {
-    build::function(
-        vec![],
-        build::result(build::empty_record(), io_error_type()),
-    )
+    build::function(vec![], build::result(build::unit(), io_error_type()))
 }
 
 /// The `stdout` handle type: a closed record of write-side methods. `stderr`
 /// shares this shape. Callers annotate parameters as open records (e.g.
-/// `{ write : (Text) -> Result({}, WriteError) | r }`), so width subtyping lets
+/// `{ write : (Text) -> Result((), WriteError) | r }`), so width subtyping lets
 /// a function needing only `write` accept any of these handles.
 pub fn stdout_handle_type() -> Type {
     build::record(vec![
@@ -1268,7 +1265,7 @@ mod tests {
         } = function_signature(write).expect("write is a function");
         assert_eq!(write_params.required_len(), 1);
         assert_eq!(&write_params[..], &[build::text()]);
-        assert_eq!(write_result, build::empty_record());
+        assert_eq!(write_result, build::unit());
 
         let write_line = global_type(&globals, "writeLine");
         let FunctionSignature {
@@ -1277,7 +1274,7 @@ mod tests {
         } = function_signature(write_line).expect("writeLine is a function");
         assert_eq!(write_line_params.required_len(), 1);
         assert_eq!(&write_line_params[..], &[build::text()]);
-        assert_eq!(write_line_result, build::empty_record());
+        assert_eq!(write_line_result, build::unit());
 
         let read_line = global_type(&globals, "readLine");
         let FunctionSignature {
@@ -1433,7 +1430,7 @@ mod tests {
             assert_eq!(names, expected, "{handle} method record");
         }
 
-        // The methods return `Result`, not the bare `{}` the top-level `write`
+        // The methods return `Result`, not the bare `()` the top-level `write`
         // returns — this is the boundary the handle tier introduces.
         let stdout = global_type(&globals, "stdout");
         let FunctionSignature {
@@ -1443,7 +1440,7 @@ mod tests {
         assert_eq!(&write_params[..], &[build::text()]);
         assert_eq!(
             write_result,
-            build::result(build::empty_record(), write_error_type())
+            build::result(build::unit(), write_error_type())
         );
 
         let stdin = global_type(&globals, "stdin");
@@ -1460,10 +1457,7 @@ mod tests {
             result: flush_result,
             ..
         } = function_signature(&record_field_type(stdout, "flush")).expect("flush is a function");
-        assert_eq!(
-            flush_result,
-            build::result(build::empty_record(), io_error_type())
-        );
+        assert_eq!(flush_result, build::result(build::unit(), io_error_type()));
     }
 
     #[test]
@@ -1535,12 +1529,12 @@ mod tests {
 
     #[test]
     fn bare_write_and_handle_write_lock_the_result_boundary() {
-        // Bare `write` returns `{}`; `stdout.write` returns `Result` — the two
+        // Bare `write` returns `()`; `stdout.write` returns `Result` — the two
         // shapes pinned together so the boundary can't silently drift.
         let bare_result = function_signature(&io_write_type())
             .expect("write is a function")
             .result;
-        assert_eq!(bare_result, build::empty_record());
+        assert_eq!(bare_result, build::unit());
 
         let handle_write = record_field_type(&stdout_handle_type(), "write");
         let handle_result = function_signature(&handle_write)
@@ -1548,7 +1542,7 @@ mod tests {
             .result;
         assert_eq!(
             handle_result,
-            build::result(build::empty_record(), write_error_type())
+            build::result(build::unit(), write_error_type())
         );
         assert_ne!(bare_result, handle_result);
     }
@@ -1564,7 +1558,7 @@ mod tests {
                 "needsWrite".to_owned(),
                 build::function(
                     vec![build::open_record(vec![("write", handle_write_type())])],
-                    build::empty_record(),
+                    build::unit(),
                 ),
             ),
             ("stdout".to_owned(), stdout_handle_type()),

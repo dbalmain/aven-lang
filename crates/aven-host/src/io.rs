@@ -8,8 +8,9 @@
 //! type halves can't drift.
 //!
 //! **Bare tier** (`write` / `writeLine` / `readLine` / `readAll`): abort on a
-//! real IO error (runtime diagnostic). Writes return the empty record;
-//! `readLine` returns `?Text` with `undefined` on EOF.
+//! real IO error (runtime diagnostic). Writes return `()`, the unit value a
+//! caller has nothing to read; `readLine` returns `?Text` with `undefined` on
+//! EOF.
 //!
 //! **Handle tier** (`stdout` / `stderr` / `stdin` / `stdio` / `File`): methods
 //! return `Result` instead of aborting. Both tiers share the same write
@@ -34,8 +35,8 @@ use crate::{Host, HostResult};
 impl Host {
     /// Register the bare process-stream IO natives `write`/`writeLine`/
     /// `readLine`/`readAll` (value + the crate's bare IO types). Writes return
-    /// the empty record; real IO errors abort as a runtime diagnostic.
-    /// `readLine` returns `undefined` on EOF.
+    /// `()`; real IO errors abort as a runtime diagnostic. `readLine` returns
+    /// `undefined` on EOF.
     pub fn register_bare_io(&mut self) {
         self.register("write", bare_write_native(false), crate::io_write_type());
         self.register(
@@ -80,7 +81,7 @@ fn bare_write_native(newline: bool) -> Value {
         let name = if newline { "writeLine" } else { "write" };
         let text = io_text_arg(name, args)?;
         write_text(&mut io::stdout().lock(), text, newline).map_err(|error| error.to_string())?;
-        Ok(empty_record_value())
+        Ok(Value::unit())
     })
 }
 
@@ -177,10 +178,6 @@ fn error_variant(tag: &str, error: &io::Error) -> Value {
         name: tag.to_owned(),
         payload: vec![Value::Text(error.to_string())],
     }
-}
-
-fn empty_record_value() -> Value {
-    Value::record(vec![])
 }
 
 /// Map a `read_line` outcome to the handle's `Result` value:
@@ -331,7 +328,7 @@ fn write_handle_native(stream: WriteStream, newline: bool) -> Value {
             WriteStream::Stderr => write_text(&mut io::stderr().lock(), text, newline),
         };
         Ok(match result {
-            Ok(()) => ok_value(empty_record_value()),
+            Ok(()) => ok_value(Value::unit()),
             Err(error) => err_value(write_error_value(&error)),
         })
     })
@@ -348,7 +345,7 @@ fn flush_handle_native(stream: WriteStream) -> Value {
             WriteStream::Stderr => io::stderr().flush(),
         };
         Ok(match result {
-            Ok(()) => ok_value(empty_record_value()),
+            Ok(()) => ok_value(Value::unit()),
             Err(error) => err_value(io_error_value(&error)),
         })
     })
@@ -552,7 +549,7 @@ fn file_write_native(state: &Rc<RefCell<FileState>>, newline: bool) -> Value {
             FileState::Read(_) => Err(io::Error::other("write on a read-only handle")),
         };
         Ok(match result {
-            Ok(()) => ok_value(empty_record_value()),
+            Ok(()) => ok_value(Value::unit()),
             Err(error) => err_value(write_error_value(&error)),
         })
     })
@@ -609,7 +606,7 @@ fn file_flush_native(state: &Rc<RefCell<FileState>>) -> Value {
             FileState::Read(_) => Err(io::Error::other("flush on a read-only handle")),
         };
         Ok(match result {
-            Ok(()) => ok_value(empty_record_value()),
+            Ok(()) => ok_value(Value::unit()),
             Err(error) => err_value(io_error_value(&error)),
         })
     })
@@ -1060,14 +1057,14 @@ mod tests {
         // annotation.
         let write_method = build::function(
             vec![build::text()],
-            build::result(build::empty_record(), crate::write_error_type()),
+            build::result(build::unit(), crate::write_error_type()),
         );
         let mut globals = file_host().check_host_globals();
         globals.types.push((
             "needsWrite".to_owned(),
             build::function(
                 vec![build::open_record(vec![("write", write_method)])],
-                build::empty_record(),
+                build::unit(),
             ),
         ));
         globals
