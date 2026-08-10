@@ -19,3 +19,4 @@ chain = records
   )
 alreadyChained = records
   .short(first)
+Constraint = @SameHouse({ a: Text, b: Text }) | @RightOf({ right: Text, left: Text }) | @Adjacent({ a: Text, b: Text }) | @AtPosition({ value: Text, position: Int })

@@ -1,0 +1,8 @@
+domain = (domains, value) => domains[value] ?? []
+usedHouses = (domains, category, value) =>
+  category.values.filter((peer) => peer != value).flatMap((peer) =>
+    peerDomain = domain(domains, peer)
+    peerDomain.length() == 1 ?>
+      true => peerDomain
+      false => []
+  )
