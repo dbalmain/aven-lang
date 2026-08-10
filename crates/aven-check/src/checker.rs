@@ -561,32 +561,21 @@ fn collect_union_annotation_entries(expr: &Expr, entries: &mut Vec<RecordEntry>)
     }
 }
 
-/// Whether a `|` chain reads as set union rather than a type-level union.
-/// The operator is deliberately dual — `"r" | "w"` and `@Red | @Green` build
-/// literal and variant unions — so a set literal somewhere in the chain is what
-/// picks the value reading: `@{1, 2} | 3` unions a set with the promoted
-/// singleton `@{3}`, while a chain of bare operands stays a type.
+/// Whether a `|` chain in *value* position is set union.
+///
+/// The operator is dual: type position still lowers `"r" | "w"` and
+/// `@Red | @Green` as literal/variant unions (binding case and annotation
+/// lowering decide that path). In value position every `|` is set union —
+/// bare chains like `"r" | "w"` become `@{"r", "w"}`, and a set literal
+/// anywhere in the chain still unions with promoted singletons
+/// (`@{1, 2} | 3`). Inference already claims every value `|`; this predicate
+/// keeps the liftability gate and Set-annotation checking in agreement.
 fn is_set_union_value_expr(expr: &Expr) -> bool {
     let ExprKind::Binary { operator, .. } = &ungroup_expr(expr).kind else {
         return false;
     };
 
-    operator == "|" && set_union_chain_has_set_literal(expr)
-}
-
-fn set_union_chain_has_set_literal(expr: &Expr) -> bool {
-    match &ungroup_expr(expr).kind {
-        ExprKind::Set(_) => true,
-        ExprKind::Binary {
-            left,
-            operator,
-            right,
-            ..
-        } if operator == "|" => {
-            set_union_chain_has_set_literal(left) || set_union_chain_has_set_literal(right)
-        }
-        _ => false,
-    }
+    operator == "|"
 }
 
 fn value_set_union_parts(expr: &Expr) -> Option<Vec<SetUnionPart<'_>>> {

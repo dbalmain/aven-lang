@@ -3411,6 +3411,20 @@ fn evaluates_set_union_promotes_singletons() {
     );
 }
 
+/// A bare-only `|` chain on a lowercase binding is a runtime set (the checker
+/// gate must allow it; the evaluator already built one). Type bindings keep
+/// the union reading — covered in aven-check.
+#[test]
+fn bare_pipe_binding_evaluates_as_set() {
+    assert_module_value(
+        "bare = \"r\" | \"w\"\nbare\n",
+        set_value(vec![
+            Value::Text("r".to_owned()),
+            Value::Text("w".to_owned()),
+        ]),
+    );
+}
+
 #[test]
 fn evaluates_set_union_splices_set_operands() {
     assert_eval(
