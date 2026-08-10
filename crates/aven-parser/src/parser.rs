@@ -1536,8 +1536,9 @@ impl Parser<'_> {
         // Consume the `?>` match operator.
         let operator_span = self.current_span();
         self.advance();
+        let inline_arms = !self.current_is(TokenKind::Newline) && !self.at_item_boundary();
 
-        let arms = if self.current_is(TokenKind::Newline) {
+        let mut arms = if self.current_is(TokenKind::Newline) {
             self.advance();
 
             if self.current_is(TokenKind::Indent) {
@@ -1556,6 +1557,10 @@ impl Parser<'_> {
             // The match greedily owns following `, pattern => expr` sequences.
             self.parse_inline_match_arms()
         };
+
+        if inline_arms && self.mixed_match_arm_continuation_follows() {
+            self.recover_mixed_match_arm_continuation(operator_span, &mut arms);
+        }
 
         let end = arms
             .last()
@@ -1637,6 +1642,79 @@ impl Parser<'_> {
         }
 
         arms
+    }
+
+    fn mixed_match_arm_continuation_follows(&self) -> bool {
+        if !self.current_is(TokenKind::Newline) {
+            return false;
+        }
+
+        let mut index = self.cursor + 1;
+        if self
+            .tokens
+            .get(index)
+            .is_some_and(|token| token.kind == TokenKind::Indent)
+        {
+            index += 1;
+        }
+
+        self.match_arm_arrow_follows(index)
+    }
+
+    fn match_arm_arrow_follows(&self, mut index: usize) -> bool {
+        let mut delimiter_depth = 0usize;
+
+        while let Some(token) = self.tokens.get(index) {
+            match &token.kind {
+                TokenKind::OpenParen | TokenKind::OpenBrace | TokenKind::OpenBracket => {
+                    delimiter_depth += 1;
+                }
+                TokenKind::CloseParen | TokenKind::CloseBrace | TokenKind::CloseBracket => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1);
+                }
+                TokenKind::Operator(operator) if delimiter_depth == 0 && operator == "=>" => {
+                    return true;
+                }
+                TokenKind::Operator(operator) if delimiter_depth == 0 && operator == "=" => {
+                    return false;
+                }
+                TokenKind::Newline | TokenKind::Dedent if delimiter_depth == 0 => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+
+        false
+    }
+
+    fn recover_mixed_match_arm_continuation(
+        &mut self,
+        operator_span: Span,
+        arms: &mut Vec<MatchArm>,
+    ) {
+        self.advance();
+        let indented = self.current_is(TokenKind::Indent);
+        if indented {
+            self.advance();
+        }
+
+        let mut first = true;
+        while self.match_arm_arrow_follows(self.cursor) {
+            let arm = self.parse_match_arm();
+            if first {
+                self.report_mixed_match_arm_layout(arm.span, operator_span);
+                first = false;
+            }
+            arms.push(arm);
+
+            if !self.consume_newline() {
+                break;
+            }
+        }
+
+        if indented && self.current_is(TokenKind::Dedent) {
+            self.advance();
+        }
     }
 
     fn inline_match_arm_cannot_start(&self) -> bool {
@@ -2895,6 +2973,24 @@ impl Parser<'_> {
                 ))
                 .with_note(
                     "separate arms with commas when they start on the `?>` line (`pat => …, pat => …`), or put each arm on its own line under `?>`",
+                ),
+        );
+    }
+
+    fn report_mixed_match_arm_layout(&mut self, arm_span: Span, operator_span: Span) {
+        self.diagnostics.push(
+            Diagnostic::error("match arms begin inline and continue on a following line")
+                .with_code(codes::parse::MIXED_MATCH_ARM_LAYOUT)
+                .with_label(Label::primary(
+                    arm_span,
+                    "this arm continues an inline arm list on a new line",
+                ))
+                .with_label(Label::primary(
+                    operator_span,
+                    "this `?>` starts the inline arm list",
+                ))
+                .with_note(
+                    "write every arm inline after `?>`, separated by commas, or put every arm on its own line under `?>`",
                 ),
         );
     }
@@ -5073,23 +5169,56 @@ mod tests {
     }
 
     #[test]
-    fn mixed_inline_then_indented_match_reports_existing_layout_diagnostics() {
-        let output = parse_module("value = result ?> @Ok(x) => x\n  @Err(e) => e\n");
+    fn mixed_inline_then_separate_line_match_has_one_layout_diagnostic() {
+        for source in [
+            "value = result ?> @Ok(x) => x\n  @Err(e) => e\n",
+            "value = result ?> @Ok(x) => x\n@Err(e) => e\n",
+        ] {
+            let output = parse_module(source);
 
-        let codes: Vec<_> = output
-            .diagnostics
-            .iter()
-            .filter_map(|diagnostic| diagnostic.code.as_deref())
-            .collect();
-        assert!(
-            codes.contains(&"parse.unexpected-indentation"),
-            "expected unexpected-indentation recovery, got {codes:?}"
+            assert_eq!(output.diagnostics.len(), 1, "{:#?}", output.diagnostics);
+            let diagnostic = &output.diagnostics[0];
+            assert_eq!(
+                diagnostic.code.as_deref(),
+                Some("parse.mixed-match-arm-layout")
+            );
+            assert_eq!(diagnostic.labels.len(), 2);
+            assert_eq!(
+                &source[diagnostic.labels[0].span.start..diagnostic.labels[0].span.end],
+                "@Err(e) => e"
+            );
+            assert_eq!(
+                &source[diagnostic.labels[1].span.start..diagnostic.labels[1].span.end],
+                "?>"
+            );
+
+            let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
+                panic!("expected match expression");
+            };
+            assert_eq!(arms.len(), 2);
+        }
+    }
+
+    #[test]
+    fn genuinely_stray_match_arm_keeps_outside_match_diagnostic() {
+        let output = parse_module("@Err(e) => e\n");
+
+        assert_eq!(output.diagnostics.len(), 1, "{:#?}", output.diagnostics);
+        assert_eq!(
+            output.diagnostics[0].code.as_deref(),
+            Some("parse.match-arm-outside-match")
         );
-        // Inline arm still parsed before the stray indented residue.
-        let ExprKind::Match { arms, .. } = binding_value(&output, 0) else {
-            panic!("expected match expression");
-        };
-        assert_eq!(arms.len(), 1);
+    }
+
+    #[test]
+    fn both_uniform_match_arm_layouts_remain_legal() {
+        for source in [
+            "value = result ?> @Ok(x) => x, @Err(e) => e\n",
+            "value = result ?>\n  @Ok(x) => x\n  @Err(e) => e\n",
+        ] {
+            let output = parse_module(source);
+            assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+        }
     }
 
     #[test]

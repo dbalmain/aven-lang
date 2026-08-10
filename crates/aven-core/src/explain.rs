@@ -303,6 +303,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A method bound must end with .. so it can accept additional methods. Insert , .. before the closing brace.",
     },
     DiagnosticExplanation {
+        code: codes::parse::MIXED_MATCH_ARM_LAYOUT,
+        text: "The match started its arms inline after ?> and continued them on a following line. Write every arm inline after ?> with commas between arms, or put every arm on its own line under ?>.",
+    },
+    DiagnosticExplanation {
         code: codes::parse::OPERATOR_ASSOCIATIVITY_CONFLICT,
         text: "Two unparenthesized operators at the same precedence level have incompatible associativity, or one is non-associative. Add parentheses to state the intended grouping.",
     },
