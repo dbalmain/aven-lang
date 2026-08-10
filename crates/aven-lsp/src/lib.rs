@@ -27,8 +27,8 @@ use tower_lsp::lsp_types::{
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use aven_core::{
-    Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile, SourcePosition, Span, codes,
-    diagnostic::REPEATED_OCCURRENCE_LABEL,
+    BuiltinType, Diagnostic as AvenDiagnostic, FileId, Severity, SourceFile, SourcePosition, Span,
+    codes, diagnostic::REPEATED_OCCURRENCE_LABEL,
 };
 use aven_parser::RecordEntry;
 
@@ -1628,12 +1628,16 @@ fn field_completion_at_position(
     let mut items = Vec::new();
     let mut seen = HashSet::new();
     let receiver_carries_encode = receiver_type_carries_member(document, &receiver_type, "encode");
+    let receiver_carries_collect =
+        receiver_type_carries_member(document, &receiver_type, "collect");
 
     for field in fields {
         let is_synthetic_encode = field.name == "encode" && !receiver_carries_encode;
+        let is_synthetic_collect = field.name == "collect" && !receiver_carries_collect;
         let mut item = completion_item_for_record_field(field);
         if let Some(edit) = &null_safe_edit
             && !is_synthetic_encode
+            && !is_synthetic_collect
             && item.label != "toResult"
         {
             item.additional_text_edits = Some(vec![edit.clone()]);
@@ -1830,9 +1834,9 @@ fn type_statics_fields(name: &str) -> Option<Vec<aven_compiler::RecordField>> {
     aven_compiler::type_statics(&aven_host::standard_check_host_globals(), name)
 }
 
-/// Fields and format-method sugar offered on a value receiver. `decode` stays
-/// Text-only; `encode` is universal sugar unless the receiver type already has
-/// an `encode` member.
+/// Fields and target-owned method sugar offered on a value receiver. `decode`
+/// stays Text-only, `collect` stays collection-only, and `encode` is universal.
+/// A real member always wins over its synthetic counterpart.
 fn receiver_field_completion_fields(
     document: &ParsedDocument,
     receiver_type: &aven_compiler::Type,
@@ -1855,10 +1859,15 @@ fn receiver_field_completion_fields(
     if aven_compiler::is_text_type(&receiver_type)
         && !fields.iter().any(|field| field.name == "decode")
     {
-        fields.push(format_method_field("decode"));
+        fields.push(synthetic_method_field("decode"));
+    }
+    if receiver_type_is_collectible(&receiver_type)
+        && !fields.iter().any(|field| field.name == "collect")
+    {
+        fields.push(synthetic_method_field("collect"));
     }
     if !fields.iter().any(|field| field.name == "encode") {
-        fields.push(format_method_field("encode"));
+        fields.push(synthetic_method_field("encode"));
     }
 
     (!fields.is_empty()).then_some(fields)
@@ -1874,21 +1883,38 @@ fn receiver_type_carries_member(
         .is_some_and(|fields| fields.iter().any(|field| field.name == member))
 }
 
-fn format_method_field(name: &str) -> aven_compiler::RecordField {
+fn receiver_type_is_collectible(receiver_type: &aven_compiler::Type) -> bool {
+    receiver_type
+        .applied_builtin()
+        .is_some_and(|(builtin, args)| {
+            args.len() == 1
+                && matches!(
+                    builtin,
+                    BuiltinType::Stream | BuiltinType::Array | BuiltinType::Set
+                )
+        })
+}
+
+fn synthetic_method_field(name: &str) -> aven_compiler::RecordField {
     aven_compiler::RecordField {
         name: name.to_owned(),
-        ty: format_method_type(name).unwrap_or(aven_compiler::Type::Deferred),
+        ty: synthetic_method_type(name).unwrap_or(aven_compiler::Type::Deferred),
     }
 }
 
-/// The method-form signature for the synthetic format sugar. The checker has no
-/// first-class "format type" value, so named display variables keep completion
-/// details honest instead of rendering deferred parameters as `?`.
-fn format_method_type(member: &str) -> Option<aven_compiler::Type> {
-    let has_registered_static = aven_host::standard_check_host_globals()
+/// Method-form signatures for synthetic target-owned sugar. The checker has no
+/// first-class format or collection-target type value, so named display
+/// variables keep completion details honest instead of rendering holes as `?`.
+fn synthetic_method_type(member: &str) -> Option<aven_compiler::Type> {
+    let host_globals = aven_host::standard_check_host_globals();
+    let has_registered_static = host_globals
         .statics
         .iter()
-        .any(|(_, members)| members.iter().any(|(name, _)| name == member));
+        .any(|(_, members)| members.iter().any(|(name, _)| name == member))
+        || ["Array", "Set"].iter().any(|target| {
+            aven_compiler::type_statics(&host_globals, target)
+                .is_some_and(|members| members.iter().any(|field| field.name == member))
+        });
     if !has_registered_static {
         return None;
     }
@@ -1906,6 +1932,12 @@ fn format_method_type(member: &str) -> Option<aven_compiler::Type> {
                 vec![aven_compiler::Type::Variable("target".to_owned())],
             ),
             result: Box::new(aven_compiler::Type::Variable("decoded".to_owned())),
+        }),
+        "collect" => Some(aven_compiler::Type::Function {
+            params: aven_compiler::FunctionParams::all_required(vec![
+                aven_compiler::Type::Variable("target".to_owned()),
+            ]),
+            result: Box::new(aven_compiler::Type::Variable("collected".to_owned())),
         }),
         _ => None,
     }
