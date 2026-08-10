@@ -7645,15 +7645,17 @@ fn infer_value_pipe_union_like_set_literals() {
     assert!(checker.diagnostics.is_empty());
 }
 
-/// `|` is dual: set union on values, literal/variant union on types. A set
-/// literal anywhere in the chain picks the value reading, so a bare operand on
-/// either side promotes to a singleton and the binding holds a runtime set —
-/// while a chain of bare operands stays a compile-time union. Both readings are
-/// asserted together so a later change cannot fix one by breaking the other.
+/// `|` is dual by *position*, not by operand shape: value bindings hold sets
+/// (including bare `"r" | "w"` → `@{"r", "w"}`), while uppercase type bindings
+/// and annotations still reify literal/variant unions. Mixed chains with a set
+/// literal keep promoting bare operands. Asserted together so neither reading
+/// can be "fixed" by breaking the other.
 #[test]
-fn set_union_values_lift_while_bare_unions_stay_types() {
+fn set_union_values_lift_while_type_unions_stay_types() {
     let output = parse_module(
-        "spliced = @{1, 2} | @{3, 4}\n\
+        "bare = \"r\" | \"w\"\n\
+         bare_literal = @{\"r\", \"w\"}\n\
+         spliced = @{1, 2} | @{3, 4}\n\
          promoted_right = @{1, 2} | 3\n\
          promoted_left = 3 | @{1, 2}\n\
          right_literal = @{1, 2, 3}\n\
@@ -7662,7 +7664,8 @@ fn set_union_values_lift_while_bare_unions_stay_types() {
          Mode = \"r\" | \"w\"\n\
          mode: Mode = \"w\"\n\
          Colour = @Red | @Green\n\
-         colour: Colour = @Green\n",
+         colour: Colour = @Green\n\
+         as_param = (m: \"r\" | \"w\") => m\n",
     );
     let check = check_module(&output.module);
     assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
@@ -7671,6 +7674,10 @@ fn set_union_values_lift_while_bare_unions_stay_types() {
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
+    assert_eq!(
+        render_top_level_value(&mut checker, "bare"),
+        render_top_level_value(&mut checker, "bare_literal")
+    );
     assert_eq!(
         render_top_level_value(&mut checker, "promoted_right"),
         render_top_level_value(&mut checker, "right_literal")
@@ -7684,6 +7691,32 @@ fn set_union_values_lift_while_bare_unions_stay_types() {
         render_top_level_value(&mut checker, "spliced_literal")
     );
     assert!(checker.diagnostics.is_empty());
+}
+
+/// Argument and scrutinee positions have no binding case to read, so record
+/// what they do rather than inventing a second discriminator:
+/// - argument *value* `id("r" | "w")` is set union (same as a bare value binding);
+/// - parameter *annotation* `(m: "r" | "w")` stays a literal union type;
+/// - `?>` or-patterns are patterns, not value unions;
+/// - a bare `"r" | "w"` as a block-match scrutinee is not a supported expression
+///   form today (parse rejects it), so there is nothing further to gate.
+#[test]
+fn bare_pipe_argument_value_is_set_union() {
+    let output = parse_module(
+        "id = (x) => x\n\
+         modes = id(\"r\" | \"w\")\n\
+         literal = @{\"r\", \"w\"}\n",
+    );
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+
+    let known_types = known_type_names(&output.module);
+    let type_definitions = type_definitions(&output.module, &known_types);
+    let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
+    assert_eq!(
+        render_top_level_value(&mut checker, "modes"),
+        render_top_level_value(&mut checker, "literal")
+    );
 }
 
 #[test]
@@ -12292,6 +12325,67 @@ fn function_equality_reports_statically() {
         "sound equality failed: {:?}",
         passing_check.diagnostics
     );
+}
+
+/// Set membership is equality. A function element is the same question as a
+/// function `==` operand — reject it statically so `@{f}.has(f)` cannot return
+/// false after the set rendered the element.
+#[test]
+fn set_function_elements_report_statically() {
+    for source in [
+        "f = (x: Int): Int => x\ns = @{f}\n",
+        "f = (x: Int): Int => x\ns = @{f, f}\n",
+        "f = (x: Int): Int => x\ns: Set(Int -> Int) = @{f}\n",
+        "f = (x: Int): Int => x\nbase = @{f}\ns = @{..base, f}\n",
+        "f = (x: Int): Int => x\ns = @{f}.add(f)\n",
+        "f = (x: Int): Int => x\nempty: Set(Int -> Int) = @{}\ns = empty.add(f)\n",
+        "f = (x: Int): Int => x\ns = [f].collect(Set)\n",
+        "f = (x: Int): Int => x\ns = Set.collect([f])\n",
+        "f = (x: Int): Int => x\ns = @{1} | f\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH) >= 1,
+            "expected function-as-set-element error for {source:?}: {:?}",
+            check.diagnostics
+        );
+        assert!(
+            check.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message == "functions are not comparable"
+                    && diagnostic
+                        .labels
+                        .iter()
+                        .any(|label| label.message.contains("set element"))
+            }),
+            "expected a set-element comparability label for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
+}
+
+/// Comparable set elements keep working: numbers, text, tags, records, tuples.
+#[test]
+fn ordinary_set_elements_remain_comparable() {
+    for source in [
+        "s = @{1, 2, 1}\n",
+        "s = @{\"a\", \"b\"}\n",
+        "Color = @{@Red, @Green}\ns: Color = @{@Red, @Green}\n",
+        "s = @{{ x: 1 }, { x: 2 }}\n",
+        "s = @{(1, \"a\"), (2, \"b\")}\n",
+        "s = @{1, 2} | 3\n",
+        "s = @{1}.add(2)\n",
+        "s = [1, 2, 2].collect(Set)\n",
+        "s = @{..@{1}, 2}\n",
+    ] {
+        let output = parse_module(source);
+        let check = check_module(&output.module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "ordinary set elements should check cleanly for {source:?}: {:?}",
+            check.diagnostics
+        );
+    }
 }
 
 #[test]

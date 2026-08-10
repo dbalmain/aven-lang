@@ -567,17 +567,7 @@ impl<'a> Checker<'a> {
                 .into_iter()
                 .find(|(ty, _)| matches!(self.unifier.resolve(ty), Type::Function { .. }));
             if let Some((_, operand)) = function_operand {
-                self.diagnostics.push(
-                    Diagnostic::error("functions are not comparable")
-                        .with_code(codes::ty::MISMATCH)
-                        .with_label(Label::primary(
-                            operand.span,
-                            "this operand is a function",
-                        ))
-                        .with_note(
-                            "compare the results of calling the functions instead of the functions themselves",
-                        ),
-                );
+                self.report_functions_not_comparable(operand.span, "this operand is a function");
                 return named_builtin("Bool");
             }
         }
@@ -2075,6 +2065,7 @@ impl<'a> Checker<'a> {
                 params,
                 Some((callee_obligation_start, callee_obligation_end)),
             );
+            self.report_incomparable_set_method_args(env, callee, args, &arg_types);
             self.simplify_method_obligations(false);
             let result = self.resolve_row_merge_call_result(result);
             if is_to_result_call(callee)
@@ -2636,6 +2627,13 @@ impl<'a> Checker<'a> {
         }
 
         let result = self.unifier.resolve(&result);
+        // `collect(Set)` is another way an element enters a set: reject
+        // function elements here the same way set literals do.
+        if target_name == "Set"
+            && let Some((BuiltinType::Set, [collected_element])) = result.applied_builtin()
+        {
+            self.report_if_incomparable_set_element(collected_element, source.span);
+        }
         if sugar {
             self.record_target_owned_member_type(field_span, &target_name, &args[1..], &result);
         }
@@ -4266,6 +4264,7 @@ impl<'a> Checker<'a> {
             callee: Box::new(Type::Named(name.to_owned())),
             args: vec![element_type.clone()],
         };
+        let is_set = name == "Set";
 
         // A spread carries an established collection element type, so let it
         // constrain the fresh element before singleton literal elements are
@@ -4295,6 +4294,9 @@ impl<'a> Checker<'a> {
             match entry {
                 RecordEntry::Element(element) => {
                     let item_type = self.infer(env, element);
+                    if is_set {
+                        self.report_if_incomparable_set_element(&item_type, element.span);
+                    }
                     if self.unifier.unify(&element_type, &item_type).is_err() {
                         return Type::Deferred;
                     }
@@ -4315,6 +4317,7 @@ impl<'a> Checker<'a> {
         let element_type = self.unifier.fresh();
         for part in parts {
             let item_type = self.infer_set_union_part_type(env, part);
+            self.report_if_incomparable_set_element(&item_type, part.expr().span);
             if self.unifier.unify(&element_type, &item_type).is_err() {
                 return Type::Deferred;
             }
@@ -4348,6 +4351,34 @@ impl<'a> Checker<'a> {
                 Some(args[0].clone())
             }
             _ => None,
+        }
+    }
+
+    /// `Set.add` / `Set.has` / `Set.delete` take an element; functions cannot
+    /// be elements. Mirror the set-literal guard so `.add(f)` is not a hole
+    /// under an annotated empty `Set(Int -> Int)`.
+    pub(super) fn report_incomparable_set_method_args(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+        arg_types: &[Type],
+    ) {
+        let ExprKind::FieldAccess {
+            receiver, field, ..
+        } = &ungroup_expr(callee).kind
+        else {
+            return;
+        };
+        if !matches!(field.as_str(), "add" | "has" | "delete") {
+            return;
+        }
+        let receiver_type = self.infer(env, receiver);
+        if self.set_operand_element_type(&receiver_type).is_none() {
+            return;
+        }
+        for (arg, ty) in args.iter().zip(arg_types) {
+            self.report_if_incomparable_set_element(ty, arg.span);
         }
     }
 

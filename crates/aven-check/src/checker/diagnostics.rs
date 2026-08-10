@@ -703,6 +703,30 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// Functions have no equality (`f == g` is rejected; the evaluator throws).
+    /// The same fact rules them out as Set elements and as `==`/`!=` operands:
+    /// membership and comparison are one question. Deduped by primary span so
+    /// re-inferring a set literal receiver (e.g. `@{f}.add(g)`) does not
+    /// double-report the same element.
+    pub(super) fn report_functions_not_comparable(&mut self, span: Span, primary_label: &str) {
+        self.push_unique_diagnostic(
+            Diagnostic::error("functions are not comparable")
+                .with_code(codes::ty::MISMATCH)
+                .with_label(Label::primary(span, primary_label))
+                .with_note(
+                    "compare the results of calling the functions instead of the functions themselves",
+                ),
+        );
+    }
+
+    /// Report when a type used as a Set element is a function. Shared by set
+    /// literals, `|` union parts, `.add`, and `collect(Set)`.
+    pub(super) fn report_if_incomparable_set_element(&mut self, ty: &Type, span: Span) {
+        if matches!(self.unifier.resolve(ty), Type::Function { .. }) {
+            self.report_functions_not_comparable(span, "this set element is a function");
+        }
+    }
+
     /// Arity mismatch when an open method row (from a free-receiver call) is
     /// checked against a concrete ambient owner whose method rejects the
     /// supplied argument count. Names the method and the repair.

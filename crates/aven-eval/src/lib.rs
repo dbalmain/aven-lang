@@ -3409,12 +3409,20 @@ fn collect_into_array(source: CollectSource, span: Span) -> Eval {
 /// array gets.
 fn collect_into_set(source: CollectSource, span: Span) -> Eval {
     if let CollectSource::Set(members) = source {
+        for member in members.iter() {
+            ensure_set_element(member, "Set.collect")
+                .map_err(|message| one_diagnostic(platform_error(span, message)))?;
+        }
         return Ok(Value::Set(members));
     }
     let mut values = Vec::new();
     append_collection(&mut values, source, span)?;
     let mut members = SetValue::default();
-    members.extend(values);
+    for value in values {
+        ensure_set_element(&value, "Set.collect")
+            .map_err(|message| one_diagnostic(platform_error(span, message)))?;
+        members.insert(value);
+    }
     Ok(Value::Set(Rc::new(members)))
 }
 
@@ -3851,6 +3859,8 @@ fn eval_set(entries: &[RecordEntry], env: &Environment) -> Eval {
         match entry {
             RecordEntry::Element(expr) => {
                 let value = eval_expr_many(expr, env)?;
+                ensure_set_element(&value, "Set")
+                    .map_err(|message| one_diagnostic(platform_error(expr.span, message)))?;
                 members.get_or_insert_default().insert(value);
             }
             RecordEntry::Spread {
@@ -5679,6 +5689,7 @@ fn set_has_method(members: Rc<SetValue>) -> Value {
         if args.len() != 1 {
             return Err(format!("Set.has expects 1 argument, got {}", args.len()));
         }
+        ensure_set_element(&args[0], "Set.has")?;
 
         Ok(Value::Bool(members.contains(&args[0])))
     })
@@ -5702,6 +5713,7 @@ fn set_add_method(members: Rc<SetValue>) -> Value {
         if args.len() != 1 {
             return Err(format!("Set.add expects 1 argument, got {}", args.len()));
         }
+        ensure_set_element(&args[0], "Set.add")?;
 
         let mut next = members.as_ref().clone();
         next.insert(args[0].clone());
@@ -5714,6 +5726,7 @@ fn set_delete_method(members: Rc<SetValue>) -> Value {
         if args.len() != 1 {
             return Err(format!("Set.delete expects 1 argument, got {}", args.len()));
         }
+        ensure_set_element(&args[0], "Set.delete")?;
 
         let mut next = members.as_ref().clone();
         next.remove(&args[0]);
@@ -5726,10 +5739,7 @@ fn set_delete_method(members: Rc<SetValue>) -> Value {
 fn set_union_method(members: Rc<SetValue>) -> Value {
     Value::native(move |args| {
         let other = set_operand(args, "Set.union")?;
-        Ok(set_union(
-            Value::Set(Rc::clone(&members)),
-            Value::Set(other),
-        ))
+        set_union(Value::Set(Rc::clone(&members)), Value::Set(other))
     })
 }
 
@@ -6234,7 +6244,7 @@ fn indexed_value(values: &[Value], index: &Int) -> Option<Value> {
 }
 
 fn ensure_map_key(key: &Value, context: &str) -> Result<(), String> {
-    if map_key_is_comparable(key) {
+    if value_is_comparable(key) {
         Ok(())
     } else {
         Err(format!(
@@ -6244,8 +6254,21 @@ fn ensure_map_key(key: &Value, context: &str) -> Result<(), String> {
     }
 }
 
-fn map_key_is_comparable(key: &Value) -> bool {
-    match key {
+/// Set membership uses the same equality as Map keys; reject values that have
+/// none (functions, streams, …) so a set cannot break its own `has` invariant.
+fn ensure_set_element(element: &Value, context: &str) -> Result<(), String> {
+    if value_is_comparable(element) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} cannot use {} as a Set element",
+            element.type_name()
+        ))
+    }
+}
+
+fn value_is_comparable(value: &Value) -> bool {
+    match value {
         Value::Closure(_)
         | Value::Native(_)
         | Value::RangeConstructor { .. }
@@ -6260,19 +6283,19 @@ fn map_key_is_comparable(key: &Value) -> bool {
         | Value::NamedMethod { .. }
         | Value::UnboundNamedMethod { .. } => false,
         Value::BrandedPrimitive { .. } => true,
-        Value::Array(values) | Value::Tuple(values) => values.iter().all(map_key_is_comparable),
-        Value::Set(members) => members.iter().all(map_key_is_comparable),
+        Value::Array(values) | Value::Tuple(values) => values.iter().all(value_is_comparable),
+        Value::Set(members) => members.iter().all(value_is_comparable),
         Value::Map(entries) => entries
             .iter()
-            .all(|(key, value)| map_key_is_comparable(key) && map_key_is_comparable(value)),
+            .all(|(key, value)| value_is_comparable(key) && value_is_comparable(value)),
         Value::Record(fields) | Value::NamedRecord { fields, .. } => {
-            fields.iter().all(|(_, value)| map_key_is_comparable(value))
+            fields.iter().all(|(_, value)| value_is_comparable(value))
         }
         Value::SlotRecord { fields, slots } => fields
             .iter()
             .chain(slots.iter())
-            .all(|(_, value)| map_key_is_comparable(value)),
-        Value::Tag { payload, .. } => payload.iter().all(map_key_is_comparable),
+            .all(|(_, value)| value_is_comparable(value)),
+        Value::Tag { payload, .. } => payload.iter().all(value_is_comparable),
         Value::Int(_)
         | Value::Float(_)
         | Value::Text(_)
@@ -6554,7 +6577,9 @@ fn apply_binary(
         "<" | ">" | "<=" | ">=" => {
             numeric_comparison(left, operator, right, span).map_err(one_diagnostic)
         }
-        "|" => Ok(set_union(left, right)),
+        "|" => {
+            set_union(left, right).map_err(|message| one_diagnostic(platform_error(span, message)))
+        }
         _ => Err(one_diagnostic(unsupported_operator(
             operator,
             operator_span,
@@ -6568,16 +6593,22 @@ fn apply_binary(
 /// membership `eval_set` uses, so `|` and `@{..}` agree on element identity.
 /// A `Set` on the left is adopted rather than rebuilt, so its structure is
 /// shared with the result.
-fn set_union(left: Value, right: Value) -> Value {
+fn set_union(left: Value, right: Value) -> Result<Value, String> {
     let mut members = match left {
         Value::Set(members) => Rc::unwrap_or_clone(members),
-        other => SetValue::from_values([other]),
+        other => {
+            ensure_set_element(&other, "Set union")?;
+            SetValue::from_values([other])
+        }
     };
     match right {
         Value::Set(other) => members.extend(other.iter().cloned()),
-        other => members.insert(other),
+        other => {
+            ensure_set_element(&other, "Set union")?;
+            members.insert(other);
+        }
     }
-    Value::Set(Rc::new(members))
+    Ok(Value::Set(Rc::new(members)))
 }
 
 fn add(left: Value, right: Value, span: Span) -> Result<Value, Diagnostic> {
