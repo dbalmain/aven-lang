@@ -1,0 +1,11 @@
+short = combine(first, second)
+long = combine("a deliberately long first argument for the wrapping policy", second, third)
+normalise = combine(
+                  first, second
+                  )
+preserve = pair(
+  first,
+  second)
+chain = records.withAnIntentionallyLongMethodName("a deliberately long argument", second)
+alreadyChained = records
+  .short(first)

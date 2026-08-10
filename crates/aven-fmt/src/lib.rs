@@ -4,13 +4,17 @@ use aven_core::{Diagnostic, Span};
 use aven_parser::{
     Expr, ExprKind, Item, MatchArm, Module, ModuleRole, OperatorFixityTable, ParseOutput,
     RecordEntry, Token, TokenKind, is_identifier, parse_module, parse_module_with_fixities,
-    walk_expr_children,
+    walk_expr_children, walk_module_exprs,
 };
 
 const INDENT_WIDTH: usize = 2;
+/// Soft line-width budget used to decide when a call must use the canonical
+/// one-argument-per-line shape. Kept separate so it can become a formatter
+/// configuration field without coupling it to other width policies.
+const CALL_MAX_LINE_WIDTH: usize = 80;
 /// Soft line-width budget used only for deciding whether an authored inline
 /// match stays on one line or breaks to the standard indented arm block.
-const MAX_LINE_WIDTH: usize = 100;
+const INLINE_MATCH_MAX_LINE_WIDTH: usize = 100;
 
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let parse = parse_module(source);
@@ -22,14 +26,36 @@ pub fn format_source_with_fixities(
     operator_fixities: &OperatorFixityTable,
 ) -> Result<String, Vec<Diagnostic>> {
     let parse = parse_module_with_fixities(source, operator_fixities, ModuleRole::Entry);
-    format_parsed_source(source, &parse)
+    format_parsed_source_with_reparse(source, &parse, |source| {
+        parse_module_with_fixities(source, operator_fixities, ModuleRole::Entry)
+    })
 }
 
 pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String, Vec<Diagnostic>> {
+    format_parsed_source_with_reparse(source, parse, parse_module)
+}
+
+fn format_parsed_source_with_reparse(
+    source: &str,
+    parse: &ParseOutput,
+    reparse: impl Fn(&str) -> ParseOutput,
+) -> Result<String, Vec<Diagnostic>> {
     if parse.diagnostics.iter().any(Diagnostic::is_error) {
         return Err(parse.diagnostics.clone());
     }
 
+    let mut formatted = format_lines(source, parse);
+    loop {
+        let reparsed = reparse(&formatted);
+        let wrapped = normalize_call_layouts(&formatted, &reparsed);
+        if wrapped == formatted {
+            return Ok(formatted);
+        }
+        formatted = wrapped;
+    }
+}
+
+fn format_lines(source: &str, parse: &ParseOutput) -> String {
     let field_name_spans = collect_field_name_spans(&parse.module);
     let line_count = source.lines().count();
     let line_starts = line_starts(source);
@@ -57,7 +83,7 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
             .iter()
             .find(|match_layout| match_layout.line == line_index);
 
-        if flat.chars().count() > MAX_LINE_WIDTH
+        if flat.chars().count() > INLINE_MATCH_MAX_LINE_WIDTH
             && let Some(match_layout) = breakable.filter(|layout| layout.can_break_to_layout)
         {
             emit_broken_inline_match(
@@ -74,7 +100,292 @@ pub fn format_parsed_source(source: &str, parse: &ParseOutput) -> Result<String,
         }
     }
 
-    Ok(output)
+    output
+}
+
+#[derive(Debug)]
+struct CallLayout {
+    span: Span,
+    callee_span: Span,
+    argument_spans: Vec<Span>,
+    separator_spans: Vec<Span>,
+    trailing_comma_span: Option<Span>,
+    open_span: Span,
+    close_span: Span,
+    chain_operator_span: Option<Span>,
+    chain_receiver_span: Option<Span>,
+}
+
+#[derive(Debug)]
+struct WhitespaceEdit {
+    span: Span,
+    replacement: String,
+}
+
+fn normalize_call_layouts(source: &str, parse: &ParseOutput) -> String {
+    let line_starts = line_starts(source);
+    let mut calls = Vec::new();
+    walk_module_exprs(&parse.module, &mut |expr| {
+        if let ExprKind::Call { callee, args } = &expr.kind
+            && let Some(call) = call_layout(expr.span, callee, args, &parse.raw_tokens)
+        {
+            calls.push(call);
+        }
+    });
+
+    let candidates = calls
+        .iter()
+        .filter_map(|call| call_layout_edits(source, &line_starts, call).map(|edits| (call, edits)))
+        .collect::<Vec<_>>();
+    let mut edits = Vec::new();
+
+    for (call, call_edits) in &candidates {
+        let contained_by_pending_call = candidates.iter().any(|(other, _)| {
+            other.span != call.span
+                && other.span.start <= call.span.start
+                && call.span.end <= other.span.end
+        });
+        if !contained_by_pending_call {
+            edits.extend(call_edits.iter().map(|edit| WhitespaceEdit {
+                span: edit.span,
+                replacement: edit.replacement.clone(),
+            }));
+        }
+    }
+
+    apply_whitespace_edits(source, edits)
+}
+
+fn call_layout(span: Span, callee: &Expr, args: &[Expr], tokens: &[Token]) -> Option<CallLayout> {
+    let open_span = tokens
+        .iter()
+        .find(|token| {
+            token.kind == TokenKind::OpenParen
+                && token.span.start >= callee.span.end
+                && token.span.end <= span.end
+        })?
+        .span;
+    let close_span = tokens
+        .iter()
+        .rev()
+        .find(|token| {
+            token.kind == TokenKind::CloseParen
+                && token.span.start >= open_span.end
+                && token.span.end <= span.end
+        })?
+        .span;
+
+    let (chain_operator_span, chain_receiver_span) = match &callee.kind {
+        ExprKind::FieldAccess {
+            receiver,
+            field_span,
+            ..
+        } => {
+            let operator = tokens.iter().find(|token| {
+                is_tight_access_operator(token)
+                    && token.span.start >= receiver.span.end
+                    && token.span.end <= field_span.start
+            });
+            (operator.map(|token| token.span), Some(receiver.span))
+        }
+        _ => (None, None),
+    };
+    let argument_spans = args.iter().map(|arg| arg.span).collect::<Vec<_>>();
+    let separator_spans = argument_spans
+        .windows(2)
+        .map(|pair| {
+            tokens
+                .iter()
+                .find(|token| {
+                    token.kind == TokenKind::Comma
+                        && token.span.start >= pair[0].end
+                        && token.span.end <= pair[1].start
+                })
+                .map(|token| token.span)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let trailing_comma_span = argument_spans.last().and_then(|last| {
+        tokens
+            .iter()
+            .find(|token| {
+                token.kind == TokenKind::Comma
+                    && token.span.start >= last.end
+                    && token.span.end <= close_span.start
+            })
+            .map(|token| token.span)
+    });
+
+    Some(CallLayout {
+        span,
+        callee_span: callee.span,
+        argument_spans,
+        separator_spans,
+        trailing_comma_span,
+        open_span,
+        close_span,
+        chain_operator_span,
+        chain_receiver_span,
+    })
+}
+
+fn call_layout_edits(
+    source: &str,
+    line_starts: &[usize],
+    call: &CallLayout,
+) -> Option<Vec<WhitespaceEdit>> {
+    let open_line = line_for_offset(line_starts, call.open_span.start);
+    let close_line = line_for_offset(line_starts, call.close_span.start);
+    let arguments_are_wrapped = open_line != close_line
+        || call.argument_spans.iter().any(|span| {
+            line_for_offset(line_starts, span.start) != open_line
+                || line_for_offset(line_starts, span.end.saturating_sub(1)) != open_line
+        });
+    let call_overruns = open_line == close_line
+        && column_for_offset(source, line_starts, call.close_span.end) > CALL_MAX_LINE_WIDTH;
+
+    let chain_was_wrapped = call
+        .chain_operator_span
+        .zip(call.chain_receiver_span)
+        .is_some_and(|(operator, receiver)| {
+            line_for_offset(line_starts, operator.start)
+                > line_for_offset(line_starts, receiver.end.saturating_sub(1))
+        });
+    let wrap_chain = call.chain_operator_span.is_some() && (chain_was_wrapped || call_overruns);
+    let wrap_arguments = arguments_are_wrapped || call_overruns;
+    if !wrap_chain && !wrap_arguments {
+        return None;
+    }
+
+    let base_indent = leading_indent(source, line_starts, call.callee_span.start);
+    let call_indent = base_indent + usize::from(wrap_chain) * INDENT_WIDTH;
+    let argument_indent = call_indent + INDENT_WIDTH;
+    let mut edits = Vec::new();
+
+    if wrap_chain {
+        let operator = call.chain_operator_span?;
+        let receiver = call.chain_receiver_span?;
+        push_whitespace_edit(
+            source,
+            &mut edits,
+            Span::new(receiver.end, operator.start),
+            format!("\n{}", " ".repeat(call_indent)),
+        )?;
+    }
+
+    if wrap_arguments {
+        let argument_prefix = format!("\n{}", " ".repeat(argument_indent));
+        let close_prefix = format!("\n{}", " ".repeat(call_indent));
+        if let Some(first) = call.argument_spans.first() {
+            push_line_prefix_edit(
+                source,
+                &mut edits,
+                Span::new(call.open_span.end, first.start),
+                argument_prefix.clone(),
+            )?;
+
+            for (pair, comma) in call.argument_spans.windows(2).zip(&call.separator_spans) {
+                push_whitespace_edit(
+                    source,
+                    &mut edits,
+                    Span::new(pair[0].end, comma.start),
+                    String::new(),
+                )?;
+                push_line_prefix_edit(
+                    source,
+                    &mut edits,
+                    Span::new(comma.end, pair[1].start),
+                    argument_prefix.clone(),
+                )?;
+            }
+
+            let close_start = call
+                .trailing_comma_span
+                .map_or(call.argument_spans.last()?.end, |span| span.end);
+            push_line_prefix_edit(
+                source,
+                &mut edits,
+                Span::new(close_start, call.close_span.start),
+                close_prefix,
+            )?;
+        } else {
+            push_line_prefix_edit(
+                source,
+                &mut edits,
+                Span::new(call.open_span.end, call.close_span.start),
+                close_prefix,
+            )?;
+        }
+    }
+
+    edits.retain(|edit| source.get(edit.span.start..edit.span.end) != Some(&edit.replacement));
+    (!edits.is_empty()).then_some(edits)
+}
+
+fn push_whitespace_edit(
+    source: &str,
+    edits: &mut Vec<WhitespaceEdit>,
+    span: Span,
+    replacement: String,
+) -> Option<()> {
+    source
+        .get(span.start..span.end)?
+        .chars()
+        .all(char::is_whitespace)
+        .then_some(())?;
+    edits.push(WhitespaceEdit { span, replacement });
+    Some(())
+}
+
+/// Replace only the trailing whitespace before a token. This keeps comments
+/// between a delimiter/separator and an argument in place while still putting
+/// the argument itself on its canonical line.
+fn push_line_prefix_edit(
+    source: &str,
+    edits: &mut Vec<WhitespaceEdit>,
+    span: Span,
+    replacement: String,
+) -> Option<()> {
+    let text = source.get(span.start..span.end)?;
+    let trailing_start = text
+        .char_indices()
+        .rev()
+        .find_map(|(offset, character)| {
+            (!character.is_whitespace()).then_some(offset + character.len_utf8())
+        })
+        .unwrap_or(0);
+    edits.push(WhitespaceEdit {
+        span: Span::new(span.start + trailing_start, span.end),
+        replacement,
+    });
+    Some(())
+}
+
+fn apply_whitespace_edits(source: &str, mut edits: Vec<WhitespaceEdit>) -> String {
+    edits.sort_by_key(|edit| edit.span.start);
+    let mut output = source.to_owned();
+    for edit in edits.into_iter().rev() {
+        output.replace_range(edit.span.start..edit.span.end, &edit.replacement);
+    }
+    output
+}
+
+fn leading_indent(source: &str, line_starts: &[usize], offset: usize) -> usize {
+    let line_start = line_starts[line_for_offset(line_starts, offset)];
+    source
+        .get(line_start..offset)
+        .unwrap_or_default()
+        .bytes()
+        .take_while(|byte| *byte == b' ')
+        .count()
+}
+
+fn column_for_offset(source: &str, line_starts: &[usize], offset: usize) -> usize {
+    let line_start = line_starts[line_for_offset(line_starts, offset)];
+    source
+        .get(line_start..offset)
+        .unwrap_or_default()
+        .chars()
+        .count()
 }
 
 /// An authored inline match: `?>` and every arm start on the same source line.
