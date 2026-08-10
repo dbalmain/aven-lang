@@ -1,2 +1,4 @@
 value = result ?> @Ok(x) => x
   @Err(e) => e
+other = result ?> @Ok(x) => x
+@Err(e) => e

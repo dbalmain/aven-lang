@@ -674,6 +674,44 @@ async fn protocol_code_action_uses_published_semantic_diagnostic() {
     assert_eq!(edit.range.end, diagnostic.range.start);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_code_action_offers_mixed_match_arm_layout_fix() {
+    let (mut service, mut socket) = LspService::new(test_backend);
+    let uri = test_uri();
+    let source = "f = (n) => n ?> \"e\" => \"euler\"\n  \"pi\" => \"pi\"\n";
+
+    let _ = initialize_service(&mut service, &mut socket).await;
+    open_test_document(&mut service, &uri, source).await;
+    let published = next_publish_diagnostics(&mut socket).await;
+    let diagnostic = mixed_match_arm_layout_diagnostic(&published.diagnostics);
+
+    let request = Request::build("textDocument/codeAction")
+        .params(json!({
+            "textDocument": { "uri": uri.clone() },
+            "range": diagnostic.range,
+            "context": { "diagnostics": published.diagnostics },
+        }))
+        .id(2)
+        .finish();
+    let response = call_service(&mut service, request)
+        .await
+        .expect("expected code action response");
+    let (_id, body) = response.into_parts();
+    let actions: Option<CodeActionResponse> =
+        serde_json::from_value(body.expect("successful code action response"))
+            .expect("expected code action response body");
+    let actions = actions.expect("expected mixed match-arm quick fix");
+    let action = single_code_action(&actions);
+
+    assert_eq!(action.title, "Put every match arm on a separate line");
+    assert_action_carries_diagnostic(action, diagnostic);
+    let edit = single_action_text_edit(action, &uri);
+    assert_eq!(
+        edit.new_text,
+        "n ?>\n  \"e\" => \"euler\"\n  \"pi\" => \"pi\""
+    );
+}
+
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn protocol_inlay_hint_returns_inferred_binding_type() {
     let (mut service, mut socket) = LspService::new(test_backend);
@@ -2345,6 +2383,39 @@ fn spread_extra_dots_code_action_keeps_the_overwrite_colon() {
     assert_eq!(edit.new_text, ":..");
     assert_eq!(edit.range, range);
     assert_edit_replaces_text(&document, edit, "wide = { :..base }\n");
+}
+
+#[test]
+fn mixed_match_arm_layout_code_action_formats_both_recoveries_as_a_block() {
+    let uri = test_uri();
+    let expected = "f = (n) => n ?>\n  \"e\" => \"euler\"\n  \"pi\" => \"pi\"\n";
+
+    for source in [
+        "f = (n) => n ?> \"e\" => \"euler\"\n  \"pi\" => \"pi\"\n",
+        "f = (n) => n ?> \"e\" => \"euler\"\n\"pi\" => \"pi\"\n",
+    ] {
+        let document = parsed_document(source);
+        let diagnostics = document_diagnostics(&document);
+        let diagnostic = mixed_match_arm_layout_diagnostic(&diagnostics);
+        let context = CodeActionContext {
+            diagnostics: diagnostics.clone(),
+            ..CodeActionContext::default()
+        };
+        let actions = mixed_match_arm_layout_code_actions(&document, &uri, &context);
+
+        let action = single_code_action(&actions);
+        assert_eq!(action.title, "Put every match arm on a separate line");
+        assert_eq!(action.kind.as_ref(), Some(&CodeActionKind::QUICKFIX));
+        assert_eq!(action.is_preferred, Some(true));
+        assert_action_carries_diagnostic(action, diagnostic);
+
+        let edit = single_action_text_edit(action, &uri);
+        assert_edit_replaces_text(&document, edit, expected);
+        assert!(
+            aven_parser::parse_module(expected).diagnostics.is_empty(),
+            "fixed match should parse cleanly"
+        );
+    }
 }
 
 #[test]
@@ -4404,6 +4475,13 @@ fn spread_extra_dots_diagnostic(diagnostics: &[Diagnostic]) -> &Diagnostic {
         .iter()
         .find(|diagnostic| is_spread_extra_dots_diagnostic(diagnostic))
         .expect("expected extra-dot spread diagnostic")
+}
+
+fn mixed_match_arm_layout_diagnostic(diagnostics: &[Diagnostic]) -> &Diagnostic {
+    diagnostics
+        .iter()
+        .find(|diagnostic| is_mixed_match_arm_layout_diagnostic(diagnostic))
+        .expect("expected mixed match-arm layout diagnostic")
 }
 
 fn single_code_action(actions: &[CodeActionOrCommand]) -> &CodeAction {

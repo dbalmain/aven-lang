@@ -98,6 +98,7 @@ pub mod parse {
     pub const MISSING_MATCH_ARMS: &str = "parse.missing-match-arms";
     pub const MISSING_MATCH_BODY: &str = "parse.missing-match-body";
     pub const MISSING_METHOD_BOUND_OPEN: &str = "parse.missing-method-bound-open";
+    pub const MIXED_MATCH_ARM_LAYOUT: &str = "parse.mixed-match-arm-layout";
     pub const OPERATOR_ASSOCIATIVITY_CONFLICT: &str = "parse.operator-associativity-conflict";
     pub const OPERATOR_FIXITY_UNDECLARED: &str = "parse.operator-fixity-undeclared";
     pub const OPERATOR_MEMBER_PARAMETER_LIST: &str = "parse.operator-member-parameter-list";
@@ -268,6 +269,7 @@ pub const ALL: &[&str] = &[
     parse::MISSING_MATCH_ARMS,
     parse::MISSING_MATCH_BODY,
     parse::MISSING_METHOD_BOUND_OPEN,
+    parse::MIXED_MATCH_ARM_LAYOUT,
     parse::OPERATOR_ASSOCIATIVITY_CONFLICT,
     parse::OPERATOR_FIXITY_UNDECLARED,
     parse::OPERATOR_MEMBER_PARAMETER_LIST,
