@@ -227,7 +227,14 @@ impl<'a> Checker<'a> {
             }
         } else if let Some(binding) = binding {
             let obligation_marker = self.method_obligation_marker();
+            let generalize_inferred_collections = self.generalize_inferred_collections;
+            if self.comptime_bindings.contains(name) {
+                // A comptime binding's RHS is a type-position expression, not
+                // a materialized runtime collection.
+                self.generalize_inferred_collections = false;
+            }
             let ty = self.infer(&TypeEnv::new(), &binding.value);
+            self.generalize_inferred_collections = generalize_inferred_collections;
             self.generalize_method_obligations(
                 self.resolve_and_default(&ty),
                 &[],
@@ -408,8 +415,60 @@ impl<'a> Checker<'a> {
             | ExprKind::NonNull(_)
             | ExprKind::Arrow { .. } => Type::Deferred,
         };
+        let ty = if self.generalize_inferred_collections {
+            self.generalize_collection_literal_positions(&ty)
+        } else {
+            ty
+        };
         self.record_expr_type(expr.span, &ty);
         ty
+    }
+
+    /// Widen inferred literal rows only where a value has materialized a
+    /// collection. Collection constructors expose their element/key/value
+    /// columns as the direct arguments of `Array`, `Set`, and `Map`, so this
+    /// one result seam also covers `collect` and `Stream.toArray` without
+    /// touching scalar, tuple, record, or function positions.
+    fn generalize_collection_literal_positions(&self, ty: &Type) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        let Some((builtin, args)) = resolved.applied_builtin() else {
+            return ty.clone();
+        };
+        if !matches!(
+            builtin,
+            BuiltinType::Array | BuiltinType::Set | BuiltinType::Map
+        ) {
+            return ty.clone();
+        }
+
+        Type::Apply {
+            callee: Box::new(named_builtin(builtin.name())),
+            args: args
+                .iter()
+                .map(|arg| self.generalize_collection_literal_position(arg))
+                .collect(),
+        }
+    }
+
+    fn generalize_collection_literal_position(&self, ty: &Type) -> Type {
+        let resolved = self.unifier.resolve(ty);
+        let Type::Variant(row) = &resolved else {
+            return resolved;
+        };
+        // Inferred literal values carry a row variable. A literal union
+        // written in an annotation may itself be open (`..`); that fixed type
+        // is still a directed target, not an inference artifact to widen.
+        if !matches!(row.tail, RowTail::Var(_)) {
+            return resolved;
+        }
+
+        match literal_variant_base(row) {
+            Some(LiteralBase::Bool) => named_builtin("Bool"),
+            Some(LiteralBase::Text) => named_builtin("Text"),
+            Some(LiteralBase::Number) if literal_row_contains_float(row) => named_builtin("Float"),
+            Some(LiteralBase::Number) => named_builtin("Int"),
+            None => resolved,
+        }
     }
 
     pub(super) fn open_literal_variant(&mut self, literal: &Literal) -> Type {
