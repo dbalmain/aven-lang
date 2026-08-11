@@ -1269,6 +1269,14 @@ unification. The rule-by-rule model (R1–R6, the `|` operator) and per-slice
 commits are recorded in `../../docs/literal-types.md` — all done. `Bool`
 literals still infer `Bool` (no bool singletons yet — see 15.3).
 
+**Collection-position addendum (2026-08-11):** an inferred collection value
+widens literal rows in its direct element/key/value columns to `Bool`, `Text`,
+`Int`, or `Float`. This applies to `Array`, `Set`, and both `Map` columns,
+including values materialized by `collect` and `Stream.toArray`. Scalar
+bindings and literal unions in type position retain their precision; tuple
+elements, record fields, function returns, and unmaterialized `Stream`
+elements are not collection columns and remain literal-typed.
+
 Slices:
 
 - 15.1 — literal-union types + checking: lower `@{ <string/number literals> }`

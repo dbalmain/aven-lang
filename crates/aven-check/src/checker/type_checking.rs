@@ -68,6 +68,13 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
+        let generalize_inferred_collections = self.generalize_inferred_collections;
+        self.generalize_inferred_collections = false;
+        self.check_value_against_target(expected, value);
+        self.generalize_inferred_collections = generalize_inferred_collections;
+    }
+
+    fn check_value_against_target(&mut self, expected: &Type, value: &Expr) {
         if matches!(value.kind, ExprKind::Regex(_)) {
             return;
         }
@@ -786,6 +793,10 @@ impl<'a> Checker<'a> {
             items.len()
         };
 
+        // The block result has `expected`, but its prefix bindings do not.
+        // Let those locals use ordinary target-free collection inference.
+        let generalize_inferred_collections = self.generalize_inferred_collections;
+        self.generalize_inferred_collections = true;
         for item in merged_items(&items[..prefix_len]) {
             match item {
                 MergedItem::Binding { signature, binding } => {
@@ -810,6 +821,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        self.generalize_inferred_collections = generalize_inferred_collections;
 
         if let Some(expr) = final_expr {
             self.check_value_against(expected, expr);

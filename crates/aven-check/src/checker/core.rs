@@ -42,6 +42,7 @@ impl<'a> Checker<'a> {
             imports: ModuleImports::default(),
             report_unbound_names: true,
             report_unresolved_bindings: true,
+            generalize_inferred_collections: true,
             coalesce_guarded_field: false,
             reported_unbound_name_spans: HashSet::new(),
             reported_import_spans: HashSet::new(),

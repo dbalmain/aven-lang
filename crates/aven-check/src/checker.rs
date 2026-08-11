@@ -109,6 +109,9 @@ pub(crate) struct Checker<'a> {
     pub(crate) imports: ModuleImports,
     report_unbound_names: bool,
     report_unresolved_bindings: bool,
+    /// False while an expression is being checked against an existing target;
+    /// collection literal widening belongs only to target-free inference.
+    generalize_inferred_collections: bool,
     /// Set while inferring the left operand of `??`, and consumed by the first
     /// field access that reads it. See `infer_field_access`.
     coalesce_guarded_field: bool,

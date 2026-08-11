@@ -2414,13 +2414,22 @@ fn int_literals_still_widen_into_float() {
 }
 
 #[test]
-fn float_literals_do_not_join_open_int_literal_unions() {
-    // Open number-literal key types from unannotated Map.from([(1, …)]) must
-    // reject float-form keys. Same class as Named Int vs float literal.
-    for source in [
-        "m = Map.from([(1, \"a\")])\nr = m.set(1.0, \"b\")\n",
-        "m = Map.from([(1, \"a\")])\nr = m.get(1.0)\n",
-        "m = Map.from([(1, \"a\")])\nf : Float = 1.0\nr = m.set(f, \"b\")\n",
+fn generalized_int_map_keys_reject_float_values() {
+    // Inferred Map key columns generalize to Int. Directed method checks must
+    // still reject Float rather than joining it into the established key type.
+    for (source, expected_message) in [
+        (
+            "m = Map.from([(1, \"a\")])\nr = m.set(1.0, \"b\")\n",
+            "expected `Int`, found a float literal",
+        ),
+        (
+            "m = Map.from([(1, \"a\")])\nr = m.get(1.0)\n",
+            "expected `Int`, found a float literal",
+        ),
+        (
+            "m = Map.from([(1, \"a\")])\nf : Float = 1.0\nr = m.set(f, \"b\")\n",
+            "expected `Int`, found `Float`",
+        ),
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -2437,8 +2446,7 @@ fn float_literals_do_not_join_open_int_literal_unions() {
             .find(|d| d.code.as_deref() == Some(codes::ty::MISMATCH))
             .expect("type.mismatch");
         assert!(
-            diagnostic.message.contains("Float")
-                && (diagnostic.message.contains("Int") || diagnostic.message.contains("1")),
+            diagnostic.message == expected_message,
             "{source} should name the Int/Float mismatch: {}",
             diagnostic.message
         );
@@ -2446,8 +2454,7 @@ fn float_literals_do_not_join_open_int_literal_unions() {
 }
 
 #[test]
-fn open_int_literal_unions_still_accept_further_int_literals() {
-    // The open tail is for more int-form keys, not a closed singleton.
+fn generalized_int_map_keys_accept_int_values() {
     for source in [
         "m = Map.from([(1, \"a\")])\nr = m.set(2, \"b\")\n",
         "m = Map.from([(1, \"a\")])\nr = m.get(2)\n",
@@ -2464,9 +2471,9 @@ fn open_int_literal_unions_still_accept_further_int_literals() {
 }
 
 #[test]
-fn open_float_literal_unions_accept_float_and_int_keys() {
-    // Mirror of the int-seeded case: float-form open unions keep accepting
-    // floats, and int-form keys join by Int → Float widening.
+fn generalized_float_map_keys_accept_float_and_int_values() {
+    // Float-keyed maps accept float keys and the directed Int → Float
+    // widening used at every other fixed Float boundary.
     for source in [
         "m = Map.from([(1.0, \"a\")])\nr = m.set(2.0, \"b\")\n",
         "m = Map.from([(1.0, \"a\")])\nr = m.get(2.0)\n",
@@ -2484,16 +2491,178 @@ fn open_float_literal_unions_accept_float_and_int_keys() {
 }
 
 #[test]
-fn open_int_literal_unions_still_reject_text_keys() {
+fn generalized_int_map_keys_reject_text_values() {
     let source = "m = Map.from([(1, \"a\")])\nr = m.set(\"k\", \"b\")\n";
     let output = parse_module(source);
     let check = check_module(&output.module);
     assert_eq!(
-        matching_codes(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        matching_codes(&check.diagnostics, codes::ty::MISMATCH),
         1,
-        "text into int open union: {:?}",
+        "text into Int key: {:?}",
         check.diagnostics
     );
+}
+
+#[test]
+fn inferred_collection_positions_generalize_literal_rows_to_bases() {
+    let host = HostGlobals::default();
+    for (source, name, expected) in [
+        ("m = Map.from([(1, \"a\")])\n", "m", "Map(Int, Text)"),
+        ("s = @{ \"r\", \"w\" }\n", "s", "Set(Text)"),
+        ("bare = \"r\" | \"w\"\n", "bare", "Set(Text)"),
+        ("a = [1, 2, 3]\n", "a", "Array(Int)"),
+        ("t = [\"a\", \"b\"]\n", "t", "Array(Text)"),
+        (
+            "mixed = Map.from([(\"k\", 1), (\"j\", 2)])\n",
+            "mixed",
+            "Map(Text, Int)",
+        ),
+    ] {
+        assert_eq!(
+            checked_binding_type(source, name, &host).render(),
+            expected,
+            "for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn collection_materializers_generalize_but_streams_keep_literal_elements() {
+    let source = concat!(
+        "stream = (0 .. 2).map((n) => \"a\")\n",
+        "array = stream.toArray()\n",
+        "set = stream.collect(Set)\n",
+        "staticSet = Set.collect(stream)\n",
+    );
+    let host = HostGlobals::default();
+
+    for (name, expected) in [
+        ("stream", "Stream(\"a\")"),
+        ("array", "Array(Text)"),
+        ("set", "Set(Text)"),
+        ("staticSet", "Set(Text)"),
+    ] {
+        assert_eq!(
+            checked_binding_type(source, name, &host).render(),
+            expected,
+            "for {name}"
+        );
+    }
+}
+
+#[test]
+fn non_collection_positions_keep_literal_types() {
+    let host = HostGlobals::default();
+    for (source, name, expected) in [
+        ("n = 100\ndivide = (x: Int): Int => x / n\n", "n", "100"),
+        ("tuple = (1, \"a\")\n", "tuple", "(1, \"a\")"),
+        ("record = { n: 1 }\n", "record", "{ n: 1 }"),
+        ("f = () => 1\n", "f", "() -> 1"),
+    ] {
+        assert_eq!(
+            checked_binding_type(source, name, &host).render(),
+            expected,
+            "for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn targeted_blocks_still_free_infer_local_collections() {
+    let source = concat!(
+        "length = (): Int =>\n",
+        "  values = [1, 2]\n",
+        "  values.length()\n",
+    );
+    let check = check_module(&parse_module(source).module);
+
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .type_at(nth_span(source, "values", 0))
+            .map(Type::render),
+        Some("Array(Int)".to_owned())
+    );
+}
+
+#[test]
+fn type_position_unions_and_directed_numeric_checks_stay_strict() {
+    let alias_source = "Mode = \"r\" | \"w\"\nm : Mode = \"x\"\n";
+    let alias = check_module(&parse_module(alias_source).module);
+    assert_eq!(
+        alias.type_definitions.get("Mode").map(Type::render),
+        Some("\"r\" | \"w\"".to_owned())
+    );
+    assert_eq!(
+        matching_codes(&alias.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        1,
+        "{:?}",
+        alias.diagnostics
+    );
+
+    let collection_alias_source = concat!(
+        "Mode = \"r\" | \"w\"\n",
+        "array : Array(Mode) = [\"r\"]\n",
+        "map : Map(Mode, Int) = Map.from([(\"r\", 1)])\n",
+        "arrayCopy = array\n",
+        "mapCopy = map\n",
+    );
+    let collection_alias = check_module(&parse_module(collection_alias_source).module);
+    assert!(
+        collection_alias.diagnostics.is_empty(),
+        "{:?}",
+        collection_alias.diagnostics
+    );
+    for (name, expected) in [
+        ("arrayCopy", "Array(\"r\" | \"w\")"),
+        ("mapCopy", "Map(\"r\" | \"w\", Int)"),
+    ] {
+        assert_eq!(
+            collection_alias
+                .type_at(nth_span(collection_alias_source, name, 0))
+                .map(Type::render),
+            Some(expected.to_owned())
+        );
+    }
+
+    for source in [
+        "x : Int = 1.0\n",
+        "a : Array(Int) = [1, 2.0]\n",
+        "value = Map.from([(1, \"a\")]).set(1.0, \"b\")\n",
+        "value = Map.from([(1, \"a\")]).get(1.0)\n",
+    ] {
+        let check = check_module(&parse_module(source).module);
+        assert_eq!(
+            matching_codes(&check.diagnostics, codes::ty::MISMATCH),
+            1,
+            "{source}: {:?}",
+            check.diagnostics
+        );
+    }
+
+    let host = HostGlobals::default();
+    for (source, expected) in [
+        ("weights = [0, 0.5, 1]\n", "Array(Float)"),
+        (
+            "value = Map.from([(1, \"a\")]).set(2, \"b\")\n",
+            "Map(Int, Text)",
+        ),
+        (
+            "value = Map.from([(1.0, \"a\")]).set(2, \"b\")\n",
+            "Map(Float, Text)",
+        ),
+    ] {
+        let name = if source.starts_with("weights") {
+            "weights"
+        } else {
+            "value"
+        };
+        assert_eq!(
+            checked_binding_type(source, name, &host).render(),
+            expected,
+            "for {source:?}"
+        );
+    }
 }
 
 /// Free **join** of mixed int/float literals (no target type) widens to Float.
@@ -2516,17 +2685,13 @@ fn mixed_number_literal_collections_join_to_float() {
             "pairs",
             "Array((1 | 2, Float))",
         ),
-        (
-            "d = Map.from([(1, 0), (2, 0.5)])\n",
-            "d",
-            "Map(1 | 2, Float)",
-        ),
+        ("d = Map.from([(1, 0), (2, 0.5)])\n", "d", "Map(Int, Float)"),
         ("nested = [[1], [1.0]]\n", "nested", "Array(Array(Float))"),
         ("s = @{1} | @{1.0}\n", "s", "Set(Float)"),
-        // Homogeneous number collections keep open literal unions (not Float).
-        ("a = [1, 2]\n", "a", "Array(1 | 2)"),
-        ("a = [1.0, 2.0]\n", "a", "Array(1.0 | 2.0)"),
-        ("s = @{1, 2}\n", "s", "Set(1 | 2)"),
+        // Homogeneous number collection positions generalize to their bases.
+        ("a = [1, 2]\n", "a", "Array(Int)"),
+        ("a = [1.0, 2.0]\n", "a", "Array(Float)"),
+        ("s = @{1, 2}\n", "s", "Set(Int)"),
         // Annotated Float targets still accept int-form and mixed members.
         ("a : Array(Float) = [1, 2]\n", "a", "Array(Float)"),
         ("a : Array(Float) = [1, 1.0]\n", "a", "Array(Float)"),
@@ -3537,7 +3702,7 @@ fn match_results_join_literal_rows() {
 }
 
 #[test]
-fn collections_join_literal_rows() {
+fn collection_literal_rows_generalize_to_their_base() {
     let source = "nums = [1, 2, 3]\n";
     let output = parse_module(source);
     let check = check_module(&output.module);
@@ -3549,7 +3714,7 @@ fn collections_join_literal_rows() {
     );
     assert_eq!(
         check.type_at(nth_span(source, "nums", 0)).map(Type::render),
-        Some("Array(1 | 2 | 3)".to_owned())
+        Some("Array(Int)".to_owned())
     );
 }
 
@@ -5502,8 +5667,8 @@ fn array_spread_mismatch_reports_type_error() {
 
 #[test]
 fn array_push_result_type_is_array() {
-    // Annotate the seed so push's result is `Array(Int)`, not an open literal
-    // union `Array(1 | 2 | ..)` from unannotated `[1]` / `2`.
+    // The annotation and inferred collection-position generalization agree on
+    // `Array(Int)`; push preserves that established collection element type.
     let output = parse_module("xs : Array(Int) = [1]\nys = xs.push(2)\n");
     let check = check_module(&output.module);
 
@@ -5748,7 +5913,7 @@ fn map_from_infers_map_key_and_value_types() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "m"),
-        Some("Map(\"a\", 1)".to_owned())
+        Some("Map(Text, Int)".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -5764,7 +5929,7 @@ fn map_constructor_infers_map_key_and_value_types() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "m"),
-        Some("Map(\"a\", 1)".to_owned())
+        Some("Map(Text, Int)".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -5778,7 +5943,7 @@ fn map_constructor_accepts_non_text_keys() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "m"),
-        Some("Map(1, \"x\")".to_owned())
+        Some("Map(Int, Text)".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -6048,7 +6213,7 @@ fn map_get_infers_optional_value_type() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "value"),
-        Some("?1".to_owned())
+        Some("?Int".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -6070,7 +6235,7 @@ fn map_index_infers_optional_value_type() {
 
     assert_eq!(
         render_top_level_value(&mut checker, "value"),
-        Some("?1".to_owned())
+        Some("?Int".to_owned())
     );
     assert!(checker.diagnostics.is_empty());
 }
@@ -6891,17 +7056,10 @@ fn collect_builds_the_target_type_over_the_source_element() {
             "value = (0 .. 10).map((x) => \"${x}\").collect(Array)\n",
             "Array(Text)",
         ),
-        // Literal element types ride through collection unwidened, the same
-        // way they survive any other element-preserving operation.
-        (
-            "value = [\"a\", \"b\"].collect(Set)\n",
-            "Set(\"a\" | \"b\")",
-        ),
-        (
-            "value = Set.collect([\"a\", \"b\"])\n",
-            "Set(\"a\" | \"b\")",
-        ),
-        ("value = @{ 1, 2 }.collect(Array)\n", "Array(1 | 2)"),
+        // Collection materialization generalizes literal element rows.
+        ("value = [\"a\", \"b\"].collect(Set)\n", "Set(Text)"),
+        ("value = Set.collect([\"a\", \"b\"])\n", "Set(Text)"),
+        ("value = @{ 1, 2 }.collect(Array)\n", "Array(Int)"),
         // An applied target is an inline annotation on the element, not a
         // different operation.
         ("value = (0 .. 10).collect(Array(Int))\n", "Array(Int)"),
@@ -8978,12 +9136,12 @@ fn array_index_infers_optional_element_type() {
     let type_definitions = type_definitions(&output.module, &known_types);
     let mut checker = Checker::with_module(known_types, type_definitions, &output.module);
 
-    // The element type of `[1, 2, 3]` is the open literal union `1 | 2 | 3`, and
-    // array indexing wraps it in `?` (an absent index yields `undefined`).
+    // The inferred element type of `[1, 2, 3]` generalizes to Int, and array
+    // indexing wraps it in `?` (an absent index yields `undefined`).
     let scheme = checker.infer_top_level_scheme("a1").expect("scheme for a1");
     assert!(
-        matches!(&scheme.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::Variant(_))),
-        "expected `?(1 | 2 | 3)`, got {:?}",
+        matches!(&scheme.ty, Type::Optional(inner) if inner.is_builtin(BuiltinType::Int)),
+        "expected `?Int`, got {:?}",
         scheme.ty
     );
     assert!(checker.diagnostics.is_empty());
