@@ -4930,18 +4930,22 @@ proptest! {
         }
     }
 
-    /// Open design: `find` returns `?a`. When `a` is already `?Int`, a found
-    /// `undefined` is indistinguishable from "not found".
+    /// `find` returns `?a`. When `a` is already `?Int`, a found `undefined`
+    /// is indistinguishable from "not found". This locks the collapse; use
+    /// `findIndex` when the distinction matters (see the property above).
     #[test]
-    #[ignore = "design: find on Array(?T) cannot distinguish found-undefined from miss"]
-    fn ambient_array_find_optional_element_open(xs in opt_int_vec_strategy()) {
+    fn ambient_array_find_optional_element_collapses(xs in opt_int_vec_strategy()) {
         let source = format!(
             "xs: Array(?Int) = {}\n\
              xs.find((x) => x ?> undefined => true, _ => false)\n",
             render_opt_ints(&xs),
         );
-        let _ = eval_with_builtins(&source);
-        prop_assert!(false, "unreachable: property is ignored pending design");
+        let result = eval_with_builtins(&source);
+        prop_assert_eq!(
+            &result,
+            &Value::Undefined,
+            "find of undefined on Array(?Int) collapses found-empty with miss"
+        );
     }
 }
 
