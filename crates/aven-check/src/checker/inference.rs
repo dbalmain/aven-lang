@@ -3564,8 +3564,25 @@ impl<'a> Checker<'a> {
             return Some(Type::Deferred);
         }
 
-        let Some(labels) = self.evaluate_record_selection_labels(env, labels_arg) else {
-            return Some(Type::Deferred);
+        let labels = match self.evaluate_record_selection_labels(env, labels_arg) {
+            LabelSetEvaluation::Labels(labels) => labels,
+            LabelSetEvaluation::Deferred => return Some(Type::Deferred),
+            // The annotation path reports the same expression, so the
+            // diagnostic is pushed uniquely rather than twice.
+            LabelSetEvaluation::NotComptime => {
+                self.push_unique_diagnostic(comptime::key_set_not_comptime(
+                    labels_arg.span,
+                    kind.name(),
+                ));
+                return Some(Type::Error);
+            }
+            LabelSetEvaluation::NotAKeySet => {
+                self.push_unique_diagnostic(comptime::key_set_wrong_kind(
+                    labels_arg.span,
+                    kind.name(),
+                ));
+                return Some(Type::Error);
+            }
         };
 
         let evaluation = comptime::evaluate_record_selection(
@@ -3652,36 +3669,55 @@ impl<'a> Checker<'a> {
         subject
     }
 
-    pub(super) fn evaluate_record_selection_labels(
+    /// Resolve the key-set argument of `pick`/`omit`.
+    ///
+    /// A key set that cannot be evaluated is a *failure*, not an absence.
+    /// Reporting it as `Deferred` would leave the selection unconstrained --
+    /// `pick(User, keys)` with a runtime-dependent `keys` then accepts any
+    /// record at all, so the annotation silently stops doing its job.
+    /// `Deferred` is reserved for the one case where an answer is still
+    /// coming: a comptime specialization that has not been applied yet.
+    fn evaluate_record_selection_labels(
         &mut self,
         env: &TypeEnv,
         arg: &Expr,
-    ) -> Option<Vec<String>> {
+    ) -> LabelSetEvaluation {
         let bindings = self.current_comptime_value_bindings();
         if let Some(argument) = self.evaluate_comptime_param_argument(arg, &bindings)
             && let comptime::ComptimeValue::LabelSet(labels) = argument.value
         {
-            return Some(labels);
+            return LabelSetEvaluation::Labels(labels);
         }
 
         if let Some(labels) =
             self.comptime_known_label_set_for_mode(arg, RowFoldMode::Value { env })
         {
-            return Some(labels);
+            return LabelSetEvaluation::Labels(labels);
         }
 
         let evaluation = comptime::evaluate_type_position_with_bindings(self, arg, &bindings);
+        // A failure the evaluator already explained needs no second
+        // diagnostic pointing at the same expression, and a comptime
+        // parameter awaiting specialization is not a failure at all.
+        let silent = !evaluation.diagnostics.is_empty()
+            || self.expr_references_unresolved_comptime_param(arg);
         self.diagnostics.extend(evaluation.diagnostics);
 
         match evaluation.evaluation {
-            Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) => Some(labels),
-            Evaluation::Evaluated(
-                comptime::ComptimeValue::ReifiedType(_)
-                | comptime::ComptimeValue::Literal(_)
-                | comptime::ComptimeValue::Bool(_),
-            )
-            | Evaluation::Deferred
-            | Evaluation::Unsupported => None,
+            Evaluation::Evaluated(comptime::ComptimeValue::LabelSet(labels)) => {
+                LabelSetEvaluation::Labels(labels)
+            }
+            _ if silent => LabelSetEvaluation::Deferred,
+            // An unresolved type term reifies as a type that names nothing:
+            // not comptime-known, rather than the wrong kind of thing.
+            Evaluation::Evaluated(comptime::ComptimeValue::ReifiedType(ty))
+                if self.reflection_subject_is_unresolved(&ty) || !is_concrete_type(&ty) =>
+            {
+                LabelSetEvaluation::NotComptime
+            }
+            // The value is comptime-known but is not a set of field names.
+            Evaluation::Evaluated(_) => LabelSetEvaluation::NotAKeySet,
+            Evaluation::Deferred | Evaluation::Unsupported => LabelSetEvaluation::NotComptime,
         }
     }
 
@@ -5646,4 +5682,16 @@ fn quote_string_literal(value: &str) -> String {
     }
     quoted.push('"');
     quoted
+}
+
+/// What resolving the key-set argument of `pick`/`omit` produced.
+enum LabelSetEvaluation {
+    Labels(Vec<String>),
+    /// A comptime specialization has not supplied the key set yet; an answer
+    /// is still coming, so the selection stays deferred without a diagnostic.
+    Deferred,
+    /// The expression cannot be evaluated at compile time at all.
+    NotComptime,
+    /// The expression is comptime-known but is not a set of field names.
+    NotAKeySet,
 }

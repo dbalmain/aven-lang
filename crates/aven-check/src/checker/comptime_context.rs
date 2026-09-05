@@ -43,6 +43,10 @@ impl comptime::EvalContext for Checker<'_> {
         })
     }
 
+    fn references_unresolved_comptime_param(&self, expr: &Expr) -> bool {
+        self.expr_references_unresolved_comptime_param(expr)
+    }
+
     fn lookup_comptime_function(&self, name: &str) -> Option<comptime::ComptimeFunction> {
         self.lookup_comptime_function_export(name)
     }

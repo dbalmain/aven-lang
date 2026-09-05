@@ -9829,6 +9829,68 @@ fn comptime_drop_key_deletes_single_computed_key_from_closed_record_type() {
 }
 
 #[test]
+fn pick_with_a_runtime_key_set_is_an_error_rather_than_an_unconstrained_type() {
+    // A key set the checker cannot evaluate used to defer silently, and a
+    // deferred selection constrains nothing: this annotation accepted
+    // `password`, a field neither branch of `keys` selects, and accepted it at
+    // the wrong type. Those two records are the discriminating cases -- they
+    // are what a correct `pick(User, @{"name"})` or `pick(User, @{"email"})`
+    // would reject, so a fix that merely narrowed the key set would still let
+    // them through.
+    let source = "User = { name: Text, email: Text, password: Text }\n\
+                  f = (flag: Bool) =>\n\
+                  \x20\x20keys = flag ?> true => @{\"name\"}, false => @{\"email\"}\n\
+                  \x20\x20s: pick(User, keys) = { password: \"nope\", name: 42 }\n\
+                  \x20\x20s\n\
+                  f\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        has_diagnostic_code(&check.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "expected a comptime.argument-not-known diagnostic, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn pick_with_a_comptime_key_set_still_selects_fields() {
+    // The guard against unresolved key sets must not fire on the forms that
+    // do resolve: an inline set, and `keysOf` of a runtime binding.
+    let source = "User = { name: Text, email: Text }\n\
+                  u: User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
+                  a: { name: Text } = pick(User, @{\"name\"})\n\
+                  b: User = pick(u, keysOf(u))\n\
+                  (a, b)\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn pick_with_a_comptime_known_non_key_set_names_the_wrong_kind() {
+    let source = "User = { name: Text, email: Text }\n\
+                  s: pick(User, Int) = { name: \"a\" }\n\
+                  s\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        has_diagnostic_code(
+            &check.diagnostics,
+            codes::comptime::REFLECTION_TYPE_MISMATCH
+        ),
+        "expected a comptime.reflection-type-mismatch diagnostic, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn comptime_pick_with_non_concrete_key_set_defers_without_diagnostic() {
     let output = parse_module(
         "User = { name: Text, email: Text }\n\

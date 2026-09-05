@@ -547,6 +547,11 @@ pub(crate) trait EvalContext {
         in_function_body: bool,
     ) -> LoweredType;
     fn runtime_binding_reference(&self, name: &str, span: Span) -> Option<Diagnostic>;
+
+    /// Whether `expr` mentions a comptime parameter of an enclosing function
+    /// that has not been specialized yet -- the one reason a comptime
+    /// evaluation may fail now and succeed later.
+    fn references_unresolved_comptime_param(&self, expr: &Expr) -> bool;
     fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction>;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
@@ -1104,9 +1109,7 @@ where
         let arg_result = self.evaluate_expr(arg, env);
         let subject = match arg_result.evaluation {
             Evaluation::Evaluated(value) => value.reify_type_position().into_reified_type(),
-            Evaluation::Deferred => {
-                return EvaluationResult::deferred_with_diagnostics(arg_result.diagnostics);
-            }
+            Evaluation::Deferred => None,
             Evaluation::Unsupported => {
                 return EvaluationResult {
                     evaluation: Evaluation::Unsupported,
@@ -1114,8 +1117,18 @@ where
                 };
             }
         };
+        // `keysOf(u)` names a runtime binding as often as it names a type, and
+        // reading `u` as a type term yields nothing. Fall back to the value's
+        // inferred type, the same way `typeOf` does, so the two positions
+        // agree on what a reflection call means.
+        let subject = subject
+            .filter(|ty| !self.context.type_is_unresolved(ty))
+            .or_else(|| {
+                let ty = self.context.infer_value_type(arg);
+                (!self.context.type_is_unresolved(&ty)).then_some(ty)
+            });
         let Some(subject) = subject else {
-            return EvaluationResult::deferred();
+            return EvaluationResult::deferred_with_diagnostics(arg_result.diagnostics);
         };
         let subject = self.context.unfold_recursive_type_once(&subject);
 
@@ -1157,23 +1170,42 @@ where
         };
         let subject = self.context.unfold_recursive_type_once(&subject);
 
+        // A key set that cannot be resolved is a failure, not an absence.
+        // Deferring silently leaves the selection unconstrained -- an
+        // unresolved `pick(User, keys)` then accepts any record at all, so the
+        // annotation stops doing its job without saying so. The one answer
+        // that really is still coming is a comptime parameter awaiting
+        // specialization, which `unresolved_comptime_param` reports.
         let labels_result = self.evaluate_expr(labels_arg, env);
+        let already_reported = !labels_result.diagnostics.is_empty();
+        // An unresolved type term reifies as a `ReifiedType` that names
+        // nothing, which is "not known at compile time", not "the wrong kind
+        // of thing".
+        let evaluated = match &labels_result.evaluation {
+            Evaluation::Evaluated(ComptimeValue::ReifiedType(ty)) => {
+                !self.context.type_is_unresolved(ty) && is_concrete_type(ty)
+            }
+            Evaluation::Evaluated(_) => true,
+            Evaluation::Deferred | Evaluation::Unsupported => false,
+        };
         let labels = match labels_result.evaluation {
-            Evaluation::Evaluated(value) => match labels_from_comptime_value(&value) {
-                Some(labels) => labels,
-                None => {
-                    return EvaluationResult::deferred_with_diagnostics(labels_result.diagnostics);
-                }
-            },
-            Evaluation::Deferred => {
-                return EvaluationResult::deferred_with_diagnostics(labels_result.diagnostics);
+            Evaluation::Evaluated(value) => labels_from_comptime_value(&value),
+            Evaluation::Deferred | Evaluation::Unsupported => None,
+        };
+        let Some(labels) = labels else {
+            let mut diagnostics = labels_result.diagnostics;
+            if !already_reported
+                && !self
+                    .context
+                    .references_unresolved_comptime_param(labels_arg)
+            {
+                diagnostics.push(if evaluated {
+                    key_set_wrong_kind(labels_arg.span, kind.name())
+                } else {
+                    key_set_not_comptime(labels_arg.span, kind.name())
+                });
             }
-            Evaluation::Unsupported => {
-                return EvaluationResult {
-                    evaluation: Evaluation::Unsupported,
-                    diagnostics: labels_result.diagnostics,
-                };
-            }
+            return EvaluationResult::deferred_with_diagnostics(diagnostics);
         };
 
         evaluate_record_selection(
@@ -1632,7 +1664,7 @@ impl RecordSelectionKind {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Pick => "pick",
             Self::Omit => "omit",
@@ -1673,6 +1705,28 @@ impl ReflectionKind {
             Self::TagsOf => evaluate_tags_of(subject, arg_span, subject_is_unresolved),
         }
     }
+}
+
+/// `pick`/`omit` was handed a key set that compile-time evaluation cannot
+/// reach -- typically one derived from a runtime value.
+pub(crate) fn key_set_not_comptime(span: Span, function: &str) -> Diagnostic {
+    Diagnostic::error(format!("`{function}` needs a key set known at compile time"))
+        .with_code(codes::comptime::ARGUMENT_NOT_KNOWN)
+        .with_label(Label::primary(span, "this is not known at compile time"))
+        .with_note(format!(
+            "`{function}` selects fields while checking, so its key set cannot depend on a runtime value"
+        ))
+}
+
+/// `pick`/`omit` was handed a comptime-known value that is not a set of
+/// field names.
+pub(crate) fn key_set_wrong_kind(span: Span, function: &str) -> Diagnostic {
+    Diagnostic::error(format!("`{function}` expected a set of field names"))
+        .with_code(codes::comptime::REFLECTION_TYPE_MISMATCH)
+        .with_label(Label::primary(span, "this is not a set of field names"))
+        .with_note(format!(
+            "pass a key set such as `@{{\"name\"}}` or `keysOf(T)` as the second argument to `{function}`"
+        ))
 }
 
 fn reflection_type_mismatch(span: Span, function: &str, expected_kind: &str) -> Diagnostic {
