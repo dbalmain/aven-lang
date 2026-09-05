@@ -1241,6 +1241,12 @@ pub struct Environment {
     allow_builtin_method_attachments: bool,
     stack_segment_limit: usize,
     stack_growth: StackGrowth,
+    /// Remaining evaluation budget, shared with every child scope. `None` is
+    /// unlimited, which is what `aven run` uses: a program is allowed to loop
+    /// as long as its author wants. A caller that evaluates untrusted or
+    /// compile-time code sets a budget so a non-terminating expression fails
+    /// reproducibly instead of hanging the process.
+    fuel: Rc<Cell<Option<u64>>>,
 }
 
 struct Scope {
@@ -1309,7 +1315,39 @@ impl Environment {
             allow_builtin_method_attachments,
             stack_segment_limit: DEFAULT_STACK_SEGMENT_LIMIT,
             stack_growth: StackGrowth::System,
+            fuel: Rc::new(Cell::new(None)),
         }
+    }
+
+    /// Cap how many expressions this environment may evaluate. The budget is
+    /// shared with every child scope, so it bounds the whole evaluation rather
+    /// than each nested call. Exhausting it is an ordinary evaluation failure
+    /// and is reproducible: the same expression always fails at the same point.
+    pub fn set_fuel(&self, budget: u64) {
+        self.fuel.set(Some(budget));
+    }
+
+    /// Fuel consumed so far, given the budget this environment started with.
+    pub fn fuel_remaining(&self) -> Option<u64> {
+        self.fuel.get()
+    }
+
+    fn spend_fuel(&self, span: Span) -> Eval<()> {
+        let Some(remaining) = self.fuel.get() else {
+            return Ok(());
+        };
+        let Some(next) = remaining.checked_sub(1) else {
+            return Err(one_diagnostic(
+                Diagnostic::error("comptime evaluation exceeded its budget")
+                    .with_code(codes::comptime::EVALUATION_LIMIT)
+                    .with_label(Label::primary(span, "evaluation ran out of fuel here"))
+                    .with_note(
+                        "this expression evaluates too much work at compile time; move the computation to runtime",
+                    ),
+            ));
+        };
+        self.fuel.set(Some(next));
+        Ok(())
     }
 
     fn child(&self) -> Self {
@@ -1325,6 +1363,7 @@ impl Environment {
             allow_builtin_method_attachments: self.allow_builtin_method_attachments,
             stack_segment_limit: self.stack_segment_limit,
             stack_growth: self.stack_growth,
+            fuel: Rc::clone(&self.fuel),
         }
     }
 
@@ -1429,6 +1468,7 @@ pub struct EvalModuleOptions<'a> {
     source: Option<Rc<EvalSource>>,
     stack_segment_limit: usize,
     stack_growth: StackGrowth,
+    fuel: Option<u64>,
 }
 
 impl Default for EvalModuleOptions<'_> {
@@ -1443,11 +1483,20 @@ impl Default for EvalModuleOptions<'_> {
             source: None,
             stack_segment_limit: DEFAULT_STACK_SEGMENT_LIMIT,
             stack_growth: StackGrowth::System,
+            fuel: None,
         }
     }
 }
 
 impl<'a> EvalModuleOptions<'a> {
+    /// Bound this evaluation to `budget` expressions. Unset means unlimited,
+    /// which is what `aven run` wants; a caller evaluating code at compile time
+    /// sets a budget so a non-terminating program fails reproducibly.
+    pub fn with_fuel(mut self, budget: u64) -> Self {
+        self.fuel = Some(budget);
+        self
+    }
+
     pub fn with_globals(mut self, globals: Vec<(String, Value)>) -> Self {
         self.globals = globals;
         self
@@ -1524,6 +1573,9 @@ pub fn eval_module_with_options(module: &Module, options: EvalModuleOptions<'_>)
         options.source,
     );
     env.stack_segment_limit = options.stack_segment_limit;
+    if let Some(budget) = options.fuel {
+        env.set_fuel(budget);
+    }
     env.stack_growth = options.stack_growth;
     bind_intrinsics(&env);
     for (name, value) in options.globals {
@@ -2046,6 +2098,7 @@ pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
 }
 
 fn eval_expr_many(expr: &Expr, env: &Environment) -> Eval {
+    env.spend_fuel(expr.span)?;
     let mut value = eval_expr_unreified(expr, env)?;
     if let Some(coercion) = env.primitive_families.coercion(expr.span) {
         value = apply_primitive_family_coercion(value, coercion, expr.span, env)?;
