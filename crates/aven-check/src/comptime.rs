@@ -1348,11 +1348,10 @@ pub(crate) fn evaluate_keys_of(
     arg_span: Span,
     subject_is_unresolved: bool,
 ) -> EvaluationResult {
-    if subject_is_unresolved || !is_concrete_type(subject) {
-        return EvaluationResult::deferred();
-    }
-
     let Type::Record(row) = subject else {
+        if subject_is_unresolved || !is_concrete_type(subject) {
+            return EvaluationResult::deferred();
+        }
         return EvaluationResult::diagnostic(reflection_type_mismatch(
             arg_span, "keysOf", "record",
         ));
@@ -1361,6 +1360,9 @@ pub(crate) fn evaluate_keys_of(
     if row.tail != RowTail::Closed {
         return EvaluationResult::deferred();
     }
+
+    // Enumerating a closed row depends on its labels, not on whether every
+    // payload (for example a generic function result) is concrete yet.
 
     let mut labels = Vec::new();
     for entry in &row.entries {

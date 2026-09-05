@@ -4,6 +4,48 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn cli_library_aven_suite_checks_and_runs() {
+    let script = Script::new(include_str!("fixtures/cli/parse.av"));
+    assert_success(&script.aven(&["check"], &[]));
+    let tested = script.aven(&["test"], &[]);
+    assert_success(&tested);
+}
+
+#[test]
+fn cli_library_reads_forwarded_arguments() {
+    let script = Script::new(
+        "cli = import(\"std/cli\")\n\
+         spec = { verbose: cli.flag(), jobs: cli.option(cli.int, { default: 1 }) }\n\
+         parsed = cli.parse(spec, args)?^\n\
+         writeLine(\"verbose=${parsed.verbose}; jobs=${parsed.jobs}\")\n",
+    );
+    assert_success(&script.aven(&["check"], &[]));
+    let output = script.aven(&["run"], &["--", "--verbose", "--jobs", "3"]);
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "verbose=true; jobs=3\n"
+    );
+}
+
+#[test]
+fn cli_library_rejects_wrong_fields_types_and_argv() {
+    for tail in [
+        "cli.parse(spec, [])?^.jbos\n",
+        "value: Int = cli.parse(spec, [])?^.verbose\n",
+        "cli.parse(spec, \"--verbose\")\n",
+        "cli.option(cli.int, { default: \"many\" })\n",
+    ] {
+        let script = Script::new(&format!(
+            "cli = import(\"std/cli\")\n\
+             spec = {{ verbose: cli.flag(), jobs: cli.option(cli.int, {{ default: 1 }}) }}\n{tail}"
+        ));
+        let output = script.aven(&["check"], &[]);
+        assert!(!output.status.success(), "unexpectedly checked: {tail}");
+    }
+}
+
+#[test]
 fn script_arguments_check_and_run() {
     let script = Script::new("writeLine(programName)\nwriteLine(\"${args}\")\n");
     let checked = script.aven(&["check"], &[]);

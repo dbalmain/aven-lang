@@ -19,7 +19,14 @@ Re-run on resume; captured by the real checker test
   explicit `Host::register_args(program_name, args)`, `args: Array(Text)` and
   `programName: Text` in the standard checker surface. Basename preserves the
   extension (`tool.av`), as requested by “basename”.
-- Parser, aliases/help, commands, usage/examples, completions: not built yet.
+- **cb26160**: Q1 checker spike and resumed findings.
+- Minimal parser (commit pending): real `std/cli` Aven module with typed decoder
+  descriptors, long flags, separate/attached options, defaults and conversion
+  errors. `cli.parse(spec, args)` infers `Result({ jobs: Int, verbose: Bool }, Text)`
+  in a `type_at` test using the actual library source. CLI check/run and a six-case
+  `.av` suite pass. This is a thin path: unknown tokens and option-value interactions
+  still need the next tokenizer slice.
+- Aliases/help, commands, usage/examples, completions: not built yet.
 - Exit codes implemented, **d2bf45b**: Int entry values select exit
   status, with portable range 0–255; invalid/oversized values diagnose instead
   of silently truncating. Other entry values keep their existing display/error
@@ -41,9 +48,20 @@ Re-run on resume; captured by the real checker test
 The static-coercion guess is being replaced with typed decoder functions in
 descriptors. This keeps coercion user-extensible and inferable through ordinary
 function types; it does not require putting a CLI-specific type switch in Rust.
-The next spike is defaulted comptime key sets derived from a runtime record's
-static shape, so `parse(spec, argv)` can return a heterogeneous record while
-metadata remains an ordinary descriptor value.
+Defaulted comptime key sets derived from a runtime record's static shape now
+specialize `parse(spec, argv)` to a heterogeneous result. General checker fixes:
+optional comptime arguments, closed keys independent of unresolved payload types,
+record-iteration binder deferral, namespace-qualified specialization and its error
+propagation context. Runtime parameter mismatches now diagnose rather than silently
+deferring this specialization path.
+
+The decoder shape currently is `cli.option(cli.int, { default: 1 })`, not
+`cli.option(Int, ...)`. `spec` is lowercase because it is an ordinary value.
+Descriptors are built once by the caller; parse does not build descriptor metadata.
+However, the evaluator still evaluates its default `keysOf(spec)` at each call:
+residualizing that known key set is an outstanding cost requirement. Imported
+specialization with free private helper references also needs lexical environment
+capture before generic helpers can be used in the parser body.
 
 ## Evidence and corrections
 
@@ -84,3 +102,6 @@ Layer 0: `cargo fmt --all`, both new CLI argument integration tests, and the
 existing host/checker surface parity test pass. Baseline collection completed.
 
 Exit-code slice: `cargo fmt --all` and **all CLI tests pass** (`cargo test -p aven`).
+
+Resume thin-path validation: all 627 checker unit tests and seven CLI argument
+integration tests pass; real Aven suite checks and runs. Full gates still pending.

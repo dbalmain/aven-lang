@@ -1,0 +1,52 @@
+# Typed command-line descriptors. Import with `cli = import("std/cli")`.
+# A descriptor carries a decoder function, so its output type is inferred
+# without a compiler-owned table of CLI conversions.
+
+int = (raw: Text): Result(Int, Text) =>
+  raw.toInt() ?>
+    undefined => @Err("expected an integer, got '${raw}'")
+    value => @Ok(value)
+
+text = (raw: Text): Result(Text, Text) => @Ok(raw)
+
+# Initial scanner: long flags and separate/attached option values. The next
+# slice combines recognition across descriptors to reject unused tokens.
+scan : (Array(Text), Int, Text, Bool) -> Result(?Text, Text)
+scan = (argv, index, name, takesValue) =>
+  token = argv[index]
+  token ?>
+    undefined => @Ok(undefined)
+    "--" => @Ok(undefined)
+    word =>
+      word == "--${name}" ?>
+        true =>
+          takesValue ?>
+            false => @Ok("true")
+            true => argv[index + 1] ?>
+              undefined => @Err("--${name} needs a value")
+              value => @Ok(value)
+        false =>
+          takesValue && word.startsWith("--${name}=") ?>
+            true => @Ok(word.dropPrefix("--${name}="))
+            false => scan(argv, index + 1, name, takesValue)
+
+flag = () => {
+  read: (argv: Array(Text), name: Text): Result(Bool, Text) =>
+    found = scan(argv, 0, name, false)?^
+    @Ok((found ?? "false") == "true")
+}
+
+option = (decode: (Text) -> Result(a, Text), metadata: { default: a, .. }) => {
+  read: (argv: Array(Text), name: Text): Result(a, Text) =>
+    found = scan(argv, 0, name, true)?^
+    found ?>
+      undefined => @Ok(metadata.default)
+      value => decode(value)
+}
+
+# Only field labels are comptime parameters; descriptors and argv are values.
+# Each decoder call specializes independently, retaining heterogeneous fields.
+parse = (spec: s, argv: Array(Text), @keys = keysOf(spec)) =>
+  @Ok({ keys -> key; (key, spec[key].read(argv, key)?^) })
+
+{ int, text, flag, option, parse }

@@ -3607,11 +3607,16 @@ impl<'a> Checker<'a> {
         callee: &Expr,
         args: &[Expr],
     ) -> Option<Type> {
-        let (params, body) = self.comptime_param_function(callee)?;
+        let (params, body) = self.comptime_param_function(env, callee)?;
         let uppercase = call_callee_name(callee)
             .and_then(|name| name.chars().next())
             .is_some_and(char::is_uppercase);
-        if params.len() != args.len() {
+        if args.len() > params.len()
+            || params
+                .iter()
+                .skip(args.len())
+                .any(|param| param.default.is_none())
+        {
             let function = match &ungroup_expr(callee).kind {
                 ExprKind::Name(name) | ExprKind::ComptimeName(name) => name,
                 _ => "comptime function",
@@ -3629,8 +3634,21 @@ impl<'a> Checker<'a> {
         let mut type_bindings = HashMap::new();
         let mut body_env = TypeEnv::new();
         let mut param_var_metas = HashMap::new();
+        let arguments = params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                args.get(index)
+                    .or(param.default.as_ref())
+                    .expect("arity checked above")
+            })
+            .collect::<Vec<_>>();
 
-        for (param, arg) in params.iter().zip(args).filter(|(param, _)| !param.comptime) {
+        for (param, arg) in params
+            .iter()
+            .zip(&arguments)
+            .filter(|(param, _)| !param.comptime)
+        {
             let inferred = self.infer(env, arg);
             let actual = self.normalize(&self.resolve_and_default(&inferred));
 
@@ -3647,7 +3665,8 @@ impl<'a> Checker<'a> {
                 let expected =
                     self.instantiate_annotation_type_variables(&expected, &mut param_var_metas);
                 if self.unifier.unify(&expected, &actual).is_err() {
-                    return Some(Type::Deferred);
+                    self.check_type_against_type(&expected, &actual, arg.span);
+                    return Some(Type::Error);
                 }
             }
 
@@ -3657,9 +3676,25 @@ impl<'a> Checker<'a> {
         let runtime_value_bindings = self.current_comptime_value_bindings();
         let mut body_comptime_values = HashMap::new();
 
-        for (param, arg) in params.iter().zip(args).filter(|(param, _)| param.comptime) {
-            let Some(argument) =
-                self.evaluate_comptime_param_argument(arg, &runtime_value_bindings)
+        for (index, (param, arg)) in params
+            .iter()
+            .zip(&arguments)
+            .enumerate()
+            .filter(|(_, (param, _))| param.comptime)
+        {
+            // A reflected key/tag set depends only on the preceding runtime
+            // argument's static type. Its default does not evaluate that value.
+            let reflected_default = (index >= args.len())
+                .then(|| {
+                    self.comptime_known_reflection_value(arg, &body_env)
+                        .map(|labels| ComptimeArgument {
+                            value: comptime::ComptimeValue::LabelSet(labels),
+                            label_set_members: None,
+                        })
+                })
+                .flatten();
+            let Some(argument) = reflected_default
+                .or_else(|| self.evaluate_comptime_param_argument(arg, &runtime_value_bindings))
             else {
                 // An unresolved enclosing comptime parameter is intentionally
                 // deferred until its caller specializes this function. Other
@@ -3734,7 +3769,11 @@ impl<'a> Checker<'a> {
         }
 
         self.local_comptime_values.push(body_comptime_values);
+        self.propagation_contexts
+            .push(PropagationContext::default());
         let result = self.infer(&body_env, &body);
+        let propagation = self.pop_propagation_context();
+        let result = self.apply_propagation_context_to_body_type(&body, result, &propagation);
         self.local_comptime_values.pop();
 
         Some(self.resolve_and_default(&result))
@@ -3824,9 +3863,26 @@ impl<'a> Checker<'a> {
         is_concrete_type(&ty).then_some(ty)
     }
 
-    pub(super) fn comptime_param_function(&self, callee: &Expr) -> Option<(Vec<Param>, Expr)> {
-        let name = call_callee_name(callee)?;
-        let export = self.lookup_comptime_function_export(name)?;
+    pub(super) fn comptime_param_function(
+        &self,
+        env: &TypeEnv,
+        callee: &Expr,
+    ) -> Option<(Vec<Param>, Expr)> {
+        let (name, export) = match &ungroup_expr(callee).kind {
+            ExprKind::FieldAccess {
+                receiver, field, ..
+            } => {
+                let specifier = self.imported_module_specifier(env, receiver)?;
+                (
+                    field.as_str(),
+                    self.imports.comptime_export(&specifier, field)?.clone(),
+                )
+            }
+            _ => {
+                let name = call_callee_name(callee)?;
+                (name, self.lookup_comptime_function_export(name)?)
+            }
+        };
         let uppercase = name.chars().next().is_some_and(char::is_uppercase);
         (uppercase || export.params.iter().any(|param| param.comptime)).then(|| {
             let params = export

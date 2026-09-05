@@ -1064,6 +1064,33 @@ fn sibling_derived_handler_annotation_reports_comptime_gap() {
 }
 
 #[test]
+fn cli_parser_infers_heterogeneous_args_from_real_descriptors() {
+    let source = format!(
+        "{}\nspec = {{ verbose: flag(), jobs: option(int, {{ default: 1 }}) }}\n\
+         argv: Array(Text) = []\n\
+         result = parse(spec, argv)\n\
+         parsed = result?^\n",
+        include_str!("../../aven-host/std/cli.av")
+    );
+    let output = parse_module(&source);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .type_at(binding_value_named(&output.module, "result").span)
+            .map(Type::render),
+        Some("Result({ jobs: Int, verbose: Bool }, Text)".to_owned())
+    );
+    assert_eq!(
+        check
+            .type_at(binding_value_named(&output.module, "parsed").span)
+            .map(Type::render),
+        Some("{ jobs: Int, verbose: Bool }".to_owned())
+    );
+}
+
+#[test]
 fn comptime_param_call_still_rejects_value_outside_reflection_domain() {
     // The instantiation fix must not weaken domain validation: a comptime
     // `@param` argument outside the reflected tag set is still rejected.

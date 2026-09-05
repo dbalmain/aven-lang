@@ -1,0 +1,12 @@
+cli = import("std/cli")
+test = import("std/test")
+spec = { verbose: cli.flag(), jobs: cli.option(cli.int, { default: 1 }) }
+
+{
+  defaults: () => test.expectEq(cli.parse(spec, []), @Ok({ verbose: false, jobs: 1 })),
+  longFlag: () => test.expectEq(cli.parse(spec, ["--verbose"]), @Ok({ verbose: true, jobs: 1 })),
+  separateValue: () => test.expectEq(cli.parse(spec, ["--jobs", "3"]), @Ok({ verbose: false, jobs: 3 })),
+  attachedValue: () => test.expectEq(cli.parse(spec, ["--jobs=-2"]), @Ok({ verbose: false, jobs: -2 })),
+  missingValue: () => test.expectErr(cli.parse(spec, ["--jobs"])),
+  invalidInteger: () => test.expectErr(cli.parse(spec, ["--jobs", "many"]))
+}
