@@ -4564,7 +4564,7 @@ impl<'a> Checker<'a> {
         target: &Type,
         item: &Type,
     ) -> Result<(), ()> {
-        self.join_collection_types(target, item, false)
+        self.join_collection_types(target, item, true)
     }
 
     fn join_collection_types(

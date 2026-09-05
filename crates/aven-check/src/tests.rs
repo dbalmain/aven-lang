@@ -1210,6 +1210,72 @@ fn callable_collection_inference_joins_results_without_widening_inputs() {
 }
 
 #[test]
+fn collection_elements_join_distinct_tags_across_positions() {
+    // Tag union is not gated by position: a bare array of variant values joins
+    // by tag exactly as a function's result position does. Distinct tags widen;
+    // a shared tag with conflicting payloads still rejects.
+    let parsed = parse_module("x = [@Add(1), @Commit(true)]\n");
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let rendered = checked
+        .type_at(binding_value_named(&parsed.module, "x").span)
+        .expect("inferred array")
+        .render();
+    assert_eq!(rendered, "Array(@Add(1) | @Commit(true))");
+
+    let parsed = parse_module("r = valuesOf({ a: @Add(1), b: @Commit(true) })\n");
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+
+    // The discriminating negative: a shared tag whose payloads cannot unify.
+    // This one rejects in every position, so it does not on its own prove the
+    // union is enabled -- the positive cases above are what establish that.
+    for source in [
+        "x = [@Value(1), @Value(true)]\n",
+        "r = valuesOf({ a: @Value(1), b: @Value(true) })\n",
+    ] {
+        let parsed = parse_module(source);
+        assert!(
+            check_module(&parsed.module)
+                .diagnostics
+                .iter()
+                .any(|d| d.is_error()),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn a_set_literal_does_not_satisfy_a_variant_type_annotation() {
+    // `@{...}` is a variant union in type position and a set literal in value
+    // position. Assigning the latter to the former once checked only because
+    // the set element join failed; joining distinct tags makes it an honest
+    // `Set`, and the annotation mismatch is now reported.
+    let parsed = parse_module("Color = @{@Red, @Green}\ns: Color = @{@Red, @Green}\n");
+    let checked = check_module(&parsed.module);
+    assert_eq!(
+        matching_codes(&checked.diagnostics, codes::ty::MISMATCH),
+        1,
+        "{:?}",
+        checked.diagnostics
+    );
+
+    // Both correct spellings still check: one member, or a set of members.
+    for source in [
+        "Color = @{@Red, @Green}\nc: Color = @Red\n",
+        "Color = @{@Red, @Green}\ns: Set(Color) = @{@Red, @Green}\n",
+    ] {
+        let parsed = parse_module(source);
+        let checked = check_module(&parsed.module);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
 fn comptime_param_call_still_rejects_value_outside_reflection_domain() {
     // The instantiation fix must not weaken domain validation: a comptime
     // `@param` argument outside the reflected tag set is still rejected.
@@ -13021,7 +13087,7 @@ fn ordinary_set_elements_remain_comparable() {
     for source in [
         "s = @{1, 2, 1}\n",
         "s = @{\"a\", \"b\"}\n",
-        "Color = @{@Red, @Green}\ns: Color = @{@Red, @Green}\n",
+        "Color = @{@Red, @Green}\ns: Set(Color) = @{@Red, @Green}\n",
         "s = @{{ x: 1 }, { x: 2 }}\n",
         "s = @{(1, \"a\"), (2, \"b\")}\n",
         "s = @{1, 2} | 3\n",
