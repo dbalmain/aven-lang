@@ -1234,7 +1234,20 @@ mod tests {
                 "stdio",
                 "File",
                 "Http",
+                "args",
+                "programName",
             ]
+        );
+
+        assert_eq!(
+            *global_type(&globals, "args"),
+            build::array(build::text()),
+            "script arguments are an array of text"
+        );
+        assert_eq!(
+            *global_type(&globals, "programName"),
+            build::text(),
+            "the program name is text"
         );
 
         let logger = global_type(&globals, "logger");
