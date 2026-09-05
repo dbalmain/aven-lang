@@ -130,6 +130,10 @@ enum Command {
         /// Source file to run.
         path: PathBuf,
 
+        /// Arguments passed to the script (use -- to separate interpreter options).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+
         /// Diagnostic output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -223,6 +227,7 @@ enum LogFormat {
 struct RunConfig {
     log: String,
     log_format: LogFormat,
+    args: Vec<String>,
 }
 
 impl Default for RunConfig {
@@ -230,6 +235,7 @@ impl Default for RunConfig {
         Self {
             log: "stdout".to_owned(),
             log_format: LogFormat::Json,
+            args: Vec::new(),
         }
     }
 }
@@ -286,7 +292,12 @@ fn normalize_direct_shebang_argv(args: Vec<OsString>) -> Result<NormalizedArgv> 
     let mut normalized = Vec::with_capacity(args.len());
     normalized.push(args[0].clone());
     normalized.push(OsString::from("run"));
-    normalized.extend(args.into_iter().skip(2));
+    let mut script_args = args.into_iter().skip(2);
+    if let Some(path) = script_args.next() {
+        normalized.push(path);
+        normalized.push(OsString::from("--"));
+        normalized.extend(script_args);
+    }
     Ok(NormalizedArgv {
         args: normalized,
         direct_shebang_arguments: Some(operator_arguments),
@@ -336,6 +347,7 @@ async fn run_cli() -> Result<i32> {
         }
         Command::Run {
             path,
+            args,
             format,
             log,
             log_format,
@@ -345,7 +357,11 @@ async fn run_cli() -> Result<i32> {
             run(
                 &path,
                 format,
-                &RunConfig { log, log_format },
+                &RunConfig {
+                    log,
+                    log_format,
+                    args,
+                },
                 &operators,
                 direct_shebang_arguments.as_deref(),
                 &mut session,
@@ -362,7 +378,11 @@ async fn run_cli() -> Result<i32> {
             test(
                 &path,
                 format,
-                &RunConfig { log, log_format },
+                &RunConfig {
+                    log,
+                    log_format,
+                    ..RunConfig::default()
+                },
                 &operators,
                 direct_shebang_arguments.as_deref(),
                 &mut session,
@@ -704,7 +724,7 @@ fn eval_entry_module(
     direct_shebang_arguments: Option<&[String]>,
     session: &mut SessionCapture,
 ) -> Result<aven_compiler::ModuleEvalOutput> {
-    let host = build_host(config)?;
+    let host = build_host(config, path)?;
     let roots = discover_roots_for_host(path, &host);
     let configured = load_path_operator_config(
         path,
@@ -1031,7 +1051,7 @@ fn parse_only_host() -> aven_host::Host {
 /// The CLI owns the concrete IO (the selected log sink, the root trace context,
 /// and the bare IO/`dbg` natives); `aven-host` owns the registration/typing
 /// vocabulary for the standard host types.
-fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
+fn build_host(config: &RunConfig, path: &Path) -> Result<aven_host::Host> {
     let mut host = aven_host::Host::new();
 
     register_platform_operators(&mut host);
@@ -1051,6 +1071,13 @@ fn build_host(config: &RunConfig) -> Result<aven_host::Host> {
     host.register_temporals();
     host.register_clock();
     host.register_zones();
+    host.register_args(
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        config.args.clone(),
+    );
 
     Ok(host)
 }
@@ -1730,7 +1757,7 @@ mod tests {
 
     #[test]
     fn build_host_check_globals_match_standard_host_types() -> Result<()> {
-        let host = build_host(&RunConfig::default())?;
+        let host = build_host(&RunConfig::default(), Path::new("tool.av"))?;
 
         assert_eq!(
             host.check_globals()
@@ -1763,7 +1790,7 @@ mod tests {
     fn check_and_run_agree_on_platform_operator_fixity() -> Result<()> {
         assert_eq!(
             parse_only_host().operator_fixities(),
-            build_host(&RunConfig::default())?.operator_fixities()
+            build_host(&RunConfig::default(), Path::new("tool.av"))?.operator_fixities()
         );
         Ok(())
     }
