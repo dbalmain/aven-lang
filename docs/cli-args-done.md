@@ -1,13 +1,17 @@
 # CLI arguments implementation — running done-note
 
 Branch: `cli-args`, based on `b22ba54`. Never pushed.
-The request supplied no `-o` path; this is the provisional output pending clarification.
+The resume explicitly selects this path. The resumed baseline is `637181e`,
+with **1767 collected tests passing**. Layer 0 and Q2 are settled.
 
 ## Q1
 
 Sibling-field handler constraint: **no** — `run: (Args(spec.args)) -> Int = spec.run`
 inside `command = (@spec) => ...` rejects `spec.args` with
 `comptime.argument-not-known` during generic checking.
+
+Re-run on resume; captured by the real checker test
+`sibling_derived_handler_annotation_reports_comptime_gap`. Command target: B.
 
 ## Slices
 
@@ -16,7 +20,7 @@ inside `command = (@spec) => ...` rejects `spec.args` with
   `programName: Text` in the standard checker surface. Basename preserves the
   extension (`tool.av`), as requested by “basename”.
 - Parser, aliases/help, commands, usage/examples, completions: not built yet.
-- Exit codes implemented (hash in next update): Int entry values select exit
+- Exit codes implemented, **d2bf45b**: Int entry values select exit
   status, with portable range 0–255; invalid/oversized values diagnose instead
   of silently truncating. Other entry values keep their existing display/error
   behavior. `aven test` is independent.
@@ -26,6 +30,20 @@ inside `command = (@spec) => ...` rejects `spec.args` with
   text output. A syslog acceptance fixture now returns 0. No examples needed
   modification. This is real evidence against implicit Int exit semantics,
   reported before implementation; the requested choice is implemented.
+- **72f1c97**, committed by the user after the interrupted run: combined
+  positional argv and the shebang transport separator.
+- **637181e**, by the user: update the exact standard-global names test for
+  `args` and `programName`. My Layer 0 slice missed this test; the user fixed
+  the only workspace failure and ran all gates successfully.
+
+## Resumed implementation
+
+The static-coercion guess is being replaced with typed decoder functions in
+descriptors. This keeps coercion user-extensible and inferable through ordinary
+function types; it does not require putting a CLI-specific type switch in Rust.
+The next spike is defaulted comptime key sets derived from a runtime record's
+static shape, so `parse(spec, argv)` can return a heterogeneous record while
+metadata remains an ordinary descriptor value.
 
 ## Evidence and corrections
 

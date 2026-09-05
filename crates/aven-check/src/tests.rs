@@ -1033,6 +1033,36 @@ fn comptime_param_call_infers_reflection_domain_for_runtime_binding() {
     );
 }
 
+/// CLI command spike: deriving a handler's input from a sibling specification
+/// currently fails while checking the generic declaration. Keep the exact
+/// diagnostic visible until dependent annotations can defer and specialize.
+#[test]
+fn sibling_derived_handler_annotation_reports_comptime_gap() {
+    let source = concat!(
+        "Args = (spec) => { keysOf(spec) -> k; (k, spec[k].Type) }\n",
+        "command = (@spec) =>\n",
+        "  run: (Args(spec.args)) -> Int = spec.run\n",
+        "  run\n",
+        "command({ args: { verbose: { Type: Bool } }, run: (a: { verbose: Bool }) => a.verbose ?> true => 0, false => 1 })\n",
+    );
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let checked = check_module(&parsed.module);
+    assert_eq!(
+        matching_codes(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        1
+    );
+    let diagnostic = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_deref() == Some(codes::comptime::ARGUMENT_NOT_KNOWN))
+        .expect("dependent annotation diagnostic");
+    assert_eq!(
+        &source[diagnostic.labels[0].span.start..diagnostic.labels[0].span.end],
+        "spec.args"
+    );
+}
+
 #[test]
 fn comptime_param_call_still_rejects_value_outside_reflection_domain() {
     // The instantiation fix must not weaken domain validation: a comptime
