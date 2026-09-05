@@ -516,7 +516,9 @@ impl<'a> Checker<'a> {
     }
 
     fn check_unevaluable_lowercase_comptime_arguments(&mut self, callee: &Expr, args: &[Expr]) {
-        let Some((params, _)) = self.comptime_param_function(callee) else {
+        let Some(function) =
+            self.comptime_param_function(&self.local_types.inference_env(), callee)
+        else {
             return;
         };
         if self.is_uppercase_comptime_function_callee(callee) {
@@ -524,7 +526,7 @@ impl<'a> Checker<'a> {
         }
 
         let bindings = self.current_comptime_value_bindings();
-        for (param, arg) in params.iter().zip(args) {
+        for (param, arg) in function.params.iter().zip(args) {
             if !param.comptime
                 || self.expr_references_unresolved_comptime_param(arg)
                 || self

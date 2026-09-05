@@ -417,6 +417,7 @@ pub struct ComptimeExport {
     pub name: String,
     pub params: Vec<Param>,
     pub body: Expr,
+    pub(crate) value_types: HashMap<String, crate::QualifiedType>,
     origin: ComptimeOrigin,
     environment: ComptimeModuleEnvironment,
     type_binding: bool,
@@ -430,6 +431,7 @@ impl ComptimeExport {
             name,
             params: params.to_vec(),
             body: body.clone(),
+            value_types: HashMap::new(),
             environment: ComptimeModuleEnvironment::default(),
             type_binding: false,
         }
@@ -451,6 +453,7 @@ impl ComptimeExport {
             name,
             params: params.to_vec(),
             body: body.clone(),
+            value_types: HashMap::new(),
             environment: ComptimeModuleEnvironment {
                 module_identity: ComptimeModuleIdentity::Current,
                 type_definitions,
@@ -481,10 +484,21 @@ impl ComptimeExport {
             name: name.into(),
             params: self.params.clone(),
             body: self.body.clone(),
+            value_types: self.value_types.clone(),
             origin: self.origin.clone(),
             environment: self.environment.clone(),
             type_binding: self.type_binding,
         }
+    }
+
+    /// Runtime free-reference types captured for lowercase specialization.
+    pub fn with_value_types(mut self, values: HashMap<String, crate::QualifiedType>) -> Self {
+        self.value_types = values;
+        self
+    }
+
+    pub(crate) fn captured_type_definitions(&self) -> &HashMap<String, Type> {
+        &self.environment.type_definitions
     }
 
     pub fn origin(&self) -> &ComptimeOrigin {
@@ -1348,11 +1362,10 @@ pub(crate) fn evaluate_keys_of(
     arg_span: Span,
     subject_is_unresolved: bool,
 ) -> EvaluationResult {
-    if subject_is_unresolved || !is_concrete_type(subject) {
-        return EvaluationResult::deferred();
-    }
-
     let Type::Record(row) = subject else {
+        if subject_is_unresolved || !is_concrete_type(subject) {
+            return EvaluationResult::deferred();
+        }
         return EvaluationResult::diagnostic(reflection_type_mismatch(
             arg_span, "keysOf", "record",
         ));
@@ -1361,6 +1374,9 @@ pub(crate) fn evaluate_keys_of(
     if row.tail != RowTail::Closed {
         return EvaluationResult::deferred();
     }
+
+    // Enumerating a closed row depends on its labels, not on whether every
+    // payload (for example a generic function result) is concrete yet.
 
     let mut labels = Vec::new();
     for entry in &row.entries {
@@ -1675,6 +1691,7 @@ impl Environment {
     fn captured_function(&self, name: &str) -> Option<ComptimeExport> {
         let (params, body) = self.captured_functions.get(name)?;
         Some(ComptimeExport {
+            value_types: HashMap::new(),
             name: name.to_owned(),
             params: params.clone(),
             body: body.clone(),

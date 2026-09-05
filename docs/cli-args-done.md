@@ -19,7 +19,19 @@ Re-run on resume; captured by the real checker test
   explicit `Host::register_args(program_name, args)`, `args: Array(Text)` and
   `programName: Text` in the standard checker surface. Basename preserves the
   extension (`tool.av`), as requested by “basename”.
-- Parser, aliases/help, commands, usage/examples, completions: not built yet.
+- **cb26160**: Q1 checker spike and resumed findings.
+- **36a952d**, minimal parser: real `std/cli` Aven module with typed decoder
+  descriptors, long flags, separate/attached options, defaults and conversion
+  errors. `cli.parse(spec, args)` infers `Result({ jobs: Int, verbose: Bool }, Text)`
+  in a `type_at` test using the actual library source. CLI check/run and a six-case
+  `.av` suite pass. This is a thin path: unknown tokens and option-value interactions
+  still need the next tokenizer slice.
+- **1726944**, committed by the user after the second interruption: `cli.define`
+  prepares and captures keys and metadata once, returning the typed parser;
+  short/long aliases, per-option help and value labels, required options,
+  single-pass tokenization, repetition/unknown-argument errors, and usage plus
+  examples in errors. All parsing/help rendering is Aven. This checkpoint was red.
+- Commands and comptime completions: not built yet.
 - Exit codes implemented, **d2bf45b**: Int entry values select exit
   status, with portable range 0–255; invalid/oversized values diagnose instead
   of silently truncating. Other entry values keep their existing display/error
@@ -41,9 +53,50 @@ Re-run on resume; captured by the real checker test
 The static-coercion guess is being replaced with typed decoder functions in
 descriptors. This keeps coercion user-extensible and inferable through ordinary
 function types; it does not require putting a CLI-specific type switch in Rust.
-The next spike is defaulted comptime key sets derived from a runtime record's
-static shape, so `parse(spec, argv)` can return a heterogeneous record while
-metadata remains an ordinary descriptor value.
+Defaulted comptime key sets derived from a runtime record's static shape now
+specialize `parse(spec, argv)` to a heterogeneous result. General checker fixes:
+optional comptime arguments, closed keys independent of unresolved payload types,
+record-iteration binder deferral, namespace-qualified specialization and its error
+propagation context. Runtime parameter mismatches now diagnose rather than silently
+deferring this specialization path.
+
+The decoder shape currently is `cli.option(cli.int, { default: 1 })`, not
+`cli.option(Int, ...)`. `spec` is lowercase because it is an ordinary value.
+Descriptors and normalized metadata are built once by `cli.define`. The returned
+parser captures the key set; repeated `cli.parse` calls no longer recompute
+`keysOf` or construct argument metadata. `define` still runs at runtime; this
+is one-time initialization, not general compiler residualization.
+
+Imported lowercase specialization now captures the defining module's private
+polymorphic value schemes and type aliases. Imported body type spans are kept
+out of the caller's inferred-type table, and specialization diagnostics are
+anchored at the call to avoid foreign source offsets crashing CLI rendering.
+The new private-helper capture integration test still needs the full gate run.
+
+## Resume 2: reconcile red checkpoint first
+
+- Mixed-kind `valuesOf` acceptance was **an accident**, not an intended language
+  semantics change. The statement-check path validated only its broad record
+  parameter, bypassing the inference path's homogeneous-field check. Both paths
+  now call the same real implementation. Its failed unification now reports
+  directly: the generic mismatch helper suppressed diagnostics for open literal
+  rows, even when their base kinds were known to disagree. Arity is validated
+  on this same path. The rejection test is retained and expanded with bound,
+  annotated, and excess-argument calls.
+- Correction to the resume's suspicion: `std/cli` does **not** call `valuesOf`
+  on heterogeneous descriptors. It projects each descriptor to the same `Meta`
+  record type first. Heterogeneous parsed values stay in a record comprehension.
+  `valuesOf` itself is a new primitive introduced on this branch, not a baseline
+  operation whose accepted input kinds were intentionally changed.
+- Private uppercase functions were being inferred as runtime values while
+  collecting the new lexical environment. Skip those declarations (retaining
+  the existing exported-value behavior); comptime evaluation remains their owner.
+  `nested_uppercase_comptime_applications_check_cleanly` is unchanged.
+- New Rust primitive `valuesOf` bridges a homogeneous record to an Array. Aven
+  can project fields by record comprehension but cannot otherwise collect them
+  into an Array. Minimal motivating expression:
+  `valuesOf({ keysOf(schema) -> k; (k, schema[k].meta(k)) })`.
+  The primitive performs no CLI parsing, metadata policy, or help generation.
 
 ## Evidence and corrections
 
@@ -84,3 +137,23 @@ Layer 0: `cargo fmt --all`, both new CLI argument integration tests, and the
 existing host/checker surface parity test pass. Baseline collection completed.
 
 Exit-code slice: `cargo fmt --all` and **all CLI tests pass** (`cargo test -p aven`).
+
+Resume thin-path validation: all 627 checker unit tests and seven CLI argument
+integration tests pass; real Aven suite checks and runs. Full gates still pending.
+
+Resume 2 reconciliation: all **628 checker unit tests pass**; workspace clippy
+with `-D warnings` passes. Full workspace test run is in progress.
+
+- **220c6fd**: fixes both checker regressions, saved as WIP when the workspace
+  run reached two additional failures: the standard-library count omitted
+  `std/cli` (9 → 10), and my new private-helper test expected the wrong spacing
+  in the evaluator's record rendering. Both expectations are being corrected;
+  the actual private polymorphic capture check and evaluation succeeded.
+
+Resume 2 full gates: `cargo fmt --all` clean; workspace clippy with
+`-D warnings` passes; `cargo test --workspace` **1775 passed / 0 failed**,
+up from 1767. Existing HTTP tests require loopback socket permission, so the
+full successful test run used the approved sandbox escalation. No tests skipped.
+The private-helper lexical capture integration test and the 24-case Aven CLI
+suite both pass. General comptime constant residualization remains unimplemented;
+`define` already removes key-set recomputation from repeated parser calls.

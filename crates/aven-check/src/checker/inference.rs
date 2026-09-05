@@ -2098,6 +2098,10 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        if let Some(result) = self.infer_record_values_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_map_constructor_call(env, callee, args) {
             return result;
         }
@@ -3543,6 +3547,50 @@ impl<'a> Checker<'a> {
         }
     }
 
+    pub(super) fn infer_record_values_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        if expr_name(callee) != Some("valuesOf")
+            || env.contains_key("valuesOf")
+            || self.bindings.contains_key("valuesOf")
+            || self.pattern_bindings.contains_key("valuesOf")
+        {
+            return None;
+        }
+        let [subject] = args else {
+            self.report_call_arity_mismatch(env, callee, 1, 1, args.len(), callee.span);
+            return Some(Type::Error);
+        };
+        let inferred = self.infer(env, subject);
+        let resolved = self.normalize(&self.resolve_and_default(&inferred));
+        let Type::Record(row) = resolved else {
+            // The ordinary function path diagnoses non-record arguments.
+            return None;
+        };
+        if row.tail != RowTail::Closed {
+            return Some(Type::Deferred);
+        }
+        let element = self.unifier.fresh();
+        for entry in row.entries {
+            let RowEntry::Field { ty, .. } = entry else {
+                return Some(Type::Deferred);
+            };
+            if self.unify_or_number_join(&element, &ty).is_err() {
+                let expected = self.resolve_and_default(&element);
+                self.report_type_mismatch_between_types(
+                    &expected.render(),
+                    &ty.render(),
+                    subject.span,
+                );
+                return Some(Type::Error);
+            }
+        }
+        Some(crate::ty::build::array(self.resolve_and_default(&element)))
+    }
+
     pub(super) fn record_selection_builtin_is_shadowed(&self, env: &TypeEnv, name: &str) -> bool {
         env.get(name).is_some()
             || self.bindings.contains_key(name)
@@ -3607,11 +3655,21 @@ impl<'a> Checker<'a> {
         callee: &Expr,
         args: &[Expr],
     ) -> Option<Type> {
-        let (params, body) = self.comptime_param_function(callee)?;
+        let function = self.comptime_param_function(env, callee)?;
+        let captured_types = function.captured_type_definitions().clone();
+        let imported = !function.value_types.is_empty();
+        let params = function.params;
+        let body = function.body;
+        let values = function.value_types;
         let uppercase = call_callee_name(callee)
             .and_then(|name| name.chars().next())
             .is_some_and(char::is_uppercase);
-        if params.len() != args.len() {
+        if args.len() > params.len()
+            || params
+                .iter()
+                .skip(args.len())
+                .any(|param| param.default.is_none())
+        {
             let function = match &ungroup_expr(callee).kind {
                 ExprKind::Name(name) | ExprKind::ComptimeName(name) => name,
                 _ => "comptime function",
@@ -3627,11 +3685,33 @@ impl<'a> Checker<'a> {
         }
 
         let mut type_bindings = HashMap::new();
-        let mut body_env = TypeEnv::new();
+        let mut body_env = values
+            .into_iter()
+            .map(|(name, qualified)| {
+                let scheme =
+                    scheme_from_qualified_type(&qualified, &name, callee.span, &mut self.unifier);
+                (name, LocalValueType::Scheme(scheme))
+            })
+            .collect::<TypeEnv>();
         let mut param_var_metas = HashMap::new();
+        let arguments = params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                args.get(index)
+                    .or(param.default.as_ref())
+                    .expect("arity checked above")
+            })
+            .collect::<Vec<_>>();
 
-        for (param, arg) in params.iter().zip(args).filter(|(param, _)| !param.comptime) {
-            let inferred = self.infer(env, arg);
+        for (index, (param, arg)) in params
+            .iter()
+            .zip(&arguments)
+            .enumerate()
+            .filter(|(_, (param, _))| !param.comptime)
+        {
+            let arg_env = if index < args.len() { env } else { &body_env };
+            let inferred = self.infer(arg_env, arg);
             let actual = self.normalize(&self.resolve_and_default(&inferred));
 
             if let Some(annotation) = &param.annotation {
@@ -3643,11 +3723,16 @@ impl<'a> Checker<'a> {
                 // repeated names stay consistent — before checking the argument,
                 // so a rigid `Type::Variable` does not spuriously reject every
                 // call.
+                let caller_types = self.type_definitions.clone();
+                self.type_definitions.extend(captured_types.clone());
                 let expected = self.lower_annotation_for_inference(annotation);
+                let expected = self.normalize(&expected);
+                self.type_definitions = caller_types;
                 let expected =
                     self.instantiate_annotation_type_variables(&expected, &mut param_var_metas);
                 if self.unifier.unify(&expected, &actual).is_err() {
-                    return Some(Type::Deferred);
+                    self.check_type_against_type(&expected, &actual, arg.span);
+                    return Some(Type::Error);
                 }
             }
 
@@ -3657,9 +3742,25 @@ impl<'a> Checker<'a> {
         let runtime_value_bindings = self.current_comptime_value_bindings();
         let mut body_comptime_values = HashMap::new();
 
-        for (param, arg) in params.iter().zip(args).filter(|(param, _)| param.comptime) {
-            let Some(argument) =
-                self.evaluate_comptime_param_argument(arg, &runtime_value_bindings)
+        for (index, (param, arg)) in params
+            .iter()
+            .zip(&arguments)
+            .enumerate()
+            .filter(|(_, (param, _))| param.comptime)
+        {
+            // A reflected key/tag set depends only on the preceding runtime
+            // argument's static type. Its default does not evaluate that value.
+            let reflected_default = (index >= args.len())
+                .then(|| {
+                    self.comptime_known_reflection_value(arg, &body_env)
+                        .map(|labels| ComptimeArgument {
+                            value: comptime::ComptimeValue::LabelSet(labels),
+                            label_set_members: None,
+                        })
+                })
+                .flatten();
+            let Some(argument) = reflected_default
+                .or_else(|| self.evaluate_comptime_param_argument(arg, &runtime_value_bindings))
             else {
                 // An unresolved enclosing comptime parameter is intentionally
                 // deferred until its caller specializes this function. Other
@@ -3733,11 +3834,31 @@ impl<'a> Checker<'a> {
             body_comptime_values.insert(param.name.clone(), value.clone());
         }
 
+        let saved_types = self.type_definitions.clone();
+        self.type_definitions.extend(captured_types);
+        let diagnostics_start = self.diagnostics.len();
+        let inferred_types_start = self.inferred_types.len();
         self.local_comptime_values.push(body_comptime_values);
+        self.propagation_contexts
+            .push(PropagationContext::default());
         let result = self.infer(&body_env, &body);
+        let propagation = self.pop_propagation_context();
+        let result = self.apply_propagation_context_to_body_type(&body, result, &propagation);
         self.local_comptime_values.pop();
-
-        Some(self.resolve_and_default(&result))
+        let result = self.normalize(&self.resolve_and_default(&result));
+        self.type_definitions = saved_types;
+        if imported {
+            self.inferred_types.truncate(inferred_types_start);
+            // Body spans belong to the defining source, not the caller's file.
+            // Until diagnostics carry source identities, anchor specialization
+            // errors at the call instead of handing foreign offsets to clients.
+            for diagnostic in &mut self.diagnostics[diagnostics_start..] {
+                for label in &mut diagnostic.labels {
+                    label.span = callee.span;
+                }
+            }
+        }
+        Some(result)
     }
 
     pub(super) fn evaluate_comptime_param_argument(
@@ -3824,20 +3945,35 @@ impl<'a> Checker<'a> {
         is_concrete_type(&ty).then_some(ty)
     }
 
-    pub(super) fn comptime_param_function(&self, callee: &Expr) -> Option<(Vec<Param>, Expr)> {
-        let name = call_callee_name(callee)?;
-        let export = self.lookup_comptime_function_export(name)?;
+    pub(super) fn comptime_param_function(
+        &self,
+        env: &TypeEnv,
+        callee: &Expr,
+    ) -> Option<comptime::ComptimeExport> {
+        let (name, mut export) = match &ungroup_expr(callee).kind {
+            ExprKind::FieldAccess {
+                receiver, field, ..
+            } => {
+                let specifier = self.imported_module_specifier(env, receiver)?;
+                (
+                    field.as_str(),
+                    self.imports.comptime_export(&specifier, field)?.clone(),
+                )
+            }
+            _ => {
+                let name = call_callee_name(callee)?;
+                if env.contains_key(name) {
+                    return None;
+                }
+                (name, self.lookup_comptime_function_export(name)?)
+            }
+        };
         let uppercase = name.chars().next().is_some_and(char::is_uppercase);
         (uppercase || export.params.iter().any(|param| param.comptime)).then(|| {
-            let params = export
-                .params
-                .into_iter()
-                .map(|mut param| {
-                    param.comptime |= uppercase;
-                    param
-                })
-                .collect();
-            (params, export.body)
+            for param in &mut export.params {
+                param.comptime |= uppercase;
+            }
+            export
         })
     }
 

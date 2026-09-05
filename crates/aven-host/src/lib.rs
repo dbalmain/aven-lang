@@ -767,6 +767,7 @@ pub fn std_library() -> HashMap<String, &'static str> {
     HashMap::from([
         ("std".to_owned(), include_str!("../std/std.av")),
         ("std/array".to_owned(), include_str!("../std/array.av")),
+        ("std/cli".to_owned(), include_str!("../std/cli.av")),
         ("std/map".to_owned(), include_str!("../std/map.av")),
         ("std/result".to_owned(), include_str!("../std/result.av")),
         ("std/set".to_owned(), include_str!("../std/set.av")),
@@ -934,6 +935,7 @@ mod tests {
             [
                 "std",
                 "std/array",
+                "std/cli",
                 "std/map",
                 "std/result",
                 "std/set",

@@ -78,6 +78,10 @@ impl<'a> Checker<'a> {
             return;
         }
         let env = self.local_types.inference_env();
+        if self.infer_record_values_call(&env, callee, args).is_some() {
+            self.check_value_exprs(args);
+            return;
+        }
         if self
             .infer_slot_conversion_call(&env, callee, args)
             .is_some()
@@ -197,7 +201,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn report_call_arity_mismatch(
+    pub(super) fn report_call_arity_mismatch(
         &mut self,
         env: &TypeEnv,
         callee: &Expr,
@@ -503,10 +507,15 @@ impl<'a> Checker<'a> {
                     self.local_types.push();
                     self.local_types.define(binder, LocalValueType::Unknown);
                     self.record_local_value_type(*binder_span, &LocalValueType::Unknown);
+                    // Each iteration binds a static field label. In a generic
+                    // body its value arrives when the source row specializes.
+                    self.local_comptime_params
+                        .push(HashSet::from([binder.clone()]));
                     if let Some(guard) = guard {
                         self.check_value_expr(guard);
                     }
                     self.walk_value_record_values(body);
+                    self.local_comptime_params.pop();
                     self.local_types.pop();
                 }
                 RecordEntry::Shorthand {
