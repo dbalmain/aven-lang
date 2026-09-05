@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use aven_parser::Expr;
+
 use crate::{
     Type,
     ty::{self, TypeScheme},
@@ -17,15 +19,30 @@ pub(crate) type TypeEnv = HashMap<String, LocalValueType>;
 #[derive(Debug, Default)]
 pub(crate) struct LocalTypeScopes {
     scopes: Vec<TypeEnv>,
+    /// Right-hand sides of local `name = comptime(value)` bindings, scoped
+    /// alongside `scopes` so every push/pop site covers both.
+    pins: Vec<HashMap<String, Expr>>,
 }
 
 impl LocalTypeScopes {
     pub(crate) fn push(&mut self) {
         self.scopes.push(HashMap::new());
+        self.pins.push(HashMap::new());
     }
 
     pub(crate) fn pop(&mut self) {
         self.scopes.pop();
+        self.pins.pop();
+    }
+
+    pub(crate) fn define_pin(&mut self, name: &str, value: Expr) {
+        if let Some(scope) = self.pins.last_mut() {
+            scope.insert(name.to_owned(), value);
+        }
+    }
+
+    pub(crate) fn pin(&self, name: &str) -> Option<&Expr> {
+        self.pins.iter().rev().find_map(|scope| scope.get(name))
     }
 
     pub(crate) fn define(&mut self, name: &str, ty: LocalValueType) {

@@ -37,7 +37,8 @@ pub fn unfold_recursive_type_once(ty: &Type, unfoldings: &HashMap<RecursiveTypeI
 
 /// Builtin comptime type functions. Shared with tooling (LSP hover) so the
 /// checker's name binding and the hover descriptions cannot drift apart.
-pub const COMPTIME_BUILTIN_FUNCTIONS: &[&str] = &["keysOf", "tagsOf", "typeOf", "pick", "omit"];
+pub const COMPTIME_BUILTIN_FUNCTIONS: &[&str] =
+    &["keysOf", "tagsOf", "typeOf", "pick", "omit", "comptime"];
 
 pub(crate) use checker::Checker;
 pub(crate) use lower::{known_type_names, reserved_type_diagnostic, type_definitions};

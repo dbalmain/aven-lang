@@ -12,6 +12,9 @@ use crate::ty::{
 
 pub(crate) const DEFAULT_EVALUATION_FUEL: usize = 128;
 
+/// The builtin that asserts an expression is comptime-known.
+pub(crate) const COMPTIME_PIN: &str = "comptime";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ComptimeValue {
     ReifiedType(Type),
@@ -552,6 +555,11 @@ pub(crate) trait EvalContext {
     /// that has not been specialized yet -- the one reason a comptime
     /// evaluation may fail now and succeed later.
     fn references_unresolved_comptime_param(&self, expr: &Expr) -> bool;
+
+    /// The argument of `name = comptime(value)`, for a binding pinned to
+    /// compile time. `None` for every other binding, including bindings that
+    /// happen to be comptime-evaluable but were not pinned.
+    fn comptime_pinned_binding(&self, name: &str) -> Option<Expr>;
     fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction>;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
@@ -897,6 +905,14 @@ where
                     return EvaluationResult::evaluated(value.clone());
                 }
 
+                // A lowercase binding is a runtime binding by phase, so a
+                // `comptime(...)` pin is the only thing that makes one
+                // readable here -- and it is read before the runtime-binding
+                // refusal below, which is exactly what the pin overrides.
+                if let Some(pinned) = self.context.comptime_pinned_binding(name) {
+                    return self.evaluate_expr(&pinned, env);
+                }
+
                 if env.in_function_body()
                     && let Some(diagnostic) =
                         self.context.runtime_binding_reference(name, expr.span)
@@ -1082,6 +1098,10 @@ where
             return self.evaluate_type_of(args);
         }
 
+        if name == COMPTIME_PIN {
+            return self.evaluate_comptime_pin(call_span, args, env);
+        }
+
         if let Some(function) = env
             .captured_function(name)
             .or_else(|| self.context.lookup_comptime_function(name))
@@ -1094,6 +1114,34 @@ where
         } else {
             EvaluationResult::unsupported()
         }
+    }
+
+    /// `comptime(e)`: evaluate `e` now, and say so when it cannot be.
+    ///
+    /// Comptime-ness is otherwise invisible -- nothing in `keys = ...` says
+    /// whether the checker can read the binding -- so a binding that stops
+    /// being comptime-known reports at whatever distant use consumed it, or
+    /// (before key sets were checked) nowhere at all. `comptime` is the
+    /// assertion that puts the report on the binding instead.
+    fn evaluate_comptime_pin(
+        &mut self,
+        call_span: Span,
+        args: &[Expr],
+        env: &Environment,
+    ) -> EvaluationResult {
+        let [arg] = args else {
+            return EvaluationResult::diagnostic(comptime_pin_arity(call_span, args.len()));
+        };
+
+        let result = self.evaluate_expr(arg, env);
+        if !result.diagnostics.is_empty()
+            || matches!(result.evaluation, Evaluation::Evaluated(_))
+            || self.context.references_unresolved_comptime_param(arg)
+        {
+            return result;
+        }
+
+        EvaluationResult::diagnostic(comptime_pin_failed(arg.span))
     }
 
     fn evaluate_reflection_application(
@@ -1726,6 +1774,26 @@ pub(crate) fn key_set_wrong_kind(span: Span, function: &str) -> Diagnostic {
         .with_label(Label::primary(span, "this is not a set of field names"))
         .with_note(format!(
             "pass a key set such as `@{{\"name\"}}` or `keysOf(T)` as the second argument to `{function}`"
+        ))
+}
+
+pub(crate) fn comptime_pin_arity(span: Span, found: usize) -> Diagnostic {
+    Diagnostic::error(format!(
+        "`{COMPTIME_PIN}` takes exactly one argument, but {found} were supplied"
+    ))
+    .with_code(codes::comptime::ARGUMENT_NOT_KNOWN)
+    .with_label(Label::primary(span, "wrong number of arguments"))
+    .with_note(format!(
+        "write `{COMPTIME_PIN}(value)` to require that `value` is known at compile time"
+    ))
+}
+
+pub(crate) fn comptime_pin_failed(span: Span) -> Diagnostic {
+    Diagnostic::error(format!("`{COMPTIME_PIN}` could not evaluate this expression"))
+        .with_code(codes::comptime::ARGUMENT_NOT_KNOWN)
+        .with_label(Label::primary(span, "this is not known at compile time"))
+        .with_note(format!(
+            "`{COMPTIME_PIN}` requires its argument to evaluate while checking; it may not depend on a runtime value"
         ))
 }
 

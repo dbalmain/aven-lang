@@ -1706,6 +1706,19 @@ fn intrinsics() -> Vec<(String, Value)> {
         }),
     ));
 
+    // `comptime(value)` is an assertion the checker enforces, not a
+    // transformation: by the time the program runs the value has already been
+    // proven comptime-known, so at runtime it is the identity.
+    intrinsics.push((
+        "comptime".to_owned(),
+        Value::native(|args| {
+            let [value] = args else {
+                return Err(format!("comptime expects 1 argument, got {}", args.len()));
+            };
+            Ok(value.clone())
+        }),
+    ));
+
     intrinsics.push((
         "pick".to_owned(),
         Value::native(|args| select_record_fields("pick", args, true)),

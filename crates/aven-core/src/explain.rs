@@ -24,7 +24,7 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
     },
     DiagnosticExplanation {
         code: codes::comptime::ARGUMENT_NOT_KNOWN,
-        text: "An uppercase comptime function was applied to an argument that is not known at compile time. Pass a type or another comptime-known value instead of a runtime value.",
+        text: "Something that must be resolved while checking was given an argument that is not known at compile time: an uppercase comptime function, the key set of `pick`/`omit`, or `comptime(value)`. Pass a type or another comptime-known value instead of a runtime value, and use `comptime(value)` to pin a binding the checker must be able to evaluate.",
     },
     DiagnosticExplanation {
         code: codes::comptime::EVALUATION_CYCLE,
