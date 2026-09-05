@@ -1,0 +1,3 @@
+error comptime.argument-not-known: `pick` needs a key set known at compile time
+  label 49..53: this is not known at compile time
+  note: `pick` selects fields while checking, so its key set cannot depend on a runtime value
