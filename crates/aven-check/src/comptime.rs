@@ -625,7 +625,111 @@ fn evaluate_type_position_with_options(
     evaluator.evaluate_expr(expr, &Environment::from_bindings(bindings))
 }
 
+/// Expressions a single comptime evaluation may run before it is cut off.
+///
+/// Comptime evaluation runs user code inside the compiler, so it must be
+/// bounded; see `Environment::set_fuel`. The number is generous enough that
+/// ordinary compile-time work -- building a shell completion script, deriving a
+/// field name -- never approaches it, and small enough that a runaway
+/// expression fails in milliseconds rather than hanging an editor.
+const COMPTIME_FUEL: u64 = 100_000;
+
+/// Evaluate `expr` with the real evaluator.
+///
+/// The hand-written cases in [`evaluate_runtime_value`] cover comptime values
+/// the evaluator has no representation for -- reified types and label sets --
+/// so they stay. Everything else defers to `aven-eval`, which is the only way
+/// to get answers that agree with what the program will actually do: rendering
+/// dispatches through `toText`, which a named type may override, so no static
+/// approximation in the checker can be right in general.
+fn evaluate_with_evaluator(
+    expr: &Expr,
+    bindings: &HashMap<String, ComptimeValue>,
+) -> Option<ComptimeValue> {
+    let env = aven_eval::Environment::new();
+    for (name, value) in bindings {
+        env.bind(name.clone(), comptime_value_as_eval_value(value)?);
+    }
+    env.set_fuel(COMPTIME_FUEL);
+    eval_value_as_comptime_value(&aven_eval::eval_expr(expr, &env).ok()?)
+}
+
+/// A literal type's value, as the evaluator represents it.
+pub(crate) fn literal_as_eval_value(literal: &Literal) -> Option<aven_eval::Value> {
+    match literal {
+        Literal::Bool(value) => Some(aven_eval::Value::Bool(*value)),
+        Literal::String(raw) => Some(aven_eval::Value::Text(aven_parser::decode_string_literal(
+            raw,
+        ))),
+        Literal::Number(raw) => {
+            if let Ok(value) = raw.parse::<aven_core::Int>() {
+                Some(aven_eval::Value::Int(value))
+            } else {
+                raw.parse::<f64>().ok().map(aven_eval::Value::Float)
+            }
+        }
+    }
+}
+
+/// How the evaluator would render `literal` inside a string interpolation.
+///
+/// The checker must not spell this itself. A literal's *token* is not its
+/// rendering -- `0.50` renders as `0.5`, `-0` as `0` -- so folding by token
+/// text produces a static answer the program then disagrees with.
+pub(crate) fn render_literal_as_text(literal: &Literal) -> Option<String> {
+    aven_eval::display_text(&literal_as_eval_value(literal)?).ok()
+}
+
+fn comptime_value_as_eval_value(value: &ComptimeValue) -> Option<aven_eval::Value> {
+    match value {
+        ComptimeValue::Bool(value) => Some(aven_eval::Value::Bool(*value)),
+        ComptimeValue::Literal(Literal::Bool(value)) => Some(aven_eval::Value::Bool(*value)),
+        ComptimeValue::Literal(Literal::String(raw)) => Some(aven_eval::Value::Text(
+            aven_parser::decode_string_literal(raw),
+        )),
+        ComptimeValue::Literal(Literal::Number(raw)) => {
+            if let Ok(value) = raw.parse::<aven_core::Int>() {
+                Some(aven_eval::Value::Int(value))
+            } else {
+                raw.parse::<f64>().ok().map(aven_eval::Value::Float)
+            }
+        }
+        // Types and label sets are compiler artifacts with no runtime value.
+        ComptimeValue::ReifiedType(_) | ComptimeValue::LabelSet(_) => None,
+    }
+}
+
+fn eval_value_as_comptime_value(value: &aven_eval::Value) -> Option<ComptimeValue> {
+    match value {
+        aven_eval::Value::Bool(value) => Some(ComptimeValue::Bool(*value)),
+        // Numbers and text are rendered by the evaluator itself rather than
+        // reconstructed here, so the literal the checker records is exactly the
+        // text the program produces.
+        aven_eval::Value::Int(_) | aven_eval::Value::Float(_) => Some(ComptimeValue::Literal(
+            Literal::Number(aven_eval::display_text(value).ok()?),
+        )),
+        aven_eval::Value::Text(_) => Some(ComptimeValue::Literal(Literal::String(
+            aven_eval::repr_text(value),
+        ))),
+        _ => None,
+    }
+}
+
 pub(crate) fn evaluate_runtime_value(
+    expr: &Expr,
+    bindings: &HashMap<String, ComptimeValue>,
+) -> EvaluationResult {
+    let native = evaluate_runtime_value_natively(expr, bindings);
+    if !matches!(native.evaluation, Evaluation::Unsupported) {
+        return native;
+    }
+    match evaluate_with_evaluator(expr, bindings) {
+        Some(value) => EvaluationResult::evaluated(value),
+        None => native,
+    }
+}
+
+fn evaluate_runtime_value_natively(
     expr: &Expr,
     bindings: &HashMap<String, ComptimeValue>,
 ) -> EvaluationResult {
@@ -645,7 +749,7 @@ pub(crate) fn evaluate_runtime_value(
         ExprKind::Call { callee, args } => evaluate_runtime_call(callee, args, bindings),
         ExprKind::Unary {
             operator, value, ..
-        } if operator == "!" => match evaluate_runtime_value(value, bindings).evaluation {
+        } if operator == "!" => match evaluate_runtime_value_natively(value, bindings).evaluation {
             Evaluation::Evaluated(ComptimeValue::Bool(value)) => {
                 EvaluationResult::evaluated(ComptimeValue::Bool(!value))
             }

@@ -1787,9 +1787,11 @@ fn interpolation_folded_at_comptime_agrees_with_the_evaluator() {
         concat!(
             "Esc = (a: Text) => \"${a}\\n\\\"q\\\"\"\n",
             "Plain = (a: Text) => \"complete -c ${a}\"\n",
+            "Nums = (a: Text) => \"${a}=${0.50}|${-0}\"\n",
             "checked: \"x\\n\\\"q\\\"\" = Esc(\"x\")\n",
             "also: \"complete -c tool\" = Plain(\"tool\")\n",
-            "{ checked, also }\n",
+            "nums: \"x=0.5|0\" = Nums(\"x\")\n",
+            "{ checked, also, nums }\n",
         ),
     );
     let checked =
@@ -1800,7 +1802,10 @@ fn interpolation_folded_at_comptime_agrees_with_the_evaluator() {
     assert_no_errors(&ran.reports);
     assert_eq!(
         ran.value.as_ref().map(ToString::to_string),
-        Some("{ checked: \"x\\n\\\"q\\\"\", also: \"complete -c tool\" }".to_owned())
+        Some(
+            "{ checked: \"x\\n\\\"q\\\"\", also: \"complete -c tool\", nums: \"x=0.5|0\" }"
+                .to_owned()
+        )
     );
 }
 
