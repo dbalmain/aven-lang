@@ -4033,6 +4033,64 @@ fn module_error_with_globals(source: &str, globals: Vec<(String, Value)>) -> ave
     diagnostics.remove(0)
 }
 
+#[test]
+fn fuel_is_unlimited_by_default_and_bounds_evaluation_when_set() {
+    // `aven run` must stay unbounded: a program may loop as long as its author
+    // wants. Only a caller that asks for a budget gets one.
+    let module = parse_ok("1 + 2 + 3 + 4 + 5\n");
+    let Item::Expr(expr) = &module.items[0] else {
+        panic!("expected expression item");
+    };
+
+    let unlimited = Environment::new();
+    assert_eq!(unlimited.fuel_remaining(), None);
+    assert_eq!(
+        eval_expr(expr, &unlimited).expect("unbounded"),
+        Value::int(15)
+    );
+
+    let generous = Environment::new();
+    generous.set_fuel(1_000);
+    assert_eq!(
+        eval_expr(expr, &generous).expect("within budget"),
+        Value::int(15)
+    );
+    assert!(
+        generous.fuel_remaining().expect("budget kept") < 1_000,
+        "evaluation should consume fuel"
+    );
+
+    let stingy = Environment::new();
+    stingy.set_fuel(2);
+    let diagnostic = eval_expr(expr, &stingy).expect_err("budget exhausted");
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::comptime::EVALUATION_LIMIT)
+    );
+}
+
+#[test]
+fn fuel_stops_a_non_terminating_program_before_the_stack_limit_does() {
+    // The reason the budget exists: without it, wiring an evaluator into the
+    // checker would let a comptime call hang the compiler and the LSP.
+    //
+    // Unbounded recursion also trips `runtime.recursion-limit` eventually, but
+    // that is a 64 MiB stack budget away -- far too late for a compiler, and it
+    // says nothing about a loop that does not grow the stack. A budget smaller
+    // than that depth is what makes the failure prompt and reproducible, so
+    // this asserts fuel wins the race.
+    let module = parse_ok("loop = () => loop()\nloop()\n");
+    let outcome = eval_module_with_options(&module, EvalModuleOptions::default().with_fuel(100));
+    assert!(
+        outcome
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(codes::comptime::EVALUATION_LIMIT)),
+        "{:?}",
+        outcome.diagnostics
+    );
+}
+
 fn eval_source(source: &str) -> Result<Value, aven_core::Diagnostic> {
     let module = parse_ok(source);
     let Item::Expr(expr) = &module.items[0] else {
