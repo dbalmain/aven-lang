@@ -9878,6 +9878,35 @@ fn comptime_reports_at_the_pin_when_the_value_is_not_known() {
 }
 
 #[test]
+fn comptime_accepts_a_value_folded_by_inference_rather_than_by_the_evaluator() {
+    // The comptime evaluator cannot walk an interpolation, but
+    // comptime-by-inference folds one whose segments are all known -- so the
+    // pin must read the folded literal type rather than only the evaluator's
+    // answer. The annotation is the discriminating half: a pin that widened
+    // to `Text` would accept it and lose the constant.
+    let source = "emit = (@name: Text) => \"complete -c ${name}\"\n\
+                  script = comptime(emit(\"tool\"))\n\
+                  checked: \"complete -c tool\" = script\n\
+                  checked\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+
+    let wrong = source.replace("\"complete -c tool\" = script", "\"wrong\" = script");
+    let output = parse_module(&wrong);
+    let check = check_module(&output.module);
+    assert!(
+        has_diagnostic_code(&check.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        "expected the pinned literal to be kept, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn a_comptime_pinned_binding_is_still_an_ordinary_runtime_value() {
     // The pin says *when* a value is known, not what it is: `@{"a"}` is a
     // `Set(Text)` either way, so pinning must not make the binding a
