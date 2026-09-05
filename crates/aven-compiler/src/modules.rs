@@ -1403,7 +1403,7 @@ fn check_export_for_node(
                 entries,
                 &node.parse.module,
                 imports,
-                &semantic.type_definitions,
+                semantic,
                 module_identity,
             );
             return CheckExport::Record {
@@ -1422,7 +1422,7 @@ fn check_export_for_node(
             entries,
             &node.parse.module,
             imports,
-            &semantic.type_definitions,
+            semantic,
             module_identity,
         );
         return CheckExport::Record {
@@ -1568,7 +1568,7 @@ fn check_export_for_node(
         entries,
         &node.parse.module,
         imports,
-        &semantic.type_definitions,
+        semantic,
         module_identity,
     );
     CheckExport::Record {
@@ -1602,7 +1602,7 @@ fn collect_comptime_exports(
     entries: &[RecordEntry],
     module: &Module,
     imports: &CheckModuleImports,
-    type_definitions: &HashMap<String, Type>,
+    semantic: &crate::SemanticOutput,
     module_identity: &ComptimeModuleIdentity,
 ) -> HashMap<String, ComptimeExport> {
     let mut exports = HashMap::new();
@@ -1622,9 +1622,16 @@ fn collect_comptime_exports(
             module,
             source_name,
             imports,
-            type_definitions,
+            &semantic.type_definitions,
             module_identity,
         ) {
+            let values = semantic.module_value_types.clone();
+            // Re-exports already carry the defining module's environment.
+            let export = if top_level_binding(module, source_name).is_some() {
+                export.with_value_types(values)
+            } else {
+                export
+            };
             exports.insert(export_name.to_owned(), export.renamed(export_name));
         }
     }

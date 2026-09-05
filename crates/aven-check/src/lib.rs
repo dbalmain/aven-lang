@@ -50,6 +50,8 @@ pub struct CheckOutput {
     pub inferred_types: Vec<InferredType>,
     pub type_definitions: HashMap<String, Type>,
     pub top_level_types: HashMap<String, Type>,
+    /// Lexical value environment for specializing exported function bodies.
+    pub module_value_types: HashMap<String, QualifiedType>,
     /// Exported value types with any method constraints reified alongside
     /// their ordinary type.
     pub top_level_qualified_types: HashMap<String, QualifiedType>,
@@ -624,15 +626,19 @@ pub fn check_module_with_host_globals_and_imports_in_role(
     checker.check_module(module);
     let export_names = final_record_names(module);
     let named_family_aliases = checker.named_family_aliases.clone();
-    let top_level_qualified_types: HashMap<_, _> = aven_parser::collect_declarations(module)
+    let module_value_types: HashMap<_, _> = aven_parser::collect_declarations(module)
         .into_iter()
-        .filter(|declaration| export_names.contains(&declaration.name))
         .filter(|declaration| !named_family_aliases.contains_key(&declaration.name))
         .filter_map(|declaration| {
             checker
                 .infer_top_level_qualified_type_for_output(&declaration.name)
                 .map(|qualified| (declaration.name, qualified))
         })
+        .collect();
+    let top_level_qualified_types: HashMap<_, _> = module_value_types
+        .iter()
+        .filter(|(name, _)| export_names.contains(*name))
+        .map(|(name, ty)| (name.clone(), ty.clone()))
         .collect();
     let top_level_types = top_level_qualified_types
         .iter()
@@ -645,6 +651,7 @@ pub fn check_module_with_host_globals_and_imports_in_role(
         inferred_types: checker.inferred_types,
         type_definitions: checker.type_definitions.clone(),
         top_level_types,
+        module_value_types,
         top_level_qualified_types,
         named_families: checker.named_families.clone(),
         named_family_aliases: checker.named_family_aliases.clone(),

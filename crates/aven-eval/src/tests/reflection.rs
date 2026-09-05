@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn values_of_preserves_record_order_and_handles_empty_records() {
+    assert_module_value(
+        "valuesOf({ z: 1, a: 2 })\n",
+        array_value(vec![Value::int(1), Value::int(2)]),
+    );
+    assert_module_value("valuesOf({})\n", array_value(vec![]));
+    for source in ["valuesOf(1)\n", "valuesOf()\n", "valuesOf({}, {})\n"] {
+        assert_eq!(
+            module_error(source).code.as_deref(),
+            Some(codes::runtime::PLATFORM_ERROR)
+        );
+    }
+}
+
+#[test]
 fn keyof_returns_record_labels_as_set() {
     assert_module_value(
         "keysOf({ name: \"Ada\", email: \"ada@x.dev\" })\n",

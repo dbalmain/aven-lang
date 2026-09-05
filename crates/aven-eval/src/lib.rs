@@ -1593,6 +1593,18 @@ fn intrinsics() -> Vec<(String, Value)> {
         .collect();
 
     intrinsics.push((
+        "valuesOf".to_owned(),
+        Value::native(|args| {
+            let [Value::Record(fields)] = args else {
+                return Err("valuesOf expects one record argument".to_owned());
+            };
+            Ok(Value::Array(Rc::new(
+                fields.iter().map(|(_, value)| value.clone()).collect(),
+            )))
+        }),
+    ));
+
+    intrinsics.push((
         "keysOf".to_owned(),
         Value::native(|args| {
             if args.len() != 1 {

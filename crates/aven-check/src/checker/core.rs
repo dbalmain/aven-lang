@@ -149,6 +149,15 @@ impl<'a> Checker<'a> {
                 ),
             ));
         }
+        if !checker.globals.iter().any(|(name, _)| name == "valuesOf") {
+            checker.globals.push((
+                "valuesOf".to_owned(),
+                crate::ty::build::function(
+                    vec![crate::ty::build::open_record(vec![])],
+                    crate::ty::build::array(crate::ty::build::var("a")),
+                ),
+            ));
+        }
         checker.imports = imports.clone();
         checker.builtin_methods = imports.builtin_methods.clone();
         checker.trusted_builtin_method_source = imports.trusted_builtin_method_source;

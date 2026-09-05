@@ -1,12 +1,44 @@
 cli = import("std/cli")
 test = import("std/test")
-spec = { verbose: cli.flag(), jobs: cli.option(cli.int, { default: 1 }) }
+spec = cli.define({ verbose: cli.flag(), jobs: cli.option(cli.int, { default: 1 }) })
+aliased = cli.define({
+  verbose: cli.flag({ short: "v", aliases: ["--chatty"], help: "Print each step" })
+  out: cli.option(cli.text, { default: "stdout", short: "o", help: "Output destination", valueName: "PATH" })
+}, { name: "tool", description: "Example tool", examples: ["tool -v -o report.txt"] })
+required = cli.define({ jobs: cli.required(cli.int) })
 
 {
-  defaults: () => test.expectEq(cli.parse(spec, []), @Ok({ verbose: false, jobs: 1 })),
-  longFlag: () => test.expectEq(cli.parse(spec, ["--verbose"]), @Ok({ verbose: true, jobs: 1 })),
-  separateValue: () => test.expectEq(cli.parse(spec, ["--jobs", "3"]), @Ok({ verbose: false, jobs: 3 })),
-  attachedValue: () => test.expectEq(cli.parse(spec, ["--jobs=-2"]), @Ok({ verbose: false, jobs: -2 })),
-  missingValue: () => test.expectErr(cli.parse(spec, ["--jobs"])),
+  defaults: () => test.expectEq(cli.parse(spec, []), @Ok({ verbose: false, jobs: 1 }))
+  longFlag: () => test.expectEq(cli.parse(spec, ["--verbose"]), @Ok({ verbose: true, jobs: 1 }))
+  separateValue: () => test.expectEq(cli.parse(spec, ["--jobs", "3"]), @Ok({ verbose: false, jobs: 3 }))
+  attachedValue: () => test.expectEq(cli.parse(spec, ["--jobs=-2"]), @Ok({ verbose: false, jobs: -2 }))
+  missingValue: () => test.expectErr(cli.parse(spec, ["--jobs"]))
   invalidInteger: () => test.expectErr(cli.parse(spec, ["--jobs", "many"]))
+  aliases: () => test.expectEq(cli.parse(aliased, ["--chatty", "-o", "report"]), @Ok({ verbose: true, out: "report" }))
+  shortFlag: () => test.expectEq(cli.parse(aliased, ["-v"]), @Ok({ verbose: true, out: "stdout" }))
+  optionLikeValue: () => test.expectEq(cli.parse(aliased, ["-o", "--chatty"]), @Ok({ verbose: false, out: "--chatty" }))
+  emptyValue: () => test.expectEq(cli.parse(aliased, ["--out="]), @Ok({ verbose: false, out: "" }))
+  equalsInValue: () => test.expectEq(cli.parse(aliased, ["--out=a=b"]), @Ok({ verbose: false, out: "a=b" }))
+  repeatedFlag: () => test.expectErr(cli.parse(aliased, ["-v", "--chatty"]))
+  repeatedOption: () => test.expectErr(cli.parse(spec, ["--jobs=2", "--jobs=3"]))
+  valueOnFlag: () => test.expectErr(cli.parse(spec, ["--verbose=false"]))
+  unknownOption: () => test.expectErr(cli.parse(spec, ["--jbos", "2"]))
+  unknownPositional: () => test.expectErr(cli.parse(spec, ["input"]))
+  separator: () => test.expectEq(cli.parse(spec, ["--"]), @Ok({ verbose: false, jobs: 1 }))
+  separatorStopsOptions: () => test.expectErr(cli.parse(spec, ["--", "--verbose"]))
+  separatorIsNotValue: () => test.expectErr(cli.parse(spec, ["--jobs", "--"]))
+  requiredMissing: () => test.expectErr(cli.parse(required, []))
+  requiredPresent: () => test.expectEq(cli.parse(required, ["--jobs=9"]), @Ok({ jobs: 9 }))
+  emptySpec: () => test.expectEq(cli.parse(cli.define({}), []), @Ok({}))
+  help: () =>
+    usage = cli.help(aliased)
+    test.expectTrue(usage.contains("Usage: tool [options]"))?^
+    test.expectTrue(usage.contains("--verbose, -v, --chatty  Print each step"))?^
+    test.expectTrue(usage.contains("--out, -o <PATH>  Output destination"))?^
+    test.expectTrue(usage.contains("Examples:\n  tool -v -o report.txt"))
+  errorIncludesHelpAndExamples: () => cli.parse(aliased, ["--oops"]) ?>
+    @Ok(_) => test.fail("unknown option was accepted")
+    @Err(message) =>
+      test.expectTrue(message.contains("unknown argument '--oops'"))?^
+      test.expectTrue(message.contains(cli.help(aliased)))
 }

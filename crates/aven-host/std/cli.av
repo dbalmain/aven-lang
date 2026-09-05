@@ -1,6 +1,9 @@
-# Typed command-line descriptors. Import with `cli = import("std/cli")`.
-# A descriptor carries a decoder function, so its output type is inferred
-# without a compiler-owned table of CLI conversions.
+# Typed CLI specifications: `cli = import("std/cli")`.
+# Build once with `cli.define({ verbose: cli.flag(), ... })`, then call
+# `cli.parse(spec, args)`. Decoders determine the exact output field types.
+# Aliases are full spellings (e.g. "--chatty"); `short: "v"` adds "-v".
+
+Meta = { name: Text, names: Array(Text), takesValue: Bool, help: Text, valueName: Text }
 
 int = (raw: Text): Result(Int, Text) =>
   raw.toInt() ?>
@@ -9,44 +12,105 @@ int = (raw: Text): Result(Int, Text) =>
 
 text = (raw: Text): Result(Text, Text) => @Ok(raw)
 
-# Initial scanner: long flags and separate/attached option values. The next
-# slice combines recognition across descriptors to reject unused tokens.
-scan : (Array(Text), Int, Text, Bool) -> Result(?Text, Text)
-scan = (argv, index, name, takesValue) =>
-  token = argv[index]
-  token ?>
-    undefined => @Ok(undefined)
-    "--" => @Ok(undefined)
-    word =>
-      word == "--${name}" ?>
-        true =>
-          takesValue ?>
-            false => @Ok("true")
-            true => argv[index + 1] ?>
-              undefined => @Err("--${name} needs a value")
-              value => @Ok(value)
+metadata = (name: Text, takesValue: Bool, config): Meta =>
+  aliases: Array(Text) = []
+  m = { short: "", help: "", valueName: "VALUE", aliases, ..config }
+  short: Array(Text) = m.short == "" ?> true => [], false => ["-${m.short}"]
+  { name, names: ["--${name}", ..short, ..m.aliases], takesValue, help: m.help, valueName: m.valueName }
+
+flag = (config: { .. } = {}) => {
+  meta: (name: Text) => metadata(name, false, config),
+  read: (tokens: Map(Text, Text), name: Text): Result(Bool, Text) =>
+    @Ok((tokens.get(name) ?? "false") == "true")
+}
+
+option = (decode: (Text) -> Result(a, Text), config: { default: a, .. }) => {
+  meta: (name: Text) => metadata(name, true, config),
+  read: (tokens: Map(Text, Text), name: Text): Result(a, Text) =>
+    tokens.get(name) ?>
+      undefined => @Ok(config.default)
+      raw => decode(raw) ?>
+        @Ok(value) => @Ok(value)
+        @Err(message) => @Err("--${name}: ${message}")
+}
+
+required = (decode: (Text) -> Result(a, Text), config: { .. } = {}) => {
+  meta: (name: Text) => metadata(name, true, config),
+  read: (tokens: Map(Text, Text), name: Text): Result(a, Text) =>
+    tokens.get(name) ?>
+      undefined => @Err("--${name} is required")
+      raw => decode(raw) ?>
+        @Ok(value) => @Ok(value)
+        @Err(message) => @Err("--${name}: ${message}")
+}
+
+# Every token is consumed once. An option's separate value is consumed with it,
+# even when that value resembles a flag. Attached values retain every '='.
+# Repetition is an error; positionals and short bundles are not supported yet.
+tokenizeGo : (Array(Meta), Array(Text), Int, Map(Text, Text)) -> Result(Map(Text, Text), Text)
+tokenizeGo = (options, argv, index, tokens) =>
+  index >= argv.length() ?>
+    true => @Ok(tokens)
+    false =>
+      word = argv[index] ?? ""
+      word == "--" ?>
+        true => index + 1 == argv.length() ?>
+          true => @Ok(tokens)
+          false => @Err("unexpected positional argument '${argv[index + 1] ?? ""}'")
         false =>
-          takesValue && word.startsWith("--${name}=") ?>
-            true => @Ok(word.dropPrefix("--${name}="))
-            false => scan(argv, index + 1, name, takesValue)
+          head = word.splitOn("=")[0] ?? ""
+          options.find((m) => m.names.has(head)) ?>
+            undefined => @Err("unknown argument '${head}'")
+            m =>
+              tokens.get(m.name) ?>
+                undefined =>
+                  m.takesValue ?>
+                    false => word.contains("=") ?>
+                      true => @Err("${head} does not take a value")
+                      false => tokenizeGo(options, argv, index + 1, tokens.set(m.name, "true"))
+                    true => word.contains("=") ?>
+                      true => tokenizeGo(options, argv, index + 1, tokens.set(m.name, word.dropPrefix("${head}=")))
+                      false => argv[index + 1] ?>
+                        undefined => @Err("${head} needs a value")
+                        "--" => @Err("${head} needs a value")
+                        raw => tokenizeGo(options, argv, index + 2, tokens.set(m.name, raw))
+                _ => @Err("${head} was supplied more than once")
 
-flag = () => {
-  read: (argv: Array(Text), name: Text): Result(Bool, Text) =>
-    found = scan(argv, 0, name, false)?^
-    @Ok((found ?? "false") == "true")
-}
+tokenize : (Array(Meta), Array(Text)) -> Result(Map(Text, Text), Text)
+tokenize = (options, argv) =>
+  seed: Map(Text, Text) = Map.empty()
+  tokenizeGo(options, argv, 0, seed)
 
-option = (decode: (Text) -> Result(a, Text), metadata: { default: a, .. }) => {
-  read: (argv: Array(Text), name: Text): Result(a, Text) =>
-    found = scan(argv, 0, name, true)?^
-    found ?>
-      undefined => @Ok(metadata.default)
-      value => decode(value)
-}
+renderHelp = (options: Array(Meta), info): Text =>
+  examples: Array(Text) = []
+  m = { name: "tool", description: "", examples, ..info }
+  lines = options.map((o) =>
+    value = o.takesValue ?> true => " <${o.valueName}>", false => ""
+    "  ${o.names.joinWith(", ")}${value}  ${o.help}"
+  )
+  exampleText = m.examples.isEmpty() ?>
+    true => ""
+    false => "\n\nExamples:\n${m.examples.map((e) => "  ${e}").joinWith("\n")}"
+  "Usage: ${m.name} [options]\n${m.description}\n\nOptions:\n${lines.joinWith("\n")}${exampleText}"
 
-# Only field labels are comptime parameters; descriptors and argv are values.
-# Each decoder call specializes independently, retaining heterogeneous fields.
-parse = (spec: s, argv: Array(Text), @keys = keysOf(spec)) =>
-  @Ok({ keys -> key; (key, spec[key].read(argv, key)?^) })
+# Capture the static key set and normalize metadata at definition time. Calling
+# the returned parser allocates only token data and the typed result record.
+define = (schema: s, info: { .. } = {}, @keys = keysOf(schema)) =>
+  options = valuesOf({ keys -> key; (key, schema[key].meta(key)) })
+  usage = renderHelp(options, info)
+  {
+    help: usage,
+    parse: (argv: Array(Text)) =>
+      result = (() =>
+        tokens = tokenize(options, argv)?^
+        @Ok({ keys -> key; (key, schema[key].read(tokens, key)?^) })
+      )()
+      result ?>
+        @Ok(value) => @Ok(value)
+        @Err(message) => @Err("${message}\n\n${usage}")
+  }
 
-{ int, text, flag, option, parse }
+parse = (spec, argv: Array(Text)) => spec.parse(argv)
+help = (spec) => spec.help
+
+{ int, text, flag, option, required, define, parse, help }

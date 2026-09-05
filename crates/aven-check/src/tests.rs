@@ -1066,7 +1066,7 @@ fn sibling_derived_handler_annotation_reports_comptime_gap() {
 #[test]
 fn cli_parser_infers_heterogeneous_args_from_real_descriptors() {
     let source = format!(
-        "{}\nspec = {{ verbose: flag(), jobs: option(int, {{ default: 1 }}) }}\n\
+        "{}\nspec = define({{ verbose: flag(), jobs: option(int, {{ default: 1 }}) }})\n\
          argv: Array(Text) = []\n\
          result = parse(spec, argv)\n\
          parsed = result?^\n",
@@ -1074,7 +1074,15 @@ fn cli_parser_infers_heterogeneous_args_from_real_descriptors() {
     );
     let output = parse_module(&source);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let check = check_module(&output.module);
+    let ambient = check_trusted_builtin_methods(include_str!("../../aven-host/std/array.av"));
+    assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let check = check_module_with_host_globals_and_imports(
+        &output.module,
+        &HostGlobals::default(),
+        &imports,
+    );
     assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
     assert_eq!(
         check
@@ -1088,6 +1096,34 @@ fn cli_parser_infers_heterogeneous_args_from_real_descriptors() {
             .map(Type::render),
         Some("{ jobs: Int, verbose: Bool }".to_owned())
     );
+}
+
+#[test]
+fn record_values_preserve_the_common_type_and_reject_mixed_kinds() {
+    let parsed = parse_module("r: { a: Int, b: Int } = { a: 1, b: 2 }\nvalues = valuesOf(r)\n");
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    assert_eq!(
+        checked
+            .type_at(binding_value_named(&parsed.module, "values").span)
+            .map(Type::render),
+        Some("Array(Int)".to_owned())
+    );
+    for source in [
+        "valuesOf({ a: 1, b: true })\n",
+        "valuesOf(1)\n",
+        "valuesOf()\n",
+    ] {
+        let parsed = parse_module(source);
+        let checked = check_module(&parsed.module);
+        assert!(
+            checked.diagnostics.iter().any(|d| d.is_error()),
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+    }
+    let parsed = parse_module("valuesOf = (x: Int) => x + 1\nvalue: Int = valuesOf(2)\n");
+    assert!(check_module(&parsed.module).diagnostics.is_empty());
 }
 
 #[test]

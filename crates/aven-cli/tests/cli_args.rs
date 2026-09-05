@@ -15,7 +15,7 @@ fn cli_library_aven_suite_checks_and_runs() {
 fn cli_library_reads_forwarded_arguments() {
     let script = Script::new(
         "cli = import(\"std/cli\")\n\
-         spec = { verbose: cli.flag(), jobs: cli.option(cli.int, { default: 1 }) }\n\
+         spec = cli.define({ verbose: cli.flag(), jobs: cli.option(cli.int, { default: 1 }) })\n\
          parsed = cli.parse(spec, args)?^\n\
          writeLine(\"verbose=${parsed.verbose}; jobs=${parsed.jobs}\")\n",
     );
@@ -38,7 +38,7 @@ fn cli_library_rejects_wrong_fields_types_and_argv() {
     ] {
         let script = Script::new(&format!(
             "cli = import(\"std/cli\")\n\
-             spec = {{ verbose: cli.flag(), jobs: cli.option(cli.int, {{ default: 1 }}) }}\n{tail}"
+             spec = cli.define({{ verbose: cli.flag(), jobs: cli.option(cli.int, {{ default: 1 }}) }})\n{tail}"
         ));
         let output = script.aven(&["check"], &[]);
         assert!(!output.status.success(), "unexpectedly checked: {tail}");
