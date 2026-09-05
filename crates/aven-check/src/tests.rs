@@ -1276,6 +1276,52 @@ fn a_set_literal_does_not_satisfy_a_variant_type_annotation() {
 }
 
 #[test]
+fn text_interpolation_folds_to_a_literal_when_every_segment_is_known() {
+    // `"a" + "b"` already folded; interpolation discarded its segment types and
+    // always widened to `Text`, so `"${k}Yaml"` could not be used where a
+    // comptime-known literal is required.
+    let parsed = parse_module("Interp = (a: Text) => \"${a}Yaml\"\nvalue = Interp(\"name\")\n");
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    assert_eq!(
+        checked
+            .type_at(binding_value_named(&parsed.module, "value").span)
+            .map(Type::render),
+        Some("\"nameYaml\"".to_owned())
+    );
+
+    // The discriminating negative: a wrong expected literal must be rejected,
+    // which a fold that merely produced some literal would not catch.
+    let parsed =
+        parse_module("Interp = (a: Text) => \"${a}Yaml\"\nvalue: \"wrong\" = Interp(\"name\")\n");
+    assert_eq!(
+        matching_codes(
+            &check_module(&parsed.module).diagnostics,
+            codes::ty::LITERAL_NOT_IN_UNION
+        ),
+        1
+    );
+}
+
+#[test]
+fn text_interpolation_keeps_widening_when_a_segment_is_not_a_text_literal() {
+    // A runtime segment, and a number segment whose literal token is not always
+    // the text the evaluator renders (`1.0` prints as `1`), both stay `Text`.
+    for source in [
+        "f = (a: Text) => \"${a}Yaml\"\ng = (b: Text) => f(b)\nvalue: (Text) -> Text = g\n",
+        "Num = (a: Text) => \"${a}${1}\"\nvalue: Text = Num(\"x\")\n",
+    ] {
+        let parsed = parse_module(source);
+        let checked = check_module(&parsed.module);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
 fn comptime_param_call_still_rejects_value_outside_reflection_domain() {
     // The instantiation fix must not weaken domain validation: a comptime
     // `@param` argument outside the reflected tag set is still rejected.

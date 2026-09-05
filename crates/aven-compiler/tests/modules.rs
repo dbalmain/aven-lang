@@ -1775,6 +1775,36 @@ fn imported_comptime_sibling_does_not_alias_importer_function_of_same_name() {
 }
 
 #[test]
+fn interpolation_folded_at_comptime_agrees_with_the_evaluator() {
+    // The checker now folds `"${a}b"` to a literal type. That fold and the
+    // evaluator's own concatenation are separate implementations, so they can
+    // silently disagree -- particularly on escapes, which the checker stores
+    // re-quoted and the evaluator stores decoded. Pin that they agree.
+    let dir = TempDir::new("interpolation-fold-agreement");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "Esc = (a: Text) => \"${a}\\n\\\"q\\\"\"\n",
+            "Plain = (a: Text) => \"complete -c ${a}\"\n",
+            "checked: \"x\\n\\\"q\\\"\" = Esc(\"x\")\n",
+            "also: \"complete -c tool\" = Plain(\"tool\")\n",
+            "{ checked, also }\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("load graph");
+    assert_no_errors(&checked.reports);
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![]).expect("evaluate");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{ checked: \"x\\n\\\"q\\\"\", also: \"complete -c tool\" }".to_owned())
+    );
+}
+
+#[test]
 fn lowercase_specialization_captures_polymorphic_private_helpers() {
     let dir = TempDir::new("lowercase-specialization-home-scope");
     write(

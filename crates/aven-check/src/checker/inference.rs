@@ -508,15 +508,45 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Infer `"a${x}b"`. When every interpolated expression resolves to a text
+    /// singleton the whole interpolation folds to the concatenated literal, the
+    /// same way `fold_binary_literals` already folds `"a" + "b"`. This is what
+    /// lets a comptime-known field name or generated script keep its literal
+    /// type; without it `"${k}Yaml"` widened to `Text` and stopped being usable
+    /// as a record label (see the computed-field-name rules in the spec).
+    ///
+    /// Only string literals fold. A number or bool segment is stringified by
+    /// the evaluator at runtime, and the literal token is not always the text
+    /// that produces -- `1.0` renders as `1` -- so those keep widening to
+    /// `Text` rather than risk a static answer the evaluator disagrees with.
     pub(super) fn infer_interpolation(
         &mut self,
         env: &TypeEnv,
         segments: &[InterpolationSegment],
     ) -> Type {
+        // Every segment is inferred for its diagnostics, even once folding is
+        // known to be impossible.
+        let mut folded = String::new();
+        let mut foldable = true;
         for segment in segments {
-            if let InterpolationSegment::Expr(expr) = segment {
-                self.infer(env, expr);
+            match segment {
+                InterpolationSegment::Text(text) => folded.push_str(text),
+                InterpolationSegment::Expr(expr) => {
+                    let ty = self.infer(env, expr);
+                    let resolved = self.unifier.resolve(&ty);
+                    match singleton_literal_type(&resolved) {
+                        Some(Literal::String(value)) => {
+                            folded.push_str(&decode_string_literal(value));
+                        }
+                        _ => foldable = false,
+                    }
+                }
             }
+        }
+
+        if foldable {
+            let literal = Literal::String(quote_string_literal(&folded));
+            return self.open_literal_variant(&literal);
         }
 
         named_builtin("Text")
