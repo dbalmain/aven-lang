@@ -142,7 +142,7 @@ fn formatted_standard_library_is_idempotent_and_checks_in_library_context() {
             (specifier, formatted)
         })
         .collect::<HashMap<_, _>>();
-    assert_eq!(formatted_library.len(), 9);
+    assert_eq!(formatted_library.len(), 10);
 
     let dir = TempDir::new("formatted-standard-library");
     write(
@@ -151,6 +151,7 @@ fn formatted_standard_library_is_idempotent_and_checks_in_library_context() {
         concat!(
             "std = import(\"std\")\n",
             "array = import(\"std/array\")\n",
+            "cli = import(\"std/cli\")\n",
             "clock = import(\"std/clock\")\n",
             "map = import(\"std/map\")\n",
             "result = import(\"std/result\")\n",
@@ -158,7 +159,7 @@ fn formatted_standard_library_is_idempotent_and_checks_in_library_context() {
             "test = import(\"std/test\")\n",
             "time = import(\"std/time\")\n",
             "zones = import(\"std/zones\")\n",
-            "{ std, array, clock, map, result, set, test, time, zones }\n",
+            "{ std, array, cli, clock, map, result, set, test, time, zones }\n",
         ),
     );
     let path = dir.path().join("main.av");
@@ -1804,7 +1805,7 @@ fn lowercase_specialization_captures_polymorphic_private_helpers() {
     assert_no_errors(&ran.reports);
     assert_eq!(
         ran.value.as_ref().map(ToString::to_string),
-        Some("{a: {count: 3}, b: {ready: true}}".to_owned())
+        Some("{ a: { count: 3 }, b: { ready: true } }".to_owned())
     );
 }
 

@@ -143,3 +143,17 @@ integration tests pass; real Aven suite checks and runs. Full gates still pendin
 
 Resume 2 reconciliation: all **628 checker unit tests pass**; workspace clippy
 with `-D warnings` passes. Full workspace test run is in progress.
+
+- **220c6fd**: fixes both checker regressions, saved as WIP when the workspace
+  run reached two additional failures: the standard-library count omitted
+  `std/cli` (9 → 10), and my new private-helper test expected the wrong spacing
+  in the evaluator's record rendering. Both expectations are being corrected;
+  the actual private polymorphic capture check and evaluation succeeded.
+
+Resume 2 full gates: `cargo fmt --all` clean; workspace clippy with
+`-D warnings` passes; `cargo test --workspace` **1775 passed / 0 failed**,
+up from 1767. Existing HTTP tests require loopback socket permission, so the
+full successful test run used the approved sandbox escalation. No tests skipped.
+The private-helper lexical capture integration test and the 24-case Aven CLI
+suite both pass. General comptime constant residualization remains unimplemented;
+`define` already removes key-set recomputation from repeated parser calls.
