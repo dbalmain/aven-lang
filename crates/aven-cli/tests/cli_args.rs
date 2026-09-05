@@ -52,6 +52,31 @@ fn assert_success(output: &Output) {
     );
 }
 
+#[test]
+fn integer_entries_choose_exit_status_without_printing() {
+    for (source, code) in [("0\n", 0), ("1 + 1\n", 2), ("255\n", 255)] {
+        let script = Script::new(source);
+        let output = script.aven(&["run"], &[]);
+        assert_eq!(output.status.code(), Some(code));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn invalid_integer_exit_codes_are_reported_without_truncation() {
+    for source in ["-1\n", "256\n", "999999999999999999999999999\n"] {
+        let script = Script::new(source);
+        let output = script.aven(&["run"], &[]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("exit code must be an integer from 0 to 255")
+        );
+    }
+}
+
 struct Script {
     path: PathBuf,
 }

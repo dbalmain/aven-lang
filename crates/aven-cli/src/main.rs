@@ -125,7 +125,7 @@ enum Command {
         operators: Vec<String>,
     },
 
-    /// Run a file and print the last expression value.
+    /// Run a file; an Int entry value is its exit code, other values are printed.
     Run {
         /// Source file to run.
         path: PathBuf,
@@ -552,6 +552,12 @@ fn run(
     }
 
     if let Some(value) = output.value.filter(|value| !is_trivial_value(value)) {
+        if let aven_eval::Value::Int(code) = &value {
+            return code
+                .to_i32()
+                .filter(|code| (0..=255).contains(code))
+                .context("entry exit code must be an integer from 0 to 255");
+        }
         // Final-value printing uses the same rendering as interpolation: the
         // toText protocol with the `repr` fallback. It fails only when a
         // user `toText` override itself fails.

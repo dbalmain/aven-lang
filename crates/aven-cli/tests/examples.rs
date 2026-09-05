@@ -30,7 +30,7 @@ fn parameterized_recursive_list_checks_and_runs() {
             "xs: List(Int) = @Cons((1, @Cons((2, @Nil))))\n",
             "len : (List(Int)) -> Int\n",
             "len = (xs) => xs ?> @Nil => 0, @Cons((_, rest)) => 1 + len(rest)\n",
-            "len(xs)\n",
+            "writeLine(\"${len(xs)}\")\n",
         ),
     )
     .expect("failed to write recursive-list program");

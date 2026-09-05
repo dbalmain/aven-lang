@@ -440,7 +440,7 @@ fn check_json_timings_reports_semantic_phases_after_parse_errors() {
 
 #[test]
 fn run_prints_last_expression_value() {
-    let file = TempFile::new("run-ok", "1 + 2 * 3\n");
+    let file = TempFile::new("run-ok", "\"${1 + 2 * 3}\"\n");
 
     let output = run_aven(["run"], file.path());
 
@@ -461,7 +461,7 @@ fn check_and_run_agree_on_arbitrary_precision_integers() {
          writeLine(\"${unsigned_edge}\")\n\
          writeLine(\"${signed_min}\")\n\
          writeLine(\"${grown}\")\n\
-         x\n",
+         writeLine(\"${x}\")\n",
     );
 
     assert_success(&run_aven(["check"], file.path()));
@@ -504,7 +504,7 @@ fn applied_type_statics_check_and_run_agree() {
          applied_map = Map(Text, Int).empty()\n\
          annotated_map: Map(Text, Int) = Map(Text, Int).empty()\n\
          bare_map: Map(Text, Int) = Map.empty()\n\
-         applied_array.length() + annotated_array.length() + bare_array.length() + applied_map.size() + annotated_map.size() + bare_map.size()\n",
+         writeLine(\"${applied_array.length() + annotated_array.length() + bare_array.length() + applied_map.size() + annotated_map.size() + bare_map.size()}\")\n",
     );
 
     let checked = run_aven(["check"], file.path());
@@ -523,7 +523,7 @@ fn check_and_run_support_applied_recursive_decode_targets() {
         "run-applied-recursive-decode",
         "Chain = (t: Type) => { value: t, next: ?Chain(t) }\n\
          decoded = Json.decode(\"{\\\"value\\\":1}\", Chain(Int))?!\n\
-         decoded.value\n",
+         writeLine(\"${decoded.value}\")\n",
     );
 
     assert_success(&run_aven(["check"], file.path()));
@@ -534,7 +534,7 @@ fn check_and_run_support_applied_recursive_decode_targets() {
 
 #[test]
 fn run_prints_final_value_after_bindings() {
-    let file = TempFile::new("run-bindings", "x = 5\ny = x + 1\ny\n");
+    let file = TempFile::new("run-bindings", "x = 5\ny = x + 1\n\"${y}\"\n");
 
     let output = run_aven(["run"], file.path());
 
@@ -544,7 +544,7 @@ fn run_prints_final_value_after_bindings() {
 
 #[test]
 fn run_prints_function_call_value() {
-    let file = TempFile::new("run-function", "double = (x) => x * 2\ndouble(5)\n");
+    let file = TempFile::new("run-function", "double = (x) => x * 2\n\"${double(5)}\"\n");
 
     let output = run_aven(["run"], file.path());
 
@@ -725,7 +725,11 @@ fn run_dbg_location_uses_imported_module_file() {
     let lib_path = dir.path().join("lib.av");
     let main_path = dir.path().join("main.av");
     fs::write(&lib_path, "value = dbg(99)\n{ value }\n").expect("write lib");
-    fs::write(&main_path, "{ value } = import(\"./lib\")\nvalue\n").expect("write main");
+    fs::write(
+        &main_path,
+        "{ value } = import(\"./lib\")\nwriteLine(\"${value}\")\n",
+    )
+    .expect("write main");
 
     let output = run_aven(["run"], &main_path);
 
@@ -899,7 +903,7 @@ fn run_log_format_text_writes_one_line_record() {
 
 #[test]
 fn run_log_syslog_reports_not_implemented() {
-    let file = TempFile::new("run-syslog", "1\n");
+    let file = TempFile::new("run-syslog", "0\n");
 
     let output = run_aven(["run", "--log", "syslog"], file.path());
 
@@ -943,7 +947,10 @@ fn run_ambient_log_and_child_log_share_trace_context() {
 
 #[test]
 fn run_user_binding_shadows_prelude_log() {
-    let file = TempFile::new("run-shadow-ambient-log", "logger = 5\nlogger\n");
+    let file = TempFile::new(
+        "run-shadow-ambient-log",
+        "logger = 5\nwriteLine(\"${logger}\")\n",
+    );
 
     let output = run_aven(["run"], file.path());
 
@@ -955,7 +962,7 @@ fn run_user_binding_shadows_prelude_log() {
 fn run_prints_match_factorial_value() {
     let file = TempFile::new(
         "run-match-factorial",
-        "fact = (n) =>\n  n ?>\n    0 => 1\n    _ => n * fact(n - 1)\nfact(5)\n",
+        "fact = (n) =>\n  n ?>\n    0 => 1\n    _ => n * fact(n - 1)\n\"${fact(5)}\"\n",
     );
 
     let output = run_aven(["run"], file.path());
@@ -1004,7 +1011,7 @@ fn run_final_value_uses_display_protocol() {
 fn run_prints_collection_and_nullable_program_value() {
     let file = TempFile::new(
         "run-collections",
-        "xs = [10, 20, 30]\npair = (1, \"a\")\nset = @{ 1, 2, 2, 3 }\nchosen = null?.name ?? xs[1]\npair ?>\n  (n, _) => chosen + n\n",
+        "xs = [10, 20, 30]\npair = (1, \"a\")\nset = @{ 1, 2, 2, 3 }\nchosen = null?.name ?? xs[1]\npair ?>\n  (n, _) => \"${chosen + n}\"\n",
     );
 
     let output = run_aven(["run"], file.path());
