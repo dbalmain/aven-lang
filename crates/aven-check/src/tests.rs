@@ -1064,6 +1064,26 @@ fn sibling_derived_handler_annotation_reports_comptime_gap() {
 }
 
 #[test]
+fn comptime_completion_string_generation_reports_the_evaluation_gap() {
+    // A runtime @-parameter call is not evidence of emitted constants. Force
+    // the same string generator into a comptime binding to expose the missing
+    // value evaluator, without substituting a Rust shell generator.
+    let parsed = parse_module(concat!(
+        "emit = (@name: Text) => \"complete -c ${name}\"\n",
+        "Script = emit(\"tool\")\n",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let checked = check_module(&parsed.module);
+    assert_eq!(
+        matching_codes(
+            &checked.diagnostics,
+            codes::comptime::EVALUATION_UNSUPPORTED
+        ),
+        1
+    );
+}
+
+#[test]
 fn cli_parser_infers_heterogeneous_args_from_real_descriptors() {
     let source = format!(
         "{}\nspec = define({{ verbose: flag(), jobs: option(int, {{ default: 1 }}) }})\n\

@@ -32,7 +32,7 @@ Re-run on resume; captured by the real checker test
   single-pass tokenization, repetition/unknown-argument errors, and usage plus
   examples in errors. All parsing/help rendering is Aven. This checkpoint was red.
 - **7f67ca4**: restored all workspace gates, 1775 passed / 0 failed.
-- Commands (commit pending): style B, with explicit constructors:
+- **d0717c2**, commands: style B, with explicit constructors:
   `cli.app({ add: cli.command(addSpec, (a) => @Add(a)) })`.
   Aliases, nesting, child help and child parse errors are in Aven.
   A checker `type_at` test using the real library asserts
@@ -182,3 +182,32 @@ suite both pass. General comptime constant residualization remains unimplemented
   then `cli.command(child, (a) => @Tag(a), { aliases: [...], help: ... })`.
   Child names/examples currently come from the child spec; automatic app example
   fallback and path-name inheritance remain unsettled.
+
+Command slice gates: fmt and clippy `-D warnings` pass; full workspace
+**1778 passed / 0 failed** (1767 resume baseline, no drop).
+
+## Completion prerequisite (confirmed on Resume 2)
+
+```aven
+emit = (@name: Text) => "complete -c ${name}"
+Script = emit("tool")
+script: Text = Script
+```
+
+`Script` reports `comptime.evaluation-unsupported`. Changing it to a lowercase
+binding checks, but the evaluator still executes the function call at runtime.
+That does not satisfy the requested constant-generation cost. The comptime
+value evaluator does not support interpolation, arrays, records, blocks, ordinary
+method calls, or general liftable closures; the existing runtime plan materializes
+type artifacts, not evaluated string call results. This is a general evaluator
+and constant-emission prerequisite, not shell-specific Rust work.
+
+No runtime bash/fish generator has been added under a misleading comptime label.
+I asked whether to extend general comptime evaluation, explicitly permit an Aven
+build-time constants generator, or checkpoint the prerequisite for the next slice.
+
+The design's “loaded through STD_AMBIENT_METHOD_MODULES” needs correction:
+`std/cli` is an embedded standard-library module loaded by ordinary import. That
+ambient list installs builtin type methods; `cli` contributes no such methods.
+Adding it there would eagerly load an unused library into every script. Array
+methods used by cli still come from the existing ambient module.
