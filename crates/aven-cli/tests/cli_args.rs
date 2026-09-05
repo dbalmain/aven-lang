@@ -35,11 +35,38 @@ fn shebang_arguments_reach_the_script() {
         ),
     ] {
         let script = Script::new(&format!("{shebang}\nwriteLine(\"${{args}}\")\n"));
-        let output = script.aven(&prefix, &["--verbose", "a b", "--format", "fish"]);
+        for args in [
+            vec!["--help"],
+            vec!["--format", "fish"],
+            vec!["--verbose", "a b", "--format", "fish"],
+        ] {
+            let output = script.aven(&prefix, &args);
+            assert_success(&output);
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("[{}]\n", args.join(", "))
+            );
+        }
+    }
+}
+
+#[test]
+fn shebang_transport_separator_preserves_every_script_argument() {
+    for (shebang, prefix) in [
+        ("#!/opt/aven/bin/aven run --", vec!["run --"]),
+        ("#!/usr/bin/env -S aven run --", vec!["run", "--"]),
+        (
+            "#!/usr/bin/env -S aven run --operator=**:^:right --",
+            vec!["run", "--operator=**:^:right", "--"],
+        ),
+    ] {
+        let script = Script::new(&format!("{shebang}\nwriteLine(\"${{args}}\")\n"));
+        assert_success(&script.aven(&["check"], &[]));
+        let output = script.aven(&prefix, &["--", "-file", "--help", ""]);
         assert_success(&output);
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "[--verbose, a b, --format, fish]\n"
+            "[--, -file, --help, ]\n"
         );
     }
 }
@@ -50,6 +77,31 @@ fn assert_success(output: &Output) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn integer_entries_choose_exit_status_without_printing() {
+    for (source, code) in [("0\n", 0), ("1 + 1\n", 2), ("255\n", 255)] {
+        let script = Script::new(source);
+        let output = script.aven(&["run"], &[]);
+        assert_eq!(output.status.code(), Some(code));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn invalid_integer_exit_codes_are_reported_without_truncation() {
+    for source in ["-1\n", "256\n", "999999999999999999999999999\n"] {
+        let script = Script::new(source);
+        let output = script.aven(&["run"], &[]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("exit code must be an integer from 0 to 255")
+        );
+    }
 }
 
 struct Script {

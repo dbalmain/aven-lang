@@ -572,7 +572,13 @@ fn parse_shebang_words(
         )]);
     };
 
-    Ok(Some((style, words[flag_start..].to_vec())))
+    // A final `--` belongs to argv transport: it ends interpreter options
+    // before the OS appends the script path and its arguments.
+    let mut flags = words[flag_start..].to_vec();
+    if flags.last().is_some_and(|word| word.text == "--") {
+        flags.pop();
+    }
+    Ok(Some((style, flags)))
 }
 
 fn shebang_words(line: &str) -> Option<Vec<ShebangWord<'_>>> {

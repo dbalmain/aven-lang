@@ -14,12 +14,24 @@ cargo run -p aven -- check examples/hello.av        # parse + name + type checks
 cargo run -p aven -- check --format json file.av    # machine-readable diagnostics
 cargo run -p aven -- check --timings file.av        # phase timings
 cargo run -p aven -- run examples/maps.av           # execute against the host
+cargo run -p aven -- run tool.av -- --verbose       # pass arguments to a script
 cargo run -p aven -- fmt --check examples/hello.av  # formatter
 cargo run -p aven -- explain parse.unclosed-delimiter
 cargo run -p aven -- tokens file.av                 # lexer debug
 cargo run -p aven -- layout file.av                 # layout debug
 cargo run -p aven -- lsp                            # language server (stdio)
 ```
+
+Scripts receive `args: Array(Text)` and `programName: Text` (the script basename).
+Interpreter options precede the script path. A final `Int` expression selects
+the process exit code (0–255); use `writeLine` to print an integer. Other final
+values are displayed, and `@Err` entries exit with status 1.
+
+For an executable script, use `#!/usr/bin/env -S aven run --` (or an absolute
+interpreter path followed by `run --`). This separator comes before the script
+path so every script argument, including a leading `--`, is preserved. In an
+explicit `aven run tool.av -- ...` invocation, the first post-path `--` is the
+interpreter separator; a second `--` is passed to the script.
 
 ## Workspace
 
