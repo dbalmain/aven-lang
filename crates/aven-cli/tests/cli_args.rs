@@ -5,10 +5,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn cli_library_aven_suite_checks_and_runs() {
-    let script = Script::new(include_str!("fixtures/cli/parse.av"));
-    assert_success(&script.aven(&["check"], &[]));
-    let tested = script.aven(&["test"], &[]);
-    assert_success(&tested);
+    for suite in [
+        include_str!("fixtures/cli/parse.av"),
+        include_str!("fixtures/cli/commands.av"),
+    ] {
+        let script = Script::new(suite);
+        assert_success(&script.aven(&["check"], &[]));
+        let tested = script.aven(&["test"], &[]);
+        assert_success(&tested);
+    }
 }
 
 #[test]
@@ -42,6 +47,39 @@ fn cli_library_rejects_wrong_fields_types_and_argv() {
         ));
         let output = script.aven(&["check"], &[]);
         assert!(!output.status.success(), "unexpectedly checked: {tail}");
+    }
+}
+
+#[test]
+fn command_handlers_are_exhaustive_and_use_their_own_args() {
+    let prefix = concat!(
+        "cli = import(\"std/cli\")\n",
+        "add = cli.define({ path: cli.required(cli.text) })\n",
+        "commit = cli.define({ jobs: cli.option(cli.int, { default: 1 }) })\n",
+        "tool = cli.app({ add: cli.command(add, (a) => @Add(a)), commit: cli.command(commit, (a) => @Commit(a)) })\n",
+    );
+    let script = Script::new(&format!(
+        "{prefix}parsed = cli.parse(tool, args)?^\nparsed ?>\n  @Add(a) => writeLine(a.path)\n  @Commit(c) => writeLine(\"jobs=${{c.jobs}}\")\n"
+    ));
+    assert_success(&script.aven(&["check"], &[]));
+    for (args, expected) in [
+        (vec!["--", "add", "--path=file"], "file\n"),
+        (vec!["--", "commit", "--jobs=3"], "jobs=3\n"),
+    ] {
+        let ran = script.aven(&["run"], &args);
+        assert_success(&ran);
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), expected);
+    }
+    for tail in [
+        "cli.parse(tool, [])?^ ?> @Add(a) => a.path\n",
+        "cli.parse(tool, [])?^ ?> @Add(a) => a.jobs, @Commit(c) => c.jobs\n",
+        "cli.command(add, (a: { path: Int }) => @Add(a))\n",
+    ] {
+        let script = Script::new(&format!("{prefix}{tail}"));
+        assert!(
+            !script.aven(&["check"], &[]).status.success(),
+            "incorrectly checked {tail}"
+        );
     }
 }
 

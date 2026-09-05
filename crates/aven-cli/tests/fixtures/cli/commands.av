@@ -1,0 +1,34 @@
+cli = import("std/cli")
+test = import("std/test")
+add = cli.define({ path: cli.required(cli.text) }, { name: "tool add", examples: ["tool add --path file.txt"] })
+commit = cli.define({ jobs: cli.option(cli.int, { default: 1 }) }, { name: "tool commit" })
+tool = cli.app({
+  add: cli.command(add, (a) => @Add(a), { aliases: ["a"], help: "Add a file" })
+  commit: cli.command(commit, (a) => @Commit(a), { help: "Commit changes" })
+}, { name: "tool", description: "Example commands", examples: ["tool commit --jobs 3"] })
+remote = cli.app({ remote: cli.command(tool, (a) => @Remote(a)) }, { name: "tool" })
+
+{
+  add: () => test.expectEq(cli.parse(tool, ["add", "--path", "a.txt"]), @Ok(@Add({ path: "a.txt" })))
+  commit: () => test.expectEq(cli.parse(tool, ["commit", "--jobs=3"]), @Ok(@Commit({ jobs: 3 })))
+  defaults: () => test.expectEq(cli.parse(tool, ["commit"]), @Ok(@Commit({ jobs: 1 })))
+  alias: () => test.expectEq(cli.parse(tool, ["a", "--path=a.txt"]), @Ok(@Add({ path: "a.txt" })))
+  missingCommand: () => test.expectErr(cli.parse(tool, []))
+  unknownCommand: () => test.expectErr(cli.parse(tool, ["push"]))
+  commandSpecificOptions: () => test.expectErr(cli.parse(tool, ["commit", "--path=a.txt"]))
+  commandSpecificRequired: () => test.expectErr(cli.parse(tool, ["add"]))
+  nested: () => test.expectEq(cli.parse(remote, ["remote", "commit", "--jobs=4"]), @Ok(@Remote(@Commit({ jobs: 4 }))))
+  handlers: () =>
+    parsed = cli.parse(tool, ["add", "--path=a.txt"])?^
+    parsed ?>
+      @Add(a) => test.expectEq(a.path, "a.txt")
+      @Commit(c) => test.expectEq(c.jobs, 1)
+  help: () =>
+    test.expectTrue(cli.help(tool).contains("add, a  Add a file"))?^
+    test.expectTrue(cli.help(tool).contains("tool commit --jobs 3"))
+  childHelp: () => test.expectEq(cli.help(tool, ["a"]), cli.help(add))
+  nestedHelp: () => test.expectEq(cli.help(remote, ["remote", "add"]), cli.help(add))
+  errorUsesMatchedCommandHelp: () => cli.parse(tool, ["add", "--oops"]) ?>
+    @Ok(_) => test.fail("unknown argument accepted")
+    @Err(message) => test.expectTrue(message.contains(cli.help(add)))
+}

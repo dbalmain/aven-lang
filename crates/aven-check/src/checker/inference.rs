@@ -3578,7 +3578,7 @@ impl<'a> Checker<'a> {
             let RowEntry::Field { ty, .. } = entry else {
                 return Some(Type::Deferred);
             };
-            if self.unify_or_number_join(&element, &ty).is_err() {
+            if self.unify_collection_element(&element, &ty).is_err() {
                 let expected = self.resolve_and_default(&element);
                 self.report_type_mismatch_between_types(
                     &expected.render(),
@@ -4520,7 +4520,10 @@ impl<'a> Checker<'a> {
                 } else {
                     collection_type.clone()
                 };
-                if self.unify_or_number_join(&expected, &source_type).is_err() {
+                if self
+                    .unify_collection_element(&expected, &source_type)
+                    .is_err()
+                {
                     return Type::Deferred;
                 }
             }
@@ -4534,7 +4537,7 @@ impl<'a> Checker<'a> {
                         self.report_if_incomparable_set_element(&item_type, element.span);
                     }
                     if self
-                        .unify_or_number_join(&element_type, &item_type)
+                        .unify_collection_element(&element_type, &item_type)
                         .is_err()
                     {
                         return Type::Deferred;
@@ -4548,14 +4551,28 @@ impl<'a> Checker<'a> {
         collection_type
     }
 
-    /// Free unify, or join mixed number forms to `Float` (recursing into
-    /// tuples / same-head applications so Map value columns and nested arrays
-    /// take the same path as bare `[0, 0.5, 1]`).
+    /// Infer a common collection element type. Besides numeric widening, closed
+    /// tagged variants join by tag while retaining each payload type. Functions
+    /// with equal input types join covariantly in their result, just as an
+    /// explicit annotation accepting either result already permits.
     ///
     /// Free unify rejects int-form ↔ float-form so directed Map-key checks still
     /// run when unify fails (`Map.from([(1, …)]).set(1.0, …)`). Collection join
     /// needs the opposite: Int → Float widening, not undirected equality.
-    pub(super) fn unify_or_number_join(&mut self, target: &Type, item: &Type) -> Result<(), ()> {
+    pub(super) fn unify_collection_element(
+        &mut self,
+        target: &Type,
+        item: &Type,
+    ) -> Result<(), ()> {
+        self.join_collection_types(target, item, false)
+    }
+
+    fn join_collection_types(
+        &mut self,
+        target: &Type,
+        item: &Type,
+        allow_tag_union: bool,
+    ) -> Result<(), ()> {
         if self.unifier.unify(target, item).is_ok() {
             return Ok(());
         }
@@ -4569,14 +4586,83 @@ impl<'a> Checker<'a> {
         }
 
         match (&left, &right) {
+            (Type::Variant(left_row), Type::Variant(right_row))
+                if allow_tag_union
+                    && left_row.tail == RowTail::Closed
+                    && right_row.tail == RowTail::Closed
+                    && left_row
+                        .entries
+                        .iter()
+                        .chain(&right_row.entries)
+                        .all(|entry| matches!(entry, RowEntry::Tag { .. })) =>
+            {
+                let mut entries = left_row.entries.clone();
+                for entry in &right_row.entries {
+                    let RowEntry::Tag { name, payload } = entry else {
+                        unreachable!()
+                    };
+                    if let Some(RowEntry::Tag {
+                        payload: existing, ..
+                    }) = entries.iter_mut().find(
+                        |entry| matches!(entry, RowEntry::Tag { name: found, .. } if found == name),
+                    ) {
+                        if existing.len() != payload.len() {
+                            return Err(());
+                        }
+                        for (prior, next) in existing.iter_mut().zip(payload) {
+                            let cell = self.unifier.fresh();
+                            self.join_collection_types(&cell, prior, allow_tag_union)?;
+                            self.join_collection_types(&cell, next, allow_tag_union)?;
+                            *prior = self.unifier.resolve(&cell);
+                        }
+                    } else {
+                        entries.push(entry.clone());
+                    }
+                }
+                self.rebind_join_target(
+                    target,
+                    Type::Variant(Row {
+                        entries,
+                        tail: RowTail::Closed,
+                    }),
+                )
+            }
+            (
+                Type::Function {
+                    params: left_params,
+                    result: left_result,
+                },
+                Type::Function {
+                    params: right_params,
+                    result: right_result,
+                },
+            ) if left_params.len() == right_params.len()
+                && left_params.required_len() == right_params.required_len() =>
+            {
+                // Widening input types would promise that a selected function
+                // accepts arguments it cannot handle. Inputs must unify exactly.
+                for (left, right) in left_params.iter().zip(right_params.iter()) {
+                    self.unifier.unify(left, right)?;
+                }
+                let result = self.unifier.fresh();
+                self.join_collection_types(&result, left_result, true)?;
+                self.join_collection_types(&result, right_result, true)?;
+                self.rebind_join_target(
+                    target,
+                    Type::Function {
+                        params: left_params.clone(),
+                        result: Box::new(self.unifier.resolve(&result)),
+                    },
+                )
+            }
             (Type::Tuple(left_parts), Type::Tuple(right_parts))
                 if left_parts.len() == right_parts.len() =>
             {
                 let mut joined = Vec::with_capacity(left_parts.len());
                 for (left_part, right_part) in left_parts.iter().zip(right_parts) {
                     let cell = self.unifier.fresh();
-                    self.unify_or_number_join(&cell, left_part)?;
-                    self.unify_or_number_join(&cell, right_part)?;
+                    self.join_collection_types(&cell, left_part, allow_tag_union)?;
+                    self.join_collection_types(&cell, right_part, allow_tag_union)?;
                     joined.push(self.unifier.resolve(&cell));
                 }
                 self.rebind_join_target(target, Type::Tuple(joined))
@@ -4596,8 +4682,8 @@ impl<'a> Checker<'a> {
                 let mut joined_args = Vec::with_capacity(left_args.len());
                 for (left_arg, right_arg) in left_args.iter().zip(right_args) {
                     let cell = self.unifier.fresh();
-                    self.unify_or_number_join(&cell, left_arg)?;
-                    self.unify_or_number_join(&cell, right_arg)?;
+                    self.join_collection_types(&cell, left_arg, allow_tag_union)?;
+                    self.join_collection_types(&cell, right_arg, allow_tag_union)?;
                     joined_args.push(self.unifier.resolve(&cell));
                 }
                 self.rebind_join_target(
@@ -4613,7 +4699,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Point `target` (a free meta, or the element meta of Array/Set/Stream) at
-    /// a ground join result. Used only after a successful free number join.
+    /// a ground join result. Used only after a successful common-element join.
     fn rebind_join_target(&mut self, target: &Type, ty: Type) -> Result<(), ()> {
         if let Some(id) = number_join_target_meta(target) {
             self.unifier.force_bind(id, ty);
@@ -4632,7 +4718,7 @@ impl<'a> Checker<'a> {
             let item_type = self.infer_set_union_part_type(env, part);
             self.report_if_incomparable_set_element(&item_type, part.expr().span);
             if self
-                .unify_or_number_join(&element_type, &item_type)
+                .unify_collection_element(&element_type, &item_type)
                 .is_err()
             {
                 return Type::Deferred;

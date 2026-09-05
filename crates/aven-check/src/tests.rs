@@ -1130,6 +1130,66 @@ fn record_values_preserve_the_common_type_and_reject_mixed_kinds() {
 }
 
 #[test]
+fn cli_commands_infer_closed_variants_with_command_specific_payloads() {
+    let source = format!(
+        "{}\n{}",
+        include_str!("../../aven-host/std/cli.av"),
+        concat!(
+            "addSpec = define({ path: required(text) })\n",
+            "commitSpec = define({ jobs: option(int, { default: 1 }) })\n",
+            "tool = app({ add: command(addSpec, (a) => @Add(a)), commit: command(commitSpec, (a) => @Commit(a)) })\n",
+            "parsed = parse(tool, [])?^\n",
+        )
+    );
+    let output = parse_module(&source);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let ambient = check_trusted_builtin_methods(include_str!("../../aven-host/std/array.av"));
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let checked = check_module_with_host_globals_and_imports(
+        &output.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    assert_eq!(
+        checked
+            .type_at(binding_value_named(&output.module, "parsed").span)
+            .map(Type::render),
+        Some("@Add({ path: Text }) | @Commit({ jobs: Int })".to_owned())
+    );
+}
+
+#[test]
+fn callable_collection_inference_joins_results_without_widening_inputs() {
+    let source = "a = (_: Text) => @Add(1)\nb = (_: Text) => @Commit(true)\nparsers = [a, b]\n";
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let inferred = checked
+        .type_at(binding_value_named(&parsed.module, "parsers").span)
+        .expect("inferred parser array")
+        .render();
+    assert!(
+        inferred.contains("@Add(") && inferred.contains("@Commit("),
+        "{inferred}"
+    );
+    for source in [
+        "valuesOf({ a: (_: Int) => @Add(1), b: (_: Bool) => @Commit(true) })\n",
+        "valuesOf({ a: @Value(1), b: @Value(true) })\n",
+    ] {
+        let parsed = parse_module(source);
+        assert!(
+            check_module(&parsed.module)
+                .diagnostics
+                .iter()
+                .any(|d| d.is_error()),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn comptime_param_call_still_rejects_value_outside_reflection_domain() {
     // The instantiation fix must not weaken domain validation: a comptime
     // `@param` argument outside the reflected tag set is still rejected.
