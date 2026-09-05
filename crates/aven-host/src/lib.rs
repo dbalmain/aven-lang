@@ -150,6 +150,14 @@ impl Host {
         Self::default()
     }
 
+    /// Expose script arguments without consulting the embedding process's argv.
+    /// `program_name` is the script basename; `args` excludes interpreter options
+    /// and the script path. Embedders explicitly choose both values.
+    pub fn register_args(&mut self, program_name: impl Into<String>, args: Vec<String>) {
+        self.register("args", args.to_value(), build::array(build::text()));
+        self.register("programName", program_name.into().to_value(), build::text());
+    }
+
     /// Register a name with its runtime value AND its Aven type (the normal path
     /// for both libraries and platforms). Free [`build::var`] variables in `ty`
     /// are generalized by the checker and instantiated fresh at each use site.
@@ -822,6 +830,8 @@ pub fn standard_check_host_globals() -> HostGlobals {
         ("Http".to_owned(), http_type()),
         ("now".to_owned(), now_type()),
         ("zone".to_owned(), zone_type()),
+        ("args".to_owned(), build::array(build::text())),
+        ("programName".to_owned(), build::text()),
     ];
 
     let comptime_functions = std::iter::once((
@@ -1224,7 +1234,20 @@ mod tests {
                 "stdio",
                 "File",
                 "Http",
+                "args",
+                "programName",
             ]
+        );
+
+        assert_eq!(
+            *global_type(&globals, "args"),
+            build::array(build::text()),
+            "script arguments are an array of text"
+        );
+        assert_eq!(
+            *global_type(&globals, "programName"),
+            build::text(),
+            "the program name is text"
         );
 
         let logger = global_type(&globals, "logger");
