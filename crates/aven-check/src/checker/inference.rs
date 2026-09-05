@@ -3554,7 +3554,11 @@ impl<'a> Checker<'a> {
         };
 
         let ty = self.infer(env, arg);
-        if !self.expr_references_unresolved_comptime_param(arg) {
+        // A singleton literal type is itself proof the value folded, and
+        // comptime-by-inference reaches expressions the comptime evaluator
+        // cannot walk, so it is checked before falling back to evaluation.
+        let folded = comptime::singleton_literal(&self.unifier.resolve(&ty)).is_some();
+        if !folded && !self.expr_references_unresolved_comptime_param(arg) {
             let bindings = self.current_comptime_value_bindings();
             let evaluation = comptime::evaluate_type_position_with_bindings(self, arg, &bindings);
             // The annotation path reports the same pin, so this is unique.

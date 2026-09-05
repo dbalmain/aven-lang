@@ -1141,6 +1141,14 @@ where
             return result;
         }
 
+        // Comptime-by-inference folds some expressions the comptime evaluator
+        // itself cannot walk -- an interpolation over a comptime parameter,
+        // say -- and the evidence is that the value has a singleton literal
+        // type. A pin must accept everything the checker already knows.
+        if let Some(literal) = singleton_literal(&self.context.infer_value_type(arg)) {
+            return EvaluationResult::evaluated(ComptimeValue::Literal(literal));
+        }
+
         EvaluationResult::diagnostic(comptime_pin_failed(arg.span))
     }
 
@@ -1643,6 +1651,19 @@ pub(crate) fn evaluate_record_selection(
         entries,
         tail: RowTail::Closed,
     })))
+}
+
+/// The value behind a singleton literal type, which is the shape a
+/// comptime-folded expression's type takes.
+pub(crate) fn singleton_literal(ty: &Type) -> Option<Literal> {
+    let Type::Variant(row) = ty else {
+        return None;
+    };
+    let [RowEntry::Literal { value }] = row.entries.as_slice() else {
+        return None;
+    };
+
+    Some(value.clone())
 }
 
 fn label_set_type(labels: Vec<String>) -> Type {
