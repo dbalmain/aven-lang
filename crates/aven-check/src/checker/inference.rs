@@ -515,10 +515,16 @@ impl<'a> Checker<'a> {
     /// type; without it `"${k}Yaml"` widened to `Text` and stopped being usable
     /// as a record label (see the computed-field-name rules in the spec).
     ///
-    /// Only string literals fold. A number or bool segment is stringified by
-    /// the evaluator at runtime, and the literal token is not always the text
-    /// that produces -- `1.0` renders as `1` -- so those keep widening to
-    /// `Text` rather than risk a static answer the evaluator disagrees with.
+    /// Every literal kind folds, and each is rendered by **the evaluator**
+    /// rather than by concatenating literal tokens. A token is not a rendering
+    /// -- `0.50` renders as `0.5`, `-0` as `0` -- so token concatenation
+    /// produces a static answer the running program then disagrees with.
+    ///
+    /// A segment whose type is not a literal singleton still widens the whole
+    /// interpolation to `Text`. That covers the case the checker must not
+    /// guess at: interpolation dispatches through `toText`, which a named type
+    /// may override with arbitrary code, and such a value never has a literal
+    /// singleton type.
     pub(super) fn infer_interpolation(
         &mut self,
         env: &TypeEnv,
@@ -534,11 +540,11 @@ impl<'a> Checker<'a> {
                 InterpolationSegment::Expr(expr) => {
                     let ty = self.infer(env, expr);
                     let resolved = self.unifier.resolve(&ty);
-                    match singleton_literal_type(&resolved) {
-                        Some(Literal::String(value)) => {
-                            folded.push_str(&decode_string_literal(value));
-                        }
-                        _ => foldable = false,
+                    match singleton_literal_type(&resolved)
+                        .and_then(comptime::render_literal_as_text)
+                    {
+                        Some(text) => folded.push_str(&text),
+                        None => foldable = false,
                     }
                 }
             }

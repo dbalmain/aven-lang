@@ -1304,21 +1304,35 @@ fn text_interpolation_folds_to_a_literal_when_every_segment_is_known() {
 }
 
 #[test]
-fn text_interpolation_keeps_widening_when_a_segment_is_not_a_text_literal() {
-    // A runtime segment, and a number segment whose literal token is not always
-    // the text the evaluator renders (`1.0` prints as `1`), both stay `Text`.
-    for source in [
+fn text_interpolation_renders_numbers_the_way_the_evaluator_does() {
+    // Folding by literal *token* would give "0.50" and "-0"; the running
+    // program prints "0.5" and "0". The checker asks the evaluator instead, so
+    // the static literal is the text the program actually produces.
+    let parsed = parse_module(
+        "Render = (a: Text) => \"${a}=${0.50}|${1}|${1.0}|${-0}\"\nvalue = Render(\"x\")\n",
+    );
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    assert_eq!(
+        checked
+            .type_at(binding_value_named(&parsed.module, "value").span)
+            .map(Type::render),
+        Some("\"x=0.5|1|1.0|0\"".to_owned())
+    );
+}
+
+#[test]
+fn text_interpolation_widens_when_a_segment_has_no_literal_type() {
+    // A runtime segment cannot fold. This is also the case the checker must not
+    // guess at: interpolation dispatches through `toText`, which a named type
+    // may override with arbitrary code, and such a value has no literal
+    // singleton type -- so it lands here and widens rather than being folded
+    // wrongly.
+    let parsed = parse_module(
         "f = (a: Text) => \"${a}Yaml\"\ng = (b: Text) => f(b)\nvalue: (Text) -> Text = g\n",
-        "Num = (a: Text) => \"${a}${1}\"\nvalue: Text = Num(\"x\")\n",
-    ] {
-        let parsed = parse_module(source);
-        let checked = check_module(&parsed.module);
-        assert!(
-            checked.diagnostics.is_empty(),
-            "{source}: {:?}",
-            checked.diagnostics
-        );
-    }
+    );
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
 }
 
 #[test]
