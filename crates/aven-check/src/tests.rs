@@ -1111,8 +1111,11 @@ fn record_values_preserve_the_common_type_and_reject_mixed_kinds() {
     );
     for source in [
         "valuesOf({ a: 1, b: true })\n",
+        "values = valuesOf({ a: 1, b: true })\n",
+        "values: Array(Int) = valuesOf({ a: 1, b: true })\n",
         "valuesOf(1)\n",
         "valuesOf()\n",
+        "valuesOf({}, {})\n",
     ] {
         let parsed = parse_module(source);
         let checked = check_module(&parsed.module);

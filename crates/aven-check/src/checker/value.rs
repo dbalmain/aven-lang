@@ -78,6 +78,10 @@ impl<'a> Checker<'a> {
             return;
         }
         let env = self.local_types.inference_env();
+        if self.infer_record_values_call(&env, callee, args).is_some() {
+            self.check_value_exprs(args);
+            return;
+        }
         if self
             .infer_slot_conversion_call(&env, callee, args)
             .is_some()
@@ -197,7 +201,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn report_call_arity_mismatch(
+    pub(super) fn report_call_arity_mismatch(
         &mut self,
         env: &TypeEnv,
         callee: &Expr,

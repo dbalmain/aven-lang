@@ -628,6 +628,14 @@ pub fn check_module_with_host_globals_and_imports_in_role(
     let named_family_aliases = checker.named_family_aliases.clone();
     let module_value_types: HashMap<_, _> = aven_parser::collect_declarations(module)
         .into_iter()
+        // Private type functions are evaluated by the comptime engine. Only
+        // runtime declarations belong in a lowercase function's value scope;
+        // inferring a private uppercase lambda here checks its body as a value
+        // and loses the implicit comptime status of its parameters.
+        .filter(|declaration| {
+            declaration.phase == aven_parser::DeclarationPhase::Runtime
+                || export_names.contains(&declaration.name)
+        })
         .filter(|declaration| !named_family_aliases.contains_key(&declaration.name))
         .filter_map(|declaration| {
             checker

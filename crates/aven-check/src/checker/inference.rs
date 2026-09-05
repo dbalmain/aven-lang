@@ -3547,7 +3547,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn infer_record_values_call(
+    pub(super) fn infer_record_values_call(
         &mut self,
         env: &TypeEnv,
         callee: &Expr,
@@ -3560,7 +3560,10 @@ impl<'a> Checker<'a> {
         {
             return None;
         }
-        let [subject] = args else { return None };
+        let [subject] = args else {
+            self.report_call_arity_mismatch(env, callee, 1, 1, args.len(), callee.span);
+            return Some(Type::Error);
+        };
         let inferred = self.infer(env, subject);
         let resolved = self.normalize(&self.resolve_and_default(&inferred));
         let Type::Record(row) = resolved else {
@@ -3577,7 +3580,11 @@ impl<'a> Checker<'a> {
             };
             if self.unify_or_number_join(&element, &ty).is_err() {
                 let expected = self.resolve_and_default(&element);
-                self.check_type_against_type(&expected, &ty, subject.span);
+                self.report_type_mismatch_between_types(
+                    &expected.render(),
+                    &ty.render(),
+                    subject.span,
+                );
                 return Some(Type::Error);
             }
         }

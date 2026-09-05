@@ -1776,23 +1776,36 @@ fn imported_comptime_sibling_does_not_alias_importer_function_of_same_name() {
 #[test]
 fn lowercase_specialization_captures_polymorphic_private_helpers() {
     let dir = TempDir::new("lowercase-specialization-home-scope");
-    write(dir.path(), "lib.av", concat!(
-        "identity = (value) => value\n",
-        "copy = (record: r, @keys = keysOf(record)) => { keys -> k; (k, identity(record[k])) }\n",
-        "{ copy }\n",
-    ));
-    write(dir.path(), "main.av", concat!(
-        "lib = import(\"./lib\")\n",
-        "identity = (value) => \"wrong scope\"\n",
-        "a: { count: Int } = lib.copy({ count: 3 })\n",
-        "b: { ready: Bool } = lib.copy({ ready: true })\n",
-        "{ a, b }\n",
-    ));
-    let checked = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default()).expect("load graph");
+    write(
+        dir.path(),
+        "lib.av",
+        concat!(
+            "identity = (value) => value\n",
+            "copy = (record: r, @keys = keysOf(record)) => { keys -> k; (k, identity(record[k])) }\n",
+            "{ copy }\n",
+        ),
+    );
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "lib = import(\"./lib\")\n",
+            "identity = (value) => \"wrong scope\"\n",
+            "a: { count: Int } = lib.copy({ count: 3 })\n",
+            "b: { ready: Bool } = lib.copy({ ready: true })\n",
+            "{ a, b }\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("load graph");
     assert_no_errors(&checked.reports);
     let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![]).expect("evaluate");
     assert_no_errors(&ran.reports);
-    assert_eq!(ran.value.as_ref().map(ToString::to_string), Some("{a: {count: 3}, b: {ready: true}}".to_owned()));
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some("{a: {count: 3}, b: {ready: true}}".to_owned())
+    );
 }
 
 #[test]
