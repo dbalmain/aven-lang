@@ -100,6 +100,7 @@ define = (schema: s, info: { .. } = {}, @keys = keysOf(schema)) =>
   usage = renderHelp(options, info)
   {
     help: usage,
+    helpFor: (_: Array(Text)): Text => usage,
     parse: (argv: Array(Text)) =>
       result = (() =>
         tokens = tokenize(options, argv)?^
@@ -111,6 +112,53 @@ define = (schema: s, info: { .. } = {}, @keys = keysOf(schema)) =>
   }
 
 parse = (spec, argv: Array(Text)) => spec.parse(argv)
-help = (spec) => spec.help
+help = (spec, argv: Array(Text) = []) => spec.helpFor(argv)
 
-{ int, text, flag, option, required, define, parse, help }
+CommandMeta = { names: Array(Text), help: Text }
+
+# The explicit constructor supplies the tag; its payload is inferred from the
+# child parser. This avoids inventing a type name from a command's spelling.
+command = (spec: { parse: (Array(Text)) -> Result(a, Text), helpFor: (Array(Text)) -> Text, .. }, wrap: (a) -> b, config: { .. } = {}) =>
+  aliases: Array(Text) = []
+  m: { aliases: Array(Text), help: Text } = { aliases, help: "", ..config }
+  {
+    meta: (name: Text): CommandMeta => { names: [name, ..m.aliases], help: m.help }
+    helpFor: spec.helpFor
+    parse: (argv: Array(Text)) => @Ok(wrap(spec.parse(argv)?^))
+  }
+
+renderCommandHelp = (commands: Array(CommandMeta), info): Text =>
+  examples: Array(Text) = []
+  m = { name: "tool", description: "", examples, ..info }
+  lines = commands.map((c) => "  ${c.names.joinWith(", ")}  ${c.help}")
+  exampleText = m.examples.isEmpty() ?>
+    true => ""
+    false => "\n\nExamples:\n${m.examples.map((e) => "  ${e}").joinWith("\n")}"
+  "Usage: ${m.name} <command> [options]\n${m.description}\n\nCommands:\n${lines.joinWith("\n")}${exampleText}"
+
+# Parser functions have the same argv input, and their closed tagged results
+# join into one variant. Every branch retains its command-specific payload.
+app = (commands: s, info: { .. } = {}, @keys = keysOf(commands)) =>
+  details = valuesOf({ keys -> key; (key, commands[key].meta(key)) })
+  parsers = valuesOf({ keys -> key; (key, commands[key].parse) })
+  helps = valuesOf({ keys -> key; (key, commands[key].helpFor) })
+  usage = renderCommandHelp(details, info)
+  {
+    help: usage
+    helpFor: (argv: Array(Text)): Text =>
+      head = argv[0] ?? ""
+      details.findIndex((m) => m.names.has(head)) ?>
+        undefined => usage
+        index => helps[index] ?>
+          undefined => usage
+          child => child(argv.drop(1))
+    parse: (argv: Array(Text)) =>
+      head = argv[0] ?? ""
+      details.findIndex((m) => m.names.has(head)) ?>
+        undefined => @Err("unknown command '${head}'\n\n${usage}")
+        index => parsers[index] ?>
+          undefined => @Err("unknown command '${head}'\n\n${usage}")
+          child => child(argv.drop(1))
+  }
+
+{ int, text, flag, option, required, define, parse, help, command, app }

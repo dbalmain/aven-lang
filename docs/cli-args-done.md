@@ -31,7 +31,13 @@ Re-run on resume; captured by the real checker test
   short/long aliases, per-option help and value labels, required options,
   single-pass tokenization, repetition/unknown-argument errors, and usage plus
   examples in errors. All parsing/help rendering is Aven. This checkpoint was red.
-- Commands and comptime completions: not built yet.
+- **7f67ca4**: restored all workspace gates, 1775 passed / 0 failed.
+- Commands (commit pending): style B, with explicit constructors:
+  `cli.app({ add: cli.command(addSpec, (a) => @Add(a)) })`.
+  Aliases, nesting, child help and child parse errors are in Aven.
+  A checker `type_at` test using the real library asserts
+  `@Add({ path: Text }) | @Commit({ jobs: Int })`.
+- Comptime completions: not built yet.
 - Exit codes implemented, **d2bf45b**: Int entry values select exit
   status, with portable range 0–255; invalid/oversized values diagnose instead
   of silently truncating. Other entry values keep their existing display/error
@@ -157,3 +163,22 @@ full successful test run used the approved sandbox escalation. No tests skipped.
 The private-helper lexical capture integration test and the 24-case Aven CLI
 suite both pass. General comptime constant residualization remains unimplemented;
 `define` already removes key-set recomputation from repeated parser calls.
+
+## Command inference findings
+
+- The design's automatic tag synthesis is not implemented. The library takes a
+  tag constructor callback, whose argument type comes from the child parser.
+  This keeps tag naming explicit and allows nesting without compiler CLI logic.
+  Q1 remains **no** for sibling-field constraints; this is style B.
+- An array of functions returning distinct tags already checks with an explicit
+  common variant result annotation, but inference failed without it. Collection
+  inference now joins **function results** covariantly, retaining each closed
+  tag's payload. Inputs must still unify exactly. Mixed scalar kinds and
+  incompatible payloads of the same tag still reject. Ordinary set inference
+  remains unchanged (its braced variant/value-set syntax needs separate care).
+  Minimal example: `a = (_: Text) => @A(1); b = (_: Text) => @B(true); fs = [a,b]`.
+  This is inference of an already-expressible type, not a Rust command dispatcher.
+- Command syntax differs from the draft: child argument specs use `cli.define`,
+  then `cli.command(child, (a) => @Tag(a), { aliases: [...], help: ... })`.
+  Child names/examples currently come from the child spec; automatic app example
+  fallback and path-name inheritance remain unsettled.
