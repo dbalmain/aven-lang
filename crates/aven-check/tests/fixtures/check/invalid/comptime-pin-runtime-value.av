@@ -1,0 +1,4 @@
+f = (flag: Bool) =>
+  keys = comptime(flag ?> true => @{"name"}, false => @{"email"})
+  keys
+f

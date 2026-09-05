@@ -1,0 +1,4 @@
+User = { name: Text, email: Text, password: Text }
+keys = comptime(@{"name", "email"})
+contact : pick(User, keys) = { name: "Ada", email: "ada@x.dev" }
+contact

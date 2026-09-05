@@ -9829,6 +9829,73 @@ fn comptime_drop_key_deletes_single_computed_key_from_closed_record_type() {
 }
 
 #[test]
+fn comptime_pins_a_local_binding_so_pick_can_read_it() {
+    // Without the pin `keys` is an ordinary local binding and `pick` cannot
+    // read it. The discriminating case is the *rejection*: a pin that merely
+    // silenced the key-set check would let `{ email: ... }` through, because
+    // an unresolved selection constrains nothing.
+    let selects = "User = { name: Text, email: Text, password: Text }\n\
+                   f = () =>\n\
+                   \x20\x20keys = comptime(@{\"name\"})\n\
+                   \x20\x20s: pick(User, keys) = { name: \"a\" }\n\
+                   \x20\x20s\n\
+                   f\n";
+    let output = parse_module(selects);
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+
+    let rejects = selects.replace("{ name: \"a\" }", "{ email: \"a\" }");
+    let output = parse_module(&rejects);
+    let check = check_module(&output.module);
+    assert!(
+        has_diagnostic_code(&check.diagnostics, codes::ty::UNEXPECTED_FIELD),
+        "expected `email` to be rejected, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn comptime_reports_at_the_pin_when_the_value_is_not_known() {
+    // The point of the pin: the error lands on the binding that is not
+    // comptime-known, not on the distant `pick` that consumed it.
+    let source = "f = (flag: Bool) =>\n\
+                  \x20\x20keys = comptime(flag ?> true => @{\"name\"}, false => @{\"email\"})\n\
+                  \x20\x20keys\n\
+                  f\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        1,
+        "expected exactly one comptime.argument-not-known, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
+fn a_comptime_pinned_binding_is_still_an_ordinary_runtime_value() {
+    // The pin says *when* a value is known, not what it is: `@{"a"}` is a
+    // `Set(Text)` either way, so pinning must not make the binding a
+    // compile-time-only artifact.
+    let source = "keys = comptime(@{\"name\"})\n\
+                  used = keys.has(\"name\")\n\
+                  used\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+
+    assert!(
+        check.diagnostics.is_empty(),
+        "expected no diagnostics, got {:?}",
+        check.diagnostics
+    );
+}
+
+#[test]
 fn pick_with_a_runtime_key_set_is_an_error_rather_than_an_unconstrained_type() {
     // A key set the checker cannot evaluate used to defer silently, and a
     // deferred selection constrains nothing: this annotation accepted

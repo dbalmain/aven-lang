@@ -1775,6 +1775,37 @@ fn imported_comptime_sibling_does_not_alias_importer_function_of_same_name() {
 }
 
 #[test]
+fn a_comptime_pinned_value_survives_to_runtime_unchanged() {
+    // `comptime(...)` is an assertion the checker enforces, not a
+    // transformation. The runtime must therefore see exactly the value the
+    // pin wrapped -- if the intrinsic were missing or rewrote its argument,
+    // checking would still pass and only the run would disagree.
+    let dir = TempDir::new("comptime-pin-runtime");
+    write(
+        dir.path(),
+        "main.av",
+        concat!(
+            "keys = comptime(@{\"name\", \"email\"})\n",
+            "plain = @{\"name\", \"email\"}\n",
+            "{ pinned: keys, plain, same: keys == plain }\n",
+        ),
+    );
+    let checked =
+        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+            .expect("load graph");
+    assert_no_errors(&checked.reports);
+    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![]).expect("evaluate");
+    assert_no_errors(&ran.reports);
+    assert_eq!(
+        ran.value.as_ref().map(ToString::to_string),
+        Some(
+            "{ pinned: @{ \"name\", \"email\" }, plain: @{ \"name\", \"email\" }, same: true }"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
 fn interpolation_folded_at_comptime_agrees_with_the_evaluator() {
     // The checker now folds `"${a}b"` to a literal type. That fold and the
     // evaluator's own concatenation are separate implementations, so they can

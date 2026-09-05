@@ -3158,6 +3158,10 @@ const COMPTIME_BUILTIN_HOVERS: &[(&str, &str)] = &[
         "omit",
         "A record type without the given keys — `omit(User, \"email\")` is `{ name: Text }`.",
     ),
+    (
+        "comptime",
+        "Requires a value to be known while checking — `keys = comptime(@{\"name\"})` makes `keys` usable where a compile-time value is needed, and is an error if it cannot be evaluated.",
+    ),
 ];
 
 /// Hover fallbacks for comptime type machinery, which is name-bound but has no

@@ -2130,6 +2130,10 @@ impl<'a> Checker<'a> {
             return result;
         }
 
+        if let Some(result) = self.infer_comptime_pin_call(env, callee, args) {
+            return result;
+        }
+
         if let Some(result) = self.infer_record_selection_builtin_call(env, callee, args) {
             return result;
         }
@@ -3527,6 +3531,42 @@ impl<'a> Checker<'a> {
                     "this compile-time host function call could not be resolved",
                 )),
         );
+    }
+
+    /// `comptime(e)` has `e`'s own type: the pin asserts *when* the value is
+    /// known, not what it is. Its work is to report an expression the checker
+    /// cannot evaluate, at the pin rather than at some distant use.
+    pub(super) fn infer_comptime_pin_call(
+        &mut self,
+        env: &TypeEnv,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<Type> {
+        if expr_name(callee) != Some(comptime::COMPTIME_PIN)
+            || self.record_selection_builtin_is_shadowed(env, comptime::COMPTIME_PIN)
+        {
+            return None;
+        }
+
+        let [arg] = args else {
+            self.push_unique_diagnostic(comptime::comptime_pin_arity(callee.span, args.len()));
+            return Some(Type::Error);
+        };
+
+        let ty = self.infer(env, arg);
+        if !self.expr_references_unresolved_comptime_param(arg) {
+            let bindings = self.current_comptime_value_bindings();
+            let evaluation = comptime::evaluate_type_position_with_bindings(self, arg, &bindings);
+            // The annotation path reports the same pin, so this is unique.
+            if evaluation.diagnostics.is_empty()
+                && !matches!(evaluation.evaluation, Evaluation::Evaluated(_))
+            {
+                self.push_unique_diagnostic(comptime::comptime_pin_failed(arg.span));
+            }
+            self.extend_unique_diagnostics(evaluation.diagnostics);
+        }
+
+        Some(ty)
     }
 
     pub(super) fn infer_record_selection_builtin_call(

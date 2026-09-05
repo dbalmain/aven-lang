@@ -47,6 +47,15 @@ impl comptime::EvalContext for Checker<'_> {
         self.expr_references_unresolved_comptime_param(expr)
     }
 
+    fn comptime_pinned_binding(&self, name: &str) -> Option<Expr> {
+        if let Some(pinned) = self.local_types.pin(name) {
+            return Some(pinned.clone());
+        }
+
+        let binding = self.bindings.get(name).and_then(|binding| *binding)?;
+        self.comptime_pin_argument(&binding.value).cloned()
+    }
+
     fn lookup_comptime_function(&self, name: &str) -> Option<comptime::ComptimeFunction> {
         self.lookup_comptime_function_export(name)
     }

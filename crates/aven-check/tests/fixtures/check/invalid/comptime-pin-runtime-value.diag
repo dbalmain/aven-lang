@@ -1,0 +1,3 @@
+error comptime.argument-not-known: `comptime` could not evaluate this expression
+  label 38..84: this is not known at compile time
+  note: `comptime` requires its argument to evaluate while checking; it may not depend on a runtime value
