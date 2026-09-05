@@ -127,12 +127,10 @@ enum Command {
 
     /// Run a file; an Int entry value is its exit code, other values are printed.
     Run {
-        /// Source file to run.
-        path: PathBuf,
-
-        /// Arguments passed to the script (use -- to separate interpreter options).
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
+        /// Source file followed by script arguments. Interpreter options precede the path.
+        #[arg(value_names = ["PATH", "ARGS"], num_args = 1.., required = true,
+              trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<OsString>,
 
         /// Diagnostic output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -271,7 +269,8 @@ fn normalize_direct_shebang_argv(args: Vec<OsString>) -> Result<NormalizedArgv> 
         .split(' ')
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
-    let operator_arguments = words[1..]
+    let operator_words = words[1..].strip_suffix(&["--"]).unwrap_or(&words[1..]);
+    let operator_arguments = operator_words
         .iter()
         .map(|word| (*word).to_owned())
         .collect::<Vec<_>>();
@@ -346,16 +345,35 @@ async fn run_cli() -> Result<i32> {
             check(&path, format, timings, &operators, &mut session)
         }
         Command::Run {
-            path,
-            args,
+            argv,
             format,
             log,
             log_format,
             operators,
         } => {
-            session.set_entry_path(&path);
+            let separator_before_path = args
+                .get(args.len() - argv.len() - 1)
+                .is_some_and(|arg| arg == "--");
+            let (path, args) = argv.split_first().context("run requires a script path")?;
+            let path = Path::new(path);
+            // The combined positional makes even a first --help belong to the
+            // script. Clap retains its optional post-path separator as a value.
+            let args = if separator_before_path {
+                args
+            } else {
+                args.strip_prefix(&[OsString::from("--")]).unwrap_or(args)
+            };
+            let args = args
+                .iter()
+                .map(|arg| {
+                    arg.to_str()
+                        .map(str::to_owned)
+                        .context("script arguments must be UTF-8")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            session.set_entry_path(path);
             run(
-                &path,
+                path,
                 format,
                 &RunConfig {
                     log,

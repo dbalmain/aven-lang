@@ -35,11 +35,38 @@ fn shebang_arguments_reach_the_script() {
         ),
     ] {
         let script = Script::new(&format!("{shebang}\nwriteLine(\"${{args}}\")\n"));
-        let output = script.aven(&prefix, &["--verbose", "a b", "--format", "fish"]);
+        for args in [
+            vec!["--help"],
+            vec!["--format", "fish"],
+            vec!["--verbose", "a b", "--format", "fish"],
+        ] {
+            let output = script.aven(&prefix, &args);
+            assert_success(&output);
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("[{}]\n", args.join(", "))
+            );
+        }
+    }
+}
+
+#[test]
+fn shebang_transport_separator_preserves_every_script_argument() {
+    for (shebang, prefix) in [
+        ("#!/opt/aven/bin/aven run --", vec!["run --"]),
+        ("#!/usr/bin/env -S aven run --", vec!["run", "--"]),
+        (
+            "#!/usr/bin/env -S aven run --operator=**:^:right --",
+            vec!["run", "--operator=**:^:right", "--"],
+        ),
+    ] {
+        let script = Script::new(&format!("{shebang}\nwriteLine(\"${{args}}\")\n"));
+        assert_success(&script.aven(&["check"], &[]));
+        let output = script.aven(&prefix, &["--", "-file", "--help", ""]);
         assert_success(&output);
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "[--verbose, a b, --format, fish]\n"
+            "[--, -file, --help, ]\n"
         );
     }
 }
