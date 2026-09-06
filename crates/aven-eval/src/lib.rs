@@ -1250,6 +1250,9 @@ pub struct Environment {
 }
 
 struct Scope {
+    definitions: RefCell<HashMap<String, Expr>>,
+    evaluating: RefCell<HashSet<String>>,
+    blocked: HashSet<String>,
     values: RefCell<HashMap<String, Value>>,
     parent: Option<Rc<Scope>>,
 }
@@ -1257,6 +1260,9 @@ struct Scope {
 impl Scope {
     fn new(parent: Option<Rc<Scope>>) -> Self {
         Self {
+            definitions: RefCell::new(HashMap::new()),
+            evaluating: RefCell::new(HashSet::new()),
+            blocked: HashSet::new(),
             values: RefCell::new(HashMap::new()),
             parent,
         }
@@ -1381,6 +1387,39 @@ impl Environment {
                 .insert(descriptor.owner.clone(), Rc::clone(descriptor));
         }
         self.scope.values.borrow_mut().insert(name.into(), value);
+    }
+
+    fn resolve(&self, name: &str, span: Span) -> Eval {
+        let mut scope = Some(Rc::clone(&self.scope));
+        while let Some(current) = scope {
+            if let Some(value) = current.values.borrow().get(name).cloned() {
+                return Ok(value);
+            }
+            if current.blocked.contains(name) {
+                return Err(one_diagnostic(unbound_name(name, span)));
+            }
+            let definition = current.definitions.borrow().get(name).cloned();
+            if let Some(definition) = definition {
+                if !current.evaluating.borrow_mut().insert(name.to_owned()) {
+                    return Err(one_diagnostic(
+                        Diagnostic::error(format!("comptime value dependency cycle at `{name}`"))
+                            .with_code(codes::comptime::EVALUATION_CYCLE)
+                            .with_label(Label::primary(span, "this binding depends on itself")),
+                    ));
+                }
+                // Resolve captures in the definition's scope, never the caller's.
+                let mut defining_env = self.clone();
+                defining_env.scope = Rc::clone(&current);
+                let value = eval_expr_many(&definition, &defining_env);
+                current.evaluating.borrow_mut().remove(name);
+                if let Ok(value) = &value {
+                    current.values.borrow_mut().insert(name.to_owned(), value.clone());
+                }
+                return value;
+            }
+            scope = current.parent.clone();
+        }
+        Err(one_diagnostic(unbound_name(name, span)))
     }
 
     fn lookup(&self, name: &str) -> Option<Value> {
@@ -2106,6 +2145,45 @@ fn eval_named_family(owner: &str, value: &Expr, env: &Environment) -> Eval {
     })))
 }
 
+/// Evaluate one expression without host capabilities. Definitions are demanded
+/// lazily, so an unrelated runtime initializer cannot run during checking.
+/// Ambient implementations are installed in their own lexical module scopes.
+pub fn eval_comptime_expr(
+    expr: &Expr,
+    definitions: HashMap<String, Expr>,
+    ambient_modules: &[Module],
+    locals: Vec<(String, Value)>,
+    blocked_locals: HashSet<String>,
+    fuel: u64,
+) -> Result<Value, Diagnostic> {
+    let root = Environment::new();
+    root.set_fuel(fuel);
+    bind_intrinsics(&root);
+    for module in ambient_modules {
+        let module_env = root.child();
+        for item in &module.items {
+            match item {
+                Item::Binding(binding) => {
+                    module_env.scope.definitions.borrow_mut()
+                        .insert(binding.name.clone(), binding.value.clone());
+                }
+                Item::MethodAttachment(attachment) => {
+                    install_builtin_method_attachment(attachment, &module_env);
+                }
+                _ => {}
+            }
+        }
+    }
+    let module_env = root.child();
+    *module_env.scope.definitions.borrow_mut() = definitions;
+    let mut env = module_env.child();
+    Rc::get_mut(&mut env.scope).expect("new lexical scope").blocked = blocked_locals;
+    for (name, value) in locals {
+        env.bind(name, value);
+    }
+    eval_expr(expr, &env)
+}
+
 pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
     eval_expr_many(expr, env).map_err(first_diagnostic)
 }
@@ -2199,9 +2277,7 @@ fn eval_expr_unreified(expr: &Expr, env: &Environment) -> Eval {
         ExprKind::Interpolation(segments) => eval_interpolation(segments, env),
         ExprKind::Undefined => Ok(Value::Undefined),
         ExprKind::Null => Ok(Value::Null),
-        ExprKind::Name(name) | ExprKind::ComptimeName(name) => env
-            .lookup(name)
-            .ok_or_else(|| one_diagnostic(unbound_name(name, expr.span))),
+        ExprKind::Name(name) | ExprKind::ComptimeName(name) => env.resolve(name, expr.span),
         ExprKind::Group(inner) => eval_expr_many(inner, env),
         ExprKind::Optional(inner) => {
             eval_type_wrapper(inner, expr.span, env, RuntimeType::optional)
@@ -4090,9 +4166,7 @@ fn fold_record_entry(
         RecordEntry::Shorthand {
             name, name_span, ..
         } => {
-            let value = env
-                .lookup(name)
-                .ok_or_else(|| one_diagnostic(unbound_name(name, *name_span)))?;
+            let value = env.resolve(name, *name_span)?;
             insert_or_replace_field(fields, name.clone(), value);
         }
         RecordEntry::Spread {

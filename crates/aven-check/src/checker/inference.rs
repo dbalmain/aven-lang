@@ -415,6 +415,7 @@ impl<'a> Checker<'a> {
             | ExprKind::NonNull(_)
             | ExprKind::Arrow { .. } => Type::Deferred,
         };
+        let ty = self.infer_evaluated_call(env, expr, ty);
         let ty = if self.generalize_inferred_collections {
             self.generalize_collection_literal_positions(&ty)
         } else {
@@ -422,6 +423,57 @@ impl<'a> Checker<'a> {
         };
         self.record_expr_type(expr.span, &ty);
         ty
+    }
+
+    /// Actual values, rather than broad intermediate types, cross this boundary.
+    fn evaluate_known_expression(
+        &self,
+        env: &TypeEnv,
+        expr: &Expr,
+    ) -> Result<aven_eval::Value, Diagnostic> {
+        let definitions = self.bindings.iter().filter_map(|(name, binding)| {
+            binding.map(|binding| (name.clone(), binding.value.clone()))
+        }).collect();
+        let locals = self.current_comptime_value_bindings().into_iter()
+            .filter_map(|(name, value)| comptime::comptime_value_as_eval_value(&value)
+                .map(|value| (name, value)))
+            .collect();
+        let mut blocked = self.local_types.inference_env().into_keys().collect::<HashSet<_>>();
+        blocked.extend(env.keys().cloned());
+        aven_eval::eval_comptime_expr(expr, definitions,
+            &self.builtin_methods.comptime_modules, locals, blocked, 100_000)
+    }
+
+    fn infer_evaluated_call(&mut self, env: &TypeEnv, expr: &Expr, ty: Type) -> Type {
+        let ExprKind::Call { callee, .. } = &expr.kind else { return ty; };
+        // Type-level intrinsics have their own evaluator and artifact values.
+        if expr_name(callee).is_some_and(|name| name == comptime::COMPTIME_PIN
+            || name.chars().next().is_some_and(char::is_uppercase))
+            || type_contains_error(&ty)
+        {
+            return ty;
+        }
+        match self.evaluate_known_expression(env, expr) {
+            Ok(value) => {
+                if let Some(comptime::ComptimeValue::Literal(literal)) =
+                    comptime::eval_value_as_comptime_value(&value)
+                {
+                    self.open_literal_variant(&literal)
+                } else if let aven_eval::Value::Bool(value) = value {
+                    self.open_literal_variant(&Literal::Bool(value))
+                } else {
+                    ty
+                }
+            }
+            Err(diagnostic) => {
+                if !matches!(diagnostic.code.as_deref(),
+                    Some(codes::runtime::UNBOUND_NAME | codes::runtime::UNSUPPORTED))
+                {
+                    self.push_unique_diagnostic(diagnostic);
+                }
+                ty
+            }
+        }
     }
 
     /// Widen inferred literal rows only where a value has materialized a
@@ -3565,7 +3617,22 @@ impl<'a> Checker<'a> {
             if evaluation.diagnostics.is_empty()
                 && !matches!(evaluation.evaluation, Evaluation::Evaluated(_))
             {
-                self.push_unique_diagnostic(comptime::comptime_pin_failed(arg.span));
+                match self.evaluate_known_expression(env, arg) {
+                    Ok(_) => {}
+                    Err(cause) => {
+                        let mut diagnostic = comptime::comptime_pin_failed(arg.span)
+                            .with_note(format!("evaluation stopped because: {}", cause.message));
+                        if cause.code.as_deref() == Some(codes::runtime::UNBOUND_NAME) {
+                            for label in cause.labels {
+                                diagnostic = diagnostic.with_label(Label::primary(label.span,
+                                    "this dependency has no compile-time value"));
+                            }
+                            self.push_unique_diagnostic(diagnostic);
+                        } else {
+                            self.push_unique_diagnostic(cause);
+                        }
+                    }
+                }
             }
             self.extend_unique_diagnostics(evaluation.diagnostics);
         }

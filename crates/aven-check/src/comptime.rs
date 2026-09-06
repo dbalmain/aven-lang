@@ -693,7 +693,7 @@ pub(crate) fn render_literal_as_text(literal: &Literal) -> Option<String> {
     aven_eval::display_text(&literal_as_eval_value(literal)?).ok()
 }
 
-fn comptime_value_as_eval_value(value: &ComptimeValue) -> Option<aven_eval::Value> {
+pub(crate) fn comptime_value_as_eval_value(value: &ComptimeValue) -> Option<aven_eval::Value> {
     match value {
         ComptimeValue::Bool(value) => Some(aven_eval::Value::Bool(*value)),
         ComptimeValue::Literal(Literal::Bool(value)) => Some(aven_eval::Value::Bool(*value)),
@@ -712,7 +712,7 @@ fn comptime_value_as_eval_value(value: &ComptimeValue) -> Option<aven_eval::Valu
     }
 }
 
-fn eval_value_as_comptime_value(value: &aven_eval::Value) -> Option<ComptimeValue> {
+pub(crate) fn eval_value_as_comptime_value(value: &aven_eval::Value) -> Option<ComptimeValue> {
     match value {
         aven_eval::Value::Bool(value) => Some(ComptimeValue::Bool(*value)),
         // Numbers and text are rendered by the evaluator itself rather than

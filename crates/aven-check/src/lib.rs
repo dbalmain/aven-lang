@@ -88,6 +88,7 @@ pub struct SlotReificationTarget {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuiltinMethodEnvironment {
     methods: Vec<BuiltinMethodType>,
+    pub(crate) comptime_modules: Vec<aven_parser::Module>,
 }
 
 impl BuiltinMethodEnvironment {

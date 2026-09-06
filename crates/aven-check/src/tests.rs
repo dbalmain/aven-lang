@@ -15122,3 +15122,42 @@ fn named_primitive_family_rejects_wrong_constructor_payload_and_widened_methods(
             .all(|diagnostic| { diagnostic.message != "missing field `toText`" })
     );
 }
+
+#[test]
+fn comptime_ordinary_calls_evaluate_structured_values_and_ambient_bodies() {
+    let ambient = check_trusted_builtin_methods(include_str!("../../aven-host/std/array.av"));
+    assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    for pin in [false, true] {
+        let call = if pin { "comptime(join([\"a\", \"b\"]))" } else { "join([\"a\", \"b\"])" };
+        let source = format!("separator: Text = \"\\n\"\njoin = (parts: Array(Text)): Text => parts.joinWith(separator)\nscript = {call}\nchecked: \"a\\nb\" = script\n");
+        let parsed = parse_module(&source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let checked = check_module_with_host_globals_and_imports(&parsed.module, &HostGlobals::default(), &imports);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let wrong = parse_module(&source.replace("checked: \"a\\nb\"", "checked: \"wrong\""));
+        let checked = check_module_with_host_globals_and_imports(&wrong.module, &HostGlobals::default(), &imports);
+        assert!(has_diagnostic_code(&checked.diagnostics, codes::ty::LITERAL_NOT_IN_UNION), "{:?}", checked.diagnostics);
+    }
+}
+
+#[test]
+fn comptime_ordinary_calls_preserve_lexical_captures_and_shorthand() {
+    for record in ["{suffix}", "{suffix: suffix}"] {
+        let source = format!("suffix: Text = \"!\"\nemit = (text: Text): Text => text + {record}.suffix\nouter = (suffix: Text): Text => emit(\"yes\")\nchecked: \"yes!\" = outer(\"wrong\")\n");
+        let parsed = parse_module(&source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let checked = check_module(&parsed.module);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+}
+
+#[test]
+fn comptime_unknown_parameter_reports_the_dependency_without_using_module_shadow() {
+    let source = "value = \"module\"\nprobe = (value: Text) => comptime(value)\n";
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    let diagnostic = checked.diagnostics.iter().find(|d| d.code.as_deref() == Some(codes::comptime::ARGUMENT_NOT_KNOWN)).expect("unknown parameter must not become module value");
+    assert!(diagnostic.notes.iter().any(|note| note.contains("unbound name `value`")), "{diagnostic:?}");
+}
