@@ -264,6 +264,15 @@ file produced. The odd-program-name registrations agree across fish versions
 too. This settles the `string unescape` question empirically: `commandline -opc`
 returns unescaped tokens on 3.7 exactly as on 4.7.
 
+Every commit on the branch was tested individually, and each is green: the
+tallies climb 1764 to 1798 with no red step. One sweep run of `81b4b3b`
+(unresolvable pick/omit key set) reported a single failure that no later run
+reproduced -- 16 consecutive workspace runs at that commit are green, so the
+cause is unknown and is recorded here in case it recurs in CI. Both workflows
+now print the bash and fish versions they installed, so a runner-image bump that
+changes completion behaviour shows up in the log rather than only in a failing
+assertion.
+
 Generated function names keep letters and digits and escape every other ASCII
 character as `_<code>_`, underscores included, so `tool` yields `__aven_tool`
 and `tool-x` yields `__aven_tool_45_x`. Escaping `_` itself is what keeps the
