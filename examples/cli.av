@@ -1,0 +1,35 @@
+# Typed command-line parsing: options keep their decoder's type, commands keep
+# their own arguments, and the shell completion script is generated from the
+# same specification.
+cli = import("std/cli")
+
+add = cli.define({
+  path: cli.required(cli.text, { help: "File to add", valueName: "PATH" })
+  verbose: cli.flag({ short: "v", aliases: ["--chatty"], help: "Print each step" })
+}, { name: "tool add", examples: ["tool add --path notes.txt"] })
+
+commit = cli.define({
+  jobs: cli.option(cli.int, { default: 1, short: "j", help: "Parallel jobs" })
+}, { name: "tool commit" })
+
+tool = cli.app({
+  add: cli.command(add, (a) => @Add(a), { aliases: ["a"], help: "Add a file" })
+  commit: cli.command(commit, (c) => @Commit(c), { help: "Commit changes" })
+}, { name: "tool", description: "Example commands" })
+
+# Each branch sees only its own command's arguments, and the checker requires
+# every branch to be handled.
+describe = (argv: Array(Text)): Text =>
+  cli.parse(tool, argv) ?>
+    @Ok(@Add(a)) => "add path=${a.path} verbose=${a.verbose}"
+    @Ok(@Commit(c)) => "commit jobs=${c.jobs}"
+    @Err(_) => "rejected"
+
+writeLine(describe(["a", "--path=notes.txt", "-v"]))
+writeLine(describe(["commit", "--jobs", "4"]))
+writeLine(describe(["commit", "--nope"]))
+
+# One line of the generated fish script, to show completions come from the
+# same specification rather than a hand-written table.
+completion = cli.completions(tool, "fish", "tool")
+writeLine(completion.contains("-l 'chatty'") ?> true => "--chatty completes", false => "alias missing")

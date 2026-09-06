@@ -71,9 +71,14 @@ cli = import("std/cli")
 tool = cli.app({ ... }, { name: "tool" })
 
 args[0] ?>
-  "completions" => writeLine(cli.completions(tool, args[1] ?? "fish", "tool"))
+  "completions" => args[1] ?>
+    "bash" => writeLine(cli.completions(tool, "bash", "tool"))
+    _ => writeLine(cli.completions(tool, "fish", "tool"))
   _ => run(cli.parse(tool, args)?^)
 ```
+
+`shell` is the literal union `"bash" | "fish"`, so it takes a literal at the
+call site rather than a `Text` read out of `args`.
 
 Install it once — `tool completions fish > ~/.config/fish/completions/tool.fish`
 — and the shell handles TAB itself. Completion never starts Aven.

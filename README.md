@@ -59,4 +59,6 @@ example must check cleanly, and hermetic ones also run with asserted output.
 
 - [`docs/tooling-first-plan.md`](docs/tooling-first-plan.md) — the milestone
   plan and its current queue (the authoritative "what's next")
+- [`docs/cli-library.md`](docs/cli-library.md) — `std/cli`: typed arguments,
+  commands, help and shell completions
 - Editor setup lives in [`editors/`](editors/README.md)

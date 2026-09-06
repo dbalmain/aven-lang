@@ -159,6 +159,12 @@ fn run_with_expected_output(example: &Path, extra_args: &[&str]) {
         "hello.av" => "hello, Aven\n",
         "literal-modes.av" => "1\n",
         "modules.av" => "a, b\n",
+        "cli.av" => {
+            "add path=notes.txt verbose=true\n\
+            commit jobs=4\n\
+            rejected\n\
+            --chatty completes\n"
+        }
         "records.av" => {
             "partialEmail:\n\
             none\n\
