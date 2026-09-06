@@ -1413,7 +1413,10 @@ impl Environment {
                 let value = eval_expr_many(&definition, &defining_env);
                 current.evaluating.borrow_mut().remove(name);
                 if let Ok(value) = &value {
-                    current.values.borrow_mut().insert(name.to_owned(), value.clone());
+                    current
+                        .values
+                        .borrow_mut()
+                        .insert(name.to_owned(), value.clone());
                 }
                 return value;
             }
@@ -2164,7 +2167,10 @@ pub fn eval_comptime_expr(
         for item in &module.items {
             match item {
                 Item::Binding(binding) => {
-                    module_env.scope.definitions.borrow_mut()
+                    module_env
+                        .scope
+                        .definitions
+                        .borrow_mut()
                         .insert(binding.name.clone(), binding.value.clone());
                 }
                 Item::MethodAttachment(attachment) => {
@@ -2177,7 +2183,9 @@ pub fn eval_comptime_expr(
     let module_env = root.child();
     *module_env.scope.definitions.borrow_mut() = definitions;
     let mut env = module_env.child();
-    Rc::get_mut(&mut env.scope).expect("new lexical scope").blocked = blocked_locals;
+    Rc::get_mut(&mut env.scope)
+        .expect("new lexical scope")
+        .blocked = blocked_locals;
     for (name, value) in locals {
         env.bind(name, value);
     }

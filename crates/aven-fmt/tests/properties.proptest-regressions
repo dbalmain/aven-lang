@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5fe8aeaf534164ea648d808598057f28988d331059965122b0639fb91a5e417f # shrinks to s = "query = \"\"\"\n  select *\n  from users\n  where id = ${userId}\n  \"\"\"\npattern = r\"\\d+\\s*\"\ndelimited = r#\"he said \"hi\" to #1\"#\nnested = \"\"\"\n  outer ${r#\"raw \\n inside\"#} tail\n  \"\"\"\nblanks = \"\"\"\n  first\n\n  third\n  \"\"\"\nindented = (value) =>\n  value ?>\n    0 =>\n      \"\"\"  \n        zero\n        \"\"\"\n    _ => \"other\"\n"
+cc a2a3da395928faa7a9fc137055e505e6b4d0a98b5241c5c991815d618240d58d # shrinks to s = "query = \"\"\"\nselect *\nfrom users\nwhere id = ${userId}\n\"\"\"\npattern = r\"\\d+\\s*\"\ndelimited = r#\"he said \"hi\" to #1\"#\nnested = \"\"\"\nouter ${r#\"raw \\n inside\"#} tail\n\"\"\"\nblanks = \"\"\"\nfirst\n\nthird\n\"\"\"\nindented = (value) =>\n  value ?>\n    0 =>\n      \"\"\"  \n      zero\n      \"\"\"\n    _ => \"other\"\n"
