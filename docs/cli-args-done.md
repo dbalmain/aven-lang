@@ -254,7 +254,21 @@ Unicode input exposed a harness issue with Readline meta conversion; the harness
 now uses UTF-8 and explicitly preserves high-bit input.
 
 CI and the heavy workflow install bash and fish. Missing shells fail tests.
-The generated fish helper uses the portable `commandline -opc` alone. User
+The generated fish helper uses the portable `commandline -opc` alone.
+
+Both generated scripts were run against the shell versions CI actually gets, not
+only the developer's. The 43-context matrix was replayed under fish 3.7.0 and
+bash 5.2.21 from `ubuntu:24.04` apt, and every context's candidate list is
+byte-identical to fish 4.7.1 and bash 5.3.9, with no `INJECTED` or `TOOL_RAN`
+file produced. The odd-program-name registrations agree across fish versions
+too. This settles the `string unescape` question empirically: `commandline -opc`
+returns unescaped tokens on 3.7 exactly as on 4.7.
+
+Generated function names keep letters and digits and escape every other ASCII
+character as `_<code>_`, underscores included, so `tool` yields `__aven_tool`
+and `tool-x` yields `__aven_tool_45_x`. Escaping `_` itself is what keeps the
+mapping injective: `_` in a generated name always starts an escape, so two
+programs can never collide on one function. User
 documentation is in `cli-library.md`. Gates green: fmt, clippy `-D warnings`,
 **1798 passed / 0 failed** (1795 baseline). No new runtime dependencies or
 compiler changes.

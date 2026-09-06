@@ -189,11 +189,19 @@ completionRows = (node, id) =>
 bashQuote = (value: Text): Text => "'${value.replaceEach("'", "'\\''")}'"
 fishQuote = (value: Text): Text => "'${value.replaceEach("\\", "\\\\").replaceEach("'", "\\'")}'"
 
-# Escape every ASCII character, including underscores, to make names injective.
+# Letters and digits carry through so a generated script stays readable. Every
+# other ASCII character, underscores included, becomes `_<code>_`, so `_` only
+# ever starts an escape and distinct programs keep distinct function names.
 # Non-ASCII characters are not bash metacharacters; fish names are also quoted.
-completionFunction = (program: Text): Text =>
+completionChar = (c: Text): Text =>
+  safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
   ascii = "\u{0}\u{1}\u{2}\u{3}\u{4}\u{5}\u{6}\u{7}\u{8}\u{9}\u{a}\u{b}\u{c}\u{d}\u{e}\u{f}\u{10}\u{11}\u{12}\u{13}\u{14}\u{15}\u{16}\u{17}\u{18}\u{19}\u{1a}\u{1b}\u{1c}\u{1d}\u{1e}\u{1f} !\"#\$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\u{7f}"
-  "__aven_${program.chars().map((c) => ascii.indexOf(c) ?> undefined => c, i => "_${i}_").joinWith("")}"
+  safe.contains(c) ?>
+    true => c
+    false => ascii.indexOf(c) ?> undefined => c, i => "_${i}_"
+
+completionFunction = (program: Text): Text =>
+  "__aven_${program.chars().map(completionChar).joinWith("")}"
 
 bashPattern = (names: Array(Text)): Text => names.map(bashQuote).joinWith("|")
 fishNames = (names: Array(Text)): Text => names.map(fishQuote).joinWith(" ")
