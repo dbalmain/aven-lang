@@ -58,8 +58,8 @@ fn cli_library_rejects_wrong_fields_types_and_argv() {
 // Readline TAB presses so the test cannot fake away COMP_WORDBREAKS or quoting.
 #[test]
 fn generated_completions_follow_the_parser_in_real_shells() {
-    let add: &[&str] = &["--chatty", "--out", "--output", "--quiet", "--verbose"];
-    let after_out: &[&str] = &["--chatty", "--quiet", "--verbose"];
+    let add = ADD_OPTIONS;
+    let after_out = AFTER_OUT;
     let cases: &[(&str, &[&str])] = &[
         (
             "tool ",
@@ -135,6 +135,83 @@ fn generated_completions_follow_the_parser_in_real_shells() {
         assert!(!fixture.directory().join("INJECTED").exists());
         assert!(!fixture.directory().join("TOOL_RAN").exists());
     }
+}
+
+const ADD_OPTIONS: &[&str] = &["--chatty", "--out", "--output", "--quiet", "--verbose"];
+const AFTER_OUT: &[&str] = &["--chatty", "--quiet", "--verbose"];
+
+// Bash hands the callback the raw line, so the generator has to recognise the
+// shell syntax that is not argv itself. fish is absent because `commandline
+// -opc` has already dropped redirections and collapsed expansions for us.
+#[test]
+fn generated_bash_completions_ignore_shell_syntax_that_is_not_argv() {
+    assert_bash_completions(&[
+        // A redirection and its operand are not arguments, attached or not.
+        ("tool add >out --", ADD_OPTIONS),
+        ("tool add > out --", ADD_OPTIONS),
+        ("tool add >>out --", ADD_OPTIONS),
+        ("tool add 2> out --", ADD_OPTIONS),
+        ("tool add <in --", ADD_OPTIONS),
+        ("tool add <<<hi --", ADD_OPTIONS),
+        ("tool add {fd}>x --", ADD_OPTIONS),
+        ("tool add >\"o u\" --", ADD_OPTIONS),
+        // An operator also ends the word it follows, so `out` is a positional.
+        ("tool add out>x --", &[]),
+        // The word under the cursor is the redirection target, not an argument.
+        ("tool add >ou", &[]),
+        // `--out` never reaches a value, so nothing may be offered after it.
+        ("tool add --out >x --", &[]),
+        // Quoted or escaped, the same characters are an ordinary argument.
+        ("tool add '>out' --", &[]),
+        ("tool add \\>out --", &[]),
+        // ANSI-C quoting, including the escapes that are not their own letter.
+        ("tool $'add' --", ADD_OPTIONS),
+        ("tool $'\\141dd' --", ADD_OPTIONS),
+        ("tool $'\\x61dd' --", ADD_OPTIONS),
+        ("tool $'\\u0061dd' --", ADD_OPTIONS),
+        ("tool $'ad", &["add"]),
+        ("tool add $'--ver'", &["--verbose"]),
+        ("tool add --out $'a\\tb' --", AFTER_OUT),
+        ("tool add --out $'\\cA' --", AFTER_OUT),
+        // `$'` is not ANSI-C quoting inside double quotes; the word keeps it.
+        ("tool \"$'add'\" --", &[]),
+        // An expansion is one opaque word: never run, and never split at its
+        // internal spaces. It matches no name, so it only ever fills a value.
+        ("tool add --out $(printf \"value\") --", AFTER_OUT),
+        ("tool add --out ${HOME} --", AFTER_OUT),
+        ("tool add --out=$(printf \"v\") --", AFTER_OUT),
+        ("tool $(echo add) --", &[]),
+    ]);
+}
+
+// Pasting a multi-line command is the one interactive way a line continuation
+// reaches COMP_LINE. A removed continuation must not start a word of its own.
+#[test]
+fn generated_bash_completions_survive_pasted_line_continuations() {
+    assert_bash_completions(&[
+        ("tool \\\n add --", ADD_OPTIONS),
+        // `--ver` is the pending `--out` value, so it is not an option prefix.
+        ("tool add --out \\\n --ver", &[]),
+        // A continuation inside a word joins it: this is still `--out`.
+        ("tool add --o\\\nut \\\n --ver", &[]),
+        ("tool add --out \"a\\\nb\" --", AFTER_OUT),
+        // A real newline inside quotes is content, so this is an argument.
+        ("tool add 'a\nb' --", &[]),
+    ]);
+}
+
+fn assert_bash_completions(cases: &[(&str, &[&str])]) {
+    let fixture = CompletionFixture::new("bash", "tool");
+    let inputs: Vec<_> = cases.iter().map(|(input, _)| *input).collect();
+    let actual = fixture.query("bash", "tool", &inputs);
+    for ((input, expected), mut found) in cases.iter().zip(actual) {
+        found.sort();
+        let mut expected: Vec<_> = expected.iter().map(|s| (*s).to_owned()).collect();
+        expected.sort();
+        assert_eq!(found, expected, "bash: {input:?}");
+    }
+    assert!(!fixture.directory().join("INJECTED").exists());
+    assert!(!fixture.directory().join("TOOL_RAN").exists());
 }
 
 #[test]
@@ -344,7 +421,17 @@ printf '%s' "$spec""#,
         }
         let mut input = include_str!("fixtures/cli/complete.bash").to_owned();
         for line in inputs {
-            input.push_str(line);
+            // A case holding a newline is delivered as a bracketed paste. That
+            // is the only interactive path that puts a line continuation into a
+            // single COMP_LINE: typing one instead starts a PS2 line, whose own
+            // first word decides which completion spec bash consults.
+            if line.contains('\n') {
+                input.push_str("\u{1b}[200~");
+                input.push_str(line);
+                input.push_str("\u{1b}[201~");
+            } else {
+                input.push_str(line);
+            }
             // TAB invokes the real Readline callback; Ctrl-U then clears the
             // edited line, so no candidate or test command gets executed.
             input.push_str("\t\u{15}\n");

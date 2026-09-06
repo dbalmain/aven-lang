@@ -287,3 +287,87 @@ The design's “loaded through STD_AMBIENT_METHOD_MODULES” needs correction:
 ambient list installs builtin type methods; `cli` contributes no such methods.
 Adding it there would eagerly load an unused library into every script. Array
 methods used by cli still come from the existing ambient module.
+
+## Round 3: bash scanner defects from Astra's review
+
+Four issues from `claude-fixes-handoff.md`, all in the bash generator's literal
+word scanner (fish needs none of this — `commandline -opc` has already removed
+redirections and collapsed expansions before the helper sees a token).
+
+**Redirections.** `tool add >out --` offered nothing, because `>out` became an
+argv element and `add` has no positionals. The scanner now matches a redirection
+operator against
+`^([0-9]+|\{name\})?(&>>|&>|>>|>\||>&|>|<<<|<<-|<<|<>|<&|<)` and discards both
+the operator and the word that follows it. A file-descriptor or `{name}` prefix
+only counts at a word start, so `tool add 2>x` redirects while `tool add x2 --`
+does not; a bare `<` or `>` also terminates the word it follows, matching bash,
+so `out>x` leaves `out` as a positional. Quoted and escaped operators
+(`'>out'`, `\>out`) stay ordinary arguments. When the cursor itself sits on a
+redirection target the function returns with no candidates rather than falling
+back to filenames, which stays consistent with the deliberately disabled `-o
+default`.
+
+**ANSI-C quoting.** `tool $'add' --` produced the word `$add`. `$'` now enters a
+decoding state that implements the escapes bash documents: the named ones
+(`\a \b \e \E \f \n \r \t \v`), the literal ones (`\\ \' \" \?`), octal `\nnn`,
+hex `\xHH`, `\uHHHH`, `\UHHHHHHHH` and `\cX`. The numeric forms go through
+`printf -v … '%b'` on digits the scanner has already validated; nothing from the
+command line is ever passed to `eval`. `$"…"` is treated as an ordinary double
+quote, which is what it is once translation is ignored. Inside `"…"`, `$'` is
+not special and stays in the word.
+
+**Line continuations.** A backslash-newline set `started=1` and then emitted a
+phantom empty word, which pushed the parser one argument out of step. It is now
+consumed at the backslash without starting a word, in both the unquoted and the
+double-quoted state; a continuation inside an existing word still joins it
+(`--o\<newline>ut` is `--out`), and `''`/`""` still produce genuine empty
+arguments.
+
+The handoff asked for end-to-end proof before treating that last one as an
+interactive regression, and typing a continuation does not reach the callback at
+all: bash starts a PS2 line whose own first word selects the completion spec, so
+`tool \` + `add --` looks up a spec for `add`. **Bracketed paste is the path that
+does reach it** — pasting a multi-line command puts a literal newline in a single
+`COMP_LINE`. Both handoff cases were then reproduced through real Readline and
+both now behave. The harness enables `enable-bracketed-paste` and wraps any case
+containing a newline in the paste markers; single-line cases are unaffected.
+
+**Unresolved expansions.** `tool add --out $(printf "value") --` offered nothing:
+the scanner split the substitution at its internal space, so `$(printf` consumed
+the pending `--out` value and `"value")` became an unknown argument. The policy
+now is: `$(…)` and `${…}` are copied verbatim as **one** word, by depth-counting
+brackets, and are never executed. Such a word can never equal an option or
+command name, so it is only ever accepted where any value is accepted — filling a
+pending option value — and anywhere else it yields no candidates. That is the
+conservative outcome, and it is also why nothing is lost when the expansion would
+really have split into several words: the divergent case
+(`--out $(printf "two words")`) is one where the real invocation gains an
+unsupported positional anyway. A `)` inside a quoted string inside `$( )` still
+closes the scan early; the leftover becomes an unknown word, so the failure mode
+is again no candidates.
+
+**Unterminated string diagnostic.** `push_unterminated_string` recommended raw
+strings, which the lexer does not implement (nor triple-quoted strings — the only
+supported escapes are `\\ \" \$ \n \r \t \u{H}`). The note now says to close the
+string and write a line break as `\n`. Two `.diag` fixtures updated.
+
+Removed as unreachable rather than fixed: an unquoted backtick substitution. Bash
+never delivers one to the callback — it treats the backtick as opening a new
+command context — so the branch that scanned it was dead code, and the same is
+true of `2>&1`, where bash truncates `COMP_LINE` at the `&`. Both are documented
+here instead of being carried as untestable shell.
+
+**Version coverage.** The 43-context matrix and all 32 new cases were replayed on
+bash 5.2.21 from `ubuntu:24.04` apt, which is what CI installs, alongside the
+developer's 5.3.9. The matrix agrees exactly on both. Of the new cases exactly
+one disagreed and was therefore not committed: a backtick substitution inside
+double quotes as an option value reaches the callback on 5.3.9 but not on
+5.2.21, which decides the completion context differently there. No `INJECTED` or
+`TOOL_RAN` file was produced by any run on either version.
+
+Gates green: fmt, clippy `-D warnings`, **1800 passed / 0 failed** (1798
+baseline; the two new tests are
+`generated_bash_completions_ignore_shell_syntax_that_is_not_argv` and
+`generated_bash_completions_survive_pasted_line_continuations`). No language
+changes were made: the proposals in
+`cli-language-priority-handoff.md` remain Dave's to decide.

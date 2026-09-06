@@ -533,7 +533,7 @@ impl Lexer<'_> {
                     "string starts here",
                 ))
                 .with_note(
-                    "close the string with a `\"`, or use a raw string for multi-line content.",
+                    "close the string with a `\"`, or write a line break as `\\n`; a string literal cannot span lines.",
                 ),
         );
         self.push(

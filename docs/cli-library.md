@@ -101,3 +101,13 @@ completions the parser then rejects. A program name that cannot be written
 unquoted reaches only fish: bash resolves a completion spec by the command word
 exactly as typed and never removes quotes, so `'tool' --` matches no spec even
 when the program really is `tool`.
+
+The bash script reads the command line itself rather than trusting `COMP_WORDS`,
+which splits on `=`. It reads only literal text: redirections and their operands
+are skipped, `$'…'` is decoded, and a `$(…)` or `${…}` is kept whole as one word
+and never run — so an unresolved expansion can fill a value position but never
+matches an option or command name. Two shapes are bash's own limits, not the
+generator's: bash truncates the line at an `&` or an unquoted backtick, so it
+never calls the completion for `tool add 2>&1 --`, and a continuation typed
+across two lines starts a fresh completion context on the second (pasting the
+same command works, because that keeps it one line).
