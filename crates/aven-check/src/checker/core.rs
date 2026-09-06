@@ -192,7 +192,10 @@ impl<'a> Checker<'a> {
         checker.lower_named_family_methods(module);
         checker.lower_builtin_method_attachments(module);
         if checker.trusted_builtin_method_source {
-            checker.builtin_methods.comptime_modules.push(module.clone());
+            checker
+                .builtin_methods
+                .comptime_modules
+                .push(module.clone());
         }
         checker.build_statics(globals);
         checker.collect_top_level_pattern_bindings(module);

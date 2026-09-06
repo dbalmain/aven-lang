@@ -15124,28 +15124,44 @@ fn named_primitive_family_rejects_wrong_constructor_payload_and_widened_methods(
 }
 
 #[test]
-fn comptime_ordinary_calls_evaluate_structured_values_and_ambient_bodies() {
+fn comptime_pin_evaluates_structured_values_and_ambient_bodies() {
     let ambient = check_trusted_builtin_methods(include_str!("../../aven-host/std/array.av"));
     assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
     let mut imports = ModuleImports::default();
     imports.set_builtin_method_environment(ambient.builtin_methods);
-    for pin in [false, true] {
-        let call = if pin { "comptime(join([\"a\", \"b\"]))" } else { "join([\"a\", \"b\"])" };
-        let source = format!("separator: Text = \"\\n\"\njoin = (parts: Array(Text)): Text => parts.joinWith(separator)\nscript = {call}\nchecked: \"a\\nb\" = script\n");
+    {
+        let call = "comptime(join([\"a\", \"b\"]))";
+        let source = format!(
+            "separator: Text = \"\\n\"\njoin = (parts: Array(Text)): Text => parts.joinWith(separator)\nscript = {call}\nchecked: \"a\\nb\" = script\n"
+        );
         let parsed = parse_module(&source);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let checked = check_module_with_host_globals_and_imports(&parsed.module, &HostGlobals::default(), &imports);
+        let checked = check_module_with_host_globals_and_imports(
+            &parsed.module,
+            &HostGlobals::default(),
+            &imports,
+        );
         assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
         let wrong = parse_module(&source.replace("checked: \"a\\nb\"", "checked: \"wrong\""));
-        let checked = check_module_with_host_globals_and_imports(&wrong.module, &HostGlobals::default(), &imports);
-        assert!(has_diagnostic_code(&checked.diagnostics, codes::ty::LITERAL_NOT_IN_UNION), "{:?}", checked.diagnostics);
+        let checked = check_module_with_host_globals_and_imports(
+            &wrong.module,
+            &HostGlobals::default(),
+            &imports,
+        );
+        assert!(
+            has_diagnostic_code(&checked.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+            "{:?}",
+            checked.diagnostics
+        );
     }
 }
 
 #[test]
-fn comptime_ordinary_calls_preserve_lexical_captures_and_shorthand() {
+fn comptime_pin_preserves_lexical_captures_and_shorthand() {
     for record in ["{suffix}", "{suffix: suffix}"] {
-        let source = format!("suffix: Text = \"!\"\nemit = (text: Text): Text => text + {record}.suffix\nouter = (suffix: Text): Text => emit(\"yes\")\nchecked: \"yes!\" = outer(\"wrong\")\n");
+        let source = format!(
+            "suffix: Text = \"!\"\nemit = (text: Text): Text => text + {record}.suffix\nouter = (suffix: Text): Text => emit(\"yes\")\nchecked: \"yes!\" = comptime(outer(\"wrong\"))\n"
+        );
         let parsed = parse_module(&source);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let checked = check_module(&parsed.module);
@@ -15158,6 +15174,76 @@ fn comptime_unknown_parameter_reports_the_dependency_without_using_module_shadow
     let source = "value = \"module\"\nprobe = (value: Text) => comptime(value)\n";
     let parsed = parse_module(source);
     let checked = check_module(&parsed.module);
-    let diagnostic = checked.diagnostics.iter().find(|d| d.code.as_deref() == Some(codes::comptime::ARGUMENT_NOT_KNOWN)).expect("unknown parameter must not become module value");
-    assert!(diagnostic.notes.iter().any(|note| note.contains("unbound name `value`")), "{diagnostic:?}");
+    let diagnostic = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_deref() == Some(codes::comptime::ARGUMENT_NOT_KNOWN))
+        .expect("unknown parameter must not become module value");
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("unbound name `value`")),
+        "{diagnostic:?}"
+    );
+}
+
+/// A pin says *when* a value is known, never that it has a different type than
+/// it had. A branded family is not a base kind, so evaluating `price` to the
+/// number `2599` must not fold the pin's type back to a bare literal — doing so
+/// would let plain-`Int` behavior reach a `Money`.
+#[test]
+fn comptime_pin_keeps_a_named_family_instead_of_folding_to_its_raw_literal() {
+    let source = concat!(
+        "Money = Int {\n",
+        "  cents(): Int => .\n",
+        "}\n",
+        "price : Money = 2599\n",
+        "pinned = comptime(price)\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
+    assert_eq!(
+        check
+            .type_at(binding_value_named(&output.module, "pinned").span)
+            .map(Type::render),
+        Some("Money".to_owned())
+    );
+}
+
+/// The same guard from the other side: an `?Int` keeps its optionality even
+/// when the pinned expression happens to produce a value on this run.
+#[test]
+fn comptime_pin_keeps_an_optional_type_when_the_lookup_succeeds() {
+    let source = "m = Map.from([(\"a\", 1)])\nfound = comptime(m.get(\"a\"))\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert_eq!(
+        check
+            .type_at(binding_value_named(&output.module, "found").span)
+            .map(Type::render),
+        Some("?Int".to_owned())
+    );
+}
+
+/// A runaway pinned call must end in a bounded resource diagnostic rather than
+/// hanging the checker, and that diagnostic is distinct from "this argument was
+/// not known", which is the phase error.
+#[test]
+fn comptime_pin_reports_instead_of_hanging_on_unbounded_evaluation() {
+    let source = concat!(
+        "countDown = (n: Int): Int => n ?> 0 => 0, _ => countDown(n + 1)\n",
+        "value = comptime(countDown(1))\n",
+    );
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.code.as_deref(),
+            Some(codes::comptime::EVALUATION_LIMIT | codes::runtime::RECURSION_LIMIT)
+        )),
+        "{:?}",
+        check.diagnostics
+    );
 }

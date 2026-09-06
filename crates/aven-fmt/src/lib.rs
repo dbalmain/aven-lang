@@ -147,7 +147,9 @@ fn format_parsed_source_with_reparse(
     let (source, parse) = if normalized_source != source {
         normalized_parse = reparse(&normalized_source);
         (normalized_source.as_str(), &normalized_parse)
-    } else { (source, parse) };
+    } else {
+        (source, parse)
+    };
 
     let mut formatted = format_lines(source, parse);
     let mut reparsed = reparse(&formatted);
@@ -182,11 +184,15 @@ fn multiline_literal_spans(source: &str, tokens: &[Token]) -> Vec<Span> {
             TokenKind::InterpolationEnd(_) => {
                 if let Some(start) = interpolations.pop() {
                     let span = Span::new(start, token.span.end);
-                    if source[span.start..span.end].contains(['\n', '\r']) { spans.push(span); }
+                    if source[span.start..span.end].contains(['\n', '\r']) {
+                        spans.push(span);
+                    }
                 }
             }
-            TokenKind::StringLiteral(_) => {
-                if source[token.span.start..token.span.end].contains(['\n', '\r']) { spans.push(token.span); }
+            TokenKind::StringLiteral(_)
+                if source[token.span.start..token.span.end].contains(['\n', '\r']) =>
+            {
+                spans.push(token.span);
             }
             _ => {}
         }
@@ -194,7 +200,9 @@ fn multiline_literal_spans(source: &str, tokens: &[Token]) -> Vec<Span> {
     spans.sort_by_key(|span| (span.start, std::cmp::Reverse(span.end)));
     let mut outer: Vec<Span> = Vec::new();
     for span in spans {
-        if !outer.last().is_some_and(|previous| previous.end >= span.end) { outer.push(span); }
+        if outer.last().is_none_or(|previous| previous.end < span.end) {
+            outer.push(span);
+        }
     }
     outer
 }
@@ -203,14 +211,27 @@ fn protect_multiline_tokens(source: &str, tokens: &[Token], spans: &[Span]) -> V
     let mut protected = Vec::new();
     let mut index = 0;
     for token in tokens {
-        while spans.get(index).is_some_and(|span| span.end <= token.span.start) { index += 1; }
-        if let Some(span) = spans.get(index)
-            && span.start <= token.span.start && token.span.end <= span.end
+        while spans
+            .get(index)
+            .is_some_and(|span| span.end <= token.span.start)
         {
+            index += 1;
+        }
+        if let Some(span) = spans.get(index)
+            && span.start <= token.span.start
+            && token.span.end <= span.end
+        {
+            // Only the opening token stands in for the whole literal; the rest
+            // of its tokens are dropped so the region reflows as one unit.
             if token.span.start == span.start {
-                protected.push(Token { kind: TokenKind::StringLiteral(source[span.start..span.end].to_owned()), span: *span });
+                protected.push(Token {
+                    kind: TokenKind::StringLiteral(source[span.start..span.end].to_owned()),
+                    span: *span,
+                });
             }
-        } else { protected.push(token.clone()); }
+        } else {
+            protected.push(token.clone());
+        }
     }
     protected
 }
@@ -222,12 +243,16 @@ fn reindent_multiline_literal(text: &str, indent: usize) -> String {
     let mut lines = normalized.split('\n');
     let opening = lines.next().unwrap_or_default();
     let rest: Vec<_> = lines.collect();
-    let margin = rest.last().map_or(0, |line| line.bytes().take_while(|byte| *byte == b' ').count());
+    let margin = rest.last().map_or(0, |line| {
+        line.bytes().take_while(|byte| *byte == b' ').count()
+    });
     let mut output = opening.to_owned();
     for line in rest {
         output.push('\n');
         let spaces = line.bytes().take_while(|byte| *byte == b' ').count();
-        if spaces < margin && line.trim().is_empty() { continue; }
+        if spaces < margin && line.trim().is_empty() {
+            continue;
+        }
         output.push_str(&" ".repeat(indent));
         output.push_str(&line[margin.min(spaces)..]);
     }
@@ -247,7 +272,9 @@ fn format_lines(source: &str, parse: &ParseOutput) -> String {
         let first = line_for_offset(&line_starts, span.start);
         let last = line_for_offset(&line_starts, span.end.saturating_sub(1));
         let owner = line_owners[first];
-        for entry in &mut line_owners[first..=last] { *entry = owner; }
+        for entry in &mut line_owners[first..=last] {
+            *entry = owner;
+        }
     }
     let mut line_tokens = content_tokens_by_line(line_count, &line_starts, &protected_tokens);
     for line in 0..line_count {
@@ -261,7 +288,9 @@ fn format_lines(source: &str, parse: &ParseOutput) -> String {
     let mut output = String::with_capacity(source.len() + 1);
 
     for (line_index, tokens) in line_tokens.iter().enumerate() {
-        if line_owners[line_index] != line_index { continue; }
+        if line_owners[line_index] != line_index {
+            continue;
+        }
         if tokens.is_empty() {
             output.push('\n');
             continue;
@@ -333,7 +362,9 @@ fn normalize_call_layouts(source: &str, parse: &ParseOutput) -> String {
     let mut calls = Vec::new();
     walk_module_exprs(&parse.module, &mut |expr| {
         if let ExprKind::Call { callee, args } = &expr.kind
-            && !multiline_spans.iter().any(|span| span.start < expr.span.end && expr.span.start < span.end)
+            && !multiline_spans
+                .iter()
+                .any(|span| span.start < expr.span.end && expr.span.start < span.end)
             && let Some(call) = call_layout(expr.span, callee, args, &parse.raw_tokens)
             && call_can_reflow(
                 source,

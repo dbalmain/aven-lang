@@ -415,7 +415,6 @@ impl<'a> Checker<'a> {
             | ExprKind::NonNull(_)
             | ExprKind::Arrow { .. } => Type::Deferred,
         };
-        let ty = self.infer_evaluated_call(env, expr, ty);
         let ty = if self.generalize_inferred_collections {
             self.generalize_collection_literal_positions(&ty)
         } else {
@@ -431,48 +430,77 @@ impl<'a> Checker<'a> {
         env: &TypeEnv,
         expr: &Expr,
     ) -> Result<aven_eval::Value, Diagnostic> {
-        let definitions = self.bindings.iter().filter_map(|(name, binding)| {
-            binding.map(|binding| (name.clone(), binding.value.clone()))
-        }).collect();
-        let locals = self.current_comptime_value_bindings().into_iter()
-            .filter_map(|(name, value)| comptime::comptime_value_as_eval_value(&value)
-                .map(|value| (name, value)))
+        let definitions = self
+            .bindings
+            .iter()
+            .filter_map(|(name, binding)| {
+                binding.map(|binding| (name.clone(), binding.value.clone()))
+            })
             .collect();
-        let mut blocked = self.local_types.inference_env().into_keys().collect::<HashSet<_>>();
+        let locals = self
+            .current_comptime_value_bindings()
+            .into_iter()
+            .filter_map(|(name, value)| {
+                comptime::comptime_value_as_eval_value(&value).map(|value| (name, value))
+            })
+            .collect();
+        let mut blocked = self
+            .local_types
+            .inference_env()
+            .into_keys()
+            .collect::<HashSet<_>>();
         blocked.extend(env.keys().cloned());
-        aven_eval::eval_comptime_expr(expr, definitions,
-            &self.builtin_methods.comptime_modules, locals, blocked, 100_000)
+        aven_eval::eval_comptime_expr(
+            expr,
+            definitions,
+            &self.builtin_methods.comptime_modules,
+            locals,
+            blocked,
+            100_000,
+        )
     }
 
-    fn infer_evaluated_call(&mut self, env: &TypeEnv, expr: &Expr, ty: Type) -> Type {
-        let ExprKind::Call { callee, .. } = &expr.kind else { return ty; };
-        // Type-level intrinsics have their own evaluator and artifact values.
-        if expr_name(callee).is_some_and(|name| name == comptime::COMPTIME_PIN
-            || name.chars().next().is_some_and(char::is_uppercase))
-            || type_contains_error(&ty)
-        {
-            return ty;
+    /// A narrowed literal is only ever a *refinement*: the singleton must sit
+    /// inside the type the expression already had. A base kind admits its own
+    /// literals, and an open literal row admits one more of its own base. A
+    /// named family such as `Money` is deliberately not a base kind, so a
+    /// branded value keeps its family instead of folding to a raw number.
+    fn literal_type_refines(&mut self, narrowed: &Type, ty: &Type) -> bool {
+        let Type::Variant(row) = narrowed else {
+            return false;
+        };
+        let Some(base) = literal_variant_base(row) else {
+            return false;
+        };
+        match self.unifier.resolve(ty) {
+            Type::Named(name) => base.matches_named(&name),
+            Type::Variant(target) => open_literal_variant_base(&target) == Some(base),
+            _ => false,
         }
-        match self.evaluate_known_expression(env, expr) {
-            Ok(value) => {
-                if let Some(comptime::ComptimeValue::Literal(literal)) =
-                    comptime::eval_value_as_comptime_value(&value)
-                {
-                    self.open_literal_variant(&literal)
-                } else if let aven_eval::Value::Bool(value) = value {
-                    self.open_literal_variant(&Literal::Bool(value))
-                } else {
-                    ty
-                }
-            }
-            Err(diagnostic) => {
-                if !matches!(diagnostic.code.as_deref(),
-                    Some(codes::runtime::UNBOUND_NAME | codes::runtime::UNSUPPORTED))
-                {
-                    self.push_unique_diagnostic(diagnostic);
-                }
-                ty
-            }
+    }
+
+    /// Narrow a pinned expression to the value it actually evaluated to.
+    ///
+    /// Only the pin demands a value, so only the pin narrows. An ordinary call
+    /// keeps the type its signature and the usual inference give it: folding
+    /// `add(1, 2)` to `3` would erase the `-> Int` its author wrote, and would
+    /// collapse `?Int` and `1 | 1.0` to whichever branch happened to run.
+    fn narrow_to_evaluated_literal(&mut self, value: &aven_eval::Value, ty: Type) -> Type {
+        let literal = match comptime::eval_value_as_comptime_value(value) {
+            Some(comptime::ComptimeValue::Literal(literal)) => literal,
+            _ => match value {
+                aven_eval::Value::Bool(value) => Literal::Bool(*value),
+                _ => return ty,
+            },
+        };
+        let narrowed = self.open_literal_variant(&literal);
+        // A pin proves *when* a value is known, never that it has a different
+        // shape than its own type. Narrowing that the type does not already
+        // admit would be a conversion, so the declared type wins.
+        if self.literal_type_refines(&narrowed, &ty) {
+            narrowed
+        } else {
+            ty
         }
     }
 
@@ -3618,14 +3646,16 @@ impl<'a> Checker<'a> {
                 && !matches!(evaluation.evaluation, Evaluation::Evaluated(_))
             {
                 match self.evaluate_known_expression(env, arg) {
-                    Ok(_) => {}
+                    Ok(value) => return Some(self.narrow_to_evaluated_literal(&value, ty)),
                     Err(cause) => {
                         let mut diagnostic = comptime::comptime_pin_failed(arg.span)
                             .with_note(format!("evaluation stopped because: {}", cause.message));
                         if cause.code.as_deref() == Some(codes::runtime::UNBOUND_NAME) {
                             for label in cause.labels {
-                                diagnostic = diagnostic.with_label(Label::primary(label.span,
-                                    "this dependency has no compile-time value"));
+                                diagnostic = diagnostic.with_label(Label::primary(
+                                    label.span,
+                                    "this dependency has no compile-time value",
+                                ));
                             }
                             self.push_unique_diagnostic(diagnostic);
                         } else {

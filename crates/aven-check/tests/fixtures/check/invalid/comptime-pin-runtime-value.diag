@@ -1,3 +1,5 @@
 error comptime.argument-not-known: `comptime` could not evaluate this expression
   label 38..84: this is not known at compile time
+  label 38..42: this dependency has no compile-time value
   note: `comptime` requires its argument to evaluate while checking; it may not depend on a runtime value
+  note: evaluation stopped because: unbound name `flag`
