@@ -3,7 +3,11 @@
 # `cli.parse(spec, args)`. Decoders determine the exact output field types.
 # Aliases are full spellings (e.g. "--chatty"); `short: "v"` adds "-v".
 
-Meta = { name: Text, names: Array(Text), takesValue: Bool, help: Text, valueName: Text }
+# Value domains are explicit metadata, never inferred from a decoder. This
+# vocabulary can grow with Files/Dirs/Values without changing the command tree.
+ValueCompletion = @{ @Unspecified }
+Meta = { name: Text, names: Array(Text), takesValue: Bool, help: Text, valueName: Text, valueCompletion: ValueCompletion }
+Completion = @{ @Opaque, @Options(Array(Meta)), @Commands(Array(CommandMeta)) }
 
 int = (raw: Text): Result(Int, Text) =>
   raw.toInt() ?>
@@ -16,7 +20,7 @@ metadata = (name: Text, takesValue: Bool, config): Meta =>
   aliases: Array(Text) = []
   m = { short: "", help: "", valueName: "VALUE", aliases, ..config }
   short: Array(Text) = m.short == "" ?> true => [], false => ["-${m.short}"]
-  { name, names: ["--${name}", ..short, ..m.aliases], takesValue, help: m.help, valueName: m.valueName }
+  { name, names: ["--${name}", ..short, ..m.aliases], takesValue, help: m.help, valueName: m.valueName, valueCompletion: @Unspecified }
 
 flag = (config: { .. } = {}) => {
   meta: (name: Text) => metadata(name, false, config),
@@ -98,7 +102,9 @@ renderHelp = (options: Array(Meta), info): Text =>
 define = (schema: s, info: { .. } = {}, @keys = keysOf(schema)) =>
   options = valuesOf({ keys -> key; (key, schema[key].meta(key)) })
   usage = renderHelp(options, info)
+  completion: Completion = @Options(options)
   {
+    completion,
     help: usage,
     helpFor: (_: Array(Text)): Text => usage,
     parse: (argv: Array(Text)) =>
@@ -114,15 +120,16 @@ define = (schema: s, info: { .. } = {}, @keys = keysOf(schema)) =>
 parse = (spec, argv: Array(Text)) => spec.parse(argv)
 help = (spec, argv: Array(Text) = []) => spec.helpFor(argv)
 
-CommandMeta = { names: Array(Text), help: Text }
+CommandMeta = { names: Array(Text), help: Text, child: Completion }
 
 # The explicit constructor supplies the tag; its payload is inferred from the
 # child parser. This avoids inventing a type name from a command's spelling.
 command = (spec: { parse: (Array(Text)) -> Result(a, Text), helpFor: (Array(Text)) -> Text, .. }, wrap: (a) -> b, config: { .. } = {}) =>
   aliases: Array(Text) = []
   m: { aliases: Array(Text), help: Text } = { aliases, help: "", ..config }
+  child: Completion = { completion: @Opaque, ..spec }.completion
   {
-    meta: (name: Text): CommandMeta => { names: [name, ..m.aliases], help: m.help }
+    meta: (name: Text): CommandMeta => { names: [name, ..m.aliases], help: m.help, child }
     helpFor: spec.helpFor
     parse: (argv: Array(Text)) => @Ok(wrap(spec.parse(argv)?^))
   }
@@ -143,7 +150,9 @@ app = (commands: s, info: { .. } = {}, @keys = keysOf(commands)) =>
   parsers = valuesOf({ keys -> key; (key, commands[key].parse) })
   helps = valuesOf({ keys -> key; (key, commands[key].helpFor) })
   usage = renderCommandHelp(details, info)
+  completion: Completion = @Commands(details)
   {
+    completion
     help: usage
     helpFor: (argv: Array(Text)): Text =>
       head = argv[0] ?? ""

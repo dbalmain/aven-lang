@@ -1,0 +1,23 @@
+cli = import("std/cli")
+test = import("std/test")
+leaf = cli.define({ verbose: cli.flag({ short: "v", help: "Print steps" }) })
+tool = cli.app({ add: cli.command(leaf, (a) => @Add(a), { aliases: ["a"] }) })
+custom = { parse: (_: Array(Text)): Result(Bool, Text) => @Ok(true), helpFor: (_: Array(Text)): Text => "custom" }
+opaque = cli.app({ custom: cli.command(custom, (a) => @Custom(a)) })
+
+{
+  optionMetadata: () => leaf.completion ?>
+    @Options(options) =>
+      test.expectEq(options.map((o) => o.names), [["--verbose", "-v"]])?^
+      test.expectEq(options.map((o) => o.valueCompletion), [@Unspecified])
+    _ => test.fail("missing option metadata")
+  childMetadata: () => tool.completion ?>
+    @Commands(commands) =>
+      test.expectEq(commands.map((c) => c.names), [["add", "a"]])?^
+      test.expectEq(commands.map((c) => c.child), [leaf.completion])
+    _ => test.fail("missing command metadata")
+  customParserStillWorks: () => test.expectEq(cli.parse(opaque, ["custom"]), @Ok(@Custom(true)))
+  opaqueMetadata: () => opaque.completion ?>
+    @Commands(commands) => test.expectEq(commands.map((c) => c.child), [@Opaque])
+    _ => test.fail("missing opaque metadata")
+}

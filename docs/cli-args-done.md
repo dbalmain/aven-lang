@@ -186,25 +186,38 @@ suite both pass. General comptime constant residualization remains unimplemented
 Command slice gates: fmt and clippy `-D warnings` pass; full workspace
 **1778 passed / 0 failed** (1767 resume baseline, no drop).
 
-## Completion prerequisite (confirmed on Resume 2)
+## Completion generation — Round 2
+
+Baseline: `73b35e6`, **1795 collected tests passing**, supplied by Dave.
+Runtime generation on demand is approved. The tool owns its delivery route;
+`app` does not reserve or intercept `completions`. The API takes the executable
+name explicitly: `cli.completions(spec, shell, program)`.
+
+The comptime route is measured **unavailable**, not merely unprofitable. Both
+of Dave's probes were reproduced with the real `aven check` binary:
 
 ```aven
-emit = (@name: Text) => "complete -c ${name}"
-Script = emit("tool")
-script: Text = Script
+join = (parts: Array(Text)): Text => parts.joinWith("\n")
+script = comptime(join(["a", "b"]))
 ```
 
-`Script` reports `comptime.evaluation-unsupported`. Changing it to a lowercase
-binding checks, but the evaluator still executes the function call at runtime.
-That does not satisfy the requested constant-generation cost. The comptime
-value evaluator does not support interpolation, arrays, records, blocks, ordinary
-method calls, or general liftable closures; the existing runtime plan materializes
-type artifacts, not evaluated string call results. This is a general evaluator
-and constant-emission prerequisite, not shell-specific Rust work.
+```aven
+script = comptime("x".toUpper())
+```
 
-No runtime bash/fish generator has been added under a misleading comptime label.
-I asked whether to extend general comptime evaluation, explicitly permit an Aven
-build-time constants generator, or checkpoint the prerequisite for the next slice.
+Both report `comptime.argument-not-known` at the pin. `comptime` preserves the
+argument's inferred type; the earlier interpolation-only example passes because
+inference already supplies a singleton. General record/closure evaluation and
+constant residualisation are not being added for completions.
+
+Round 2 checkpoint: `define` and `app` expose a `completion` node using their
+existing normalized metadata. `CommandMeta.child` preserves nested metadata;
+custom parser records without metadata remain supported as opaque children.
+`Meta.valueCompletion: @Unspecified` is the explicit seam for future Files,
+Dirs and Values hints; no value domains are implemented in this slice.
+
+Generators, shell behavior tests, user documentation and final gates remain in
+progress. No new runtime dependencies or compiler changes.
 
 The design's “loaded through STD_AMBIENT_METHOD_MODULES” needs correction:
 `std/cli` is an embedded standard-library module loaded by ordinary import. That

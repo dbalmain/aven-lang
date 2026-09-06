@@ -8,6 +8,7 @@ fn cli_library_aven_suite_checks_and_runs() {
     for suite in [
         include_str!("fixtures/cli/parse.av"),
         include_str!("fixtures/cli/commands.av"),
+        include_str!("fixtures/cli/completions.av"),
     ] {
         let script = Script::new(suite);
         assert_success(&script.aven(&["check"], &[]));
