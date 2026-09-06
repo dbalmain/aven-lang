@@ -1,9 +1,9 @@
 # String literals and comptime contract
 
-Status: design accepted for implementation; parser, formatter, and evaluator
-support are still pending. This document records the contract that library
-code may target. It does not claim that the current compiler accepts every
-example yet.
+Status: the string half is implemented — lexer, formatter, and `std/cli`'s own
+generated shell fragments all use it. The comptime half is implemented **at the
+pin only**; whether an ordinary call folds is an open decision, recorded at the
+end of this document.
 
 ## Multiline and raw strings
 
@@ -19,8 +19,10 @@ query = """
   """
 ```
 
-The opening delimiter must be immediately followed by a physical newline, and
-the closing delimiter must be on its own line after spaces only. The two
+The opening delimiter must be followed by a physical newline. Spaces and tabs
+may sit between the two: they belong to no line of the value, and an editor
+that trims on save must not change a program's meaning. The closing delimiter
+must be on its own line after spaces only. The two
 boundary newlines are removed from the value. The number of spaces before the
 closing delimiter is the dedent margin `N`: remove exactly `N` spaces from each
 content line. A nonblank line with fewer than `N` leading spaces is an error.
@@ -99,6 +101,26 @@ The second case is an implementation limitation, not a user error in the
 program's phase. The diagnostic should identify the operation and capability
 gap so library authors do not redesign a sound API around an accidental
 restriction.
+
+## What is implemented, and the one open decision
+
+`comptime(e)` evaluates through ordinary helpers, ambient method bodies,
+lexical captures and record shorthand, with nothing marked comptime, and
+narrows to the value it produced. It narrows only to a *refinement*: the
+singleton must already sit inside the type the expression had. A base kind
+admits its own literals and an open literal row admits one more of its own
+base. A named family such as `Money` is not a base kind, which is what stops a
+branded value folding to a raw number and picking up plain-`Int` behavior.
+
+The spec's *Comptime by inference* section asks for more than this: that **any**
+call with comptime-known arguments folds, so that `double(2)` has type `4`
+under a `(Int) -> Int` signature. That is not implemented. An attempt at it
+narrowed `Map.get` from `?Int` to `1`, collapsed a `1 | 1.0` match join to
+whichever branch ran, folded a branded `Money` to its raw `Int`, and cost an
+evaluator environment clone on every inferred call — 36 checker tests, several
+of them soundness properties, disagreed with it. Doing it correctly needs a
+lifting rule for `Optional`, `Result`, records and named families, and a cost
+story for evaluating calls the program never asked to fold.
 
 See [`language-spec.md`](../../docs/language-spec.md), the comptime and string
 literal sections, for the normative language draft. This document is the
