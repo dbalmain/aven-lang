@@ -105,8 +105,11 @@ when the program really is `tool`.
 The bash script reads the command line itself rather than trusting `COMP_WORDS`,
 which splits on `=`. It reads only literal text: redirections and their operands
 are skipped, `$'…'` is decoded, and a `$(…)` or `${…}` is kept whole as one word
-and never run — so an unresolved expansion can fill a value position but never
-matches an option or command name. Two shapes are bash's own limits, not the
+and never run. Nested expansions retain their own quote context, including when
+the outer expansion is double-quoted; an incomplete expansion offers nothing.
+ANSI-C NUL escapes truncate only their quoted segment, preserving concatenated
+text after its closing quote. An unresolved expansion can fill a value position
+but never matches an option or command name. Two shapes are bash's own limits, not the
 generator's: bash truncates the line at an `&` or an unquoted backtick, so it
 never calls the completion for `tool add 2>&1 --`, and a continuation typed
 across two lines starts a fresh completion context on the second (pasting the

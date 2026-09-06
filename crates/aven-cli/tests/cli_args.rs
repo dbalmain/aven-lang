@@ -169,6 +169,14 @@ fn generated_bash_completions_ignore_shell_syntax_that_is_not_argv() {
         ("tool $'\\141dd' --", ADD_OPTIONS),
         ("tool $'\\x61dd' --", ADD_OPTIONS),
         ("tool $'\\u0061dd' --", ADD_OPTIONS),
+        // NUL ends this quoted segment, not the concatenated shell word.
+        ("tool $'add\\0junk' --", ADD_OPTIONS),
+        ("tool $'ad\\0d' --", &[]),
+        ("tool $'ad\\0ignored'd --", ADD_OPTIONS),
+        ("tool $'ad\\x00ignored'd --", ADD_OPTIONS),
+        ("tool $'ad\\u0000ignored'd --", ADD_OPTIONS),
+        ("tool $'ad\\c@ignored'd --", ADD_OPTIONS),
+        ("tool $'ad\\0ignored\\\'still ignored'd --", ADD_OPTIONS),
         ("tool $'ad", &["add"]),
         ("tool add $'--ver'", &["--verbose"]),
         ("tool add --out $'a\\tb' --", AFTER_OUT),
@@ -180,6 +188,22 @@ fn generated_bash_completions_ignore_shell_syntax_that_is_not_argv() {
         ("tool add --out $(printf \"value\") --", AFTER_OUT),
         ("tool add --out ${HOME} --", AFTER_OUT),
         ("tool add --out=$(printf \"v\") --", AFTER_OUT),
+        (
+            "tool add --out \"$(printf \"%s\" \"hello world\")\" --",
+            AFTER_OUT,
+        ),
+        ("tool add --out $(printf \"%s\" \"(\") --", AFTER_OUT),
+        ("tool add --out $(printf \"%s\" \")\") --", AFTER_OUT),
+        ("tool add --out ${value:-'}'} --", AFTER_OUT),
+        (
+            "tool add --out \"$(printf \"%s\" \"$(printf ')')\")\" --",
+            AFTER_OUT,
+        ),
+        ("tool add --out $(printf \\)) --", AFTER_OUT),
+        ("tool add --out $(printf $'\\\'(') --", AFTER_OUT),
+        ("tool add >$(printf \"(\") --", ADD_OPTIONS),
+        ("tool add --out $(touch INJECTED) --", AFTER_OUT),
+        ("tool add --out $(printf \"unterminated --", &[]),
         ("tool $(echo add) --", &[]),
     ]);
 }

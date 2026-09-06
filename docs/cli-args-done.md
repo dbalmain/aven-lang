@@ -338,13 +338,10 @@ the pending `--out` value and `"value")` became an unknown argument. The policy
 now is: `$(…)` and `${…}` are copied verbatim as **one** word, by depth-counting
 brackets, and are never executed. Such a word can never equal an option or
 command name, so it is only ever accepted where any value is accepted — filling a
-pending option value — and anywhere else it yields no candidates. That is the
-conservative outcome, and it is also why nothing is lost when the expansion would
-really have split into several words: the divergent case
-(`--out $(printf "two words")`) is one where the real invocation gains an
-unsupported positional anyway. A `)` inside a quoted string inside `$( )` still
-closes the scan early; the leftover becomes an unknown word, so the failure mode
-is again no candidates.
+pending option value — and anywhere else it yields no candidates. This is an
+approximation: an unquoted expansion can actually produce zero or multiple argv
+elements. Completion does not execute it to discover those elements. The initial
+depth counter mishandled quoted delimiters; the follow-up below replaces it.
 
 **Unterminated string diagnostic.** `push_unterminated_string` recommended raw
 strings, which the lexer does not implement (nor triple-quoted strings — the only
@@ -371,3 +368,28 @@ baseline; the two new tests are
 `generated_bash_completions_survive_pasted_line_continuations`). No language
 changes were made: the proposals in
 `cli-language-priority-handoff.md` remain Dave's to decide.
+
+### Round 3 follow-up: quoted expansion boundaries and NUL
+
+The ANSI-C decoder now recognizes a decoded NUL and skips the remainder of that
+quoted segment, respecting escaped quotes while locating its end. Concatenated
+text remains part of the word: `$'ad\0ignored'd` is `add`, while `$'ad\0d'` is
+`ad`. This applies to octal, hex, Unicode and control-character NUL escapes.
+
+Expansion boundaries now use a stack of closing delimiters and quote contexts.
+Quoted or escaped parentheses do not close an expansion; nested substitutions
+have their own quote state, including inside an outer double-quoted word. Source
+is still copied literally and never executed. Incomplete expansions return no
+candidates. This is a boundary scanner, not an evaluator or a complete Bash
+grammar parser (for example, it does not parse case statements or heredoc bodies
+inside substitutions).
+
+The real-Readline matrix covers both reported failures plus concatenated ANSI-C
+segments, several NUL spellings, quoted/escaped delimiters, nested substitutions,
+redirection targets, incomplete input, and a substitution containing
+`touch INJECTED` that must not execute.
+
+Follow-up validation: all 14 CLI integration tests pass; workspace fmt and
+clippy with `-D warnings` pass; the full workspace suite passes with local socket
+access for its HTTP test servers. Shell coverage in this follow-up is the local
+bash 5.3.9 / fish 4.7.1 installation; older versions were not rerun.
