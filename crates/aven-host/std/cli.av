@@ -334,235 +334,239 @@ completions = (spec: { completion: Completion, .. }, shell: "bash" | "fish", pro
 
 bashStartLines = (): Array(Text) =>
   [
-    "  local LC_ALL=C",
-    "  local line=\${COMP_LINE:0:COMP_POINT} word='' quote='' ch next cur state=n pending=0 key takes item",
-    "  local escaped=0 started=0 drop=0 expDepth=0 expEsc=0 digits limit code i",
-    "  # Redirections are not arguments. A file-descriptor or {name} prefix only",
-    "  # counts at a word start; `<` and `>` also end the word they follow.",
-    "  local redir='^([0-9]+|\\{[A-Za-z_][A-Za-z_0-9]*\\})?(&>>|&>|>>|>\\||>&|>|<<<|<<-|<<|<>|<&|<)'",
-    "  local -a words=() seen=() candidates=() expEnds=() expQuotes=()",
-    "  COMPREPLY=()",
-    "  # Read literal shell words without executing expansions. COMP_WORDS splits '='.",
-    "  for ((i=0; i<\${#line}; i++)); do",
-    "    ch=\${line:i:1}",
-    "    if ((escaped)); then word+=\"$ch\"; escaped=0; continue; fi",
+    ..r"""
+      local LC_ALL=C
+      local line=${COMP_LINE:0:COMP_POINT} word='' quote='' ch next cur state=n pending=0 key takes item
+      local escaped=0 started=0 drop=0 expDepth=0 expEsc=0 digits limit code i
+      # Redirections are not arguments. A file-descriptor or {name} prefix only
+      # counts at a word start; `<` and `>` also end the word they follow.
+      local redir='^([0-9]+|\{[A-Za-z_][A-Za-z_0-9]*\})?(&>>|&>|>>|>\||>&|>|<<<|<<-|<<|<>|<&|<)'
+      local -a words=() seen=() candidates=() expEnds=() expQuotes=()
+      COMPREPLY=()
+      # Read literal shell words without executing expansions. COMP_WORDS splits '='.
+      for ((i=0; i<${#line}; i++)); do
+        ch=${line:i:1}
+        if ((escaped)); then word+="$ch"; escaped=0; continue; fi
+    """.splitOn("\n"),
     ..bashExpansionLines(),
-    "    case \"$quote\" in",
-    "      \"'\")",
-    "        if [[ $ch == \"'\" ]]; then quote=''; else word+=\"$ch\"; fi ;;",
-    "      dead)",
-    "        # NUL truncates only this ANSI-C segment. Still find its unescaped end.",
-    "        case \"$ch\" in",
-    "          \"'\") quote='' ;;",
-    "          '\\') i=$((i+1)); [[ \${line:i:1} == c ]] && i=$((i+1)) ;;",
-    "        esac ;;",
-    "      c)",
-    "        # Inside $'...', where backslashes decode ANSI-C style.",
-    "        case \"$ch\" in",
-    "          \"'\") quote='' ;;",
-    "          '\\')",
-    "            i=$((i+1)); next=\${line:i:1}",
-    "            case \"$next\" in",
-    "              a) word+=$'\\a' ;;",
-    "              b) word+=$'\\b' ;;",
-    "              e|E) word+=$'\\e' ;;",
-    "              f) word+=$'\\f' ;;",
-    "              n) word+=$'\\n' ;;",
-    "              r) word+=$'\\r' ;;",
-    "              t) word+=$'\\t' ;;",
-    "              v) word+=$'\\v' ;;",
-    "              '\\'|\"'\"|'\"'|'?') word+=\"$next\" ;;",
-    "              [0-7])",
-    "                digits=$next",
-    "                while ((\${#digits} < 3)) && [[ \${line:i+1:1} == [0-7] ]]; do i=$((i+1)); digits+=\${line:i:1}; done",
-    "                printf -v code '%b' \"\\\\0$digits\"; word+=$code; [[ -n $code ]] || quote=dead ;;",
-    "              x|u|U)",
-    "                case $next in x) limit=2 ;; u) limit=4 ;; *) limit=8 ;; esac",
-    "                digits=''",
-    "                while ((\${#digits} < limit)) && [[ \${line:i+1:1} == [0-9a-fA-F] ]]; do i=$((i+1)); digits+=\${line:i:1}; done",
-    "                if [[ -n $digits ]]; then printf -v code '%b' \"\\\\$next$digits\"; word+=$code; [[ -n $code ]] || quote=dead; else word+=\"\\\\$next\"; fi ;;",
-    "              c)",
-    "                i=$((i+1)); next=\${line:i:1}",
-    "                if [[ -n $next ]]; then printf -v code '%d' \"'$next\"; printf -v code '%03o' \"$((code ^ 64))\"; printf -v code '%b' \"\\\\0$code\"; word+=$code; [[ -n $code ]] || quote=dead; fi ;;",
-    "              '') ;;",
-    "              *) word+=\"\\\\$next\" ;;",
-    "            esac ;;",
-    "          *) word+=\"$ch\" ;;",
-    "        esac ;;",
-    "      '\"')",
-    "        case \"$ch\" in",
-    "          '\"') quote='' ;;",
-    "          '\\')",
-    "            next=\${line:i+1:1}",
-    "            case \"$next\" in",
-    "              $'\\n') i=$((i+1)) ;;",
-    "              '$'|'`'|'\"'|'\\') escaped=1 ;;",
-    "              *) word+=\"$ch\" ;;",
-    "            esac ;;",
-    "          *) word+=\"$ch\" ;;",
-    "        esac ;;",
-    "      '')",
-    "        case \"$ch\" in",
-    "          \"'\"|'\"') quote=$ch; started=1 ;;",
-    "          '\\')",
-    "            # A backslash-newline is a line continuation and starts no word.",
-    "            if [[ \${line:i+1:1} == $'\\n' ]]; then i=$((i+1)); else escaped=1; started=1; fi ;;",
-    "          ' '|$'\\t'|$'\\n')",
-    "            if ((started)); then",
-    "              if ((drop)); then drop=0; else words+=(\"$word\"); fi",
-    "              word=''; started=0",
-    "            fi ;;",
-    "          '$')",
-    "            next=\${line:i+1:1}",
-    "            case \"$next\" in",
-    "              \"'\") quote=c; i=$((i+1)); started=1 ;;",
-    "              '\"') quote='\"'; i=$((i+1)); started=1 ;;",
-    "              *) word+=\"$ch\"; started=1 ;;",
-    "            esac ;;",
-    "          '<'|'>'|'&'|'{'|[0-9])",
-    "            if [[ \${line:i} =~ $redir ]] && { [[ $ch == '<' || $ch == '>' ]] || ((started == 0)); }; then",
-    "              if ((started)); then",
-    "                if ((drop)); then drop=0; else words+=(\"$word\"); fi",
-    "                word=''; started=0",
-    "              fi",
-    "              i=$((i + \${#BASH_REMATCH[0]} - 1)); drop=1",
-    "            else",
-    "              word+=\"$ch\"; started=1",
-    "            fi ;;",
-    "          *) word+=\"$ch\"; started=1 ;;",
-    "        esac ;;",
-    "    esac",
-    "  done",
-    "  # A word still attached to a redirection is a target, not an argument.",
-    "  ((drop || expDepth)) && return 0",
-    "  cur=$word",
-    "  for ((i=1; i<\${#words[@]}; i++)); do",
-    "    word=\${words[i]}",
-    "    if ((pending)); then",
-    "      [[ $word == -- ]] && return 0",
-    "      pending=0",
-    "      continue",
-    "    fi",
-    "    case \"$state\" in"
+    ..r"""
+        case "$quote" in
+          "'")
+            if [[ $ch == "'" ]]; then quote=''; else word+="$ch"; fi ;;
+          dead)
+            # NUL truncates only this ANSI-C segment. Still find its unescaped end.
+            case "$ch" in
+              "'") quote='' ;;
+              '\') i=$((i+1)); [[ ${line:i:1} == c ]] && i=$((i+1)) ;;
+            esac ;;
+          c)
+            # Inside $'...', where backslashes decode ANSI-C style.
+            case "$ch" in
+              "'") quote='' ;;
+              '\')
+                i=$((i+1)); next=${line:i:1}
+                case "$next" in
+                  a) word+=$'\a' ;;
+                  b) word+=$'\b' ;;
+                  e|E) word+=$'\e' ;;
+                  f) word+=$'\f' ;;
+                  n) word+=$'\n' ;;
+                  r) word+=$'\r' ;;
+                  t) word+=$'\t' ;;
+                  v) word+=$'\v' ;;
+                  '\'|"'"|'"'|'?') word+="$next" ;;
+                  [0-7])
+                    digits=$next
+                    while ((${#digits} < 3)) && [[ ${line:i+1:1} == [0-7] ]]; do i=$((i+1)); digits+=${line:i:1}; done
+                    printf -v code '%b' "\\0$digits"; word+=$code; [[ -n $code ]] || quote=dead ;;
+                  x|u|U)
+                    case $next in x) limit=2 ;; u) limit=4 ;; *) limit=8 ;; esac
+                    digits=''
+                    while ((${#digits} < limit)) && [[ ${line:i+1:1} == [0-9a-fA-F] ]]; do i=$((i+1)); digits+=${line:i:1}; done
+                    if [[ -n $digits ]]; then printf -v code '%b' "\\$next$digits"; word+=$code; [[ -n $code ]] || quote=dead; else word+="\\$next"; fi ;;
+                  c)
+                    i=$((i+1)); next=${line:i:1}
+                    if [[ -n $next ]]; then printf -v code '%d' "'$next"; printf -v code '%03o' "$((code ^ 64))"; printf -v code '%b' "\\0$code"; word+=$code; [[ -n $code ]] || quote=dead; fi ;;
+                  '') ;;
+                  *) word+="\\$next" ;;
+                esac ;;
+              *) word+="$ch" ;;
+            esac ;;
+          '"')
+            case "$ch" in
+              '"') quote='' ;;
+              '\')
+                next=${line:i+1:1}
+                case "$next" in
+                  $'\n') i=$((i+1)) ;;
+                  '$'|'`'|'"'|'\') escaped=1 ;;
+                  *) word+="$ch" ;;
+                esac ;;
+              *) word+="$ch" ;;
+            esac ;;
+          '')
+            case "$ch" in
+              "'"|'"') quote=$ch; started=1 ;;
+              '\')
+                # A backslash-newline is a line continuation and starts no word.
+                if [[ ${line:i+1:1} == $'\n' ]]; then i=$((i+1)); else escaped=1; started=1; fi ;;
+              ' '|$'\t'|$'\n')
+                if ((started)); then
+                  if ((drop)); then drop=0; else words+=("$word"); fi
+                  word=''; started=0
+                fi ;;
+              '$')
+                next=${line:i+1:1}
+                case "$next" in
+                  "'") quote=c; i=$((i+1)); started=1 ;;
+                  '"') quote='"'; i=$((i+1)); started=1 ;;
+                  *) word+="$ch"; started=1 ;;
+                esac ;;
+              '<'|'>'|'&'|'{'|[0-9])
+                if [[ ${line:i} =~ $redir ]] && { [[ $ch == '<' || $ch == '>' ]] || ((started == 0)); }; then
+                  if ((started)); then
+                    if ((drop)); then drop=0; else words+=("$word"); fi
+                    word=''; started=0
+                  fi
+                  i=$((i + ${#BASH_REMATCH[0]} - 1)); drop=1
+                else
+                  word+="$ch"; started=1
+                fi ;;
+              *) word+="$ch"; started=1 ;;
+            esac ;;
+        esac
+      done
+      # A word still attached to a redirection is a target, not an argument.
+      ((drop || expDepth)) && return 0
+      cur=$word
+      for ((i=1; i<${#words[@]}; i++)); do
+        word=${words[i]}
+        if ((pending)); then
+          [[ $word == -- ]] && return 0
+          pending=0
+          continue
+        fi
+        case "$state" in
+    """.splitOn("\n")
   ]
 
 bashExpansionLines = (): Array(Text) =>
-  [
-    "    # Preserve expansions literally, with a quote context for each nesting level.",
-    "    # This scanner only finds boundaries; it never evaluates shell source.",
-    "    if ((expDepth)); then",
-    "      word+=\"$ch\"",
-    "      if ((expEsc)); then expEsc=0; continue; fi",
-    "      case \"\${expQuotes[expDepth]}\" in",
-    "        \"'\") [[ $ch == \"'\" ]] && expQuotes[expDepth]=''; continue ;;",
-    "        c)",
-    "          case \"$ch\" in",
-    "            \"'\") expQuotes[expDepth]='' ;;",
-    "            '\\')",
-    "              i=$((i+1)); ch=\${line:i:1}; word+=\"$ch\"",
-    "              if [[ $ch == c ]]; then i=$((i+1)); word+=\${line:i:1}; fi ;;",
-    "          esac",
-    "          continue ;;",
-    "        '`')",
-    "          case \"$ch\" in '`') expQuotes[expDepth]='' ;; '\\') expEsc=1 ;; esac",
-    "          continue ;;",
-    "      esac",
-    "      if [[ $ch == '\\' ]]; then expEsc=1; continue; fi",
-    "      if [[ $ch == '$' && ( \${line:i+1:1} == '(' || \${line:i+1:1} == '{' ) ]]; then",
-    "        i=$((i+1)); ch=\${line:i:1}; word+=\"$ch\"",
-    "        expDepth=$((expDepth+1)); expQuotes[expDepth]=''",
-    "        case \"$ch\" in '(') expEnds[expDepth]=')' ;; *) expEnds[expDepth]='}' ;; esac",
-    "        continue",
-    "      fi",
-    "      if [[ -z \${expQuotes[expDepth]} && $ch == '$' && \${line:i+1:1} == \"'\" ]]; then",
-    "        i=$((i+1)); word+=\"'\"; expQuotes[expDepth]=c; continue",
-    "      fi",
-    "      if [[ \${expQuotes[expDepth]} == '\"' ]]; then",
-    "        [[ $ch == '\"' ]] && expQuotes[expDepth]=''",
-    "        continue",
-    "      fi",
-    "      case \"$ch\" in",
-    "        \"'\"|'\"'|'`') expQuotes[expDepth]=$ch ;;",
-    "        '(')",
-    "          if [[ \${expEnds[expDepth]} == ')' ]]; then",
-    "            expDepth=$((expDepth+1)); expEnds[expDepth]=')'; expQuotes[expDepth]=''",
-    "          fi ;;",
-    "        ')'|'}') [[ $ch == \"\${expEnds[expDepth]}\" ]] && expDepth=$((expDepth-1)) ;;",
-    "      esac",
-    "      continue",
-    "    fi",
-    "    if [[ ( -z $quote || $quote == '\"' ) && $ch == '$' && ( \${line:i+1:1} == '(' || \${line:i+1:1} == '{' ) ]]; then",
-    "      word+=\"$ch\"; i=$((i+1)); ch=\${line:i:1}; word+=\"$ch\"; started=1",
-    "      expDepth=1; expQuotes[1]=''",
-    "      case \"$ch\" in '(') expEnds[1]=')' ;; *) expEnds[1]='}' ;; esac",
-    "      continue",
-    "    fi"
-  ]
+  r"""
+      # Preserve expansions literally, with a quote context for each nesting level.
+      # This scanner only finds boundaries; it never evaluates shell source.
+      if ((expDepth)); then
+        word+="$ch"
+        if ((expEsc)); then expEsc=0; continue; fi
+        case "${expQuotes[expDepth]}" in
+          "'") [[ $ch == "'" ]] && expQuotes[expDepth]=''; continue ;;
+          c)
+            case "$ch" in
+              "'") expQuotes[expDepth]='' ;;
+              '\')
+                i=$((i+1)); ch=${line:i:1}; word+="$ch"
+                if [[ $ch == c ]]; then i=$((i+1)); word+=${line:i:1}; fi ;;
+            esac
+            continue ;;
+          '`')
+            case "$ch" in '`') expQuotes[expDepth]='' ;; '\') expEsc=1 ;; esac
+            continue ;;
+        esac
+        if [[ $ch == '\' ]]; then expEsc=1; continue; fi
+        if [[ $ch == '$' && ( ${line:i+1:1} == '(' || ${line:i+1:1} == '{' ) ]]; then
+          i=$((i+1)); ch=${line:i:1}; word+="$ch"
+          expDepth=$((expDepth+1)); expQuotes[expDepth]=''
+          case "$ch" in '(') expEnds[expDepth]=')' ;; *) expEnds[expDepth]='}' ;; esac
+          continue
+        fi
+        if [[ -z ${expQuotes[expDepth]} && $ch == '$' && ${line:i+1:1} == "'" ]]; then
+          i=$((i+1)); word+="'"; expQuotes[expDepth]=c; continue
+        fi
+        if [[ ${expQuotes[expDepth]} == '"' ]]; then
+          [[ $ch == '"' ]] && expQuotes[expDepth]=''
+          continue
+        fi
+        case "$ch" in
+          "'"|'"'|'`') expQuotes[expDepth]=$ch ;;
+          '(')
+            if [[ ${expEnds[expDepth]} == ')' ]]; then
+              expDepth=$((expDepth+1)); expEnds[expDepth]=')'; expQuotes[expDepth]=''
+            fi ;;
+          ')'|'}') [[ $ch == "${expEnds[expDepth]}" ]] && expDepth=$((expDepth-1)) ;;
+        esac
+        continue
+      fi
+      if [[ ( -z $quote || $quote == '"' ) && $ch == '$' && ( ${line:i+1:1} == '(' || ${line:i+1:1} == '{' ) ]]; then
+        word+="$ch"; i=$((i+1)); ch=${line:i:1}; word+="$ch"; started=1
+        expDepth=1; expQuotes[1]=''
+        case "$ch" in '(') expEnds[1]=')' ;; *) expEnds[1]='}' ;; esac
+        continue
+      fi
+  """.splitOn("\n")
 
 bashOptionsStartLines = (): Array(Text) =>
-  [
-    "        [[ $word == -- ]] && return 0",
-    "        key='' takes=0",
-    "        case \"\${word%%=*}\" in"
-  ]
+  r"""
+          [[ $word == -- ]] && return 0
+          key='' takes=0
+          case "${word%%=*}" in
+  """.splitOn("\n")
 
 bashOptionsEndLines = (): Array(Text) =>
-  [
-    "          *) return 0 ;;",
-    "        esac",
-    "        for item in \"\${seen[@]}\"; do [[ $item == \"$key\" ]] && return 0; done",
-    "        seen+=(\"$key\")",
-    "        if [[ $word == *=* ]]; then",
-    "          ((takes)) || return 0",
-    "        elif ((takes)); then",
-    "          pending=1",
-    "        fi"
-  ]
+  r"""
+            *) return 0 ;;
+          esac
+          for item in "${seen[@]}"; do [[ $item == "$key" ]] && return 0; done
+          seen+=("$key")
+          if [[ $word == *=* ]]; then
+            ((takes)) || return 0
+          elif ((takes)); then
+            pending=1
+          fi
+  """.splitOn("\n")
 
 fishStartLines = (): Array(Text) =>
-  [
-    "  set -l state n",
-    "  set -l pending 0",
-    "  set -l seen",
-    "  for word in $words[2..-1]",
-    "    if test $pending = 1",
-    "      test \"$word\" = --; and return 1",
-    "      set pending 0",
-    "      continue",
-    "    end",
-    "    switch \"$state\""
-  ]
+  r"""
+    set -l state n
+    set -l pending 0
+    set -l seen
+    for word in $words[2..-1]
+      if test $pending = 1
+        test "$word" = --; and return 1
+        set pending 0
+        continue
+      end
+      switch "$state"
+  """.splitOn("\n")
 
 fishOptionsStartLines = (): Array(Text) =>
-  [
-    "        test \"$word\" = --; and return 1",
-    "        set -l head (string split -m 1 '=' -- \"$word\")[1]",
-    "        set -l key ''",
-    "        set -l takes 0"
-  ]
+  r"""
+          test "$word" = --; and return 1
+          set -l head (string split -m 1 '=' -- "$word")[1]
+          set -l key ''
+          set -l takes 0
+  """.splitOn("\n")
 
 fishOptionsEndLines = (): Array(Text) =>
-  [
-    "        contains -- \"$key\" $seen; and return 1",
-    "        set -a seen \"$key\"",
-    "        if string match -q '*=*' -- \"$word\"",
-    "          test $takes = 1; or return 1",
-    "        else if test $takes = 1",
-    "          set pending 1",
-    "        end"
-  ]
+  r"""
+          contains -- "$key" $seen; and return 1
+          set -a seen "$key"
+          if string match -q '*=*' -- "$word"
+            test $takes = 1; or return 1
+          else if test $takes = 1
+            set pending 1
+          end
+  """.splitOn("\n")
 
 fishEndLines = (): Array(Text) =>
-  [
-    "    end",
-    "  end",
-    "  test \"$state\" = \"$argv[1]\"; or return 1",
-    "  test $pending = 0; or return 1",
-    "  if test (count $argv) -gt 1",
-    "    contains -- \"$argv[2]\" $seen; and return 1",
-    "  end",
-    "  return 0",
-    "end"
-  ]
+  r"""
+      end
+    end
+    test "$state" = "$argv[1]"; or return 1
+    test $pending = 0; or return 1
+    if test (count $argv) -gt 1
+      contains -- "$argv[2]" $seen; and return 1
+    end
+    return 0
+  end
+  """.splitOn("\n")
 
 { int, text, flag, option, required, define, parse, help, command, app, completions }
