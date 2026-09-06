@@ -103,6 +103,9 @@ patch applied, plus the opener-blank amendment above.
 
 ## The open decision
 
+Stated in full, with options and tradeoffs, at
+<https://claude.ai/code/artifact/534e74ba-11f3-4193-b61a-cc681c3fd861>.
+
 **Does an ordinary call with comptime-known arguments fold to a literal type?**
 
 The spec's *Comptime by inference* section (decision 2026-09-06) says yes, and
