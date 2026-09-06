@@ -1,0 +1,2 @@
+source "$AVEN_COMPLETION_SCRIPT"; or exit 91
+complete -C "$AVEN_COMPLETION_INPUT"

@@ -59,5 +59,40 @@ from the child parser. Command aliases are plain words. A child can itself be
 an app, producing a nested variant. `cli.help(tool, ["add"])` selects child help;
 parse errors also use the deepest matched command's usage.
 
-Completion scripts are not implemented yet. The required comptime string
-evaluation and constant emission are recorded in [the implementation note](cli-args-done.md).
+## Shell completions
+
+`cli.completions(spec, shell, program)` returns a completion script as `Text`
+for `"bash"` or `"fish"`. `program` is the installed executable name, which is
+independent of the `name` used in help output.
+
+```aven
+cli = import("std/cli")
+
+tool = cli.app({ ... }, { name: "tool" })
+
+args[0] ?>
+  "completions" => writeLine(cli.completions(tool, args[1] ?? "fish", "tool"))
+  _ => run(cli.parse(tool, args)?^)
+```
+
+Install it once — `tool completions fish > ~/.config/fish/completions/tool.fish`
+— and the shell handles TAB itself. Completion never starts Aven.
+
+The script follows the parser rather than approximating it: command aliases
+select the same options, an option's value is consumed even when it looks like a
+command or a flag, an option already supplied is not offered again under any of
+its spellings, and nothing is offered after `--`. Fish completions carry each
+option's help text as its description.
+
+Option names are completed; option *values* are not. A decoder says that a value
+is required, not what the valid values are, so the generator offers nothing
+there rather than guessing — and it disables the shell's filename fallback, so a
+value position stays empty instead of silently suggesting local files.
+`Meta.valueCompletion` is the seam where explicit value domains would attach.
+
+Fish declares short spellings with `-o`, because the parser accepts neither
+bundles (`-vj`) nor attached short values (`-j3`); `-s` would advertise
+completions the parser then rejects. A program name that cannot be written
+unquoted reaches only fish: bash resolves a completion spec by the command word
+exactly as typed and never removes quotes, so `'tool' --` matches no spec even
+when the program really is `tool`.

@@ -1,0 +1,7 @@
+cli = import("std/cli")
+spec = cli.define({ other: cli.flag() }, { name: "display name only" })
+program = args[2] ?? "tool"
+args[1] ?>
+  "bash" => writeLine(cli.completions(spec, "bash", program))
+  "fish" => writeLine(cli.completions(spec, "fish", program))
+  _ => writeLine("unknown shell")

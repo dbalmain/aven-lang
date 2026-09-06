@@ -1,0 +1,32 @@
+cli = import("std/cli")
+add = cli.define({
+  verbose: cli.flag({ short: "v", aliases: ["--chatty"], help: "Print each step" })
+  quiet: cli.flag({ short: "q", help: "Keep quiet" })
+  out: cli.option(cli.text, { default: "stdout", short: "o", aliases: ["--output"], help: "Dave's $HOME `quoted` $(touch INJECTED) \\ destination", valueName: "PATH" })
+}, { name: "display name add" })
+commit = cli.define({ jobs: cli.option(cli.int, { default: 1, short: "j" }) })
+remote = cli.app({ add: cli.command(cli.define({ force: cli.flag() }), (a) => @Add(a)) })
+tool = cli.app({
+  add: cli.command(add, (a) => @Add(a), { aliases: ["a"], help: "Add a file" })
+  commit: cli.command(commit, (a) => @Commit(a))
+  remote: cli.command(remote, (a) => @Remote(a), { aliases: ["r"] })
+  odd: cli.command(cli.define({ safe: cli.flag() }), (a) => @Odd(a), { aliases: ["we'ird$(touch INJECTED)"] })
+  empty: cli.command(cli.define({}), (a) => @Empty(a))
+  branch: cli.command(cli.app({}), (a) => @Branch(a))
+  custom: cli.command({ parse: (_: Array(Text)): Result(Bool, Text) => @Ok(true), helpFor: (_: Array(Text)): Text => "custom" }, (a) => @Custom(a))
+}, { name: "display name only" })
+
+(args[0] ?? "") == "completions" ?>
+  true =>
+    program = args[2] ?? "tool"
+    args[1] ?>
+      "fish" =>
+        writeLine(cli.completions(tool, "fish", program))
+        0
+      "bash" =>
+        writeLine(cli.completions(tool, "bash", program))
+        0
+      _ => 2
+  false => cli.parse(tool, args) ?>
+    @Ok(_) => 0
+    @Err(_) => 2

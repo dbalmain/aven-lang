@@ -210,14 +210,54 @@ argument's inferred type; the earlier interpolation-only example passes because
 inference already supplies a singleton. General record/closure evaluation and
 constant residualisation are not being added for completions.
 
-Round 2 checkpoint: `define` and `app` expose a `completion` node using their
+Round 2 metadata checkpoint **618b646**: `define` and `app` expose a `completion` node using their
 existing normalized metadata. `CommandMeta.child` preserves nested metadata;
 custom parser records without metadata remain supported as opaque children.
 `Meta.valueCompletion: @Unspecified` is the explicit seam for future Files,
 Dirs and Values hints; no value domains are implemented in this slice.
 
-Generators, shell behavior tests, user documentation and final gates remain in
-progress. No new runtime dependencies or compiler changes.
+Both generators now exist entirely in `std/cli.av`. They flatten the metadata
+only on an explicit generation call. Fish uses old-style short spellings,
+descriptions and exact-path conditions; bash uses a registered shell function
+and a literal-word scanner over `COMP_LINE` up to `COMP_POINT`, avoiding the
+false assumption that `COMP_WORDS` is argv. Both track arity, aliases, repeated
+options, nested commands and `--`; neither starts Aven on TAB.
+
+The real-shell matrix covers 43 contexts. The round-2 agent was cut off by a
+usage limit before running any gate, so nothing below this point was verified by
+it; the gates, the three defects and their fixes are the main thread's. The tree
+it left did not check at all — `option` and `command` were shadowed by local
+bindings in the new generators — and two further defects survived into the
+first green run:
+
+- The fish helper ran `string unescape` over `(commandline -opc)`, which already
+  returns unescaped tokens. The second pass ate apostrophes, so the guard
+  comparing the executable name failed and fish offered nothing for any program
+  whose name contained `'`. Removing the extra unescape fixed it. The
+  compatibility argument for keeping it (fish 3.7 lacking `commandline -x`) does
+  not apply: `-o` has always returned tokens with quotes removed.
+- The bash half of the registration test asserted completions for a program name
+  requiring quotes. Bash resolves a `complete` spec by the command word exactly
+  as typed, with no quote removal — verified on bash 5.3.9, where even
+  `'toolx' --` fails for a program genuinely named `toolx`. The expectation was
+  unreachable, so that case now asserts the registration itself, which is the
+  generator's actual obligation and still fails on a globbed or mangled name.
+
+A globbed `complete -c` pattern remains for fish, because fish cannot key a
+completion to a command name containing an apostrophe under any spelling; the
+exact executable-name condition inside the helper is what keeps it literal. The
+test also checks separate hyphen and
+underscore program registrations and shell metacharacters in descriptions and
+command aliases. Bash tests drive actual Readline TAB presses through an
+interactive process with piped input; no PTY crate or fake COMP_WORDS is needed.
+Unicode input exposed a harness issue with Readline meta conversion; the harness
+now uses UTF-8 and explicitly preserves high-bit input.
+
+CI and the heavy workflow install bash and fish. Missing shells fail tests.
+The generated fish helper uses the portable `commandline -opc` alone. User
+documentation is in `cli-library.md`. Gates green: fmt, clippy `-D warnings`,
+**1798 passed / 0 failed** (1795 baseline). No new runtime dependencies or
+compiler changes.
 
 The design's “loaded through STD_AMBIENT_METHOD_MODULES” needs correction:
 `std/cli` is an embedded standard-library module loaded by ordinary import. That

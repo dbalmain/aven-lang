@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Install shells for CLI completion tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bash fish
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
