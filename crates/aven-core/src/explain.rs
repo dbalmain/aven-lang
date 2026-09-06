@@ -87,6 +87,10 @@ const EXPLANATIONS: &[DiagnosticExplanation] = &[
         text: "A line dedented to a column that does not match an open layout block. Align it with an existing block level or change the surrounding indentation.",
     },
     DiagnosticExplanation {
+        code: codes::lex::INVALID_MULTILINE_STRING,
+        text: "Triple-quoted strings start with a newline and close on a line preceded only by spaces. Each nonblank content line must begin with at least as many spaces as the closing delimiter; this margin is removed from the value. Short blank lines are empty.",
+    },
+    DiagnosticExplanation {
         code: codes::lex::LEADING_BOM,
         text: "The file starts with a UTF-8 byte-order mark. Aven source files should be plain UTF-8 without a leading BOM.",
     },

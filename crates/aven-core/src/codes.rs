@@ -49,6 +49,7 @@ pub mod module {
 }
 
 pub mod lex {
+    pub const INVALID_MULTILINE_STRING: &str = "lex.invalid-multiline-string";
     pub const LEADING_BOM: &str = "lex.leading-bom";
     pub const RESERVED_OPERATOR: &str = "lex.reserved-operator";
     pub const SPREAD_EXTRA_DOTS: &str = "lex.spread-extra-dots";
@@ -215,6 +216,7 @@ pub const ALL: &[&str] = &[
     config::OPERATOR_TOKEN_INVALID,
     config::OPERATOR_TOKEN_RESERVED,
     layout::INCONSISTENT_INDENTATION,
+    lex::INVALID_MULTILINE_STRING,
     lex::LEADING_BOM,
     lex::RESERVED_OPERATOR,
     lex::SPREAD_EXTRA_DOTS,

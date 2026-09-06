@@ -140,6 +140,15 @@ fn format_parsed_source_with_reparse(
         return Err(parse.diagnostics.clone());
     }
 
+    // Reparse normalized physical line endings so all formatter offsets remain
+    // aligned. Escape sequences such as backslash-r are unaffected.
+    let normalized_source = source.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized_parse;
+    let (source, parse) = if normalized_source != source {
+        normalized_parse = reparse(&normalized_source);
+        (normalized_source.as_str(), &normalized_parse)
+    } else { (source, parse) };
+
     let mut formatted = format_lines(source, parse);
     let mut reparsed = reparse(&formatted);
     if reparsed.diagnostics.iter().any(Diagnostic::is_error) {
@@ -162,18 +171,97 @@ fn format_parsed_source_with_reparse(
     }
 }
 
+/// Collapse a multiline literal (including its interpolation expressions) into
+/// one formatting unit. Its interior is text, not a sequence of language lines.
+fn multiline_literal_spans(source: &str, tokens: &[Token]) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let mut interpolations = Vec::new();
+    for token in tokens {
+        match token.kind {
+            TokenKind::InterpolationStart(_) => interpolations.push(token.span.start),
+            TokenKind::InterpolationEnd(_) => {
+                if let Some(start) = interpolations.pop() {
+                    let span = Span::new(start, token.span.end);
+                    if source[span.start..span.end].contains(['\n', '\r']) { spans.push(span); }
+                }
+            }
+            TokenKind::StringLiteral(_) => {
+                if source[token.span.start..token.span.end].contains(['\n', '\r']) { spans.push(token.span); }
+            }
+            _ => {}
+        }
+    }
+    spans.sort_by_key(|span| (span.start, std::cmp::Reverse(span.end)));
+    let mut outer: Vec<Span> = Vec::new();
+    for span in spans {
+        if !outer.last().is_some_and(|previous| previous.end >= span.end) { outer.push(span); }
+    }
+    outer
+}
+
+fn protect_multiline_tokens(source: &str, tokens: &[Token], spans: &[Span]) -> Vec<Token> {
+    let mut protected = Vec::new();
+    let mut index = 0;
+    for token in tokens {
+        while spans.get(index).is_some_and(|span| span.end <= token.span.start) { index += 1; }
+        if let Some(span) = spans.get(index)
+            && span.start <= token.span.start && token.span.end <= span.end
+        {
+            if token.span.start == span.start {
+                protected.push(Token { kind: TokenKind::StringLiteral(source[span.start..span.end].to_owned()), span: *span });
+            }
+        } else { protected.push(token.clone()); }
+    }
+    protected
+}
+
+/// Change the margin as a unit, leaving both literal text and nested literal
+/// values intact. Short blank lines need no padding under the language rules.
+fn reindent_multiline_literal(text: &str, indent: usize) -> String {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = normalized.split('\n');
+    let opening = lines.next().unwrap_or_default();
+    let rest: Vec<_> = lines.collect();
+    let margin = rest.last().map_or(0, |line| line.bytes().take_while(|byte| *byte == b' ').count());
+    let mut output = opening.to_owned();
+    for line in rest {
+        output.push('\n');
+        let spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+        if spaces < margin && line.trim().is_empty() { continue; }
+        output.push_str(&" ".repeat(indent));
+        output.push_str(&line[margin.min(spaces)..]);
+    }
+    output
+}
+
 fn format_lines(source: &str, parse: &ParseOutput) -> String {
     let field_name_spans = collect_field_name_spans(&parse.module);
     let line_count = source.lines().count();
     let line_starts = line_starts(source);
     let mut line_indents = layout_line_indents(line_count, &line_starts, &parse.layout_tokens);
     fill_trivia_line_indents(source, &mut line_indents);
-    let line_tokens = content_tokens_by_line(line_count, &line_starts, &parse.raw_tokens);
+    let multiline_spans = multiline_literal_spans(source, &parse.raw_tokens);
+    let protected_tokens = protect_multiline_tokens(source, &parse.raw_tokens, &multiline_spans);
+    let mut line_owners: Vec<_> = (0..line_count).collect();
+    for span in &multiline_spans {
+        let first = line_for_offset(&line_starts, span.start);
+        let last = line_for_offset(&line_starts, span.end.saturating_sub(1));
+        let owner = line_owners[first];
+        for entry in &mut line_owners[first..=last] { *entry = owner; }
+    }
+    let mut line_tokens = content_tokens_by_line(line_count, &line_starts, &protected_tokens);
+    for line in 0..line_count {
+        if line_owners[line] != line {
+            let tokens = std::mem::take(&mut line_tokens[line]);
+            line_tokens[line_owners[line]].extend(tokens);
+        }
+    }
     let inline_matches = collect_inline_matches(&parse.module, &line_starts, &parse.raw_tokens);
 
     let mut output = String::with_capacity(source.len() + 1);
 
     for (line_index, tokens) in line_tokens.iter().enumerate() {
+        if line_owners[line_index] != line_index { continue; }
         if tokens.is_empty() {
             output.push('\n');
             continue;
@@ -241,9 +329,11 @@ fn normalize_call_layouts(source: &str, parse: &ParseOutput) -> String {
             binary_spans.push(expr.span);
         }
     });
+    let multiline_spans = multiline_literal_spans(source, &parse.raw_tokens);
     let mut calls = Vec::new();
     walk_module_exprs(&parse.module, &mut |expr| {
         if let ExprKind::Call { callee, args } = &expr.kind
+            && !multiline_spans.iter().any(|span| span.start < expr.span.end && expr.span.start < span.end)
             && let Some(call) = call_layout(expr.span, callee, args, &parse.raw_tokens)
             && call_can_reflow(
                 source,
@@ -898,7 +988,14 @@ fn emit_line(
             output.push(' ');
         }
 
-        output.push_str(&token_text(source, token, field_name_spans));
+        let text = token_text(source, token, field_name_spans);
+        if matches!(token.kind, TokenKind::StringLiteral(_)) && text.contains(['\n', '\r']) {
+            let line = output.rsplit('\n').next().unwrap_or_default();
+            let indent = line.bytes().take_while(|byte| *byte == b' ').count();
+            output.push_str(&reindent_multiline_literal(&text, indent));
+        } else {
+            output.push_str(&text);
+        }
     }
 }
 

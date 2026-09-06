@@ -1,6 +1,7 @@
 use aven_core::{Diagnostic, Label, Span, codes};
 
 use crate::operators::is_custom_operator_byte;
+use crate::strings::{StringDelimiter, multiline_content_ranges, retained_fragment};
 
 #[derive(Debug, Clone)]
 pub struct LexOutput {
@@ -119,6 +120,7 @@ pub fn lex_source(source: &str) -> LexOutput {
         diagnostics: Vec::new(),
         at_line_start: true,
         interp_contexts: Vec::new(),
+        strings: Vec::new(),
     };
 
     lexer.lex();
@@ -152,10 +154,18 @@ struct Lexer<'a> {
     diagnostics: Vec<Diagnostic>,
     at_line_start: bool,
     interp_contexts: Vec<InterpolationContext>,
+    strings: Vec<StringContext>,
+}
+
+struct StringContext {
+    start: usize,
+    delimiter: StringDelimiter,
+    fragments: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct InterpolationContext {
+    string_id: usize,
     brace_depth: usize,
     start: usize,
 }
@@ -180,6 +190,7 @@ impl Lexer<'_> {
                 Some(b' ' | b'\t') => self.offset += 1,
                 Some(b'\n' | b'\r') => self.scan_newline(),
                 Some(b'#') => self.scan_comment(),
+                Some(b'r') if StringDelimiter::at(&self.source[self.offset..]).is_some() => self.scan_string(),
                 Some(b'a'..=b'z' | b'A'..=b'Z' | b'_') => self.scan_identifier(),
                 Some(b'0'..=b'9') => self.scan_number(),
                 Some(b'"') => self.scan_string(),
@@ -357,81 +368,83 @@ impl Lexer<'_> {
 
     fn scan_string(&mut self) {
         let start = self.offset;
-        self.offset += 1;
-
-        while self.offset < self.source.len() {
-            let Some(ch) = self.current_char() else {
-                break;
-            };
-
-            match ch {
-                '\\' => self.scan_string_escape(),
-                '$' if self.peek_byte(1) == Some(b'{') => {
-                    let interpolation_start = self.offset;
-                    self.push(
-                        TokenKind::InterpolationStart(self.source[start..self.offset].to_owned()),
-                        Span::new(start, self.offset),
-                    );
-                    self.offset += 2;
-                    self.push_interpolation_context(interpolation_start);
-                    return;
-                }
-                '"' => {
-                    self.offset += 1;
-                    self.push(
-                        TokenKind::StringLiteral(self.source[start..self.offset].to_owned()),
-                        Span::new(start, self.offset),
-                    );
-                    return;
-                }
-                '\n' | '\r' => {
-                    self.push_unterminated_string(start);
-                    return;
-                }
-                _ => self.offset += ch.len_utf8(),
-            }
+        let delimiter = StringDelimiter::at(&self.source[start..]).expect("string opener");
+        let string_id = self.strings.len();
+        self.strings.push(StringContext { start, delimiter, fragments: Vec::new() });
+        self.offset += delimiter.opening_len;
+        if delimiter.multiline && !self.source[self.offset..].starts_with(['\r', '\n']) {
+            self.string_layout_error(Span::point(self.offset), "a triple-quoted string must start on the next line");
         }
-
-        self.push_unterminated_string(start);
+        self.scan_string_part(string_id, start, true);
     }
 
-    fn scan_string_continuation(&mut self) {
-        let start = self.offset;
-
+    fn scan_string_part(&mut self, string_id: usize, start: usize, first: bool) {
+        let delimiter = self.strings[string_id].delimiter;
+        let closing = delimiter.closing();
         while self.offset < self.source.len() {
-            let Some(ch) = self.current_char() else {
-                break;
-            };
-
+            if self.source[self.offset..].starts_with(&closing) {
+                let closing_start = self.offset;
+                self.offset += closing.len();
+                let text = self.source[start..self.offset].to_owned();
+                let kind = if first { TokenKind::StringLiteral(text) } else { TokenKind::InterpolationEnd(text) };
+                self.strings[string_id].fragments.push(self.tokens.len());
+                self.push(kind, Span::new(start, self.offset));
+                if delimiter.multiline { self.finish_multiline_string(string_id, closing_start); }
+                return;
+            }
+            let ch = self.current_char().expect("character in source");
             match ch {
-                '\\' => self.scan_string_escape(),
-                '$' if self.peek_byte(1) == Some(b'{') => {
+                '\\' if !delimiter.raw => self.scan_string_escape(),
+                '$' if !delimiter.raw && self.peek_byte(1) == Some(b'{') => {
+                    let text = self.source[start..self.offset].to_owned();
+                    let kind = if first { TokenKind::InterpolationStart(text) } else { TokenKind::InterpolationMiddle(text) };
+                    self.strings[string_id].fragments.push(self.tokens.len());
+                    self.push(kind, Span::new(start, self.offset));
                     let interpolation_start = self.offset;
-                    self.push(
-                        TokenKind::InterpolationMiddle(self.source[start..self.offset].to_owned()),
-                        Span::new(start, self.offset),
-                    );
                     self.offset += 2;
-                    self.push_interpolation_context(interpolation_start);
+                    self.interp_contexts.push(InterpolationContext { brace_depth: 0, start: interpolation_start, string_id });
                     return;
                 }
-                '"' => {
-                    self.offset += 1;
-                    self.push(
-                        TokenKind::InterpolationEnd(self.source[start..self.offset].to_owned()),
-                        Span::new(start, self.offset),
-                    );
-                    return;
-                }
-                '\n' | '\r' => {
-                    self.push_unterminated_interpolation_fragment(start);
+                '\n' | '\r' if !delimiter.multiline => {
+                    if first { self.push_unterminated_string(start); } else { self.push_unterminated_interpolation_fragment(start); }
                     return;
                 }
                 _ => self.offset += ch.len_utf8(),
             }
         }
+        if first { self.push_unterminated_string(start); } else { self.push_unterminated_interpolation_fragment(start); }
+    }
 
-        self.push_unterminated_interpolation_fragment(start);
+    fn string_layout_error(&mut self, span: Span, message: &str) {
+        self.diagnostics.push(Diagnostic::error(message).with_code(codes::lex::INVALID_MULTILINE_STRING).with_label(Label::primary(span, message)));
+    }
+
+    fn finish_multiline_string(&mut self, string_id: usize, closing_start: usize) {
+        let context = &self.strings[string_id];
+        let start = context.start;
+        let text = &self.source[start..self.offset];
+        let ranges = match multiline_content_ranges(text, context.delimiter.opening_len, closing_start - start) {
+            Ok(ranges) => ranges,
+            Err(range) => {
+                self.string_layout_error(Span::new(start + range.start, start + range.end),
+                    "multiline content must have at least the closing delimiter's space indentation, and the closer must start on its own line");
+                return;
+            }
+        };
+        // The parser already decodes ordinary interpolation fragments. Encode
+        // only the dedented fragments back into that representation; their spans
+        // continue to refer to the original physical source.
+        for &index in &context.fragments {
+            let token = &mut self.tokens[index];
+            if matches!(token.kind, TokenKind::StringLiteral(_)) { continue; }
+            let fragment = retained_fragment(text, token.span.start - start..token.span.end - start, &ranges);
+            match &mut token.kind {
+                TokenKind::InterpolationStart(value) => *value = format!("\"{fragment}"),
+                TokenKind::InterpolationMiddle(value) => *value = fragment,
+                TokenKind::InterpolationEnd(value) => *value = format!("{fragment}\""),
+                _ => unreachable!(),
+            }
+        }
     }
 
     fn scan_string_escape(&mut self) {
@@ -533,7 +546,7 @@ impl Lexer<'_> {
                     "string starts here",
                 ))
                 .with_note(
-                    "close the string with a `\"`, or write a line break as `\\n`; a string literal cannot span lines.",
+                    "close the string with its matching quote and hash delimiter; use triple quotes for multiline text.",
                 ),
         );
         self.push(
@@ -585,13 +598,6 @@ impl Lexer<'_> {
         true
     }
 
-    fn push_interpolation_context(&mut self, start: usize) {
-        self.interp_contexts.push(InterpolationContext {
-            brace_depth: 0,
-            start,
-        });
-    }
-
     fn scan_open_brace(&mut self) {
         if let Some(context) = self.interp_contexts.last_mut() {
             context.brace_depth += 1;
@@ -612,9 +618,10 @@ impl Lexer<'_> {
             return;
         }
 
+        let string_id = context.string_id;
         self.interp_contexts.pop();
         self.offset += 1;
-        self.scan_string_continuation();
+        self.scan_string_part(string_id, self.offset, false);
     }
 
     fn scan_label_or_operator(&mut self) {
