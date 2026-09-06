@@ -1,0 +1,22 @@
+query = """
+  select *
+  from users
+  where id = ${userId}
+  """
+pattern = r"\d+\s*"
+delimited = r#"he said "hi" to #1"#
+nested = """
+  outer ${r#"raw \n inside"#} tail
+  """
+blanks = """
+  first
+
+  third
+  """
+indented = (value) =>
+  value ?>
+    0 =>
+      """
+        zero
+        """
+    _ => "other"

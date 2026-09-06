@@ -95,21 +95,58 @@ fn is_top_level_content(line: &str) -> bool {
     line_has_content(line) && leading_spaces(line) == 0
 }
 
+/// Lines whose bytes are payload of a multiline string literal.
+///
+/// Inside such a literal whitespace is *not* insignificant: a trailing space is
+/// part of the value, and a blank line inserted before it changes the text. So
+/// the perturbation leaves those lines exactly as the seed wrote them, and only
+/// the literal's opening line — which contributes nothing to the value — stays
+/// eligible for a trailing edit.
+fn literal_payload_lines(seed: &str) -> Vec<bool> {
+    let mut payload = vec![false; seed.lines().count()];
+    let lexed = aven_parser::lex_source(seed);
+    if lexed.diagnostics.iter().any(Diagnostic::is_error) {
+        return payload;
+    }
+    let line_of = |offset: usize| seed[..offset].lines().count().saturating_sub(1);
+    for token in &lexed.tokens {
+        let text = &seed[token.span.start..token.span.end];
+        if !text.contains(['\n', '\r']) {
+            continue;
+        }
+        for line in payload
+            .iter_mut()
+            .take(line_of(token.span.end) + 1)
+            .skip(line_of(token.span.start) + 1)
+        {
+            *line = true;
+        }
+    }
+    payload
+}
+
 /// Parse-safe whitespace perturbation of a valid seed.
 ///
 /// Safe edits only:
 /// - trailing spaces/tabs on lines that already have non-whitespace content
 /// - fully blank lines immediately before top-level (indent-0 content) lines
 ///
-/// Does **not** reindent, split lines, or insert blanks inside indented blocks.
+/// Does **not** reindent, split lines, insert blanks inside indented blocks, or
+/// touch any line carrying multiline string payload.
 fn apply_perturbation(seed: &str, trail: &[u8], blanks_before: &[u8]) -> String {
     let lines: Vec<&str> = seed.lines().collect();
     if lines.is_empty() {
         return String::new();
     }
+    let payload = literal_payload_lines(seed);
 
     let mut out = String::with_capacity(seed.len() + 32);
     for (i, line) in lines.iter().enumerate() {
+        if payload.get(i).copied().unwrap_or(false) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
         if is_top_level_content(line) {
             let n = blanks_before.get(i).copied().unwrap_or(0) as usize;
             for _ in 0..n {

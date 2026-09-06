@@ -14,16 +14,32 @@ impl StringDelimiter {
         let raw = text.starts_with('r');
         let prefix = usize::from(raw);
         let hashes = if raw {
-            text[prefix..].bytes().take_while(|byte| *byte == b'#').count()
-        } else { 0 };
+            text[prefix..]
+                .bytes()
+                .take_while(|byte| *byte == b'#')
+                .count()
+        } else {
+            0
+        };
         let quoted = text.get(prefix + hashes..)?;
-        if !quoted.starts_with('"') { return None; }
+        if !quoted.starts_with('"') {
+            return None;
+        }
         let multiline = quoted.starts_with("\"\"\"");
-        Some(Self { raw, multiline, hashes, opening_len: prefix + hashes + if multiline { 3 } else { 1 } })
+        Some(Self {
+            raw,
+            multiline,
+            hashes,
+            opening_len: prefix + hashes + if multiline { 3 } else { 1 },
+        })
     }
 
     pub fn closing(self) -> String {
-        format!("{}{}", if self.multiline { "\"\"\"" } else { "\"" }, "#".repeat(self.hashes))
+        format!(
+            "{}{}",
+            if self.multiline { "\"\"\"" } else { "\"" },
+            "#".repeat(self.hashes)
+        )
     }
 }
 
@@ -35,47 +51,84 @@ pub(crate) fn multiline_content_ranges(
     closing_start: usize,
 ) -> Result<Vec<std::ops::Range<usize>>, std::ops::Range<usize>> {
     let newline_len = |tail: &str| if tail.starts_with("\r\n") { 2 } else { 1 };
+    // Blanks between the opener and its newline belong to no line of the value.
+    let opening_len = opening_len
+        + text[opening_len..]
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
     if !text[opening_len..].starts_with(['\r', '\n']) {
         return Err(opening_len..opening_len);
     }
     let body_start = opening_len + newline_len(&text[opening_len..]);
-    let closing_line = text[..closing_start].rfind(['\r', '\n']).map_or(0, |index| index + 1);
-    if !text[closing_line..closing_start].bytes().all(|byte| byte == b' ') {
+    let closing_line = text[..closing_start]
+        .rfind(['\r', '\n'])
+        .map_or(0, |index| index + 1);
+    if !text[closing_line..closing_start]
+        .bytes()
+        .all(|byte| byte == b' ')
+    {
         return Err(closing_line..closing_start);
     }
     let margin = closing_start - closing_line;
     let mut ranges = Vec::new();
     let mut line = body_start;
     while line < closing_line {
-        let end = text[line..closing_line].find(['\r', '\n']).map_or(closing_line, |index| line + index);
-        let next = if end < closing_line { end + newline_len(&text[end..]) } else { end };
+        let end = text[line..closing_line]
+            .find(['\r', '\n'])
+            .map_or(closing_line, |index| line + index);
+        let next = if end < closing_line {
+            end + newline_len(&text[end..])
+        } else {
+            end
+        };
         let content = &text[line..end];
         let spaces = content.bytes().take_while(|byte| *byte == b' ').count();
         let blank = content.bytes().all(|byte| matches!(byte, b' ' | b'\t'));
-        if spaces < margin && !blank { return Err(line..end); }
-        let stripped = if blank && spaces < margin { end } else { line + margin };
+        if spaces < margin && !blank {
+            return Err(line..end);
+        }
+        let stripped = if blank && spaces < margin {
+            end
+        } else {
+            line + margin
+        };
         ranges.push(stripped..end);
         // The newline immediately before the closer is a delimiter boundary.
-        if next < closing_line { ranges.push(end..next); }
+        if next < closing_line {
+            ranges.push(end..next);
+        }
         line = next;
     }
     Ok(ranges)
 }
 
-pub(crate) fn retained_fragment(text: &str, fragment: std::ops::Range<usize>, ranges: &[std::ops::Range<usize>]) -> String {
+pub(crate) fn retained_fragment(
+    text: &str,
+    fragment: std::ops::Range<usize>,
+    ranges: &[std::ops::Range<usize>],
+) -> String {
     let mut result = String::new();
     for range in ranges {
         let start = range.start.max(fragment.start);
         let end = range.end.min(fragment.end);
-        if start < end { result.push_str(&text[start..end]); }
+        if start < end {
+            result.push_str(&text[start..end]);
+        }
     }
     result.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 pub fn decode_string_literal(text: &str) -> String {
-    let Some(delimiter) = StringDelimiter::at(text) else { return decode_string_fragment(text); };
+    let Some(delimiter) = StringDelimiter::at(text) else {
+        return decode_string_fragment(text);
+    };
     let closing = delimiter.closing();
-    let Some(inner_end) = text.strip_suffix(&closing).map(str::len).filter(|end| *end >= delimiter.opening_len) else {
+    let Some(inner_end) = text
+        .strip_suffix(&closing)
+        .map(str::len)
+        .filter(|end| *end >= delimiter.opening_len)
+    else {
         return decode_string_fragment(text);
     };
     let inner = if delimiter.multiline {
@@ -85,7 +138,11 @@ pub fn decode_string_literal(text: &str) -> String {
     } else {
         text[delimiter.opening_len..inner_end].to_owned()
     };
-    if delimiter.raw { inner } else { decode_string_fragment(&inner) }
+    if delimiter.raw {
+        inner
+    } else {
+        decode_string_fragment(&inner)
+    }
 }
 
 pub(crate) fn decode_string_fragment(text: &str) -> String {

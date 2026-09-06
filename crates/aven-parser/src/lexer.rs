@@ -190,7 +190,9 @@ impl Lexer<'_> {
                 Some(b' ' | b'\t') => self.offset += 1,
                 Some(b'\n' | b'\r') => self.scan_newline(),
                 Some(b'#') => self.scan_comment(),
-                Some(b'r') if StringDelimiter::at(&self.source[self.offset..]).is_some() => self.scan_string(),
+                Some(b'r') if StringDelimiter::at(&self.source[self.offset..]).is_some() => {
+                    self.scan_string()
+                }
                 Some(b'a'..=b'z' | b'A'..=b'Z' | b'_') => self.scan_identifier(),
                 Some(b'0'..=b'9') => self.scan_number(),
                 Some(b'"') => self.scan_string(),
@@ -370,10 +372,30 @@ impl Lexer<'_> {
         let start = self.offset;
         let delimiter = StringDelimiter::at(&self.source[start..]).expect("string opener");
         let string_id = self.strings.len();
-        self.strings.push(StringContext { start, delimiter, fragments: Vec::new() });
+        self.strings.push(StringContext {
+            start,
+            delimiter,
+            fragments: Vec::new(),
+        });
         self.offset += delimiter.opening_len;
-        if delimiter.multiline && !self.source[self.offset..].starts_with(['\r', '\n']) {
-            self.string_layout_error(Span::point(self.offset), "a triple-quoted string must start on the next line");
+        if delimiter.multiline {
+            // Trailing blanks after the opener are invisible in an editor and
+            // contribute nothing to the value, so they are skipped rather than
+            // rejected. Anything else on that line is content the layout rule
+            // has no margin for.
+            let rest = &self.source[self.offset..];
+            let blanks = rest
+                .bytes()
+                .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                .count();
+            if rest[blanks..].starts_with(['\r', '\n']) {
+                self.offset += blanks;
+            } else {
+                self.string_layout_error(
+                    Span::point(self.offset),
+                    "a triple-quoted string must start on the next line",
+                );
+            }
         }
         self.scan_string_part(string_id, start, true);
     }
@@ -386,10 +408,16 @@ impl Lexer<'_> {
                 let closing_start = self.offset;
                 self.offset += closing.len();
                 let text = self.source[start..self.offset].to_owned();
-                let kind = if first { TokenKind::StringLiteral(text) } else { TokenKind::InterpolationEnd(text) };
+                let kind = if first {
+                    TokenKind::StringLiteral(text)
+                } else {
+                    TokenKind::InterpolationEnd(text)
+                };
                 self.strings[string_id].fragments.push(self.tokens.len());
                 self.push(kind, Span::new(start, self.offset));
-                if delimiter.multiline { self.finish_multiline_string(string_id, closing_start); }
+                if delimiter.multiline {
+                    self.finish_multiline_string(string_id, closing_start);
+                }
                 return;
             }
             let ch = self.current_char().expect("character in source");
@@ -397,33 +425,57 @@ impl Lexer<'_> {
                 '\\' if !delimiter.raw => self.scan_string_escape(),
                 '$' if !delimiter.raw && self.peek_byte(1) == Some(b'{') => {
                     let text = self.source[start..self.offset].to_owned();
-                    let kind = if first { TokenKind::InterpolationStart(text) } else { TokenKind::InterpolationMiddle(text) };
+                    let kind = if first {
+                        TokenKind::InterpolationStart(text)
+                    } else {
+                        TokenKind::InterpolationMiddle(text)
+                    };
                     self.strings[string_id].fragments.push(self.tokens.len());
                     self.push(kind, Span::new(start, self.offset));
                     let interpolation_start = self.offset;
                     self.offset += 2;
-                    self.interp_contexts.push(InterpolationContext { brace_depth: 0, start: interpolation_start, string_id });
+                    self.interp_contexts.push(InterpolationContext {
+                        brace_depth: 0,
+                        start: interpolation_start,
+                        string_id,
+                    });
                     return;
                 }
                 '\n' | '\r' if !delimiter.multiline => {
-                    if first { self.push_unterminated_string(start); } else { self.push_unterminated_interpolation_fragment(start); }
+                    if first {
+                        self.push_unterminated_string(start);
+                    } else {
+                        self.push_unterminated_interpolation_fragment(start);
+                    }
                     return;
                 }
                 _ => self.offset += ch.len_utf8(),
             }
         }
-        if first { self.push_unterminated_string(start); } else { self.push_unterminated_interpolation_fragment(start); }
+        if first {
+            self.push_unterminated_string(start);
+        } else {
+            self.push_unterminated_interpolation_fragment(start);
+        }
     }
 
     fn string_layout_error(&mut self, span: Span, message: &str) {
-        self.diagnostics.push(Diagnostic::error(message).with_code(codes::lex::INVALID_MULTILINE_STRING).with_label(Label::primary(span, message)));
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(codes::lex::INVALID_MULTILINE_STRING)
+                .with_label(Label::primary(span, message)),
+        );
     }
 
     fn finish_multiline_string(&mut self, string_id: usize, closing_start: usize) {
         let context = &self.strings[string_id];
         let start = context.start;
         let text = &self.source[start..self.offset];
-        let ranges = match multiline_content_ranges(text, context.delimiter.opening_len, closing_start - start) {
+        let ranges = match multiline_content_ranges(
+            text,
+            context.delimiter.opening_len,
+            closing_start - start,
+        ) {
             Ok(ranges) => ranges,
             Err(range) => {
                 self.string_layout_error(Span::new(start + range.start, start + range.end),
@@ -436,8 +488,14 @@ impl Lexer<'_> {
         // continue to refer to the original physical source.
         for &index in &context.fragments {
             let token = &mut self.tokens[index];
-            if matches!(token.kind, TokenKind::StringLiteral(_)) { continue; }
-            let fragment = retained_fragment(text, token.span.start - start..token.span.end - start, &ranges);
+            if matches!(token.kind, TokenKind::StringLiteral(_)) {
+                continue;
+            }
+            let fragment = retained_fragment(
+                text,
+                token.span.start - start..token.span.end - start,
+                &ranges,
+            );
             match &mut token.kind {
                 TokenKind::InterpolationStart(value) => *value = format!("\"{fragment}"),
                 TokenKind::InterpolationMiddle(value) => *value = fragment,

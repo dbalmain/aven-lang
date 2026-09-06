@@ -71,6 +71,23 @@ fn interpolation_fragments_dedent_without_changing_expression_spans() {
     assert_eq!(&source[raw.span.start..raw.span.end], r##"r#"\n"#"##);
 }
 
+/// Blanks after the opening delimiter are invisible in an editor and belong to
+/// no line of the value, so they are skipped. Java, Kotlin and Swift all accept
+/// them, and an editor that trims-on-save must not change a program's meaning.
+#[test]
+fn blanks_after_the_opening_delimiter_are_not_content() {
+    assert_eq!(literal("\"\"\"  \n  a\n  \"\"\""), "a");
+    assert_eq!(literal("\"\"\"\t\r\n  a\r\n  \"\"\""), "a");
+    assert_eq!(literal("r\"\"\" \n  a\n  \"\"\""), "a");
+    // Anything else on the opening line still has no margin to dedent against.
+    assert!(
+        parse_module("\"\"\" x\n  a\n  \"\"\"")
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("lex.invalid-multiline-string"))
+    );
+}
+
 #[test]
 fn rejects_malformed_multiline_layout_and_unmatched_delimiters() {
     for source in [
