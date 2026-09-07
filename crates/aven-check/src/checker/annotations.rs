@@ -527,28 +527,22 @@ impl<'a> Checker<'a> {
 
         let bindings = self.current_comptime_value_bindings();
         for (param, arg) in function.params.iter().zip(args) {
-            if !param.comptime
-                || self.expr_references_unresolved_comptime_param(arg)
-                || self
-                    .evaluate_comptime_param_argument(
-                        &self.local_types.inference_env(),
-                        arg,
-                        &bindings,
-                    )
-                    .is_some()
-            {
+            if !param.comptime {
                 continue;
             }
-
+            let demand = self.evaluate_comptime_param_argument(
+                &self.local_types.inference_env(),
+                arg,
+                &bindings,
+            );
+            if matches!(demand, ComptimeDemand::Known(_) | ComptimeDemand::Deferred) {
+                continue;
+            }
             let diagnostics_start = self.diagnostics.len();
             self.check_value_expr(arg);
             if self.diagnostics.len() == diagnostics_start {
                 let function = call_callee_name(callee).unwrap_or("comptime function");
-                self.report_comptime_param_argument_failure(
-                    &self.local_types.inference_env(),
-                    arg,
-                    function,
-                );
+                self.report_comptime_param_argument_failure(arg, function, demand);
             }
         }
     }

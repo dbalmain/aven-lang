@@ -1086,6 +1086,13 @@ where
             return EvaluationResult::unsupported();
         };
 
+        if let Some(function) = env
+            .captured_function(name)
+            .or_else(|| self.context.lookup_comptime_function(name))
+        {
+            return self.evaluate_function_application(function, call_span, args, env);
+        }
+
         if let Some(kind) = ReflectionKind::from_name(name) {
             return self.evaluate_reflection_application(args, env, kind);
         }
@@ -1100,13 +1107,6 @@ where
 
         if name == COMPTIME_PIN {
             return self.evaluate_comptime_pin(call_span, args, env);
-        }
-
-        if let Some(function) = env
-            .captured_function(name)
-            .or_else(|| self.context.lookup_comptime_function(name))
-        {
-            return self.evaluate_function_application(function, call_span, args, env);
         }
 
         if name.chars().next().is_some_and(char::is_uppercase) {

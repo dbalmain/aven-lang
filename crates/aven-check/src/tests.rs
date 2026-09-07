@@ -1050,7 +1050,7 @@ fn sibling_derived_handler_annotation_reports_comptime_gap() {
     let checked = check_module(&parsed.module);
     assert_eq!(
         matching_codes(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
-        1
+        2
     );
     let diagnostic = checked
         .diagnostics
@@ -1060,6 +1060,20 @@ fn sibling_derived_handler_annotation_reports_comptime_gap() {
     assert_eq!(
         &source[diagnostic.labels[0].span.start..diagnostic.labels[0].span.end],
         "spec.args"
+    );
+    let unsupported = checked
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("evaluated Record values are not yet supported"))
+        })
+        .expect("the handler record is not yet a representable comptime value");
+    assert_eq!(
+        &source[unsupported.labels[0].span.start..unsupported.labels[0].span.end],
+        "{ args: { verbose: { Type: Bool } }, run: (a: { verbose: Bool }) => a.verbose ?> true => 0, false => 1 }"
     );
 }
 
@@ -9987,7 +10001,7 @@ fn pick_with_a_comptime_known_non_key_set_names_the_wrong_kind() {
 }
 
 #[test]
-fn comptime_pick_with_non_concrete_key_set_defers_without_diagnostic() {
+fn comptime_pick_rejects_unrepresentable_bound_key_set() {
     let output = parse_module(
         "User = { name: Text, email: Text }\n\
          user : User = { name: \"Ada\", email: \"ada@x.dev\" }\n\
@@ -10005,7 +10019,20 @@ fn comptime_pick_with_non_concrete_key_set_defers_without_diagnostic() {
             .map(|scheme| scheme.ty),
         Some(Type::Deferred)
     );
-    assert!(checker.diagnostics.is_empty());
+    // The evaluator can run this bound set, but cannot yet transport its
+    // structured runtime representation through the compiler-artifact channel.
+    assert_eq!(checker.diagnostics.len(), 1, "{:?}", checker.diagnostics);
+    let diagnostic = &checker.diagnostics[0];
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(codes::comptime::ARGUMENT_NOT_KNOWN)
+    );
+    assert!(
+        diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("evaluated Set values are not yet supported"))
+    );
 }
 
 #[test]
@@ -15443,4 +15470,53 @@ fn a_pin_narrows_whichever_evaluator_produced_the_value() {
             check.diagnostics
         );
     }
+}
+
+#[test]
+fn user_comptime_functions_shadow_type_position_builtins() {
+    for name in ["pick", "omit", "keysOf", "tagsOf", "typeOf", "comptime"] {
+        for (initializer, valid) in [("\"expected\"", true), ("1", false)] {
+            let source = format!(
+                "{name} = (@t) => {{ value: t }}\nhelper = () => \"expected\"\nx: {name}(helper()) = {{ value: {initializer} }}\n"
+            );
+            let parsed = parse_module(&source);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "{source}: {:?}",
+                parsed.diagnostics
+            );
+            let checked = check_module(&parsed.module);
+            assert_eq!(
+                checked.diagnostics.is_empty(),
+                valid,
+                "{source}: {:?}",
+                checked.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn comptime_parameter_demand_does_not_use_literal_type_as_value_evidence() {
+    let source = "pin = (@arg) => arg\nf = (input: 1) => pin(input)\n";
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "{:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn nested_comptime_demand_preserves_argument_bound_failure() {
+    let parsed =
+        parse_module("bounded = (@n: 1 | 2) => 1\npin = (@arg) => arg\nresult = pin(bounded(3))\n");
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let checked = check_module(&parsed.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_BOUND),
+        "the runtime body returns a valid scalar but cannot erase the bound: {:?}",
+        checked.diagnostics
+    );
 }

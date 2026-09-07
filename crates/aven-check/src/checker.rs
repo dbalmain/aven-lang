@@ -323,6 +323,13 @@ impl LabelReflection {
     }
 }
 
+enum ComptimeDemand {
+    Known(ComptimeArgument),
+    Deferred,
+    Unsupported(&'static str),
+    Failed(Vec<Diagnostic>),
+}
+
 struct ComptimeArgument {
     value: comptime::ComptimeValue,
     label_set_members: Option<Vec<LabelSetMember>>,
