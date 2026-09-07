@@ -6,8 +6,9 @@ The tree is green and committed. `cargo fmt --all --check`, `cargo clippy
 --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all
 pass: **1818 tests, zero failures**, up from the 1800 at baseline `8cc9872`.
 
-One decision is open and is the user's: whether an ordinary call with
-comptime-known arguments folds to a literal type. See *The open decision*.
+The open decision is settled: `comptime` is an ordinary `@`-parameter
+function, and known values move beside the type rather than into it. The plan
+is in *Decided: `comptime` is an ordinary comptime-parameter function*.
 
 ## What landed
 
@@ -104,34 +105,222 @@ they match it. The real-shell integration tests pass unchanged.
 `/home/dave/w/clex/docs/language-spec.md` has the prepared string-literal
 patch applied, plus the opener-blank amendment above.
 
-## The open decision
+## Decided: `comptime` is an ordinary comptime-parameter function
 
-Stated in full, with options and tradeoffs, at
-<https://claude.ai/code/artifact/534e74ba-11f3-4193-b61a-cc681c3fd861>.
+Decided 2026-09-07. `comptime` is **not** a builtin pin. It is
 
-**Does an ordinary call with comptime-known arguments fold to a literal type?**
+```aven
+comptime = (@arg) => arg
+```
 
-The spec's *Comptime by inference* section (decision 2026-09-06) says yes, and
-gives `double = (n: Int) => n + n; four = double(2)  # four : 4, not Int`. The
-checker's 646-test suite, which predates that decision, says no. Both cannot
-hold. What is implemented is the pin-only reading, because it is the one that
-is currently sound.
+an ordinary function whose only distinction is that its parameter carries `@`.
+A call pins because **every `@` parameter it has was supplied a
+compile-time-known argument** — nothing about the call site is special. So a
+user-written
 
-The attempt at the spec reading is in `47fda25` and its repair in `70e7cee`;
-between them they record what broke. Four things did:
+```aven
+comptimeAdd = (@a: Int, @b: Int): Int => a + b
+```
 
-- `Map.get("a")` narrowed from `?Int` to `1`, erasing the optionality. The
-  evaluated value was an optional; only its payload was lifted.
-- a `1 | 1.0` match join collapsed to whichever branch ran.
-- a branded `Money` folded to its raw `Int`, so plain-`Int` behavior reached it.
-- every inferred call cloned an evaluator environment, whether or not anything
-  was foldable.
+pins on exactly the same rule, with no compiler support of its own, and
+`comptimeAdd(1, 3)` is known for the same reason `comptime(x)` is.
 
-The first three are lifting bugs rather than arguments against the rule; the
-fourth is a cost the rule implies and needs a preflight. Implementing the spec
-reading properly means a lifting rule for `Optional`, `Result`, records and
-named families, and re-deciding the 36 checker tests one at a time — several
+Two framings are superseded by this. The first is the builtin `comptime(e)`
+form currently in `checker/inference.rs`. The second is the spec's *Comptime by
+inference* reading (decision 2026-09-06), where **any** ordinary call with known
+arguments folds — that is still wanted, but as the end of this plan rather than
+the start; see *Why fold-everywhere comes last*.
+
+> Note for anyone reading Aven for the first time: `@` has two unrelated
+> meanings. On a parameter declaration it marks a comptime parameter
+> (`(@key: Text) => key`); the body then refers to the bare name, and `@name`
+> inside a body is a parse error. Before a brace it is a label-set literal
+> (`@{"name", "email"}`). This plan only concerns the first.
+
+### What is already true, and what the gap is
+
+Four probes, run on `58eb0a8` with `target/debug/aven check`. **Re-run them
+before starting and report any divergence** — the plan is built on them, and a
+brief's claims about code are exactly the thing that rots.
+
+**`@`-parameter functions already fold their bodies to a literal.** This is the
+good news and it is load-bearing: much of what the plan wants already exists on
+the `@` path.
+
+```aven
+comptimeAdd = (@a: Int, @b: Int): Int => a + b
+checked: 4 = comptimeAdd(1, 3)     # passes
+```
+
+with the negative control that proves the fold is real rather than unchecked:
+
+```aven
+checked: 5 = comptimeAdd(1, 3)
+# type.literal-not-in-union: literal 4 is not one of 5
+```
+
+**But the `@` path is strictly weaker than the builtin pin.** These two programs
+differ only in which pin is used, and they disagree:
+
+```aven
+pin = (@arg: Text): Text => arg
+join = (parts: Array(Text)): Text => parts.joinWith("\n")
+script = pin(join(["a", "b"]))
+# comptime.argument-not-known: comptime argument to `pin` is not known
+```
+
+```aven
+join = (parts: Array(Text)): Text => parts.joinWith("\n")
+script = comptime(join(["a", "b"]))
+checked: "a\nb" = script           # passes
+```
+
+The cause is the guard at `checker/inference.rs:4138`:
+`evaluate_comptime_param_argument` bails via `is_runtime_computation_call`
+(`inference.rs:4164`), which classifies *any* call to a lowercase function with
+no `@` parameters as a runtime computation, "even if the evaluator can reduce
+its body". `join` is exactly that. The builtin pin has no such guard — it runs
+a two-evaluator cascade and then `evaluate_known_expression`.
+
+Closing that gap is the whole of slice 1, and it is why slice 1 comes before
+deleting the builtin: delete the builtin first and the motivating example
+regresses.
+
+### The slices
+
+Each is a commit boundary. Slices 1–2 are the `@`-unification; 3–5 are the
+known-value work.
+
+**Slice 1 — one demand path, the strong one.** Give a `@`-parameter argument
+the evaluation the builtin pin gets. Concretely: `evaluate_comptime_param_argument`
+gains the cascade `infer_comptime_pin_call` uses — the type-position walker
+(`comptime::evaluate_type_position_with_bindings`), then
+`evaluate_known_expression` — and its failures report with the pin's evidence
+(dependency named and labelled at its own span, bounded-resource diagnostic for
+a runaway).
+
+The `is_runtime_computation_call` guard exists for a stated reason:
+"`pick(bad())` must not execute `bad` while validating a comptime argument."
+Decide whether that reason survives, and say which in the done-note.
+Evaluation is fuel-bounded and installs no host capabilities, so the risk is
+not effects — it is likely diagnostic quality (reporting an evaluation failure
+inside `bad` instead of "this argument is not known"). If so, keep the guard's
+*diagnostic* and drop its *refusal to evaluate*. If there is a soundness reason
+we have missed, say so and stop — a correct "this cannot be unified" is worth
+more than an implementation of our guess.
+
+Done when `pin(join(["a", "b"]))` and `comptime(join(["a", "b"]))` agree, and
+`crates/aven-check/tests/fixtures/check/invalid/comptime-pin-runtime-value.av`
+still fails for the same reason.
+
+**Slice 2 — `comptime` stops being a compiler builtin.** Delete
+`comptime::COMPTIME_PIN` and its special-casing at `inference.rs:3643` and
+`core.rs:1867`, and bind `comptime = (@arg) => arg` in the Aven layer under
+`crates/aven-host/std/` (the same layer that already carries the ambient method
+sets — see the note in `.ai/core.md`). Keep the arity and
+"could not evaluate" diagnostics working; if a user-defined pin cannot produce
+diagnostics as good as the builtin's, that is a finding about `@` parameters
+and should be reported rather than worked around by keeping the builtin.
+
+Reminder: `crates/aven-host/std/*.av` is `include_str!`-embedded. Rebuild the
+binary after editing it.
+
+**Slice 3 — known values move beside the type, and the pin stops narrowing.**
+This is the substantial one and the reason the rest is safe.
+
+Today a pin rewrites the *type*: `comptime(e)` narrows `e`'s type to a singleton
+literal row, guarded by `literal_type_refines` (`inference.rs:468`). That
+conflates "the checker knows this value" with "this type is narrower", and it is
+the single cause of three of the four things that broke when fold-everywhere was
+attempted in `47fda25`:
+
+| Breakage in `47fda25` | Under a known-value side channel |
+| --- | --- |
+| `Map.get("a")` narrowed `?Int` to `1`, erasing optionality | type stays `?Int`; the known value is `Some(1)` |
+| a `1 \| 1.0` match join collapsed to whichever branch ran | type stays `1 \| 1.0` |
+| a branded `Money` folded to its raw `Int` | type stays `Money`; the known value is `99` |
+| every inferred call cloned an evaluator environment | still real; slice 5's preflight |
+
+So: introduce a `KnownValue` side table keyed by expression, holding a
+`ComptimeValue`. **It must not live inside `Type`.** Putting known-ness into
+`Type` means it flows through unification, subsumption and rendering, which is
+the road that produced 36 failures; a side table leaves `Type` untouched.
+
+With it, `literal_type_refines`, `narrow_to_literal` and
+`narrow_to_evaluated_literal` (`inference.rs:468–525`) should all be deletable,
+along with the `number_literal_text_is_finite` guard that exists only to stop
+`NaN` refining `Int`. If any survives, say which and why.
+
+A literal-type annotation becomes a **demand site**: `checked: "a\nb" = script`
+passes by consulting `script`'s known value, not because `script`'s type was
+rewritten. This half must land in the same commit as the first, or the
+motivating example regresses.
+
+Diagnostics have to consult the channel too, or a correct program reports
+`expected "a\nb", found Text`.
+
+Two consequences worth stating in the doc, because they are the design's price:
+
+- **Literal types stay.** They are what an author *writes* and what crosses a
+  function signature (`(): "a" => "a"`). Known values are what the checker
+  *discovers*, and they deliberately do **not** cross a signature. Two
+  mechanisms where there is one today.
+- **This is what makes fold-everywhere safe to swap out.** Because the type never
+  changes, replacing a comptime-known value with a runtime input cannot break
+  callers — it can only fail at the sites that explicitly demanded knowledge.
+  Under type-narrowing folding it would break every downstream use.
+
+Slice 3 subsumes two open findings below: *A pin does not apply a named
+family's `toText`* stops being a narrowing question (though the missing family
+plans in `eval_comptime_expr` are a separate, small fix that should still be
+made), and *The `folded` shortcut accepts a pin without evaluating it* gets its
+honest fix, since "require evaluation provenance rather than a row shape" is
+precisely what a known-value channel provides.
+
+**Slice 4 — propagate known values through let-bindings.** `x = 1 + 1` records
+`2` beside `Int`; a later `comptime(x)` or `checked: 2 = x` reads it rather than
+re-evaluating. Also fixes the open finding *A pin inside a function cannot see
+local bindings*, where `blocked` over-blocks local helpers and literals.
+
+**Slice 5 — fold at every call, behind a preflight.** The spec's *Comptime by
+inference* reading, now safe because folding records a known value instead of
+rewriting a type. `map.get("a")` on a known map yields a known result.
+
+The preflight is the fourth breakage and is not optional: a cheap syntactic gate
+— every leaf of the call is a literal or a binding with a known value — must run
+before any evaluator environment is constructed. State the measured cost of a
+full `cargo test --workspace` before and after; if folding costs more than a few
+percent, stop and report rather than shipping it.
+
+Re-decide the 36 checker tests that `47fda25` broke **one at a time**. Several
 encode soundness properties and must not be blanket-updated.
+
+### Why fold-everywhere comes last
+
+It is the most wanted and the least safe to do first. Attempted directly, as in
+`47fda25`, it needs a lifting rule for `Optional`, `Result`, records and named
+families, because folding rewrites types. Done after slice 3 it needs none of
+them, because folding stops rewriting types. The ordering is the whole
+argument: slice 3 is not preparation for slice 5, it is what removes slice 5's
+four known defects.
+
+### Conventions for this work
+
+- Branch from `main` at `58eb0a8`. **Never `git push`.**
+- Commit within the first twenty minutes — notes, the probe results, whatever
+  the reading establishes — then every 20–30 minutes, red or green, prefixed
+  `WIP:`. Do not save one commit for the end.
+- Keep a done-note file updated as you go, not written at the end: root cause,
+  what changed, decisions the task did not settle.
+- Gates you own, and that the main thread will not re-run: `cargo fmt --all
+  --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
+  --workspace`. Baseline is **1818 passing**; a *drop* in the count matters as
+  much as a failure.
+- The CLI package is named `aven`, not `aven-cli` (`cargo test -p aven`).
+- Never `git add -A`; name paths.
+- If a slice's diagnosis here is wrong, say so and propose the better shape
+  rather than forcing it. A correct "this is actually X" is worth more than an
+  implementation of our guess.
 
 ## Open findings from the three-agent review
 
