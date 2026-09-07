@@ -2,6 +2,65 @@
 
 Updated: 2026-09-07, Australia/Sydney.
 
+## Resumed implementation — agreed review amendments
+
+Implementation resumed after discussion with the user, from clean `3163938`
+(the plan commit following `58eb0a8`). The root agent orchestrates and reviews;
+Terra owns the checker/evaluator implementation, initially slices 1–2. Live
+implementation notes are in `docs/comptime-implementation-progress.md` once
+created. No push is authorized.
+
+The discussion supersedes these parts of the plan below:
+
+- Unsupported evaluation fails conservatively at explicit demand sites. An
+  ordinary expression may remain unknown; it must never receive a guessed value.
+- A compile-time-known **present optional may implicitly satisfy a nonoptional
+  expected type**, including a literal annotation, when its payload satisfies
+  that type. An absent or unknown optional cannot. Typed arguments and annotated
+  bindings are demand sites; no assertion operator is required. The user accepts
+  that changing an upstream known value to an unknown runtime input can break
+  distant uses that depended on this proof.
+- Preserve ordinary inferred types, but do not interpret that as forbidding
+  verified conversions at typed uses. Preserve semantic values (presence and
+  named-family behavior) in the knowledge channel; type preservation alone does
+  not make raw evaluator values sound.
+- The runtime-dependency shortcut, named-family rendering mismatch, and
+  check/runtime binding-order discrepancy require regression coverage and
+  correction or conservative rejection. Passing the previous suite is not
+  sufficient evidence for these cases.
+- Review each implementation stage before expanding it. Measure checker cost
+  directly as well as workspace-test elapsed time; preflight must account for
+  lexical captures and demanded dependencies.
+
+The green status and test count below describe the starting implementation,
+not verification of the resumed work.
+
+### Resumption quality-gate results
+
+- Independently verified clean `3163938` using a snapshot in
+  `/tmp/aven-comptime-baseline-3163938`: **1818 passed, zero failures**.
+  Logs: `/tmp/aven-comptime-baseline-tests.log` (cold build, 82.91 seconds)
+  and `/tmp/aven-comptime-baseline-warm-tests.log` (cached build, 47.58 seconds).
+  Three direct checker-suite baseline runs took 3.117, 3.122, and 3.243 seconds;
+  data: `/tmp/aven-comptime-baseline-check-timing.json`.
+- Slice 1 committed as `4465716`; work now on
+  `comptime-unification-slices-1-2`. Root's full checker gate found **652 passed,
+  three failed** in `/tmp/aven-comptime-slice1-check.log`. Terra is repairing
+  the failures before proceeding to slice 2. Do not treat the slice as green.
+- Slice 2 needs generic prelude exports: ordinary functions from
+  `std/prelude.av` must reach both checker and runtime as lexical defaults.
+  No Rust special case for the name `comptime`; explicit user bindings shadow
+  prelude exports. This plumbing is approved, with root review required.
+- Terra's first repair attempts did not pass the checker gate. The root assigned
+  `repair_demand_outcomes` (inheriting the root model) the bounded slice-1
+  repair after Terra could not complete it. Terra is idle; do not resume two
+  agents against the same checker files. Uncommitted source changes following
+  `4465716` are repair experiments until a fresh passing result is recorded.
+- CLI completion fixture baseline (`aven check .../completion_tool.av
+  --timings`, five runs) checker times: 3525.614, 3496.118, 3511.874,
+  3574.593, 3572.739 ms. Data:
+  `/tmp/aven-comptime-baseline-cli-timing.json`.
+
 The tree is green and committed. `cargo fmt --all --check`, `cargo clippy
 --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all
 pass: **1818 tests, zero failures**, up from the 1800 at baseline `8cc9872`.
