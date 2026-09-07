@@ -3378,7 +3378,7 @@ impl<'a> Checker<'a> {
             };
             let Some(mut argument) = (match param {
                 HostComptimeParam::Value(_) => self
-                    .evaluate_comptime_param_argument(arg, &bindings)
+                    .evaluate_comptime_param_argument(env, arg, &bindings)
                     .map(|argument| argument.value),
                 HostComptimeParam::TypeOf(_) => arg_types.get(index).map(|actual| {
                     let actual = self.normalize(&self.resolve_and_default(actual));
@@ -3876,7 +3876,7 @@ impl<'a> Checker<'a> {
         arg: &Expr,
     ) -> LabelSetEvaluation {
         let bindings = self.current_comptime_value_bindings();
-        if let Some(argument) = self.evaluate_comptime_param_argument(arg, &bindings)
+        if let Some(argument) = self.evaluate_comptime_param_argument(env, arg, &bindings)
             && let comptime::ComptimeValue::LabelSet(labels) = argument.value
         {
             return LabelSetEvaluation::Labels(labels);
@@ -4024,9 +4024,9 @@ impl<'a> Checker<'a> {
                         })
                 })
                 .flatten();
-            let Some(argument) = reflected_default
-                .or_else(|| self.evaluate_comptime_param_argument(arg, &runtime_value_bindings))
-            else {
+            let Some(argument) = reflected_default.or_else(|| {
+                self.evaluate_comptime_param_argument(env, arg, &runtime_value_bindings)
+            }) else {
                 // An unresolved enclosing comptime parameter is intentionally
                 // deferred until its caller specializes this function. Other
                 // unevaluable lowercase arguments still need ordinary value
@@ -4035,13 +4035,9 @@ impl<'a> Checker<'a> {
                 if !uppercase && !self.expr_references_unresolved_comptime_param(arg) {
                     let diagnostics_start = self.diagnostics.len();
                     self.check_value_expr(arg);
-                    if self.diagnostics.len() == diagnostics_start
-                        && self.is_runtime_computation_call(arg)
-                    {
+                    if self.diagnostics.len() == diagnostics_start {
                         let function = call_callee_name(callee).unwrap_or("comptime function");
-                        self.push_unique_diagnostic(comptime::comptime_argument_not_known(
-                            arg.span, function,
-                        ));
+                        self.report_comptime_param_argument_failure(env, arg, function);
                     }
                 }
                 return Some(Type::Deferred);
@@ -4128,23 +4124,19 @@ impl<'a> Checker<'a> {
 
     pub(super) fn evaluate_comptime_param_argument(
         &mut self,
+        env: &TypeEnv,
         arg: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
     ) -> Option<ComptimeArgument> {
-        // A call to a lowercase function with no `@` parameters is a runtime
-        // computation, even if the evaluator can reduce its body. In
-        // particular, `pick(bad())` must not execute `bad` while validating a
-        // comptime argument.
-        if self.is_runtime_computation_call(arg) {
-            return None;
-        }
-
-        if let Some(argument) = self.evaluate_comptime_runtime_argument(arg, bindings) {
-            return Some(argument);
-        }
-
-        let members = self.concrete_label_set_members(arg, bindings);
-        if let Some(members) = members {
+        // A comptime parameter is a demand site. First use the type-position
+        // evaluator for compiler-only values such as label sets and reified
+        // types. If it cannot answer, ask the capability-free runtime
+        // evaluator for ordinary Aven code. This deliberately has no
+        // syntactic "runtime call" refusal: whether a helper is reducible is
+        // a property of its demanded dependencies, not of its parameter list.
+        // Preserve the precise spans for direct label-set members before the
+        // generic evaluator returns the same semantic value without them.
+        if let Some(members) = self.concrete_label_set_members(arg, bindings) {
             let labels = members.iter().map(|member| member.label.clone()).collect();
             return Some(ComptimeArgument {
                 value: comptime::ComptimeValue::LabelSet(labels),
@@ -4152,25 +4144,53 @@ impl<'a> Checker<'a> {
             });
         }
 
-        if let Some(ty) = self.evaluate_comptime_type_argument(arg, bindings) {
+        let type_position = comptime::evaluate_type_position_with_bindings(self, arg, bindings);
+        if type_position.diagnostics.is_empty()
+            && let Evaluation::Evaluated(value) = type_position.evaluation
+        {
             return Some(ComptimeArgument {
-                value: comptime::ComptimeValue::ReifiedType(ty),
+                value,
                 label_set_members: None,
             });
         }
+
+        if let Ok(value) = self.evaluate_known_expression(env, arg)
+            && let Some(value) = comptime::eval_value_as_comptime_value(&value)
+        {
+            return Some(ComptimeArgument {
+                value,
+                label_set_members: None,
+            });
+        }
+
         None
     }
 
-    pub(super) fn is_runtime_computation_call(&self, expr: &Expr) -> bool {
-        matches!(&ungroup_expr(expr).kind, ExprKind::Call { callee, .. }
-        if call_callee_name(callee).is_some_and(|name| {
-            name.chars().next().is_some_and(char::is_lowercase)
-                && self
-                    .lookup_comptime_function_export(name)
-                    .is_some_and(|function| {
-                        function.params.iter().all(|param| !param.comptime)
-                    })
-        }))
+    pub(super) fn report_comptime_param_argument_failure(
+        &mut self,
+        env: &TypeEnv,
+        arg: &Expr,
+        function: &str,
+    ) {
+        let evaluation = self.evaluate_known_expression(env, arg);
+        let Err(cause) = evaluation else {
+            self.push_unique_diagnostic(comptime::comptime_argument_not_known(arg.span, function));
+            return;
+        };
+
+        let detail = if cause.code.as_deref() == Some(codes::runtime::UNBOUND_NAME) {
+            "this dependency has no compile-time value"
+        } else {
+            "evaluation failed inside this expression"
+        };
+        let mut diagnostic = comptime::comptime_argument_not_known(arg.span, function)
+            .with_note(format!("evaluation stopped because: {}", cause.message));
+        for label in cause.labels {
+            if arg.span.start <= label.span.start && label.span.end <= arg.span.end {
+                diagnostic = diagnostic.with_label(Label::primary(label.span, detail));
+            }
+        }
+        self.push_unique_diagnostic(diagnostic);
     }
 
     pub(super) fn evaluate_comptime_runtime_argument(
@@ -4189,25 +4209,6 @@ impl<'a> Checker<'a> {
         }
 
         None
-    }
-
-    fn evaluate_comptime_type_argument(
-        &mut self,
-        arg: &Expr,
-        bindings: &HashMap<String, comptime::ComptimeValue>,
-    ) -> Option<Type> {
-        let start = self.diagnostics.len();
-        self.local_comptime_values.push(bindings.clone());
-        let ty = self.lower_annotation(arg);
-        self.local_comptime_values.pop();
-        let diagnostics = self.diagnostics.split_off(start);
-        let has_diagnostics = !diagnostics.is_empty();
-        self.diagnostics.extend(diagnostics);
-        if has_diagnostics {
-            return None;
-        }
-
-        is_concrete_type(&ty).then_some(ty)
     }
 
     pub(super) fn comptime_param_function(

@@ -15129,10 +15129,12 @@ fn comptime_pin_evaluates_structured_values_and_ambient_bodies() {
     assert!(ambient.diagnostics.is_empty(), "{:?}", ambient.diagnostics);
     let mut imports = ModuleImports::default();
     imports.set_builtin_method_environment(ambient.builtin_methods);
-    {
-        let call = "comptime(join([\"a\", \"b\"]))";
+    for call in [
+        "comptime(join([\"a\", \"b\"]))".to_owned(),
+        "pin(join([\"a\", \"b\"]))".to_owned(),
+    ] {
         let source = format!(
-            "separator: Text = \"\\n\"\njoin = (parts: Array(Text)): Text => parts.joinWith(separator)\nscript = {call}\nchecked: \"a\\nb\" = script\n"
+            "separator: Text = \"\\n\"\npin = (@arg: Text): Text => arg\njoin = (parts: Array(Text)): Text => parts.joinWith(separator)\nscript = {call}\nchecked: \"a\\nb\" = script\n"
         );
         let parsed = parse_module(&source);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -15154,6 +15156,30 @@ fn comptime_pin_evaluates_structured_values_and_ambient_bodies() {
             checked.diagnostics
         );
     }
+}
+
+#[test]
+fn comptime_parameter_rejects_a_runtime_dependency_after_evaluation() {
+    let source = concat!(
+        "pin = (@arg: Int): Int => arg\n",
+        "f = (runtime: Int) => pin(runtime + 1)\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert_eq!(
+        matching_codes(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        1,
+        "a demanded runtime dependency must remain rejected: {:?}",
+        checked.diagnostics
+    );
+    assert!(
+        checked.diagnostics.iter().any(|diagnostic| diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("unbound name `runtime`"))),
+        "the demand diagnostic must retain evaluator evidence: {:?}",
+        checked.diagnostics
+    );
 }
 
 #[test]

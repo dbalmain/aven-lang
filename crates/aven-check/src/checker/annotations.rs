@@ -530,7 +530,11 @@ impl<'a> Checker<'a> {
             if !param.comptime
                 || self.expr_references_unresolved_comptime_param(arg)
                 || self
-                    .evaluate_comptime_param_argument(arg, &bindings)
+                    .evaluate_comptime_param_argument(
+                        &self.local_types.inference_env(),
+                        arg,
+                        &bindings,
+                    )
                     .is_some()
             {
                 continue;
@@ -538,12 +542,13 @@ impl<'a> Checker<'a> {
 
             let diagnostics_start = self.diagnostics.len();
             self.check_value_expr(arg);
-            if self.diagnostics.len() == diagnostics_start && self.is_runtime_computation_call(arg)
-            {
+            if self.diagnostics.len() == diagnostics_start {
                 let function = call_callee_name(callee).unwrap_or("comptime function");
-                self.push_unique_diagnostic(comptime::comptime_argument_not_known(
-                    arg.span, function,
-                ));
+                self.report_comptime_param_argument_failure(
+                    &self.local_types.inference_env(),
+                    arg,
+                    function,
+                );
             }
         }
     }
