@@ -58,8 +58,10 @@ allow content such as `"#` by choosing `r##"..."##`; a closing sequence with
 The formatter must preserve the value of a string literal. When it reindents a
 multiline literal, it moves the body and closing delimiter together so the
 dedent margin changes with the source layout, never the resulting text.
-Byte-level fixtures should cover blank lines, tabs, CRLF input, interpolation,
-and delimiter collisions before this feature is marked implemented.
+Blank lines, tabs, CRLF input, interpolation and delimiter collisions are
+covered at value level in `crates/aven-fmt/tests/string_values.rs`, which
+decodes every payload before and after a format and compares. The formatter
+fixture `multiline-strings.av` covers the layouts byte for byte.
 
 ## Comptime evaluation
 
@@ -79,8 +81,11 @@ checker must evaluate its argument and report an error at the pin if it cannot:
 body = comptime(["one", "two"].joinWith("\n"))
 ```
 
-The pin is a phase assertion, not a conversion. It preserves the value's own
-type and is the identity at runtime. Liftable values include text, numbers,
+The pin is a phase assertion, not a conversion. It is the identity at runtime,
+and it preserves the value's own type **up to refinement**: because the value is
+now known, the pin may narrow to its singleton, but only where that singleton
+already sits inside the type the expression had. It never widens and never
+changes a value's shape. Liftable values include text, numbers,
 records, arrays, sets, and generated schema data. Types, modules, and other
 compiler artifacts remain non-liftable unless explicitly reflected into a
 runtime value.
@@ -93,9 +98,10 @@ Diagnostics must distinguish these cases:
 
 Comptime evaluation must also fail in a bounded and diagnosable way. A
 comptime failure, panic, or exhausted evaluation fuel reports at the pinned
-expression with the operation and source span; it must not hang the checker or
-silently fall back to runtime evaluation. Fuel exhaustion is a capability or
-resource diagnostic, distinct from an argument that was not known.
+expression, naming the resource or operation that stopped it; it must not hang
+the checker or silently fall back to runtime evaluation. A cause raised inside
+an ambient module carries that module's source offsets, which are not positions
+in the program being checked: it contributes its message, never its span.
 
 The second case is an implementation limitation, not a user error in the
 program's phase. The diagnostic should identify the operation and capability

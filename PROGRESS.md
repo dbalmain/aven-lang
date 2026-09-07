@@ -4,7 +4,7 @@ Updated: 2026-09-07, Australia/Sydney.
 
 The tree is green and committed. `cargo fmt --all --check`, `cargo clippy
 --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all
-pass: **1813 tests, zero failures**, up from the 1800 at baseline `8cc9872`.
+pass: **1818 tests, zero failures**, up from the 1800 at baseline `8cc9872`.
 
 One decision is open and is the user's: whether an ordinary call with
 comptime-known arguments folds to a literal type. See *The open decision*.
@@ -22,6 +22,9 @@ Commits on `main`, oldest first:
 | `cf77313` | prove literals survive the formatter; allow a blank opener line |
 | `3940e3c` | the two proptest seeds that found the opener-blank defect |
 | `6a74f8a` | write `std/cli`'s generated shell fragments as raw multiline text |
+| `3a29bf9` | reject an optional value at a literal-type annotation |
+| `c8fd362` | keep the named-family owner key out of diagnostics; fix a line index |
+| `20f5d52` | fix three pin defects found by review |
 
 `47fda25` was committed knowingly red — 610 passed / 36 failed — because three
 agents had been cut off by a shared usage limit with the work uncommitted, and
@@ -129,6 +132,63 @@ fourth is a cost the rule implies and needs a preflight. Implementing the spec
 reading properly means a lifting rule for `Optional`, `Result`, records and
 named families, and re-deciding the 36 checker tests one at a time — several
 encode soundness properties and must not be blanket-updated.
+
+## Open findings from the three-agent review
+
+Reviewed by Grok, Kimi K3 and GLM 5.3 Flash over `8cc9872..c61cd8f`. Four
+findings were fixed (`3a29bf9`, `c8fd362`, `20f5d52`); these are confirmed and
+left open, each with the probe that shows it.
+
+**The `folded` shortcut accepts a pin without evaluating it.** (Kimi) An open
+singleton row is taken as proof the value folded, but that shape is also what
+ordinary inference produces for a literal through a type variable. The pin then
+skips evaluation entirely, so a runtime dependency goes unreported:
+
+```aven
+f = (t: Int) =>
+  x = comptime(Array.range(0, 5).fold(0, (a, b) => a + b + t))
+  ok: 0 = x
+  x
+f(1)
+```
+
+`check` passes; `run` produces `15`, from the runtime parameter `t`. This
+predates the slice, and the honest fix — require evaluation provenance rather
+than a row shape — amounts to "always evaluate", which is a cost decision tied
+to the open decision below.
+
+**A pin does not apply a named family's `toText`.** (Grok) `eval_comptime_expr`
+installs no family plans, so `comptime("${price}")` on a branded `Money` types
+as `"10"` while the program prints `$10`. The spec requires the evaluator's own
+rendering precisely to avoid this.
+
+**A pin inside a function cannot see local bindings.** (Grok) `blocked` keeps a
+parameter from resolving to a same-named module binding, but it also blocks
+local helpers and local literals, so the motivating example works at top level
+and fails one scope in.
+
+**Top-level bindings are mutually recursive to the comptime evaluator and
+sequential to the runtime.** (GLM) `comptime(double(later))` before `later = 3`
+checks and narrows to `6`; running it reports `unbound name later`. The
+underlying split predates the slice, but the pin now certifies a specific value
+the program cannot produce.
+
+**A wrapped interpolation cannot span lines.** (Grok) Inside a triple-quoted
+string, `${"a"\n + "b"}` is reported unterminated. Multiline literals are the
+first place a wrapped interpolation is reasonable, so this is new visibility
+rather than a new rule.
+
+**Margin validation reaches into `${...}` holes.** (Kimi) Every physical line of
+a multiline literal must respect the margin, including expression lines inside
+a hole. Values are never computed wrongly — the excess is in validation — but
+the rule is not written down.
+
+Smaller, confirmed: a closed literal union is not treated as refinable, so
+`comptime(choose(1))` on `(1 | 2) -> 1 | 2` keeps `1 | 2` (conservative, not
+unsound); a malformed `"""` opener emits two diagnostics for one defect; and
+`crates/aven-fmt/tests/string_values.rs` decodes interpolation fragments with
+`decode_string_literal` rather than the parser's own fragment path, so a decode
+only the parser gets right would be invisible to it.
 
 ## Not run
 
