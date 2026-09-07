@@ -1266,6 +1266,19 @@ impl<'a> Checker<'a> {
             (expected, Type::Apply { .. }) if reportable_type_shape(expected) => {
                 self.report_type_mismatch_between_types(&expected.render(), &actual.render(), span);
             }
+            // A literal union is never Optional or Nullable. The `Named` arm
+            // above carries the same guard for `Int` vs `?Int`; without this
+            // one an `?Int` silently inhabits the annotation `1`, because no
+            // other arm pairs a literal-union expected with a wrapped actual.
+            (Type::Variant(expected), actual @ (Type::Optional(_) | Type::Nullable(_)))
+                if literal_variant_base(&self.resolve_variant_row(expected)).is_some() =>
+            {
+                self.report_type_mismatch_between_types(
+                    &Type::Variant(self.resolve_variant_row(expected)).render(),
+                    &actual.render(),
+                    span,
+                );
+            }
             (Type::Variant(expected), Type::Named(actual)) => {
                 self.check_named_type_against_variant(expected, actual, span);
             }

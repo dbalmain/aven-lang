@@ -15247,3 +15247,32 @@ fn comptime_pin_reports_instead_of_hanging_on_unbounded_evaluation() {
         check.diagnostics
     );
 }
+
+/// A literal union is never `Optional` or `Nullable`. The `Named` side of this
+/// has always been guarded — `bad: Int = m.get(k)` reports `Int` vs `?Int` — but
+/// the literal-union side had no arm at all, so a `?Int` silently inhabited the
+/// annotation `1`, and even a `Text` literal annotation accepted it.
+#[test]
+fn a_literal_annotation_rejects_an_optional_value() {
+    for (annotation, expected) in [
+        ("1", "expected `1`, found `?Int`"),
+        ("\"x\"", "expected `\"x\"`, found `?Int`"),
+    ] {
+        let source =
+            format!("m = Map.from([(\"a\", 1)])\ngot = m.get(\"a\")\nbad: {annotation} = got\n");
+        let check = check_module(&parse_module(&source).module);
+        assert!(
+            check
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == expected),
+            "{source}: {:?}",
+            check.diagnostics
+        );
+    }
+    // The value really is optional, so unwrapping it satisfies the annotation.
+    let ok = check_module(
+        &parse_module("m = Map.from([(\"a\", 1)])\ngood: Int = m.get(\"a\") ?? 0\n").module,
+    );
+    assert!(ok.diagnostics.is_empty(), "{:?}", ok.diagnostics);
+}
