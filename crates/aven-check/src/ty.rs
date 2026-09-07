@@ -994,10 +994,7 @@ impl TypeRenderer {
             // type shape but deferred its real meaning to a later phase.
             Type::Error => "<error>".to_owned(),
             Type::Deferred => "?".to_owned(),
-            Type::Named(name) => name.rfind('\0').map_or_else(
-                || name.clone(),
-                |separator| name[separator + 1..].to_owned(),
-            ),
+            Type::Named(name) => display_type_name(name).to_owned(),
             Type::Variable(name) => name.clone(),
             Type::Meta(id) => self.render_meta(*id),
             Type::Recursive(id) => crate::comptime::recursive_type_display(*id),
@@ -1615,6 +1612,18 @@ pub(crate) fn literal_variant_base(row: &Row) -> Option<LiteralBase> {
     }
 
     base
+}
+
+/// The name a user wrote, given a name the checker may have qualified.
+///
+/// A named family's owner key is `\0aven.named-family:<module>\0<name>`, which
+/// keeps two same-named families in different modules distinct. Only the last
+/// segment is the user's spelling, and only it may reach a diagnostic — a NUL
+/// renders as nothing, so the raw key surfaces as a stray space, an absolute
+/// path, and the name. A string with no NUL is already a display name.
+pub(crate) fn display_type_name(name: &str) -> &str {
+    name.rfind('\0')
+        .map_or(name, |separator| &name[separator + 1..])
 }
 
 pub(crate) fn literal_base(literal: &Literal) -> Option<LiteralBase> {

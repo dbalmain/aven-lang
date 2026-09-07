@@ -15276,3 +15276,33 @@ fn a_literal_annotation_rejects_an_optional_value() {
     );
     assert!(ok.diagnostics.is_empty(), "{:?}", ok.diagnostics);
 }
+
+/// A named family's owner key is `\0aven.named-family:<module>\0<name>`, and a
+/// NUL renders as nothing, so leaking it into a diagnostic showed the user a
+/// stray space, an absolute source path, and then the name. Several callers
+/// pass a bare name rather than a rendered type, so the strip happens at the
+/// diagnostic instead of at each of them.
+#[test]
+fn a_named_family_reaches_diagnostics_by_its_own_name() {
+    let source = concat!(
+        "Money = Int {\n",
+        "  toText(): Text => \"money\"\n",
+        "}\n",
+        "price : Money = 1500\n",
+        "bad: 1500 = price\n",
+    );
+    let check = check_module(&parse_module(source).module);
+    let mismatch = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+        .expect("a family is not a literal");
+    assert_eq!(mismatch.message, "expected `1500`, found `Money`");
+    for text in std::iter::once(&mismatch.message)
+        .chain(mismatch.labels.iter().map(|label| &label.message))
+        .chain(mismatch.notes.iter())
+    {
+        assert!(!text.contains('\0'), "owner key leaked: {text:?}");
+        assert!(!text.contains("named-family"), "owner key leaked: {text:?}");
+    }
+}

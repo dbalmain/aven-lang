@@ -1019,6 +1019,11 @@ impl<'a> Checker<'a> {
         actual: &str,
         span: Span,
     ) {
+        // Several callers pass a bare type *name* rather than a rendered type,
+        // and a named family's name carries its owner key. Stripping here fixes
+        // every one of them, and is a no-op on an already-rendered string.
+        let expected = display_type_name(expected);
+        let actual = display_type_name(actual);
         self.push_type_mismatch_diagnostic(
             Diagnostic::error(format!("expected `{expected}`, found `{actual}`"))
                 .with_code(codes::ty::MISMATCH)

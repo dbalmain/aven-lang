@@ -108,7 +108,10 @@ fn literal_payload_lines(seed: &str) -> Vec<bool> {
     if lexed.diagnostics.iter().any(Diagnostic::is_error) {
         return payload;
     }
-    let line_of = |offset: usize| seed[..offset].lines().count().saturating_sub(1);
+    // Count newlines, not lines: `"a\n".lines()` yields one line, so a
+    // `lines().count() - 1` reads the first offset of line 1 as line 0 and
+    // shifts the payload window by one at every line start.
+    let line_of = |offset: usize| seed[..offset].matches('\n').count();
     for token in &lexed.tokens {
         let text = &seed[token.span.start..token.span.end];
         if !text.contains(['\n', '\r']) {
