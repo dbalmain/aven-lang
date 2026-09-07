@@ -15227,9 +15227,9 @@ fn comptime_pin_keeps_an_optional_type_when_the_lookup_succeeds() {
     );
 }
 
-/// A runaway pinned call must end in a bounded resource diagnostic rather than
-/// hanging the checker, and that diagnostic is distinct from "this argument was
-/// not known", which is the phase error.
+/// A runaway pinned call must end bounded rather than hanging the checker, and
+/// must report at the pin naming the resource that ran out — the failure is not
+/// "your argument was not known", and the reader needs to know which it was.
 #[test]
 fn comptime_pin_reports_instead_of_hanging_on_unbounded_evaluation() {
     let source = concat!(
@@ -15238,13 +15238,23 @@ fn comptime_pin_reports_instead_of_hanging_on_unbounded_evaluation() {
     );
     let output = parse_module(source);
     let check = check_module(&output.module);
+    let pin = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_NOT_KNOWN))
+        .unwrap_or_else(|| {
+            panic!(
+                "a runaway pin must report at the pin: {:?}",
+                check.diagnostics
+            )
+        });
+    // Bounded *and* diagnosable: the resource that ran out is named, so this
+    // does not read as "your argument was not known at compile time".
     assert!(
-        check.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.code.as_deref(),
-            Some(codes::comptime::EVALUATION_LIMIT | codes::runtime::RECURSION_LIMIT)
-        )),
-        "{:?}",
-        check.diagnostics
+        pin.notes
+            .iter()
+            .any(|note| note.contains("recursion limit") || note.contains("budget")),
+        "the pin must say what stopped it: {pin:?}"
     );
 }
 
@@ -15304,5 +15314,107 @@ fn a_named_family_reaches_diagnostics_by_its_own_name() {
     {
         assert!(!text.contains('\0'), "owner key leaked: {text:?}");
         assert!(!text.contains("named-family"), "owner key leaked: {text:?}");
+    }
+}
+
+/// The evaluator spells a non-finite float `NaN` or `Infinity`. Neither is a
+/// number lexeme, and neither carries a `.` or exponent, so both read as
+/// int-form to every other test here — a pin could turn a `Float` into a
+/// singleton that `Int` accepts, which is a meaning change, not a phase
+/// assertion. The no-pin form of each case is the control.
+#[test]
+fn a_pin_does_not_narrow_a_non_finite_float_into_int() {
+    for expression in ["0.0 / 0.0", "1.0 / 0.0"] {
+        let pinned = format!("y = comptime({expression})\nasInt: Int = y\n");
+        let bare = format!("y = {expression}\nasInt: Int = y\n");
+        for source in [&pinned, &bare] {
+            let check = check_module(&parse_module(source).module);
+            assert!(
+                check
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message == "expected `Int`, found `Float`"),
+                "{source}: {:?}",
+                check.diagnostics
+            );
+        }
+    }
+    // A float-form value must not refine `Int` either, pinned or not.
+    let check = check_module(&parse_module("f = comptime(1.0 + 0.5)\nbad: Int = f\n").module);
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH)),
+        "{:?}",
+        check.diagnostics
+    );
+    // The narrowing this slice exists for still happens.
+    let ok = check_module(&parse_module("x = comptime(2 + 2)\ngood: 4 = x\n").module);
+    assert!(ok.diagnostics.is_empty(), "{:?}", ok.diagnostics);
+}
+
+/// A comptime failure raised inside an ambient `std/*.av` module carries that
+/// module's byte offsets. Forwarding it hands the renderer a span that is not a
+/// position in this source, which aborted the CLI outright. Every failure now
+/// reports at the pin, and a label survives only if it lies inside the pinned
+/// argument.
+#[test]
+fn a_pin_failure_in_an_ambient_module_reports_at_the_pin() {
+    let source = "x = comptime(Array.range(0, 300000).find((v) => v == 299999))\n";
+    let output = parse_module(source);
+    let check = check_module(&output.module);
+    let pin = check
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_NOT_KNOWN))
+        .expect("a runaway ambient call must report at the pin");
+    for label in &pin.labels {
+        assert!(
+            label.span.end <= source.len(),
+            "label escapes this source: {label:?}"
+        );
+    }
+    assert!(
+        check
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.labels.iter().all(|l| l.span.end <= source.len())),
+        "a foreign span reached the diagnostics: {:?}",
+        check.diagnostics
+    );
+}
+
+/// Two evaluators reach the pin: the type-position walker and the runtime one.
+/// Narrowing used to run only when the walker did *not* produce a value, so the
+/// feature depended on it failing — `comptime(ident(4))` stayed `Int` while the
+/// same helper written `n + 0` narrowed to `4`, because `+` is unsupported in
+/// type position. A value from either evaluator narrows now.
+#[test]
+fn a_pin_narrows_whichever_evaluator_produced_the_value() {
+    for (helper, call, annotation) in [
+        // The walker evaluates these; the runtime evaluator is not reached.
+        ("ident = (n: Int): Int => n\n", "ident(4)", "4"),
+        ("id = (t: Text): Text => t\n", "id(\"hello\")", "\"hello\""),
+        (
+            "flip = (b: Bool): Bool => b ?> true => false, false => true\n",
+            "flip(true)",
+            "false",
+        ),
+        // These fall through to the runtime evaluator.
+        ("ident = (n: Int): Int => n + 0\n", "ident(4)", "4"),
+        (
+            "join = (parts: Array(Text)): Text => parts.joinWith(\"-\")\n",
+            "join([\"a\", \"b\"])",
+            "\"a-b\"",
+        ),
+    ] {
+        let source = format!("{helper}x = comptime({call})\nchecked: {annotation} = x\n");
+        let check = check_module(&parse_module(&source).module);
+        assert!(
+            check.diagnostics.is_empty(),
+            "{source}: {:?}",
+            check.diagnostics
+        );
     }
 }

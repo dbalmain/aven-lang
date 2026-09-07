@@ -1916,6 +1916,19 @@ pub(crate) fn is_meta_type(ty: &Type) -> bool {
 }
 
 /// True when a number lexeme is a float form (`.` or exponent), not a bare int.
+/// True when a number literal's text is a numeric lexeme a user could write.
+///
+/// The evaluator renders a non-finite float as `NaN` or `Infinity`, neither of
+/// which is a legal literal — and neither carries a `.` or exponent, so both
+/// read as int-form to every other test here. A singleton type spelled that way
+/// would be inhabited by nothing, and would silently satisfy `Int`.
+pub(crate) fn number_literal_text_is_finite(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'e' | b'E' | b'+' | b'-'))
+}
+
 pub(crate) fn number_literal_text_is_float(text: &str) -> bool {
     text.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
 }

@@ -472,7 +472,20 @@ impl<'a> Checker<'a> {
         let Some(base) = literal_variant_base(row) else {
             return false;
         };
+        // A number singleton also has to agree in *form*. `Number` matches both
+        // `Int` and `Float`, so without this an evaluated `1.5` would refine
+        // `Int`, and so would a value that is not a number lexeme at all.
+        if let Some(RowEntry::Literal {
+            value: Literal::Number(text),
+        }) = row.entries.first()
+            && !number_literal_text_is_finite(text)
+        {
+            return false;
+        }
         match self.unifier.resolve(ty) {
+            Type::Named(name) if base == LiteralBase::Number => {
+                number_literal_row_fits_named(row, &name)
+            }
             Type::Named(name) => base.matches_named(&name),
             Type::Variant(target) => open_literal_variant_base(&target) == Some(base),
             _ => false,
@@ -493,7 +506,12 @@ impl<'a> Checker<'a> {
                 _ => return ty,
             },
         };
-        let narrowed = self.open_literal_variant(&literal);
+        self.narrow_to_literal(&literal, ty)
+    }
+
+    /// The refinement itself, over a literal from either evaluator.
+    fn narrow_to_literal(&mut self, literal: &Literal, ty: Type) -> Type {
+        let narrowed = self.open_literal_variant(literal);
         // A pin proves *when* a value is known, never that it has a different
         // shape than its own type. Narrowing that the type does not already
         // admit would be a conversion, so the declared type wins.
@@ -3642,25 +3660,59 @@ impl<'a> Checker<'a> {
             let bindings = self.current_comptime_value_bindings();
             let evaluation = comptime::evaluate_type_position_with_bindings(self, arg, &bindings);
             // The annotation path reports the same pin, so this is unique.
+            // The two evaluators reach different expressions: the type-position
+            // walker handles forms the runtime one cannot, and the runtime one
+            // handles calls the walker reports as unsupported. A value from
+            // either narrows the pin. Taking only the second made the feature
+            // depend on the first *failing* — `comptime(ident(4))` stayed `Int`
+            // while `comptime(ident(4))` through `n + 0` narrowed to `4`.
             if evaluation.diagnostics.is_empty()
-                && !matches!(evaluation.evaluation, Evaluation::Evaluated(_))
+                && let Evaluation::Evaluated(value) = &evaluation.evaluation
             {
+                let literal = match value {
+                    comptime::ComptimeValue::Literal(literal) => Some(literal.clone()),
+                    comptime::ComptimeValue::Bool(value) => Some(Literal::Bool(*value)),
+                    // A reified type or label set is a compiler artifact, not a
+                    // value with a literal type to narrow to.
+                    comptime::ComptimeValue::ReifiedType(_)
+                    | comptime::ComptimeValue::LabelSet(_) => None,
+                };
+                let narrowed = match literal {
+                    Some(literal) => self.narrow_to_literal(&literal, ty),
+                    None => ty,
+                };
+                return Some(narrowed);
+            }
+            if evaluation.diagnostics.is_empty() {
                 match self.evaluate_known_expression(env, arg) {
                     Ok(value) => return Some(self.narrow_to_evaluated_literal(&value, ty)),
                     Err(cause) => {
+                        // Every failure reports at the pin, whatever its cause.
+                        // Forwarding the cause instead loses the pin as the
+                        // place to read about it, and carries the cause's own
+                        // code and note, which describe a runtime phase this is
+                        // not.
+                        let detail = if cause.code.as_deref() == Some(codes::runtime::UNBOUND_NAME)
+                        {
+                            "this dependency has no compile-time value"
+                        } else {
+                            "evaluation failed inside this expression"
+                        };
                         let mut diagnostic = comptime::comptime_pin_failed(arg.span)
                             .with_note(format!("evaluation stopped because: {}", cause.message));
-                        if cause.code.as_deref() == Some(codes::runtime::UNBOUND_NAME) {
-                            for label in cause.labels {
-                                diagnostic = diagnostic.with_label(Label::primary(
-                                    label.span,
-                                    "this dependency has no compile-time value",
-                                ));
+                        for label in cause.labels {
+                            // A cause raised inside an ambient `std/*.av` module
+                            // carries that module's offsets. They are not
+                            // positions in this source, and handing one to a
+                            // renderer that assumes otherwise aborts the CLI, so
+                            // only a label within the pinned argument survives.
+                            if arg.span.start <= label.span.start && label.span.end <= arg.span.end
+                            {
+                                diagnostic =
+                                    diagnostic.with_label(Label::primary(label.span, detail));
                             }
-                            self.push_unique_diagnostic(diagnostic);
-                        } else {
-                            self.push_unique_diagnostic(cause);
                         }
+                        self.push_unique_diagnostic(diagnostic);
                     }
                 }
             }
