@@ -947,6 +947,7 @@ fn with_standard_library(roots: aven_compiler::ModuleRoots) -> aven_compiler::Mo
             aven_host::standard_std_library(),
         )
         .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
+        .with_trusted_prelude_modules(aven_host::STD_PRELUDE_MODULES.iter().copied())
         .with_library_only_global_names(aven_host::standard_library_only_global_names())
 }
 

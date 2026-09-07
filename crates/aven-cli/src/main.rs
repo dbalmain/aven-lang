@@ -971,6 +971,7 @@ fn discover_roots(path: &Path) -> aven_compiler::ModuleRoots {
             aven_host::standard_std_library(),
         )
         .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
+        .with_trusted_prelude_modules(aven_host::STD_PRELUDE_MODULES.iter().copied())
         .with_library_only_global_names(aven_host::standard_library_only_global_names())
 }
 
@@ -979,6 +980,7 @@ fn discover_roots_for_host(path: &Path, host: &aven_host::Host) -> aven_compiler
         aven_compiler::ModuleRoots::discover(path)
             .with_library(aven_host::STD_LIBRARY_NAME, host.std_library())
             .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
+            .with_trusted_prelude_modules(aven_host::STD_PRELUDE_MODULES.iter().copied())
             .with_library_only_global_names(host.library_only_global_names()),
         |roots, (specifier, capability, register_method)| {
             roots.with_disabled_capability_module(specifier, capability, register_method)

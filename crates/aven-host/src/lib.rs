@@ -758,6 +758,7 @@ pub fn stdio_handle_type() -> Type {
 /// The library name the embedded standard library registers under.
 pub const STD_LIBRARY_NAME: &str = "std";
 pub const STD_AMBIENT_METHOD_MODULES: &[&str] = &["std/array", "std/set"];
+pub const STD_PRELUDE_MODULES: &[&str] = &["std/prelude"];
 
 /// Embedded standard-library sources, keyed by module specifier. std is
 /// written in Aven and only puns host-registered natives, so registering this
@@ -766,6 +767,7 @@ pub const STD_AMBIENT_METHOD_MODULES: &[&str] = &["std/array", "std/set"];
 pub fn std_library() -> HashMap<String, &'static str> {
     HashMap::from([
         ("std".to_owned(), include_str!("../std/std.av")),
+        ("std/prelude".to_owned(), include_str!("../std/prelude.av")),
         ("std/array".to_owned(), include_str!("../std/array.av")),
         ("std/cli".to_owned(), include_str!("../std/cli.av")),
         ("std/map".to_owned(), include_str!("../std/map.av")),

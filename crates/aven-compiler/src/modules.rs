@@ -108,6 +108,8 @@ pub struct ModuleRoots {
     /// methods. Filesystem modules and ordinary library registrations never
     /// acquire this trust implicitly.
     pub trusted_ambient_modules: HashSet<String>,
+    /// Embedded modules whose record exports become ordinary lexical defaults.
+    pub trusted_prelude_modules: HashSet<String>,
     /// Host names available only while evaluating embedded library modules.
     pub library_only_global_names: HashSet<String>,
     /// Known capability modules omitted by this host, keyed by specifier.
@@ -137,6 +139,7 @@ impl ModuleRoots {
             filesystem: true,
             libraries: HashMap::new(),
             trusted_ambient_modules: HashSet::new(),
+            trusted_prelude_modules: HashSet::new(),
             library_only_global_names: HashSet::new(),
             disabled_capability_modules: HashMap::new(),
         }
@@ -152,6 +155,14 @@ impl ModuleRoots {
         specifiers: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.trusted_ambient_modules = specifiers.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_trusted_prelude_modules(
+        mut self,
+        specifiers: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.trusted_prelude_modules = specifiers.into_iter().map(Into::into).collect();
         self
     }
 
@@ -424,6 +435,7 @@ fn check_path_impl(
     let mut name_duration = None;
     let mut check_duration = None;
     let mut builtin_methods = aven_check::BuiltinMethodEnvironment::default();
+    let mut prelude_types = Vec::new();
 
     for node_id in graph.order.iter().copied() {
         let mut imports = check_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
@@ -431,7 +443,10 @@ fn check_path_impl(
         let trusted_ambient = is_trusted_ambient_node(roots, &graph.nodes[node_id].path);
         imports.set_trusted_builtin_method_source(trusted_ambient);
         let file_id = graph.nodes[node_id].file.id;
-        let node_globals = globals_for_node(globals, roots, &graph.nodes[node_id].path);
+        let mut node_globals = globals_for_node(globals, roots, &graph.nodes[node_id].path);
+        if !is_trusted_prelude_node(roots, &graph.nodes[node_id].path) {
+            node_globals.types.extend(prelude_types.clone());
+        }
         let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
         let semantic = analyze_semantics_with_host_globals_and_imports_in(
             &graph.nodes[node_id].parse,
@@ -476,6 +491,14 @@ fn check_path_impl(
                 &semantic.diagnostics,
                 trusted_ambient,
             ));
+        if is_trusted_prelude_node(roots, &graph.nodes[node_id].path) {
+            prelude_types.extend(
+                semantic
+                    .top_level_qualified_types
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.ty.clone())),
+            );
+        }
         semantics[node_id] = Some(semantic);
 
         if semantic_has_errors || file_has_errors(&diagnostics, file_id) || imports.has_failed() {
@@ -607,6 +630,8 @@ fn eval_path_impl(
     let mut entry_value = None;
     let mut checked_builtin_methods = aven_check::BuiltinMethodEnvironment::default();
     let runtime_builtin_methods = aven_eval::BuiltinMethodEnvironment::default();
+    let mut prelude_values = Vec::new();
+    let mut prelude_types = Vec::new();
 
     for node_id in graph.order.iter().copied() {
         let mut check_imports = check_imports_for_node(
@@ -617,7 +642,11 @@ fn eval_path_impl(
         check_imports.set_builtin_method_environment(checked_builtin_methods.clone());
         let trusted_ambient = is_trusted_ambient_node(roots, &graph.nodes[node_id].path);
         check_imports.set_trusted_builtin_method_source(trusted_ambient);
-        let node_check_globals = globals_for_node(check_globals, roots, &graph.nodes[node_id].path);
+        let mut node_check_globals =
+            globals_for_node(check_globals, roots, &graph.nodes[node_id].path);
+        if !is_trusted_prelude_node(roots, &graph.nodes[node_id].path) {
+            node_check_globals.types.extend(prelude_types.clone());
+        }
         let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
         let semantic = analyze_semantics_with_host_globals_and_imports_in(
             &graph.nodes[node_id].parse,
@@ -647,6 +676,17 @@ fn eval_path_impl(
                 &module_identity,
             )
         };
+        if is_trusted_prelude_node(roots, &graph.nodes[node_id].path)
+            && let CheckExport::Record {
+                qualified_exports, ..
+            } = &check_exports[node_id]
+        {
+            prelude_types.extend(
+                qualified_exports
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.ty.clone())),
+            );
+        }
 
         if trusted_ambient && semantic.diagnostics.iter().any(Diagnostic::is_error) {
             let file_id = graph.nodes[node_id].file.id;
@@ -678,7 +718,10 @@ fn eval_path_impl(
             continue;
         }
 
-        let node_globals = eval_globals_for_node(&globals, roots, &graph.nodes[node_id].path);
+        let mut node_globals = eval_globals_for_node(&globals, roots, &graph.nodes[node_id].path);
+        if !is_trusted_prelude_node(roots, &graph.nodes[node_id].path) {
+            node_globals.extend(prelude_values.clone());
+        }
         let slot_reifications = aven_eval::SlotReificationPlan::new(
             semantic.slot_reifications.iter().map(|(span, target)| {
                 (
@@ -731,6 +774,11 @@ fn eval_path_impl(
         }
 
         exports[node_id] = eval_export_for_node(&graph.nodes[node_id], outcome.value);
+        if is_trusted_prelude_node(roots, &graph.nodes[node_id].path)
+            && let EvalExport::Record(Value::Record(fields)) = &exports[node_id]
+        {
+            prelude_values.extend(fields.iter().cloned());
+        }
     }
 
     let mut reports = reports_from_diagnostics(&graph.source_map, diagnostics);
@@ -830,6 +878,11 @@ fn globals_for_node(globals: &HostGlobals, roots: &ModuleRoots, path: &Path) -> 
 fn is_trusted_ambient_node(roots: &ModuleRoots, path: &Path) -> bool {
     library_specifier(path)
         .is_some_and(|specifier| roots.trusted_ambient_modules.contains(&specifier))
+}
+
+fn is_trusted_prelude_node(roots: &ModuleRoots, path: &Path) -> bool {
+    library_specifier(path)
+        .is_some_and(|specifier| roots.trusted_prelude_modules.contains(&specifier))
 }
 
 /// The diagnostics of one module that belong in the report. A warning raised
@@ -946,6 +999,16 @@ impl ModuleGraph {
         stack.push(path.to_path_buf());
 
         if is_entry {
+            let mut preludes = roots
+                .trusted_prelude_modules
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            preludes.sort();
+            for specifier in preludes {
+                let virtual_path = library_virtual_path(&specifier);
+                self.load_module(&virtual_path, overlay, entry, roots, states, stack)?;
+            }
             let mut ambient = roots
                 .trusted_ambient_modules
                 .iter()
