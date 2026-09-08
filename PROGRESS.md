@@ -93,6 +93,30 @@ not verification of the resumed work.
   file. Check for partial uncommitted metadata edits before resuming.
 - Slices 3–5 (known-value channel, implicit verified optional conversion,
   binding propagation and opportunistic folding) have **not started**.
+- `b589d6e` repairs prelude export metadata. Both graph passes now use actual
+  checked record exports with qualified schemes and comptime functions;
+  private bindings stay private and source/host shadows agree. Invalid,
+  non-record, implicit-type-export, and runtime-failing preludes stop consumers.
+  Owner gates: checker **658 + 2**, compiler **42 + 95**; format and all-targets
+  checker/compiler clippy pass. Logs: `/tmp/prelude-metadata-owner-tests.log`,
+  `/tmp/prelude-metadata-clippy.log`. This repairs `54c36ff`'s known defects.
+- Builtin removal is now underway under `repair_demand_outcomes`; no parallel
+  implementation agent owns checker files. Generic `@`-call recognition must
+  evaluate the whole call when knowledge is demanded, not assume its result is
+  known merely because its `@` arguments are known. Preserve named-family and
+  optional types; if necessary bring the relevant known-value work forward
+  rather than recreating a special case for the name `comptime`.
+- Latest builtin-removal work is **uncommitted** after `b589d6e`: compiler,
+  evaluator and LSP builtin entries removed; std prelude defines ordinary
+  `comptime`; low-level tests receive explicit prelude metadata. The first
+  checker run passed 656/658; subsequent fixes preserve label-set `Set(Text)`
+  types and address default-argument definition scope. Do not treat this as a
+  final gate. Logs use `/tmp/prelude-remove-*.log`.
+- Root review of newly reconstructed comptime prelude scopes requires retaining
+  `eval_items` outcome diagnostics and conservatively rejecting missing
+  elaborations (including private named families). Nested demands such as
+  `again = comptime(script)` must see prelude functions with correct lexical
+  captures. These checks remain with the implementation owner.
 
 At the starting checkpoint, the tree was green and committed. `cargo fmt --all --check`, `cargo clippy
 --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all
