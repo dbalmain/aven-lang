@@ -949,6 +949,19 @@ impl<'a> Checker<'a> {
                 )
             })
             .collect();
+        for (name, qualified) in self.imports.prelude_qualified_exports() {
+            if !declared.contains(name) && !types.contains_key(name) {
+                types.insert(
+                    name.clone(),
+                    Some(scheme_from_qualified_type(
+                        qualified,
+                        name,
+                        Span::point(0),
+                        &mut self.unifier,
+                    )),
+                );
+            }
+        }
 
         for declaration in &declarations {
             let name = declaration.name.clone();
@@ -2150,6 +2163,8 @@ impl<'a> Checker<'a> {
     pub(super) fn is_runtime_value_reference(&self, name: &str) -> bool {
         self.local_types.get(name).is_some()
             || (self.bindings.contains_key(name) && !self.comptime_bindings.contains(name))
+            || (!self.bindings.contains_key(name)
+                && self.imports.prelude_qualified_exports().contains_key(name))
     }
 
     pub(super) fn record_local_value_type(&mut self, name_span: Span, value_type: &LocalValueType) {

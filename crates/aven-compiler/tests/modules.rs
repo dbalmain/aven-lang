@@ -142,7 +142,7 @@ fn formatted_standard_library_is_idempotent_and_checks_in_library_context() {
             (specifier, formatted)
         })
         .collect::<HashMap<_, _>>();
-    assert_eq!(formatted_library.len(), 10);
+    assert_eq!(formatted_library.len(), 11);
 
     let dir = TempDir::new("formatted-standard-library");
     write(
@@ -3247,4 +3247,160 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+fn test_prelude_roots(source: &'static str) -> ModuleRoots {
+    ModuleRoots::none()
+        .with_library("base", HashMap::from([("base/prelude".to_owned(), source)]))
+        .with_trusted_prelude_modules(["base/prelude"])
+}
+
+#[test]
+fn prelude_exports_preserve_polymorphism_constraints_and_privacy() {
+    let roots = test_prelude_roots(
+        "identity = (x) => x\nsize = (x) => x.length()\nprivate = 99\n{ identity, size }\n",
+    );
+    let dir = TempDir::new("prelude-qualified");
+    let path = dir.path().join("main.av");
+    write(
+        dir.path(),
+        "main.av",
+        "a: Int = identity(1)\nb: Text = identity(\"b\")\nn: Int = size(\"abc\")\n{a,b,n}\n",
+    );
+    let checked = check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+        .expect("prelude graph should produce a result");
+    assert_no_errors(&checked.reports);
+    let evaluated =
+        eval_path_with_host_globals_and_roots(&path, &HostGlobals::default(), vec![], &roots)
+            .expect("prelude graph should produce a result");
+    assert_no_errors(&evaluated.reports);
+    assert_eq!(
+        evaluated
+            .value
+            .expect("prelude graph should produce a result")
+            .to_string(),
+        "{ a: 1, b: \"b\", n: 3 }"
+    );
+
+    for source in ["size(1)\n", "private\n"] {
+        write(dir.path(), "main.av", source);
+        let checked =
+            check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+                .expect("prelude graph should produce a result");
+        assert!(
+            checked
+                .reports
+                .iter()
+                .any(|report| report.diagnostics.iter().any(|d| d.is_error())),
+            "{source}"
+        );
+        let evaluated =
+            eval_path_with_host_globals_and_roots(&path, &HostGlobals::default(), vec![], &roots)
+                .expect("prelude graph should produce a result");
+        assert!(
+            evaluated
+                .reports
+                .iter()
+                .any(|report| report.diagnostics.iter().any(|d| d.is_error())),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn invalid_preludes_block_checking_and_evaluating_consumers() {
+    for source in ["x: Int = \"bad\"\n{x}\n", "99\n", "T = Int\n{T}\n"] {
+        let roots = test_prelude_roots(source);
+        let dir = TempDir::new("invalid-prelude");
+        let path = dir.path().join("main.av");
+        write(dir.path(), "main.av", "42\n");
+        let checked =
+            check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+                .expect("prelude graph should produce a result");
+        assert!(
+            checked
+                .reports
+                .iter()
+                .any(|report| report.diagnostics.iter().any(|d| d.is_error())),
+            "{source}"
+        );
+        let evaluated =
+            eval_path_with_host_globals_and_roots(&path, &HostGlobals::default(), vec![], &roots)
+                .expect("prelude graph should produce a result");
+        assert!(
+            evaluated
+                .reports
+                .iter()
+                .any(|report| report.diagnostics.iter().any(|d| d.is_error())),
+            "{source}"
+        );
+        assert!(evaluated.value.is_none());
+    }
+}
+
+#[test]
+fn prelude_comptime_exports_respect_source_and_host_shadows() {
+    let roots = test_prelude_roots("pin = (@x) => x\n{pin}\n");
+    let dir = TempDir::new("prelude-shadow");
+    let path = dir.path().join("main.av");
+    for (source, expected) in [
+        ("x: 2 = pin(2)\nx\n", "2"),
+        ("pin = 7\npin\n", "7"),
+        ("{pin} = {pin: 8}\npin\n", "8"),
+        ("pin = (x) => x + 1\npin(2)\n", "3"),
+    ] {
+        write(dir.path(), "main.av", source);
+        let checked =
+            check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+                .expect("prelude graph should produce a result");
+        assert_no_errors(&checked.reports);
+        let evaluated =
+            eval_path_with_host_globals_and_roots(&path, &HostGlobals::default(), vec![], &roots)
+                .expect("prelude graph should produce a result");
+        assert_no_errors(&evaluated.reports);
+        assert_eq!(
+            evaluated
+                .value
+                .expect("prelude graph should produce a result")
+                .to_string(),
+            expected
+        );
+    }
+    write(dir.path(), "main.av", "pin\n");
+    let globals = HostGlobals::types_only(&[("pin".to_owned(), build::int())]);
+    let checked = check_path_with_host_globals_and_roots(&path, &globals, &roots)
+        .expect("prelude graph should produce a result");
+    assert_no_errors(&checked.reports);
+    let evaluated = eval_path_with_host_globals_and_roots(
+        &path,
+        &globals,
+        vec![("pin".to_owned(), Value::int(9))],
+        &roots,
+    )
+    .expect("prelude graph should produce a result");
+    assert_no_errors(&evaluated.reports);
+    assert_eq!(
+        evaluated
+            .value
+            .expect("prelude graph should produce a result")
+            .to_string(),
+        "9"
+    );
+}
+
+#[test]
+fn runtime_prelude_failure_blocks_consumer_evaluation() {
+    let roots =
+        test_prelude_roots("fail = (): Result(Int, Text) => @Err(\"bad\")\nx = fail()?!\n{x}\n");
+    let dir = TempDir::new("runtime-prelude-failure");
+    let path = dir.path().join("main.av");
+    write(dir.path(), "main.av", "42\n");
+    let checked = check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+        .expect("prelude graph should produce a result");
+    assert_no_errors(&checked.reports);
+    let evaluated =
+        eval_path_with_host_globals_and_roots(&path, &HostGlobals::default(), vec![], &roots)
+            .expect("prelude graph should produce a result");
+    assert_has_code(&evaluated.reports, codes::runtime::PANIC);
+    assert!(evaluated.value.is_none());
 }

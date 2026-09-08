@@ -4281,11 +4281,19 @@ impl<'a> Checker<'a> {
             );
         }
 
-        let pattern_binding = *self.pattern_bindings.get(name)?;
-        let specifier = aven_parser::static_import_specifier(&pattern_binding.value)?;
-        let source = super::import_pattern_source_for_binder(&pattern_binding.pattern, name)?;
-        let export = self.imports.comptime_export(&specifier, source)?;
-        Some(export.renamed(name))
+        if let Some(pattern_binding) = self.pattern_bindings.get(name) {
+            let specifier = aven_parser::static_import_specifier(&pattern_binding.value)?;
+            let source = super::import_pattern_source_for_binder(&pattern_binding.pattern, name)?;
+            return self
+                .imports
+                .comptime_export(&specifier, source)
+                .map(|export| export.renamed(name));
+        }
+        if self.bindings.contains_key(name) || self.globals.iter().any(|(global, _)| global == name)
+        {
+            return None;
+        }
+        self.imports.prelude_comptime_export(name).cloned()
     }
 
     pub(super) fn local_comptime_function_definitions(&self) -> Vec<(String, Vec<Param>, Expr)> {

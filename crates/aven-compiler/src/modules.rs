@@ -346,6 +346,52 @@ enum VisitState {
     Loaded,
 }
 
+/// The same checked export metadata supplies defaults in both graph passes.
+#[derive(Default)]
+struct PreludeExports {
+    qualified: HashMap<String, QualifiedType>,
+    comptime: HashMap<String, ComptimeExport>,
+}
+
+impl PreludeExports {
+    fn install(&self, imports: &mut aven_check::ModuleImports) {
+        imports.set_prelude_exports(self.qualified.clone(), self.comptime.clone());
+    }
+
+    fn publish(&mut self, export: &CheckExport) {
+        if let CheckExport::Record {
+            qualified_exports,
+            comptime_exports,
+            ..
+        } = export
+        {
+            self.qualified.extend(qualified_exports.clone());
+            self.comptime.extend(comptime_exports.clone());
+        }
+    }
+}
+
+fn prelude_export_diagnostic(export: &CheckExport) -> Option<Diagnostic> {
+    match export {
+        CheckExport::Record { type_exports, .. } if !type_exports.is_empty() => {
+            Some(not_importable(
+                Span::point(0),
+                "prelude",
+                "implicit prelude type exports are not supported; import types explicitly",
+            ))
+        }
+        CheckExport::Record { .. } | CheckExport::HasErrors => None,
+        CheckExport::NotImportable { note } => {
+            Some(not_importable(Span::point(0), "prelude", note))
+        }
+        CheckExport::UppercaseExportNotType { name, span } => Some(
+            Diagnostic::error(format!("uppercase prelude export `{name}` is not a type"))
+                .with_code(codes::module::UPPERCASE_EXPORT_NOT_TYPE)
+                .with_label(Label::primary(*span, "uppercase exports must be types")),
+        ),
+    }
+}
+
 pub fn check_path_with_host_globals(
     path: &Path,
     globals: &HostGlobals,
@@ -435,7 +481,7 @@ fn check_path_impl(
     let mut name_duration = None;
     let mut check_duration = None;
     let mut builtin_methods = aven_check::BuiltinMethodEnvironment::default();
-    let mut prelude_types = Vec::new();
+    let mut prelude_exports = PreludeExports::default();
 
     for node_id in graph.order.iter().copied() {
         let mut imports = check_imports_for_node(&graph.nodes[node_id], &exports, &mut diagnostics);
@@ -443,9 +489,9 @@ fn check_path_impl(
         let trusted_ambient = is_trusted_ambient_node(roots, &graph.nodes[node_id].path);
         imports.set_trusted_builtin_method_source(trusted_ambient);
         let file_id = graph.nodes[node_id].file.id;
-        let mut node_globals = globals_for_node(globals, roots, &graph.nodes[node_id].path);
+        let node_globals = globals_for_node(globals, roots, &graph.nodes[node_id].path);
         if !is_trusted_prelude_node(roots, &graph.nodes[node_id].path) {
-            node_globals.types.extend(prelude_types.clone());
+            prelude_exports.install(&mut imports);
         }
         let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
         let semantic = analyze_semantics_with_host_globals_and_imports_in(
@@ -491,18 +537,17 @@ fn check_path_impl(
                 &semantic.diagnostics,
                 trusted_ambient,
             ));
-        if is_trusted_prelude_node(roots, &graph.nodes[node_id].path) {
-            prelude_types.extend(
-                semantic
-                    .top_level_qualified_types
-                    .iter()
-                    .map(|(name, ty)| (name.clone(), ty.ty.clone())),
-            );
+        let is_prelude = is_trusted_prelude_node(roots, &graph.nodes[node_id].path);
+        if is_prelude && let Some(diagnostic) = prelude_export_diagnostic(&export) {
+            diagnostics.entry(file_id).or_default().push(diagnostic);
         }
         semantics[node_id] = Some(semantic);
 
         if semantic_has_errors || file_has_errors(&diagnostics, file_id) || imports.has_failed() {
             exports[node_id] = CheckExport::HasErrors;
+            if is_prelude {
+                break;
+            }
             continue;
         }
 
@@ -514,6 +559,9 @@ fn check_path_impl(
                 .clone();
         }
 
+        if is_prelude {
+            prelude_exports.publish(&export);
+        }
         export_provenance[node_id] = provenance;
         exports[node_id] = export;
     }
@@ -631,7 +679,7 @@ fn eval_path_impl(
     let mut checked_builtin_methods = aven_check::BuiltinMethodEnvironment::default();
     let runtime_builtin_methods = aven_eval::BuiltinMethodEnvironment::default();
     let mut prelude_values = Vec::new();
-    let mut prelude_types = Vec::new();
+    let mut prelude_exports = PreludeExports::default();
 
     for node_id in graph.order.iter().copied() {
         let mut check_imports = check_imports_for_node(
@@ -642,10 +690,10 @@ fn eval_path_impl(
         check_imports.set_builtin_method_environment(checked_builtin_methods.clone());
         let trusted_ambient = is_trusted_ambient_node(roots, &graph.nodes[node_id].path);
         check_imports.set_trusted_builtin_method_source(trusted_ambient);
-        let mut node_check_globals =
-            globals_for_node(check_globals, roots, &graph.nodes[node_id].path);
-        if !is_trusted_prelude_node(roots, &graph.nodes[node_id].path) {
-            node_check_globals.types.extend(prelude_types.clone());
+        let node_check_globals = globals_for_node(check_globals, roots, &graph.nodes[node_id].path);
+        let is_prelude = is_trusted_prelude_node(roots, &graph.nodes[node_id].path);
+        if !is_prelude {
+            prelude_exports.install(&mut check_imports);
         }
         let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
         let semantic = analyze_semantics_with_host_globals_and_imports_in(
@@ -676,16 +724,34 @@ fn eval_path_impl(
                 &module_identity,
             )
         };
-        if is_trusted_prelude_node(roots, &graph.nodes[node_id].path)
-            && let CheckExport::Record {
-                qualified_exports, ..
-            } = &check_exports[node_id]
-        {
-            prelude_types.extend(
-                qualified_exports
-                    .iter()
-                    .map(|(name, ty)| (name.clone(), ty.ty.clone())),
-            );
+        if is_prelude {
+            let file_id = graph.nodes[node_id].file.id;
+            diagnostics
+                .entry(file_id)
+                .or_default()
+                .extend(semantic.diagnostics.clone());
+            if let Some(diagnostic) = prelude_export_diagnostic(&check_exports[node_id]) {
+                diagnostics.entry(file_id).or_default().push(diagnostic);
+            }
+            if file_has_errors(&diagnostics, file_id)
+                || file_has_errors(&check_diagnostics, file_id)
+                || check_imports.has_failed()
+                || !matches!(check_exports[node_id], CheckExport::Record { .. })
+            {
+                // A prelude is an implicit dependency of every consumer.
+                diagnostics
+                    .entry(file_id)
+                    .or_default()
+                    .extend(check_diagnostics.remove(&file_id).unwrap_or_default());
+                if !file_has_errors(&diagnostics, file_id) {
+                    diagnostics.entry(file_id).or_default().push(not_importable(
+                        Span::point(0),
+                        "prelude",
+                        "a prelude dependency failed checking",
+                    ));
+                }
+                break;
+            }
         }
 
         if trusted_ambient && semantic.diagnostics.iter().any(Diagnostic::is_error) {
@@ -715,12 +781,24 @@ fn eval_path_impl(
         let file_id = graph.nodes[node_id].file.id;
         if file_has_errors(&diagnostics, file_id) || imports.has_failed() {
             exports[node_id] = EvalExport::HasErrors;
+            if is_prelude {
+                break;
+            }
             continue;
         }
 
         let mut node_globals = eval_globals_for_node(&globals, roots, &graph.nodes[node_id].path);
         if !is_trusted_prelude_node(roots, &graph.nodes[node_id].path) {
-            node_globals.extend(prelude_values.clone());
+            let explicit_names = node_globals
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<HashSet<_>>();
+            node_globals.extend(
+                prelude_values
+                    .iter()
+                    .filter(|(name, _)| !explicit_names.contains(name))
+                    .cloned(),
+            );
         }
         let slot_reifications = aven_eval::SlotReificationPlan::new(
             semantic.slot_reifications.iter().map(|(span, target)| {
@@ -770,6 +848,9 @@ fn eval_path_impl(
 
         if file_has_errors(&diagnostics, file_id) {
             exports[node_id] = EvalExport::HasErrors;
+            if is_prelude {
+                break;
+            }
             continue;
         }
 
@@ -777,6 +858,7 @@ fn eval_path_impl(
         if is_trusted_prelude_node(roots, &graph.nodes[node_id].path)
             && let EvalExport::Record(Value::Record(fields)) = &exports[node_id]
         {
+            prelude_exports.publish(&check_exports[node_id]);
             prelude_values.extend(fields.iter().cloned());
         }
     }

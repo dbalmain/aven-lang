@@ -313,6 +313,8 @@ pub struct ModuleImports {
     /// name. Carries owned AST so importers can specialize type applications
     /// such as `pair(Int)` without borrowing the dependency's module.
     comptime_exports: HashMap<String, HashMap<String, ComptimeExport>>,
+    prelude_qualified_exports: HashMap<String, QualifiedType>,
+    prelude_comptime_exports: HashMap<String, ComptimeExport>,
     recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     builtin_methods: BuiltinMethodEnvironment,
     trusted_builtin_method_source: bool,
@@ -329,6 +331,8 @@ impl ModuleImports {
             qualified_exports: HashMap::new(),
             named_family_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
+            prelude_qualified_exports: HashMap::new(),
+            prelude_comptime_exports: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
             builtin_methods: BuiltinMethodEnvironment::default(),
             trusted_builtin_method_source: false,
@@ -345,6 +349,8 @@ impl ModuleImports {
             qualified_exports: HashMap::new(),
             named_family_exports: HashMap::new(),
             comptime_exports: HashMap::new(),
+            prelude_qualified_exports: HashMap::new(),
+            prelude_comptime_exports: HashMap::new(),
             recursive_type_unfoldings: HashMap::new(),
             builtin_methods: BuiltinMethodEnvironment::default(),
             trusted_builtin_method_source: false,
@@ -411,6 +417,27 @@ impl ModuleImports {
         unfoldings: impl IntoIterator<Item = (RecursiveTypeId, Type)>,
     ) {
         self.recursive_type_unfoldings.extend(unfoldings);
+    }
+
+    /// Install checked ordinary value exports as lexical defaults. Qualified
+    /// types retain generic constraints; comptime exports retain function ASTs.
+    /// User declarations and explicit host globals take precedence. Type and
+    /// named-family exports require an explicit module import instead.
+    pub fn set_prelude_exports(
+        &mut self,
+        qualified: HashMap<String, QualifiedType>,
+        comptime: HashMap<String, ComptimeExport>,
+    ) {
+        self.prelude_qualified_exports = qualified;
+        self.prelude_comptime_exports = comptime;
+    }
+
+    pub fn prelude_qualified_exports(&self) -> &HashMap<String, QualifiedType> {
+        &self.prelude_qualified_exports
+    }
+
+    pub fn prelude_comptime_export(&self, name: &str) -> Option<&ComptimeExport> {
+        self.prelude_comptime_exports.get(name)
     }
 
     pub fn set_builtin_method_environment(&mut self, methods: BuiltinMethodEnvironment) {
