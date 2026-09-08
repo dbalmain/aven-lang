@@ -1,14 +1,17 @@
 # Implementation status — language proposals
 
-Updated: 2026-09-07, Australia/Sydney.
+Updated: 2026-09-08, Australia/Sydney.
 
 ## Resumed implementation — agreed review amendments
 
 Implementation resumed after discussion with the user, from clean `3163938`
 (the plan commit following `58eb0a8`). The root agent orchestrates and reviews;
-Terra owns the checker/evaluator implementation, initially slices 1–2. Live
-implementation notes are in `docs/comptime-implementation-progress.md` once
-created. No push is authorized.
+`repair_demand_outcomes` currently owns slice 2 after Terra's partial work.
+Implementation is incomplete: slice 1's repair passes its owner gate; the
+prelude checkpoint is not yet gated. See **Latest checkpoint** below before
+the chronological gate results. Live notes are in
+`docs/comptime-implementation-progress.md` and
+`docs/comptime-prelude-progress.md`. No push is authorized.
 
 The discussion supersedes these parts of the plan below:
 
@@ -60,10 +63,40 @@ not verification of the resumed work.
   --timings`, five runs) checker times: 3525.614, 3496.118, 3511.874,
   3574.593, 3572.739 ms. Data:
   `/tmp/aven-comptime-baseline-cli-timing.json`.
+- Before slice 5, review evaluator lifetime as well as elapsed time:
+  `Scope.values` can memoize a `Value::Closure` whose `Environment.scope`
+  points back to that scope, forming an `Rc` cycle; installed ambient methods
+  also capture their environment. Reconstructing these environments at every
+  fold can retain ASTs after scalar results are consumed. This is a static
+  ownership finding, not yet measured or fixed. Keep closure/capture behavior
+  correct when choosing cache lifetime or cleanup.
 
-The tree is green and committed. `cargo fmt --all --check`, `cargo clippy
+### Latest checkpoint — 2026-09-08
+
+- `24d17aa` repairs slice 1. Owner suite: **658 unit + 2 fixture tests pass**;
+  format/workspace clippy and final checker clippy passed. The actual annotation
+  regression was builtin dispatch preceding user-function lookup (`pick` and
+  five sibling names). Shared demand outcomes now retain failures without
+  repeating evaluation; a successful runtime result cannot erase a type bound
+  failure. Two old silent-deferral tests now explicitly reject unsupported
+  evaluated Set/Record arguments, per the user's conservative-failure decision.
+- Full unsandboxed gate compiled concurrent prelude work: **938 passed** before
+  its module-count assertion failed (expected 10 std modules, now 11).
+  `/tmp/aven-demand-repair-workspace-unsandboxed.log` is therefore an integrated
+  intermediate result, not a clean slice-1 workspace gate.
+- `54c36ff` is an **incomplete prelude infrastructure checkpoint**. Root review
+  found checker/runtime export disagreement: checker exposes private bindings
+  and erases qualified constraints. It also needs proper checked comptime export
+  metadata and builtin removal. Do not treat it as green or slice 2 complete.
+- Terra did not complete subsequent bounded metadata patches. Ownership is now
+  wholly with `repair_demand_outcomes` for slice 2; Terra is idle. Root owns this
+  file. Check for partial uncommitted metadata edits before resuming.
+- Slices 3–5 (known-value channel, implicit verified optional conversion,
+  binding propagation and opportunistic folding) have **not started**.
+
+At the starting checkpoint, the tree was green and committed. `cargo fmt --all --check`, `cargo clippy
 --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all
-pass: **1818 tests, zero failures**, up from the 1800 at baseline `8cc9872`.
+passed: **1818 tests, zero failures**, up from the 1800 at baseline `8cc9872`.
 
 The open decision is settled: `comptime` is an ordinary `@`-parameter
 function, and known values move beside the type rather than into it. The plan
