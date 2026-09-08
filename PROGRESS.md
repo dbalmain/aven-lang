@@ -1,14 +1,14 @@
 # Implementation status — language proposals
 
-Updated: 2026-09-08, Australia/Sydney.
+Updated: 2026-09-09, Australia/Sydney.
 
 ## Resumed implementation — agreed review amendments
 
 Implementation resumed after discussion with the user, from clean `3163938`
 (the plan commit following `58eb0a8`). The root agent orchestrates and reviews;
 `repair_demand_outcomes` currently owns slice 2 after Terra's partial work.
-Implementation is incomplete: slice 1's repair passes its owner gate; the
-prelude checkpoint is not yet gated. See **Latest checkpoint** below before
+Implementation is incomplete: slice 1 and prelude metadata pass their owner
+gates; builtin removal is under review. See **Latest checkpoint** below before
 the chronological gate results. Live notes are in
 `docs/comptime-implementation-progress.md` and
 `docs/comptime-prelude-progress.md`. No push is authorized.
@@ -71,7 +71,7 @@ not verification of the resumed work.
   ownership finding, not yet measured or fixed. Keep closure/capture behavior
   correct when choosing cache lifetime or cleanup.
 
-### Latest checkpoint — 2026-09-08
+### Latest checkpoint — 2026-09-09
 
 - `24d17aa` repairs slice 1. Owner suite: **658 unit + 2 fixture tests pass**;
   format/workspace clippy and final checker clippy passed. The actual annotation
@@ -117,6 +117,44 @@ not verification of the resumed work.
   elaborations (including private named families). Nested demands such as
   `again = comptime(script)` must see prelude functions with correct lexical
   captures. These checks remain with the implementation owner.
+- Resumed September 9 with the same single implementation owner. Recovered
+  `/tmp/prelude-remove-tests5.log`: **661 checker unit + 2 fixture tests pass**.
+  `/tmp/prelude-remove-integrations2.log`: **42 compiler unit + 97 module +
+  184 LSP tests pass**. The last clippy log still fails on `filter_map_bool_then`;
+  no final workspace gate or builtin-removal commit yet.
+- Root review found a further prelude scope defect: reconstructed prelude
+  closures capture the root into which later prelude exports are inserted,
+  whereas runtime preludes have independent intrinsic scopes. A later prelude
+  exporting `repr` can change an earlier prelude's `render = () => repr(1)`
+  only during checking. Implementation owner is separating consumer defaults
+  from the immutable base and adding a check/runtime regression before commit.
+- The focused scope regression now passes. Reconstruction uses a separate
+  consumer-default scope, and the type evaluator prevents a foreign function's
+  missing captured callee from resolving to caller exports. Bare checker/eval
+  APIs explicitly reject `comptime` without a prelude. Root accepted these
+  changes for the slice-2 checkpoint, conditional on final gates.
+
+### Next implementation gate: semantic knowledge
+
+- Keep runtime knowledge separate from `Type` and from compiler artifacts such
+  as reified types. Preserve evaluator values rather than round-tripping through
+  display text: integers and floats, absence and presence, and family identity
+  must retain their meaning. The evaluator represents optional absence with
+  `Undefined` and nullable absence with `Null`; present payloads are unwrapped
+  runtime values, so the existing type remains essential context.
+- Key expression knowledge by source/module and specialization or lexical
+  instance, not bare spans shared by imported functions or repeated calls.
+  Unknown runtime parameters must never acquire knowledge from singleton types.
+- Remove computed-value type narrowing together with literal demand checking,
+  keeping the motivating example passing in that same slice. Typed arguments
+  and bindings must share the proof-based optional conversion behavior.
+- Before accepting family-dependent knowledge, share the runtime elaboration
+  construction or conservatively reject it. `primitive_family_plan` currently
+  lives in `aven-compiler/src/modules.rs`; duplicating branding/rendering rules
+  in another evaluator would create another check/runtime disagreement.
+- Preserve sequential runtime availability when demanding definitions. A
+  forward binding cannot be certified merely because lazy evaluation can find
+  its AST. Full local propagation and opportunistic folding remain later gates.
 
 At the starting checkpoint, the tree was green and committed. `cargo fmt --all --check`, `cargo clippy
 --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all
