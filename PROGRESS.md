@@ -6,9 +6,9 @@ Updated: 2026-09-09, Australia/Sydney.
 
 Implementation resumed after discussion with the user, from clean `3163938`
 (the plan commit following `58eb0a8`). The root agent orchestrates and reviews;
-`repair_demand_outcomes` currently owns slice 2 after Terra's partial work.
-Implementation is incomplete: slice 1 and prelude metadata pass their owner
-gates; builtin removal is under review. See **Latest checkpoint** below before
+`comptime_unification` (Terra) currently owns the bounded binding-order repair.
+Implementation is incomplete: slices 1–2 are committed and passed their gates;
+the binding-order follow-up needs further repair before semantic knowledge work. See **Latest checkpoint** below before
 the chronological gate results. Live notes are in
 `docs/comptime-implementation-progress.md` and
 `docs/comptime-prelude-progress.md`. No push is authorized.
@@ -140,8 +140,17 @@ not verification of the resumed work.
   includes `std/prelude`. Foreign context isolation also covers type lowering
   and reflection/value inference. Owner checks: checker **662 + 2**, compiler
   **42 + 98**. The implementation agent hit its usage limit after these gates;
-  root is committing the reviewed checkpoint. Slice 3's design below is
-  approved but implementation has not started.
+  root committed the reviewed checkpoint as `d327ea2`. Slice 3's design below
+  is approved but implementation has not started.
+- Terra committed `87cb889`, a first binding-order guard; **664 checker unit
+  tests pass**, but root review marks it **needs work**. Filtering definitions by
+  the demanded expression's source offset does not model the initialization
+  boundary of lazily evaluated earlier bindings, or demands in helper/default
+  bodies. Terra owns the follow-up; do not start a second source editor.
+  Required controls include a closure called after its captured dependency
+  initializes, and an earlier initializer that reads a later dependency even
+  when the final demand occurs after both. No full-workspace acceptance of this
+  follow-up is claimed.
 
 ### Next implementation gate: semantic knowledge
 
