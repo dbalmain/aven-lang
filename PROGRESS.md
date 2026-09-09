@@ -1,12 +1,13 @@
 # Implementation status — language proposals
 
-Updated: 2026-09-09, Australia/Sydney.
+Updated: 2026-09-10, Australia/Sydney.
 
 ## Resumed implementation — agreed review amendments
 
 Implementation resumed after discussion with the user, from clean `3163938`
 (the plan commit following `58eb0a8`). The root agent orchestrates and reviews;
-`comptime_unification` (Terra) currently owns the bounded binding-order repair.
+`comptime_unification` (Terra) owns the unfinished checker availability repair
+after the stronger agent hit its usage limit. Root independently reviews it.
 Implementation is incomplete: slices 1–2 are committed and passed their gates;
 the binding-order follow-up needs further repair before semantic knowledge work. See **Latest checkpoint** below before
 the chronological gate results. Live notes are in
@@ -151,6 +152,33 @@ not verification of the resumed work.
   initializes, and an earlier initializer that reads a later dependency even
   when the final demand occurs after both. No full-workspace acceptance of this
   follow-up is claimed.
+- Terra's uncommitted evaluator repair now tracks lazy initializer availability
+  before cached values and restores the caller boundary after initialization.
+  `ComptimeDefinition` holds optional order metadata; ambient definitions inherit
+  caller context without comparing unrelated source spans. `ComptimeEvalConfig`
+  keeps the evaluator API cohesive. **668 checker unit tests pass** and affected
+  checker/evaluator all-targets clippy passes. This is an intermediate gate:
+  the checker still approximates demand context from inference state.
+- Root independently confirmed two type-evaluator bypasses: a demand can read a
+  later `comptime(3)` binding, or call a later `(@x) => x` helper, and certify `3`.
+  Source ownership has transferred to `repair_demand_outcomes`; Terra is idle.
+  Required repair: explicit execution context plus runtime availability
+  requirements through compiler evaluation and cached specializations. Do not
+  simply replay every scalar in the runtime evaluator: compiler-artifact
+  operations can also yield Bool/literal values. Preserve those computations.
+  The current uncommitted patch is not yet accepted as a complete order fix.
+
+### September 10 resumption
+
+- Terra resumed as the sole source owner of the uncommitted ordering repair;
+  the stronger agent's checker edits were interrupted before validation.
+- Root review requires preserving specialization caching without reusing a
+  result under an incompatible initialization boundary. Canonical recursive
+  type identity must remain independent of demand execution context.
+- The quality gate also covers pinned forward references, helpers declared
+  later, imported runtime helpers, and compiler-artifact computations returning
+  scalars. No new green result or acceptance is claimed yet. Slice 3 has not
+  started.
 
 ### Next implementation gate: semantic knowledge
 
