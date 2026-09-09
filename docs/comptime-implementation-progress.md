@@ -31,6 +31,16 @@ Staged, not fixed here:
 - Family interpolation and top-level forward-reference behavior still belong
   to later evaluator/environment work and retain their existing staged probes.
 
+### Sequential top-level demand — 2026-09-09
+
+Comptime evaluation now exposes only top-level definitions whose initializer
+has already occurred before the demanded expression. The runtime initializes
+top-level bindings sequentially, while the comptime evaluator resolves its
+definition map lazily; without this boundary a demand could certify a later
+binding that runtime evaluation would report as unbound. The guard preserves
+earlier helpers and captures, including a helper declared before a value when
+the demand occurs after that value's initializer.
+
 ### Slice 1 repair — 2026-09-08
 
 The old `pick(bad())` regression was a builtin-shadowing defect in the

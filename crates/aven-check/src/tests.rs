@@ -15337,6 +15337,35 @@ fn comptime_pin_reports_instead_of_hanging_on_unbounded_evaluation() {
     );
 }
 
+#[test]
+fn comptime_demand_rejects_a_later_top_level_binding() {
+    let source = concat!(
+        "double = (x: Int): Int => x + x\n",
+        "result = comptime(double(later))\n",
+        "later = 3\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "a demand must not certify a binding unavailable at runtime: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn comptime_demand_allows_a_preceding_top_level_binding() {
+    let source = concat!(
+        "later = 3\n",
+        "double = (x: Int): Int => x + x\n",
+        "result = comptime(double(later))\n",
+        "checked: 6 = result\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+}
+
 /// A literal union is never `Optional` or `Nullable`. The `Named` side of this
 /// has always been guarded — `bad: Int = m.get(k)` reports `Int` vs `?Int` — but
 /// the literal-union side had no arm at all, so a `?Int` silently inhabited the

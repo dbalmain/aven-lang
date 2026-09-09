@@ -440,7 +440,14 @@ impl<'a> Checker<'a> {
             .bindings
             .iter()
             .filter_map(|(name, binding)| {
-                binding.map(|binding| (name.clone(), binding.value.clone()))
+                // Runtime top-level bindings initialize sequentially. The
+                // comptime evaluator is deliberately lazy, so exposing every
+                // declaration here would let a demand observe a later binding
+                // the runtime has not installed yet.
+                binding.and_then(|binding| {
+                    (binding.span.start < expr.span.start)
+                        .then(|| (name.clone(), binding.value.clone()))
+                })
             })
             .collect();
         let locals = bindings
