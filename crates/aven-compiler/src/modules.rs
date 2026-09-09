@@ -349,6 +349,8 @@ enum VisitState {
 /// The same checked export metadata supplies defaults in both graph passes.
 #[derive(Default)]
 struct PreludeExports {
+    modules: Vec<aven_parser::Module>,
+    requires_elaboration: bool,
     qualified: HashMap<String, QualifiedType>,
     comptime: HashMap<String, ComptimeExport>,
 }
@@ -356,15 +358,26 @@ struct PreludeExports {
 impl PreludeExports {
     fn install(&self, imports: &mut aven_check::ModuleImports) {
         imports.set_prelude_exports(self.qualified.clone(), self.comptime.clone());
+        imports.set_prelude_modules(self.modules.clone(), self.requires_elaboration);
     }
 
-    fn publish(&mut self, export: &CheckExport) {
+    fn publish(
+        &mut self,
+        export: &CheckExport,
+        module: &aven_parser::Module,
+        semantic: &SemanticOutput,
+    ) {
         if let CheckExport::Record {
             qualified_exports,
             comptime_exports,
             ..
         } = export
         {
+            self.requires_elaboration |= !semantic.named_families.is_empty()
+                || !semantic.slot_reifications.is_empty()
+                || !semantic.direct_slot_inits.is_empty()
+                || !semantic.primitive_family_coercions.is_empty();
+            self.modules.push(module.clone());
             self.qualified.extend(qualified_exports.clone());
             self.comptime.extend(comptime_exports.clone());
         }
@@ -560,7 +573,11 @@ fn check_path_impl(
         }
 
         if is_prelude {
-            prelude_exports.publish(&export);
+            prelude_exports.publish(
+                &export,
+                &graph.nodes[node_id].parse.module,
+                semantics[node_id].as_ref().expect("stored semantic output"),
+            );
         }
         export_provenance[node_id] = provenance;
         exports[node_id] = export;
@@ -858,7 +875,11 @@ fn eval_path_impl(
         if is_trusted_prelude_node(roots, &graph.nodes[node_id].path)
             && let EvalExport::Record(Value::Record(fields)) = &exports[node_id]
         {
-            prelude_exports.publish(&check_exports[node_id]);
+            prelude_exports.publish(
+                &check_exports[node_id],
+                &graph.nodes[node_id].parse.module,
+                &semantic,
+            );
             prelude_values.extend(fields.iter().cloned());
         }
     }

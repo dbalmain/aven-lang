@@ -133,6 +133,15 @@ not verification of the resumed work.
   missing captured callee from resolving to caller exports. Bare checker/eval
   APIs explicitly reject `comptime` without a prelude. Root accepted these
   changes for the slice-2 checkpoint, conditional on final gates.
+- Final builtin-removal gate is green: **1833 workspace tests pass, zero
+  failures**, with workspace clippy, format, and diff checks passing. Logs:
+  `/tmp/prelude-removal-workspace-green.log` and
+  `/tmp/prelude-removal-clippy-green.log`. The stale host library-list test now
+  includes `std/prelude`. Foreign context isolation also covers type lowering
+  and reflection/value inference. Owner checks: checker **662 + 2**, compiler
+  **42 + 98**. The implementation agent hit its usage limit after these gates;
+  root is committing the reviewed checkpoint. Slice 3's design below is
+  approved but implementation has not started.
 
 ### Next implementation gate: semantic knowledge
 

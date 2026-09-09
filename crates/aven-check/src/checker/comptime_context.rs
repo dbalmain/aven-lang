@@ -6,19 +6,35 @@ impl comptime::EvalContext for Checker<'_> {
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
         captured_types: &HashMap<String, Type>,
-        _in_function_body: bool,
+        uses_context_scope: bool,
     ) -> comptime::LoweredType {
         let start = self.diagnostics.len();
-        let mut visible_type_definitions = self.type_definitions.clone();
+        let mut visible_type_definitions = if uses_context_scope {
+            self.type_definitions.clone()
+        } else {
+            HashMap::new()
+        };
         visible_type_definitions.extend(captured_types.clone());
-        let mut visible_known_types = self.known_types.clone();
+        let mut visible_known_types = if uses_context_scope {
+            self.known_types.clone()
+        } else {
+            BuiltinType::ALL
+                .iter()
+                .map(|builtin| builtin.name().to_owned())
+                .collect()
+        };
         visible_known_types.extend(captured_types.keys().cloned());
         let saved_type_definitions =
             std::mem::replace(&mut self.type_definitions, visible_type_definitions);
         let saved_known_types = std::mem::replace(&mut self.known_types, visible_known_types);
+        let saved_values =
+            (!uses_context_scope).then(|| std::mem::take(&mut self.local_comptime_values));
         self.local_comptime_values.push(bindings.clone());
         let ty = self.lower_annotation(expr);
         self.local_comptime_values.pop();
+        if let Some(saved_values) = saved_values {
+            self.local_comptime_values = saved_values;
+        }
         self.known_types = saved_known_types;
         self.type_definitions = saved_type_definitions;
         let diagnostics = self.diagnostics.split_off(start);
@@ -47,13 +63,26 @@ impl comptime::EvalContext for Checker<'_> {
         self.expr_references_unresolved_comptime_param(expr)
     }
 
+    fn label_set_argument(
+        &self,
+        expr: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Option<Vec<String>> {
+        self.concrete_label_set_members(expr, bindings)
+            .map(|members| members.into_iter().map(|member| member.label).collect())
+    }
+
     fn comptime_pinned_binding(&self, name: &str) -> Option<Expr> {
         if let Some(pinned) = self.local_types.pin(name) {
             return Some(pinned.clone());
         }
 
         let binding = self.bindings.get(name).and_then(|binding| *binding)?;
-        self.comptime_pin_argument(&binding.value).cloned()
+        self.comptime_demand_call(&binding.value).cloned()
+    }
+
+    fn module_identity(&self) -> &comptime::ComptimeModuleIdentity {
+        &self.module_identity
     }
 
     fn lookup_comptime_function(&self, name: &str) -> Option<comptime::ComptimeFunction> {

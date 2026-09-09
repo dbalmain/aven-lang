@@ -10,6 +10,32 @@ use aven_parser::{
     parse_module, parse_module_with_fixities,
 };
 
+use crate as checker_api;
+#[path = "../tests/support/prelude.rs"]
+mod test_prelude;
+
+fn check_module(module: &Module) -> CheckOutput {
+    check_module_with_host_globals(module, &HostGlobals::default())
+}
+
+fn check_module_with_globals(module: &Module, globals: &[(String, Type)]) -> CheckOutput {
+    check_module_with_host_globals(module, &HostGlobals::types_only(globals))
+}
+
+fn check_module_with_host_globals(module: &Module, globals: &HostGlobals) -> CheckOutput {
+    crate::check_module_with_host_globals_and_imports(module, globals, &test_prelude::imports())
+}
+
+fn check_module_with_host_globals_and_imports(
+    module: &Module,
+    globals: &HostGlobals,
+    imports: &ModuleImports,
+) -> CheckOutput {
+    let mut imports = imports.clone();
+    test_prelude::install(&mut imports);
+    crate::check_module_with_host_globals_and_imports(module, globals, &imports)
+}
+
 fn annotation<'a>(module: &'a Module, name: &str) -> &'a Expr {
     module
         .items
@@ -1029,7 +1055,7 @@ fn comptime_param_call_infers_reflection_domain_for_runtime_binding() {
         check
             .type_at(binding_value_named(&output.module, "selected").span)
             .map(Type::render),
-        Some("\"Red\" | \"Blue\"".to_owned())
+        Some("Set(Text)".to_owned())
     );
 }
 
@@ -15519,4 +15545,63 @@ fn nested_comptime_demand_preserves_argument_bound_failure() {
         "the runtime body returns a valid scalar but cannot erase the bound: {:?}",
         checked.diagnostics
     );
+}
+
+#[test]
+fn generic_comptime_calls_do_not_lift_compiler_type_artifacts() {
+    for source in [
+        "x = comptime(Int)\n",
+        "pin = (@arg) => arg\nx = pin(Int)\n",
+        "typeFor = (@arg) => Int\nx = typeFor(1)\n",
+    ] {
+        let parsed = parse_module(source);
+        let checked = check_module(&parsed.module);
+        assert!(
+            has_diagnostic_code(
+                &checked.diagnostics,
+                codes::comptime::NON_LIFTABLE_INTO_RUNTIME
+            ),
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
+fn comptime_defaults_use_preceding_parameters_over_caller_names() {
+    let source = "a = 99\nnext = (@a: Int, @b: Int = a + 1) => b\nchecked: 2 = next(1)\n";
+    let parsed = parse_module(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+}
+
+#[test]
+fn prelude_comptime_demands_compose_through_lazy_bindings() {
+    let source = "join = (parts: Array(Text)): Text => parts.joinWith(\"\\n\")\nscript = comptime(join([\"a\",\"b\"]))\nagain = comptime(script)\nchecked: \"a\\nb\" = again\n";
+    let parsed = parse_module(source);
+    let ambient = check_trusted_builtin_methods(include_str!("../../aven-host/std/array.av"));
+    let mut imports = ModuleImports::default();
+    imports.set_builtin_method_environment(ambient.builtin_methods);
+    let checked = check_module_with_host_globals_and_imports(
+        &parsed.module,
+        &HostGlobals::default(),
+        &imports,
+    );
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+}
+
+#[test]
+fn comptime_requires_an_explicit_prelude_in_bare_checker_and_evaluator() {
+    let parsed = parse_module("comptime(1)\n");
+    let checked = crate::check_module(&parsed.module);
+    assert!(has_diagnostic_code(
+        &checked.diagnostics,
+        codes::name::UNBOUND
+    ));
+    let evaluated = aven_eval::eval_module(&parsed.module);
+    assert!(has_diagnostic_code(
+        &evaluated.diagnostics,
+        codes::runtime::UNBOUND_NAME
+    ));
 }

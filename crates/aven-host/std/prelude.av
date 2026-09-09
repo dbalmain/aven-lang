@@ -1,4 +1,2 @@
-# Lexical defaults installed by hosts that opt into the standard prelude.
-# Keep this module ordinary: its final record is what the module graph exports.
-identity = (value) => value
-{ identity }
+comptime = (@arg) => arg
+{ comptime }

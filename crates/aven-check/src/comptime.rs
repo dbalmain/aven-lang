@@ -12,9 +12,6 @@ use crate::ty::{
 
 pub(crate) const DEFAULT_EVALUATION_FUEL: usize = 128;
 
-/// The builtin that asserts an expression is comptime-known.
-pub(crate) const COMPTIME_PIN: &str = "comptime";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ComptimeValue {
     ReifiedType(Type),
@@ -547,7 +544,7 @@ pub(crate) trait EvalContext {
         expr: &Expr,
         bindings: &HashMap<String, ComptimeValue>,
         captured_types: &HashMap<String, Type>,
-        in_function_body: bool,
+        uses_context_scope: bool,
     ) -> LoweredType;
     fn runtime_binding_reference(&self, name: &str, span: Span) -> Option<Diagnostic>;
 
@@ -555,12 +552,18 @@ pub(crate) trait EvalContext {
     /// that has not been specialized yet -- the one reason a comptime
     /// evaluation may fail now and succeed later.
     fn references_unresolved_comptime_param(&self, expr: &Expr) -> bool;
+    fn label_set_argument(
+        &self,
+        expr: &Expr,
+        bindings: &HashMap<String, ComptimeValue>,
+    ) -> Option<Vec<String>>;
 
-    /// The argument of `name = comptime(value)`, for a binding pinned to
-    /// compile time. `None` for every other binding, including bindings that
-    /// happen to be comptime-evaluable but were not pinned.
+    /// The whole initializer of a binding with an explicit `@` call demand.
+    /// Returning it does not prove the result known; the caller must evaluate
+    /// its arguments, body, and demanded lexical dependencies.
     fn comptime_pinned_binding(&self, name: &str) -> Option<Expr>;
     fn lookup_comptime_function(&self, name: &str) -> Option<ComptimeFunction>;
+    fn module_identity(&self) -> &ComptimeModuleIdentity;
     fn cached_specialization(&self, key: &SpecializationKey) -> Option<EvaluationResult>;
     fn cache_specialization(&mut self, key: SpecializationKey, result: EvaluationResult);
     fn specialization_is_active(&self, key: &SpecializationKey) -> bool;
@@ -905,19 +908,18 @@ where
                     return EvaluationResult::evaluated(value.clone());
                 }
 
-                // A lowercase binding is a runtime binding by phase, so a
-                // `comptime(...)` pin is the only thing that makes one
-                // readable here -- and it is read before the runtime-binding
-                // refusal below, which is exactly what the pin overrides.
-                if let Some(pinned) = self.context.comptime_pinned_binding(name) {
-                    return self.evaluate_expr(&pinned, env);
-                }
-
-                if env.in_function_body()
-                    && let Some(diagnostic) =
-                        self.context.runtime_binding_reference(name, expr.span)
-                {
-                    return EvaluationResult::diagnostic(diagnostic);
+                // Only this module's scope may resolve its demanded bindings.
+                // A foreign closure cannot read a same-named caller pin.
+                if env.uses_context_scope(self.context.module_identity()) {
+                    if let Some(pinned) = self.context.comptime_pinned_binding(name) {
+                        return self.evaluate_expr(&pinned, env);
+                    }
+                    if env.in_function_body()
+                        && let Some(diagnostic) =
+                            self.context.runtime_binding_reference(name, expr.span)
+                    {
+                        return EvaluationResult::diagnostic(diagnostic);
+                    }
                 }
 
                 self.evaluate_type_term(expr, env)
@@ -1086,10 +1088,11 @@ where
             return EvaluationResult::unsupported();
         };
 
-        if let Some(function) = env
-            .captured_function(name)
-            .or_else(|| self.context.lookup_comptime_function(name))
-        {
+        if let Some(function) = env.captured_function(name).or_else(|| {
+            env.uses_context_scope(self.context.module_identity())
+                .then(|| self.context.lookup_comptime_function(name))
+                .flatten()
+        }) {
             return self.evaluate_function_application(function, call_span, args, env);
         }
 
@@ -1102,11 +1105,7 @@ where
         }
 
         if name == "typeOf" {
-            return self.evaluate_type_of(args);
-        }
-
-        if name == COMPTIME_PIN {
-            return self.evaluate_comptime_pin(call_span, args, env);
+            return self.evaluate_type_of(args, env);
         }
 
         if name.chars().next().is_some_and(char::is_uppercase) {
@@ -1114,42 +1113,6 @@ where
         } else {
             EvaluationResult::unsupported()
         }
-    }
-
-    /// `comptime(e)`: evaluate `e` now, and say so when it cannot be.
-    ///
-    /// Comptime-ness is otherwise invisible -- nothing in `keys = ...` says
-    /// whether the checker can read the binding -- so a binding that stops
-    /// being comptime-known reports at whatever distant use consumed it, or
-    /// (before key sets were checked) nowhere at all. `comptime` is the
-    /// assertion that puts the report on the binding instead.
-    fn evaluate_comptime_pin(
-        &mut self,
-        call_span: Span,
-        args: &[Expr],
-        env: &Environment,
-    ) -> EvaluationResult {
-        let [arg] = args else {
-            return EvaluationResult::diagnostic(comptime_pin_arity(call_span, args.len()));
-        };
-
-        let result = self.evaluate_expr(arg, env);
-        if !result.diagnostics.is_empty()
-            || matches!(result.evaluation, Evaluation::Evaluated(_))
-            || self.context.references_unresolved_comptime_param(arg)
-        {
-            return result;
-        }
-
-        // Comptime-by-inference folds some expressions the comptime evaluator
-        // itself cannot walk -- an interpolation over a comptime parameter,
-        // say -- and the evidence is that the value has a singleton literal
-        // type. A pin must accept everything the checker already knows.
-        if let Some(literal) = singleton_literal(&self.context.infer_value_type(arg)) {
-            return EvaluationResult::evaluated(ComptimeValue::Literal(literal));
-        }
-
-        EvaluationResult::diagnostic(comptime_pin_failed(arg.span))
     }
 
     fn evaluate_reflection_application(
@@ -1180,6 +1143,9 @@ where
         let subject = subject
             .filter(|ty| !self.context.type_is_unresolved(ty))
             .or_else(|| {
+                if !env.uses_context_scope(self.context.module_identity()) {
+                    return None;
+                }
                 let ty = self.context.infer_value_type(arg);
                 (!self.context.type_is_unresolved(&ty)).then_some(ty)
             });
@@ -1273,7 +1239,10 @@ where
         )
     }
 
-    fn evaluate_type_of(&mut self, args: &[Expr]) -> EvaluationResult {
+    fn evaluate_type_of(&mut self, args: &[Expr], env: &Environment) -> EvaluationResult {
+        if !env.uses_context_scope(self.context.module_identity()) {
+            return EvaluationResult::unsupported();
+        }
         let [arg] = args else {
             return EvaluationResult::unsupported();
         };
@@ -1372,7 +1341,10 @@ where
         for arg in args {
             let allow_unresolved_type_terms = self.allow_unresolved_type_terms;
             self.allow_unresolved_type_terms = false;
-            let arg_result = self.evaluate_expr(arg, env);
+            let arg_result = match self.context.label_set_argument(arg, env.bindings()) {
+                Some(labels) => EvaluationResult::evaluated(ComptimeValue::LabelSet(labels)),
+                None => self.evaluate_expr(arg, env),
+            };
             self.allow_unresolved_type_terms = allow_unresolved_type_terms;
             match arg_result.evaluation {
                 Evaluation::Evaluated(value) => values.push(value),
@@ -1417,7 +1389,7 @@ where
                 annotation,
                 env.bindings(),
                 env.captured_types(),
-                env.in_function_body(),
+                env.uses_context_scope(self.context.module_identity()),
             );
             if !lowering.diagnostics.is_empty() {
                 diagnostics.extend(lowering.diagnostics);
@@ -1446,7 +1418,7 @@ where
             expr,
             env.bindings(),
             env.captured_types(),
-            env.in_function_body(),
+            env.uses_context_scope(self.context.module_identity()),
         );
         if !lowering.diagnostics.is_empty() {
             return EvaluationResult::deferred_with_diagnostics(lowering.diagnostics);
@@ -1653,19 +1625,6 @@ pub(crate) fn evaluate_record_selection(
     })))
 }
 
-/// The value behind a singleton literal type, which is the shape a
-/// comptime-folded expression's type takes.
-pub(crate) fn singleton_literal(ty: &Type) -> Option<Literal> {
-    let Type::Variant(row) = ty else {
-        return None;
-    };
-    let [RowEntry::Literal { value }] = row.entries.as_slice() else {
-        return None;
-    };
-
-    Some(value.clone())
-}
-
 fn label_set_type(labels: Vec<String>) -> Type {
     Type::Variant(Row {
         entries: labels
@@ -1795,26 +1754,6 @@ pub(crate) fn key_set_wrong_kind(span: Span, function: &str) -> Diagnostic {
         .with_label(Label::primary(span, "this is not a set of field names"))
         .with_note(format!(
             "pass a key set such as `@{{\"name\"}}` or `keysOf(T)` as the second argument to `{function}`"
-        ))
-}
-
-pub(crate) fn comptime_pin_arity(span: Span, found: usize) -> Diagnostic {
-    Diagnostic::error(format!(
-        "`{COMPTIME_PIN}` takes exactly one argument, but {found} were supplied"
-    ))
-    .with_code(codes::comptime::ARGUMENT_NOT_KNOWN)
-    .with_label(Label::primary(span, "wrong number of arguments"))
-    .with_note(format!(
-        "write `{COMPTIME_PIN}(value)` to require that `value` is known at compile time"
-    ))
-}
-
-pub(crate) fn comptime_pin_failed(span: Span) -> Diagnostic {
-    Diagnostic::error(format!("`{COMPTIME_PIN}` could not evaluate this expression"))
-        .with_code(codes::comptime::ARGUMENT_NOT_KNOWN)
-        .with_label(Label::primary(span, "this is not known at compile time"))
-        .with_note(format!(
-            "`{COMPTIME_PIN}` requires its argument to evaluate while checking; it may not depend on a runtime value"
         ))
 }
 
@@ -1954,6 +1893,10 @@ impl Environment {
 
     fn in_function_body(&self) -> bool {
         self.in_function_body
+    }
+
+    fn uses_context_scope(&self, identity: &ComptimeModuleIdentity) -> bool {
+        !self.in_function_body() || self.module_identity == *identity
     }
 }
 

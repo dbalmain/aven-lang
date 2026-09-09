@@ -1776,10 +1776,8 @@ fn imported_comptime_sibling_does_not_alias_importer_function_of_same_name() {
 
 #[test]
 fn a_comptime_pinned_value_survives_to_runtime_unchanged() {
-    // `comptime(...)` is an assertion the checker enforces, not a
-    // transformation. The runtime must therefore see exactly the value the
-    // pin wrapped -- if the intrinsic were missing or rewrote its argument,
-    // checking would still pass and only the run would disagree.
+    // The ordinary prelude function preserves the actual Set value in both phases.
+    let roots = test_prelude_roots(include_str!("../../aven-host/std/prelude.av"));
     let dir = TempDir::new("comptime-pin-runtime");
     write(
         dir.path(),
@@ -1790,11 +1788,15 @@ fn a_comptime_pinned_value_survives_to_runtime_unchanged() {
             "{ pinned: keys, plain, same: keys == plain }\n",
         ),
     );
-    let checked =
-        check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
-            .expect("load graph");
+    let checked = check_path_with_host_globals_and_roots(
+        &dir.path().join("main.av"),
+        &HostGlobals::default(),
+        &roots,
+    )
+    .expect("load graph");
     assert_no_errors(&checked.reports);
-    let ran = eval_path_with_globals(&dir.path().join("main.av"), vec![]).expect("evaluate");
+    let ran = eval_path_with_globals_and_roots(&dir.path().join("main.av"), vec![], &roots)
+        .expect("evaluate");
     assert_no_errors(&ran.reports);
     assert_eq!(
         ran.value.as_ref().map(ToString::to_string),
@@ -3403,4 +3405,105 @@ fn runtime_prelude_failure_blocks_consumer_evaluation() {
             .expect("prelude graph should produce a result");
     assert_has_code(&evaluated.reports, codes::runtime::PANIC);
     assert!(evaluated.value.is_none());
+}
+
+#[test]
+fn prelude_value_demands_keep_private_lexical_captures() {
+    let roots = test_prelude_roots(
+        "prefix = \"pre:\"\ngetPrefix = (): Text => prefix\nrender = (x: Text): Text => \"${prefix}${x}\"\n{render, getPrefix}\n",
+    );
+    let dir = TempDir::new("prelude-demand-capture");
+    let path = dir.path().join("main.av");
+    write(
+        dir.path(),
+        "main.av",
+        "pin = (@arg) => arg\nprefix = pin(\"caller:\")\nfromPrefix: \"pre:\" = pin(getPrefix())\nscript = pin(render(\"a\"))\nagain = pin(script)\nchecked: \"pre:a\" = again\nchecked\n",
+    );
+    let checked = check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+        .expect("load graph");
+    assert_no_errors(&checked.reports);
+    let evaluated =
+        eval_path_with_host_globals_and_roots(&path, &HostGlobals::default(), vec![], &roots)
+            .expect("evaluate graph");
+    assert_no_errors(&evaluated.reports);
+    assert_eq!(
+        evaluated.value.as_ref().map(ToString::to_string),
+        Some("pre:a".to_owned())
+    );
+}
+
+#[test]
+fn prelude_value_demands_reject_unavailable_family_elaboration() {
+    let roots = test_prelude_roots(
+        "Money = Int { toText(): Text => \"money\" }\nprice: Money = 1\nrender = (): Text => \"${price}\"\n{render}\n",
+    );
+    let dir = TempDir::new("prelude-demand-family");
+    let path = dir.path().join("main.av");
+    write(
+        dir.path(),
+        "main.av",
+        "pin = (@arg) => arg\nresult = pin(render())\n",
+    );
+    let checked = check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+        .expect("load graph");
+    assert_has_code(&checked.reports, codes::comptime::ARGUMENT_NOT_KNOWN);
+    assert!(
+        checked
+            .reports
+            .iter()
+            .flat_map(|report| &report.diagnostics)
+            .flat_map(|diagnostic| &diagnostic.notes)
+            .any(|note| note.contains("runtime elaborations"))
+    );
+}
+
+#[test]
+fn prelude_defaults_do_not_mutate_other_prelude_lexical_scopes() {
+    let roots = ModuleRoots::none()
+        .with_library(
+            "base",
+            HashMap::from([
+                (
+                    "base/a".to_owned(),
+                    "render = (): Text => repr(1)\n{render}\n",
+                ),
+                ("base/b".to_owned(), "repr = (x) => \"bad\"\n{repr}\n"),
+            ]),
+        )
+        .with_trusted_prelude_modules(["base/a", "base/b"]);
+    let dir = TempDir::new("prelude-lexical-defaults");
+    let path = dir.path().join("main.av");
+    for (expected, valid) in [("1", true), ("bad", false)] {
+        write(
+            dir.path(),
+            "main.av",
+            &format!("pin = (@arg) => arg\nx: \"{expected}\" = pin(render())\nx\n"),
+        );
+        let checked =
+            check_path_with_host_globals_and_roots(&path, &HostGlobals::default(), &roots)
+                .expect("load graph");
+        assert_eq!(
+            checked.reports.iter().all(|report| report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.is_error())),
+            valid,
+            "{:?}",
+            checked.reports
+        );
+        if valid {
+            let evaluated = eval_path_with_host_globals_and_roots(
+                &path,
+                &HostGlobals::default(),
+                vec![],
+                &roots,
+            )
+            .expect("evaluate graph");
+            assert_no_errors(&evaluated.reports);
+            assert_eq!(
+                evaluated.value.as_ref().map(ToString::to_string),
+                Some("1".to_owned())
+            );
+        }
+    }
 }

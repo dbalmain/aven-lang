@@ -1748,19 +1748,6 @@ fn intrinsics() -> Vec<(String, Value)> {
         }),
     ));
 
-    // `comptime(value)` is an assertion the checker enforces, not a
-    // transformation: by the time the program runs the value has already been
-    // proven comptime-known, so at runtime it is the identity.
-    intrinsics.push((
-        "comptime".to_owned(),
-        Value::native(|args| {
-            let [value] = args else {
-                return Err(format!("comptime expects 1 argument, got {}", args.len()));
-            };
-            Ok(value.clone())
-        }),
-    ));
-
     intrinsics.push((
         "pick".to_owned(),
         Value::native(|args| select_record_fields("pick", args, true)),
@@ -2155,6 +2142,7 @@ pub fn eval_comptime_expr(
     expr: &Expr,
     definitions: HashMap<String, Expr>,
     ambient_modules: &[Module],
+    prelude_modules: &[Module],
     locals: Vec<(String, Value)>,
     blocked_locals: HashSet<String>,
     fuel: u64,
@@ -2180,7 +2168,22 @@ pub fn eval_comptime_expr(
             }
         }
     }
-    let module_env = root.child();
+    let defaults = root.child();
+    for module in prelude_modules {
+        // Each prelude owns a sibling lexical scope, never the caller scope.
+        // Unsupported prelude initialization fails the demand conservatively.
+        let prelude_env = root.child();
+        let outcome = eval_items(&module.items, &prelude_env, None).map_err(first_diagnostic)?;
+        if let Some(diagnostic) = outcome.diagnostics.into_iter().find(Diagnostic::is_error) {
+            return Err(diagnostic);
+        }
+        if let Some(Value::Record(fields)) = outcome.value {
+            for (name, value) in fields.iter() {
+                defaults.bind(name.clone(), value.clone());
+            }
+        }
+    }
+    let module_env = defaults.child();
     *module_env.scope.definitions.borrow_mut() = definitions;
     let mut env = module_env.child();
     Rc::get_mut(&mut env.scope)

@@ -429,7 +429,13 @@ impl<'a> Checker<'a> {
         &self,
         env: &TypeEnv,
         expr: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
     ) -> Result<aven_eval::Value, Diagnostic> {
+        if self.imports.prelude_requires_elaboration() {
+            return Err(Diagnostic::error("prelude value evaluation requires runtime elaborations that are not yet available at compile time")
+                .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
+                .with_label(Label::primary(expr.span, "this demand cannot preserve the prelude value's semantics")));
+        }
         let definitions = self
             .bindings
             .iter()
@@ -437,11 +443,10 @@ impl<'a> Checker<'a> {
                 binding.map(|binding| (name.clone(), binding.value.clone()))
             })
             .collect();
-        let locals = self
-            .current_comptime_value_bindings()
-            .into_iter()
+        let locals = bindings
+            .iter()
             .filter_map(|(name, value)| {
-                comptime::comptime_value_as_eval_value(&value).map(|value| (name, value))
+                comptime::comptime_value_as_eval_value(value).map(|value| (name.clone(), value))
             })
             .collect();
         let mut blocked = self
@@ -450,10 +455,18 @@ impl<'a> Checker<'a> {
             .into_keys()
             .collect::<HashSet<_>>();
         blocked.extend(env.keys().cloned());
+        blocked.extend(self.pattern_bindings.keys().cloned());
+        blocked.extend(
+            self.globals
+                .iter()
+                .filter(|(name, _)| self.imports.prelude_qualified_exports().contains_key(name))
+                .map(|(name, _)| name.clone()),
+        );
         aven_eval::eval_comptime_expr(
             expr,
             definitions,
             &self.builtin_methods.comptime_modules,
+            self.imports.prelude_modules(),
             locals,
             blocked,
             100_000,
@@ -490,23 +503,6 @@ impl<'a> Checker<'a> {
             Type::Variant(target) => open_literal_variant_base(&target) == Some(base),
             _ => false,
         }
-    }
-
-    /// Narrow a pinned expression to the value it actually evaluated to.
-    ///
-    /// Only the pin demands a value, so only the pin narrows. An ordinary call
-    /// keeps the type its signature and the usual inference give it: folding
-    /// `add(1, 2)` to `3` would erase the `-> Int` its author wrote, and would
-    /// collapse `?Int` and `1 | 1.0` to whichever branch happened to run.
-    fn narrow_to_evaluated_literal(&mut self, value: &aven_eval::Value, ty: Type) -> Type {
-        let literal = match comptime::eval_value_as_comptime_value(value) {
-            Some(comptime::ComptimeValue::Literal(literal)) => literal,
-            _ => match value {
-                aven_eval::Value::Bool(value) => Literal::Bool(*value),
-                _ => return ty,
-            },
-        };
-        self.narrow_to_literal(&literal, ty)
     }
 
     /// The refinement itself, over a literal from either evaluator.
@@ -2228,10 +2224,6 @@ impl<'a> Checker<'a> {
             return result;
         }
 
-        if let Some(result) = self.infer_comptime_pin_call(env, callee, args) {
-            return result;
-        }
-
         if let Some(result) = self.infer_record_selection_builtin_call(env, callee, args) {
             return result;
         }
@@ -3639,97 +3631,6 @@ impl<'a> Checker<'a> {
         );
     }
 
-    /// `comptime(e)` has `e`'s own type: the pin asserts *when* the value is
-    /// known, not what it is. Its work is to report an expression the checker
-    /// cannot evaluate, at the pin rather than at some distant use.
-    pub(super) fn infer_comptime_pin_call(
-        &mut self,
-        env: &TypeEnv,
-        callee: &Expr,
-        args: &[Expr],
-    ) -> Option<Type> {
-        if expr_name(callee) != Some(comptime::COMPTIME_PIN)
-            || self.record_selection_builtin_is_shadowed(env, comptime::COMPTIME_PIN)
-        {
-            return None;
-        }
-
-        let [arg] = args else {
-            self.push_unique_diagnostic(comptime::comptime_pin_arity(callee.span, args.len()));
-            return Some(Type::Error);
-        };
-
-        let ty = self.infer(env, arg);
-        // A singleton literal type is itself proof the value folded, and
-        // comptime-by-inference reaches expressions the comptime evaluator
-        // cannot walk, so it is checked before falling back to evaluation.
-        let folded = comptime::singleton_literal(&self.unifier.resolve(&ty)).is_some();
-        if !folded && !self.expr_references_unresolved_comptime_param(arg) {
-            let bindings = self.current_comptime_value_bindings();
-            let evaluation = comptime::evaluate_type_position_with_bindings(self, arg, &bindings);
-            // The annotation path reports the same pin, so this is unique.
-            // The two evaluators reach different expressions: the type-position
-            // walker handles forms the runtime one cannot, and the runtime one
-            // handles calls the walker reports as unsupported. A value from
-            // either narrows the pin. Taking only the second made the feature
-            // depend on the first *failing* — `comptime(ident(4))` stayed `Int`
-            // while `comptime(ident(4))` through `n + 0` narrowed to `4`.
-            if evaluation.diagnostics.is_empty()
-                && let Evaluation::Evaluated(value) = &evaluation.evaluation
-            {
-                let literal = match value {
-                    comptime::ComptimeValue::Literal(literal) => Some(literal.clone()),
-                    comptime::ComptimeValue::Bool(value) => Some(Literal::Bool(*value)),
-                    // A reified type or label set is a compiler artifact, not a
-                    // value with a literal type to narrow to.
-                    comptime::ComptimeValue::ReifiedType(_)
-                    | comptime::ComptimeValue::LabelSet(_) => None,
-                };
-                let narrowed = match literal {
-                    Some(literal) => self.narrow_to_literal(&literal, ty),
-                    None => ty,
-                };
-                return Some(narrowed);
-            }
-            if evaluation.diagnostics.is_empty() {
-                match self.evaluate_known_expression(env, arg) {
-                    Ok(value) => return Some(self.narrow_to_evaluated_literal(&value, ty)),
-                    Err(cause) => {
-                        // Every failure reports at the pin, whatever its cause.
-                        // Forwarding the cause instead loses the pin as the
-                        // place to read about it, and carries the cause's own
-                        // code and note, which describe a runtime phase this is
-                        // not.
-                        let detail = if cause.code.as_deref() == Some(codes::runtime::UNBOUND_NAME)
-                        {
-                            "this dependency has no compile-time value"
-                        } else {
-                            "evaluation failed inside this expression"
-                        };
-                        let mut diagnostic = comptime::comptime_pin_failed(arg.span)
-                            .with_note(format!("evaluation stopped because: {}", cause.message));
-                        for label in cause.labels {
-                            // A cause raised inside an ambient `std/*.av` module
-                            // carries that module's offsets. They are not
-                            // positions in this source, and handing one to a
-                            // renderer that assumes otherwise aborts the CLI, so
-                            // only a label within the pinned argument survives.
-                            if arg.span.start <= label.span.start && label.span.end <= arg.span.end
-                            {
-                                diagnostic =
-                                    diagnostic.with_label(Label::primary(label.span, detail));
-                            }
-                        }
-                        self.push_unique_diagnostic(diagnostic);
-                    }
-                }
-            }
-            self.extend_unique_diagnostics(evaluation.diagnostics);
-        }
-
-        Some(ty)
-    }
-
     pub(super) fn infer_record_selection_builtin_call(
         &mut self,
         env: &TypeEnv,
@@ -4033,9 +3934,15 @@ impl<'a> Checker<'a> {
                         })
                 })
                 .flatten();
+            let arg_env = if index < args.len() { env } else { &body_env };
+            let arg_bindings = if index < args.len() {
+                &runtime_value_bindings
+            } else {
+                &body_comptime_values
+            };
             let demand = match reflected_default {
                 Some(argument) => ComptimeDemand::Known(argument),
-                None => self.evaluate_comptime_param_argument(env, arg, &runtime_value_bindings),
+                None => self.evaluate_comptime_param_argument(arg_env, arg, arg_bindings),
             };
             let argument = match demand {
                 ComptimeDemand::Known(argument) => argument,
@@ -4094,12 +4001,23 @@ impl<'a> Checker<'a> {
                 return Some(Type::Deferred);
             }
 
-            let value_type = value
-                .clone()
-                .reify_type_position()
-                .into_reified_type()
-                .or(domain)
-                .unwrap_or(Type::Deferred);
+            let value_type = match &value {
+                comptime::ComptimeValue::Literal(literal) => {
+                    let actual = self.infer(arg_env, arg);
+                    self.narrow_to_literal(literal, actual)
+                }
+                comptime::ComptimeValue::Bool(value) => {
+                    let actual = self.infer(arg_env, arg);
+                    self.narrow_to_literal(&Literal::Bool(*value), actual)
+                }
+                comptime::ComptimeValue::LabelSet(_) => self.infer(arg_env, arg),
+                _ => value
+                    .clone()
+                    .reify_type_position()
+                    .into_reified_type()
+                    .or(domain)
+                    .unwrap_or(Type::Deferred),
+            };
 
             body_env.insert(param.name.clone(), LocalValueType::Known(value_type));
             body_comptime_values.insert(param.name.clone(), value.clone());
@@ -4168,7 +4086,7 @@ impl<'a> Checker<'a> {
         }
         // Keep the evidence from the evaluation that was demanded. Reporting
         // must not re-run helpers or discard an already explained type error.
-        match self.evaluate_known_expression(env, arg) {
+        match self.evaluate_known_expression(env, arg, bindings) {
             Ok(value) => match comptime::eval_value_as_comptime_value(&value) {
                 Some(value) => ComptimeDemand::Known(ComptimeArgument {
                     value,

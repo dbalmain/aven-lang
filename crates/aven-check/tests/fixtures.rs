@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use aven_check as checker_api;
 use aven_check::{Type, build};
+#[path = "support/prelude.rs"]
+mod test_prelude;
 use aven_core::{Diagnostic, Severity};
 
 const CHECK_FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/check");
@@ -29,7 +32,11 @@ fn valid_check_fixtures_have_no_diagnostics() -> Result<(), Box<dyn Error>> {
         );
 
         let globals = fixture_globals();
-        let check = aven_check::check_module_with_globals(&parse.module, &globals);
+        let check = aven_check::check_module_with_host_globals_and_imports(
+            &parse.module,
+            &aven_check::HostGlobals::types_only(&globals),
+            &test_prelude::imports(),
+        );
 
         assert!(
             check.diagnostics.is_empty(),
@@ -56,7 +63,11 @@ fn invalid_check_fixtures_match_expected_diagnostics() -> Result<(), Box<dyn Err
 
         let globals = fixture_globals();
         let mut diagnostics = name_error_diagnostics(&parse.module);
-        let check = aven_check::check_module_with_globals(&parse.module, &globals);
+        let check = aven_check::check_module_with_host_globals_and_imports(
+            &parse.module,
+            &aven_check::HostGlobals::types_only(&globals),
+            &test_prelude::imports(),
+        );
         diagnostics.extend(check.diagnostics);
         let actual = render_diagnostics(&diagnostics);
         let expected_path = path.with_extension("diag");

@@ -939,6 +939,7 @@ mod tests {
                 "std/array",
                 "std/cli",
                 "std/map",
+                "std/prelude",
                 "std/result",
                 "std/set",
                 "std/test",

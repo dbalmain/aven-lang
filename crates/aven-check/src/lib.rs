@@ -37,8 +37,7 @@ pub fn unfold_recursive_type_once(ty: &Type, unfoldings: &HashMap<RecursiveTypeI
 
 /// Builtin comptime type functions. Shared with tooling (LSP hover) so the
 /// checker's name binding and the hover descriptions cannot drift apart.
-pub const COMPTIME_BUILTIN_FUNCTIONS: &[&str] =
-    &["keysOf", "tagsOf", "typeOf", "pick", "omit", "comptime"];
+pub const COMPTIME_BUILTIN_FUNCTIONS: &[&str] = &["keysOf", "tagsOf", "typeOf", "pick", "omit"];
 
 pub(crate) use checker::Checker;
 pub(crate) use lower::{known_type_names, reserved_type_diagnostic, type_definitions};
@@ -315,6 +314,8 @@ pub struct ModuleImports {
     comptime_exports: HashMap<String, HashMap<String, ComptimeExport>>,
     prelude_qualified_exports: HashMap<String, QualifiedType>,
     prelude_comptime_exports: HashMap<String, ComptimeExport>,
+    prelude_modules: Vec<Module>,
+    prelude_requires_elaboration: bool,
     recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     builtin_methods: BuiltinMethodEnvironment,
     trusted_builtin_method_source: bool,
@@ -333,6 +334,8 @@ impl ModuleImports {
             comptime_exports: HashMap::new(),
             prelude_qualified_exports: HashMap::new(),
             prelude_comptime_exports: HashMap::new(),
+            prelude_modules: Vec::new(),
+            prelude_requires_elaboration: false,
             recursive_type_unfoldings: HashMap::new(),
             builtin_methods: BuiltinMethodEnvironment::default(),
             trusted_builtin_method_source: false,
@@ -351,6 +354,8 @@ impl ModuleImports {
             comptime_exports: HashMap::new(),
             prelude_qualified_exports: HashMap::new(),
             prelude_comptime_exports: HashMap::new(),
+            prelude_modules: Vec::new(),
+            prelude_requires_elaboration: false,
             recursive_type_unfoldings: HashMap::new(),
             builtin_methods: BuiltinMethodEnvironment::default(),
             trusted_builtin_method_source: false,
@@ -430,6 +435,21 @@ impl ModuleImports {
     ) {
         self.prelude_qualified_exports = qualified;
         self.prelude_comptime_exports = comptime;
+    }
+
+    /// Owned prelude sources let value demands reconstruct their lexical
+    /// scopes without resolving private captures against the caller module.
+    pub fn set_prelude_modules(&mut self, modules: Vec<Module>, requires_elaboration: bool) {
+        self.prelude_modules = modules;
+        self.prelude_requires_elaboration = requires_elaboration;
+    }
+
+    pub fn prelude_requires_elaboration(&self) -> bool {
+        self.prelude_requires_elaboration
+    }
+
+    pub fn prelude_modules(&self) -> &[Module] {
+        &self.prelude_modules
     }
 
     pub fn prelude_qualified_exports(&self) -> &HashMap<String, QualifiedType> {

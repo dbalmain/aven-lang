@@ -1592,10 +1592,9 @@ impl<'a> Checker<'a> {
         if let Some(recursive) = self.self_recursive_local_type(binding, signature, false) {
             self.local_types.define(&binding.name, recursive);
         }
-        // Record a `comptime(...)` pin before the value is checked: an
-        // annotation later in the same block may read this binding as a
-        // comptime value.
-        if let Some(pinned) = self.comptime_pin_argument(&binding.value) {
+        // Retain the whole explicitly demanded call for later annotations.
+        // Those uses still evaluate the call; this is not a known-value proof.
+        if let Some(pinned) = self.comptime_demand_call(&binding.value) {
             let pinned = pinned.clone();
             self.local_types.define_pin(&binding.name, pinned);
         }
@@ -1871,22 +1870,15 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The argument of an unshadowed `comptime(value)` call, which pins the
-    /// expression to compile time.
-    pub(super) fn comptime_pin_argument<'e>(&self, value: &'e Expr) -> Option<&'e Expr> {
-        let ExprKind::Call { callee, args } = &ungroup_expr(value).kind else {
+    /// A call carrying explicit compile-time argument demands. Keep the whole
+    /// expression: supplying known arguments does not prove a result whose
+    /// body may still reference runtime parameters or lexical dependencies.
+    pub(super) fn comptime_demand_call<'e>(&self, value: &'e Expr) -> Option<&'e Expr> {
+        let ExprKind::Call { callee, .. } = &ungroup_expr(value).kind else {
             return None;
         };
-        if expr_name(callee) != Some(comptime::COMPTIME_PIN)
-            || self.record_selection_builtin_is_shadowed(&TypeEnv::new(), comptime::COMPTIME_PIN)
-        {
-            return None;
-        }
-        let [arg] = args.as_slice() else {
-            return None;
-        };
-
-        Some(arg)
+        self.comptime_param_function(&self.local_types.inference_env(), callee)?;
+        Some(value)
     }
 
     pub(super) fn is_unshadowed_record_selection_builtin_call(&self, value: &Expr) -> bool {
@@ -1940,14 +1932,15 @@ impl<'a> Checker<'a> {
         value: &Expr,
         visiting: &mut HashSet<String>,
     ) -> bool {
-        // A `comptime(...)` pin says *when* a value is known, not what it is,
-        // so liftability is decided by the pinned expression. `@{"a"}` is a
-        // perfectly ordinary `Set(Text)` whether or not it is pinned.
-        if let Some(pinned) = self.comptime_pin_argument(value) {
-            let pinned = pinned.clone();
-            return self.runtime_rhs_is_artifact(&pinned, visiting);
+        if self.comptime_demand_call(value).is_some() {
+            let bindings = self.current_comptime_value_bindings();
+            let evaluation = comptime::evaluate_type_position_with_bindings(self, value, &bindings);
+            if evaluation.diagnostics.is_empty()
+                && matches!(evaluation.evaluation, Evaluation::Evaluated(comptime::ComptimeValue::ReifiedType(ref ty)) if is_non_liftable_artifact_type(ty))
+            {
+                return true;
+            }
         }
-
         match &value.kind {
             ExprKind::Group(inner) => self.runtime_rhs_is_artifact(inner, visiting),
             // Type constructors (`?T` / `T?` / `T!`) are never runtime values.
@@ -1985,11 +1978,6 @@ impl<'a> Checker<'a> {
         value: &Expr,
         visiting: &mut HashSet<String>,
     ) -> bool {
-        if let Some(pinned) = self.comptime_pin_argument(value) {
-            let pinned = pinned.clone();
-            return self.rhs_is_non_liftable_artifact(&pinned, visiting);
-        }
-
         match &value.kind {
             ExprKind::Group(inner) => {
                 return self.rhs_is_non_liftable_artifact(inner, visiting);
