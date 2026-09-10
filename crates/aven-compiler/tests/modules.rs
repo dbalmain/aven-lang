@@ -3507,3 +3507,32 @@ fn prelude_defaults_do_not_mutate_other_prelude_lexical_scopes() {
         }
     }
 }
+
+#[test]
+fn imported_comptime_helper_respects_initializer_order() {
+    let dir = TempDir::new("comptime-import-order");
+    write(dir.path(), "helper.av", "f = (@x) => x\n{ f }\n");
+    write(
+        dir.path(),
+        "early.av",
+        "comptime = (@arg) => arg\nresult = comptime(f(3))\n{ f } = import(\"./helper\")\n",
+    );
+    let early = check_path_with_host_globals(&dir.path().join("early.av"), &HostGlobals::default())
+        .expect("load early");
+    assert!(
+        early
+            .reports
+            .iter()
+            .flat_map(|report| &report.diagnostics)
+            .any(|diagnostic| diagnostic.code.as_deref()
+                == Some(codes::comptime::ARGUMENT_NOT_KNOWN))
+    );
+    write(
+        dir.path(),
+        "late.av",
+        "comptime = (@arg) => arg\n{ f } = import(\"./helper\")\nresult = comptime(f(3))\nchecked: 3 = result\n",
+    );
+    let late = check_path_with_host_globals(&dir.path().join("late.av"), &HostGlobals::default())
+        .expect("load late");
+    assert_no_errors(&late.reports);
+}

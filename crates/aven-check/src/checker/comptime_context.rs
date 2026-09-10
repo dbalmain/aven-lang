@@ -72,6 +72,68 @@ impl comptime::EvalContext for Checker<'_> {
             .map(|members| members.into_iter().map(|member| member.label).collect())
     }
 
+    fn runtime_binding_availability(&self, name: &str, span: Span) -> Option<Diagnostic> {
+        if self.comptime_bindings.contains(name) || self.local_types.pin(name).is_some() {
+            return None;
+        }
+        if self.execution_context == comptime::ExecutionContext::Artifact {
+            return None;
+        }
+        let binding_span = self
+            .bindings
+            .get(name)
+            .and_then(|binding| *binding)
+            .map(|binding| binding.span.start)
+            .or_else(|| {
+                self.pattern_bindings
+                    .get(name)
+                    .map(|binding| binding.span.start)
+            })?;
+        match self.execution_context {
+            comptime::ExecutionContext::RuntimeKnown(boundary) if binding_span < boundary => None,
+            comptime::ExecutionContext::RuntimeKnown(_) => Some(
+                Diagnostic::error(format!(
+                    "runtime binding `{name}` is not known to be initialized at this demand"
+                ))
+                .with_code(codes::comptime::ARGUMENT_NOT_KNOWN)
+                .with_label(Label::primary(
+                    span,
+                    "this demand requires an initialized runtime binding",
+                )),
+            ),
+            comptime::ExecutionContext::RuntimeUnknown => Some(
+                Diagnostic::error(format!(
+                    "runtime binding `{name}` is not known to be initialized at this demand"
+                ))
+                .with_code(codes::comptime::ARGUMENT_NOT_KNOWN)
+                .with_label(Label::primary(
+                    span,
+                    "this demand has no runtime initialization context",
+                )),
+            ),
+            comptime::ExecutionContext::Artifact => None,
+        }
+    }
+
+    fn enter_binding_initializer(&mut self, name: &str) -> comptime::ExecutionContext {
+        let previous = self.execution_context;
+        if self.local_types.pin(name).is_none()
+            && let Some(binding) = self.bindings.get(name).and_then(|binding| *binding)
+        {
+            self.execution_context = comptime::ExecutionContext::RuntimeKnown(binding.span.start);
+        }
+        previous
+    }
+
+    fn restore_execution_context(&mut self, previous: comptime::ExecutionContext) {
+        self.execution_context = previous;
+    }
+    fn enter_type_binding_context(&mut self) -> comptime::ExecutionContext {
+        std::mem::replace(
+            &mut self.execution_context,
+            comptime::ExecutionContext::Artifact,
+        )
+    }
     fn comptime_pinned_binding(&self, name: &str) -> Option<Expr> {
         if let Some(pinned) = self.local_types.pin(name) {
             return Some(pinned.clone());
@@ -93,7 +155,9 @@ impl comptime::EvalContext for Checker<'_> {
         &self,
         key: &comptime::SpecializationKey,
     ) -> Option<comptime::EvaluationResult> {
-        self.comptime_specializations.get(key).cloned()
+        self.comptime_specializations
+            .get(&(key.clone(), self.execution_context))
+            .cloned()
     }
 
     fn cache_specialization(
@@ -101,7 +165,8 @@ impl comptime::EvalContext for Checker<'_> {
         key: comptime::SpecializationKey,
         result: comptime::EvaluationResult,
     ) {
-        self.comptime_specializations.insert(key, result);
+        self.comptime_specializations
+            .insert((key, self.execution_context), result);
     }
 
     fn specialization_is_active(&self, key: &comptime::SpecializationKey) -> bool {
@@ -145,6 +210,7 @@ impl comptime::EvalContext for Checker<'_> {
                 lowlink: index,
                 self_edge: false,
                 call_span,
+                execution_context: self.execution_context,
                 result: None,
             });
         Ok(())
@@ -188,8 +254,9 @@ impl comptime::EvalContext for Checker<'_> {
         let recursive = component.len() > 1 || component.iter().any(|frame| frame.self_edge);
         if !recursive {
             if !matches!(result.evaluation, Evaluation::Unsupported) {
+                let frame = &component[0];
                 self.comptime_specializations
-                    .insert(key.clone(), result.clone());
+                    .insert((key.clone(), frame.execution_context), result.clone());
             }
             return result;
         }
@@ -285,10 +352,24 @@ impl Checker<'_> {
         name: &str,
         span: Span,
     ) -> comptime::EvaluationResult {
+        let previous_boundary = <Self as comptime::EvalContext>::enter_type_binding_context(self);
+        let result = self.evaluate_prelowered_type_definition_in_type_context(name, span);
+        <Self as comptime::EvalContext>::restore_execution_context(self, previous_boundary);
+        result
+    }
+
+    fn evaluate_prelowered_type_definition_in_type_context(
+        &mut self,
+        name: &str,
+        span: Span,
+    ) -> comptime::EvaluationResult {
         let origin =
             comptime::ComptimeOrigin::new(self.prelowered_type_module.clone(), name.to_owned());
         let key = comptime::SpecializationKey::zero_argument(origin);
-        if let Some(result) = self.comptime_specializations.get(&key) {
+        if let Some(result) = self
+            .comptime_specializations
+            .get(&(key.clone(), comptime::ExecutionContext::Artifact))
+        {
             return result.clone();
         }
         if let Some(id) =
@@ -492,7 +573,8 @@ impl Checker<'_> {
             else {
                 for frame in component {
                     if let Some(result) = frame.result {
-                        self.comptime_specializations.insert(frame.key, result);
+                        self.comptime_specializations
+                            .insert((frame.key, frame.execution_context), result);
                     }
                 }
                 return fallback;
@@ -569,7 +651,7 @@ impl Checker<'_> {
                 );
             }
             self.comptime_specializations.insert(
-                frame.key,
+                (frame.key, frame.execution_context),
                 comptime::EvaluationResult {
                     evaluation: Evaluation::Evaluated(comptime::ComptimeValue::ReifiedType(
                         Type::Recursive(frame.id),
@@ -580,8 +662,69 @@ impl Checker<'_> {
         }
 
         self.comptime_specializations
-            .get(requested)
+            .get(&(requested.clone(), self.execution_context))
             .cloned()
             .unwrap_or(fallback)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::comptime::Evaluation;
+    use aven_parser::{Item, parse_module};
+
+    #[test]
+    fn specialization_cache_does_not_cross_artifact_and_runtime_contexts() {
+        let parsed = parse_module(
+            "pin = (@x) => x\nhelper = (@x) => later\nT = helper(3)\nresult = helper(3)\nlater = pin(3)\n",
+        );
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+        let known_types = crate::lower::known_type_names(&parsed.module);
+        let type_definitions = crate::lower::type_definitions(&parsed.module, &known_types);
+        let mut checker = Checker::with_module(known_types, type_definitions, &parsed.module);
+        let value = |name: &str| {
+            parsed
+                .module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Binding(binding) if binding.name == name => Some(&binding.value),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing binding {name}"))
+        };
+
+        checker.execution_context = comptime::ExecutionContext::Artifact;
+        let artifact = comptime::evaluate_type_position(&mut checker, value("T"));
+        assert!(
+            matches!(artifact.evaluation, Evaluation::Evaluated(_)),
+            "artifact specialization should evaluate: {:?}",
+            artifact.diagnostics
+        );
+
+        let result_binding = parsed
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Binding(binding) if binding.name == "result" => Some(binding),
+                _ => None,
+            })
+            .expect("missing result binding");
+        checker.execution_context =
+            comptime::ExecutionContext::RuntimeKnown(result_binding.span.start);
+        let runtime = comptime::evaluate_type_position(&mut checker, &result_binding.value);
+        assert!(
+            !matches!(runtime.evaluation, Evaluation::Evaluated(_)),
+            "runtime demand must not reuse the artifact result: {runtime:?}"
+        );
+        assert!(
+            runtime.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some(codes::comptime::ARGUMENT_NOT_KNOWN)
+            }),
+            "runtime demand should report the unavailable capture: {runtime:?}"
+        );
     }
 }

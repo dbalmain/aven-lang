@@ -83,7 +83,12 @@ pub(crate) struct Checker<'a> {
     value_types: HashMap<String, Option<TypeScheme>>,
     comptime_bindings: HashSet<String>,
     comptime_artifacts: HashMap<String, bool>,
-    comptime_specializations: HashMap<comptime::SpecializationKey, comptime::EvaluationResult>,
+    /// Results are scoped by a demand frontier. The canonical specialization
+    /// key itself stays independent so recursive type identity is stable.
+    comptime_specializations: HashMap<
+        (comptime::SpecializationKey, comptime::ExecutionContext),
+        comptime::EvaluationResult,
+    >,
     comptime_specialization_calls: Vec<comptime::SpecializationKey>,
     comptime_specialization_stack: Vec<SpecializationFrame>,
     comptime_specialization_active: HashMap<comptime::SpecializationKey, usize>,
@@ -97,6 +102,8 @@ pub(crate) struct Checker<'a> {
     annotations: HashMap<String, &'a Expr>,
     memo: HashMap<String, TypeScheme>,
     in_progress: HashSet<String>,
+    /// Execution frontier of the current demand, independent of inference order.
+    execution_context: comptime::ExecutionContext,
     unifier: Unifier,
     /// Host/library globals seeded into the top-level value environment. They
     /// are checked through the same `value_types` paths as user declarations,
@@ -154,6 +161,7 @@ struct SpecializationFrame {
     lowlink: usize,
     self_edge: bool,
     call_span: Span,
+    execution_context: comptime::ExecutionContext,
     result: Option<comptime::EvaluationResult>,
 }
 

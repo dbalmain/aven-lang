@@ -538,6 +538,13 @@ struct ComptimeModuleEnvironment {
 
 pub(crate) type ComptimeFunction = ComptimeExport;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ExecutionContext {
+    Artifact,
+    RuntimeUnknown,
+    RuntimeKnown(usize),
+}
+
 pub(crate) trait EvalContext {
     fn lower_comptime_type(
         &mut self,
@@ -547,6 +554,10 @@ pub(crate) trait EvalContext {
         uses_context_scope: bool,
     ) -> LoweredType;
     fn runtime_binding_reference(&self, name: &str, span: Span) -> Option<Diagnostic>;
+    fn runtime_binding_availability(&self, name: &str, span: Span) -> Option<Diagnostic>;
+    fn enter_binding_initializer(&mut self, name: &str) -> ExecutionContext;
+    fn restore_execution_context(&mut self, previous: ExecutionContext);
+    fn enter_type_binding_context(&mut self) -> ExecutionContext;
 
     /// Whether `expr` mentions a comptime parameter of an enclosing function
     /// that has not been specialized yet -- the one reason a comptime
@@ -912,7 +923,15 @@ where
                 // A foreign closure cannot read a same-named caller pin.
                 if env.uses_context_scope(self.context.module_identity()) {
                     if let Some(pinned) = self.context.comptime_pinned_binding(name) {
-                        return self.evaluate_expr(&pinned, env);
+                        if let Some(diagnostic) =
+                            self.context.runtime_binding_availability(name, expr.span)
+                        {
+                            return EvaluationResult::diagnostic(diagnostic);
+                        }
+                        let previous = self.context.enter_binding_initializer(name);
+                        let result = self.evaluate_expr(&pinned, env);
+                        self.context.restore_execution_context(previous);
+                        return result;
                     }
                     if env.in_function_body()
                         && let Some(diagnostic) =
@@ -1093,6 +1112,13 @@ where
                 .then(|| self.context.lookup_comptime_function(name))
                 .flatten()
         }) {
+            if !function.type_binding
+                && env.uses_context_scope(self.context.module_identity())
+                && let Some(diagnostic) =
+                    self.context.runtime_binding_availability(name, callee.span)
+            {
+                return EvaluationResult::diagnostic(diagnostic);
+            }
             return self.evaluate_function_application(function, call_span, args, env);
         }
 
@@ -1256,6 +1282,23 @@ where
     }
 
     fn evaluate_function_application(
+        &mut self,
+        function: ComptimeFunction,
+        call_span: Span,
+        args: &[Expr],
+        env: &Environment,
+    ) -> EvaluationResult {
+        let previous_boundary = function
+            .type_binding
+            .then(|| self.context.enter_type_binding_context());
+        let result = self.evaluate_function_application_in_context(function, call_span, args, env);
+        if let Some(previous_boundary) = previous_boundary {
+            self.context.restore_execution_context(previous_boundary);
+        }
+        result
+    }
+
+    fn evaluate_function_application_in_context(
         &mut self,
         function: ComptimeFunction,
         call_span: Span,

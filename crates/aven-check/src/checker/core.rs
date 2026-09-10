@@ -35,6 +35,7 @@ impl<'a> Checker<'a> {
             annotations: HashMap::new(),
             memo: HashMap::new(),
             in_progress: HashSet::new(),
+            execution_context: comptime::ExecutionContext::RuntimeUnknown,
             unifier: Unifier::default(),
             globals: Vec::new(),
             statics: HashMap::new(),
@@ -1087,11 +1088,28 @@ impl<'a> Checker<'a> {
         // Top-level declared annotations go through declarations so inline and
         // adjacent signature+binding forms share one lookup path.
         for declaration in collect_declarations(module) {
+            let previous = self.execution_context;
+            self.execution_context = if declaration.phase == DeclarationPhase::Runtime {
+                binding_for_declaration(module, &declaration)
+                    .map_or(comptime::ExecutionContext::RuntimeUnknown, |b| {
+                        comptime::ExecutionContext::RuntimeKnown(b.span.start)
+                    })
+            } else {
+                comptime::ExecutionContext::Artifact
+            };
             self.check_declaration(module, &declaration);
+            self.execution_context = previous;
         }
 
         let mut top_level_spread_names = HashSet::new();
         for (index, item) in module.items.iter().enumerate() {
+            let previous = self.execution_context;
+            self.execution_context = comptime::ExecutionContext::RuntimeKnown(match item {
+                Item::Expr(expr) => expr.span.start,
+                Item::PatternBinding(binding) => binding.span.start,
+                Item::SpreadBinding(binding) => binding.span.start,
+                _ => 0,
+            });
             match item {
                 Item::PatternBinding(binding) => {
                     self.check_top_level_pattern_binding(binding);
@@ -1115,6 +1133,7 @@ impl<'a> Checker<'a> {
                 }
                 Item::Binding(_) | Item::Signature(_) => {}
             }
+            self.execution_context = previous;
         }
     }
 

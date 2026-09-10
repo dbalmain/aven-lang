@@ -1247,10 +1247,29 @@ pub struct Environment {
     /// compile-time code sets a budget so a non-terminating expression fails
     /// reproducibly instead of hanging the process.
     fuel: Rc<Cell<Option<u64>>>,
+    comptime_boundary: Rc<Cell<Option<usize>>>,
+}
+
+#[derive(Clone)]
+pub struct ComptimeDefinition {
+    pub expr: Expr,
+    /// `None` denotes a definition from an ambient lexical scope, whose source
+    /// order is unrelated to the module currently being demanded.
+    pub initialization_boundary: Option<usize>,
+}
+
+pub struct ComptimeEvalConfig<'a> {
+    pub definitions: HashMap<String, ComptimeDefinition>,
+    pub active_boundary: Option<usize>,
+    pub ambient_modules: &'a [Module],
+    pub prelude_modules: &'a [Module],
+    pub locals: Vec<(String, Value)>,
+    pub blocked_locals: HashSet<String>,
+    pub fuel: u64,
 }
 
 struct Scope {
-    definitions: RefCell<HashMap<String, Expr>>,
+    definitions: RefCell<HashMap<String, ComptimeDefinition>>,
     evaluating: RefCell<HashSet<String>>,
     blocked: HashSet<String>,
     values: RefCell<HashMap<String, Value>>,
@@ -1322,6 +1341,7 @@ impl Environment {
             stack_segment_limit: DEFAULT_STACK_SEGMENT_LIMIT,
             stack_growth: StackGrowth::System,
             fuel: Rc::new(Cell::new(None)),
+            comptime_boundary: Rc::new(Cell::new(Some(usize::MAX))),
         }
     }
 
@@ -1370,6 +1390,7 @@ impl Environment {
             stack_segment_limit: self.stack_segment_limit,
             stack_growth: self.stack_growth,
             fuel: Rc::clone(&self.fuel),
+            comptime_boundary: Rc::clone(&self.comptime_boundary),
         }
     }
 
@@ -1392,6 +1413,21 @@ impl Environment {
     fn resolve(&self, name: &str, span: Span) -> Eval {
         let mut scope = Some(Rc::clone(&self.scope));
         while let Some(current) = scope {
+            let boundary = current
+                .definitions
+                .borrow()
+                .get(name)
+                .and_then(|definition| definition.initialization_boundary);
+            // Check availability before a memoized value: a demand may read a
+            // later binding first, then reach an earlier initializer that must
+            // still be unable to observe that cached future value.
+            if boundary.is_some_and(|boundary| {
+                self.comptime_boundary
+                    .get()
+                    .is_none_or(|active| boundary >= active)
+            }) {
+                return Err(one_diagnostic(unbound_name(name, span)));
+            }
             if let Some(value) = current.values.borrow().get(name).cloned() {
                 return Ok(value);
             }
@@ -1410,7 +1446,15 @@ impl Environment {
                 // Resolve captures in the definition's scope, never the caller's.
                 let mut defining_env = self.clone();
                 defining_env.scope = Rc::clone(&current);
-                let value = eval_expr_many(&definition, &defining_env);
+                // Ambient definitions have no module-local boundary. Preserve
+                // the active caller boundary while evaluating them.
+                let definition_boundary = definition
+                    .initialization_boundary
+                    .map(Some)
+                    .unwrap_or_else(|| self.comptime_boundary.get());
+                let previous_boundary = self.comptime_boundary.replace(definition_boundary);
+                let value = eval_expr_many(&definition.expr, &defining_env);
+                self.comptime_boundary.set(previous_boundary);
                 current.evaluating.borrow_mut().remove(name);
                 if let Ok(value) = &value {
                     current
@@ -2140,26 +2184,23 @@ fn eval_named_family(owner: &str, value: &Expr, env: &Environment) -> Eval {
 /// Ambient implementations are installed in their own lexical module scopes.
 pub fn eval_comptime_expr(
     expr: &Expr,
-    definitions: HashMap<String, Expr>,
-    ambient_modules: &[Module],
-    prelude_modules: &[Module],
-    locals: Vec<(String, Value)>,
-    blocked_locals: HashSet<String>,
-    fuel: u64,
+    config: ComptimeEvalConfig<'_>,
 ) -> Result<Value, Diagnostic> {
     let root = Environment::new();
-    root.set_fuel(fuel);
+    root.set_fuel(config.fuel);
     bind_intrinsics(&root);
-    for module in ambient_modules {
+    for module in config.ambient_modules {
         let module_env = root.child();
         for item in &module.items {
             match item {
                 Item::Binding(binding) => {
-                    module_env
-                        .scope
-                        .definitions
-                        .borrow_mut()
-                        .insert(binding.name.clone(), binding.value.clone());
+                    module_env.scope.definitions.borrow_mut().insert(
+                        binding.name.clone(),
+                        ComptimeDefinition {
+                            expr: binding.value.clone(),
+                            initialization_boundary: None,
+                        },
+                    );
                 }
                 Item::MethodAttachment(attachment) => {
                     install_builtin_method_attachment(attachment, &module_env);
@@ -2169,7 +2210,7 @@ pub fn eval_comptime_expr(
         }
     }
     let defaults = root.child();
-    for module in prelude_modules {
+    for module in config.prelude_modules {
         // Each prelude owns a sibling lexical scope, never the caller scope.
         // Unsupported prelude initialization fails the demand conservatively.
         let prelude_env = root.child();
@@ -2184,12 +2225,13 @@ pub fn eval_comptime_expr(
         }
     }
     let module_env = defaults.child();
-    *module_env.scope.definitions.borrow_mut() = definitions;
+    *module_env.scope.definitions.borrow_mut() = config.definitions;
+    module_env.comptime_boundary.set(config.active_boundary);
     let mut env = module_env.child();
     Rc::get_mut(&mut env.scope)
         .expect("new lexical scope")
-        .blocked = blocked_locals;
-    for (name, value) in locals {
+        .blocked = config.blocked_locals;
+    for (name, value) in config.locals {
         env.bind(name, value);
     }
     eval_expr(expr, &env)

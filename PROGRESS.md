@@ -1,16 +1,16 @@
 # Implementation status — language proposals
 
-Updated: 2026-09-10, Australia/Sydney.
+Updated: 2026-09-11, Australia/Sydney.
 
 ## Resumed implementation — agreed review amendments
 
 Implementation resumed after discussion with the user, from clean `3163938`
 (the plan commit following `58eb0a8`). The root agent orchestrates and reviews;
-`ordering_final_gate` (Luna) owns the remaining cache regression and final
-validation after Terra hit its usage limit. Root independently reviews it.
-Implementation is incomplete: slices 1–2 are committed and passed their gates;
-the binding-order follow-up needs further repair before semantic knowledge work. See **Latest checkpoint** below before
-the chronological gate results. Live notes are in
+Terra and Luna completed the ordering repair, and root accepted its final gates.
+No agent currently owns active source edits.
+Implementation is incomplete: slices 1–2 and the binding-order follow-up have
+passed their gates. Semantic knowledge (slice 3) is next. See **Accepted ordering repair** below before
+the historical gate results. Live notes are in
 `docs/comptime-implementation-progress.md` and
 `docs/comptime-prelude-progress.md`. No push is authorized.
 
@@ -38,6 +38,35 @@ The discussion supersedes these parts of the plan below:
 
 The green status and test count below describe the starting implementation,
 not verification of the resumed work.
+
+### Accepted ordering repair — September 11
+
+Root accepted the repaired ordering implementation after Terra/Luna coding and
+independent review. **1845 workspace tests pass, zero failures**; checker has
+**673** tests. Workspace clippy (`--all-targets -- -D warnings`), formatting,
+and diff checks pass. Final logs: `/tmp/aven-order-final-test.log`,
+`/tmp/aven-order-final-clippy.log`, `/tmp/aven-order-final-fmt.log`, and
+`/tmp/aven-order-final-diff.log`. The workspace test run had socket access.
+
+The checker distinguishes Artifact, RuntimeUnknown, and RuntimeKnown contexts;
+actual annotations run in Artifact context. Unproven runtime lambda demands
+reject conservatively. Lazy evaluation respects initializer boundaries before
+memoized reads. Specialization caches retain context separately from canonical
+recursive type identity. A same-specialization cache regression was mutation
+tested: context-insensitive lookup incorrectly returned 3 and failed the test.
+
+The integrated gate exposed recursive equality repeatedly unfolding optional
+and expanded `Chain(Int)` references. Equality now recognizes wrapped recursive
+identities and tracks compared type pairs. The existing recursive compiler
+fixture passes. Failed annotation-depth and test-only context workarounds were
+removed.
+
+Root rebuilt/checked CLI controls: direct, transitive, pinned, helper, imported,
+and unknown-lambda forward demands reject; earlier closure capture, initialized
+import, artifact-derived Bool, and generic recursive equality pass. No push.
+Slice 3 has not started; follow the semantic knowledge gate below. Historical
+blocked/intermediate notes below are retained as the diagnosis trail and are
+superseded by this accepted checkpoint.
 
 ### Resumption quality-gate results
 
@@ -223,6 +252,51 @@ intermediate results; the implementation remains uncommitted and unaccepted.
   contexts and fail if cache context isolation is removed.
 - No implementation commit or final acceptance yet; no semantic knowledge work
   has started. User reiterated Luna/Terra write code and root assures quality.
+
+### September 11 resumption — recursive-type gate remains blocked
+
+- Luna replaced the ineffective cache test with a same-specialization regression
+  and verified it fails under context-insensitive cache lookup. Production cache
+  code was restored; root accepted this test.
+- Annotation lowering now enters Artifact context, restoring three annotation
+  regressions; checker suite passes **673**. Final compiler/workspace validation
+  reproducibly overflows in
+  `recursive_runtime_targets_decode_encode_and_preserve_shape_errors`, including
+  serial execution. A diagnostic 16 MiB test stack also overflows immediately
+  (`/tmp/aven-order-stack-diagnostic.log`); increasing stack is not an accepted fix.
+- Luna's additional annotation-depth/wrapper changes did not fix the overflow
+  and remain unreviewed experiments. Terra resumes as sole source owner to
+  identify the recursion/cache interaction, remove unnecessary experiments,
+  repair it, and run final workspace gates. Luna is idle.
+- No implementation acceptance or commit yet. Keep all forward-reference,
+  unknown-runtime lambda, artifact, cache-isolation, and import tests intact.
+
+### Latest narrowed blocker and ownership
+
+Terra again hit its usage limit; Luna is sole source owner. Root independently
+minimized the overflow to `chain == chainAgain` after decoding generic
+`Chain(Int)` values. The same source without equality passes CLI checking;
+Tree and mutual-record equality controls pass. Files:
+`/tmp/comptime-binding-review/chain-use-equal.av` and `chain-use.av`.
+
+Root identified a candidate in `equality_compatibility`: it checks recursive
+IDs before peeling optional wrappers, then normalizes wrapped recursive IDs
+into records before descending again. This can repeatedly unfold an
+`Optional(Recursive(...))` field. Luna is verifying and repairing that path;
+no acceptance yet. Preserve mismatch diagnostics and avoid arbitrary stack
+limits. Remove failed annotation-depth experiments once the cause is verified.
+
+### Equality repair still under review
+
+The optional-wrapper identity check alone did not complete the repair. Root
+reproduced the exact compiler test overflowing again in
+`/tmp/aven-order-root-recursion-current.log`. Removing Artifact annotation
+context merely masks that overflow and restores annotation regressions; it is
+not accepted. Luna is restoring the simple annotation wrapper and tracing the
+recursive-versus-expanded equality pair, then implementing a local recursion
+pair guard while preserving mismatched-field checks. Failed depth/duplicate
+annotation wrapper experiments have been removed. No final green workspace
+gate or implementation acceptance is claimed.
 
 ### Next implementation gate: semantic knowledge
 

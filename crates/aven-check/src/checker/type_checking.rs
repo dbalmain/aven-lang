@@ -839,6 +839,12 @@ impl<'a> Checker<'a> {
         body: &Expr,
         expected: (&[Type], &Type),
     ) -> Type {
+        // A lambda's defaults and body run only when invoked, so its checker
+        // pass must not inherit the enclosing initializer frontier.
+        let previous_execution_context = std::mem::replace(
+            &mut self.execution_context,
+            comptime::ExecutionContext::RuntimeUnknown,
+        );
         let (expected_params, expected_result) = expected;
         if params.len() != expected_params.len() {
             // The expected type is a function-type annotation, which has no
@@ -850,6 +856,7 @@ impl<'a> Checker<'a> {
                 lambda_span,
             );
             self.check_lambda_value_expr(params, return_annotation, requirements, body);
+            self.execution_context = previous_execution_context;
             return Type::Deferred;
         }
 
@@ -926,6 +933,7 @@ impl<'a> Checker<'a> {
         self.local_comptime_params.pop();
         self.local_types.pop();
         self.pop_inline_lambda_type_var_scope();
+        self.execution_context = previous_execution_context;
 
         let required = params
             .iter()

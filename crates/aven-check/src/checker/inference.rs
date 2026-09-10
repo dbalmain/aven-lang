@@ -112,9 +112,10 @@ impl<'a> Checker<'a> {
 
     #[cfg(test)]
     pub(crate) fn infer_top_level_value(&mut self, name: &str) -> Option<Type> {
-        let scheme = self.infer_top_level(name)?;
-        let (ty, _) = self.unifier.instantiate_scheme(&scheme);
-        self.resolve_if_concrete(&ty)
+        self.infer_top_level(name).and_then(|scheme| {
+            let (ty, _) = self.unifier.instantiate_scheme(&scheme);
+            self.resolve_if_concrete(&ty)
+        })
     }
 
     pub(crate) fn infer_top_level_qualified_type_for_output(
@@ -216,6 +217,21 @@ impl<'a> Checker<'a> {
             return None;
         }
         self.in_progress.insert(name.to_owned());
+        let previous_boundary = self.execution_context;
+        let initializer_boundary = (!self.comptime_bindings.contains(name))
+            .then(|| {
+                binding
+                    .map(|b| b.span.start)
+                    .or_else(|| pattern_binding.map(|b| b.span.start))
+            })
+            .flatten();
+        self.execution_context = match (previous_boundary, initializer_boundary) {
+            (comptime::ExecutionContext::RuntimeKnown(active), Some(initializer)) => {
+                comptime::ExecutionContext::RuntimeKnown(active.min(initializer))
+            }
+            (_, Some(initializer)) => comptime::ExecutionContext::RuntimeKnown(initializer),
+            (previous, None) => previous,
+        };
 
         let scheme = if let Some(annotation) = self.clean_declared_annotation(name) {
             // Polymorphic annotations use `Type::Variable` binders; publish them
@@ -282,6 +298,7 @@ impl<'a> Checker<'a> {
             TypeScheme::mono(Type::Deferred)
         };
 
+        self.execution_context = previous_boundary;
         self.in_progress.remove(name);
         self.memo.insert(name.to_owned(), scheme.clone());
         Some(scheme)
@@ -436,17 +453,24 @@ impl<'a> Checker<'a> {
                 .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
                 .with_label(Label::primary(expr.span, "this demand cannot preserve the prelude value's semantics")));
         }
+        let initialization_boundary = match self.execution_context {
+            comptime::ExecutionContext::RuntimeKnown(boundary) => Some(boundary),
+            comptime::ExecutionContext::RuntimeUnknown | comptime::ExecutionContext::Artifact => {
+                None
+            }
+        };
         let definitions = self
             .bindings
             .iter()
             .filter_map(|(name, binding)| {
-                // Runtime top-level bindings initialize sequentially. The
-                // comptime evaluator is deliberately lazy, so exposing every
-                // declaration here would let a demand observe a later binding
-                // the runtime has not installed yet.
-                binding.and_then(|binding| {
-                    (binding.span.start < expr.span.start)
-                        .then(|| (name.clone(), binding.value.clone()))
+                binding.map(|binding| {
+                    (
+                        name.clone(),
+                        aven_eval::ComptimeDefinition {
+                            expr: binding.value.clone(),
+                            initialization_boundary: Some(binding.span.start),
+                        },
+                    )
                 })
             })
             .collect();
@@ -471,12 +495,15 @@ impl<'a> Checker<'a> {
         );
         aven_eval::eval_comptime_expr(
             expr,
-            definitions,
-            &self.builtin_methods.comptime_modules,
-            self.imports.prelude_modules(),
-            locals,
-            blocked,
-            100_000,
+            aven_eval::ComptimeEvalConfig {
+                definitions,
+                active_boundary: initialization_boundary,
+                ambient_modules: &self.builtin_methods.comptime_modules,
+                prelude_modules: self.imports.prelude_modules(),
+                locals,
+                blocked_locals: blocked,
+                fuel: 100_000,
+            },
         )
     }
 
@@ -1408,7 +1435,12 @@ impl<'a> Checker<'a> {
         resolved
     }
 
-    fn record_equality_compatibility(&mut self, left: &Row, right: &Row) -> EqualityCompatibility {
+    fn record_equality_compatibility(
+        &mut self,
+        left: &Row,
+        right: &Row,
+        visited: &mut HashSet<(Type, Type)>,
+    ) -> EqualityCompatibility {
         if left.tail != RowTail::Closed || right.tail != RowTail::Closed {
             return EqualityCompatibility::Unknown;
         }
@@ -1440,7 +1472,8 @@ impl<'a> Checker<'a> {
                 return EqualityCompatibility::Mismatched;
             };
 
-            compatibility = compatibility.and(self.equality_compatibility(left_type, right_type));
+            compatibility = compatibility
+                .and(self.equality_compatibility_inner(left_type, right_type, visited));
             if compatibility == EqualityCompatibility::Mismatched {
                 return compatibility;
             }
@@ -1467,9 +1500,28 @@ impl<'a> Checker<'a> {
     }
 
     fn equality_compatibility(&mut self, left: &Type, right: &Type) -> EqualityCompatibility {
+        self.equality_compatibility_inner(left, right, &mut HashSet::new())
+    }
+
+    fn equality_compatibility_inner(
+        &mut self,
+        left: &Type,
+        right: &Type,
+        visited: &mut HashSet<(Type, Type)>,
+    ) -> EqualityCompatibility {
         let left = self.unifier.resolve(left);
         let right = self.unifier.resolve(right);
-        if let (Type::Recursive(left), Type::Recursive(right)) = (&left, &right) {
+        if !visited.insert((left.clone(), right.clone())) {
+            return EqualityCompatibility::Unknown;
+        }
+        // Peel optional/nullable wrappers before unfolding recursive heads.
+        // Otherwise `?Chain(Int)` unfolds to a record whose `next` field is
+        // another `?Chain(Int)`, and each recursive comparison starts a fresh
+        // demand walk before the recursive identity guard can see the back
+        // edge.
+        let (_, peeled_left) = peel_empty_values(&left);
+        let (_, peeled_right) = peel_empty_values(&right);
+        if let (Type::Recursive(left), Type::Recursive(right)) = (peeled_left, peeled_right) {
             return if left == right {
                 EqualityCompatibility::Comparable
             } else {
@@ -1497,7 +1549,7 @@ impl<'a> Checker<'a> {
         // (e.g. Array(1 | ..) vs Array("a" | ..) is a mismatch).
         match (left, right) {
             (Type::Record(left), Type::Record(right)) => {
-                return self.record_equality_compatibility(left, right);
+                return self.record_equality_compatibility(left, right, visited);
             }
             (Type::Record(_), _) | (_, Type::Record(_)) => {
                 return EqualityCompatibility::Mismatched;
@@ -1510,7 +1562,7 @@ impl<'a> Checker<'a> {
             }
             (Type::Tuple(left), Type::Tuple(right)) => {
                 return equality_sequence_compatibility(left, right, |left, right| {
-                    self.equality_compatibility(left, right)
+                    self.equality_compatibility_inner(left, right, visited)
                 });
             }
             (Type::Tuple(_), _) | (_, Type::Tuple(_)) => {
@@ -1528,7 +1580,7 @@ impl<'a> Checker<'a> {
             ) => {
                 return if apply_constructors_match(left_callee, right_callee) {
                     equality_sequence_compatibility(left_args, right_args, |left, right| {
-                        self.equality_compatibility(left, right)
+                        self.equality_compatibility_inner(left, right, visited)
                     })
                 } else {
                     EqualityCompatibility::Mismatched
@@ -1657,6 +1709,10 @@ impl<'a> Checker<'a> {
         requirements: &[Requirement],
         body: &Expr,
     ) -> Type {
+        let previous_boundary = std::mem::replace(
+            &mut self.execution_context,
+            comptime::ExecutionContext::RuntimeUnknown,
+        );
         let mut next_env = env.clone();
         let mut param_types = Vec::new();
         self.push_inline_lambda_type_var_scope();
@@ -1763,6 +1819,7 @@ impl<'a> Checker<'a> {
         self.finalize_lambda_requirements(obligation_marker, requirements, assumptions);
         self.pop_method_assumptions();
         self.pop_inline_lambda_type_var_scope();
+        self.execution_context = previous_boundary;
         lambda_type
     }
 

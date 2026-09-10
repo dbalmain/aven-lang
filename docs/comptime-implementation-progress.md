@@ -31,15 +31,30 @@ Staged, not fixed here:
 - Family interpolation and top-level forward-reference behavior still belong
   to later evaluator/environment work and retain their existing staged probes.
 
-### Sequential top-level demand — 2026-09-09
+### Sequential top-level demand — verified September 11
 
-Comptime evaluation now exposes only top-level definitions whose initializer
-has already occurred before the demanded expression. The runtime initializes
-top-level bindings sequentially, while the comptime evaluator resolves its
-definition map lazily; without this boundary a demand could certify a later
-binding that runtime evaluation would report as unbound. The guard preserves
-earlier helpers and captures, including a helper declared before a value when
-the demand occurs after that value's initializer.
+Lazy evaluation carries an initialization boundary for each module binding.
+Lookup checks availability before reading cached values and evaluates earlier
+initializers under their own boundary. Closure bodies use the caller boundary,
+so a closure may capture a binding initialized before the call.
+
+Checker evaluation distinguishes compiler artifacts, unknown runtime execution,
+and a known runtime initialization point. Type annotations use artifact context;
+unspecialized runtime lambda demands conservatively reject unproven module
+reads. This patch does not add invocation-sensitive knowledge propagation.
+Specialization caches include execution context while recursive type identity
+remains canonical. Direct/pinned/helper/import forward references and cache
+isolation have regression coverage, alongside valid artifact-derived scalars.
+
+Integration exposed repeated unfolding during equality of generic recursive
+values. Equality now peels absence wrappers before checking recursive identity
+and tracks visited type pairs, preserving mismatched-field checks.
+
+Final validation: **1845 workspace tests pass**, including **673 checker tests**;
+workspace clippy, formatting, and diff checks pass. The cache regression was
+also mutation tested. Logs: `/tmp/aven-order-final-test.log` and
+`/tmp/aven-order-final-clippy.log`. Root independently verified CLI failure and
+success controls. Semantic knowledge remains the next implementation slice.
 
 ### Slice 1 repair — 2026-09-08
 

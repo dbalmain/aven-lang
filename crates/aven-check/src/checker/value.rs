@@ -359,6 +359,12 @@ impl<'a> Checker<'a> {
         requirements: &[Requirement],
         body: &Expr,
     ) {
+        // Lambda bodies/defaults execute at a future call site, never while
+        // their enclosing top-level initializer is being installed.
+        let previous_execution_context = std::mem::replace(
+            &mut self.execution_context,
+            comptime::ExecutionContext::RuntimeUnknown,
+        );
         self.push_inline_lambda_type_var_scope();
         let param_types: Vec<_> = params
             .iter()
@@ -404,6 +410,7 @@ impl<'a> Checker<'a> {
         self.local_comptime_params.pop();
         self.local_types.pop();
         self.pop_inline_lambda_type_var_scope();
+        self.execution_context = previous_execution_context;
     }
 
     pub(super) fn check_value_exprs(&mut self, items: &[Expr]) {

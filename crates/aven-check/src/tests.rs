@@ -15354,6 +15354,58 @@ fn comptime_demand_rejects_a_later_top_level_binding() {
 }
 
 #[test]
+fn comptime_in_lambda_with_unknown_call_time_rejects_future_binding() {
+    for source in [
+        "f = () => comptime(later)\nearly = f()\nlater = comptime(3)\nearly\n",
+        "f: () -> Int = () => comptime(later)\nearly = f()\nlater = comptime(3)\nearly\n",
+    ] {
+        let checked = check_module(&parse_module(source).module);
+        assert!(
+            has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
+fn comptime_pin_rejects_a_later_top_level_binding() {
+    let source = "result = comptime(later)\nlater = comptime(3)\n";
+    let checked = check_module(&parse_module(source).module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "a pin must not bypass sequential initialization: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn comptime_helper_call_rejects_a_later_top_level_binding() {
+    let source = "result = comptime(f(3))\nf = (@x) => x\nchecked: 3 = result\n";
+    let checked = check_module(&parse_module(source).module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "a comptime helper is still a runtime top-level initializer: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn comptime_demand_preserves_artifact_derived_scalar_values() {
+    let source = concat!(
+        "has = (@keys) => keys.has(\"name\")\n",
+        "result = comptime(has(@{\"name\"}))\n",
+        "checked: true = result\n",
+    );
+    let checked = check_module(&parse_module(source).module);
+    assert!(
+        checked.diagnostics.is_empty(),
+        "artifact-derived scalar values remain valid comptime arguments: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
 fn comptime_demand_allows_a_preceding_top_level_binding() {
     let source = concat!(
         "later = 3\n",
@@ -15364,6 +15416,70 @@ fn comptime_demand_allows_a_preceding_top_level_binding() {
     let parsed = parse_module(source);
     let checked = check_module(&parsed.module);
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+}
+
+#[test]
+fn comptime_demand_allows_an_earlier_closure_to_capture_an_initialized_binding() {
+    let source = concat!(
+        "double = (): Int => later + later\n",
+        "later = 3\n",
+        "result = comptime(double())\n",
+        "checked: 6 = result\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+}
+
+#[test]
+fn comptime_demand_rejects_an_earlier_initializer_that_reads_later() {
+    let source = concat!(
+        "double = (x: Int): Int => x + x\n",
+        "a = double(later)\n",
+        "later = 3\n",
+        "result = comptime(a)\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "a demand must not certify an initializer that runtime evaluates too early: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn comptime_demand_rejects_an_initializer_calling_a_closure_with_later_capture() {
+    let source = concat!(
+        "double = (): Int => later + later\n",
+        "a = double()\n",
+        "later = 3\n",
+        "result = comptime(a)\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "a demand must not certify a closure run before its capture initializes: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn comptime_demand_does_not_reuse_a_later_binding_memoized_before_an_early_initializer() {
+    let source = concat!(
+        "double = (): Int => later + later\n",
+        "a = double()\n",
+        "later = 3\n",
+        "result = comptime(later + a)\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "memoizing `later` must not make it visible while evaluating `a`: {:?}",
+        checked.diagnostics
+    );
 }
 
 /// A literal union is never `Optional` or `Nullable`. The `Named` side of this

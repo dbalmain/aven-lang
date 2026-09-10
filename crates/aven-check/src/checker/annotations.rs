@@ -358,6 +358,7 @@ impl<'a> Checker<'a> {
         checker.recursive_type_unfoldings = self.recursive_type_unfoldings.clone();
         checker.recursive_type_comparisons = self.recursive_type_comparisons.clone();
         checker.module_identity = self.module_identity.clone();
+        checker.execution_context = self.execution_context;
         checker
             .unifier
             .set_recursive_type_unfoldings(self.recursive_type_unfoldings.clone());
@@ -373,6 +374,16 @@ impl<'a> Checker<'a> {
     }
 
     pub(crate) fn lower_annotation(&mut self, annotation: &Expr) -> Type {
+        let previous = std::mem::replace(
+            &mut self.execution_context,
+            comptime::ExecutionContext::Artifact,
+        );
+        let ty = self.lower_annotation_in_context(annotation);
+        self.execution_context = previous;
+        ty
+    }
+
+    fn lower_annotation_in_context(&mut self, annotation: &Expr) -> Type {
         match &annotation.kind {
             ExprKind::ComptimeName(name) => {
                 if name == "Self"
@@ -396,7 +407,7 @@ impl<'a> Checker<'a> {
             ExprKind::Name(name) => self
                 .lookup_comptime_reified_type(name)
                 .unwrap_or_else(|| Type::Variable(name.clone())),
-            ExprKind::Group(inner) => self.lower_annotation(inner),
+            ExprKind::Group(inner) => self.lower_annotation_in_context(inner),
             ExprKind::Index { callee, args, .. } => self
                 .lower_comptime_type_index(callee, args)
                 .unwrap_or_else(|| {
@@ -405,16 +416,20 @@ impl<'a> Checker<'a> {
                     }
                     self.lower_type_application(callee, args)
                 }),
-            ExprKind::Optional(inner) => Type::Optional(Box::new(self.lower_annotation(inner))),
-            ExprKind::Nullable(inner) => Type::Nullable(Box::new(self.lower_annotation(inner))),
+            ExprKind::Optional(inner) => {
+                Type::Optional(Box::new(self.lower_annotation_in_context(inner)))
+            }
+            ExprKind::Nullable(inner) => {
+                Type::Nullable(Box::new(self.lower_annotation_in_context(inner)))
+            }
             ExprKind::NonNull(inner) => {
-                let inner = self.lower_annotation(inner);
+                let inner = self.lower_annotation_in_context(inner);
                 self.strip_nullable(&inner)
             }
             ExprKind::Unary {
                 operator, value, ..
             } if operator == "!" => {
-                let inner = self.lower_annotation(value);
+                let inner = self.lower_annotation_in_context(value);
                 self.strip_optional(&inner)
             }
             ExprKind::Arrow { params, result } => {
@@ -423,7 +438,7 @@ impl<'a> Checker<'a> {
                 let lowered = self.lower_annotations(params);
                 Type::Function {
                     params: FunctionParams::all_required(lowered),
-                    result: Box::new(self.lower_annotation(result)),
+                    result: Box::new(self.lower_annotation_in_context(result)),
                 }
             }
             ExprKind::Tuple(items) => Type::Tuple(self.lower_annotations(items)),
@@ -549,7 +564,7 @@ impl<'a> Checker<'a> {
 
     fn lower_type_application(&mut self, callee: &Expr, args: &[Expr]) -> Type {
         Type::Apply {
-            callee: Box::new(self.lower_annotation(callee)),
+            callee: Box::new(self.lower_annotation_in_context(callee)),
             args: self.lower_annotations(args),
         }
     }
@@ -594,7 +609,7 @@ impl<'a> Checker<'a> {
     pub(super) fn lower_annotations(&mut self, items: &[Expr]) -> Vec<Type> {
         items
             .iter()
-            .map(|item| self.lower_annotation(item))
+            .map(|item| self.lower_annotation_in_context(item))
             .collect()
     }
 
@@ -653,7 +668,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn lower_deferred_annotation(&mut self, annotation: &Expr) {
         walk_expr_children(annotation, &mut |child| {
-            self.lower_annotation(child);
+            self.lower_annotation_in_context(child);
         });
     }
 }
