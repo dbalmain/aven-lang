@@ -6,8 +6,8 @@ Updated: 2026-09-10, Australia/Sydney.
 
 Implementation resumed after discussion with the user, from clean `3163938`
 (the plan commit following `58eb0a8`). The root agent orchestrates and reviews;
-`comptime_unification` (Terra) owns the unfinished checker availability repair
-after the stronger agent hit its usage limit. Root independently reviews it.
+`ordering_final_gate` (Luna) owns the remaining cache regression and final
+validation after Terra hit its usage limit. Root independently reviews it.
 Implementation is incomplete: slices 1–2 are committed and passed their gates;
 the binding-order follow-up needs further repair before semantic knowledge work. See **Latest checkpoint** below before
 the chronological gate results. Live notes are in
@@ -179,6 +179,50 @@ not verification of the resumed work.
   later, imported runtime helpers, and compiler-artifact computations returning
   scalars. No new green result or acceptance is claimed yet. Slice 3 has not
   started.
+- September 10 implementation checkpoint: checker unit suite is green
+  (**671 passed**), and `cargo clippy -p aven-check -p aven-eval --all-targets
+  -- -D warnings` passes. The final workspace test/clippy rerun is logged under
+  `/tmp/aven-comptime-binding-order-workspace-*-final.log`; root review remains
+  pending and no implementation commit has been made.
+
+### Blocking review finding — unknown runtime versus artifact context
+
+Root rejected the September 10 candidate despite 671 passing checker tests.
+`runtime_binding_availability` treated `None` as permission for all runtime
+reads, while lambda checking also used `None` for unknown execution context.
+Both inferred and annotated versions of this program checked but failed to run:
+
+```aven
+f = () => comptime(later)
+early = f()
+later = comptime(3)
+early
+```
+
+The exception was added for the existing compiler-artifact test
+`comptime_function_application_reifies_sorted_literal_union`:
+`keyUnion = (r) => keysOf(r); Keys = keyUnion(User)`.
+These contexts must be represented separately. Terra is implementing explicit
+Artifact / RuntimeUnknown / RuntimeKnown context and context-keyed caching.
+Unknown runtime demands reject unproven reads conservatively; no invocation
+analysis or later knowledge slice is authorized as part of this repair.
+Required final tests include both lambda forms, artifact scalar preservation,
+cache context isolation, and compiler import ordering. Earlier green gates are
+intermediate results; the implementation remains uncommitted and unaccepted.
+
+### Latest ownership handoff — September 10
+
+- Terra completed the explicit execution-context split and persistent compiler
+  import before/after test, then hit its usage limit (reported reset 11:19 AM).
+- Root rebuilt the CLI and confirmed the unknown-runtime lambda example now
+  rejects with `comptime.argument-not-known`.
+- Luna (`ordering_final_gate`) is sole source owner for the final bounded work:
+  replace the ineffective cache-isolation regression (its two calls used
+  different argument keys), run final workspace/fmt/clippy gates, update docs.
+  The corrected regression must exercise the same specialization under different
+  contexts and fail if cache context isolation is removed.
+- No implementation commit or final acceptance yet; no semantic knowledge work
+  has started. User reiterated Luna/Terra write code and root assures quality.
 
 ### Next implementation gate: semantic knowledge
 
