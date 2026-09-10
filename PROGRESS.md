@@ -41,8 +41,8 @@ not verification of the resumed work.
 
 ### Accepted ordering repair — September 11
 
-Root accepted the repaired ordering implementation after Terra/Luna coding and
-independent review. **1845 workspace tests pass, zero failures**; checker has
+Root accepted and committed the repaired ordering implementation as `55ac2d1`
+after Terra/Luna coding and independent review. **1845 workspace tests pass, zero failures**; checker has
 **673** tests. Workspace clippy (`--all-targets -- -D warnings`), formatting,
 and diff checks pass. Final logs: `/tmp/aven-order-final-test.log`,
 `/tmp/aven-order-final-clippy.log`, `/tmp/aven-order-final-fmt.log`, and
@@ -299,6 +299,25 @@ annotation wrapper experiments have been removed. No final green workspace
 gate or implementation acceptance is claimed.
 
 ### Next implementation gate: semantic knowledge
+
+Slice 3 inventory completed after the ordering commit; no slice-3 code changed.
+Root verified the main seams directly: computed `@` parameter narrowing is in
+`checker/inference.rs` (`narrow_to_literal`, `infer_comptime_param_call`,
+`evaluate_comptime_param_argument`), while typed binding checks enter
+`checker/type_checking.rs::check_value_against_target`. Ordinary argument
+checking also has inference/unification paths and must share the proof rule.
+Do not rely on the inventory agent's earlier attribution of demand evaluation
+to `checker/value.rs`.
+
+Implementation should retain actual evaluator values alongside ordinary types,
+not encode knowledge by rewriting `Type` or reconstruct values from display
+text. Existing compiler artifacts remain distinct. Side-table identity must
+include module and lexical/specialization context; a bare Span is insufficient.
+Pin narrowing removal and proof-based literal/known-present-optional checking
+must land together. Audit existing arithmetic/interpolation folding before
+claiming all computed knowledge is separate from types. Family-dependent
+proofs require the runtime elaboration plan or conservative rejection.
+
 
 - Keep runtime knowledge separate from `Type` and from compiler artifacts such
   as reified types. Preserve evaluator values rather than round-tripping through
