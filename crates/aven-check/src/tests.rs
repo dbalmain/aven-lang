@@ -15406,6 +15406,105 @@ fn comptime_demand_preserves_artifact_derived_scalar_values() {
 }
 
 #[test]
+fn a_demand_inside_a_function_sees_its_own_locals() {
+    // A local binding is an evaluable definition. Blocking it alongside runtime
+    // parameters is what used to make the motivating example work at top level
+    // and fail one scope in.
+    for source in [
+        concat!(
+            "f = () =>\n",
+            "  parts = [\"a\", \"b\"]\n",
+            "  script = comptime(parts.joinWith(\"\\n\"))\n",
+            "  checked: \"a\\nb\" = script\n",
+            "  script\n",
+            "f\n",
+        ),
+        concat!(
+            "f = () =>\n",
+            "  n = 3\n",
+            "  doubled = comptime(n + n)\n",
+            "  checked: 6 = doubled\n",
+            "  doubled\n",
+            "f\n",
+        ),
+    ] {
+        let checked = check_module(&parse_module(source).module);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_demand_inside_a_function_cannot_see_runtime_values() {
+    // The discriminating negatives. A parameter has no compile-time value, and
+    // neither does a local computed from one — the second is what shows locals
+    // are evaluated rather than assumed known.
+    for source in [
+        concat!(
+            "f = (runtime: Int) =>\n",
+            "  doubled = comptime(runtime + runtime)\n",
+            "  doubled\n",
+            "f\n",
+        ),
+        concat!(
+            "f = (runtime: Int) =>\n",
+            "  n = runtime + 1\n",
+            "  doubled = comptime(n + n)\n",
+            "  doubled\n",
+            "f\n",
+        ),
+    ] {
+        let checked = check_module(&parse_module(source).module);
+        assert!(
+            has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+            "{source}: {:?}",
+            checked.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_local_is_visible_only_below_where_it_is_written() {
+    // Locals carry no initialization boundary: they are registered as the block
+    // is walked, so a demand sees exactly the locals above it. This is the
+    // negative half of the test above, and it must stay an error.
+    let source = concat!(
+        "f = () =>\n",
+        "  early = comptime(n + n)\n",
+        "  n = 3\n",
+        "  early\n",
+        "f\n",
+    );
+    let checked = check_module(&parse_module(source).module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::comptime::ARGUMENT_NOT_KNOWN),
+        "a demand must not reach a local written below it: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn a_local_demand_still_proves_only_the_value_it_has() {
+    let source = concat!(
+        "f = () =>\n",
+        "  n = 3\n",
+        "  doubled = comptime(n + n)\n",
+        "  checked: 7 = doubled\n",
+        "  doubled\n",
+        "f\n",
+    );
+    let checked = check_module(&parse_module(source).module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        "{:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
 fn a_computed_comptime_result_keeps_its_base_type() {
     // Knowledge is recorded beside the type, never folded into it. The
     // ordinary `add(1, 3)` is the control: a `@` call must report the same

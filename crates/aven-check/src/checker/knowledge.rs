@@ -76,6 +76,23 @@ impl<'a> Checker<'a> {
         self.knowledge.insert((span, self.execution_context), known);
     }
 
+    pub(super) fn push_local_value_scope(&mut self) {
+        self.local_types.push_values();
+    }
+
+    pub(super) fn pop_local_value_scope(&mut self) {
+        self.local_types.pop_values();
+    }
+
+    pub(super) fn record_local_value(&mut self, name: &str, initializer: &Expr) {
+        self.local_types.define_value(name, initializer.clone());
+    }
+
+    /// Every local value in scope, outermost first.
+    pub(super) fn local_values_in_scope(&self) -> impl Iterator<Item = (&String, &LocalValue)> {
+        self.local_types.values_in_scope()
+    }
+
     pub(super) fn record_known_binding(&mut self, name: &str, known: Known) {
         self.known_bindings
             .insert(name.to_owned(), (self.execution_context, known));

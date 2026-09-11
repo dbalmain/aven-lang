@@ -461,7 +461,7 @@ impl<'a> Checker<'a> {
                 None
             }
         };
-        let definitions = self
+        let mut definitions = self
             .bindings
             .iter()
             .filter_map(|(name, binding)| {
@@ -475,13 +475,31 @@ impl<'a> Checker<'a> {
                     )
                 })
             })
-            .collect();
+            .collect::<HashMap<_, _>>();
+        // Local bindings shadow module ones, and an inner scope shadows an
+        // outer one. `values_in_scope` yields outermost first, so inserting in
+        // order leaves the nearest binding in place.
+        for (name, local) in self.local_values_in_scope() {
+            definitions.insert(
+                name.clone(),
+                aven_eval::ComptimeDefinition {
+                    expr: local.initializer.clone(),
+                    initialization_boundary: None,
+                },
+            );
+        }
         let locals = bindings
             .iter()
             .filter_map(|(name, value)| {
                 comptime::comptime_value_as_eval_value(value).map(|value| (name.clone(), value))
             })
             .collect();
+        // Blocking exists to stop a *runtime* local — a parameter, a match
+        // binder — from resolving to a same-named module binding and being
+        // evaluated as though it held that module value. A local binding with
+        // an initializer is not that: it has a value the demand may compute, so
+        // it is a definition above rather than a blocked name. Blocking it too
+        // was what kept a demand inside a function from seeing its own locals.
         let mut blocked = self
             .local_types
             .inference_env()
@@ -489,6 +507,9 @@ impl<'a> Checker<'a> {
             .collect::<HashSet<_>>();
         blocked.extend(env.keys().cloned());
         blocked.extend(self.pattern_bindings.keys().cloned());
+        for (name, _) in self.local_values_in_scope() {
+            blocked.remove(name);
+        }
         blocked.extend(
             self.globals
                 .iter()
@@ -5191,11 +5212,13 @@ impl<'a> Checker<'a> {
 
     pub(super) fn infer_block(&mut self, env: &TypeEnv, items: &[Item]) -> Type {
         let mut next_env = env.clone();
+        self.push_local_value_scope();
 
         for item in merged_items(items) {
             match item {
                 MergedItem::Binding { signature, binding } => {
                     let obligation_marker = self.method_obligation_marker();
+                    self.record_local_value(&binding.name, &binding.value);
                     // A local function may call itself; bind it before inferring
                     // its own value. See `self_recursive_local_type`.
                     if let Some(recursive) =
@@ -5269,10 +5292,12 @@ impl<'a> Checker<'a> {
             }
         }
 
-        match items.last() {
+        let result = match items.last() {
             Some(Item::Expr(expr)) => self.infer(&next_env, expr),
             _ => Type::Deferred,
-        }
+        };
+        self.pop_local_value_scope();
+        result
     }
     pub(super) fn lower_annotation_for_inference(&self, annotation: &Expr) -> Type {
         let mut checker = self.fork_annotation_checker();

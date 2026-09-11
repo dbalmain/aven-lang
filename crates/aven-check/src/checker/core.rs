@@ -1172,6 +1172,11 @@ impl<'a> Checker<'a> {
             && let Some(binding) = binding
         {
             self.check_runtime_binding_liftability(&binding.value);
+            // An ordinary local binding is an evaluable definition, not an opaque
+            // runtime name. Recording it here is what lets a demand inside a
+            // function reach a local helper or literal; parameters are deliberately
+            // absent, so they stay blocked.
+            self.record_local_value(&binding.name, &binding.value);
         }
 
         if declaration.phase == DeclarationPhase::Comptime
@@ -1624,6 +1629,11 @@ impl<'a> Checker<'a> {
             let pinned = pinned.clone();
             self.local_types.define_pin(&binding.name, pinned);
         }
+        // An ordinary local binding is an evaluable definition, not an opaque
+        // runtime name. Recording it is what lets a demand inside a function
+        // reach a local helper or literal; parameters and match binders are
+        // deliberately absent, so they stay blocked from evaluation.
+        self.record_local_value(&binding.name, &binding.value);
         self.check_runtime_binding_liftability(&binding.value);
 
         let signature_type = signature.map(|signature| {

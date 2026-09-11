@@ -22,17 +22,63 @@ pub(crate) struct LocalTypeScopes {
     /// Right-hand sides of local `name = comptime(value)` bindings, scoped
     /// alongside `scopes` so every push/pop site covers both.
     pins: Vec<HashMap<String, Expr>>,
+    /// Initializers of ordinary local bindings, scoped alongside `scopes` so
+    /// every push/pop site covers all three.
+    values: Vec<HashMap<String, LocalValue>>,
+}
+
+/// An ordinary local binding's initializer. A comptime demand may evaluate one
+/// of these; a runtime *parameter* may not, which is why parameters are never
+/// recorded and stay blocked from evaluation.
+///
+/// There is no initialization boundary here, and that is deliberate. A module
+/// binding needs one because a demand can reach it from anywhere in the file.
+/// A local is registered as its block is walked, in source order, so a demand
+/// only ever sees the locals written above it — ordering is enforced by when
+/// the binding enters scope rather than by comparing offsets.
+#[derive(Debug, Clone)]
+pub(crate) struct LocalValue {
+    pub(crate) initializer: Expr,
 }
 
 impl LocalTypeScopes {
     pub(crate) fn push(&mut self) {
         self.scopes.push(HashMap::new());
         self.pins.push(HashMap::new());
+        self.values.push(HashMap::new());
     }
 
     pub(crate) fn pop(&mut self) {
         self.scopes.pop();
         self.pins.pop();
+        self.values.pop();
+    }
+
+    /// Open a scope for local *values* only. `infer_block` walks a block
+    /// without pushing a type scope — its names live in a cloned `TypeEnv` —
+    /// but its bindings are still evaluable definitions, and a demand reached
+    /// during inference must see them exactly as one reached during checking.
+    pub(crate) fn push_values(&mut self) {
+        self.values.push(HashMap::new());
+    }
+
+    pub(crate) fn pop_values(&mut self) {
+        self.values.pop();
+    }
+
+    pub(crate) fn define_value(&mut self, name: &str, initializer: Expr) {
+        if name == "_" {
+            return;
+        }
+        if let Some(scope) = self.values.last_mut() {
+            scope.insert(name.to_owned(), LocalValue { initializer });
+        }
+    }
+
+    /// Every local value in scope, outermost first, so inserting them in order
+    /// leaves the nearest binding of a shadowed name in place.
+    pub(crate) fn values_in_scope(&self) -> impl Iterator<Item = (&String, &LocalValue)> {
+        self.values.iter().flat_map(HashMap::iter)
     }
 
     pub(crate) fn define_pin(&mut self, name: &str, value: Expr) {

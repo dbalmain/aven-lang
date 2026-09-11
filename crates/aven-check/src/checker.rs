@@ -13,7 +13,7 @@ use aven_parser::{
 use crate::BUILTIN_TYPES;
 use crate::comptime::{self, Evaluation};
 use crate::env::{
-    LocalTypeScopes, LocalValueType, TypeEnv, free_metas_in_local_values,
+    LocalTypeScopes, LocalValue, LocalValueType, TypeEnv, free_metas_in_local_values,
     free_row_vars_in_local_values,
 };
 use crate::host_comptime::{
