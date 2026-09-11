@@ -18,7 +18,8 @@ jobs:
           # visible in the log rather than only in a failing assertion.
           bash --version | head -1
           fish --version
-      - uses: dtolnay/rust-toolchain@stable
+      # Same pin as CI / rust-toolchain.toml; see ci.yml.
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: clippy, rustfmt
       - run: cargo fmt --all --check
