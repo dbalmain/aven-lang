@@ -2,18 +2,74 @@
 
 Updated: 2026-09-12, Australia/Sydney.
 
-## Current handoff to Claude
+## Current state
 
-The user requested a written completion plan rather than further implementation.
-Read [docs/claude-completion-plan.md](docs/claude-completion-plan.md) first: it
-consolidates the settled semantics, prioritized remaining slices, source map,
-acceptance tests, performance/lifetime gates, and remaining string findings.
-No slice-3 source implementation has started.
+Branch `comptime-unification-slices-1-2`, tip `fc692c2` plus the merged
+`strings-findings` work. Nothing pushed. Gates green in `nix develop`:
+`fmt --check`, `clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace` at **1870 passed / 0 failed** (baseline 1845). The
+MSRV gate (`nix develop .#msrv`, `cargo check --workspace --all-targets` on
+1.91.0) also passes, and is runnable locally for the first time.
 
-Current branch tip at handoff is `0e61f7b`, following `f054152` (Rust/clippy
-1.98.1, MSRV 1.91.0) and the accepted ordering/progress commits below. Preserve
-these newer toolchain changes. The 1845-test result below belongs to the accepted
-ordering checkpoint; this documentation-only handoff did not rerun source tests.
+Completed since the handoff, newest first:
+
+| Commit | Work |
+| --- | --- |
+| merge | Four string-literal findings (grok, isolated worktree) |
+| `fc692c2` | Semantic transport audit; branding rule pinned |
+| `9f1cdf5` | Evaluator lifetime gate: release what a comptime evaluation retains |
+| `a2210f9` | Slice 4 — a demand inside a function sees its own locals |
+| `aa68133` | Slice 3 — typed demands proved from knowledge, not narrowing |
+| `c401379` | Dev shell reproduces CI; MSRV gate runnable locally |
+
+Remaining, in order:
+
+1. **Slice 5 — opportunistic evaluation at ordinary calls.** Blocked on a
+   decision; see below.
+2. Final documentation: `docs/language-literals-and-comptime.md` (grok touched
+   it; the comptime sections are still mine), implementation notes, and
+   `docs/language-proposals-review.html`. Review `../docs/language-spec.md` for
+   stale builtin/narrowing claims and prepare a patch rather than editing it
+   silently.
+3. Re-run the older-shell verification (bash 5.2.21 / fish 3.7.0).
+
+## Slice 5 is blocked on a cost decision
+
+A comptime demand costs about **3.3 ms**, of which roughly **2 ms is fixed
+setup** paid before any user expression runs: `eval_comptime_expr` builds a
+fresh scope chain and re-evaluates the prelude and the ambient `std` modules on
+every call. Measured on 1000 identical bindings, release build:
+
+| File | Wall clock |
+| --- | --- |
+| 1000 ordinary bindings, no demand | 0.64 s |
+| 1000 x `comptime(i)` (cheapest possible demand) | 2.07 s |
+| 1000 x `comptime(double(i))` | 3.93 s |
+
+Slice 5 folds at *every* call whose inputs are known, not only at written
+`comptime(...)`. The preflight the plan asks for reduces how many evaluations
+happen; it does not make one cheaper. At 3.3 ms per fold, a file with a few
+thousand foldable calls goes from sub-second to minutes, against an acceptance
+bar in the plan of "a few percent". So the per-demand setup cost has to be
+decided before slice 5 is written, not after.
+
+## Known gaps, recorded rather than fixed
+
+- **Branding and comptime.** `price: Money = 99` is accepted;
+  `price: Money = comptime(99)` is not. This is the existing rule applying
+  evenly --- branding keys on a literal *written* at the annotated position,
+  and `price: Money = 40 + 59` fails the same way with no comptime involved.
+  Pinned by `only_a_written_literal_brands_a_primitive_family`. Widening it is
+  a language decision.
+- **`@`-param call result types.** A call to an `@`-param function returns the
+  body's type rather than the declared return type. Pre-existing from slices
+  1--2; relevant to contract item 7.
+- **Interpolation hole margins.** Margin validation still walks lines inside a
+  `${...}` hole. Reproduced, documented and pinned; skipping them would be a
+  language decision.
+- **Wrapped interpolation.** A newline does not continue an infix operator, so
+  `${"a"\n  + "b"}` stays rejected --- as does the same expression outside a
+  string. Valid wrappings are documented.
 
 ## Resumed implementation — agreed review amendments
 
