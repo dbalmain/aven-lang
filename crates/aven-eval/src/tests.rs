@@ -14,6 +14,7 @@ use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 mod reflection;
+mod scope_release;
 
 #[test]
 fn evaluates_arithmetic_with_parser_precedence() {

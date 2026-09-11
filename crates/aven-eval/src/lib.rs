@@ -3,7 +3,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     fmt,
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use aven_core::{BuiltinType, Diagnostic, Label, Span, codes};
@@ -1248,6 +1248,11 @@ pub struct Environment {
     /// reproducibly instead of hanging the process.
     fuel: Rc<Cell<Option<u64>>>,
     comptime_boundary: Rc<Cell<Option<usize>>>,
+    /// Present only for comptime evaluation, which is bounded by fuel and
+    /// torn down when it finishes. `aven run` leaves this `None`: a program
+    /// creates a scope per call and may run for as long as its author wants,
+    /// so recording every one would be its own unbounded growth.
+    scope_registry: Option<ScopeRegistry>,
 }
 
 #[derive(Clone)]
@@ -1266,6 +1271,88 @@ pub struct ComptimeEvalConfig<'a> {
     pub locals: Vec<(String, Value)>,
     pub blocked_locals: HashSet<String>,
     pub fuel: u64,
+}
+
+/// Every scope created during one comptime evaluation, held weakly so the
+/// registry itself never keeps one alive.
+///
+/// A scope and a closure it holds form a reference cycle: `Scope::values`
+/// memoizes a `Value::Closure`, the closure owns an `Environment`, and that
+/// environment owns an `Rc` to the very scope that memoized it. Nothing in
+/// that loop is weak, so the scope, its parents, and every AST they hold
+/// outlive the evaluation that made them. Checking one file runs a comptime
+/// demand per site, so the cost is paid per demand and never reclaimed --- an
+/// editor session would retain a chain for every demand it ever checked.
+///
+/// The loop cannot be broken where it forms. `resolve` could decline to
+/// memoize a closure, but a block-local `g = (n) => ...` is bound rather than
+/// defined, and declining to bind it would simply lose the name. So the cycle
+/// is allowed to form and severed at the end of the evaluation instead, which
+/// is also the point at which the whole chain is meant to die.
+type ScopeRegistry = Rc<RefCell<Vec<Weak<Scope>>>>;
+
+/// Everything one comptime evaluation can retain itself through, kept so the
+/// evaluation can be dismantled when it ends.
+///
+/// A cycle needs a closure --- the only value that owns an `Environment` ---
+/// stored somewhere the environment reaches. There are three such places, and
+/// missing any one of them leaves the whole chain standing:
+///
+/// - `Scope::values` memoizes a definition's result, and `resolve` evaluates
+///   that definition in the scope it memoizes into. A block-local
+///   `g = (n) => ...` reaches the same place by being bound rather than
+///   defined.
+/// - `BuiltinMethodEnvironment` collects the ambient method bodies from
+///   `std/*.av`, each a closure over the module scope that declared it, in a
+///   table every child environment shares by `Rc`.
+/// - `family_descriptors` collects declared named-family methods the same way.
+///
+/// Only the first is reachable from a scope at all, which is why clearing
+/// scopes alone left the ambient standard library alive: a real check retained
+/// roughly ten scopes and the whole `std` AST per demand even after the scope
+/// cycle was cut.
+///
+/// `definitions` is deliberately left alone. It holds expressions, which own no
+/// environment, so it cannot close a cycle, and a scope whose cycles are cut
+/// drops it anyway.
+struct Teardown {
+    scopes: ScopeRegistry,
+    builtin_methods: BuiltinMethodEnvironment,
+    family_descriptors: Rc<RefCell<HashMap<String, Rc<NamedFamilyDescriptor>>>>,
+}
+
+impl Teardown {
+    /// Sever every retention path, so the evaluation's scopes, closures, and
+    /// the ambient ASTs they hold drop when the call returns.
+    ///
+    /// A closure the caller received keeps its own scope alive until the caller
+    /// drops it --- that is the one legitimate survival --- but its environment
+    /// has been emptied, so calling it reports an unbound name rather than
+    /// doing something unsound. A comptime demand never calls one: the checker
+    /// admits scalars and absence as evidence and discards every other value.
+    fn release(&self) {
+        for weak in self.scopes.borrow().iter() {
+            if let Some(scope) = weak.upgrade() {
+                scope.values.borrow_mut().clear();
+            }
+        }
+        self.builtin_methods.methods.borrow_mut().clear();
+        self.family_descriptors.borrow_mut().clear();
+    }
+
+    #[cfg(test)]
+    fn live_scopes(&self) -> usize {
+        self.scopes
+            .borrow()
+            .iter()
+            .filter(|weak| weak.strong_count() > 0)
+            .count()
+    }
+
+    #[cfg(test)]
+    fn scope_count(&self) -> usize {
+        self.scopes.borrow().len()
+    }
 }
 
 struct Scope {
@@ -1342,6 +1429,20 @@ impl Environment {
             stack_growth: StackGrowth::System,
             fuel: Rc::new(Cell::new(None)),
             comptime_boundary: Rc::new(Cell::new(Some(usize::MAX))),
+            scope_registry: None,
+        }
+    }
+
+    /// Record every scope from here down, so the evaluation that owns this
+    /// environment can release them when it finishes. Only comptime evaluation
+    /// does this; see `ScopeRegistry`.
+    fn track_scopes(&mut self) -> Teardown {
+        let registry: ScopeRegistry = Rc::new(RefCell::new(vec![Rc::downgrade(&self.scope)]));
+        self.scope_registry = Some(Rc::clone(&registry));
+        Teardown {
+            scopes: registry,
+            builtin_methods: self.builtin_methods.clone(),
+            family_descriptors: Rc::clone(&self.family_descriptors),
         }
     }
 
@@ -1377,8 +1478,25 @@ impl Environment {
     }
 
     fn child(&self) -> Self {
+        self.child_with_scope(Scope::new(Some(Rc::clone(&self.scope))))
+    }
+
+    /// A child scope whose `blocked` set is fixed before it is shared. The set
+    /// cannot be written afterwards: registering the scope takes a `Weak`, and
+    /// `Rc::get_mut` refuses any `Rc` that has one.
+    fn child_blocked(&self, blocked: HashSet<String>) -> Self {
+        let mut scope = Scope::new(Some(Rc::clone(&self.scope)));
+        scope.blocked = blocked;
+        self.child_with_scope(scope)
+    }
+
+    fn child_with_scope(&self, scope: Scope) -> Self {
+        let scope = Rc::new(scope);
+        if let Some(registry) = &self.scope_registry {
+            registry.borrow_mut().push(Rc::downgrade(&scope));
+        }
         Self {
-            scope: Rc::new(Scope::new(Some(Rc::clone(&self.scope)))),
+            scope,
             source: self.source.as_ref().map(Rc::clone),
             imports: Rc::clone(&self.imports),
             builtin_methods: self.builtin_methods.clone(),
@@ -1391,6 +1509,7 @@ impl Environment {
             stack_growth: self.stack_growth,
             fuel: Rc::clone(&self.fuel),
             comptime_boundary: Rc::clone(&self.comptime_boundary),
+            scope_registry: self.scope_registry.clone(),
         }
     }
 
@@ -2186,7 +2305,20 @@ pub fn eval_comptime_expr(
     expr: &Expr,
     config: ComptimeEvalConfig<'_>,
 ) -> Result<Value, Diagnostic> {
-    let root = Environment::new();
+    let (result, teardown) = eval_comptime_expr_tracked(expr, config);
+    teardown.release();
+    result
+}
+
+/// `eval_comptime_expr`, handing back what it built so a test can assert the
+/// teardown really did release it.
+fn eval_comptime_expr_tracked(
+    expr: &Expr,
+    config: ComptimeEvalConfig<'_>,
+) -> (Result<Value, Diagnostic>, Teardown) {
+    let mut root = Environment::new();
+    let registry = root.track_scopes();
+    let root = root;
     root.set_fuel(config.fuel);
     bind_intrinsics(&root);
     for module in config.ambient_modules {
@@ -2214,9 +2346,12 @@ pub fn eval_comptime_expr(
         // Each prelude owns a sibling lexical scope, never the caller scope.
         // Unsupported prelude initialization fails the demand conservatively.
         let prelude_env = root.child();
-        let outcome = eval_items(&module.items, &prelude_env, None).map_err(first_diagnostic)?;
+        let outcome = match eval_items(&module.items, &prelude_env, None) {
+            Ok(outcome) => outcome,
+            Err(diagnostics) => return (Err(first_diagnostic(diagnostics)), registry),
+        };
         if let Some(diagnostic) = outcome.diagnostics.into_iter().find(Diagnostic::is_error) {
-            return Err(diagnostic);
+            return (Err(diagnostic), registry);
         }
         if let Some(Value::Record(fields)) = outcome.value {
             for (name, value) in fields.iter() {
@@ -2227,14 +2362,11 @@ pub fn eval_comptime_expr(
     let module_env = defaults.child();
     *module_env.scope.definitions.borrow_mut() = config.definitions;
     module_env.comptime_boundary.set(config.active_boundary);
-    let mut env = module_env.child();
-    Rc::get_mut(&mut env.scope)
-        .expect("new lexical scope")
-        .blocked = config.blocked_locals;
+    let env = module_env.child_blocked(config.blocked_locals);
     for (name, value) in config.locals {
         env.bind(name, value);
     }
-    eval_expr(expr, &env)
+    (eval_expr(expr, &env), registry)
 }
 
 pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {
