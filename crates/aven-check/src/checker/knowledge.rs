@@ -51,31 +51,14 @@ impl Known {
     /// types. The text comes from the evaluator's own rendering, so a proof
     /// says what the program would actually produce. The two empties have no
     /// literal spelling and never satisfy a demand.
-    fn literal(&self) -> Option<Literal> {
+    pub(super) fn literal(&self) -> Option<Literal> {
         match &self.0 {
             aven_eval::Value::Bool(value) => Some(Literal::Bool(*value)),
-            aven_eval::Value::Int(_) | aven_eval::Value::Float(_) => Some(Literal::Number(
-                aven_eval::display_text(&self.0).ok()?,
-            )),
-            aven_eval::Value::Text(_) => {
-                Some(Literal::String(aven_eval::repr_text(&self.0)))
+            aven_eval::Value::Int(_) | aven_eval::Value::Float(_) => {
+                Some(Literal::Number(aven_eval::display_text(&self.0).ok()?))
             }
+            aven_eval::Value::Text(_) => Some(Literal::String(aven_eval::repr_text(&self.0))),
             _ => None,
-        }
-    }
-
-    pub(crate) fn is_absent(&self) -> bool {
-        matches!(
-            self.0,
-            aven_eval::Value::Undefined | aven_eval::Value::Null
-        )
-    }
-
-    /// How this evidence reads in a diagnostic.
-    pub(crate) fn render(&self) -> String {
-        match self.literal() {
-            Some(literal) => render_literal_value(&literal).to_owned(),
-            None => self.0.type_name().to_owned(),
         }
     }
 }
@@ -93,8 +76,60 @@ impl<'a> Checker<'a> {
         self.knowledge.insert((span, self.execution_context), known);
     }
 
-    pub(super) fn knowledge_at(&self, span: Span) -> Option<&Known> {
-        self.knowledge.get(&(span, self.execution_context))
+    pub(super) fn record_known_binding(&mut self, name: &str, known: Known) {
+        self.known_bindings
+            .insert(name.to_owned(), (self.execution_context, known));
+    }
+
+    /// Is evidence written in `origin` readable from the current context?
+    ///
+    /// Initialization boundaries are source offsets, so a larger one runs
+    /// later. Evidence from an earlier boundary is available; evidence from a
+    /// later one is not, which is what stops `comptime(double(later))` above
+    /// `later = 3` from certifying a value the program cannot produce yet.
+    /// The artifact and runtime-unknown regimes are not ordered against each
+    /// other and must match exactly.
+    fn knowledge_is_in_scope(&self, origin: comptime::ExecutionContext) -> bool {
+        match (origin, self.execution_context) {
+            (
+                comptime::ExecutionContext::RuntimeKnown(written),
+                comptime::ExecutionContext::RuntimeKnown(reading),
+            ) => written <= reading,
+            (origin, reading) => origin == reading,
+        }
+    }
+
+    /// Evidence for an expression, if a comptime demand established any.
+    ///
+    /// Evidence is never derived here. A value is known because an explicit
+    /// demand evaluated it, not because this position went looking — that
+    /// distinction is what keeps an ordinary runtime call from certifying a
+    /// type its signature does not give, and it is why `g = f(0)` stays
+    /// `1 | 1.0` rather than becoming whichever branch happened to run.
+    pub(super) fn known_for_expression(&self, expr: &Expr) -> Option<Known> {
+        let expr = ungroup_expr(expr);
+        if let Some(known) = self.knowledge.get(&(expr.span, self.execution_context)) {
+            return Some(known.clone());
+        }
+        let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &expr.kind else {
+            return None;
+        };
+        // A local binding shadows a module one, and a name the checker cannot
+        // see as an ordinary binding is not this name at all.
+        self.known_bindings
+            .get(name)
+            .filter(|(origin, _)| self.knowledge_is_in_scope(*origin))
+            .map(|(_, known)| known.clone())
+    }
+
+    /// Carry a binding's evidence to its name, so a later reference can answer
+    /// a demand its initializer already proved. This is the minimal path the
+    /// motivating `script = comptime(join(…))` needs; ordinary propagation
+    /// through arbitrary local forms is a later slice.
+    pub(super) fn propagate_binding_knowledge(&mut self, name: &str, value: &Expr) {
+        if let Some(known) = self.known_for_expression(value) {
+            self.record_known_binding(name, known);
+        }
     }
 
     /// Does this evidence discharge a demand for `expected`?
@@ -134,16 +169,29 @@ impl<'a> Checker<'a> {
             return false;
         }
         match self.unifier.resolve(expected) {
+            // A known *present* optional discharges a nonoptional demand. The
+            // evaluator represents a present optional as its payload, so the
+            // evidence here is already the payload and the only question is
+            // whether it fits. An absent optional has no literal spelling and
+            // was rejected above, so the conversion can never smuggle an empty
+            // through. This is what lets a value the program is known to have
+            // be used where the program requires one.
+            Type::Optional(inner) | Type::Nullable(inner) => {
+                self.knowledge_satisfies(known, &inner)
+            }
             Type::Named(name) if base == LiteralBase::Number => {
                 number_literal_row_fits_named(row, &name)
             }
             Type::Named(name) => base.matches_named(&name),
-            Type::Variant(target) => match open_literal_variant_base(&target) {
-                Some(target_base) => {
-                    target_base == base && self.literal_is_in_variant(&target, &literal)
-                }
-                None => false,
-            },
+            // A closed union admits exactly the literals it names. Type
+            // refinement could not use one — a singleton is not *narrower* than
+            // a union it belongs to — but evidence can, because the question
+            // here is membership of a known value rather than a relation
+            // between two types.
+            Type::Variant(target) => {
+                literal_variant_base(&target) == Some(base)
+                    && self.literal_is_in_variant(&target, &literal)
+            }
             _ => false,
         }
     }

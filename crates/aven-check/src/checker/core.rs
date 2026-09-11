@@ -62,6 +62,9 @@ impl<'a> Checker<'a> {
             pattern_bindings: HashMap::new(),
             diagnostics: Vec::new(),
             inferred_types: Vec::new(),
+            knowledge: HashMap::new(),
+            known_bindings: HashMap::new(),
+            pending_known: None,
         }
     }
 
@@ -1236,6 +1239,10 @@ impl<'a> Checker<'a> {
                 self.deduplicate_diagnostics_since(diagnostics_start);
             }
         }
+
+        if let Some(binding) = binding {
+            self.propagate_binding_knowledge(&declaration.name, &binding.value);
+        }
     }
 
     fn check_named_family_declaration(&mut self, owner: &str, value: &Expr) {
@@ -1634,6 +1641,7 @@ impl<'a> Checker<'a> {
         if let Some((_, expected)) = declared_type {
             self.check_value_against_declared_type(expected, &binding.value);
         }
+        self.propagate_binding_knowledge(&binding.name, &binding.value);
 
         let inferred_type = if declared_type.is_none() {
             let env = self.local_types.inference_env();

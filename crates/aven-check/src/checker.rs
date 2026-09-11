@@ -160,6 +160,14 @@ pub(crate) struct Checker<'a> {
     /// body's spans belong to its own source and are dropped with its inferred
     /// types.
     knowledge: HashMap<(Span, comptime::ExecutionContext), knowledge::Known>,
+    /// Evidence for a binding's value, with the initialization boundary it
+    /// became valid at. A reference reads it only from at or after that
+    /// boundary, so evidence cannot flow backwards into an initializer that
+    /// runs before the value exists.
+    known_bindings: HashMap<String, (comptime::ExecutionContext, knowledge::Known)>,
+    /// Evidence produced by the call currently being inferred, handed to the
+    /// expression arm that knows the call's own span.
+    pending_known: Option<knowledge::Known>,
 }
 
 #[derive(Debug, Clone)]

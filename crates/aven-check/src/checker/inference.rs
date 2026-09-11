@@ -390,7 +390,14 @@ impl<'a> Checker<'a> {
                 requirements,
                 body,
             ),
-            ExprKind::Call { callee, args } => self.infer_call(env, callee, args),
+            ExprKind::Call { callee, args } => {
+                self.pending_known = None;
+                let ty = self.infer_call(env, callee, args);
+                if let Some(known) = self.pending_known.take() {
+                    self.record_known(expr.span, known);
+                }
+                ty
+            }
             ExprKind::Index {
                 callee,
                 args,
@@ -4019,12 +4026,34 @@ impl<'a> Checker<'a> {
                 // A known argument keeps its ordinary type. Narrowing it to a
                 // singleton would make the body — and so the call's result —
                 // report a type the signature never promised, which is the
-                // knowledge channel's job and not the type's. Reified types and
-                // label sets are compiler artifacts rather than runtime values,
-                // so they still shape the type they always did.
-                comptime::ComptimeValue::Literal(_)
-                | comptime::ComptimeValue::Bool(_)
-                | comptime::ComptimeValue::LabelSet(_) => self.infer(arg_env, arg),
+                // knowledge channel's job and not the type's.
+                //
+                // An annotated parameter takes its annotation, exactly as a
+                // runtime parameter does. Taking the argument *expression's*
+                // type instead would specialize `(@a: Int)` to `1` at a literal
+                // call and hand the body a narrower type than the signature
+                // declares, so `comptimeAdd(1, 3)` would report `4` where the
+                // ordinary `add(1, 3)` reports `Int`. Reified types and label
+                // sets are compiler artifacts rather than runtime values and
+                // still shape the type they always did.
+                comptime::ComptimeValue::Literal(_) | comptime::ComptimeValue::Bool(_) => {
+                    // Only a *base kind* annotation overrides. A literal-union
+                    // domain such as `@{"text", "int"}` exists precisely so the
+                    // body can specialize to the member supplied, and an
+                    // uppercase comptime function is a type-level computation
+                    // whose result is meant to be the reified literal — both
+                    // keep the argument's own type.
+                    let declared = (!uppercase)
+                        .then_some(param.annotation.as_ref())
+                        .flatten()
+                        .map(|annotation| self.lower_normalized_annotation(annotation))
+                        .filter(|annotation| matches!(annotation, Type::Named(_)));
+                    match declared {
+                        Some(declared) => declared,
+                        None => self.infer(arg_env, arg),
+                    }
+                }
+                comptime::ComptimeValue::LabelSet(_) => self.infer(arg_env, arg),
                 _ => value
                     .clone()
                     .reify_type_position()
@@ -4041,12 +4070,22 @@ impl<'a> Checker<'a> {
         self.type_definitions.extend(captured_types);
         let diagnostics_start = self.diagnostics.len();
         let inferred_types_start = self.inferred_types.len();
-        self.local_comptime_values.push(body_comptime_values);
+        self.local_comptime_values
+            .push(body_comptime_values.clone());
         self.propagation_contexts
             .push(PropagationContext::default());
         let result = self.infer(&body_env, &body);
         let propagation = self.pop_propagation_context();
         let result = self.apply_propagation_context_to_body_type(&body, result, &propagation);
+        // Every `@` parameter was satisfied, so this specialization's body is
+        // evaluable now. Its value is the call's compile-time evidence: the
+        // proof a later annotation or typed argument can demand, recorded
+        // beside the ordinary result type rather than folded into it.
+        self.pending_known = self
+            .evaluate_known_expression(&body_env, &body, &body_comptime_values)
+            .ok()
+            .as_ref()
+            .and_then(knowledge::Known::from_value);
         self.local_comptime_values.pop();
         let result = self.normalize(&self.resolve_and_default(&result));
         self.type_definitions = saved_types;

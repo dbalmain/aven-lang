@@ -99,36 +99,79 @@ impl<'a> Checker<'a> {
         // evidence about this expression. A bound, family, or type error raised
         // somewhere inside it is a real error, and knowing the whole value is no
         // reply to it.
-        let reported_here = self.diagnostics[diagnostics_start..].iter().all(|diagnostic| {
-            diagnostic
-                .labels
-                .iter()
-                .all(|label| label.span == value.span)
-        });
+        let reported_here = self.diagnostics[diagnostics_start..]
+            .iter()
+            .all(|diagnostic| {
+                diagnostic
+                    .labels
+                    .iter()
+                    .all(|label| label.span == value.span)
+            });
         if !reported_here {
             return false;
         }
 
-        let known = match self.knowledge_at(value.span) {
-            Some(known) => known.clone(),
-            None => {
-                let bindings = self.current_comptime_value_bindings();
-                let env = self.local_types.inference_env();
-                // A failed evaluation is simply no evidence. Its diagnostic
-                // describes a compile-time phase this position never entered,
-                // so the ordinary type error stands as the report.
-                let Ok(evaluated) = self.evaluate_known_expression(&env, value, &bindings) else {
-                    return false;
-                };
-                let Some(known) = knowledge::Known::from_value(&evaluated) else {
-                    return false;
-                };
-                self.record_known(value.span, known.clone());
-                known
-            }
+        let Some(known) = self.known_for_expression(value) else {
+            return false;
         };
 
-        self.knowledge_satisfies(&known, expected)
+        // Evidence must agree with the expression's *own* type before it can
+        // speak about any other. `other : Float = 1` evaluates to an integer
+        // because the widening lives in the elaboration, not in the literal, so
+        // an unguarded proof would let that `1` satisfy `Int` and quietly
+        // discard a numeric-kind error. A proof that cannot describe the value
+        // the program actually produces is no proof.
+        let env = self.local_types.inference_env();
+        let actual = self.infer(&env, value);
+        let actual = self.normalize(&self.resolve_and_default(&actual));
+        if !self.knowledge_satisfies(&known, &actual) {
+            return false;
+        }
+
+        if self.knowledge_satisfies(&known, expected) {
+            return true;
+        }
+
+        // The demand stands, but the report should not. Without evidence the
+        // only honest complaint is that the value's type is wider than the
+        // annotation; with it, the exact value is known and can be named. Say
+        // which literal this is rather than which type it has.
+        self.replace_demand_report_with_evidence(&known, expected, value.span, diagnostics_start);
+        false
+    }
+
+    /// Re-report a rejected demand in terms of the value the program is known
+    /// to produce. Only a literal-union annotation can be described this way;
+    /// every other expectation keeps the report ordinary checking produced.
+    fn replace_demand_report_with_evidence(
+        &mut self,
+        known: &knowledge::Known,
+        expected: &Type,
+        span: Span,
+        diagnostics_start: usize,
+    ) {
+        let Some(literal) = known.literal() else {
+            return;
+        };
+        let Type::Variant(row) = self.unifier.resolve(expected) else {
+            return;
+        };
+        if literal_variant_base(&row).is_none() || row.tail != RowTail::Closed {
+            return;
+        }
+        let members = row
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                RowEntry::Literal { value } => Some(value),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if members.is_empty() {
+            return;
+        }
+        self.diagnostics.truncate(diagnostics_start);
+        self.report_literal_not_in_union(&literal, &members, span);
     }
 
     fn check_value_against_target(&mut self, expected: &Type, value: &Expr) {

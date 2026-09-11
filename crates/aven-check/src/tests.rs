@@ -15406,6 +15406,172 @@ fn comptime_demand_preserves_artifact_derived_scalar_values() {
 }
 
 #[test]
+fn a_computed_comptime_result_keeps_its_base_type() {
+    // Knowledge is recorded beside the type, never folded into it. The
+    // ordinary `add(1, 3)` is the control: a `@` call must report the same
+    // type, because specializing a body is not a licence to strengthen what
+    // the signature says.
+    let source = concat!(
+        "comptimeAdd = (@a: Int, @b: Int): Int => a + b\n",
+        "add = (a: Int, b: Int): Int => a + b\n",
+        "computed = comptimeAdd(1, 3)\n",
+        "ordinary = add(1, 3)\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let computed = checked
+        .type_at(binding_value_named(&parsed.module, "computed").span)
+        .map(Type::render);
+    assert_eq!(computed, Some("Int".to_owned()));
+    assert_eq!(
+        computed,
+        checked
+            .type_at(binding_value_named(&parsed.module, "ordinary").span)
+            .map(Type::render)
+    );
+}
+
+#[test]
+fn a_declared_literal_return_type_stays_literal() {
+    // The mirror of the test above. An author who *writes* a literal type gets
+    // it; only inferred narrowing was removed.
+    let source = concat!(
+        "tag = (@n: Int): \"fixed\" => \"fixed\"\n",
+        "declared = tag(1)\n",
+    );
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    assert_eq!(
+        checked
+            .type_at(binding_value_named(&parsed.module, "declared").span)
+            .map(Type::render),
+        Some("\"fixed\"".to_owned())
+    );
+}
+
+#[test]
+fn a_known_present_optional_satisfies_a_nonoptional_demand() {
+    // A present optional is represented by its payload, so proving it against
+    // a nonoptional type is just proving the payload. The ordinary function is
+    // the control: identical body, no `@`, and the demand must fail — which is
+    // what shows the proof, rather than some widening rule, is doing the work.
+    for (definition, expected_diagnostics) in [
+        ("first = (@n: Int) => [n][0]\n", 0),
+        ("first = (n: Int) => [n][0]\n", 1),
+    ] {
+        for demand in ["Int", "7"] {
+            let source = format!("{definition}checked: {demand} = first(7)\n");
+            let checked = check_module(&parse_module(&source).module);
+            assert_eq!(
+                checked.diagnostics.len(),
+                expected_diagnostics,
+                "{source}: {:?}",
+                checked.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn a_known_optional_proves_only_the_value_it_has() {
+    // The payload must still fit. A wrong literal is rejected, and the report
+    // names the value the program actually produces rather than complaining
+    // that its type is wider than the annotation.
+    let checked =
+        check_module(&parse_module("first = (@n: Int) => [n][0]\nchecked: 8 = first(7)\n").module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::ty::LITERAL_NOT_IN_UNION),
+        "{:?}",
+        checked.diagnostics
+    );
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("literal 7")),
+        "the report should name the known value: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn an_absent_optional_cannot_satisfy_a_nonoptional_demand() {
+    let checked =
+        check_module(&parse_module("oob = (@n: Int) => [n][5]\nchecked: Int = oob(7)\n").module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::ty::MISMATCH),
+        "an absent optional has no payload to prove: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
+fn a_known_optional_keeps_its_optional_type() {
+    let source = "first = (@n: Int) => [n][0]\ngot = first(7)\n";
+    let parsed = parse_module(source);
+    let checked = check_module(&parsed.module);
+    assert_eq!(
+        checked
+            .type_at(binding_value_named(&parsed.module, "got").span)
+            .map(Type::render),
+        Some("?Int".to_owned()),
+        "discharging a demand must not rewrite the inferred type"
+    );
+}
+
+#[test]
+fn knowledge_does_not_reach_a_binding_that_runs_before_it() {
+    // Evidence carries the initialization boundary it became valid at. Reading
+    // it from an earlier boundary would certify a value the program cannot
+    // produce yet.
+    //
+    // The demanded value has to be one only evaluation can supply: `3 + 3`
+    // would fold by ordinary literal arithmetic and prove nothing about the
+    // knowledge channel at all.
+    let helper = "join = (parts: Array(Text)): Text => parts.joinWith(\"\\n\")\n";
+    let demand = "demanded: \"a\\nb\" = later\n";
+    let binding = "later = comptime(join([\"a\", \"b\"]))\n";
+
+    let backwards = check_module(&parse_module(&format!("{demand}{helper}{binding}")).module);
+    assert!(
+        !backwards.diagnostics.is_empty(),
+        "a later binding's proof must not reach an earlier one: {:?}",
+        backwards.diagnostics
+    );
+
+    // The positive control: the identical demand, one line later, is answered.
+    let forwards = check_module(&parse_module(&format!("{helper}{binding}{demand}")).module);
+    assert!(
+        forwards.diagnostics.is_empty(),
+        "the same demand after the binding must be answered: {:?}",
+        forwards.diagnostics
+    );
+}
+
+#[test]
+fn an_ordinary_call_does_not_certify_a_literal_demand() {
+    // The discriminating case for "proof needs provenance". `f(0)` really does
+    // evaluate to 1, so an implementation that evaluated on demand would accept
+    // `Int` here. Only an explicit comptime demand may establish knowledge.
+    let source = concat!(
+        "f = (x) =>\n",
+        "  x ?>\n",
+        "    0 => 1\n",
+        "    _ => 1.0\n",
+        "g = f(0)\n",
+        "asInt: Int = g\n",
+    );
+    let checked = check_module(&parse_module(source).module);
+    assert!(
+        has_diagnostic_code(&checked.diagnostics, codes::ty::MISMATCH),
+        "an ordinary call is not a proof: {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
 fn comptime_demand_allows_a_preceding_top_level_binding() {
     let source = concat!(
         "later = 3\n",
