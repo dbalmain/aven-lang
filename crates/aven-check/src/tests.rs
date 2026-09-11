@@ -16015,3 +16015,50 @@ fn comptime_requires_an_explicit_prelude_in_bare_checker_and_evaluator() {
         codes::runtime::UNBOUND_NAME
     ));
 }
+
+/// Branding a primitive family is keyed on a literal *written* at the
+/// annotated position, not on the value's type being a singleton. Both
+/// `40 + 59` and `comptime(99)` have type `99`, and neither brands.
+///
+/// This pins the rule rather than endorsing it. `comptime(99)` failing where
+/// `99` succeeds is the Money gap that comptime evidence cannot close: a proof
+/// says a value is `99`, and nothing in the proof says that `99` was written
+/// where `Money` was asked for. If the rule is ever widened to admit a proven
+/// literal, this test is the one that should change, deliberately.
+#[test]
+fn only_a_written_literal_brands_a_primitive_family() {
+    const FAMILY: &str = "Money = Int {\n  cents(): Int => .\n}\n";
+
+    let accepted = format!("{FAMILY}price : Money = 99\n");
+    let output = parse_module(&accepted);
+    let check = check_module(&output.module);
+    assert!(
+        !check.diagnostics.iter().any(Diagnostic::is_error),
+        "a written literal brands: {:?}",
+        check.diagnostics
+    );
+
+    for (source, found) in [
+        // Folds to the literal type `99` and is still not a written literal.
+        (format!("{FAMILY}price : Money = 40 + 59\n"), "99"),
+        // Comptime evidence proves the same value and fares the same way, so
+        // evidence is not treated worse than an ordinary expression.
+        (format!("{FAMILY}price : Money = comptime(99)\n"), "99"),
+        // An `Int` binding does not brand either, which is the rule's point.
+        (format!("{FAMILY}n : Int = 99\nprice : Money = n\n"), "Int"),
+    ] {
+        let output = parse_module(&source);
+        let check = check_module(&output.module);
+        let mismatches = check
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some(codes::ty::MISMATCH))
+            .collect::<Vec<_>>();
+        assert_eq!(mismatches.len(), 1, "{source}: {:?}", check.diagnostics);
+        assert_eq!(
+            mismatches[0].message,
+            format!("expected `Money`, found `{found}`"),
+            "{source}"
+        );
+    }
+}

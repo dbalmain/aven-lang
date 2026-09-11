@@ -26,15 +26,66 @@ pub(crate) struct Known(aven_eval::Value);
 impl Known {
     /// Project an evaluator value into transportable evidence, or refuse.
     ///
-    /// Refusal is the conservative direction: no proof means a demand falls
-    /// back to ordinary type checking, which is what it did before proofs
-    /// existed. The notable gap is `BrandedPrimitive` — a `Money` whose
-    /// payload is an integer. Certifying one needs the family's own
-    /// elaboration, including its rendering, and the evaluator does not expose
-    /// its descriptor's owner to the checker. Recording the bare payload
-    /// instead would let a branded value satisfy a raw `Int`, which is exactly
-    /// the confusion the family exists to prevent, so branded values are
-    /// unsupported until that plan is available.
+    /// # What a proof can be spent on
+    ///
+    /// Evidence is only ever consulted where a demand would otherwise fail, so
+    /// it can only help where the demanded type is narrower than what
+    /// inference already produced. The types narrower in that way are the
+    /// literal types, and `aven_parser::Literal` has exactly three
+    /// constructors: `Bool`, `Number`, and `String`. A demand for anything
+    /// else --- a record, an array, a named family --- is already answered by
+    /// the expression's inferred type or not at all, and a proof would change
+    /// nothing.
+    ///
+    /// So the supported set below is not a convenient starting subset to be
+    /// widened later. It is every value a demand can currently spend, and
+    /// widening it is work for whichever slice first introduces a demand that
+    /// a non-scalar could discharge.
+    ///
+    /// # Support table
+    ///
+    /// | Evaluator value | Transported | Why |
+    /// |---|---|---|
+    /// | `Int`, `Float` | yes | `Literal::Number`, compared by the evaluator's own rendering |
+    /// | `Text` | yes | `Literal::String` |
+    /// | `Bool` | yes | `Literal::Bool` |
+    /// | `Undefined`, `Null` | recorded, never discharges | the two empties have no literal spelling, so a demand falls through to ordinary checking |
+    /// | `Array`, `Tuple`, `Set`, `Map`, `Record`, `SlotRecord` | no | no literal type to satisfy; the inferred type already carries the shape |
+    /// | `Tag`, results | no | variant membership is decided by the row, not by a value |
+    /// | `NamedRecord`, `NamedFamily` | no | a family's identity lives in its descriptor, which the checker cannot read from here |
+    /// | `BrandedPrimitive` | no | see below |
+    /// | `Closure`, `Stream`, `Native`, method values, `Type` | no | not values a type can name, and each owns an evaluator environment |
+    ///
+    /// # Why refusal is the safe direction
+    ///
+    /// No proof means a demand falls back to ordinary type checking, which is
+    /// what it did before proofs existed. An unsupported value therefore costs
+    /// an error message that could have been avoided, never a wrong answer.
+    ///
+    /// Refusal also carries a lifetime guarantee. Every transported variant is
+    /// `Rc`-free, so a proof cannot hold a scope, a closure, or a captured
+    /// environment, and the knowledge maps cannot become a second place the
+    /// evaluator's memory survives. The evaluation's own retention is cut when
+    /// it ends; see `Teardown` in `aven-eval`.
+    ///
+    /// # The one real gap
+    ///
+    /// `BrandedPrimitive` --- a `Money` whose payload is an integer --- is the
+    /// case where a proof would genuinely help and cannot be made here.
+    /// Certifying one needs the family's own elaboration, including its
+    /// rendering, and the evaluator does not expose its descriptor's owner to
+    /// the checker. Recording the bare payload instead would let a branded
+    /// value satisfy a raw `Int`, which is exactly the confusion the family
+    /// exists to prevent.
+    ///
+    /// Note what this gap is and is not. Branding is keyed on a literal
+    /// *written* at the annotated position, not on the value's type being a
+    /// singleton: given `Money = Int { ... }`, `price: Money = 99` is accepted
+    /// while `price: Money = 40 + 59` is rejected, though both have type `99`.
+    /// So `price: Money = comptime(99)` failing is the existing rule applying
+    /// evenly rather than evidence being treated worse than an ordinary value.
+    /// Widening it is a language decision about where branding applies, and
+    /// belongs with whoever owns that rule.
     pub(crate) fn from_value(value: &aven_eval::Value) -> Option<Self> {
         match value {
             aven_eval::Value::Int(_)
