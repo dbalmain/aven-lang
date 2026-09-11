@@ -40,10 +40,26 @@
               "rust-analyzer"
             ];
           };
+          # `crates/aven-cli/tests/cli_args.rs` drives a real Readline session to
+          # check generated completions. nixpkgs' plain `bash` is built without
+          # readline or programmable completion, and mkShell puts it on PATH
+          # ahead of the host's, so `complete` disappears and four tests fail
+          # inside the shell while passing outside it. CI runs on a full bash.
+          shells = [
+            pkgs.bashInteractive
+            pkgs.fish
+          ];
         in
         {
           default = pkgs.mkShell {
-            packages = [ rust ];
+            packages = [ rust ] ++ shells;
+          };
+          # MSRV gate: `cargo check --workspace --all-targets` only, matching
+          # ci.yml's `dtolnay/rust-toolchain@1.91.0` job. rust-toolchain.toml
+          # pins 1.98.1, which rustup would otherwise honour over any default.
+          msrv = pkgs.mkShell {
+            packages = [ pkgs.rust-bin.stable."1.91.0".minimal ] ++ shells;
+            RUSTUP_TOOLCHAIN = "1.91.0";
           };
         }
       );

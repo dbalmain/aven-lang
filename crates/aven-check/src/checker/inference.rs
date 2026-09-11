@@ -402,12 +402,7 @@ impl<'a> Checker<'a> {
                 field_span,
                 null_safe,
             } => self.infer_field_access(env, receiver, field, *null_safe, *field_span),
-            ExprKind::Binary {
-                left,
-                operator,
-                right,
-                ..
-            } if operator == "|" => self.infer_set_union(env, expr),
+            ExprKind::Binary { operator, .. } if operator == "|" => self.infer_set_union(env, expr),
             ExprKind::Binary {
                 left,
                 operator,
