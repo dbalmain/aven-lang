@@ -1,0 +1,22 @@
+# A `${...}` hole in a triple-quoted string may wrap a continued expression
+# the same way parentheses, calls, and collections already wrap.
+query = """
+  ${join(
+    "a",
+    "b"
+  )}
+  """
+grouped = """
+  ${
+    "a" + "b"
+  }
+  """
+chained = """
+  ${value
+    .foo()}
+  """
+nested = """
+  outer ${"""
+    inner ${x}
+    """} tail
+  """

@@ -40,6 +40,7 @@ pub fn layout_tokens(tokens: &[Token]) -> LayoutOutput {
         pending_indent: 0,
         pending_indent_span: None,
         last_offset: 0,
+        interpolation_depth: 0,
     };
 
     builder.layout(tokens);
@@ -59,6 +60,7 @@ struct LayoutBuilder {
     pending_indent: usize,
     pending_indent_span: Option<Span>,
     last_offset: usize,
+    interpolation_depth: usize,
 }
 
 impl LayoutBuilder {
@@ -67,14 +69,29 @@ impl LayoutBuilder {
             self.last_offset = token.span.end;
 
             match &token.kind {
+                TokenKind::RawIndent { .. } if self.interpolation_depth > 0 => {}
                 TokenKind::RawIndent { spaces } if self.at_line_start => {
                     self.pending_indent = *spaces;
                     self.pending_indent_span = Some(token.span);
                 }
                 TokenKind::RawIndent { .. } => {}
+                TokenKind::RawNewline if self.interpolation_depth > 0 => {
+                    // Hole expressions sit inside a string, not in program
+                    // layout: keep newlines as whitespace and leave the indent
+                    // stack on the statement that opened the literal.
+                    self.push(TokenKind::Newline, token.span);
+                }
                 TokenKind::RawNewline => self.end_line(token.span),
                 TokenKind::Comment(_) => {}
                 TokenKind::DocComment(_) => self.push_code_token(token),
+                TokenKind::InterpolationStart(_) => {
+                    self.interpolation_depth += 1;
+                    self.push_code_token(token);
+                }
+                TokenKind::InterpolationEnd(_) => {
+                    self.interpolation_depth = self.interpolation_depth.saturating_sub(1);
+                    self.push_code_token(token);
+                }
                 _ => self.push_code_token(token),
             }
         }

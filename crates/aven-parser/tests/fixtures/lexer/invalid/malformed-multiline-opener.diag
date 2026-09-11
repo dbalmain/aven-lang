@@ -1,0 +1,2 @@
+error lex.invalid-multiline-string: a triple-quoted string must start on the next line
+  label 10..10: a triple-quoted string must start on the next line

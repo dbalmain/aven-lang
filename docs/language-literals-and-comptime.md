@@ -36,6 +36,29 @@ content line requests a trailing LF.
 Physical CRLF and CR line endings are normalized to LF before escape processing.
 An explicit `\r` escape still contributes a carriage return to the value.
 
+Every physical line of the literal, including lines that sit inside a `${...}`
+interpolation hole rather than in the text, must still satisfy the closer's
+margin. The hole's expression is never itself dedented — values are unchanged —
+but a line in the hole with fewer than `N` leading spaces is still an error.
+
+Inside a triple-quoted string, a hole may wrap across those physical lines.
+Layout indent is suspended in the hole, so a call, a parenthesised group, a
+collection, or a method chain may break the same way it does in other delimited
+positions:
+
+```aven
+query = """
+  ${join(
+    "a",
+    "b"
+  )}
+  """
+```
+
+A newline does not by itself continue an infix operator. `${"a"` then `+ "b"}`
+on the next line is not a continued expression, matching the same split inside
+parentheses.
+
 Raw strings use an `r` prefix and do not process escapes or interpolation:
 
 ```aven
@@ -60,7 +83,8 @@ multiline literal, it moves the body and closing delimiter together so the
 dedent margin changes with the source layout, never the resulting text.
 Blank lines, tabs, CRLF input, interpolation and delimiter collisions are
 covered at value level in `crates/aven-fmt/tests/string_values.rs`, which
-decodes every payload before and after a format and compares. The formatter
+walks the parser's decoded interpolation fragments and literals before and
+after a format and compares. The formatter
 fixture `multiline-strings.av` covers the layouts byte for byte.
 
 ## Comptime evaluation

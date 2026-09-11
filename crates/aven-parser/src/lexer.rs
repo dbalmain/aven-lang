@@ -161,6 +161,9 @@ struct StringContext {
     start: usize,
     delimiter: StringDelimiter,
     fragments: Vec<usize>,
+    /// False when the opener itself is already a layout error, so recovery
+    /// must not emit a second diagnostic for the same defect.
+    layout_valid: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -376,6 +379,7 @@ impl Lexer<'_> {
             start,
             delimiter,
             fragments: Vec::new(),
+            layout_valid: true,
         });
         self.offset += delimiter.opening_len;
         if delimiter.multiline {
@@ -390,11 +394,12 @@ impl Lexer<'_> {
                 .count();
             if rest[blanks..].starts_with(['\r', '\n']) {
                 self.offset += blanks;
-            } else {
+            } else if !rest[blanks..].is_empty() {
                 self.string_layout_error(
                     Span::point(self.offset),
                     "a triple-quoted string must start on the next line",
                 );
+                self.strings[string_id].layout_valid = false;
             }
         }
         self.scan_string_part(string_id, start, true);
@@ -453,7 +458,14 @@ impl Lexer<'_> {
             }
         }
         if first {
-            self.push_unterminated_string(start);
+            if self.strings[string_id].layout_valid {
+                self.push_unterminated_string(start);
+            } else {
+                self.push(
+                    TokenKind::StringLiteral(self.source[start..self.offset].to_owned()),
+                    Span::new(start, self.offset),
+                );
+            }
         } else {
             self.push_unterminated_interpolation_fragment(start);
         }
@@ -469,6 +481,9 @@ impl Lexer<'_> {
 
     fn finish_multiline_string(&mut self, string_id: usize, closing_start: usize) {
         let context = &self.strings[string_id];
+        if !context.layout_valid {
+            return;
+        }
         let start = context.start;
         let text = &self.source[start..self.offset];
         let ranges = match multiline_content_ranges(
@@ -642,16 +657,19 @@ impl Lexer<'_> {
     }
 
     fn interpolation_newline_or_eof(&mut self) -> bool {
-        if self.interp_contexts.is_empty() || !self.at_newline_or_eof() {
+        let Some(context) = self.interp_contexts.last().copied() else {
+            return false;
+        };
+        if !self.at_newline_or_eof() {
+            return false;
+        }
+        // A multiline literal already admits physical line breaks in its text;
+        // the expression in a `${...}` hole may use those same breaks.
+        if self.current_byte().is_some() && self.strings[context.string_id].delimiter.multiline {
             return false;
         }
 
-        let start = self
-            .interp_contexts
-            .last()
-            .map(|context| context.start)
-            .unwrap_or(self.offset);
-        self.push_unterminated_interpolation(start, true);
+        self.push_unterminated_interpolation(context.start, true);
         self.interp_contexts.clear();
         true
     }
@@ -1426,6 +1444,25 @@ mod tests {
                 "expected a note about `\\$` for literal dollars, got {notes:?}"
             );
         }
+    }
+
+    #[test]
+    fn multiline_interpolation_may_span_physical_lines() {
+        let source = "\"\"\"\n  ${\n    \"a\" + \"b\"\n  }\n  \"\"\"";
+        let output = lex_source(source);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert!(
+            output
+                .tokens
+                .iter()
+                .any(|token| { matches!(token.kind, TokenKind::InterpolationStart(_)) })
+        );
+        assert!(
+            output
+                .tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::InterpolationEnd(_)))
+        );
     }
 
     #[test]
