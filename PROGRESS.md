@@ -1,6 +1,19 @@
 # Implementation status — language proposals
 
-Updated: 2026-09-11, Australia/Sydney.
+Updated: 2026-09-12, Australia/Sydney.
+
+## Current handoff to Claude
+
+The user requested a written completion plan rather than further implementation.
+Read [docs/claude-completion-plan.md](docs/claude-completion-plan.md) first: it
+consolidates the settled semantics, prioritized remaining slices, source map,
+acceptance tests, performance/lifetime gates, and remaining string findings.
+No slice-3 source implementation has started.
+
+Current branch tip at handoff is `0e61f7b`, following `f054152` (Rust/clippy
+1.98.1, MSRV 1.91.0) and the accepted ordering/progress commits below. Preserve
+these newer toolchain changes. The 1845-test result below belongs to the accepted
+ordering checkpoint; this documentation-only handoff did not rerun source tests.
 
 ## Resumed implementation — agreed review amendments
 
