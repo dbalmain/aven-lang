@@ -125,3 +125,55 @@ fn rejects_malformed_multiline_layout_and_unmatched_delimiters() {
         let _ = decode_string_literal(malformed);
     }
 }
+
+/// Temporary dump of the four historical string-literal findings.
+#[test]
+fn dump_string_literal_findings() {
+    fn dump(label: &str, source: &str) {
+        let parsed = parse_module(source);
+        eprintln!("=== {label} ===\nsource:\n{source}\ndiags ({})", parsed.diagnostics.len());
+        for diagnostic in &parsed.diagnostics {
+            eprintln!(
+                "  {} {}: {}",
+                diagnostic.severity,
+                diagnostic.code.as_deref().unwrap_or("?"),
+                diagnostic.message
+            );
+            for label in &diagnostic.labels {
+                eprintln!("    label {}..{}: {}", label.span.start, label.span.end, label.message);
+            }
+            for note in &diagnostic.notes {
+                eprintln!("    note: {note}");
+            }
+        }
+    }
+
+    dump(
+        "1 wrapped interpolation",
+        "q = \"\"\"\n  ${\"a\"\n    + \"b\"}\n  \"\"\"\n",
+    );
+    dump(
+        "1 wrapped interpolation parenthesized",
+        "q = \"\"\"\n  ${\n    \"a\" + \"b\"\n  }\n  \"\"\"\n",
+    );
+    dump(
+        "1 wrapped interpolation call",
+        "q = \"\"\"\n  ${join(\n    \"a\",\n    \"b\"\n  )}\n  \"\"\"\n",
+    );
+    dump(
+        "2 hole under-indented",
+        "q = \"\"\"\n  head ${\n x}\n  \"\"\"\n",
+    );
+    dump(
+        "2 hole at margin",
+        "q = \"\"\"\n  head ${\n  x}\n  \"\"\"\n",
+    );
+    dump(
+        "2 hole deeper than margin",
+        "q = \"\"\"\n  head ${\n    x}\n  \"\"\"\n",
+    );
+    dump("3 opener with content no closer", "q = \"\"\"text\n");
+    dump("3 opener with content and closer same line", "q = \"\"\"text\"\"\"\n");
+    dump("3 opener with content then proper closer", "q = \"\"\"text\n  a\n  \"\"\"\n");
+    dump("3 opener blanks then content on same line", "q = \"\"\"  x\n  a\n  \"\"\"\n");
+}
