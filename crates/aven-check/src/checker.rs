@@ -49,6 +49,7 @@ mod constraints;
 mod core;
 mod diagnostics;
 mod inference;
+mod knowledge;
 mod match_checking;
 mod method_sets;
 mod rows;
@@ -151,6 +152,14 @@ pub(crate) struct Checker<'a> {
     pattern_bindings: HashMap<String, &'a PatternBinding>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) inferred_types: Vec<InferredType>,
+    /// Compile-time evidence for an expression's value, recorded beside its
+    /// ordinary inferred type rather than inside it. A proof is keyed by the
+    /// demand frontier as well as the span, mirroring `comptime_specializations`,
+    /// so one execution context cannot read another's evidence for the same
+    /// source location. Only this module's spans are ever recorded: an imported
+    /// body's spans belong to its own source and are dropped with its inferred
+    /// types.
+    knowledge: HashMap<(Span, comptime::ExecutionContext), knowledge::Known>,
 }
 
 #[derive(Debug, Clone)]

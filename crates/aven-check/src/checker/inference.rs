@@ -437,7 +437,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Actual values, rather than broad intermediate types, cross this boundary.
-    fn evaluate_known_expression(
+    pub(super) fn evaluate_known_expression(
         &self,
         env: &TypeEnv,
         expr: &Expr,
@@ -500,51 +500,6 @@ impl<'a> Checker<'a> {
                 fuel: 100_000,
             },
         )
-    }
-
-    /// A narrowed literal is only ever a *refinement*: the singleton must sit
-    /// inside the type the expression already had. A base kind admits its own
-    /// literals, and an open literal row admits one more of its own base. A
-    /// named family such as `Money` is deliberately not a base kind, so a
-    /// branded value keeps its family instead of folding to a raw number.
-    fn literal_type_refines(&mut self, narrowed: &Type, ty: &Type) -> bool {
-        let Type::Variant(row) = narrowed else {
-            return false;
-        };
-        let Some(base) = literal_variant_base(row) else {
-            return false;
-        };
-        // A number singleton also has to agree in *form*. `Number` matches both
-        // `Int` and `Float`, so without this an evaluated `1.5` would refine
-        // `Int`, and so would a value that is not a number lexeme at all.
-        if let Some(RowEntry::Literal {
-            value: Literal::Number(text),
-        }) = row.entries.first()
-            && !number_literal_text_is_finite(text)
-        {
-            return false;
-        }
-        match self.unifier.resolve(ty) {
-            Type::Named(name) if base == LiteralBase::Number => {
-                number_literal_row_fits_named(row, &name)
-            }
-            Type::Named(name) => base.matches_named(&name),
-            Type::Variant(target) => open_literal_variant_base(&target) == Some(base),
-            _ => false,
-        }
-    }
-
-    /// The refinement itself, over a literal from either evaluator.
-    fn narrow_to_literal(&mut self, literal: &Literal, ty: Type) -> Type {
-        let narrowed = self.open_literal_variant(literal);
-        // A pin proves *when* a value is known, never that it has a different
-        // shape than its own type. Narrowing that the type does not already
-        // admit would be a conversion, so the declared type wins.
-        if self.literal_type_refines(&narrowed, &ty) {
-            narrowed
-        } else {
-            ty
-        }
     }
 
     /// Widen inferred literal rows only where a value has materialized a
@@ -4061,15 +4016,15 @@ impl<'a> Checker<'a> {
             }
 
             let value_type = match &value {
-                comptime::ComptimeValue::Literal(literal) => {
-                    let actual = self.infer(arg_env, arg);
-                    self.narrow_to_literal(literal, actual)
-                }
-                comptime::ComptimeValue::Bool(value) => {
-                    let actual = self.infer(arg_env, arg);
-                    self.narrow_to_literal(&Literal::Bool(*value), actual)
-                }
-                comptime::ComptimeValue::LabelSet(_) => self.infer(arg_env, arg),
+                // A known argument keeps its ordinary type. Narrowing it to a
+                // singleton would make the body — and so the call's result —
+                // report a type the signature never promised, which is the
+                // knowledge channel's job and not the type's. Reified types and
+                // label sets are compiler artifacts rather than runtime values,
+                // so they still shape the type they always did.
+                comptime::ComptimeValue::Literal(_)
+                | comptime::ComptimeValue::Bool(_)
+                | comptime::ComptimeValue::LabelSet(_) => self.infer(arg_env, arg),
                 _ => value
                     .clone()
                     .reify_type_position()

@@ -70,8 +70,65 @@ impl<'a> Checker<'a> {
     pub(super) fn check_value_against(&mut self, expected: &Type, value: &Expr) {
         let generalize_inferred_collections = self.generalize_inferred_collections;
         self.generalize_inferred_collections = false;
+        let diagnostics_start = self.diagnostics.len();
         self.check_value_against_target(expected, value);
+        if self.diagnostics.len() > diagnostics_start
+            && self.demand_is_discharged_by_knowledge(expected, value, diagnostics_start)
+        {
+            self.diagnostics.truncate(diagnostics_start);
+        }
         self.generalize_inferred_collections = generalize_inferred_collections;
+    }
+
+    /// A typed position is a proof demand as well as a type demand. When the
+    /// type alone does not satisfy it, ask whether the program *knows* the
+    /// value here, and accept the demand if the known value sits inside the
+    /// expected type.
+    ///
+    /// This is the only consumer of compile-time evidence. It runs solely on
+    /// the path that was already going to report an error, so an ordinary
+    /// program pays nothing for it, and it can only ever turn a rejection into
+    /// an acceptance — never the reverse, and never a different inferred type.
+    fn demand_is_discharged_by_knowledge(
+        &mut self,
+        expected: &Type,
+        value: &Expr,
+        diagnostics_start: usize,
+    ) -> bool {
+        // Only a mismatch reported *at this expression* can be answered by
+        // evidence about this expression. A bound, family, or type error raised
+        // somewhere inside it is a real error, and knowing the whole value is no
+        // reply to it.
+        let reported_here = self.diagnostics[diagnostics_start..].iter().all(|diagnostic| {
+            diagnostic
+                .labels
+                .iter()
+                .all(|label| label.span == value.span)
+        });
+        if !reported_here {
+            return false;
+        }
+
+        let known = match self.knowledge_at(value.span) {
+            Some(known) => known.clone(),
+            None => {
+                let bindings = self.current_comptime_value_bindings();
+                let env = self.local_types.inference_env();
+                // A failed evaluation is simply no evidence. Its diagnostic
+                // describes a compile-time phase this position never entered,
+                // so the ordinary type error stands as the report.
+                let Ok(evaluated) = self.evaluate_known_expression(&env, value, &bindings) else {
+                    return false;
+                };
+                let Some(known) = knowledge::Known::from_value(&evaluated) else {
+                    return false;
+                };
+                self.record_known(value.span, known.clone());
+                known
+            }
+        };
+
+        self.knowledge_satisfies(&known, expected)
     }
 
     fn check_value_against_target(&mut self, expected: &Type, value: &Expr) {
