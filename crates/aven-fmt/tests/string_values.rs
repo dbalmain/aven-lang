@@ -7,31 +7,39 @@
 //! comes out is byte-identical.
 
 use aven_core::Diagnostic;
-use aven_parser::{TokenKind, decode_string_literal, lex_source};
+use aven_parser::{
+    ExprKind, InterpolationSegment, Literal, decode_string_literal, parse_module, walk_module_exprs,
+};
 
 /// Every string payload in a source, in order, already decoded.
 ///
-/// Interpolation fragments arrive as their own tokens carrying the same
-/// spelling a whole literal would, so decoding each one covers the segments
-/// between `${...}` holes as well as plain literals.
+/// Interpolation fragments are taken from the parser's own
+/// `InterpolationSegment::Text` path. Decoding lexer tokens with
+/// `decode_string_literal` would treat a fragment such as `"hello ` as a
+/// whole literal and keep the delimiter quote, so a decode only the parser
+/// gets right would not be visible here.
 fn decoded_payloads(source: &str) -> Vec<String> {
-    let lexed = lex_source(source);
+    let parsed = parse_module(source);
     assert!(
-        !lexed.diagnostics.iter().any(Diagnostic::is_error),
+        !parsed.diagnostics.iter().any(Diagnostic::is_error),
         "{source:?}: {:?}",
-        lexed.diagnostics
+        parsed.diagnostics
     );
-    lexed
-        .tokens
-        .iter()
-        .filter_map(|token| match &token.kind {
-            TokenKind::StringLiteral(text)
-            | TokenKind::InterpolationStart(text)
-            | TokenKind::InterpolationMiddle(text)
-            | TokenKind::InterpolationEnd(text) => Some(decode_string_literal(text)),
-            _ => None,
-        })
-        .collect()
+    let mut payloads = Vec::new();
+    walk_module_exprs(&parsed.module, &mut |expr| match &expr.kind {
+        ExprKind::Literal(Literal::String(text)) => {
+            payloads.push(decode_string_literal(text));
+        }
+        ExprKind::Interpolation(segments) => {
+            for segment in segments {
+                if let InterpolationSegment::Text(text) = segment {
+                    payloads.push(text.clone());
+                }
+            }
+        }
+        _ => {}
+    });
+    payloads
 }
 
 fn assert_values_survive_formatting(source: &str) {
@@ -71,6 +79,9 @@ fn reindenting_a_multiline_literal_preserves_its_value() {
         "q = r#\"\"\"\n  a \"\"\" b\n  \"\"\"#\n",
         // Interpolation, including a nested raw literal inside the hole.
         "q = \"\"\"\n  head ${name}\n    ${r#\"\\n\"#} tail\n  \"\"\"\n",
+        // A hole may wrap a continued call or parenthesised group.
+        "q = \"\"\"\n  ${join(\n    \"a\",\n    \"b\"\n  )}\n  \"\"\"\n",
+        "q = \"\"\"\n  ${\n    \"a\" + \"b\"\n  }\n  \"\"\"\n",
         // The literal is nested inside indented syntax, so the margin moves.
         "f = (v) =>\n  v ?>\n    0 =>\n        \"\"\"\n          zero\n          \"\"\"\n    _ => \"other\"\n",
         // Two literals at different depths in one expression.
@@ -93,4 +104,13 @@ fn carriage_return_only_sources_format_without_changing_values() {
     // The bindings around the literal must survive too, not just its payload.
     assert!(formatted.contains("a = 1"), "{formatted:?}");
     assert!(formatted.contains("b = 2"), "{formatted:?}");
+}
+
+#[test]
+fn interpolation_fragments_follow_the_parser_decode_path() {
+    assert_eq!(decoded_payloads(r#""a${x}b""#), ["a", "b"]);
+    assert_eq!(
+        decoded_payloads("\"\"\"\n  head ${name} tail\n  \"\"\""),
+        ["head ", " tail"]
+    );
 }

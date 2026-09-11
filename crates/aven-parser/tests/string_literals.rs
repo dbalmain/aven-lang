@@ -79,12 +79,18 @@ fn blanks_after_the_opening_delimiter_are_not_content() {
     assert_eq!(literal("\"\"\"  \n  a\n  \"\"\""), "a");
     assert_eq!(literal("\"\"\"\t\r\n  a\r\n  \"\"\""), "a");
     assert_eq!(literal("r\"\"\" \n  a\n  \"\"\""), "a");
-    // Anything else on the opening line still has no margin to dedent against.
-    assert!(
-        parse_module("\"\"\" x\n  a\n  \"\"\"")
+    // Anything else on the opening line still has no margin to dedent against,
+    // and that one defect is one diagnostic.
+    let opener = parse_module("\"\"\" x\n  a\n  \"\"\"");
+    assert_eq!(
+        opener
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("lex.invalid-multiline-string"))
+            .map(|d| d.code.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("lex.invalid-multiline-string")],
+        "{:?}",
+        opener.diagnostics
     );
 }
 
@@ -123,5 +129,126 @@ fn rejects_malformed_multiline_layout_and_unmatched_delimiters() {
     // The public decoder is intentionally lenient even without a successful lex.
     for malformed in ["", "r", "r#", "\"", "\"\"\"", "r#\"é", "\"\"\"é\"\"\""] {
         let _ = decode_string_literal(malformed);
+    }
+}
+
+fn diagnostic_codes(source: &str) -> Vec<Option<String>> {
+    parse_module(source)
+        .diagnostics
+        .iter()
+        .map(|d| d.code.clone())
+        .collect()
+}
+
+fn interpolation_expr(source: &str) -> Vec<InterpolationSegment> {
+    let ExprKind::Interpolation(segments) = expression(source).kind else {
+        panic!("interpolation")
+    };
+    segments
+}
+
+#[test]
+fn wrapped_interpolation_in_a_multiline_string_parses() {
+    let source = "\"\"\"\n  ${\n    \"a\" + \"b\"\n  }\n  \"\"\"";
+    let segments = interpolation_expr(source);
+    assert_eq!(segments[0], InterpolationSegment::Text(String::new()));
+    let InterpolationSegment::Expr(value) = &segments[1] else {
+        panic!("expr")
+    };
+    assert_eq!(&source[value.span.start..value.span.end], "\"a\" + \"b\"");
+    assert_eq!(segments[2], InterpolationSegment::Text(String::new()));
+
+    let call = "\"\"\"\n  ${join(\n    \"a\",\n    \"b\"\n  )}\n  \"\"\"";
+    let segments = interpolation_expr(call);
+    let InterpolationSegment::Expr(value) = &segments[1] else {
+        panic!("call")
+    };
+    assert_eq!(
+        &call[value.span.start..value.span.end],
+        "join(\n    \"a\",\n    \"b\"\n  )"
+    );
+
+    let nested = "\"\"\"\n  outer ${\"\"\"\n    inner ${x}\n    \"\"\"} tail\n  \"\"\"";
+    assert!(
+        parse_module(nested).diagnostics.is_empty(),
+        "{:?}",
+        parse_module(nested).diagnostics
+    );
+
+    let chain = "\"\"\"\n  ${value\n    .foo()}\n  \"\"\"";
+    let segments = interpolation_expr(chain);
+    let InterpolationSegment::Expr(value) = &segments[1] else {
+        panic!("chain")
+    };
+    assert_eq!(
+        &chain[value.span.start..value.span.end],
+        "value\n    .foo()"
+    );
+}
+
+#[test]
+fn infix_split_across_lines_is_not_a_continued_interpolation() {
+    // Matching `("a"\n  + "b")`: a newline does not continue `+`.
+    let source = "\"\"\"\n  ${\"a\"\n    + \"b\"}\n  \"\"\"";
+    let codes = diagnostic_codes(source);
+    assert!(
+        codes
+            .iter()
+            .any(|code| code.as_deref() == Some("parse.interpolation-continuation")),
+        "{codes:?}"
+    );
+    assert!(
+        !codes
+            .iter()
+            .any(|code| code.as_deref() == Some("lex.unterminated-interpolation")),
+        "lexer must not reject a multiline hole as unterminated: {codes:?}"
+    );
+}
+
+#[test]
+fn margin_validation_includes_lines_inside_interpolation_holes() {
+    let under = "\"\"\"\n  head ${\n x\n  }\n  \"\"\"";
+    assert_eq!(
+        diagnostic_codes(under),
+        [Some("lex.invalid-multiline-string".into())],
+        "{under:?}"
+    );
+
+    let at_margin = "\"\"\"\n  head ${\n  x\n  }\n  \"\"\"";
+    assert!(
+        parse_module(at_margin).diagnostics.is_empty(),
+        "{:?}",
+        parse_module(at_margin).diagnostics
+    );
+
+    let deeper = "\"\"\"\n  head ${\n    x\n  }\n  \"\"\"";
+    assert!(
+        parse_module(deeper).diagnostics.is_empty(),
+        "{:?}",
+        parse_module(deeper).diagnostics
+    );
+}
+
+#[test]
+fn malformed_triple_opener_is_one_diagnostic() {
+    for source in [
+        "\"\"\"text",
+        "\"\"\"text\"\"\"",
+        "\"\"\"text\n  a\n  \"\"\"",
+        "\"\"\"  x\n  a\n  \"\"\"",
+    ] {
+        let codes = diagnostic_codes(source);
+        assert_eq!(
+            codes,
+            [Some("lex.invalid-multiline-string".into())],
+            "{source:?}: {codes:?}"
+        );
+        assert!(
+            parse_module(source).diagnostics[0]
+                .message
+                .contains("must start on the next line"),
+            "{source:?}: {:?}",
+            parse_module(source).diagnostics
+        );
     }
 }

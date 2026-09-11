@@ -1,0 +1,2 @@
+error lex.invalid-multiline-string: multiline content must have at least the closing delimiter's space indentation, and the closer must start on its own line
+  label 22..24: multiline content must have at least the closing delimiter's space indentation, and the closer must start on its own line

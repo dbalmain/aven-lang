@@ -383,6 +383,7 @@ fn parse_module_with_file_id(
             operator_fixities,
             role,
             match_arm_body_depth: 0,
+            interpolation_depth: 0,
         };
         let module = parser.parse_module();
         (module, parser.diagnostics)
@@ -412,6 +413,9 @@ struct Parser<'a> {
     /// detect a following `pattern =>` written at body indent (layout error)
     /// without rewriting the general unsupported-remainder fallback.
     match_arm_body_depth: u32,
+    /// Nesting depth while parsing `${...}` holes. Layout indent is suspended
+    /// inside a hole, so a newline before `.` still continues a method chain.
+    interpolation_depth: u32,
 }
 
 /// Whether an entry loop is parsing a record `{...}`, a set/variant `@{...}`,
@@ -1382,7 +1386,7 @@ impl Parser<'_> {
             index += 1;
         }
 
-        if opened == 0 && !chain_open {
+        if opened == 0 && !chain_open && self.interpolation_depth == 0 {
             return None;
         }
 
@@ -2000,9 +2004,11 @@ impl Parser<'_> {
             &start_text,
         ))];
         self.advance();
+        self.interpolation_depth += 1;
 
         loop {
-            if self.at_end() || self.at_item_boundary() {
+            self.skip_collection_trivia();
+            if self.at_end() {
                 break;
             }
 
@@ -2014,6 +2020,7 @@ impl Parser<'_> {
             end = value.span.end;
             segments.push(InterpolationSegment::Expr(value));
 
+            self.skip_collection_trivia();
             let Some(token) = self.current().cloned() else {
                 break;
             };
@@ -2039,6 +2046,7 @@ impl Parser<'_> {
             }
         }
 
+        self.interpolation_depth = self.interpolation_depth.saturating_sub(1);
         Expr {
             kind: ExprKind::Interpolation(segments),
             span: Span::new(start, end),
