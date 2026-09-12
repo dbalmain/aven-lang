@@ -1177,7 +1177,12 @@ impl<'a> Checker<'a> {
             // runtime name. Recording it here is what lets a demand inside a
             // function reach a local helper or literal; parameters are deliberately
             // absent, so they stay blocked.
-            self.record_local_value(&binding.name, &binding.value, binding.shadow_span.is_some());
+            self.record_local_value(
+                &binding.name,
+                &binding.value,
+                binding.annotation.as_ref(),
+                binding.shadow_span.is_some(),
+            );
         }
 
         if declaration.phase == DeclarationPhase::Comptime
@@ -1634,7 +1639,14 @@ impl<'a> Checker<'a> {
         // runtime name. Recording it is what lets a demand inside a function
         // reach a local helper or literal; parameters and match binders are
         // deliberately absent, so they stay blocked from evaluation.
-        self.record_local_value(&binding.name, &binding.value, binding.shadow_span.is_some());
+        self.record_local_value(
+            &binding.name,
+            &binding.value,
+            signature
+                .map(|signature| &signature.annotation)
+                .or(binding.annotation.as_ref()),
+            binding.shadow_span.is_some(),
+        );
         self.check_runtime_binding_liftability(&binding.value);
 
         let signature_type = signature.map(|signature| {

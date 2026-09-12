@@ -443,6 +443,67 @@ impl<'a> Checker<'a> {
         ty
     }
 
+    /// The primitive family a demand could observe, if any.
+    ///
+    /// A `Money = Int { toText(): Text => "money" }` is an `Int` that renders
+    /// as `money`, and the brand is attached by an elaboration the checker
+    /// records as it goes. A comptime demand evaluates definitions directly,
+    /// without those elaborations, so `comptime("${price}")` would render the
+    /// bare payload and certify `"99"` for a program that prints `money`.
+    ///
+    /// Rather than reproduce every position where a literal may be branded ---
+    /// binding and signature annotations, parameter and return annotations,
+    /// fields, arguments --- this refuses the demand whenever a family is
+    /// anywhere in its reach. A family can only enter by being *named*, so
+    /// walking the demanded expression together with the definitions it can
+    /// reach, annotations included, catches every case. Over-refusal costs an
+    /// error message; under-refusal costs a wrong answer.
+    fn demand_reaches_primitive_family<'b>(&'b self, expr: &'b Expr) -> Option<&'b str> {
+        let mut seen = HashSet::new();
+        let mut pending = vec![expr];
+        let mut names = Vec::new();
+        while let Some(current) = pending.pop() {
+            names.clear();
+            collect_expr_names(current, &mut names);
+            for name in names.drain(..) {
+                if self.names_a_primitive_family(name) {
+                    return Some(name);
+                }
+                if !seen.insert(name) {
+                    continue;
+                }
+                // Every local binding of the name, not just the nearest: a
+                // demand can reach an earlier one through a closure written
+                // between the two.
+                for (local_name, local) in self.local_types.values_in_scope() {
+                    if local_name == name {
+                        pending.push(&local.initializer);
+                        pending.extend(local.annotation.as_ref());
+                    }
+                }
+                if let Some(Some(binding)) = self.bindings.get(name) {
+                    pending.push(&binding.value);
+                    pending.extend(binding.annotation.as_ref());
+                }
+                pending.extend(self.annotations.get(name).copied());
+            }
+        }
+        None
+    }
+
+    /// Does this name denote a primitive family? The family's own key is
+    /// path-qualified and not worth showing anyone; the name as written is.
+    fn names_a_primitive_family(&self, name: &str) -> bool {
+        let owner = self
+            .named_family_aliases
+            .get(name)
+            .map(String::as_str)
+            .unwrap_or(name);
+        self.named_families
+            .get(owner)
+            .is_some_and(|family| family.primitive_base.is_some())
+    }
+
     /// Actual values, rather than broad intermediate types, cross this boundary.
     pub(super) fn evaluate_known_expression(
         &self,
@@ -4110,9 +4171,18 @@ impl<'a> Checker<'a> {
         // evaluable now. Its value is the call's compile-time evidence: the
         // proof a later annotation or typed argument can demand, recorded
         // beside the ordinary result type rather than folded into it.
-        self.pending_known = self
-            .evaluate_known_expression(&body_env, &body, &body_comptime_values)
-            .ok()
+        // A family in reach makes the evaluation's *value* untrustworthy even
+        // where the evaluation itself succeeds, so the specialization keeps
+        // working and only the proof is withheld. Refusing the evaluation
+        // instead would break an honest `comptime(price)` pin, which never
+        // needed a proof to begin with.
+        let family_in_reach = self.demand_reaches_primitive_family(&body).is_some()
+            || args
+                .iter()
+                .any(|arg| self.demand_reaches_primitive_family(arg).is_some());
+        self.pending_known = (!family_in_reach)
+            .then(|| self.evaluate_known_expression(&body_env, &body, &body_comptime_values))
+            .and_then(Result::ok)
             .as_ref()
             .and_then(knowledge::Known::from_value);
         self.local_comptime_values.pop();
@@ -5229,6 +5299,9 @@ impl<'a> Checker<'a> {
                     self.record_local_value(
                         &binding.name,
                         &binding.value,
+                        signature
+                            .map(|signature| &signature.annotation)
+                            .or(binding.annotation.as_ref()),
                         binding.shadow_span.is_some(),
                     );
                     // A local function may call itself; bind it before inferring
@@ -5922,4 +5995,15 @@ enum LabelSetEvaluation {
     NotComptime,
     /// The expression is comptime-known but is not a set of field names.
     NotAKeySet,
+}
+
+/// Every name mentioned anywhere inside an expression, including its
+/// annotations. Deliberately syntactic: a name that is shadowed, or is a field
+/// label, still counts, because the only use is deciding whether something
+/// *might* be in reach.
+fn collect_expr_names<'a>(expr: &'a Expr, names: &mut Vec<&'a str>) {
+    if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &expr.kind {
+        names.push(name);
+    }
+    walk_expr_children(expr, &mut |child| collect_expr_names(child, names));
 }

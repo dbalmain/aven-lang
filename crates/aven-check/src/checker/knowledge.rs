@@ -153,9 +153,15 @@ impl<'a> Checker<'a> {
         self.local_types.pop_values();
     }
 
-    pub(super) fn record_local_value(&mut self, name: &str, initializer: &Expr, shadows: bool) {
+    pub(super) fn record_local_value(
+        &mut self,
+        name: &str,
+        initializer: &Expr,
+        annotation: Option<&Expr>,
+        shadows: bool,
+    ) {
         self.local_types
-            .define_value(name, initializer.clone(), shadows);
+            .define_value(name, initializer.clone(), annotation.cloned(), shadows);
     }
 
     /// Every local value in scope, in written order.

@@ -55,6 +55,10 @@ pub(crate) struct LocalTypeScopes {
 #[derive(Debug, Clone)]
 pub(crate) struct LocalValue {
     pub(crate) initializer: Expr,
+    /// The binding's declared type, when it has one. Kept because a demand
+    /// has to know whether evaluating this binding could involve a primitive
+    /// family, and that is written in the annotation rather than the value.
+    pub(crate) annotation: Option<Expr>,
     /// Written with `:=`. The initializer runs before this binding exists, so
     /// it resolves the binding being shadowed --- `x := x + 1` reads the
     /// previous `x` --- rather than itself.
@@ -88,7 +92,13 @@ impl LocalTypeScopes {
         self.values.pop();
     }
 
-    pub(crate) fn define_value(&mut self, name: &str, initializer: Expr, shadows: bool) {
+    pub(crate) fn define_value(
+        &mut self,
+        name: &str,
+        initializer: Expr,
+        annotation: Option<Expr>,
+        shadows: bool,
+    ) {
         if name == "_" {
             return;
         }
@@ -97,6 +107,7 @@ impl LocalTypeScopes {
                 name.to_owned(),
                 LocalValue {
                     initializer,
+                    annotation,
                     shadows,
                 },
             ));

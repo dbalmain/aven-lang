@@ -16208,3 +16208,34 @@ fn a_shadowing_initializer_reads_its_predecessor() {
         "f = () =>\n{BODY}  checked: 1 = result\n  checked\nf()\n"
     ));
 }
+
+/// A demand that can reach a primitive family proves nothing.
+///
+/// `Money = Int { toText(): Text => "money" }` is an `Int` that renders as
+/// `money`, and the brand arrives through an elaboration the checker records
+/// as it goes. Comptime evaluation runs the definitions without those
+/// elaborations, so `comptime("${price}")` renders the bare payload: the
+/// evidence says `"99"` for a program that prints `money`.
+///
+/// The repair withholds the proof rather than refusing the evaluation, so a
+/// pin of a family value still works and only the certification is lost. Both
+/// spellings are therefore rejected --- the wrong one and the right one alike
+/// --- which is the support limitation this pins, not an endorsement. Widening
+/// it needs runtime-equivalent family elaboration inside the demand.
+#[test]
+fn a_demand_reaching_a_primitive_family_proves_nothing() {
+    const FAMILY: &str = "Money = Int {\n  toText(): Text => \"money\"\n}\nprice: Money = 99\n";
+
+    // What the evaluation would have rendered, and what running prints.
+    for expected in ["\"99\"", "\"money\""] {
+        assert_rejects(&format!(
+            "{FAMILY}text = comptime(\"${{price}}\")\nchecked: {expected} = text\nchecked\n"
+        ));
+    }
+
+    // A demand that cannot reach the family is unaffected, so the guard is
+    // about reach rather than about the module declaring a family at all.
+    assert_checks(&format!(
+        "{FAMILY}n = 99\ntext = comptime(\"${{n}}\")\nchecked: \"99\" = text\nprice\n"
+    ));
+}
