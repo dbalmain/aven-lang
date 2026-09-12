@@ -21,7 +21,23 @@ use super::*;
 /// cannot keep an evaluator environment alive. `from_value` is the only
 /// constructor and enforces that.
 #[derive(Debug, Clone)]
-pub(crate) struct Known(aven_eval::Value);
+pub(crate) struct Known {
+    value: aven_eval::Value,
+    provenance: Provenance,
+}
+
+/// Why a value is known, which decides what it is allowed to answer.
+///
+/// A demanded proof was asked for: the author wrote `comptime(...)`, or a
+/// specialization needed the value to exist. An opportunistic one was not ---
+/// the checker simply found that an ordinary call could be evaluated. Both are
+/// equally *true*; they differ in what may be built on them. See
+/// `opportunistic_proof_may_answer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Provenance {
+    Demanded,
+    Opportunistic,
+}
 
 impl Known {
     /// Project an evaluator value into transportable evidence, or refuse.
@@ -87,15 +103,29 @@ impl Known {
     /// Widening it is a language decision about where branding applies, and
     /// belongs with whoever owns that rule.
     pub(crate) fn from_value(value: &aven_eval::Value) -> Option<Self> {
+        Self::from_value_with(value, Provenance::Demanded)
+    }
+
+    pub(crate) fn from_value_with(
+        value: &aven_eval::Value,
+        provenance: Provenance,
+    ) -> Option<Self> {
         match value {
             aven_eval::Value::Int(_)
             | aven_eval::Value::Float(_)
             | aven_eval::Value::Text(_)
             | aven_eval::Value::Bool(_)
             | aven_eval::Value::Undefined
-            | aven_eval::Value::Null => Some(Self(value.clone())),
+            | aven_eval::Value::Null => Some(Self {
+                value: value.clone(),
+                provenance,
+            }),
             _ => None,
         }
+    }
+
+    pub(super) fn provenance(&self) -> Provenance {
+        self.provenance
     }
 
     /// The literal spelling of this evidence, for comparison against literal
@@ -103,12 +133,12 @@ impl Known {
     /// says what the program would actually produce. The two empties have no
     /// literal spelling and never satisfy a demand.
     pub(super) fn literal(&self) -> Option<Literal> {
-        match &self.0 {
+        match &self.value {
             aven_eval::Value::Bool(value) => Some(Literal::Bool(*value)),
             aven_eval::Value::Int(_) | aven_eval::Value::Float(_) => {
-                Some(Literal::Number(aven_eval::display_text(&self.0).ok()?))
+                Some(Literal::Number(aven_eval::display_text(&self.value).ok()?))
             }
-            aven_eval::Value::Text(_) => Some(Literal::String(aven_eval::repr_text(&self.0))),
+            aven_eval::Value::Text(_) => Some(Literal::String(aven_eval::repr_text(&self.value))),
             _ => None,
         }
     }
@@ -197,13 +227,19 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Evidence for an expression, if a comptime demand established any.
+    /// Evidence for an expression, if anything established any.
     ///
-    /// Evidence is never derived here. A value is known because an explicit
-    /// demand evaluated it, not because this position went looking — that
-    /// distinction is what keeps an ordinary runtime call from certifying a
-    /// type its signature does not give, and it is why `g = f(0)` stays
-    /// `1 | 1.0` rather than becoming whichever branch happened to run.
+    /// Evidence is never *derived* here: this reads what an evaluation
+    /// recorded, and a position that has none stays unknown rather than going
+    /// looking. Two things record. An explicit demand --- `comptime(...)`, a
+    /// satisfied specialization --- records a `Demanded` proof. An ordinary
+    /// call whose inputs all happened to be known records an `Opportunistic`
+    /// one.
+    ///
+    /// Neither changes a type. `g = f(0)` still has whatever `f`'s signature
+    /// gives it, `1 | 1.0` included, however clearly this call produces `1`;
+    /// what a proof can do is answer a demand, and what an *unasked-for* proof
+    /// can answer is narrower again. See `opportunistic_proof_may_answer`.
     pub(super) fn known_for_expression(&self, expr: &Expr) -> Option<Known> {
         let expr = ungroup_expr(expr);
         if let Some(known) = self.knowledge.get(&(expr.span, self.execution_context)) {
@@ -250,6 +286,34 @@ impl<'a> Checker<'a> {
             }
             None => self.local_types.mask_proof(name),
         }
+    }
+
+    /// May an *unasked-for* proof answer this demand?
+    ///
+    /// Only a literal-type demand --- `"ab"`, `6`, `1 | 2`. The difference is
+    /// what the annotation is asking. A literal type asks about this
+    /// particular value, so answering it with that value is exactly the
+    /// question; `Int` or `Text` or `?Int` asks about the expression's
+    /// *contract*, and answering that from a folded result would check the
+    /// annotation against an implementation detail instead.
+    ///
+    /// The practical difference is what happens when the callee changes.
+    /// `total: 6 = double(3)` stops checking when `double` stops returning 6,
+    /// which is the point of writing it. `asInt: Int = f(0)` would stop
+    /// checking when `f` merely grows a runtime dependency it could no longer
+    /// be folded through --- the annotation still true, the program still
+    /// correct, the error at the annotation rather than the change. That is
+    /// the acceptance an author cannot predict, so it stays unavailable
+    /// without `comptime(...)`, where asking for it is the whole point.
+    ///
+    /// A second restriction lives at the call site: an unasked-for proof does
+    /// not discharge optionality either, however literal the demand. See
+    /// `check_value_against_declared_type`.
+    pub(super) fn opportunistic_proof_may_answer(&mut self, expected: &Type) -> bool {
+        let Type::Variant(row) = self.unifier.resolve(expected) else {
+            return false;
+        };
+        literal_variant_base(&row).is_some()
     }
 
     /// Does this evidence discharge a demand for `expected`?

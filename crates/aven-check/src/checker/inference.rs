@@ -393,7 +393,11 @@ impl<'a> Checker<'a> {
             ExprKind::Call { callee, args } => {
                 self.pending_known = None;
                 let ty = self.infer_call(env, callee, args);
-                if let Some(known) = self.pending_known.take() {
+                let known = self
+                    .pending_known
+                    .take()
+                    .or_else(|| self.opportunistically_known_call(env, expr, callee, &ty));
+                if let Some(known) = known {
                     self.record_known(expr.span, known);
                 }
                 ty
@@ -443,52 +447,44 @@ impl<'a> Checker<'a> {
         ty
     }
 
-    /// The primitive family a demand could observe, if any.
+    /// What `name` reaches as a module binding, cached.
     ///
-    /// A `Money = Int { toText(): Text => "money" }` is an `Int` that renders
-    /// as `money`, and the brand is attached by an elaboration the checker
-    /// records as it goes. A comptime demand evaluates definitions directly,
-    /// without those elaborations, so `comptime("${price}")` would render the
-    /// bare payload and certify `"99"` for a program that prints `money`.
-    ///
-    /// Rather than reproduce every position where a literal may be branded ---
-    /// binding and signature annotations, parameter and return annotations,
-    /// fields, arguments --- this refuses the demand whenever a family is
-    /// anywhere in its reach. A family can only enter by being *named*, so
-    /// walking the demanded expression together with the definitions it can
-    /// reach, annotations included, catches every case. Over-refusal costs an
-    /// error message; under-refusal costs a wrong answer.
-    fn demand_reaches_primitive_family<'b>(&'b self, expr: &'b Expr) -> Option<&'b str> {
-        let mut seen = HashSet::new();
-        let mut pending = vec![expr];
-        let mut names = Vec::new();
-        while let Some(current) = pending.pop() {
-            names.clear();
-            collect_expr_names(current, &mut names);
-            for name in names.drain(..) {
-                if self.names_a_primitive_family(name) {
-                    return Some(name);
-                }
-                if !seen.insert(name) {
-                    continue;
-                }
-                // Every local binding of the name, not just the nearest: a
-                // demand can reach an earlier one through a closure written
-                // between the two.
-                for (local_name, local) in self.local_types.values_in_scope() {
-                    if local_name == name {
-                        pending.push(&local.initializer);
-                        pending.extend(local.annotation.as_ref());
-                    }
-                }
-                if let Some(Some(binding)) = self.bindings.get(name) {
-                    pending.push(&binding.value);
-                    pending.extend(binding.annotation.as_ref());
-                }
-                pending.extend(self.annotations.get(name).copied());
-            }
+    /// Locals are deliberately absent: a local binding belongs to one scope of
+    /// one function, while this cache is keyed by name alone and lives as long
+    /// as the check. Callers walk locals themselves.
+    fn module_closure(&self, name: &str) -> Rc<ModuleClosure> {
+        if let Some(closure) = self.module_closures.borrow().get(name) {
+            return Rc::clone(closure);
         }
-        None
+
+        let mut closure = ModuleClosure::default();
+        let mut pending = vec![name.to_owned()];
+        let mut direct = Vec::new();
+        while let Some(current) = pending.pop() {
+            if !closure.names.insert(current.clone()) {
+                continue;
+            }
+            if self.names_a_primitive_family(&current) {
+                closure.reaches_primitive_family = true;
+            }
+            direct.clear();
+            if let Some(Some(binding)) = self.bindings.get(&current) {
+                collect_expr_names(&binding.value, &mut direct);
+                if let Some(annotation) = &binding.annotation {
+                    collect_expr_names(annotation, &mut direct);
+                }
+            }
+            if let Some(annotation) = self.annotations.get(&current) {
+                collect_expr_names(annotation, &mut direct);
+            }
+            pending.extend(direct.drain(..).map(str::to_owned));
+        }
+
+        let closure = Rc::new(closure);
+        self.module_closures
+            .borrow_mut()
+            .insert(name.to_owned(), Rc::clone(&closure));
+        closure
     }
 
     /// Does this name denote a primitive family? The family's own key is
@@ -504,12 +500,217 @@ impl<'a> Checker<'a> {
             .is_some_and(|family| family.primitive_base.is_some())
     }
 
+    /// Walk everything a demanded expression can reach, calling `visit` with
+    /// each name and with the closure of each module binding among them.
+    ///
+    /// Local bindings are followed inline, because they are scoped and cannot
+    /// be cached; module bindings are followed through `module_closure`, which
+    /// is why a file's worth of definitions is walked once rather than once
+    /// per demand.
+    fn walk_demand_reach(&self, expr: &Expr, mut visit: impl FnMut(DemandReach<'_>) -> bool) {
+        let mut seen = HashSet::new();
+        let mut pending = vec![expr];
+        let mut names = Vec::new();
+        while let Some(current) = pending.pop() {
+            names.clear();
+            collect_expr_names(current, &mut names);
+            for name in names.drain(..) {
+                if visit(DemandReach::Name(name)) {
+                    return;
+                }
+                if !seen.insert(name.to_owned()) {
+                    continue;
+                }
+                // Every local binding of the name, not just the nearest: a
+                // demand can reach an earlier one through a closure written
+                // between the two. Gated on a hash lookup, because the scan is
+                // proportional to the enclosing block and most names are not
+                // local at all.
+                let local = self.local_types.has_value(name);
+                if local {
+                    for (local_name, value) in self.local_types.values_in_scope() {
+                        if local_name == name {
+                            pending.push(&value.initializer);
+                            pending.extend(value.annotation.as_ref());
+                        }
+                    }
+                }
+                if !local
+                    && (self.bindings.contains_key(name) || self.annotations.contains_key(name))
+                    && visit(DemandReach::Module(self.module_closure(name)))
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The primitive family a demand could observe, if any.
+    ///
+    /// A `Money = Int { toText(): Text => "money" }` is an `Int` that renders
+    /// as `money`, and the brand is attached by an elaboration the checker
+    /// records as it goes. A comptime demand evaluates definitions directly,
+    /// without those elaborations, so `comptime("${price}")` would render the
+    /// bare payload and certify `"99"` for a program that prints `money`.
+    ///
+    /// Rather than reproduce every position where a literal may be branded ---
+    /// binding and signature annotations, parameter and return annotations,
+    /// fields, arguments --- this refuses the demand whenever a family is
+    /// anywhere in its reach. A family can only enter by being *named*, so
+    /// walking the demanded expression together with the definitions it can
+    /// reach, annotations included, catches every case. Over-refusal costs an
+    /// error message; under-refusal costs a wrong answer.
+    fn demand_reaches_primitive_family(&self, expr: &Expr) -> bool {
+        let mut found = false;
+        self.walk_demand_reach(expr, |reach| {
+            found = match reach {
+                DemandReach::Name(name) => self.names_a_primitive_family(name),
+                DemandReach::Module(closure) => closure.reaches_primitive_family,
+            };
+            found
+        });
+        found
+    }
+
+    /// Evidence for an ordinary call whose inputs all happen to be known.
+    ///
+    /// A call needs no `comptime(...)` around it to have a value the checker
+    /// could compute; `join(["a", "b"])` is `"ab"` whether or not anyone said
+    /// so. Recording that lets `script: "ab" = join(["a", "b"])` be accepted
+    /// the same way the explicitly pinned form is.
+    ///
+    /// It records a proof and never a type. `g = f(0)` still has whatever type
+    /// `f`'s signature gives it --- `1 | 1.0` stays `1 | 1.0` --- because a
+    /// value discovered here says what this call produces, not what the
+    /// function returns. An earlier attempt at this narrowed the type instead
+    /// and broke thirty-six tests, all of them saying the same thing.
+    ///
+    /// Failure is silent by construction. Nobody asked for this evaluation, so
+    /// nothing about it can be reported: an unfoldable call is exactly the
+    /// program that worked before this existed. Explicit demands keep their
+    /// own path, their own budget, and their own diagnostics.
+    fn opportunistically_known_call(
+        &mut self,
+        env: &TypeEnv,
+        expr: &Expr,
+        callee: &Expr,
+        ty: &Type,
+    ) -> Option<knowledge::Known> {
+        if !self.call_is_worth_evaluating(env, expr, callee, ty) {
+            return None;
+        }
+        let value = self
+            .evaluate_demanded_expression(env, expr, &HashMap::new(), OPPORTUNISTIC_FUEL)
+            .ok()?;
+        knowledge::Known::from_value_with(&value, knowledge::Provenance::Opportunistic)
+    }
+
+    /// The preflight: decide whether a call could possibly fold, before paying
+    /// for an evaluation.
+    ///
+    /// Evaluating is far more expensive than deciding not to, and an ordinary
+    /// file is mostly calls that cannot fold, so this has to answer cheaply and
+    /// from syntax alone. It looks past the arguments, which is the part that
+    /// is easy to get wrong: known arguments say nothing about whether the
+    /// callee's own body reaches a parameter, and a call reaching one fails
+    /// however simple its arguments look.
+    fn call_is_worth_evaluating(
+        &self,
+        env: &TypeEnv,
+        expr: &Expr,
+        callee: &Expr,
+        ty: &Type,
+    ) -> bool {
+        // A body from another source is never recorded against, so evaluating
+        // it would buy nothing at all.
+        if self.foreign_body_depth > 0 {
+            return false;
+        }
+        // An uppercase callee is a type-level computation, and a comptime
+        // function --- `comptime(...)` among them --- already evaluated through
+        // machinery that owns the result and reports its own failures. Quietly
+        // re-evaluating either would either duplicate work or, worse, supply a
+        // proof that path had deliberately withheld.
+        if call_callee_name(callee)
+            .is_some_and(|name| name.chars().next().is_some_and(char::is_uppercase))
+            || self.comptime_param_function(env, callee).is_some()
+        {
+            return false;
+        }
+        // Nothing to certify, or nothing coherent to certify it against.
+        if !matches!(
+            self.unifier.resolve(ty),
+            Type::Variant(_) | Type::Named(_) | Type::Optional(_) | Type::Nullable(_)
+        ) || type_contains_error(ty)
+            || type_contains_deferred(ty)
+        {
+            return false;
+        }
+
+        let mut worth = true;
+        self.walk_demand_reach(expr, |reach| {
+            worth = match reach {
+                DemandReach::Name(name) => {
+                    !self.demand_blocks_name(env, name) && !self.names_a_primitive_family(name)
+                }
+                // Asked of the closure rather than of the blocked set, because
+                // a definition reaches a handful of names while the block
+                // around a call may hold a thousand.
+                DemandReach::Module(closure) => {
+                    !closure.reaches_primitive_family
+                        && !closure
+                            .names
+                            .iter()
+                            .any(|name| self.demand_blocks_name(env, name))
+                }
+            };
+            !worth
+        });
+        worth
+    }
+
+    /// Is this a name a demand cannot resolve --- a runtime local, or a prelude
+    /// export only reachable through its qualifier?
+    ///
+    /// Every test is a hash lookup, and the one that is not --- whether a local
+    /// name also has an evaluable value --- is reached only for names already
+    /// known to be local. This runs for every name of every candidate call, so
+    /// anything proportional to the size of the enclosing block would be
+    /// quadratic in it.
+    fn demand_blocks_name(&self, env: &TypeEnv, name: &str) -> bool {
+        if self.local_types.declares(name) || env.contains_key(name) {
+            return !self.local_types.has_value(name);
+        }
+        if self.pattern_bindings.contains_key(name) {
+            return true;
+        }
+        self.imports.prelude_qualified_exports().contains_key(name)
+            && self.globals.iter().any(|(global, _)| global == name)
+    }
+
     /// Actual values, rather than broad intermediate types, cross this boundary.
     pub(super) fn evaluate_known_expression(
         &self,
         env: &TypeEnv,
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Result<aven_eval::Value, Diagnostic> {
+        self.evaluate_demanded_expression(env, expr, bindings, DEMAND_FUEL)
+    }
+
+    /// The same, with the budget the caller is entitled to.
+    ///
+    /// An explicit demand and an opportunistic fold get separate budgets, and
+    /// each demand gets its own rather than drawing on a shared pool. A typed
+    /// proof must not start failing because unrelated calls elsewhere in the
+    /// file spent the allowance first --- whether a program checks cannot
+    /// depend on how much folding happened above it.
+    fn evaluate_demanded_expression(
+        &self,
+        env: &TypeEnv,
+        expr: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+        fuel: u64,
     ) -> Result<aven_eval::Value, Diagnostic> {
         if self.imports.prelude_requires_elaboration() {
             return Err(Diagnostic::error("prelude value evaluation requires runtime elaborations that are not yet available at compile time")
@@ -595,7 +796,7 @@ impl<'a> Checker<'a> {
                 active_boundary: initialization_boundary,
                 locals,
                 blocked_locals: blocked,
-                fuel: 100_000,
+                fuel,
             },
         )
     }
@@ -4197,10 +4398,10 @@ impl<'a> Checker<'a> {
         // working and only the proof is withheld. Refusing the evaluation
         // instead would break an honest `comptime(price)` pin, which never
         // needed a proof to begin with.
-        let family_in_reach = self.demand_reaches_primitive_family(&body).is_some()
+        let family_in_reach = self.demand_reaches_primitive_family(&body)
             || args
                 .iter()
-                .any(|arg| self.demand_reaches_primitive_family(arg).is_some());
+                .any(|arg| self.demand_reaches_primitive_family(arg));
         self.pending_known = (!family_in_reach)
             .then(|| self.evaluate_known_expression(&body_env, &body, &body_comptime_values))
             .and_then(Result::ok)
@@ -6016,6 +6217,22 @@ enum LabelSetEvaluation {
     NotComptime,
     /// The expression is comptime-known but is not a set of field names.
     NotAKeySet,
+}
+
+/// What an explicit demand may evaluate. Generous, because a demand that runs
+/// out has to be reported as a failure the author must work around.
+const DEMAND_FUEL: u64 = 100_000;
+
+/// What an opportunistic fold may evaluate. Much smaller, because nobody asked
+/// for it: a call that would need more simply stays unproved, which is what it
+/// was before folding existed.
+const OPPORTUNISTIC_FUEL: u64 = 10_000;
+
+/// What a demand reaches: a name written somewhere in it, or everything one
+/// module binding among those names reaches in turn.
+enum DemandReach<'a> {
+    Name(&'a str),
+    Module(Rc<ModuleClosure>),
 }
 
 /// Every name mentioned anywhere inside an expression, including its

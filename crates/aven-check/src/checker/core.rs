@@ -67,6 +67,7 @@ impl<'a> Checker<'a> {
             foreign_body_depth: 0,
             comptime_definitions: std::cell::OnceCell::new(),
             comptime_session: std::cell::OnceCell::new(),
+            module_closures: RefCell::new(HashMap::new()),
             pending_known: None,
         }
     }
@@ -900,9 +901,11 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn collect_top_level_environment(&mut self, module: &'a Module) {
-        // The shared definition map is derived from `bindings`, so anything
-        // that adds to them invalidates it.
+        // The shared definition map and the reachability cache are both
+        // derived from `bindings`, so anything that adds to them invalidates
+        // both.
         self.comptime_definitions.take();
+        self.module_closures.borrow_mut().clear();
         for declaration in collect_declarations(module) {
             if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
                 self.annotations

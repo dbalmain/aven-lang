@@ -16239,3 +16239,82 @@ fn a_demand_reaching_a_primitive_family_proves_nothing() {
         "{FAMILY}n = 99\ntext = comptime(\"${{n}}\")\nchecked: \"99\" = text\nprice\n"
     ));
 }
+
+/// An ordinary call proves a literal demand, without `comptime(...)`.
+///
+/// `join(["a", "b"])` is `"a-b"` whether or not anyone asked, and a literal
+/// annotation is a statement about this particular value, so answering it with
+/// that value is exactly the question it posed. The wrong literal still fails,
+/// and so does a call whose argument only exists at runtime --- which is the
+/// preflight's job, and the case that distinguishes folding from guessing.
+#[test]
+fn an_ordinary_call_proves_a_literal_demand() {
+    const JOIN: &str = "join = (parts: Array(Text)): Text => parts.joinWith(\"-\")\n";
+
+    assert_checks(&format!(
+        "{JOIN}script: \"a-b\" = join([\"a\", \"b\"])\nscript\n"
+    ));
+    assert_rejects(&format!(
+        "{JOIN}script: \"a+b\" = join([\"a\", \"b\"])\nscript\n"
+    ));
+    assert_rejects(&format!(
+        "{JOIN}f = (x: Text) =>\n  script: \"a-b\" = join([\"a\", x])\n  script\nf(\"b\")\n"
+    ));
+}
+
+/// A demand reached through a local helper, and through what that helper
+/// captured, folds the same way.
+#[test]
+fn an_ordinary_call_proves_a_demand_through_a_local_helper() {
+    assert_checks(
+        "f = () =>\n  suffix = \"!\"\n  shout = (word: Text): Text => word + suffix\n  greeting: \"hi!\" = shout(\"hi\")\n  greeting\nf()\n",
+    );
+    assert_rejects(
+        "f = () =>\n  suffix = \"!\"\n  shout = (word: Text): Text => word + suffix\n  greeting: \"hi?\" = shout(\"hi\")\n  greeting\nf()\n",
+    );
+}
+
+/// An unasked-for proof answers a literal demand and nothing wider.
+///
+/// `f(0)` really is `1`, so an implementation that folded without regard to
+/// what was being demanded would accept `Int` here. It stays rejected because
+/// `Int` asks about the expression's contract rather than about this value:
+/// accepting it would mean the annotation held only while the checker could
+/// still fold `f`, so adding a runtime dependency anywhere inside `f` would
+/// break an annotation that was never wrong. Writing `comptime(...)` is how an
+/// author asks for it anyway.
+#[test]
+fn an_unasked_proof_answers_a_literal_demand_and_nothing_wider() {
+    const F: &str = "f = (x) =>\n  x ?>\n    0 => 1\n    _ => 1.0\n";
+
+    assert_checks(&format!("{F}g = f(0)\nasOne: 1 = g\nasOne\n"));
+    assert_rejects(&format!("{F}g = f(0)\nasInt: Int = g\nasInt\n"));
+    assert_checks(&format!("{F}g = comptime(f(0))\nasInt: Int = g\nasInt\n"));
+}
+
+/// An unasked-for proof does not discharge optionality, however literal the
+/// demand.
+///
+/// That a value exists is a safety claim, not a question about which literal
+/// it is, and it is the one an author should have to make deliberately. The
+/// lookup really does find `1`; `comptime(...)` is where saying so belongs.
+#[test]
+fn an_unasked_proof_does_not_discharge_optionality() {
+    const MAP: &str = "m = Map.from([(\"a\", 1)])\n";
+
+    assert_rejects(&format!("{MAP}found: 1 = m.get(\"a\")\nfound\n"));
+    assert_checks(&format!("{MAP}found: 1 = comptime(m.get(\"a\"))\nfound\n"));
+    assert_checks(&format!("{MAP}found: Int = m.get(\"a\") ?? 0\nfound\n"));
+}
+
+/// Folding stops at a primitive family, the same way an explicit demand does.
+#[test]
+fn an_ordinary_call_reaching_a_primitive_family_proves_nothing() {
+    const FAMILY: &str = "Money = Int {\n  toText(): Text => \"money\"\n}\nprice: Money = 99\nshow = (): Text => \"${price}\"\n";
+
+    for expected in ["\"99\"", "\"money\""] {
+        assert_rejects(&format!("{FAMILY}text: {expected} = show()\ntext\n"));
+    }
+    // The same call shape with no family in reach still folds.
+    assert_checks("n = 99\nshow = (): Text => \"${n}\"\ntext: \"99\" = show()\ntext\n");
+}

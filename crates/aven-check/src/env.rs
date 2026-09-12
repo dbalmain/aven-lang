@@ -32,6 +32,11 @@ pub(crate) struct LocalTypeScopes {
     /// `x = 1` and `x := 2` captures the first `x`, and a map keyed by name
     /// can only remember the last one. See `local_definition_layers`.
     values: Vec<Vec<(String, LocalValue)>>,
+    /// The names in `values`, per scope, so asking whether a name has a local
+    /// value is a hash lookup rather than a scan. A block with a thousand
+    /// bindings is scanned once per call otherwise, which is quadratic in the
+    /// block's own size.
+    value_names: Vec<HashSet<String>>,
     /// Compile-time evidence for a binding's value, scoped alongside `scopes`
     /// so a proof cannot outlive the binding that earned it.
     ///
@@ -70,6 +75,7 @@ impl LocalTypeScopes {
         self.scopes.push(HashMap::new());
         self.pins.push(HashMap::new());
         self.values.push(Vec::new());
+        self.value_names.push(HashSet::new());
         self.proofs.push(HashMap::new());
     }
 
@@ -77,6 +83,7 @@ impl LocalTypeScopes {
         self.scopes.pop();
         self.pins.pop();
         self.values.pop();
+        self.value_names.pop();
         self.proofs.pop();
     }
 
@@ -86,10 +93,12 @@ impl LocalTypeScopes {
     /// during inference must see them exactly as one reached during checking.
     pub(crate) fn push_values(&mut self) {
         self.values.push(Vec::new());
+        self.value_names.push(HashSet::new());
     }
 
     pub(crate) fn pop_values(&mut self) {
         self.values.pop();
+        self.value_names.pop();
     }
 
     pub(crate) fn define_value(
@@ -111,6 +120,9 @@ impl LocalTypeScopes {
                     shadows,
                 },
             ));
+        }
+        if let Some(names) = self.value_names.last_mut() {
+            names.insert(name.to_owned());
         }
     }
 
@@ -194,6 +206,18 @@ impl LocalTypeScopes {
 
     pub(crate) fn free_row_vars(&self, resolve: impl FnMut(&Type) -> Type) -> Vec<u32> {
         free_row_vars_in_local_values(self.scopes.iter().flat_map(|scope| scope.values()), resolve)
+    }
+
+    /// Is this name a local *type* --- a binding, parameter or binder in some
+    /// enclosing scope?
+    pub(crate) fn declares(&self, name: &str) -> bool {
+        self.scopes.iter().any(|scope| scope.contains_key(name))
+    }
+
+    /// Does this name have a local value a demand could evaluate? Parameters
+    /// and match binders do not, which is exactly what makes them opaque.
+    pub(crate) fn has_value(&self, name: &str) -> bool {
+        self.value_names.iter().any(|names| names.contains(name))
     }
 
     pub(crate) fn inference_env(&self) -> TypeEnv {

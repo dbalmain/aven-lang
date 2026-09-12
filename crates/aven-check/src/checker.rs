@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use std::rc::Rc;
 
@@ -179,11 +180,32 @@ pub(crate) struct Checker<'a> {
     /// The evaluator prepared for this check: intrinsics, ambient `std` method
     /// sets, and the prelude, all built once. See `comptime_session`.
     comptime_session: std::cell::OnceCell<Result<aven_eval::ComptimeSession, Diagnostic>>,
+    /// What each module binding's definition reaches, transitively. Module
+    /// bindings and their annotations are fixed once the top-level environment
+    /// is collected, so a closure computed once stays true, and the preflight
+    /// that runs before every foldable call can afford to consult it.
+    module_closures: RefCell<HashMap<String, Rc<ModuleClosure>>>,
     /// Nonzero while a function body from another source is being inferred.
     /// Its spans address the defining file, and a `Span` carries no file
     /// identity, so recording evidence against one would let two files'
     /// unrelated expressions share a proof.
     foreign_body_depth: usize,
+}
+
+/// Everything one module binding's definition can reach, following names
+/// through other module bindings and through both their annotations and their
+/// values.
+///
+/// Syntactic and deliberately generous: a shadowed name, or a name that only
+/// appears in a nested lambda, still counts. Every question asked of this is
+/// one where a false "yes" costs a fold that would not have helped, and a
+/// false "no" costs a wrong answer.
+#[derive(Debug, Default)]
+pub(crate) struct ModuleClosure {
+    names: HashSet<String>,
+    /// Whether any of those names denotes a primitive family, precomputed
+    /// because it is asked far more often than it changes.
+    reaches_primitive_family: bool,
 }
 
 #[derive(Debug, Clone)]
