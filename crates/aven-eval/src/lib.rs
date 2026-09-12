@@ -1516,6 +1516,43 @@ impl Environment {
         }
     }
 
+    /// A child used to evaluate a closure's body when it is called from
+    /// `active`, the environment actually driving this call.
+    ///
+    /// `self` (the closure's own captured environment) supplies everything
+    /// lexical: the scope chain a free variable resolves against, imports,
+    /// and ambient/family tables. `active` supplies everything dynamic: fuel,
+    /// the comptime boundary, and scope-registry membership. A prepared
+    /// closure's own environment was fixed once, at preparation time, with
+    /// unlimited fuel and no registry --- without this split, every call into
+    /// it would run with that time's budget and leave its scopes untracked by
+    /// the demand that is actually spending fuel and will actually release
+    /// them, rather than the call's own. A local closure defined within the
+    /// same demand already shares `active`'s fuel/registry `Rc`s, so this is
+    /// a no-op for it.
+    fn call_child(&self, active: &Environment) -> Self {
+        let scope = Rc::new(Scope::new(Some(Rc::clone(&self.scope))));
+        if let Some(registry) = &active.scope_registry {
+            registry.borrow_mut().push(Rc::downgrade(&scope));
+        }
+        Self {
+            scope,
+            source: self.source.as_ref().map(Rc::clone),
+            imports: Rc::clone(&self.imports),
+            builtin_methods: self.builtin_methods.clone(),
+            slot_reifications: Rc::clone(&self.slot_reifications),
+            direct_slot_inits: Rc::clone(&self.direct_slot_inits),
+            primitive_families: Rc::clone(&self.primitive_families),
+            family_descriptors: Rc::clone(&active.family_descriptors),
+            allow_builtin_method_attachments: self.allow_builtin_method_attachments,
+            stack_segment_limit: self.stack_segment_limit,
+            stack_growth: self.stack_growth,
+            fuel: Rc::clone(&active.fuel),
+            comptime_boundary: Rc::clone(&active.comptime_boundary),
+            scope_registry: active.scope_registry.clone(),
+        }
+    }
+
     /// A child scope whose `blocked` set is fixed before it is shared. The set
     /// cannot be written afterwards: registering the scope takes a `Weak`, and
     /// `Rc::get_mut` refuses any `Rc` that has one.
@@ -3401,7 +3438,7 @@ fn apply_callee_values(
             member,
             implementation,
         } => apply_unbound_named_method(descriptor, &member, implementation, arg_values, span),
-        Value::Closure(closure) => apply_closure_values(closure, arg_values, span),
+        Value::Closure(closure) => apply_closure_values(closure, arg_values, span, None),
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
     }
 }
@@ -3477,7 +3514,7 @@ fn apply_named_method(
             let mut values = Vec::with_capacity(args.len() + 1);
             values.push(receiver);
             values.extend(args);
-            apply_closure_values(implementation, values, span)
+            apply_closure_values(implementation, values, span, None)
         }
         NamedMethodImplementation::Inherited(implementation) => {
             apply_inherited_primitive_method(receiver, implementation, args, span)
@@ -4065,10 +4102,21 @@ fn apply_closure(closure: Closure, args: &[Expr], span: Span, env: &Environment)
     for arg in args {
         arg_values.push(eval_expr_many(arg, env)?);
     }
-    apply_closure_values(closure, arg_values, span)
+    apply_closure_values(closure, arg_values, span, Some(env))
 }
 
-fn apply_closure_values(closure: Closure, arg_values: Vec<Value>, span: Span) -> Eval {
+/// `active` is the environment actually driving this call, when one is
+/// available --- see `Environment::call_child`. Callers reached only through
+/// `NativeContext`, which does not carry an environment, pass `None` and fall
+/// back to the closure's own captured fuel/registry; closing that gap is
+/// unfinished, tracked as a known limitation rather than silently assumed
+/// fixed.
+fn apply_closure_values(
+    closure: Closure,
+    arg_values: Vec<Value>,
+    span: Span,
+    active: Option<&Environment>,
+) -> Eval {
     let (required, total) = closure_arity(&closure);
     let provided = arg_values.len();
     if provided < required || provided > total {
@@ -4077,7 +4125,7 @@ fn apply_closure_values(closure: Closure, arg_values: Vec<Value>, span: Span) ->
         )));
     }
 
-    bind_and_eval_closure(closure, arg_values, provided, span)
+    bind_and_eval_closure(closure, arg_values, provided, span, active)
 }
 
 /// Call a value with already-evaluated arguments.
@@ -4222,8 +4270,12 @@ fn bind_and_eval_closure(
     arg_values: Vec<Value>,
     provided: usize,
     span: Span,
+    active: Option<&Environment>,
 ) -> Eval {
-    let call_env = closure.env.child();
+    let call_env = match active {
+        Some(active) => closure.env.call_child(active),
+        None => closure.env.child(),
+    };
     for (param, value) in closure.params.iter().zip(arg_values) {
         call_env.bind(param.name.clone(), value);
     }

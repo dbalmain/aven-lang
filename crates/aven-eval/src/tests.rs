@@ -13,6 +13,7 @@ use proptest::test_runner::TestCaseError;
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
+mod prepared_call_budget;
 mod reflection;
 mod scope_release;
 

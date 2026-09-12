@@ -151,7 +151,7 @@ fn override_to_text(
 }
 
 fn apply_to_text_closure(closure: Closure, receiver: &Value, span: Span) -> Eval<String> {
-    let result = apply_closure_values(closure, vec![receiver.clone()], span)?;
+    let result = apply_closure_values(closure, vec![receiver.clone()], span, None)?;
     expect_text(result, span)
 }
 
