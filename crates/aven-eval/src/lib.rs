@@ -1269,19 +1269,9 @@ pub struct ComptimeDefinition {
 }
 
 pub struct ComptimeEvalConfig<'a> {
-    pub definitions: HashMap<String, ComptimeDefinition>,
-    /// Local definitions in the order they were written, outermost first. Each
-    /// gets a lexical scope of its own, nested inside the one before it, so a
-    /// closure defined between `x = 1` and `x := 2` resolves `x` to the first
-    /// --- which is what the program does at runtime, and what one flat map
-    /// keyed by name cannot express.
-    pub local_definitions: Vec<(String, ComptimeDefinition)>,
-    pub active_boundary: Option<usize>,
     pub ambient_modules: &'a [Module],
     pub prelude_modules: &'a [Module],
-    pub locals: Vec<(String, Value)>,
-    pub blocked_locals: HashSet<String>,
-    pub fuel: u64,
+    pub demand: ComptimeDemand,
 }
 
 /// Every scope created during one comptime evaluation, held weakly so the
@@ -1328,7 +1318,10 @@ type ScopeRegistry = Rc<RefCell<Vec<Weak<Scope>>>>;
 /// drops it anyway.
 struct Teardown {
     scopes: ScopeRegistry,
-    builtin_methods: BuiltinMethodEnvironment,
+    /// Present only for a session. The ambient method bodies belong to the
+    /// session that installed them, and a demand clearing them would pull the
+    /// std method surface out from under every later demand.
+    builtin_methods: Option<BuiltinMethodEnvironment>,
     family_descriptors: Rc<RefCell<HashMap<String, Rc<NamedFamilyDescriptor>>>>,
 }
 
@@ -1347,7 +1340,9 @@ impl Teardown {
                 scope.values.borrow_mut().clear();
             }
         }
-        self.builtin_methods.methods.borrow_mut().clear();
+        if let Some(builtin_methods) = &self.builtin_methods {
+            builtin_methods.methods.borrow_mut().clear();
+        }
         self.family_descriptors.borrow_mut().clear();
     }
 
@@ -1367,7 +1362,11 @@ impl Teardown {
 }
 
 struct Scope {
-    definitions: RefCell<HashMap<String, ComptimeDefinition>>,
+    /// Comptime definitions visible in this scope, behind an `Rc` so a whole
+    /// module's bindings can be built once for a checking session and shared
+    /// by every demand in it. A scope that adds to its own set is uniquely
+    /// holding one, so `Rc::make_mut` clones nothing.
+    definitions: RefCell<Rc<HashMap<String, ComptimeDefinition>>>,
     evaluating: RefCell<HashSet<String>>,
     blocked: HashSet<String>,
     values: RefCell<HashMap<String, Value>>,
@@ -1377,7 +1376,7 @@ struct Scope {
 impl Scope {
     fn new(parent: Option<Rc<Scope>>) -> Self {
         Self {
-            definitions: RefCell::new(HashMap::new()),
+            definitions: RefCell::new(Rc::new(HashMap::new())),
             evaluating: RefCell::new(HashSet::new()),
             blocked: HashSet::new(),
             values: RefCell::new(HashMap::new()),
@@ -1448,11 +1447,20 @@ impl Environment {
     /// environment can release them when it finishes. Only comptime evaluation
     /// does this; see `ScopeRegistry`.
     fn track_scopes(&mut self) -> Teardown {
+        Teardown {
+            builtin_methods: Some(self.builtin_methods.clone()),
+            ..self.track_demand_scopes()
+        }
+    }
+
+    /// The same, for one demand: its scopes and its own family descriptors are
+    /// its to release, and the session's ambient method table is not.
+    fn track_demand_scopes(&mut self) -> Teardown {
         let registry: ScopeRegistry = Rc::new(RefCell::new(vec![Rc::downgrade(&self.scope)]));
         self.scope_registry = Some(Rc::clone(&registry));
         Teardown {
             scopes: registry,
-            builtin_methods: self.builtin_methods.clone(),
+            builtin_methods: None,
             family_descriptors: Rc::clone(&self.family_descriptors),
         }
     }
@@ -1490,6 +1498,22 @@ impl Environment {
 
     fn child(&self) -> Self {
         self.child_with_scope(Scope::new(Some(Rc::clone(&self.scope))))
+    }
+
+    /// A child that starts a demand: it shares the session's scopes and
+    /// ambient methods, but owns its fuel, its initialization boundary, and
+    /// its family descriptors, so nothing it does is visible to the next
+    /// demand and nothing it leaves behind survives its teardown. The
+    /// descriptors are seeded from the session's, because a family installed
+    /// while the prelude ran is part of what a demand starts from.
+    fn demand_child(&self) -> Self {
+        let descriptors = self.family_descriptors.borrow().clone();
+        Self {
+            fuel: Rc::new(Cell::new(None)),
+            comptime_boundary: Rc::new(Cell::new(Some(usize::MAX))),
+            family_descriptors: Rc::new(RefCell::new(descriptors)),
+            ..self.child()
+        }
     }
 
     /// A child scope whose `blocked` set is fixed before it is shared. The set
@@ -2322,88 +2346,177 @@ fn eval_named_family(owner: &str, value: &Expr, env: &Environment) -> Eval {
     })))
 }
 
-/// Evaluate one expression without host capabilities. Definitions are demanded
-/// lazily, so an unrelated runtime initializer cannot run during checking.
-/// Ambient implementations are installed in their own lexical module scopes.
+/// One demand's own inputs: everything that differs between two
+/// `comptime(...)` sites in the same file.
+pub struct ComptimeDemand {
+    /// The module's bindings, shared. Building this per demand cloned every
+    /// initializer in the file for every demand written in it.
+    pub definitions: Rc<HashMap<String, ComptimeDefinition>>,
+    /// Local definitions in the order they were written, outermost first. Each
+    /// gets a lexical scope of its own, nested inside the one before it, so a
+    /// closure defined between `x = 1` and `x := 2` resolves `x` to the first
+    /// --- which is what the program does at runtime, and what one flat map
+    /// keyed by name cannot express.
+    pub local_definitions: Vec<(String, ComptimeDefinition)>,
+    pub active_boundary: Option<usize>,
+    pub locals: Vec<(String, Value)>,
+    pub blocked_locals: HashSet<String>,
+    pub fuel: u64,
+}
+
+/// A prepared evaluator, shared by every comptime demand in one checking
+/// session.
+///
+/// Preparing means binding the intrinsics, installing every ambient `std`
+/// method set, and running each prelude module. That work is identical for
+/// every demand in a file, and doing it per demand cost about 70 microseconds
+/// each time --- 140ms of a 360ms check of a thousand pins. A session does it
+/// once; a demand hangs its own module scope, lexical layers and locals off
+/// the shared defaults.
+///
+/// The split is also what teardown is organised around. Ambient method tables
+/// and the prelude's scopes are session-owned and released when the session
+/// ends. Everything a demand creates --- including its own family descriptors,
+/// fuel, and initialization boundary --- is demand-owned and released when
+/// that demand finishes, so one demand can neither clear a table another is
+/// reading nor leave its scopes alive in the session.
+pub struct ComptimeSession {
+    defaults: Environment,
+    teardown: Teardown,
+}
+
+impl ComptimeSession {
+    pub fn prepare(
+        ambient_modules: &[Module],
+        prelude_modules: &[Module],
+    ) -> Result<Self, Diagnostic> {
+        let mut root = Environment::new();
+        let teardown = root.track_scopes();
+        let root = root;
+        bind_intrinsics(&root);
+        for module in ambient_modules {
+            let module_env = root.child();
+            for item in &module.items {
+                match item {
+                    Item::Binding(binding) => {
+                        Rc::make_mut(&mut module_env.scope.definitions.borrow_mut()).insert(
+                            binding.name.clone(),
+                            ComptimeDefinition {
+                                expr: binding.value.clone(),
+                                initialization_boundary: None,
+                                shadows_outer: false,
+                            },
+                        );
+                    }
+                    Item::MethodAttachment(attachment) => {
+                        install_builtin_method_attachment(attachment, &module_env);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut defaults = root.child();
+        for module in prelude_modules {
+            // Each prelude owns a sibling lexical scope, never the caller
+            // scope. Unsupported prelude initialization fails conservatively.
+            let prelude_env = root.child();
+            let failure = match eval_items(&module.items, &prelude_env, None) {
+                Ok(outcome) => match outcome.diagnostics.into_iter().find(Diagnostic::is_error) {
+                    Some(diagnostic) => Some(diagnostic),
+                    None => {
+                        if let Some(Value::Record(fields)) = outcome.value {
+                            for (name, value) in fields.iter() {
+                                defaults.bind(name.clone(), value.clone());
+                            }
+                        }
+                        None
+                    }
+                },
+                Err(diagnostics) => Some(first_diagnostic(diagnostics)),
+            };
+            if let Some(diagnostic) = failure {
+                teardown.release();
+                return Err(diagnostic);
+            }
+        }
+        // A demand's scopes belong to the demand. Stop the session registry
+        // from adopting them, so it neither grows nor outlives them.
+        defaults.scope_registry = None;
+        Ok(Self { defaults, teardown })
+    }
+
+    pub fn eval(&self, expr: &Expr, demand: ComptimeDemand) -> Result<Value, Diagnostic> {
+        let (result, teardown) = self.eval_tracked(expr, demand);
+        teardown.release();
+        result
+    }
+
+    /// `eval`, handing back what the demand built so a test can assert the
+    /// teardown really did release it.
+    fn eval_tracked(
+        &self,
+        expr: &Expr,
+        demand: ComptimeDemand,
+    ) -> (Result<Value, Diagnostic>, Teardown) {
+        let mut module_env = self.defaults.demand_child();
+        let teardown = module_env.track_demand_scopes();
+        let module_env = module_env;
+        module_env.set_fuel(demand.fuel);
+        *module_env.scope.definitions.borrow_mut() = demand.definitions;
+        module_env.comptime_boundary.set(demand.active_boundary);
+        // One scope per local definition, nested in written order, so that each
+        // definition's captures see exactly the bindings written above it.
+        let mut lexical = module_env;
+        for (name, definition) in demand.local_definitions {
+            let scope = lexical.child();
+            Rc::make_mut(&mut scope.scope.definitions.borrow_mut()).insert(name, definition);
+            lexical = scope;
+        }
+        let env = lexical.child_blocked(demand.blocked_locals);
+        for (name, value) in demand.locals {
+            env.bind(name, value);
+        }
+        (eval_expr(expr, &env), teardown)
+    }
+}
+
+#[cfg(test)]
+impl ComptimeSession {
+    /// This session's own scope registry, so a test can hold it across the
+    /// session's drop and assert that ending the session released the prelude
+    /// and ambient chains it built.
+    fn session_scope_registry(&self) -> ScopeRegistry {
+        Rc::clone(&self.teardown.scopes)
+    }
+
+    fn eval_demand_tracked(
+        &self,
+        expr: &Expr,
+        demand: ComptimeDemand,
+    ) -> (Result<Value, Diagnostic>, Teardown) {
+        self.eval_tracked(expr, demand)
+    }
+}
+
+impl Drop for ComptimeSession {
+    fn drop(&mut self) {
+        self.teardown.release();
+    }
+}
+
+/// Evaluate one expression without host capabilities, against a session
+/// prepared for it alone. Definitions are demanded lazily, so an unrelated
+/// runtime initializer cannot run during checking, and ambient implementations
+/// are installed in their own lexical module scopes.
+///
+/// Preparation is the expensive half, so anything evaluating more than one
+/// demand should hold a `ComptimeSession` instead of calling this repeatedly.
 pub fn eval_comptime_expr(
     expr: &Expr,
     config: ComptimeEvalConfig<'_>,
 ) -> Result<Value, Diagnostic> {
-    let (result, teardown) = eval_comptime_expr_tracked(expr, config);
-    teardown.release();
-    result
-}
-
-/// `eval_comptime_expr`, handing back what it built so a test can assert the
-/// teardown really did release it.
-fn eval_comptime_expr_tracked(
-    expr: &Expr,
-    config: ComptimeEvalConfig<'_>,
-) -> (Result<Value, Diagnostic>, Teardown) {
-    let mut root = Environment::new();
-    let registry = root.track_scopes();
-    let root = root;
-    root.set_fuel(config.fuel);
-    bind_intrinsics(&root);
-    for module in config.ambient_modules {
-        let module_env = root.child();
-        for item in &module.items {
-            match item {
-                Item::Binding(binding) => {
-                    module_env.scope.definitions.borrow_mut().insert(
-                        binding.name.clone(),
-                        ComptimeDefinition {
-                            expr: binding.value.clone(),
-                            initialization_boundary: None,
-                            shadows_outer: false,
-                        },
-                    );
-                }
-                Item::MethodAttachment(attachment) => {
-                    install_builtin_method_attachment(attachment, &module_env);
-                }
-                _ => {}
-            }
-        }
-    }
-    let defaults = root.child();
-    for module in config.prelude_modules {
-        // Each prelude owns a sibling lexical scope, never the caller scope.
-        // Unsupported prelude initialization fails the demand conservatively.
-        let prelude_env = root.child();
-        let outcome = match eval_items(&module.items, &prelude_env, None) {
-            Ok(outcome) => outcome,
-            Err(diagnostics) => return (Err(first_diagnostic(diagnostics)), registry),
-        };
-        if let Some(diagnostic) = outcome.diagnostics.into_iter().find(Diagnostic::is_error) {
-            return (Err(diagnostic), registry);
-        }
-        if let Some(Value::Record(fields)) = outcome.value {
-            for (name, value) in fields.iter() {
-                defaults.bind(name.clone(), value.clone());
-            }
-        }
-    }
-    let module_env = defaults.child();
-    *module_env.scope.definitions.borrow_mut() = config.definitions;
-    module_env.comptime_boundary.set(config.active_boundary);
-    // One scope per local definition, nested in written order, so that each
-    // definition's captures see exactly the bindings written above it.
-    let mut lexical = module_env;
-    for (name, definition) in config.local_definitions {
-        let scope = lexical.child();
-        scope
-            .scope
-            .definitions
-            .borrow_mut()
-            .insert(name, definition);
-        lexical = scope;
-    }
-    let env = lexical.child_blocked(config.blocked_locals);
-    for (name, value) in config.locals {
-        env.bind(name, value);
-    }
-    (eval_expr(expr, &env), registry)
+    let session = ComptimeSession::prepare(config.ambient_modules, config.prelude_modules)?;
+    session.eval(expr, config.demand)
 }
 
 pub fn eval_expr(expr: &Expr, env: &Environment) -> Result<Value, Diagnostic> {

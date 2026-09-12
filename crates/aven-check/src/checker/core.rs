@@ -65,6 +65,8 @@ impl<'a> Checker<'a> {
             knowledge: HashMap::new(),
             known_bindings: HashMap::new(),
             foreign_body_depth: 0,
+            comptime_definitions: std::cell::OnceCell::new(),
+            comptime_session: std::cell::OnceCell::new(),
             pending_known: None,
         }
     }
@@ -898,6 +900,9 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn collect_top_level_environment(&mut self, module: &'a Module) {
+        // The shared definition map is derived from `bindings`, so anything
+        // that adds to them invalidates it.
+        self.comptime_definitions.take();
         for declaration in collect_declarations(module) {
             if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
                 self.annotations

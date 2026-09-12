@@ -522,22 +522,25 @@ impl<'a> Checker<'a> {
                 None
             }
         };
-        let definitions = self
-            .bindings
-            .iter()
-            .filter_map(|(name, binding)| {
-                binding.map(|binding| {
-                    (
-                        name.clone(),
-                        aven_eval::ComptimeDefinition {
-                            expr: binding.value.clone(),
-                            initialization_boundary: Some(binding.span.start),
-                            shadows_outer: false,
-                        },
-                    )
-                })
-            })
-            .collect::<HashMap<_, _>>();
+        let definitions = Rc::clone(self.comptime_definitions.get_or_init(|| {
+            Rc::new(
+                self.bindings
+                    .iter()
+                    .filter_map(|(name, binding)| {
+                        binding.map(|binding| {
+                            (
+                                name.clone(),
+                                aven_eval::ComptimeDefinition {
+                                    expr: binding.value.clone(),
+                                    initialization_boundary: Some(binding.span.start),
+                                    shadows_outer: false,
+                                },
+                            )
+                        })
+                    })
+                    .collect::<HashMap<_, _>>(),
+            )
+        }));
         // Local bindings shadow module ones, and a later local shadows an
         // earlier one --- but only for what is written *after* it. Handing the
         // evaluator the written order, rather than a map that remembers only
@@ -584,19 +587,37 @@ impl<'a> Checker<'a> {
                 .filter(|(name, _)| self.imports.prelude_qualified_exports().contains_key(name))
                 .map(|(name, _)| name.clone()),
         );
-        aven_eval::eval_comptime_expr(
+        self.comptime_session()?.eval(
             expr,
-            aven_eval::ComptimeEvalConfig {
+            aven_eval::ComptimeDemand {
                 definitions,
                 local_definitions,
                 active_boundary: initialization_boundary,
-                ambient_modules: &self.builtin_methods.comptime_modules,
-                prelude_modules: self.imports.prelude_modules(),
                 locals,
                 blocked_locals: blocked,
                 fuel: 100_000,
             },
         )
+    }
+
+    /// The evaluator prepared for this check, built on first demand.
+    ///
+    /// Preparing one binds the intrinsics, installs every ambient `std` method
+    /// set, and runs the prelude --- identical work for every demand in the
+    /// file, and the single largest remaining cost when it was repeated per
+    /// demand. A failed preparation is remembered as the failure, so a broken
+    /// prelude is reported the same way for every demand rather than re-run
+    /// for each.
+    fn comptime_session(&self) -> Result<&aven_eval::ComptimeSession, Diagnostic> {
+        self.comptime_session
+            .get_or_init(|| {
+                aven_eval::ComptimeSession::prepare(
+                    &self.builtin_methods.comptime_modules,
+                    self.imports.prelude_modules(),
+                )
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// Widen inferred literal rows only where a value has materialized a

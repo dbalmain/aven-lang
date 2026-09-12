@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use aven_parser::{Expr, Item, Module, parse_module};
 
-use super::super::{ComptimeDefinition, ComptimeEvalConfig, eval_comptime_expr_tracked};
+use super::super::{ComptimeDefinition, ComptimeDemand, ComptimeSession};
 
 fn binding_value(source: &str) -> Expr {
     let output = parse_module(source);
@@ -31,9 +31,14 @@ fn binding_value(source: &str) -> Expr {
     }
 }
 
-/// Run one demand and report how many of its scopes were created and how many
-/// are still alive once it is over. A case that creates none proves nothing, so
-/// every caller asserts on the count as well as the survivors.
+/// Run one demand and report how many of *its own* scopes were created and how
+/// many are still alive once it is over. A case that creates none proves
+/// nothing, so every caller asserts on the count as well as the survivors.
+///
+/// The session's scopes --- intrinsics, ambient modules, the prelude --- are
+/// deliberately not among them: they belong to the session and outlive any one
+/// demand by design. `a_session_releases_its_own_scopes_when_it_ends` covers
+/// that half.
 fn scopes_after_demand(
     definition: Option<&str>,
     demand: &str,
@@ -51,14 +56,13 @@ fn scopes_after_demand(
             },
         );
     }
-    let (result, teardown) = eval_comptime_expr_tracked(
+    let session = ComptimeSession::prepare(ambient, &[]).expect("session must prepare");
+    let (result, teardown) = session.eval_demand_tracked(
         &demand,
-        ComptimeEvalConfig {
+        ComptimeDemand {
             local_definitions: Vec::new(),
-            definitions,
+            definitions: std::rc::Rc::new(definitions),
             active_boundary: Some(1000),
-            ambient_modules: ambient,
-            prelude_modules: &[],
             locals: Vec::new(),
             blocked_locals: HashSet::new(),
             fuel: 100_000,
@@ -130,4 +134,68 @@ fn ambient_method_module_releases_its_scopes() {
         "ambient probe must declare one attachment"
     );
     assert_released_with_ambient(None, "y = [1, 2, 3].second()", &[ambient]);
+}
+
+/// A session releases its own scopes when it ends.
+///
+/// The demand tests above deliberately ignore the session's scopes, because a
+/// session outliving one demand is the whole point of having one. That leaves
+/// the other half to prove: the prelude and ambient chains a session builds are
+/// released when it is dropped, rather than living as long as the process.
+///
+/// The prelude here defines a function and calls nothing, so resolving it
+/// memoizes a closure into the scope that closure captured --- the same cycle
+/// the demand cases turn on, formed in session-owned scopes this time.
+#[test]
+fn a_session_releases_its_own_scopes_when_it_ends() {
+    let prelude = parse_module("step = (n) => n + 1\n{ step }\n");
+    assert!(
+        prelude.diagnostics.iter().all(|d| !d.is_error()),
+        "prelude must parse: {:?}",
+        prelude.diagnostics
+    );
+    let ambient = parse_module("Array(a) {\n  second(): ?a => .[1]\n}\n");
+    assert!(
+        ambient.diagnostics.iter().all(|d| !d.is_error()),
+        "ambient must parse: {:?}",
+        ambient.diagnostics
+    );
+
+    let session = ComptimeSession::prepare(
+        std::slice::from_ref(&ambient.module),
+        std::slice::from_ref(&prelude.module),
+    )
+    .expect("session must prepare");
+
+    let demand = binding_value("y = step([1, 2, 3].second() ?? 0)");
+    let result = session.eval(
+        &demand,
+        ComptimeDemand {
+            definitions: std::rc::Rc::new(HashMap::new()),
+            local_definitions: Vec::new(),
+            active_boundary: Some(1000),
+            locals: Vec::new(),
+            blocked_locals: HashSet::new(),
+            fuel: 100_000,
+        },
+    );
+    assert!(result.is_ok(), "probe must evaluate: {result:?}");
+    drop(result);
+
+    let registry = session.session_scope_registry();
+    let created = registry.borrow().len();
+    assert!(
+        created > 0,
+        "session created no scopes, so it proves nothing"
+    );
+    drop(session);
+    let live = registry
+        .borrow()
+        .iter()
+        .filter(|scope| scope.upgrade().is_some())
+        .count();
+    assert_eq!(
+        live, 0,
+        "{live} of {created} session scopes outlived the session"
+    );
 }

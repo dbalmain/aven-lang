@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
+use std::rc::Rc;
 
 use aven_core::{BuiltinType, Diagnostic, Int, Label, Span, codes};
 use aven_parser::{
@@ -169,6 +170,15 @@ pub(crate) struct Checker<'a> {
     /// Evidence produced by the call currently being inferred, handed to the
     /// expression arm that knows the call's own span.
     pending_known: Option<knowledge::Known>,
+    /// This module's bindings as evaluator definitions, built once and shared
+    /// by every demand. `bindings` is fixed once the top-level environment is
+    /// collected, so the map is too; rebuilding it per demand was cloning
+    /// every initializer in the file for every `comptime(...)` written in it,
+    /// which made checking quadratic in the number of demands.
+    comptime_definitions: std::cell::OnceCell<Rc<HashMap<String, aven_eval::ComptimeDefinition>>>,
+    /// The evaluator prepared for this check: intrinsics, ambient `std` method
+    /// sets, and the prelude, all built once. See `comptime_session`.
+    comptime_session: std::cell::OnceCell<Result<aven_eval::ComptimeSession, Diagnostic>>,
     /// Nonzero while a function body from another source is being inferred.
     /// Its spans address the defining file, and a `Span` carries no file
     /// identity, so recording evidence against one would let two files'
