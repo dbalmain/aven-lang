@@ -16062,3 +16062,149 @@ fn only_a_written_literal_brands_a_primitive_family() {
         );
     }
 }
+
+/// Assert that a module checks without errors, so a rejection test elsewhere
+/// cannot pass merely because the whole shape is unsupported.
+#[track_caller]
+fn assert_checks(source: &str) {
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "parse diagnostics for {source:?}: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+    let errors = check
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .collect::<Vec<_>>();
+    assert!(errors.is_empty(), "{source}: {errors:?}");
+}
+
+#[track_caller]
+fn assert_rejects(source: &str) {
+    let output = parse_module(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "parse diagnostics for {source:?}: {:?}",
+        output.diagnostics
+    );
+    let check = check_module(&output.module);
+    assert!(
+        check.diagnostics.iter().any(Diagnostic::is_error),
+        "{source}: expected an error, got {:?}",
+        check.diagnostics
+    );
+}
+
+/// A proof belongs to the binding that earned it, not to the spelling.
+///
+/// `first` returns its `@`-parameter, so `x = first(1)` proves this `x` holds
+/// `1`. That proof is about one binding inside one function. Another function
+/// whose *parameter* happens to be called `x` holds whatever its caller passed
+/// --- here `2` --- and must not be able to spend the first function's proof.
+///
+/// The discriminating case is the pair: the same annotation is accepted in the
+/// function that owns the proof and rejected in the one that does not, so an
+/// implementation that simply stopped proving anything fails the first half.
+#[test]
+fn a_proof_does_not_escape_the_function_that_earned_it() {
+    const FIRST: &str = "first = (@n: Int) => [n][0]\n";
+
+    assert_checks(&format!(
+        "{FIRST}f = () =>\n  x = first(1)\n  checked: 1 = x\n  checked\nf()\n"
+    ));
+    assert_rejects(&format!(
+        "{FIRST}f = () =>\n  x = first(1)\n  x\ng = (x: Int) =>\n  checked: 1 = x\n  checked\ng(2)\n"
+    ));
+}
+
+/// A module binding's proof does not reach into a function body through a
+/// same-named parameter.
+///
+/// The mechanism here is the execution-context filter rather than masking: a
+/// module binding is proved at a source boundary, and a lambda body executes
+/// at some future call, so the two regimes never match. The test pins the
+/// behaviour, not the mechanism --- whichever of the two guards is doing the
+/// work, a parameter must hold what its caller passed.
+#[test]
+fn a_module_proof_does_not_reach_a_same_named_parameter() {
+    const FIRST: &str = "first = (@n: Int) => [n][0]\n";
+
+    assert_checks(&format!("{FIRST}x = first(1)\nchecked: 1 = x\nchecked\n"));
+    assert_rejects(&format!(
+        "{FIRST}x = first(1)\ng = (x: Int) =>\n  checked: 1 = x\n  checked\ng(2)\n"
+    ));
+}
+
+/// An explicit shadow inside a nested block masks the outer binding's proof,
+/// while an ordinary inner reference still reads it.
+///
+/// Implicit shadowing cannot reach this code at all --- `name.accidental-shadowing`
+/// rejects a parameter or binder that reuses a visible name --- so `:=` is the
+/// only way an inner scope rebinds an outer name, and the only shape this
+/// guard has to survive.
+#[test]
+fn an_inner_explicit_shadow_masks_the_outer_proof() {
+    const FIRST: &str = "first = (@n: Int) => [n][0]\n";
+
+    assert_checks(&format!(
+        "{FIRST}f = () =>\n  x = first(1)\n  g = () =>\n    checked: 1 = x\n    checked\n  g()\nf()\n"
+    ));
+    assert_rejects(&format!(
+        "{FIRST}f = () =>\n  x = first(1)\n  g = () =>\n    x := [2][0]\n    checked: 1 = x\n    checked\n  g()\nf()\n"
+    ));
+}
+
+/// Rebinding replaces what the name proves, including when the new value
+/// proves nothing at all.
+///
+/// Silence is the dangerous case: `x := [2][0]` establishes nothing, and if
+/// that left the earlier proof standing then `checked: 1 = x` would be
+/// certified by a binding the program has already replaced. Running this
+/// returns 2.
+#[test]
+fn a_rebinding_masks_the_proof_it_replaces() {
+    const FIRST: &str = "first = (@n: Int) => [n][0]\n";
+
+    assert_checks(&format!(
+        "{FIRST}f = () =>\n  x = first(1)\n  checked: 1 = x\n  x := [2][0]\n  checked\nf()\n"
+    ));
+    assert_rejects(&format!(
+        "{FIRST}f = () =>\n  x = first(1)\n  x := [2][0]\n  checked: 1 = x\n  checked\nf()\n"
+    ));
+}
+
+/// A closure captures the binding written above it, not the latest binding of
+/// that spelling.
+///
+/// `get` is defined between `x = 1` and `x := 2`, so calling it yields 1 at
+/// runtime however many times `x` is rebound afterwards. A demand that
+/// reconstructs `get` from a map keyed by name sees only the last `x` and
+/// certifies 2 --- which is why both halves are here: proving 1 and refusing
+/// 2 are different claims, and the bug passed the first.
+#[test]
+fn a_demanded_closure_captures_the_binding_written_above_it() {
+    const BODY: &str = "  x: Int = 1\n  get = () => x\n  x := 2\n  result = comptime(get())\n";
+
+    assert_checks(&format!(
+        "f = () =>\n{BODY}  checked: 1 = result\n  checked\nf()\n"
+    ));
+    assert_rejects(&format!(
+        "f = () =>\n{BODY}  checked: 2 = result\n  checked\nf()\n"
+    ));
+}
+
+/// A shadowing initializer reads the binding it replaces, not itself.
+#[test]
+fn a_shadowing_initializer_reads_its_predecessor() {
+    const BODY: &str = "  x: Int = 1\n  x := x + 1\n  result = comptime(x)\n";
+
+    assert_checks(&format!(
+        "f = () =>\n{BODY}  checked: 2 = result\n  checked\nf()\n"
+    ));
+    assert_rejects(&format!(
+        "f = () =>\n{BODY}  checked: 1 = result\n  checked\nf()\n"
+    ));
+}

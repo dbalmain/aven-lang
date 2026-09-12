@@ -1261,10 +1261,21 @@ pub struct ComptimeDefinition {
     /// `None` denotes a definition from an ambient lexical scope, whose source
     /// order is unrelated to the module currently being demanded.
     pub initialization_boundary: Option<usize>,
+    /// Written with `:=`: this definition shadows one of the same name further
+    /// out, and its own initializer runs before it exists. `x := x + 1` reads
+    /// the `x` it replaces, so the initializer resolves from the parent scope
+    /// rather than from the scope this definition lives in.
+    pub shadows_outer: bool,
 }
 
 pub struct ComptimeEvalConfig<'a> {
     pub definitions: HashMap<String, ComptimeDefinition>,
+    /// Local definitions in the order they were written, outermost first. Each
+    /// gets a lexical scope of its own, nested inside the one before it, so a
+    /// closure defined between `x = 1` and `x := 2` resolves `x` to the first
+    /// --- which is what the program does at runtime, and what one flat map
+    /// keyed by name cannot express.
+    pub local_definitions: Vec<(String, ComptimeDefinition)>,
     pub active_boundary: Option<usize>,
     pub ambient_modules: &'a [Module],
     pub prelude_modules: &'a [Module],
@@ -1562,9 +1573,14 @@ impl Environment {
                             .with_label(Label::primary(span, "this binding depends on itself")),
                     ));
                 }
-                // Resolve captures in the definition's scope, never the caller's.
+                // Resolve captures in the definition's scope, never the
+                // caller's --- except for a `:=` shadow, whose initializer runs
+                // before the binding exists and so reads the one it replaces.
                 let mut defining_env = self.clone();
-                defining_env.scope = Rc::clone(&current);
+                defining_env.scope = match current.parent.clone() {
+                    Some(parent) if definition.shadows_outer => parent,
+                    _ => Rc::clone(&current),
+                };
                 // Ambient definitions have no module-local boundary. Preserve
                 // the active caller boundary while evaluating them.
                 let definition_boundary = definition
@@ -1576,6 +1592,14 @@ impl Environment {
                 self.comptime_boundary.set(previous_boundary);
                 current.evaluating.borrow_mut().remove(name);
                 if let Ok(value) = &value {
+                    // Mirror `bind`: a family's descriptor has to be reachable
+                    // by owner name for a brand to be applied, and a lazily
+                    // resolved definition is the usual way one arrives.
+                    if let Value::NamedFamily(descriptor) = value {
+                        self.family_descriptors
+                            .borrow_mut()
+                            .insert(descriptor.owner.clone(), Rc::clone(descriptor));
+                    }
                     current
                         .values
                         .borrow_mut()
@@ -2331,6 +2355,7 @@ fn eval_comptime_expr_tracked(
                         ComptimeDefinition {
                             expr: binding.value.clone(),
                             initialization_boundary: None,
+                            shadows_outer: false,
                         },
                     );
                 }
@@ -2362,7 +2387,19 @@ fn eval_comptime_expr_tracked(
     let module_env = defaults.child();
     *module_env.scope.definitions.borrow_mut() = config.definitions;
     module_env.comptime_boundary.set(config.active_boundary);
-    let env = module_env.child_blocked(config.blocked_locals);
+    // One scope per local definition, nested in written order, so that each
+    // definition's captures see exactly the bindings written above it.
+    let mut lexical = module_env;
+    for (name, definition) in config.local_definitions {
+        let scope = lexical.child();
+        scope
+            .scope
+            .definitions
+            .borrow_mut()
+            .insert(name, definition);
+        lexical = scope;
+    }
+    let env = lexical.child_blocked(config.blocked_locals);
     for (name, value) in config.locals {
         env.bind(name, value);
     }

@@ -3168,6 +3168,131 @@ fn ambient_sort_by_is_receiver_first_for_named_rank_and_bound_values_run() {
     );
 }
 
+/// The prelude these agreement tests run against: `comptime` is an ordinary
+/// comptime-parameter function, exactly as the shipped prelude defines it.
+const COMPTIME_PRELUDE: &str = "comptime = (@arg) => arg\n{ comptime }\n";
+
+/// A proof must name the value the program actually produces.
+///
+/// Each case below is a shape where checking used to accept an annotation the
+/// run then contradicted: evidence surviving the function that earned it,
+/// evidence surviving the binding it was about, and a demanded closure
+/// rebuilt against the wrong `x`. Checking and running the same file is the
+/// only assertion that catches all three, because each bug was invisible to
+/// the checker alone --- the checker was the thing that was wrong.
+#[test]
+fn a_comptime_proof_agrees_with_the_value_the_program_runs() {
+    for (name, source, expected) in [
+        (
+            "proof-inside-its-own-function",
+            "first = (@n: Int) => [n][0]\nf = () =>\n  x = first(1)\n  checked: 1 = x\n  checked\nf()\n",
+            1,
+        ),
+        (
+            "proof-before-the-rebinding-that-replaces-it",
+            "first = (@n: Int) => [n][0]\nf = () =>\n  x = first(1)\n  checked: 1 = x\n  x := [2][0]\n  checked\nf()\n",
+            1,
+        ),
+        (
+            "closure-captures-the-binding-written-above-it",
+            "f = () =>\n  x: Int = 1\n  get = () => x\n  x := 2\n  result = comptime(get())\n  checked: 1 = result\n  checked\nf()\n",
+            1,
+        ),
+        (
+            "shadowing-initializer-reads-its-predecessor",
+            "f = () =>\n  x: Int = 1\n  x := x + 1\n  result = comptime(x)\n  checked: 2 = result\n  checked\nf()\n",
+            2,
+        ),
+    ] {
+        let roots = test_prelude_roots(COMPTIME_PRELUDE);
+        let dir = TempDir::new(name);
+        write(dir.path(), "main.av", source);
+        let entry = dir.path().join("main.av");
+
+        let check = check_path_with_host_globals_and_roots(&entry, &HostGlobals::default(), &roots)
+            .expect("check should load module");
+        assert_no_errors(&check.reports);
+
+        let evaluated = aven_compiler::eval_path_with_globals_and_roots(&entry, Vec::new(), &roots)
+            .expect("eval should load module");
+        assert_no_errors(&evaluated.reports);
+        assert_eq!(
+            evaluated.value,
+            Some(Value::Int(expected.into())),
+            "{name}: the annotation the checker accepted is not what running produced"
+        );
+    }
+}
+
+/// The rejecting halves of the same shapes, so the agreement above cannot be
+/// bought by a checker that simply stopped proving anything.
+#[test]
+fn a_comptime_proof_does_not_certify_a_value_the_program_contradicts() {
+    for (name, source) in [
+        (
+            "proof-does-not-escape-its-function",
+            "first = (@n: Int) => [n][0]\nf = () =>\n  x = first(1)\n  x\ng = (x: Int) =>\n  checked: 1 = x\n  checked\ng(2)\n",
+        ),
+        (
+            "rebinding-replaces-what-the-name-proves",
+            "first = (@n: Int) => [n][0]\nf = () =>\n  x = first(1)\n  x := [2][0]\n  checked: 1 = x\n  checked\nf()\n",
+        ),
+        (
+            "closure-is-not-rebuilt-against-the-latest-shadow",
+            "f = () =>\n  x: Int = 1\n  get = () => x\n  x := 2\n  result = comptime(get())\n  checked: 2 = result\n  checked\nf()\n",
+        ),
+    ] {
+        let roots = test_prelude_roots(COMPTIME_PRELUDE);
+        let dir = TempDir::new(name);
+        write(dir.path(), "main.av", source);
+        let check = check_path_with_host_globals_and_roots(
+            &dir.path().join("main.av"),
+            &HostGlobals::default(),
+            &roots,
+        )
+        .expect("check should load module");
+        assert!(
+            check
+                .reports
+                .iter()
+                .any(aven_core::DiagnosticReport::has_errors),
+            "{name}: expected the demand to be rejected, got {:#?}",
+            check.reports
+        );
+    }
+}
+
+/// Evidence from an imported specialization is anchored at the caller's call,
+/// which is a span in the caller's own file.
+///
+/// The hazard this guards is that a `Span` is a bare offset pair with no file
+/// identity, so a proof recorded against an imported body's span could answer
+/// a demand about whatever sits at the same offsets in the importing file. No
+/// currently supported program reaches that: the only expression that records
+/// evidence is a comptime-parameter call, and one nested inside an imported
+/// body does not propagate its result today. So this pins the working half ---
+/// that importing a specialization still proves something --- and the
+/// suppression itself stands on the argument rather than on a fixture.
+#[test]
+fn an_imported_specialization_proves_a_value_at_the_callers_span() {
+    let dir = TempDir::new("imported-specialization-proof");
+    write(dir.path(), "util.av", "pick = (@k) => [k][0]\n{ pick }\n");
+    write(
+        dir.path(),
+        "main.av",
+        "u = import(\"./util\")\nr = u.pick(3)\nw: 3 = r\nw\n",
+    );
+    let entry = dir.path().join("main.av");
+
+    let check =
+        check_path_with_host_globals(&entry, &HostGlobals::default()).expect("check should load");
+    assert_no_errors(&check.reports);
+
+    let evaluated = eval_path_with_globals(&entry, Vec::new()).expect("eval should load");
+    assert_no_errors(&evaluated.reports);
+    assert_eq!(evaluated.value, Some(Value::Int(3.into())));
+}
+
 fn assert_no_errors(reports: &[aven_core::DiagnosticReport]) {
     assert!(
         !reports.iter().any(aven_core::DiagnosticReport::has_errors),

@@ -49,7 +49,7 @@ mod constraints;
 mod core;
 mod diagnostics;
 mod inference;
-mod knowledge;
+pub(crate) mod knowledge;
 mod match_checking;
 mod method_sets;
 mod rows;
@@ -160,14 +160,20 @@ pub(crate) struct Checker<'a> {
     /// body's spans belong to its own source and are dropped with its inferred
     /// types.
     knowledge: HashMap<(Span, comptime::ExecutionContext), knowledge::Known>,
-    /// Evidence for a binding's value, with the initialization boundary it
-    /// became valid at. A reference reads it only from at or after that
-    /// boundary, so evidence cannot flow backwards into an initializer that
-    /// runs before the value exists.
+    /// Evidence for a *module* binding's value, with the initialization
+    /// boundary it became valid at. A reference reads it only from at or after
+    /// that boundary, so evidence cannot flow backwards into an initializer
+    /// that runs before the value exists. Local bindings' evidence lives in
+    /// `local_types`, scoped so that leaving a block takes it along.
     known_bindings: HashMap<String, (comptime::ExecutionContext, knowledge::Known)>,
     /// Evidence produced by the call currently being inferred, handed to the
     /// expression arm that knows the call's own span.
     pending_known: Option<knowledge::Known>,
+    /// Nonzero while a function body from another source is being inferred.
+    /// Its spans address the defining file, and a `Span` carries no file
+    /// identity, so recording evidence against one would let two files'
+    /// unrelated expressions share a proof.
+    foreign_body_depth: usize,
 }
 
 #[derive(Debug, Clone)]

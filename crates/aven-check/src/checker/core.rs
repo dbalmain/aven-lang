@@ -64,6 +64,7 @@ impl<'a> Checker<'a> {
             inferred_types: Vec::new(),
             knowledge: HashMap::new(),
             known_bindings: HashMap::new(),
+            foreign_body_depth: 0,
             pending_known: None,
         }
     }
@@ -1176,7 +1177,7 @@ impl<'a> Checker<'a> {
             // runtime name. Recording it here is what lets a demand inside a
             // function reach a local helper or literal; parameters are deliberately
             // absent, so they stay blocked.
-            self.record_local_value(&binding.name, &binding.value);
+            self.record_local_value(&binding.name, &binding.value, binding.shadow_span.is_some());
         }
 
         if declaration.phase == DeclarationPhase::Comptime
@@ -1246,7 +1247,7 @@ impl<'a> Checker<'a> {
         }
 
         if let Some(binding) = binding {
-            self.propagate_binding_knowledge(&declaration.name, &binding.value);
+            self.propagate_module_binding_knowledge(&declaration.name, &binding.value);
         }
     }
 
@@ -1633,7 +1634,7 @@ impl<'a> Checker<'a> {
         // runtime name. Recording it is what lets a demand inside a function
         // reach a local helper or literal; parameters and match binders are
         // deliberately absent, so they stay blocked from evaluation.
-        self.record_local_value(&binding.name, &binding.value);
+        self.record_local_value(&binding.name, &binding.value, binding.shadow_span.is_some());
         self.check_runtime_binding_liftability(&binding.value);
 
         let signature_type = signature.map(|signature| {
@@ -1651,8 +1652,6 @@ impl<'a> Checker<'a> {
         if let Some((_, expected)) = declared_type {
             self.check_value_against_declared_type(expected, &binding.value);
         }
-        self.propagate_binding_knowledge(&binding.name, &binding.value);
-
         let inferred_type = if declared_type.is_none() {
             let env = self.local_types.inference_env();
             let obligation_marker = self.method_obligation_marker();
@@ -1692,6 +1691,11 @@ impl<'a> Checker<'a> {
             self.record_local_value_type(binding.name_span, &inferred_type);
         }
         self.local_types.define(&binding.name, inferred_type);
+        // After `define`, which masks the name: a binding replaces whatever an
+        // earlier binding of the same spelling proved, and only then re-records
+        // what this one proves. Inference has also run by here, so a proof the
+        // value's own call produced is visible.
+        self.propagate_local_binding_knowledge(&binding.name, &binding.value);
     }
 
     pub(super) fn check_local_pattern_binding(&mut self, binding: &PatternBinding) {

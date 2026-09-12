@@ -45,6 +45,7 @@ fn scopes_after_demand(
         definitions.insert(
             "f".to_owned(),
             ComptimeDefinition {
+                shadows_outer: false,
                 expr: binding_value(definition),
                 initialization_boundary: Some(0),
             },
@@ -53,6 +54,7 @@ fn scopes_after_demand(
     let (result, teardown) = eval_comptime_expr_tracked(
         &demand,
         ComptimeEvalConfig {
+            local_definitions: Vec::new(),
             definitions,
             active_boundary: Some(1000),
             ambient_modules: ambient,

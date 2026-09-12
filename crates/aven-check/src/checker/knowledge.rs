@@ -118,13 +118,31 @@ impl<'a> Checker<'a> {
     /// Record evidence for `span` in the current execution context.
     ///
     /// Spans from an imported body are never recorded: they address the
-    /// defining source, not this one, and the caller already discards that
-    /// body's inferred types for the same reason.
+    /// defining source, not this one, and a span is a bare offset pair with no
+    /// file identity, so an imported body's offsets can collide with this
+    /// file's. The caller already discards that body's inferred types for the
+    /// same reason; `foreign_body_depth` is what makes the claim true here.
     pub(super) fn record_known(&mut self, span: Span, known: Known) {
-        if span.is_empty() {
+        if span.is_empty() || self.foreign_body_depth > 0 {
             return;
         }
         self.knowledge.insert((span, self.execution_context), known);
+    }
+
+    /// Run `body` with evidence recording suppressed, for a function body that
+    /// belongs to another source.
+    pub(super) fn in_foreign_body<T>(
+        &mut self,
+        foreign: bool,
+        body: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        if !foreign {
+            return body(self);
+        }
+        self.foreign_body_depth += 1;
+        let result = body(self);
+        self.foreign_body_depth -= 1;
+        result
     }
 
     pub(super) fn push_local_value_scope(&mut self) {
@@ -135,16 +153,22 @@ impl<'a> Checker<'a> {
         self.local_types.pop_values();
     }
 
-    pub(super) fn record_local_value(&mut self, name: &str, initializer: &Expr) {
-        self.local_types.define_value(name, initializer.clone());
+    pub(super) fn record_local_value(&mut self, name: &str, initializer: &Expr, shadows: bool) {
+        self.local_types
+            .define_value(name, initializer.clone(), shadows);
     }
 
-    /// Every local value in scope, outermost first.
+    /// Every local value in scope, in written order.
     pub(super) fn local_values_in_scope(&self) -> impl Iterator<Item = (&String, &LocalValue)> {
         self.local_types.values_in_scope()
     }
 
-    pub(super) fn record_known_binding(&mut self, name: &str, known: Known) {
+    /// Evidence for a *module* binding, with the initialization boundary it
+    /// became valid at. Module bindings are one flat, mutually recursive
+    /// namespace, so they are ordered by boundary rather than by scope; a
+    /// local binding's evidence lives in `local_types` instead, where a scope
+    /// pop takes it with it.
+    pub(super) fn record_module_binding_knowledge(&mut self, name: &str, known: Known) {
         self.known_bindings
             .insert(name.to_owned(), (self.execution_context, known));
     }
@@ -182,21 +206,43 @@ impl<'a> Checker<'a> {
         let (ExprKind::Name(name) | ExprKind::ComptimeName(name)) = &expr.kind else {
             return None;
         };
-        // A local binding shadows a module one, and a name the checker cannot
-        // see as an ordinary binding is not this name at all.
+        // The nearest binding of the name decides, and it decides even when it
+        // has nothing to say: a mask stops the search rather than letting an
+        // outer binding, or a module binding, answer for a name that is no
+        // longer theirs.
+        if let Some(local) = self.local_types.proof(name) {
+            return local
+                .filter(|(origin, _)| self.knowledge_is_in_scope(*origin))
+                .map(|(_, known)| known.clone());
+        }
         self.known_bindings
             .get(name)
             .filter(|(origin, _)| self.knowledge_is_in_scope(*origin))
             .map(|(_, known)| known.clone())
     }
 
-    /// Carry a binding's evidence to its name, so a later reference can answer
-    /// a demand its initializer already proved. This is the minimal path the
-    /// motivating `script = comptime(join(…))` needs; ordinary propagation
-    /// through arbitrary local forms is a later slice.
-    pub(super) fn propagate_binding_knowledge(&mut self, name: &str, value: &Expr) {
+    /// Carry a module binding's evidence to its name, so a later reference can
+    /// answer a demand its initializer already proved.
+    pub(super) fn propagate_module_binding_knowledge(&mut self, name: &str, value: &Expr) {
         if let Some(known) = self.known_for_expression(value) {
-            self.record_known_binding(name, known);
+            self.record_module_binding_knowledge(name, known);
+        }
+    }
+
+    /// The same for a local binding, except that it is *total*: a binding
+    /// whose value proves nothing records a mask.
+    ///
+    /// Totality is the whole point. `x = first(1)` proves `x` is `1`; the
+    /// `x := [2][0]` below it proves nothing, and if that silence left the
+    /// earlier proof standing then `checked: 1 = x` would be certified by a
+    /// binding the program has already replaced.
+    pub(super) fn propagate_local_binding_knowledge(&mut self, name: &str, value: &Expr) {
+        match self.known_for_expression(value) {
+            Some(known) => {
+                let origin = self.execution_context;
+                self.local_types.define_proof(name, origin, known);
+            }
+            None => self.local_types.mask_proof(name),
         }
     }
 

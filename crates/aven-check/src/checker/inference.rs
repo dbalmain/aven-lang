@@ -461,7 +461,7 @@ impl<'a> Checker<'a> {
                 None
             }
         };
-        let mut definitions = self
+        let definitions = self
             .bindings
             .iter()
             .filter_map(|(name, binding)| {
@@ -471,23 +471,30 @@ impl<'a> Checker<'a> {
                         aven_eval::ComptimeDefinition {
                             expr: binding.value.clone(),
                             initialization_boundary: Some(binding.span.start),
+                            shadows_outer: false,
                         },
                     )
                 })
             })
             .collect::<HashMap<_, _>>();
-        // Local bindings shadow module ones, and an inner scope shadows an
-        // outer one. `values_in_scope` yields outermost first, so inserting in
-        // order leaves the nearest binding in place.
-        for (name, local) in self.local_values_in_scope() {
-            definitions.insert(
-                name.clone(),
-                aven_eval::ComptimeDefinition {
-                    expr: local.initializer.clone(),
-                    initialization_boundary: None,
-                },
-            );
-        }
+        // Local bindings shadow module ones, and a later local shadows an
+        // earlier one --- but only for what is written *after* it. Handing the
+        // evaluator the written order, rather than a map that remembers only
+        // the last binding of each name, is what lets a closure defined
+        // between `x = 1` and `x := 2` still read `1`.
+        let local_definitions = self
+            .local_values_in_scope()
+            .map(|(name, local)| {
+                (
+                    name.clone(),
+                    aven_eval::ComptimeDefinition {
+                        expr: local.initializer.clone(),
+                        initialization_boundary: None,
+                        shadows_outer: local.shadows,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
         let locals = bindings
             .iter()
             .filter_map(|(name, value)| {
@@ -520,6 +527,7 @@ impl<'a> Checker<'a> {
             expr,
             aven_eval::ComptimeEvalConfig {
                 definitions,
+                local_definitions,
                 active_boundary: initialization_boundary,
                 ambient_modules: &self.builtin_methods.comptime_modules,
                 prelude_modules: self.imports.prelude_modules(),
@@ -4095,7 +4103,7 @@ impl<'a> Checker<'a> {
             .push(body_comptime_values.clone());
         self.propagation_contexts
             .push(PropagationContext::default());
-        let result = self.infer(&body_env, &body);
+        let result = self.in_foreign_body(imported, |checker| checker.infer(&body_env, &body));
         let propagation = self.pop_propagation_context();
         let result = self.apply_propagation_context_to_body_type(&body, result, &propagation);
         // Every `@` parameter was satisfied, so this specialization's body is
@@ -5218,7 +5226,11 @@ impl<'a> Checker<'a> {
             match item {
                 MergedItem::Binding { signature, binding } => {
                     let obligation_marker = self.method_obligation_marker();
-                    self.record_local_value(&binding.name, &binding.value);
+                    self.record_local_value(
+                        &binding.name,
+                        &binding.value,
+                        binding.shadow_span.is_some(),
+                    );
                     // A local function may call itself; bind it before inferring
                     // its own value. See `self_recursive_local_type`.
                     if let Some(recursive) =

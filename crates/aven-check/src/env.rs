@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use aven_parser::Expr;
 
+use crate::checker::knowledge::Known;
+use crate::comptime::ExecutionContext;
 use crate::{
     Type,
     ty::{self, TypeScheme},
@@ -24,7 +26,21 @@ pub(crate) struct LocalTypeScopes {
     pins: Vec<HashMap<String, Expr>>,
     /// Initializers of ordinary local bindings, scoped alongside `scopes` so
     /// every push/pop site covers all three.
-    values: Vec<HashMap<String, LocalValue>>,
+    ///
+    /// Ordered, and shadowing appends rather than overwrites, because a local
+    /// definition is a *lexical* thing: `get = () => x` written between
+    /// `x = 1` and `x := 2` captures the first `x`, and a map keyed by name
+    /// can only remember the last one. See `local_definition_layers`.
+    values: Vec<Vec<(String, LocalValue)>>,
+    /// Compile-time evidence for a binding's value, scoped alongside `scopes`
+    /// so a proof cannot outlive the binding that earned it.
+    ///
+    /// `None` is a *mask*, not an absence: a parameter, a match binder, or a
+    /// rebinding whose value proves nothing all record one, so that a lookup
+    /// stops at the nearest binding of the name instead of reading a proof
+    /// about some earlier, unrelated binding that happened to share a
+    /// spelling.
+    proofs: Vec<HashMap<String, Option<(ExecutionContext, Known)>>>,
 }
 
 /// An ordinary local binding's initializer. A comptime demand may evaluate one
@@ -39,19 +55,25 @@ pub(crate) struct LocalTypeScopes {
 #[derive(Debug, Clone)]
 pub(crate) struct LocalValue {
     pub(crate) initializer: Expr,
+    /// Written with `:=`. The initializer runs before this binding exists, so
+    /// it resolves the binding being shadowed --- `x := x + 1` reads the
+    /// previous `x` --- rather than itself.
+    pub(crate) shadows: bool,
 }
 
 impl LocalTypeScopes {
     pub(crate) fn push(&mut self) {
         self.scopes.push(HashMap::new());
         self.pins.push(HashMap::new());
-        self.values.push(HashMap::new());
+        self.values.push(Vec::new());
+        self.proofs.push(HashMap::new());
     }
 
     pub(crate) fn pop(&mut self) {
         self.scopes.pop();
         self.pins.pop();
         self.values.pop();
+        self.proofs.pop();
     }
 
     /// Open a scope for local *values* only. `infer_block` walks a block
@@ -59,26 +81,36 @@ impl LocalTypeScopes {
     /// but its bindings are still evaluable definitions, and a demand reached
     /// during inference must see them exactly as one reached during checking.
     pub(crate) fn push_values(&mut self) {
-        self.values.push(HashMap::new());
+        self.values.push(Vec::new());
     }
 
     pub(crate) fn pop_values(&mut self) {
         self.values.pop();
     }
 
-    pub(crate) fn define_value(&mut self, name: &str, initializer: Expr) {
+    pub(crate) fn define_value(&mut self, name: &str, initializer: Expr, shadows: bool) {
         if name == "_" {
             return;
         }
         if let Some(scope) = self.values.last_mut() {
-            scope.insert(name.to_owned(), LocalValue { initializer });
+            scope.push((
+                name.to_owned(),
+                LocalValue {
+                    initializer,
+                    shadows,
+                },
+            ));
         }
     }
 
-    /// Every local value in scope, outermost first, so inserting them in order
-    /// leaves the nearest binding of a shadowed name in place.
+    /// Every local value in scope, in the order it was written: outermost
+    /// scope first, and within a scope, earliest binding first. A shadowed
+    /// name appears more than once, and both entries matter --- the earlier
+    /// one is what anything defined between them captured.
     pub(crate) fn values_in_scope(&self) -> impl Iterator<Item = (&String, &LocalValue)> {
-        self.values.iter().flat_map(HashMap::iter)
+        self.values
+            .iter()
+            .flat_map(|scope| scope.iter().map(|(name, value)| (name, value)))
     }
 
     pub(crate) fn define_pin(&mut self, name: &str, value: Expr) {
@@ -91,14 +123,54 @@ impl LocalTypeScopes {
         self.pins.iter().rev().find_map(|scope| scope.get(name))
     }
 
+    /// Introduce a local name.
+    ///
+    /// Every local name --- binding, parameter, match binder, comprehension
+    /// binder --- arrives here, which is why this is also where a stale proof
+    /// is masked. A name that has just been bound to something new cannot go
+    /// on answering demands with what an older binding of the same spelling
+    /// was proved to hold. A binding that does prove something re-records it
+    /// afterwards, through `propagate_local_binding_knowledge`.
+    ///
+    /// That propagation is itself total --- it records a mask when the new
+    /// value proves nothing --- so for an ordinary binding the two overlap,
+    /// and neutering either one alone leaves the tests green. The overlap is
+    /// deliberate: propagation covers only `Binding`s, and this covers every
+    /// other way a name is introduced, so the invariant holds here rather than
+    /// depending on a caller remembering to re-establish it.
     pub(crate) fn define(&mut self, name: &str, ty: LocalValueType) {
         if name == "_" {
             return;
         }
 
+        self.mask_proof(name);
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_owned(), ty);
         }
+    }
+
+    /// Record that this name's nearest binding proves nothing.
+    pub(crate) fn mask_proof(&mut self, name: &str) {
+        if let Some(scope) = self.proofs.last_mut() {
+            scope.insert(name.to_owned(), None);
+        }
+    }
+
+    pub(crate) fn define_proof(&mut self, name: &str, origin: ExecutionContext, known: Known) {
+        if let Some(scope) = self.proofs.last_mut() {
+            scope.insert(name.to_owned(), Some((origin, known)));
+        }
+    }
+
+    /// The nearest binding's evidence, or `None` when the nearest binding of
+    /// this name has none. The distinction from "no binding at all" is the
+    /// point: an outer proof must not show through an inner binding.
+    pub(crate) fn proof(&self, name: &str) -> Option<Option<&(ExecutionContext, Known)>> {
+        self.proofs
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .map(Option::as_ref)
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&LocalValueType> {
