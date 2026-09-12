@@ -15267,12 +15267,18 @@ fn comptime_unknown_parameter_reports_the_dependency_without_using_module_shadow
     );
 }
 
-/// A pin says *when* a value is known, never that it has a different type than
-/// it had. A branded family is not a base kind, so evaluating `price` to the
-/// number `2599` must not fold the pin's type back to a bare literal — doing so
-/// would let plain-`Int` behavior reach a `Money`.
+/// `comptime(price)` used to succeed silently, keeping `price`'s `Money` type
+/// and simply withholding the proof. A later review found that leniency
+/// unsound the same way for any `@` parameter, not only for this call's own
+/// result: an argument reaching a family can select a match arm or a domain
+/// member before any proof is ever asked for, certifying a value the family's
+/// rendering would have changed. Closing that hole conservatively rejects
+/// every family-reaching argument up front, `comptime(price)` included, since
+/// distinguishing "this one happens to be a harmless pass-through" from "this
+/// one drives a decision" is exactly the elaboration this repair does not
+/// yet do. This is the support limitation, not the earlier partial success.
 #[test]
-fn comptime_pin_keeps_a_named_family_instead_of_folding_to_its_raw_literal() {
+fn comptime_pin_of_a_named_family_is_rejected_conservatively() {
     let source = concat!(
         "Money = Int {\n",
         "  cents(): Int => .\n",
@@ -15282,12 +15288,29 @@ fn comptime_pin_keeps_a_named_family_instead_of_folding_to_its_raw_literal() {
     );
     let output = parse_module(source);
     let check = check_module(&output.module);
+    assert_eq!(
+        matching_codes(&check.diagnostics, codes::comptime::EVALUATION_UNSUPPORTED),
+        1,
+        "{:?}",
+        check.diagnostics
+    );
+
+    // A demand that cannot reach the family is unaffected.
+    let unaffected = concat!(
+        "Money = Int {\n",
+        "  cents(): Int => .\n",
+        "}\n",
+        "n = 2599\n",
+        "pinned = comptime(n)\n",
+    );
+    let output = parse_module(unaffected);
+    let check = check_module(&output.module);
     assert!(check.diagnostics.is_empty(), "{:?}", check.diagnostics);
     assert_eq!(
         check
             .type_at(binding_value_named(&output.module, "pinned").span)
             .map(Type::render),
-        Some("Money".to_owned())
+        Some("2599".to_owned())
     );
 }
 

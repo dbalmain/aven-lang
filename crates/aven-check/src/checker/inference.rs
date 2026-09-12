@@ -600,7 +600,7 @@ impl<'a> Checker<'a> {
             return None;
         }
         let value = self
-            .evaluate_demanded_expression(env, expr, &HashMap::new(), OPPORTUNISTIC_FUEL)
+            .evaluate_demanded_expression(env, expr, &HashMap::new(), OPPORTUNISTIC_FUEL, true)
             .ok()?;
         knowledge::Known::from_value_with(&value, knowledge::Provenance::Opportunistic)
     }
@@ -695,7 +695,27 @@ impl<'a> Checker<'a> {
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
     ) -> Result<aven_eval::Value, Diagnostic> {
-        self.evaluate_demanded_expression(env, expr, bindings, DEMAND_FUEL)
+        self.evaluate_demanded_expression(env, expr, bindings, DEMAND_FUEL, true)
+    }
+
+    /// Evaluate a resolved module (or imported) function's body: never through
+    /// the caller's lexical scope.
+    ///
+    /// `body_env`/`bindings` already carry everything the callee is entitled
+    /// to see --- its parameters and comptime arguments. Reusing the caller's
+    /// local scope on top of that lets a same-named local at the call site
+    /// (a parameter, a `:=` reassignment) stand in for the callee's own
+    /// free variables, which is a different binding by construction: the
+    /// callee's body was elaborated against its own definition site, not
+    /// this call's. Excluding caller locals here is what keeps `x := 2` in
+    /// `g` from being visible to `f`'s body when `f` never captured `x`.
+    pub(super) fn evaluate_module_function_body(
+        &self,
+        env: &TypeEnv,
+        expr: &Expr,
+        bindings: &HashMap<String, comptime::ComptimeValue>,
+    ) -> Result<aven_eval::Value, Diagnostic> {
+        self.evaluate_demanded_expression(env, expr, bindings, DEMAND_FUEL, false)
     }
 
     /// The same, with the budget the caller is entitled to.
@@ -705,12 +725,18 @@ impl<'a> Checker<'a> {
     /// proof must not start failing because unrelated calls elsewhere in the
     /// file spent the allowance first --- whether a program checks cannot
     /// depend on how much folding happened above it.
+    ///
+    /// `include_caller_scope` says whether the expression is lexically part
+    /// of the current local scope (an argument, an ordinary block
+    /// expression) and so may see this scope's locals, or is a resolved
+    /// callee's body evaluated at a distance, which may not.
     fn evaluate_demanded_expression(
         &self,
         env: &TypeEnv,
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
         fuel: u64,
+        include_caller_scope: bool,
     ) -> Result<aven_eval::Value, Diagnostic> {
         if self.imports.prelude_requires_elaboration() {
             return Err(Diagnostic::error("prelude value evaluation requires runtime elaborations that are not yet available at compile time")
@@ -747,19 +773,22 @@ impl<'a> Checker<'a> {
         // evaluator the written order, rather than a map that remembers only
         // the last binding of each name, is what lets a closure defined
         // between `x = 1` and `x := 2` still read `1`.
-        let local_definitions = self
-            .local_values_in_scope()
-            .map(|(name, local)| {
-                (
-                    name.clone(),
-                    aven_eval::ComptimeDefinition {
-                        expr: local.initializer.clone(),
-                        initialization_boundary: None,
-                        shadows_outer: local.shadows,
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
+        let local_definitions = if include_caller_scope {
+            self.local_values_in_scope()
+                .map(|(name, local)| {
+                    (
+                        name.clone(),
+                        aven_eval::ComptimeDefinition {
+                            expr: local.initializer.clone(),
+                            initialization_boundary: None,
+                            shadows_outer: local.shadows,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let locals = bindings
             .iter()
             .filter_map(|(name, value)| {
@@ -772,6 +801,8 @@ impl<'a> Checker<'a> {
         // an initializer is not that: it has a value the demand may compute, so
         // it is a definition above rather than a blocked name. Blocking it too
         // was what kept a demand inside a function from seeing its own locals.
+        // A callee body evaluated at a distance keeps every caller local
+        // blocked instead, since none of them are its own.
         let mut blocked = self
             .local_types
             .inference_env()
@@ -779,8 +810,10 @@ impl<'a> Checker<'a> {
             .collect::<HashSet<_>>();
         blocked.extend(env.keys().cloned());
         blocked.extend(self.pattern_bindings.keys().cloned());
-        for (name, _) in self.local_values_in_scope() {
-            blocked.remove(name);
+        if include_caller_scope {
+            for (name, _) in self.local_values_in_scope() {
+                blocked.remove(name);
+            }
         }
         blocked.extend(
             self.globals
@@ -4273,8 +4306,33 @@ impl<'a> Checker<'a> {
             } else {
                 &body_comptime_values
             };
+            // A family-tainted argument must never reach the evaluator at
+            // all: its value would go on to select a match arm or a domain
+            // member below, which taints the call's *type* rather than only
+            // a proof a later annotation could demand. Withholding a proof
+            // afterward is too late for that --- `choose("${price}")` had
+            // already picked its branch by then. `arg` is the resolved
+            // argument, defaults included, so an omitted `= "${price}"`
+            // default is caught the same way a written one would be.
+            let family_tainted =
+                reflected_default.is_none() && self.demand_reaches_primitive_family(arg);
             let demand = match reflected_default {
                 Some(argument) => ComptimeDemand::Known(argument),
+                None if family_tainted => {
+                    let diagnostic = Diagnostic::error(
+                        "this argument's value cannot be certified at compile time",
+                    )
+                    .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
+                    .with_label(Label::primary(
+                        arg.span,
+                        "reaches a primitive family, whose rendering compile-time evaluation cannot reproduce",
+                    ))
+                    .with_note(
+                        "this is a support limitation, not a rejection of the program: \
+                         family-dependent compile-time evaluation is not yet implemented",
+                    );
+                    ComptimeDemand::Failed(vec![diagnostic])
+                }
                 None => self.evaluate_comptime_param_argument(arg_env, arg, arg_bindings),
             };
             let argument = match demand {
@@ -4403,7 +4461,7 @@ impl<'a> Checker<'a> {
                 .iter()
                 .any(|arg| self.demand_reaches_primitive_family(arg));
         self.pending_known = (!family_in_reach)
-            .then(|| self.evaluate_known_expression(&body_env, &body, &body_comptime_values))
+            .then(|| self.evaluate_module_function_body(&body_env, &body, &body_comptime_values))
             .and_then(Result::ok)
             .as_ref()
             .and_then(knowledge::Known::from_value);
@@ -6239,9 +6297,23 @@ enum DemandReach<'a> {
 /// annotations. Deliberately syntactic: a name that is shadowed, or is a field
 /// label, still counts, because the only use is deciding whether something
 /// *might* be in reach.
+///
+/// `walk_expr_children` does not visit `RecordEntry::Shorthand` — a shorthand
+/// field stores its name outside any `Expr`, since `{ price }` has nothing
+/// else to walk — so it is collected here explicitly. Missing it would let
+/// `{ price }` carry a primitive family past this guard unseen.
 fn collect_expr_names<'a>(expr: &'a Expr, names: &mut Vec<&'a str>) {
     if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &expr.kind {
         names.push(name);
+    }
+    if let ExprKind::Record(entries) | ExprKind::Array(entries) | ExprKind::Set(entries) =
+        &expr.kind
+    {
+        for entry in entries {
+            if let RecordEntry::Shorthand { name, .. } = entry {
+                names.push(name);
+            }
+        }
     }
     walk_expr_children(expr, &mut |child| collect_expr_names(child, names));
 }
