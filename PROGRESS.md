@@ -4,57 +4,115 @@ Updated: 2026-09-12, Australia/Sydney.
 
 ## Current state
 
-Branch `comptime-unification-slices-1-2`, tip `fc692c2` plus the merged
-`strings-findings` work. Nothing pushed. Gates green in `nix develop`:
-`fmt --check`, `clippy --workspace --all-targets -- -D warnings`, and
-`cargo test --workspace` at **1870 passed / 0 failed** (baseline 1845). The
-MSRV gate (`nix develop .#msrv`, `cargo check --workspace --all-targets` on
-1.91.0) also passes, and is runnable locally for the first time.
+Branch `comptime-unification-slices-1-2`, tip `a30ac3e`. Nothing pushed. Gates
+green in `nix develop`: `fmt --check`, `clippy --workspace --all-targets -D
+warnings`, `git diff --check`, and `cargo test --workspace` at **1886 passed /
+0 failed** (1870 before this round). The MSRV gate (`nix develop .#msrv`,
+`cargo check --workspace --all-targets` on 1.91.0) also passes.
 
-Completed since the handoff, newest first:
+Astra's review of `0e61f7b..da9c901` (`docs/claude-review-followup.md`) is
+addressed. All three correctness findings reproduced exactly as reported on a
+freshly built release binary before any code changed.
 
 | Commit | Work |
 | --- | --- |
-| merge | Four string-literal findings (grok, isolated worktree) |
-| `fc692c2` | Semantic transport audit; branding rule pinned |
-| `9f1cdf5` | Evaluator lifetime gate: release what a comptime evaluation retains |
-| `a2210f9` | Slice 4 — a demand inside a function sees its own locals |
-| `aa68133` | Slice 3 — typed demands proved from knowledge, not narrowing |
-| `c401379` | Dev shell reproduces CI; MSRV gate runnable locally |
+| `a30ac3e` | Slice 5 — fold ordinary calls; a fold answers a literal demand only |
+| `11f4c21` | Prepare the comptime evaluator once per check, not once per demand |
+| `2685d8f` | Withhold a proof a primitive family could have changed |
+| `68ee95c` | Tie a proof to the binding that earned it |
+| `da9c901` | (review baseline) |
 
-Remaining, in order:
+### What the three repairs were
 
-1. **Slice 5 — opportunistic evaluation at ordinary calls.** Blocked on a
-   decision; see below.
-2. Final documentation: `docs/language-literals-and-comptime.md` (grok touched
-   it; the comptime sections are still mine), implementation notes, and
-   `docs/language-proposals-review.html`. Review `../docs/language-spec.md` for
-   stale builtin/narrowing claims and prepare a patch rather than editing it
-   silently.
-3. Re-run the older-shell verification (bash 5.2.21 / fish 3.7.0).
+**Proof identity and lifetime.** Evidence lived in one checker-wide map keyed
+by name, so it outlived both its scope and its binding. Three programs passed
+`aven check` and contradicted the annotation at runtime. Evidence for a local
+binding now lives in the same scope stack as its types and initializers, so
+every push/pop covers all three; introducing any local name masks what an older
+binding of that spelling proved, and a binding whose value proves nothing
+records that rather than leaving the question to whoever asked last.
 
-## Slice 5 is blocked on a cost decision
+**Lexical captures.** Local initializers reached the evaluator flattened into a
+map keyed by name, so a closure written between `x = 1` and `x := 2` was rebuilt
+against the second. They now arrive in written order, one lexical scope each. A
+`:=` shadow's own initializer resolves from the parent scope, which is also what
+gives `x := x + 1` its runtime meaning.
 
-A comptime demand costs about **3.3 ms**, of which roughly **2 ms is fixed
-setup** paid before any user expression runs: `eval_comptime_expr` builds a
-fresh scope chain and re-evaluates the prelude and the ambient `std` modules on
-every call. Measured on 1000 identical bindings, release build:
+`record_known` now really does refuse an imported body's spans, as its comment
+already claimed. No supported program exhibits the leak --- a nested
+comptime-parameter call through an import does not propagate evidence today ---
+so the suppression stands on the argument, not on a fixture; noted in
+`an_imported_specialization_proves_a_value_at_the_callers_span`.
 
-| File | Wall clock |
-| --- | --- |
-| 1000 ordinary bindings, no demand | 0.64 s |
-| 1000 x `comptime(i)` (cheapest possible demand) | 2.07 s |
-| 1000 x `comptime(double(i))` | 3.93 s |
+**Primitive families.** See the support limitation below.
 
-Slice 5 folds at *every* call whose inputs are known, not only at written
-`comptime(...)`. The preflight the plan asks for reduces how many evaluations
-happen; it does not make one cheaper. At 3.3 ms per fold, a file with a few
-thousand foldable calls goes from sub-second to minutes, against an acceptance
-bar in the plan of "a few percent". So the per-demand setup cost has to be
-decided before slice 5 is written, not after.
+### Performance
+
+Instrumenting a thousand-pin file located the cost, which was not where the
+wall-clock subtraction had suggested. Per demand: 570ms total building the
+definition map, 144ms preparing ambient `std`, 2.6ms on the prelude, 0.3ms
+actually evaluating --- and 2,002,000 definitions cloned across 2000 calls,
+every initializer in the file copied again for every demand written in it.
+
+Module bindings now become evaluator definitions once per check and are shared
+behind an `Rc`. Intrinsics, ambient method sets and the prelude become a
+`ComptimeSession`, prepared on the first demand. Teardown follows the same
+split: a demand owns its scopes, fuel, boundary and family descriptors; the
+session owns the ambient method table and the prelude chain.
+
+Medians of three, release, against the `da9c901` binary:
+
+| File | Before | After |
+| --- | --- | --- |
+| 1000 ordinary bindings, no demand | 0.04 s | 0.04 s |
+| 1000 pins | 1.24 s | 0.12 s |
+| 1000 pins through a helper | 3.45 s | 0.37 s |
+| 2000 pins through a helper | 13.04 s | 1.00 s |
+| 1000 foldable ordinary calls | 0.08 s | 0.09 s |
+| 1000 unfoldable calls in one block | 2.18 s | 2.30 s |
+| `examples/cli.av` | 1.61 s | 1.61 s |
+| `examples/json.av`, `errors.av`, `http-fetch.av` | 0.02--0.03 s | unchanged |
+
+Peak RSS on the 2000-pin file is 27.1 MB either way, so none of it was bought by
+holding more. The residual +5% on the unfoldable-calls file is slice 5's
+preflight; that file's 2.18 s baseline is itself pathological and unrelated to
+comptime, as is `cli.av` at 1.6 s. Both are worth a look and neither is this
+work.
+
+### Slice 5, and the rule it needed
+
+Enabling folding at ordinary calls broke six tests, none of them about
+comptime: checked division returning `?Int`, a literal annotation refusing an
+optional, a `1 | 1.0` join refusing `Int`. Each said the same thing --- an
+expression's type is its contract --- and folding answered all of them with an
+implementation detail.
+
+So an unasked-for proof answers a **literal-type demand and nothing else**, and
+does not discharge optionality however literal the demand. `total: 6 =
+double(3)` works; `asInt: Int = f(0)` does not, because that annotation would
+hold only while the checker could still fold `f`. `comptime(...)` asks for both,
+because there asking is the point.
+
+With that rule all six stay green. Nothing was loosened and no existing
+assertion was touched.
 
 ## Known gaps, recorded rather than fixed
 
+- **Primitive families and comptime — a support limitation, not a repair.** A
+  demand that can reach a primitive family proves nothing. `Money = Int {
+  toText(): Text => "money" }` is an `Int` that renders as `money`, and the
+  brand arrives through an elaboration the checker records as it goes; comptime
+  evaluation runs definitions without those elaborations, so
+  `comptime("${price}")` rendered the bare payload and certified `"99"` for a
+  program that prints `money`. The refusal is of the *proof*, not of the
+  evaluation, so `comptime(price)` still pins and keeps its `Money` type, and a
+  demand that cannot reach the family is untouched even in a module that
+  declares one. **The right answer, `"money"`, is refused alongside the wrong
+  one.** Certifying it needs runtime-equivalent family elaboration inside the
+  demand --- a slice of its own. Reproducing every position where a literal may
+  be branded was rejected as the alternative: it would be a second copy of a
+  rule that already lives in the checker, and a copy that drifts is worse than
+  none. Pinned by `a_demand_reaching_a_primitive_family_proves_nothing`.
 - **Branding and comptime.** `price: Money = 99` is accepted;
   `price: Money = comptime(99)` is not. This is the existing rule applying
   evenly --- branding keys on a literal *written* at the annotated position,
