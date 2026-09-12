@@ -4,28 +4,71 @@ Updated: 2026-09-12, Australia/Sydney.
 
 ## Current state
 
-Branch `comptime-unification-slices-1-2`, tip `a30ac3e`. Nothing pushed. Gates
-green in `nix develop`: `fmt --check`, `clippy --workspace --all-targets -D
-warnings`, `git diff --check`, and `cargo test --workspace` at **1886 passed /
-0 failed** (1870 before this round). The MSRV gate (`nix develop .#msrv`,
-`cargo check --workspace --all-targets` on 1.91.0) also passes.
+Branch `comptime-unification-slices-1-2`, tip `78ebe43`. Nothing pushed. Gates
+green in `nix develop`: `fmt --check`,
+`clippy --workspace --all-targets -D warnings`, `git diff --check`, and
+`cargo test --workspace` at **1893 passed / 0 failed** (1886 before this round).
+The MSRV gate (`nix develop .#msrv`, `cargo check --workspace --all-targets` on
+1.91.0) also passes.
 
-Astra's review of `0e61f7b..da9c901` (`docs/claude-review-followup.md`) is
-addressed. All three correctness findings reproduced exactly as reported on a
-freshly built release binary before any code changed.
+Astra's follow-up review of `da9c901..af60ed4` (`.ai/REVIEW.md`) found six more
+gaps in the same three repairs, three of them P1. All six reproduced exactly as
+reported before any code changed; all six are fixed except the fifth, which
+turned out to be a genuine, unresolved tension between two previously-approved
+decisions rather than a bug — see the artifact.
 
-| Commit | Work |
-| --- | --- |
-| `a30ac3e` | Slice 5 — fold ordinary calls; a fold answers a literal demand only |
-| `11f4c21` | Prepare the comptime evaluator once per check, not once per demand |
-| `2685d8f` | Withhold a proof a primitive family could have changed |
-| `68ee95c` | Tie a proof to the binding that earned it |
-| `da9c901` | (review baseline) |
+| Commit    | Work                                                                     |
+| --------- | ------------------------------------------------------------------------ |
+| `78ebe43` | Give a call into a prepared closure the calling demand's fuel and scopes |
+| `64bbbb7` | Evaluate a specialization through its own scope, not its caller's        |
+| `af60ed4` | (review baseline)                                                        |
+| `a30ac3e` | Slice 5 — fold ordinary calls; a fold answers a literal demand only      |
+| `11f4c21` | Prepare the comptime evaluator once per check, not once per demand       |
+| `2685d8f` | Withhold a proof a primitive family could have changed                   |
+| `68ee95c` | Tie a proof to the binding that earned it                                |
+| `da9c901` | (first review baseline)                                                  |
+
+### The follow-up review's six findings
+
+1. **Specialization evidence still evaluated in the caller's scope.** The shared
+   evaluation helper always spliced in the checker's current local scope, so a
+   caller's `x := 2` could stand in for a module callee's free `x` it never
+   captured. Fixed: the helper now takes an explicit flag, and a resolved
+   callee's body is evaluated with caller locals excluded rather than included.
+2. **The family guard missed shorthand references and omitted defaults.**
+   `collect_expr_names` skipped `RecordEntry::Shorthand`, so `{ price }` carried
+   a family past it unseen; the guard also read the caller's raw `args` rather
+   than the resolved `arguments`, missing a family reaching only through a
+   default. Fixed: shorthand names are collected explicitly, and the check runs
+   against the resolved argument.
+3. **Withholding the final proof was too late.** A family-tainted comptime
+   argument had already selected a match arm or a domain member before any proof
+   was asked for, so no `Known` was even needed to certify the wrong value.
+   Fixed: a family-reaching argument is now rejected before it is evaluated at
+   all, which necessarily also rejects `comptime(price)` itself — see the
+   updated support-limitation entry below.
+4. **Prepared closures bypassed the per-demand fuel budget.** A closure captured
+   at session-preparation time carried that time's unlimited fuel and untracked
+   scope registry forever; calling it ran with that budget rather than the
+   active demand's. Fixed with `Environment::call_child`, which splits lexical
+   capture (scope chain, imports, ambient tables — from the closure) from
+   dynamic state (fuel, comptime boundary, scope registry — from the active
+   caller). Does not yet cover a closure called back through a native
+   higher-order function (array `.map`/`.filter`/`.fold`, operator dispatch),
+   since `NativeContext` carries no environment reference — noted as a remaining
+   gap.
+5. **Slice 5 reportedly reversed the approved typed-use contract.** Not fixed —
+   this is an open design question, not a bug. See "Open: present optionals and
+   opportunistic folding" below.
+6. **Calls into prepared closures retained demand objects until session end.**
+   Same root cause as #4, fixed by the same change: a dynamic call frame now
+   registers with the active demand's scope registry rather than whichever
+   registry its lexical parent happened to carry.
 
 ### What the three repairs were
 
-**Proof identity and lifetime.** Evidence lived in one checker-wide map keyed
-by name, so it outlived both its scope and its binding. Three programs passed
+**Proof identity and lifetime.** Evidence lived in one checker-wide map keyed by
+name, so it outlived both its scope and its binding. Three programs passed
 `aven check` and contradicted the annotation at runtime. Evidence for a local
 binding now lives in the same scope stack as its types and initializers, so
 every push/pop covers all three; introducing any local name masks what an older
@@ -62,15 +105,15 @@ session owns the ambient method table and the prelude chain.
 
 Medians of three, release, against the `da9c901` binary:
 
-| File | Before | After |
-| --- | --- | --- |
-| 1000 ordinary bindings, no demand | 0.04 s | 0.04 s |
-| 1000 pins | 1.24 s | 0.12 s |
-| 1000 pins through a helper | 3.45 s | 0.37 s |
-| 2000 pins through a helper | 13.04 s | 1.00 s |
-| 1000 foldable ordinary calls | 0.08 s | 0.09 s |
-| 1000 unfoldable calls in one block | 2.18 s | 2.30 s |
-| `examples/cli.av` | 1.61 s | 1.61 s |
+| File                                             | Before       | After     |
+| ------------------------------------------------ | ------------ | --------- |
+| 1000 ordinary bindings, no demand                | 0.04 s       | 0.04 s    |
+| 1000 pins                                        | 1.24 s       | 0.12 s    |
+| 1000 pins through a helper                       | 3.45 s       | 0.37 s    |
+| 2000 pins through a helper                       | 13.04 s      | 1.00 s    |
+| 1000 foldable ordinary calls                     | 0.08 s       | 0.09 s    |
+| 1000 unfoldable calls in one block               | 2.18 s       | 2.30 s    |
+| `examples/cli.av`                                | 1.61 s       | 1.61 s    |
 | `examples/json.av`, `errors.av`, `http-fetch.av` | 0.02--0.03 s | unchanged |
 
 Peak RSS on the 2000-pin file is 27.1 MB either way, so none of it was bought by
@@ -81,17 +124,17 @@ work.
 
 ### Slice 5, and the rule it needed
 
-Enabling folding at ordinary calls broke six tests, none of them about
-comptime: checked division returning `?Int`, a literal annotation refusing an
-optional, a `1 | 1.0` join refusing `Int`. Each said the same thing --- an
-expression's type is its contract --- and folding answered all of them with an
-implementation detail.
+Enabling folding at ordinary calls broke six tests, none of them about comptime:
+checked division returning `?Int`, a literal annotation refusing an optional, a
+`1 | 1.0` join refusing `Int`. Each said the same thing --- an expression's type
+is its contract --- and folding answered all of them with an implementation
+detail.
 
 So an unasked-for proof answers a **literal-type demand and nothing else**, and
-does not discharge optionality however literal the demand. `total: 6 =
-double(3)` works; `asInt: Int = f(0)` does not, because that annotation would
-hold only while the checker could still fold `f`. `comptime(...)` asks for both,
-because there asking is the point.
+does not discharge optionality however literal the demand.
+`total: 6 = double(3)` works; `asInt: Int = f(0)` does not, because that
+annotation would hold only while the checker could still fold `f`.
+`comptime(...)` asks for both, because there asking is the point.
 
 With that rule all six stay green. Nothing was loosened and no existing
 assertion was touched.
@@ -99,29 +142,41 @@ assertion was touched.
 ## Known gaps, recorded rather than fixed
 
 - **Primitive families and comptime — a support limitation, not a repair.** A
-  demand that can reach a primitive family proves nothing. `Money = Int {
-  toText(): Text => "money" }` is an `Int` that renders as `money`, and the
-  brand arrives through an elaboration the checker records as it goes; comptime
-  evaluation runs definitions without those elaborations, so
+  demand that can reach a primitive family is rejected outright.
+  `Money = Int { toText(): Text => "money" }` is an `Int` that renders as
+  `money`, and the brand arrives through an elaboration the checker records as
+  it goes; comptime evaluation runs definitions without those elaborations, so
   `comptime("${price}")` rendered the bare payload and certified `"99"` for a
-  program that prints `money`. The refusal is of the *proof*, not of the
-  evaluation, so `comptime(price)` still pins and keeps its `Money` type, and a
-  demand that cannot reach the family is untouched even in a module that
-  declares one. **The right answer, `"money"`, is refused alongside the wrong
-  one.** Certifying it needs runtime-equivalent family elaboration inside the
-  demand --- a slice of its own. Reproducing every position where a literal may
-  be branded was rejected as the alternative: it would be a second copy of a
-  rule that already lives in the checker, and a copy that drifts is worse than
-  none. Pinned by `a_demand_reaching_a_primitive_family_proves_nothing`.
+  program that prints `money`. **This now refuses the evaluation itself, not
+  only the proof** — the follow-up review found that withholding only the proof
+  was too late: a family-tainted argument could already have selected a match
+  arm or a domain member before any proof was asked for. That closes the hole
+  but costs more than the first repair intended: `comptime(price)` is rejected
+  too, not only the interpolation that would have rendered it wrong, because
+  distinguishing "harmless pass-through" from "drives a decision" needs the same
+  elaboration this repair still does not do. A demand that cannot reach the
+  family is untouched even in a module that declares one. Certifying the right
+  answer needs runtime-equivalent family elaboration inside the demand --- a
+  slice of its own. Reproducing every position where a literal may be branded
+  was rejected as the alternative: it would be a second copy of a rule that
+  already lives in the checker, and a copy that drifts is worse than none.
+  Pinned by `a_demand_reaching_a_primitive_family_proves_nothing` and
+  `comptime_pin_of_a_named_family_is_rejected_conservatively`.
 - **Branding and comptime.** `price: Money = 99` is accepted;
   `price: Money = comptime(99)` is not. This is the existing rule applying
-  evenly --- branding keys on a literal *written* at the annotated position,
-  and `price: Money = 40 + 59` fails the same way with no comptime involved.
-  Pinned by `only_a_written_literal_brands_a_primitive_family`. Widening it is
-  a language decision.
+  evenly --- branding keys on a literal _written_ at the annotated position, and
+  `price: Money = 40 + 59` fails the same way with no comptime involved. Pinned
+  by `only_a_written_literal_brands_a_primitive_family`. Widening it is a
+  language decision.
 - **`@`-param call result types.** A call to an `@`-param function returns the
   body's type rather than the declared return type. Pre-existing from slices
   1--2; relevant to contract item 7.
+- **Prepared-closure fuel/registry threading stops at natives.** A closure
+  called back through a native higher-order function (array
+  `.map`/`.filter`/`.fold`, operator method dispatch) still binds against its
+  own captured fuel and scope registry rather than the active demand's, since
+  `NativeContext` carries no environment reference to thread through. Direct
+  calls (the reported repro) are fixed; this narrower remaining case is not.
 - **Interpolation hole margins.** Margin validation still walks lines inside a
   `${...}` hole. Reproduced, documented and pinned; skipping them would be a
   language decision.
@@ -129,16 +184,35 @@ assertion was touched.
   `${"a"\n  + "b"}` stays rejected --- as does the same expression outside a
   string. Valid wrappings are documented.
 
+## Open: present optionals and opportunistic folding
+
+Not fixed, not a bug — a genuine conflict between two decisions this project has
+already approved, surfaced by the follow-up review's fifth finding. Full options
+brief on the decisions artifact:
+https://claude.ai/code/artifact/534e74ba-11f3-4193-b61a-cc681c3fd861
+
+In short: `docs/claude-completion-plan.md` item 3 says a known present optional
+may satisfy a nonoptional expected type, no exception for how the knowledge was
+obtained. Slice 5's provenance rule says an _opportunistic_ fold answers a
+literal-type demand and nothing else — added specifically because
+`checked_integer_division_narrows_on_static_divisors` needs it: `x.div(n)` with
+`n` a known-but-not-statically-proven-nonzero divisor must stay `?Int` even
+though the fold could compute a present `Int`. Astra's `m.get("a")` example
+needs the opposite: `found: Int = m.get("a")` should just work per item 3, with
+no `comptime(...)` wrapper. Both existing tests are correct readings of their
+own decision; nobody has yet reconciled the two decisions with each other. Left
+as-is (opportunistic folds restricted to literal demands, no optional discharge)
+pending an answer.
+
 ## Resumed implementation — agreed review amendments
 
-Implementation resumed after discussion with the user, from clean `3163938`
-(the plan commit following `58eb0a8`). The root agent orchestrates and reviews;
-Terra and Luna completed the ordering repair, and root accepted its final gates.
-No agent currently owns active source edits.
-Implementation is incomplete: slices 1–2 and the binding-order follow-up have
-passed their gates. Semantic knowledge (slice 3) is next. See **Accepted ordering repair** below before
-the historical gate results. Live notes are in
-`docs/comptime-implementation-progress.md` and
+Implementation resumed after discussion with the user, from clean `3163938` (the
+plan commit following `58eb0a8`). The root agent orchestrates and reviews; Terra
+and Luna completed the ordering repair, and root accepted its final gates. No
+agent currently owns active source edits. Implementation is incomplete: slices
+1–2 and the binding-order follow-up have passed their gates. Semantic knowledge
+(slice 3) is next. See **Accepted ordering repair** below before the historical
+gate results. Live notes are in `docs/comptime-implementation-progress.md` and
 `docs/comptime-prelude-progress.md`. No push is authorized.
 
 The discussion supersedes these parts of the plan below:
@@ -163,17 +237,18 @@ The discussion supersedes these parts of the plan below:
   directly as well as workspace-test elapsed time; preflight must account for
   lexical captures and demanded dependencies.
 
-The green status and test count below describe the starting implementation,
-not verification of the resumed work.
+The green status and test count below describe the starting implementation, not
+verification of the resumed work.
 
 ### Accepted ordering repair — September 11
 
 Root accepted and committed the repaired ordering implementation as `55ac2d1`
-after Terra/Luna coding and independent review. **1845 workspace tests pass, zero failures**; checker has
-**673** tests. Workspace clippy (`--all-targets -- -D warnings`), formatting,
-and diff checks pass. Final logs: `/tmp/aven-order-final-test.log`,
-`/tmp/aven-order-final-clippy.log`, `/tmp/aven-order-final-fmt.log`, and
-`/tmp/aven-order-final-diff.log`. The workspace test run had socket access.
+after Terra/Luna coding and independent review. **1845 workspace tests pass,
+zero failures**; checker has **673** tests. Workspace clippy
+(`--all-targets -- -D warnings`), formatting, and diff checks pass. Final logs:
+`/tmp/aven-order-final-test.log`, `/tmp/aven-order-final-clippy.log`,
+`/tmp/aven-order-final-fmt.log`, and `/tmp/aven-order-final-diff.log`. The
+workspace test run had socket access.
 
 The checker distinguishes Artifact, RuntimeUnknown, and RuntimeKnown contexts;
 actual annotations run in Artifact context. Unproven runtime lambda demands
@@ -182,8 +257,8 @@ memoized reads. Specialization caches retain context separately from canonical
 recursive type identity. A same-specialization cache regression was mutation
 tested: context-insensitive lookup incorrectly returned 3 and failed the test.
 
-The integrated gate exposed recursive equality repeatedly unfolding optional
-and expanded `Chain(Int)` references. Equality now recognizes wrapped recursive
+The integrated gate exposed recursive equality repeatedly unfolding optional and
+expanded `Chain(Int)` references. Equality now recognizes wrapped recursive
 identities and tracks compared type pairs. The existing recursive compiler
 fixture passes. Failed annotation-depth and test-only context workarounds were
 removed.
@@ -198,35 +273,35 @@ superseded by this accepted checkpoint.
 ### Resumption quality-gate results
 
 - Independently verified clean `3163938` using a snapshot in
-  `/tmp/aven-comptime-baseline-3163938`: **1818 passed, zero failures**.
-  Logs: `/tmp/aven-comptime-baseline-tests.log` (cold build, 82.91 seconds)
-  and `/tmp/aven-comptime-baseline-warm-tests.log` (cached build, 47.58 seconds).
+  `/tmp/aven-comptime-baseline-3163938`: **1818 passed, zero failures**. Logs:
+  `/tmp/aven-comptime-baseline-tests.log` (cold build, 82.91 seconds) and
+  `/tmp/aven-comptime-baseline-warm-tests.log` (cached build, 47.58 seconds).
   Three direct checker-suite baseline runs took 3.117, 3.122, and 3.243 seconds;
   data: `/tmp/aven-comptime-baseline-check-timing.json`.
-- Slice 1 committed as `4465716`; work now on
-  `comptime-unification-slices-1-2`. Root's full checker gate found **652 passed,
-  three failed** in `/tmp/aven-comptime-slice1-check.log`. Terra is repairing
-  the failures before proceeding to slice 2. Do not treat the slice as green.
+- Slice 1 committed as `4465716`; work now on `comptime-unification-slices-1-2`.
+  Root's full checker gate found **652 passed, three failed** in
+  `/tmp/aven-comptime-slice1-check.log`. Terra is repairing the failures before
+  proceeding to slice 2. Do not treat the slice as green.
 - Slice 2 needs generic prelude exports: ordinary functions from
-  `std/prelude.av` must reach both checker and runtime as lexical defaults.
-  No Rust special case for the name `comptime`; explicit user bindings shadow
+  `std/prelude.av` must reach both checker and runtime as lexical defaults. No
+  Rust special case for the name `comptime`; explicit user bindings shadow
   prelude exports. This plumbing is approved, with root review required.
 - Terra's first repair attempts did not pass the checker gate. The root assigned
   `repair_demand_outcomes` (inheriting the root model) the bounded slice-1
   repair after Terra could not complete it. Terra is idle; do not resume two
   agents against the same checker files. Uncommitted source changes following
   `4465716` are repair experiments until a fresh passing result is recorded.
-- CLI completion fixture baseline (`aven check .../completion_tool.av
-  --timings`, five runs) checker times: 3525.614, 3496.118, 3511.874,
-  3574.593, 3572.739 ms. Data:
+- CLI completion fixture baseline
+  (`aven check .../completion_tool.av --timings`, five runs) checker times:
+  3525.614, 3496.118, 3511.874, 3574.593, 3572.739 ms. Data:
   `/tmp/aven-comptime-baseline-cli-timing.json`.
 - Before slice 5, review evaluator lifetime as well as elapsed time:
-  `Scope.values` can memoize a `Value::Closure` whose `Environment.scope`
-  points back to that scope, forming an `Rc` cycle; installed ambient methods
-  also capture their environment. Reconstructing these environments at every
-  fold can retain ASTs after scalar results are consumed. This is a static
-  ownership finding, not yet measured or fixed. Keep closure/capture behavior
-  correct when choosing cache lifetime or cleanup.
+  `Scope.values` can memoize a `Value::Closure` whose `Environment.scope` points
+  back to that scope, forming an `Rc` cycle; installed ambient methods also
+  capture their environment. Reconstructing these environments at every fold can
+  retain ASTs after scalar results are consumed. This is a static ownership
+  finding, not yet measured or fixed. Keep closure/capture behavior correct when
+  choosing cache lifetime or cleanup.
 
 ### Latest checkpoint — 2026-09-09
 
@@ -246,15 +321,15 @@ superseded by this accepted checkpoint.
   and erases qualified constraints. It also needs proper checked comptime export
   metadata and builtin removal. Do not treat it as green or slice 2 complete.
 - Terra did not complete subsequent bounded metadata patches. Ownership is now
-  wholly with `repair_demand_outcomes` for slice 2; Terra is idle. Root owns this
-  file. Check for partial uncommitted metadata edits before resuming.
+  wholly with `repair_demand_outcomes` for slice 2; Terra is idle. Root owns
+  this file. Check for partial uncommitted metadata edits before resuming.
 - Slices 3–5 (known-value channel, implicit verified optional conversion,
   binding propagation and opportunistic folding) have **not started**.
 - `b589d6e` repairs prelude export metadata. Both graph passes now use actual
-  checked record exports with qualified schemes and comptime functions;
-  private bindings stay private and source/host shadows agree. Invalid,
-  non-record, implicit-type-export, and runtime-failing preludes stop consumers.
-  Owner gates: checker **658 + 2**, compiler **42 + 95**; format and all-targets
+  checked record exports with qualified schemes and comptime functions; private
+  bindings stay private and source/host shadows agree. Invalid, non-record,
+  implicit-type-export, and runtime-failing preludes stop consumers. Owner
+  gates: checker **658 + 2**, compiler **42 + 95**; format and all-targets
   checker/compiler clippy pass. Logs: `/tmp/prelude-metadata-owner-tests.log`,
   `/tmp/prelude-metadata-clippy.log`. This repairs `54c36ff`'s known defects.
 - Builtin removal is now underway under `repair_demand_outcomes`; no parallel
@@ -276,15 +351,15 @@ superseded by this accepted checkpoint.
   captures. These checks remain with the implementation owner.
 - Resumed September 9 with the same single implementation owner. Recovered
   `/tmp/prelude-remove-tests5.log`: **661 checker unit + 2 fixture tests pass**.
-  `/tmp/prelude-remove-integrations2.log`: **42 compiler unit + 97 module +
-  184 LSP tests pass**. The last clippy log still fails on `filter_map_bool_then`;
+  `/tmp/prelude-remove-integrations2.log`: **42 compiler unit + 97 module + 184
+  LSP tests pass**. The last clippy log still fails on `filter_map_bool_then`;
   no final workspace gate or builtin-removal commit yet.
 - Root review found a further prelude scope defect: reconstructed prelude
   closures capture the root into which later prelude exports are inserted,
   whereas runtime preludes have independent intrinsic scopes. A later prelude
-  exporting `repr` can change an earlier prelude's `render = () => repr(1)`
-  only during checking. Implementation owner is separating consumer defaults
-  from the immutable base and adding a check/runtime regression before commit.
+  exporting `repr` can change an earlier prelude's `render = () => repr(1)` only
+  during checking. Implementation owner is separating consumer defaults from the
+  immutable base and adding a check/runtime regression before commit.
 - The focused scope regression now passes. Reconstruction uses a separate
   consumer-default scope, and the type evaluator prevents a foreign function's
   missing captured callee from resolving to caller exports. Bare checker/eval
@@ -297,11 +372,11 @@ superseded by this accepted checkpoint.
   includes `std/prelude`. Foreign context isolation also covers type lowering
   and reflection/value inference. Owner checks: checker **662 + 2**, compiler
   **42 + 98**. The implementation agent hit its usage limit after these gates;
-  root committed the reviewed checkpoint as `d327ea2`. Slice 3's design below
-  is approved but implementation has not started.
+  root committed the reviewed checkpoint as `d327ea2`. Slice 3's design below is
+  approved but implementation has not started.
 - Terra committed `87cb889`, a first binding-order guard; **664 checker unit
-  tests pass**, but root review marks it **needs work**. Filtering definitions by
-  the demanded expression's source offset does not model the initialization
+  tests pass**, but root review marks it **needs work**. Filtering definitions
+  by the demanded expression's source offset does not model the initialization
   boundary of lazily evaluated earlier bindings, or demands in helper/default
   bodies. Terra owns the follow-up; do not start a second source editor.
   Required controls include a closure called after its captured dependency
@@ -310,15 +385,16 @@ superseded by this accepted checkpoint.
   follow-up is claimed.
 - Terra's uncommitted evaluator repair now tracks lazy initializer availability
   before cached values and restores the caller boundary after initialization.
-  `ComptimeDefinition` holds optional order metadata; ambient definitions inherit
-  caller context without comparing unrelated source spans. `ComptimeEvalConfig`
-  keeps the evaluator API cohesive. **668 checker unit tests pass** and affected
-  checker/evaluator all-targets clippy passes. This is an intermediate gate:
-  the checker still approximates demand context from inference state.
+  `ComptimeDefinition` holds optional order metadata; ambient definitions
+  inherit caller context without comparing unrelated source spans.
+  `ComptimeEvalConfig` keeps the evaluator API cohesive. **668 checker unit
+  tests pass** and affected checker/evaluator all-targets clippy passes. This is
+  an intermediate gate: the checker still approximates demand context from
+  inference state.
 - Root independently confirmed two type-evaluator bypasses: a demand can read a
-  later `comptime(3)` binding, or call a later `(@x) => x` helper, and certify `3`.
-  Source ownership has transferred to `repair_demand_outcomes`; Terra is idle.
-  Required repair: explicit execution context plus runtime availability
+  later `comptime(3)` binding, or call a later `(@x) => x` helper, and certify
+  `3`. Source ownership has transferred to `repair_demand_outcomes`; Terra is
+  idle. Required repair: explicit execution context plus runtime availability
   requirements through compiler evaluation and cached specializations. Do not
   simply replay every scalar in the runtime evaluator: compiler-artifact
   operations can also yield Bool/literal values. Preserve those computations.
@@ -326,18 +402,19 @@ superseded by this accepted checkpoint.
 
 ### September 10 resumption
 
-- Terra resumed as the sole source owner of the uncommitted ordering repair;
-  the stronger agent's checker edits were interrupted before validation.
+- Terra resumed as the sole source owner of the uncommitted ordering repair; the
+  stronger agent's checker edits were interrupted before validation.
 - Root review requires preserving specialization caching without reusing a
-  result under an incompatible initialization boundary. Canonical recursive
-  type identity must remain independent of demand execution context.
+  result under an incompatible initialization boundary. Canonical recursive type
+  identity must remain independent of demand execution context.
 - The quality gate also covers pinned forward references, helpers declared
   later, imported runtime helpers, and compiler-artifact computations returning
   scalars. No new green result or acceptance is claimed yet. Slice 3 has not
   started.
-- September 10 implementation checkpoint: checker unit suite is green
-  (**671 passed**), and `cargo clippy -p aven-check -p aven-eval --all-targets
-  -- -D warnings` passes. The final workspace test/clippy rerun is logged under
+- September 10 implementation checkpoint: checker unit suite is green (**671
+  passed**), and
+  `cargo clippy -p aven-check -p aven-eval --all-targets -- -D warnings` passes.
+  The final workspace test/clippy rerun is logged under
   `/tmp/aven-comptime-binding-order-workspace-*-final.log`; root review remains
   pending and no implementation commit has been made.
 
@@ -357,14 +434,14 @@ early
 
 The exception was added for the existing compiler-artifact test
 `comptime_function_application_reifies_sorted_literal_union`:
-`keyUnion = (r) => keysOf(r); Keys = keyUnion(User)`.
-These contexts must be represented separately. Terra is implementing explicit
-Artifact / RuntimeUnknown / RuntimeKnown context and context-keyed caching.
-Unknown runtime demands reject unproven reads conservatively; no invocation
-analysis or later knowledge slice is authorized as part of this repair.
-Required final tests include both lambda forms, artifact scalar preservation,
-cache context isolation, and compiler import ordering. Earlier green gates are
-intermediate results; the implementation remains uncommitted and unaccepted.
+`keyUnion = (r) => keysOf(r); Keys = keyUnion(User)`. These contexts must be
+represented separately. Terra is implementing explicit Artifact / RuntimeUnknown
+/ RuntimeKnown context and context-keyed caching. Unknown runtime demands reject
+unproven reads conservatively; no invocation analysis or later knowledge slice
+is authorized as part of this repair. Required final tests include both lambda
+forms, artifact scalar preservation, cache context isolation, and compiler
+import ordering. Earlier green gates are intermediate results; the
+implementation remains uncommitted and unaccepted.
 
 ### Latest ownership handoff — September 10
 
@@ -390,7 +467,8 @@ intermediate results; the implementation remains uncommitted and unaccepted.
   reproducibly overflows in
   `recursive_runtime_targets_decode_encode_and_preserve_shape_errors`, including
   serial execution. A diagnostic 16 MiB test stack also overflows immediately
-  (`/tmp/aven-order-stack-diagnostic.log`); increasing stack is not an accepted fix.
+  (`/tmp/aven-order-stack-diagnostic.log`); increasing stack is not an accepted
+  fix.
 - Luna's additional annotation-depth/wrapper changes did not fix the overflow
   and remain unreviewed experiments. Terra resumes as sole source owner to
   identify the recursion/cache interaction, remove unnecessary experiments,
@@ -402,16 +480,16 @@ intermediate results; the implementation remains uncommitted and unaccepted.
 
 Terra again hit its usage limit; Luna is sole source owner. Root independently
 minimized the overflow to `chain == chainAgain` after decoding generic
-`Chain(Int)` values. The same source without equality passes CLI checking;
-Tree and mutual-record equality controls pass. Files:
+`Chain(Int)` values. The same source without equality passes CLI checking; Tree
+and mutual-record equality controls pass. Files:
 `/tmp/comptime-binding-review/chain-use-equal.av` and `chain-use.av`.
 
-Root identified a candidate in `equality_compatibility`: it checks recursive
-IDs before peeling optional wrappers, then normalizes wrapped recursive IDs
-into records before descending again. This can repeatedly unfold an
-`Optional(Recursive(...))` field. Luna is verifying and repairing that path;
-no acceptance yet. Preserve mismatch diagnostics and avoid arbitrary stack
-limits. Remove failed annotation-depth experiments once the cause is verified.
+Root identified a candidate in `equality_compatibility`: it checks recursive IDs
+before peeling optional wrappers, then normalizes wrapped recursive IDs into
+records before descending again. This can repeatedly unfold an
+`Optional(Recursive(...))` field. Luna is verifying and repairing that path; no
+acceptance yet. Preserve mismatch diagnostics and avoid arbitrary stack limits.
+Remove failed annotation-depth experiments once the cause is verified.
 
 ### Equality repair still under review
 
@@ -422,8 +500,8 @@ context merely masks that overflow and restores annotation regressions; it is
 not accepted. Luna is restoring the simple annotation wrapper and tracing the
 recursive-versus-expanded equality pair, then implementing a local recursion
 pair guard while preserving mismatched-field checks. Failed depth/duplicate
-annotation wrapper experiments have been removed. No final green workspace
-gate or implementation acceptance is claimed.
+annotation wrapper experiments have been removed. No final green workspace gate
+or implementation acceptance is claimed.
 
 ### Next implementation gate: semantic knowledge
 
@@ -432,9 +510,9 @@ Root verified the main seams directly: computed `@` parameter narrowing is in
 `checker/inference.rs` (`narrow_to_literal`, `infer_comptime_param_call`,
 `evaluate_comptime_param_argument`), while typed binding checks enter
 `checker/type_checking.rs::check_value_against_target`. Ordinary argument
-checking also has inference/unification paths and must share the proof rule.
-Do not rely on the inventory agent's earlier attribution of demand evaluation
-to `checker/value.rs`.
+checking also has inference/unification paths and must share the proof rule. Do
+not rely on the inventory agent's earlier attribution of demand evaluation to
+`checker/value.rs`.
 
 Implementation should retain actual evaluator values alongside ordinary types,
 not encode knowledge by rewriting `Type` or reconstruct values from display
@@ -442,9 +520,8 @@ text. Existing compiler artifacts remain distinct. Side-table identity must
 include module and lexical/specialization context; a bare Span is insufficient.
 Pin narrowing removal and proof-based literal/known-present-optional checking
 must land together. Audit existing arithmetic/interpolation folding before
-claiming all computed knowledge is separate from types. Family-dependent
-proofs require the runtime elaboration plan or conservative rejection.
-
+claiming all computed knowledge is separate from types. Family-dependent proofs
+require the runtime elaboration plan or conservative rejection.
 
 - Keep runtime knowledge separate from `Type` and from compiler artifacts such
   as reified types. Preserve evaluator values rather than round-tripping through
@@ -456,51 +533,53 @@ proofs require the runtime elaboration plan or conservative rejection.
   instance, not bare spans shared by imported functions or repeated calls.
   Unknown runtime parameters must never acquire knowledge from singleton types.
 - Remove computed-value type narrowing together with literal demand checking,
-  keeping the motivating example passing in that same slice. Typed arguments
-  and bindings must share the proof-based optional conversion behavior.
+  keeping the motivating example passing in that same slice. Typed arguments and
+  bindings must share the proof-based optional conversion behavior.
 - Before accepting family-dependent knowledge, share the runtime elaboration
   construction or conservatively reject it. `primitive_family_plan` currently
   lives in `aven-compiler/src/modules.rs`; duplicating branding/rendering rules
   in another evaluator would create another check/runtime disagreement.
-- Preserve sequential runtime availability when demanding definitions. A
-  forward binding cannot be certified merely because lazy evaluation can find
-  its AST. Full local propagation and opportunistic folding remain later gates.
+- Preserve sequential runtime availability when demanding definitions. A forward
+  binding cannot be certified merely because lazy evaluation can find its AST.
+  Full local propagation and opportunistic folding remain later gates.
 
-At the starting checkpoint, the tree was green and committed. `cargo fmt --all --check`, `cargo clippy
---workspace --all-targets -- -D warnings`, and `cargo test --workspace` all
-passed: **1818 tests, zero failures**, up from the 1800 at baseline `8cc9872`.
+At the starting checkpoint, the tree was green and committed.
+`cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace` all passed: **1818 tests, zero failures**, up from the
+1800 at baseline `8cc9872`.
 
-The open decision is settled: `comptime` is an ordinary `@`-parameter
-function, and known values move beside the type rather than into it. The plan
-is in *Decided: `comptime` is an ordinary comptime-parameter function*.
+The open decision is settled: `comptime` is an ordinary `@`-parameter function,
+and known values move beside the type rather than into it. The plan is in
+_Decided: `comptime` is an ordinary comptime-parameter function_.
 
 ## What landed
 
 Commits on `main`, oldest first:
 
-| Commit | Slice |
-| --- | --- |
-| `4d7d21c` | raw and triple-quoted string literals (lexer, formatter, codes) |
-| `843a621` | the literal/comptime contract doc and the review page |
+| Commit    | Slice                                                                   |
+| --------- | ----------------------------------------------------------------------- |
+| `4d7d21c` | raw and triple-quoted string literals (lexer, formatter, codes)         |
+| `843a621` | the literal/comptime contract doc and the review page                   |
 | `47fda25` | comptime evaluation through ordinary helpers — committed red, see below |
-| `70e7cee` | narrow that evaluation to the pin, and keep named families intact |
-| `cf77313` | prove literals survive the formatter; allow a blank opener line |
-| `3940e3c` | the two proptest seeds that found the opener-blank defect |
-| `6a74f8a` | write `std/cli`'s generated shell fragments as raw multiline text |
-| `3a29bf9` | reject an optional value at a literal-type annotation |
-| `c8fd362` | keep the named-family owner key out of diagnostics; fix a line index |
-| `20f5d52` | fix three pin defects found by review |
+| `70e7cee` | narrow that evaluation to the pin, and keep named families intact       |
+| `cf77313` | prove literals survive the formatter; allow a blank opener line         |
+| `3940e3c` | the two proptest seeds that found the opener-blank defect               |
+| `6a74f8a` | write `std/cli`'s generated shell fragments as raw multiline text       |
+| `3a29bf9` | reject an optional value at a literal-type annotation                   |
+| `c8fd362` | keep the named-family owner key out of diagnostics; fix a line index    |
+| `20f5d52` | fix three pin defects found by review                                   |
 
 `47fda25` was committed knowingly red — 610 passed / 36 failed — because three
-agents had been cut off by a shared usage limit with the work uncommitted, and
-a WIP commit was worth more than a clean history. `70e7cee` is its repair.
+agents had been cut off by a shared usage limit with the work uncommitted, and a
+WIP commit was worth more than a clean history. `70e7cee` is its repair.
 
 ### Strings
 
-The contract in `docs/language-literals-and-comptime.md` is implemented: raw
-and triple forms, arbitrary matching hash counts, the closer's margin as the
-dedent, blank-line and tab rules, CRLF/CR normalization, and a formatter that
-moves body and closer together.
+The contract in `docs/language-literals-and-comptime.md` is implemented: raw and
+triple forms, arbitrary matching hash counts, the closer's margin as the dedent,
+blank-line and tab rules, CRLF/CR normalization, and a formatter that moves body
+and closer together.
 
 Two amendments to the contract as written, both from running it:
 
@@ -513,13 +592,13 @@ Two amendments to the contract as written, both from running it:
   layout and inside one is value. It now lexes the seed first.
 
 Coverage: `crates/aven-parser/tests/string_literals.rs` for the decode matrix,
-`crates/aven-fmt/tests/string_values.rs` for value preservation across a
-format (deeper-than-margin content, blank and whitespace-only lines, tabs,
-escapes and their raw counterparts, hash delimiters whose payload contains the
-closing spelling, interpolation with a nested raw literal, a literal under
-indented syntax, two literals at different depths, and a CR-only source),
-and `crates/aven-fmt/tests/fixtures/valid/multiline-strings.{av,fmt}`, which
-also seeds the formatter property tests.
+`crates/aven-fmt/tests/string_values.rs` for value preservation across a format
+(deeper-than-margin content, blank and whitespace-only lines, tabs, escapes and
+their raw counterparts, hash delimiters whose payload contains the closing
+spelling, interpolation with a nested raw literal, a literal under indented
+syntax, two literals at different depths, and a CR-only source), and
+`crates/aven-fmt/tests/fixtures/valid/multiline-strings.{av,fmt}`, which also
+seeds the formatter property tests.
 
 ### Comptime
 
@@ -534,10 +613,10 @@ checked: "a\nb" = script
 ```
 
 `aven-eval`'s `Environment` gained lazy definitions, cycle detection, blocked
-local names and lexical resolution; `eval_comptime_expr` evaluates only
-demanded definitions, shares the existing fuel budget, and installs no host
-capabilities. Record shorthand resolves lazily, so `{suffix}` and
-`{suffix: suffix}` agree — a divergence found in review.
+local names and lexical resolution; `eval_comptime_expr` evaluates only demanded
+definitions, shares the existing fuel budget, and installs no host capabilities.
+Record shorthand resolves lazily, so `{suffix}` and `{suffix: suffix}` agree — a
+divergence found in review.
 
 The pin narrows to the evaluated value, but only to a **refinement**: the
 singleton must already sit inside the type the expression had. A base kind
@@ -566,8 +645,8 @@ they match it. The real-shell integration tests pass unchanged.
 
 ### Parent spec
 
-`/home/dave/w/clex/docs/language-spec.md` has the prepared string-literal
-patch applied, plus the opener-blank amendment above.
+`/home/dave/w/clex/docs/language-spec.md` has the prepared string-literal patch
+applied, plus the opener-blank amendment above.
 
 ## Decided: `comptime` is an ordinary comptime-parameter function
 
@@ -577,10 +656,9 @@ Decided 2026-09-07. `comptime` is **not** a builtin pin. It is
 comptime = (@arg) => arg
 ```
 
-an ordinary function whose only distinction is that its parameter carries `@`.
-A call pins because **every `@` parameter it has was supplied a
-compile-time-known argument** — nothing about the call site is special. So a
-user-written
+an ordinary function whose only distinction is that its parameter carries `@`. A
+call pins because **every `@` parameter it has was supplied a compile-time-known
+argument** — nothing about the call site is special. So a user-written
 
 ```aven
 comptimeAdd = (@a: Int, @b: Int): Int => a + b
@@ -589,11 +667,11 @@ comptimeAdd = (@a: Int, @b: Int): Int => a + b
 pins on exactly the same rule, with no compiler support of its own, and
 `comptimeAdd(1, 3)` is known for the same reason `comptime(x)` is.
 
-Two framings are superseded by this. The first is the builtin `comptime(e)`
-form currently in `checker/inference.rs`. The second is the spec's *Comptime by
-inference* reading (decision 2026-09-06), where **any** ordinary call with known
+Two framings are superseded by this. The first is the builtin `comptime(e)` form
+currently in `checker/inference.rs`. The second is the spec's _Comptime by
+inference_ reading (decision 2026-09-06), where **any** ordinary call with known
 arguments folds — that is still wanted, but as the end of this plan rather than
-the start; see *Why fold-everywhere comes last*.
+the start; see _Why fold-everywhere comes last_.
 
 > Note for anyone reading Aven for the first time: `@` has two unrelated
 > meanings. On a parameter declaration it marks a comptime parameter
@@ -641,10 +719,10 @@ checked: "a\nb" = script           # passes
 
 The cause is the guard at `checker/inference.rs:4138`:
 `evaluate_comptime_param_argument` bails via `is_runtime_computation_call`
-(`inference.rs:4164`), which classifies *any* call to a lowercase function with
+(`inference.rs:4164`), which classifies _any_ call to a lowercase function with
 no `@` parameters as a runtime computation, "even if the evaluator can reduce
-its body". `join` is exactly that. The builtin pin has no such guard — it runs
-a two-evaluator cascade and then `evaluate_known_expression`.
+its body". `join` is exactly that. The builtin pin has no such guard — it runs a
+two-evaluator cascade and then `evaluate_known_expression`.
 
 Closing that gap is the whole of slice 1, and it is why slice 1 comes before
 deleting the builtin: delete the builtin first and the motivating example
@@ -655,8 +733,8 @@ regresses.
 Each is a commit boundary. Slices 1–2 are the `@`-unification; 3–5 are the
 known-value work.
 
-**Slice 1 — one demand path, the strong one.** Give a `@`-parameter argument
-the evaluation the builtin pin gets. Concretely: `evaluate_comptime_param_argument`
+**Slice 1 — one demand path, the strong one.** Give a `@`-parameter argument the
+evaluation the builtin pin gets. Concretely: `evaluate_comptime_param_argument`
 gains the cascade `infer_comptime_pin_call` uses — the type-position walker
 (`comptime::evaluate_type_position_with_bindings`), then
 `evaluate_known_expression` — and its failures report with the pin's evidence
@@ -665,13 +743,13 @@ a runaway).
 
 The `is_runtime_computation_call` guard exists for a stated reason:
 "`pick(bad())` must not execute `bad` while validating a comptime argument."
-Decide whether that reason survives, and say which in the done-note.
-Evaluation is fuel-bounded and installs no host capabilities, so the risk is
-not effects — it is likely diagnostic quality (reporting an evaluation failure
-inside `bad` instead of "this argument is not known"). If so, keep the guard's
-*diagnostic* and drop its *refusal to evaluate*. If there is a soundness reason
-we have missed, say so and stop — a correct "this cannot be unified" is worth
-more than an implementation of our guess.
+Decide whether that reason survives, and say which in the done-note. Evaluation
+is fuel-bounded and installs no host capabilities, so the risk is not effects —
+it is likely diagnostic quality (reporting an evaluation failure inside `bad`
+instead of "this argument is not known"). If so, keep the guard's _diagnostic_
+and drop its _refusal to evaluate_. If there is a soundness reason we have
+missed, say so and stop — a correct "this cannot be unified" is worth more than
+an implementation of our guess.
 
 Done when `pin(join(["a", "b"]))` and `comptime(join(["a", "b"]))` agree, and
 `crates/aven-check/tests/fixtures/check/invalid/comptime-pin-runtime-value.av`
@@ -681,10 +759,10 @@ still fails for the same reason.
 `comptime::COMPTIME_PIN` and its special-casing at `inference.rs:3643` and
 `core.rs:1867`, and bind `comptime = (@arg) => arg` in the Aven layer under
 `crates/aven-host/std/` (the same layer that already carries the ambient method
-sets — see the note in `.ai/core.md`). Keep the arity and
-"could not evaluate" diagnostics working; if a user-defined pin cannot produce
-diagnostics as good as the builtin's, that is a finding about `@` parameters
-and should be reported rather than worked around by keeping the builtin.
+sets — see the note in `.ai/core.md`). Keep the arity and "could not evaluate"
+diagnostics working; if a user-defined pin cannot produce diagnostics as good as
+the builtin's, that is a finding about `@` parameters and should be reported
+rather than worked around by keeping the builtin.
 
 Reminder: `crates/aven-host/std/*.av` is `include_str!`-embedded. Rebuild the
 binary after editing it.
@@ -692,18 +770,18 @@ binary after editing it.
 **Slice 3 — known values move beside the type, and the pin stops narrowing.**
 This is the substantial one and the reason the rest is safe.
 
-Today a pin rewrites the *type*: `comptime(e)` narrows `e`'s type to a singleton
+Today a pin rewrites the _type_: `comptime(e)` narrows `e`'s type to a singleton
 literal row, guarded by `literal_type_refines` (`inference.rs:468`). That
 conflates "the checker knows this value" with "this type is narrower", and it is
 the single cause of three of the four things that broke when fold-everywhere was
 attempted in `47fda25`:
 
-| Breakage in `47fda25` | Under a known-value side channel |
-| --- | --- |
+| Breakage in `47fda25`                                      | Under a known-value side channel                |
+| ---------------------------------------------------------- | ----------------------------------------------- |
 | `Map.get("a")` narrowed `?Int` to `1`, erasing optionality | type stays `?Int`; the known value is `Some(1)` |
-| a `1 \| 1.0` match join collapsed to whichever branch ran | type stays `1 \| 1.0` |
-| a branded `Money` folded to its raw `Int` | type stays `Money`; the known value is `99` |
-| every inferred call cloned an evaluator environment | still real; slice 5's preflight |
+| a `1 \| 1.0` match join collapsed to whichever branch ran  | type stays `1 \| 1.0`                           |
+| a branded `Money` folded to its raw `Int`                  | type stays `Money`; the known value is `99`     |
+| every inferred call cloned an evaluator environment        | still real; slice 5's preflight                 |
 
 So: introduce a `KnownValue` side table keyed by expression, holding a
 `ComptimeValue`. **It must not live inside `Type`.** Putting known-ness into
@@ -725,29 +803,29 @@ Diagnostics have to consult the channel too, or a correct program reports
 
 Two consequences worth stating in the doc, because they are the design's price:
 
-- **Literal types stay.** They are what an author *writes* and what crosses a
+- **Literal types stay.** They are what an author _writes_ and what crosses a
   function signature (`(): "a" => "a"`). Known values are what the checker
-  *discovers*, and they deliberately do **not** cross a signature. Two
+  _discovers_, and they deliberately do **not** cross a signature. Two
   mechanisms where there is one today.
-- **This is what makes fold-everywhere safe to swap out.** Because the type never
-  changes, replacing a comptime-known value with a runtime input cannot break
-  callers — it can only fail at the sites that explicitly demanded knowledge.
-  Under type-narrowing folding it would break every downstream use.
+- **This is what makes fold-everywhere safe to swap out.** Because the type
+  never changes, replacing a comptime-known value with a runtime input cannot
+  break callers — it can only fail at the sites that explicitly demanded
+  knowledge. Under type-narrowing folding it would break every downstream use.
 
-Slice 3 subsumes two open findings below: *A pin does not apply a named
-family's `toText`* stops being a narrowing question (though the missing family
-plans in `eval_comptime_expr` are a separate, small fix that should still be
-made), and *The `folded` shortcut accepts a pin without evaluating it* gets its
-honest fix, since "require evaluation provenance rather than a row shape" is
-precisely what a known-value channel provides.
+Slice 3 subsumes two open findings below: _A pin does not apply a named family's
+`toText`_ stops being a narrowing question (though the missing family plans in
+`eval_comptime_expr` are a separate, small fix that should still be made), and
+_The `folded` shortcut accepts a pin without evaluating it_ gets its honest fix,
+since "require evaluation provenance rather than a row shape" is precisely what
+a known-value channel provides.
 
 **Slice 4 — propagate known values through let-bindings.** `x = 1 + 1` records
 `2` beside `Int`; a later `comptime(x)` or `checked: 2 = x` reads it rather than
-re-evaluating. Also fixes the open finding *A pin inside a function cannot see
-local bindings*, where `blocked` over-blocks local helpers and literals.
+re-evaluating. Also fixes the open finding _A pin inside a function cannot see
+local bindings_, where `blocked` over-blocks local helpers and literals.
 
-**Slice 5 — fold at every call, behind a preflight.** The spec's *Comptime by
-inference* reading, now safe because folding records a known value instead of
+**Slice 5 — fold at every call, behind a preflight.** The spec's _Comptime by
+inference_ reading, now safe because folding records a known value instead of
 rewriting a type. `map.get("a")` on a known map yields a known result.
 
 The preflight is the fourth breakage and is not optional: a cheap syntactic gate
@@ -764,9 +842,9 @@ encode soundness properties and must not be blanket-updated.
 It is the most wanted and the least safe to do first. Attempted directly, as in
 `47fda25`, it needs a lifting rule for `Optional`, `Result`, records and named
 families, because folding rewrites types. Done after slice 3 it needs none of
-them, because folding stops rewriting types. The ordering is the whole
-argument: slice 3 is not preparation for slice 5, it is what removes slice 5's
-four known defects.
+them, because folding stops rewriting types. The ordering is the whole argument:
+slice 3 is not preparation for slice 5, it is what removes slice 5's four known
+defects.
 
 ### Conventions for this work
 
@@ -776,10 +854,11 @@ four known defects.
   `WIP:`. Do not save one commit for the end.
 - Keep a done-note file updated as you go, not written at the end: root cause,
   what changed, decisions the task did not settle.
-- Gates you own, and that the main thread will not re-run: `cargo fmt --all
-  --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
-  --workspace`. Baseline is **1818 passing**; a *drop* in the count matters as
-  much as a failure.
+- Gates you own, and that the main thread will not re-run:
+  `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`. Baseline is **1818 passing**; a _drop_ in the count
+  matters as much as a failure.
 - The CLI package is named `aven`, not `aven-cli` (`cargo test -p aven`).
 - Never `git add -A`; name paths.
 - If a slice's diagnosis here is wrong, say so and propose the better shape
@@ -832,9 +911,9 @@ first place a wrapped interpolation is reasonable, so this is new visibility
 rather than a new rule.
 
 **Margin validation reaches into `${...}` holes.** (Kimi) Every physical line of
-a multiline literal must respect the margin, including expression lines inside
-a hole. Values are never computed wrongly — the excess is in validation — but
-the rule is not written down.
+a multiline literal must respect the margin, including expression lines inside a
+hole. Values are never computed wrongly — the excess is in validation — but the
+rule is not written down.
 
 Smaller, confirmed: a closed literal union is not treated as refinable, so
 `comptime(choose(1))` on `(1 | 2) -> 1 | 2` keeps `1 | 2` (conservative, not
@@ -846,8 +925,8 @@ only the parser gets right would be invisible to it.
 ## Not run
 
 - **MSRV.** CI checks Rust 1.91 with `cargo check --workspace --all-targets`.
-  This machine has only 1.95 and no `rustup`, so that check was not run. The
-  new code uses `matches!`, `take_while`, `is_none_or` and ordinary iterator
+  This machine has only 1.95 and no `rustup`, so that check was not run. The new
+  code uses `matches!`, `take_while`, `is_none_or` and ordinary iterator
   methods, all well below 1.91, but the claim is untested here.
 - **Older shells.** The bash 5.2.21 / fish 3.7.0 Docker verification from the
   previous slice was not repeated. The generated bytes are identical, so it
