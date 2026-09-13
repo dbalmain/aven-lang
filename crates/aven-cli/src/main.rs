@@ -17,6 +17,9 @@ use aven_core::{
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Accumulates one session-log record for the current invocation.
 ///
 /// Emitted exactly once via [`SessionCapture::emit`] from the single exit funnel

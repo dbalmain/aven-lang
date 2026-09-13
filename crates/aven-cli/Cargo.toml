@@ -24,6 +24,7 @@ aven-host.workspace = true
 aven-lsp.workspace = true
 aven-parser.workspace = true
 clap.workspace = true
+mimalloc = "0.1.52"
 serde_json.workspace = true
 tokio.workspace = true
 
