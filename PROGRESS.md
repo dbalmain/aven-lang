@@ -4,16 +4,112 @@ Updated: 2026-09-13, Australia/Sydney.
 
 ## Current state
 
-Merged to `main` and pushed; tip `5798bba`. Gates green in `nix develop`:
-`fmt --check`, `clippy --workspace --all-targets -D warnings`,
-`git diff --check`, and `cargo test --workspace` at **1888 passed / 0 failed**.
-The MSRV gate (`nix develop .#msrv`, `cargo check --workspace --all-targets` on
-1.91.0) also passes, as does the nightly Heavy job.
+Branch `comptime/final-repairs`, tip `6388e26`, branched from `main` at
+`2e1073a`. Nothing pushed, nothing merged. Gates green in `nix develop`:
+`fmt --all -- --check`, `clippy --workspace --all-targets -D warnings`,
+`git diff --check`, and `cargo test --workspace` at **1901 passed / 0 failed**
+(1888 on `main`). The MSRV gate (`nix develop .#msrv`,
+`cargo check --workspace --all-targets` on 1.91.0) also passes.
 
-> The workspace total was reported as 1893 while this branch was in flight.
+Two other branches are live and separate: `cli/positional-arguments`
+(`c68ee82`, `cli.positional` in `std/cli.av`) and `deps/easy-updates`
+(`89acb31`, the dependency bump). Neither is merged, and no commit here
+touches either's files.
+
+### This round — the final comptime repair handoff
+
+`docs/claude-comptime-final-repair-plan.md` priorities 1–4, implemented in
+three commits. Every reproduction in that document was reproduced on
+`2e1073a` before any code changed.
+
+| Commit    | Work                                                    |
+| --------- | ------------------------------------------------------- |
+| `6388e26` | Let a proof answer the demand its value satisfies        |
+| `893dd6b` | Carry the driving demand through a native's callback     |
+| `8f32348` | Resolve a demand's names in the scope that wrote it      |
+
+**Scope (priorities 1–2).** A `DemandScope` value replaces the previous
+`include_caller_scope` flag and is threaded through *both* the evaluation and
+the dependency walk, so the two cannot disagree about which binding a name
+denotes. An omitted parameter's default now resolves at the callee's
+definition site rather than through the caller's locals, and the
+primitive-family guard asks the same question of the same bindings.
+`collect_expr_names` stopped at the top level of a record, so a shorthand
+nested in a comprehension body carried a family past the guard; entries nest,
+so the walk now does too, through a new `walk_record_entries` in the parser.
+The family refusal moved to the shared demand boundary --- below the type walk,
+so `pick(Money, ...)` still reifies a type, and above the value evaluation
+where a family's rendering is actually lost.
+
+**Demand propagation (priority 3).** `NativeContext` now carries the
+environment driving the call, so a closure reached through `flatMap`, `fold`,
+a stream stage or a family method spends the *demand's* fuel and registers its
+frames with the demand's teardown. Before this a prepared prelude export ran
+on preparation time's unlimited budget: `[1].flatMap(step)` on a six-unit
+budget returned `[2]` for free, while the identical demand-local definition
+exhausted it. Preparation itself is now bounded too, by its own budget,
+cleared before the session is handed out.
+
+**Typed use (priority 4).** The approved rule is restored: a known present
+optional satisfies a nonoptional expected type, literal or not, at an
+annotated binding or typed argument, with no assertion operator and no
+`comptime(...)` wrapper. `found: Int = m.get("a")` checks and runs as 1. See
+"Resolved: present optionals and opportunistic folding" below.
+
+Two divergences from the brief, both verified against the checker rather than
+assumed, and both pinned by their own tests:
+
+- The brief's positive control for the default case (`checked: 1` inside a
+  function) cannot hold. A demand written in a lambda has no initialization
+  frontier, so it reads *no* module binding --- `comptime(x)` fails there too,
+  unchanged by this work. The control is written at the top level instead.
+- An imported callee's default reaches none of its own module's bindings,
+  because the evaluator's definition map is built from the importing module.
+  Both halves of that case now refuse; before, one of them certified the
+  caller's value.
+
+One behaviour changed deliberately: `@Ok(x).map(dbg)` used to print with no
+location, because the context reaching the native had dropped the source. A
+callback now inherits the driving call's context, so it prints the `.map(dbg)`
+location. The test that pinned the gap is rewritten to state the new rule.
+
+### Performance after the repairs
+
+Medians of five warm release runs, `/usr/bin/time` wall clock and peak RSS,
+`2e1073a` binary versus `6388e26`. Fixtures are generated files of N
+definitions each, held at the same size for both binaries.
+
+| File                       | `2e1073a`             | `6388e26`             |
+| -------------------------- | --------------------- | --------------------- |
+| pins, 100 / 1k / 2k        | 0.03 / 0.17 / 0.41 s  | 0.03 / 0.17 / 0.41 s  |
+| helper pins, 100 / 1k / 2k | 0.03 / 0.13 / 0.29 s  | 0.03 / 0.13 / 0.30 s  |
+| foldable calls, same sizes | 0.03 / 0.09 / 0.22 s  | 0.03 / 0.09 / 0.23 s  |
+| prepared callbacks, same   | 0.05 / 2.62 / 11.04 s | 0.05 / 2.62 / 10.96 s |
+| `examples/cli.av`          | 1.60 s                | 1.61 s                |
+| `aven-host/std/cli.av`     | 1.50 s                | 1.50 s                |
+| `example_stub_cli.av`      | 1.68 s                | 1.66 s                |
+
+Peak RSS tracks within noise throughout (2000 pins: 27.0 MB vs 26.3 MB). No
+regression: every figure is inside run-to-run variation, including the
+prepared-callback workload, which is the one this round's evaluator changes
+run through on every line.
+
+That workload's ~4x per doubling is **not** a regression and not about
+comptime. It is the quadratic recorded in the repair plan's section 6:
+checking cost grows with the square of module size, and these fixtures grow
+the file. `2e1073a` shows the same curve. Section 6 is a separate workstream
+and is deliberately untouched here.
+
+Both CI workflows had been red since 2026-09-01 on `clippy`, because they
+resolved `dtolnay/rust-toolchain@stable` and a new lint landed; the pin to
+1.98.1 that fixes it was sitting on this branch the whole time. Clearing it
+exposed two further failures neither workflow had been able to reach, both
+fixed here and neither a defect in Aven itself:
+
+> The workspace total was reported as 1893 while that branch was in flight.
 > That figure came from a de-duplicated count of the per-suite result lines,
 > which silently drops two suites reporting the same number in the same time.
-> Summed properly it is 1888, before and after this round.
+> Summed properly it was 1888 --- the figure `main` still carries.
 
 Both CI workflows had been red since 2026-09-01 on `clippy`, because they
 resolved `dtolnay/rust-toolchain@stable` and a new lint landed; the pin to
@@ -28,14 +124,16 @@ fixed here and neither a defect in Aven itself:
 
 `--include-ignored` in the Heavy job is currently a no-op: the `#[ignore =
 "slow: <reason>"]` tier is described in five files and used by none, so the
-nightly and the PR gate run exactly the same 1888 tests, the nightly only at a
+nightly and the PR gate run exactly the same tests, the nightly only at a
 higher case count.
 
 Astra's follow-up review of `da9c901..af60ed4` (`.ai/REVIEW.md`) found six more
 gaps in the same three repairs, three of them P1. All six reproduced exactly as
-reported before any code changed; all six are fixed except the fifth, which
-turned out to be a genuine, unresolved tension between two previously-approved
-decisions rather than a bug — see the artifact.
+reported before any code changed. All six are now closed: findings 1–3 were
+repaired here and *completed* in `8f32348`, which found the same errors still
+live on paths the first repair did not reach; 4 and 6 were closed in `893dd6b`;
+and the fifth, a genuine tension between two previously-approved decisions
+rather than a bug, was settled in `6388e26`.
 
 | Commit    | Work                                                                     |
 | --------- | ------------------------------------------------------------------------ |
@@ -55,12 +153,19 @@ decisions rather than a bug — see the artifact.
    caller's `x := 2` could stand in for a module callee's free `x` it never
    captured. Fixed: the helper now takes an explicit flag, and a resolved
    callee's body is evaluated with caller locals excluded rather than included.
+   **Completed in `8f32348`**, which found the same error still live on the
+   *default* path --- an omitted parameter's default went through the ordinary
+   argument evaluator, caller locals and all --- and replaced the flag with a
+   `DemandScope` shared by evaluation and dependency analysis.
 2. **The family guard missed shorthand references and omitted defaults.**
    `collect_expr_names` skipped `RecordEntry::Shorthand`, so `{ price }` carried
    a family past it unseen; the guard also read the caller's raw `args` rather
    than the resolved `arguments`, missing a family reaching only through a
    default. Fixed: shorthand names are collected explicitly, and the check runs
-   against the resolved argument.
+   against the resolved argument. **Completed in `8f32348`**: collecting
+   shorthand names only at the top level of a record still lost one nested in a
+   comprehension body, and the guard still resolved the default's names in the
+   caller's scope.
 3. **Withholding the final proof was too late.** A family-tainted comptime
    argument had already selected a match arm or a domain member before any proof
    was asked for, so no `Known` was even needed to certify the wrong value.
@@ -76,10 +181,11 @@ decisions rather than a bug — see the artifact.
    caller). Does not yet cover a closure called back through a native
    higher-order function (array `.map`/`.filter`/`.fold`, operator dispatch),
    since `NativeContext` carries no environment reference — noted as a remaining
-   gap.
-5. **Slice 5 reportedly reversed the approved typed-use contract.** Not fixed —
-   this is an open design question, not a bug. See "Open: present optionals and
-   opportunistic folding" below.
+   gap. **Closed in `893dd6b`**: `NativeContext` now carries the driving
+   environment, and every callback route inherits it.
+5. **Slice 5 reportedly reversed the approved typed-use contract.** Resolved in
+   `6388e26` in favour of the completion plan's contract item 3. See "Resolved:
+   present optionals and opportunistic folding" below.
 6. **Calls into prepared closures retained demand objects until session end.**
    Same root cause as #4, fixed by the same change: a dynamic call frame now
    registers with the active demand's scope registry rather than whichever
@@ -180,8 +286,12 @@ assertion was touched.
   slice of its own. Reproducing every position where a literal may be branded
   was rejected as the alternative: it would be a second copy of a rule that
   already lives in the checker, and a copy that drifts is worse than none.
-  Pinned by `a_demand_reaching_a_primitive_family_proves_nothing` and
-  `comptime_pin_of_a_named_family_is_rejected_conservatively`.
+  Pinned by `a_demand_reaching_a_primitive_family_proves_nothing`,
+  `comptime_pin_of_a_named_family_is_rejected_conservatively`,
+  `a_family_reaching_default_is_refused_whatever_the_caller_binds` and
+  `a_nested_shorthand_keeps_its_family_dependency`. The last two are this
+  round's: the refusal now also survives a caller that binds an ordinary value
+  of the same name, and a shorthand nested at any depth in a comprehension.
 - **Branding and comptime.** `price: Money = 99` is accepted;
   `price: Money = comptime(99)` is not. This is the existing rule applying
   evenly --- branding keys on a literal _written_ at the annotated position, and
@@ -191,12 +301,25 @@ assertion was touched.
 - **`@`-param call result types.** A call to an `@`-param function returns the
   body's type rather than the declared return type. Pre-existing from slices
   1--2; relevant to contract item 7.
-- **Prepared-closure fuel/registry threading stops at natives.** A closure
-  called back through a native higher-order function (array
-  `.map`/`.filter`/`.fold`, operator method dispatch) still binds against its
-  own captured fuel and scope registry rather than the active demand's, since
-  `NativeContext` carries no environment reference to thread through. Direct
-  calls (the reported repro) are fixed; this narrower remaining case is not.
+- ~~**Prepared-closure fuel/registry threading stops at natives.**~~ Closed in
+  `893dd6b`. `NativeContext` carries the driving environment, so a closure
+  reached through a native higher-order function spends the demand's fuel and
+  registers with its teardown. `None` now means only the genuinely
+  environment-free boundaries: the public `call_value`, `Stream`'s `Iterator`
+  impl, the display protocol, and host natives.
+- **An imported callee reaches none of its own module's bindings.** A demand
+  evaluating an imported function's body or default sees the *importing*
+  module's definitions, because that is what the evaluator's definition map is
+  built from. The refusal is conservative --- the alternative was certifying the
+  caller's same-named value --- but it means a supported program can go
+  unproved. Pinned by
+  `an_imported_comptime_default_does_not_read_the_importer_locals`.
+- **A demand inside a lambda reads no module binding.** A lambda body runs at
+  some future call, so the execution-context filter has no initialization
+  frontier for it and refuses every module binding a demand there reaches ---
+  `comptime(x)` no less than a callee's `= x` default. Widening it needs a
+  frontier for deferred code, not a change to scoping. Pinned by
+  `a_demand_inside_a_lambda_cannot_read_a_module_binding`.
 - **Interpolation hole margins.** Margin validation still walks lines inside a
   `${...}` hole. Reproduced, documented and pinned; skipping them would be a
   language decision.
@@ -204,25 +327,38 @@ assertion was touched.
   `${"a"\n  + "b"}` stays rejected --- as does the same expression outside a
   string. Valid wrappings are documented.
 
-## Open: present optionals and opportunistic folding
+## Resolved: present optionals and opportunistic folding
 
-Not fixed, not a bug — a genuine conflict between two decisions this project has
-already approved, surfaced by the follow-up review's fifth finding. Full options
-brief on the decisions artifact:
-https://claude.ai/code/artifact/534e74ba-11f3-4193-b61a-cc681c3fd861
+Settled in favour of `docs/claude-completion-plan.md` contract item 3, and
+implemented in `6388e26`. The conflict, as it stood: item 3 says a known
+present optional may satisfy a nonoptional expected type with no exception for
+how the knowledge was obtained, while slice 5's provenance rule said an
+_opportunistic_ fold answers a literal-type demand and nothing else. Both
+existing tests were correct readings of their own decision.
 
-In short: `docs/claude-completion-plan.md` item 3 says a known present optional
-may satisfy a nonoptional expected type, no exception for how the knowledge was
-obtained. Slice 5's provenance rule says an _opportunistic_ fold answers a
-literal-type demand and nothing else — added specifically because
-`checked_integer_division_narrows_on_static_divisors` needs it: `x.div(n)` with
-`n` a known-but-not-statically-proven-nonzero divisor must stay `?Int` even
-though the fold could compute a present `Int`. Astra's `m.get("a")` example
-needs the opposite: `found: Int = m.get("a")` should just work per item 3, with
-no `comptime(...)` wrapper. Both existing tests are correct readings of their
-own decision; nobody has yet reconciled the two decisions with each other. Left
-as-is (opportunistic folds restricted to literal demands, no optional discharge)
-pending an answer.
+The answer is item 3, without the provenance qualifier. A demand is answered by
+the value, not by who asked for it, so `found: Int = m.get("a")` checks and runs
+as 1. `Provenance` itself is deleted rather than left inert: once it decides
+nothing, keeping it reads like a second assignability rule beside the real one.
+
+What the decision costs, stated plainly rather than denied: replacing an
+upstream known value with runtime input can now break a distant typed use that
+relied on the proof. That is contract item 4, and it is accepted.
+
+What it does not cost. Evidence must still agree with the expression's own type
+before it speaks about any other, so a `Float`-returning call does not satisfy
+`Int`. Known absence has no literal spelling and satisfies nothing. An argument
+the checker cannot evaluate proves nothing. A primitive family withholds its
+proof outright. And no type changes: `m.get("a")` is still `?Int` and `f(0)` is
+still `1 | 1.0`, asserted by rendering beside every acceptance.
+
+`checked_integer_division_narrows_on_static_divisors` --- the test that
+motivated the provenance rule --- keeps its zero-divisor and named-family
+rejections. What changed is its `n : Int = 2` case, which the checker really
+can prove: the surviving negative is a divisor that only exists at runtime.
+The `?Int` claim it was protecting is now asserted directly, as a type-at
+assertion on an unnarrowed division, rather than indirectly through a
+rejection.
 
 ## Resumed implementation — agreed review amendments
 
