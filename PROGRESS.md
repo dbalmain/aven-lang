@@ -1134,7 +1134,70 @@ section. The absolute cost fell, but everything around it fell further, so
 re-checking `std/cli` is now about half of a small program's entire runtime.
 The decision to drop it was correct on the day and is no longer.
 
-## Startup is ~135ms of re-checking `std/cli` — 2026-09-14
+## Startup: 285ms to 130ms, and counting — 2026-09-14
+
+Two of the three levers below are implemented and merged; the third is in
+progress. Results on the program that prompted this, the Cox-trigrams harness
+stub, `aven run ... match a a`:
+
+| Tip                          | stub  | `import("std/cli")` check |
+| ---------------------------- | ----- | ------------------------- |
+| `ff90448` (before)           | 285ms | 150ms                     |
+| + mimalloc (`cae812e`)       | 140ms | 80ms                      |
+| + `Arc<str>` names (`6842e12`) | 130ms | 70ms                      |
+
+Python does the same work in 29ms, so the gap has gone from about 10x to about
+4.5x. Both changes are behaviour-neutral: `aven check` over all 364 tracked
+`.av` files produces byte-identical diagnostics before and after, compared
+across worktrees with paths normalised. Workspace tests went 1909 to 1912.
+
+**Lever 1, mimalloc (`cae812e`, `7643cd2`).** A `#[global_allocator]` in
+`crates/aven-cli/src/main.rs` and a dependency; five lines of code. Given the
+profile below is 60% allocator, this was expected to help and instead roughly
+halved the whole thing. Cross-reviewed by a second model, which re-measured it
+independently on SHA-matched binaries with interleaved before/after pairs
+rather than trusting the reported figure: 252.8ms to 129.7ms wall on
+`examples/cli.av`, with child CPU time moving the same way. `aven` is the
+workspace's only binary, so nothing production escapes the allocator; library
+unit tests and doctests do not inherit it, which does not matter. The C
+toolchain it now needs to build is not a new requirement — `ring` and `psm`
+already compile native code — but MSVC and cross-compilation targets are
+untested, and CI covers Ubuntu only.
+
+**Lever 2, `Arc<str>` type names (`6842e12`).** `Type::Named`,
+`Type::Variable` and the `RowEntry` field and tag names hold `Arc<str>` rather
+than `String`, so cloning a record type is refcount bumps rather than one
+allocation per label. My brief proposed `Rc<str>`; that is impossible, and the
+implementing agent said so and used `Arc`. The reviewing agent then confirmed
+the chain rather than accepting it: `Type` sits in the LSP's document snapshot,
+which lives in `DocumentStore`, which is cloned into `tokio::spawn`, which
+requires `Send`. `Rc` would not have compiled.
+
+Structural `PartialEq`/`Eq`/`Hash` are preserved — `Arc<str>` compares and
+hashes contents, and no production path compares names by pointer, so two
+independently-allocated `"field"` labels remain equal and hash equal. That was
+the constraint most likely to break, and there is a test pinning it.
+
+**Worth recording honestly:** lever 2 bought about 10ms on top of lever 1, for
+a 23-file diff, against lever 1's 145ms for five lines. It is a real 12% and
+the reviewer found no further win that belonged in the slice — rows are mutated
+in place in `unify.rs` and `rows.rs`, so sharing entry vectors or whole
+subtrees needs a mutation audit that was deliberately out of scope. But the
+ordering lesson is that the allocator swap was worth more than the refactor,
+and it was the thing nobody would have guessed from reading the code.
+
+### The measurement tooling
+
+`.ai/bench.sh` (median of 7 warm runs per case) and `.ai/sweep.sh` (diagnostics
+over every tracked `.av` file, paths normalised so two worktrees compare) are
+gitignored under `.ai/`. Both reviewers independently flagged that `bench.sh`
+reports GNU `time -f %e` at **10ms resolution**, so the `trivial` and
+`import-array` rows sitting at 10ms cannot demonstrate the absence of a small
+change — they are the floor, not a measurement. Both also caught that an
+earlier brief of mine claimed 368 `.av` files when the tracked count is 364;
+the extra four were my own untracked scratch.
+
+### The original finding
 
 Recorded, not fixed. Prompted by a real program: the Cox-trigrams course
 harness stub takes 285ms where its Python equivalent takes 29ms, and the
