@@ -5,12 +5,12 @@ use crate::{
     decode_string_literal, is_custom_operator_token, is_method_operator, lex_then_layout,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Module {
     pub items: Vec<Item>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Item {
     Binding(Binding),
     PatternBinding(PatternBinding),
@@ -24,14 +24,14 @@ pub enum Item {
 ///
 /// The member representation is shared with named-family records so both
 /// surfaces accept the same named/operator methods and requirement syntax.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MethodAttachment {
     pub owner: Expr,
     pub members: Vec<RecordEntry>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Binding {
     pub name: String,
     pub name_span: Span,
@@ -44,7 +44,7 @@ pub struct Binding {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PatternBinding {
     /// Parsed as an ordinary expression; pattern meaning is assigned later.
     pub pattern: Expr,
@@ -52,7 +52,7 @@ pub struct PatternBinding {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SpreadBinding {
     pub value: Expr,
     pub overwrite: bool,
@@ -60,7 +60,7 @@ pub struct SpreadBinding {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Signature {
     pub name: String,
     pub name_span: Span,
@@ -69,7 +69,7 @@ pub struct Signature {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Param {
     pub name: String,
     pub name_span: Span,
@@ -85,7 +85,7 @@ pub struct Param {
 
 /// A parsed requirement line on a lambda signature. Constraint semantics are
 /// intentionally deferred to the qualified-schemes slice.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Requirement {
     pub name: String,
     pub name_span: Span,
@@ -100,7 +100,7 @@ enum BindingOperator {
     Shadow,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
@@ -111,7 +111,7 @@ pub struct Expr {
 /// in Aven source while keeping focus on the ordinary name/field-access paths.
 pub const METHOD_RECEIVER_NAME: &str = "\0aven.method.receiver";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExprKind {
     Missing,
     Literal(Literal),
@@ -203,19 +203,19 @@ pub enum ExprKind {
     Block(Vec<Item>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterpolationSegment {
     Text(String),
     Expr(Expr),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PropagationMode {
     ReturnError,
     Panic,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MatchArm {
     /// Parsed as an ordinary expression; pattern meaning is assigned later.
     pub pattern: Expr,
@@ -224,7 +224,7 @@ pub struct MatchArm {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RecordEntry {
     Field {
         name: String,
@@ -305,7 +305,7 @@ pub enum RecordEntry {
     Element(Expr),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Literal {
     Bool(bool),
     Number(String),
@@ -334,7 +334,7 @@ pub struct ParseOutput {
 }
 
 /// A source module's role in one compilation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ModuleRole {
     Entry,
     Dependency,

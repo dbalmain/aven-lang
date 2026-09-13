@@ -968,27 +968,41 @@ fn print_test_suite_json(report: &TestSuiteReport) -> Result<()> {
 /// Module roots for `check`/`run`: filesystem discovery plus the embedded
 /// standard library, so bare `import("std")`/`import("std/time")` resolve.
 fn discover_roots(path: &Path) -> aven_compiler::ModuleRoots {
-    aven_compiler::ModuleRoots::discover(path)
-        .with_library(
-            aven_host::STD_LIBRARY_NAME,
-            aven_host::standard_std_library(),
-        )
-        .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
-        .with_trusted_prelude_modules(aven_host::STD_PRELUDE_MODULES.iter().copied())
-        .with_library_only_global_names(aven_host::standard_library_only_global_names())
+    with_baked_std(
+        aven_compiler::ModuleRoots::discover(path)
+            .with_library(
+                aven_host::STD_LIBRARY_NAME,
+                aven_host::standard_std_library(),
+            )
+            .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
+            .with_trusted_prelude_modules(aven_host::STD_PRELUDE_MODULES.iter().copied())
+            .with_library_only_global_names(aven_host::standard_library_only_global_names()),
+    )
 }
 
 fn discover_roots_for_host(path: &Path, host: &aven_host::Host) -> aven_compiler::ModuleRoots {
-    host.disabled_capability_modules().into_iter().fold(
-        aven_compiler::ModuleRoots::discover(path)
-            .with_library(aven_host::STD_LIBRARY_NAME, host.std_library())
-            .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
-            .with_trusted_prelude_modules(aven_host::STD_PRELUDE_MODULES.iter().copied())
-            .with_library_only_global_names(host.library_only_global_names()),
-        |roots, (specifier, capability, register_method)| {
-            roots.with_disabled_capability_module(specifier, capability, register_method)
-        },
+    with_baked_std(
+        host.disabled_capability_modules().into_iter().fold(
+            aven_compiler::ModuleRoots::discover(path)
+                .with_library(aven_host::STD_LIBRARY_NAME, host.std_library())
+                .with_trusted_ambient_modules(aven_host::STD_AMBIENT_METHOD_MODULES.iter().copied())
+                .with_trusted_prelude_modules(aven_host::STD_PRELUDE_MODULES.iter().copied())
+                .with_library_only_global_names(host.library_only_global_names()),
+            |roots, (specifier, capability, register_method)| {
+                roots.with_disabled_capability_module(specifier, capability, register_method)
+            },
+        ),
     )
+}
+
+const BAKED_STD: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/baked_std.rs"));
+
+fn with_baked_std(mut roots: aven_compiler::ModuleRoots) -> aven_compiler::ModuleRoots {
+    roots.baked_checks = BAKED_STD
+        .iter()
+        .map(|(name, bytes)| ((*name).to_owned(), *bytes))
+        .collect();
+    roots
 }
 
 struct PathOperatorConfig {
@@ -1783,6 +1797,63 @@ fn byte_offset_to_char_offset(source: &str, byte_offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn baked_std_equals_fresh_runtime_checks() -> Result<()> {
+        // Decode in reverse order, after interning an unrelated recursive type.
+        // Persisting process-local IDs would corrupt this comparison.
+        let unrelated = aven_parser::parse_module(
+            "Tree(a) = @{ @Leaf(a), @Branch(Array(Tree(a))) }\nvalue: Tree(Int) = @Leaf(1)\n",
+        );
+        aven_check::check_module(&unrelated.module);
+        let mut decoded = std::collections::HashMap::new();
+        for (specifier, bytes) in BAKED_STD.iter().rev() {
+            let module: aven_check::baked::BakedCheck = serde_json::from_slice(bytes)?;
+            decoded.insert(*specifier, module);
+        }
+        let entry = Path::new(concat!(env!("OUT_DIR"), "/bake.av"));
+        let mut roots = discover_roots(entry);
+        roots.baked_checks.clear();
+        let fresh = aven_compiler::bake_library_checks(
+            entry,
+            &aven_host::standard_check_host_globals(),
+            &roots,
+        )?;
+        assert_eq!(fresh.modules.len(), BAKED_STD.len());
+        assert_eq!(fresh.modules.len(), aven_host::standard_std_library().len());
+        for (specifier, module) in fresh.modules {
+            assert_eq!(
+                decoded.get(specifier.as_str()),
+                Some(&module),
+                "{specifier}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn measure_baked_std_decode() -> Result<()> {
+        // Keep this measurement on the production blobs and decoder. Run with
+        // --release --nocapture; it deliberately excludes process startup,
+        // parsing, context comparison, fresh checking and artifact destruction.
+        for (specifier, bytes) in BAKED_STD {
+            let mut durations = Vec::new();
+            for _ in 0..7 {
+                let start = std::time::Instant::now();
+                let decoded: aven_check::baked::BakedCheck =
+                    serde_json::from_slice(std::hint::black_box(bytes))?;
+                durations.push(start.elapsed());
+                std::hint::black_box(decoded);
+            }
+            durations.sort();
+            eprintln!(
+                "{specifier}: {} bytes, median decode {:?}",
+                bytes.len(),
+                durations[3]
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn build_host_check_globals_match_standard_host_types() -> Result<()> {

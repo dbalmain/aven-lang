@@ -20,7 +20,9 @@ pub(crate) enum ComptimeValue {
     Bool(bool),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 enum CanonicalComptimeValue {
     ReifiedType(CanonicalType),
     LabelSet(Vec<String>),
@@ -44,7 +46,9 @@ impl From<&ComptimeValue> for CanonicalComptimeValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 enum CanonicalType {
     Error,
     Deferred,
@@ -103,7 +107,9 @@ impl From<&Type> for CanonicalType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 struct CanonicalRow {
     entries: Vec<CanonicalRowEntry>,
     tail: CanonicalRowTail,
@@ -120,7 +126,9 @@ impl From<&Row> for CanonicalRow {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 enum CanonicalRowEntry {
     Field {
         name: String,
@@ -149,7 +157,9 @@ impl From<&RowEntry> for CanonicalRowEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 enum CanonicalRowTail {
     Closed,
     Open,
@@ -166,10 +176,12 @@ impl From<RowTail> for CanonicalRowTail {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 enum CanonicalLiteral {
     Bool(bool),
-    Int(Int),
+    Int(#[serde(with = "crate::baked::integer")] Int),
     Float(u64),
     InvalidNumber(String),
     String(String),
@@ -280,7 +292,7 @@ impl EvaluationResult {
 }
 
 /// Canonical identity of a module that defines comptime functions.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ComptimeModuleIdentity {
     /// Reserved identity for direct checker calls that have no module graph.
     #[default]
@@ -302,7 +314,7 @@ impl ComptimeModuleIdentity {
 }
 
 /// Stable definition-site identity of a comptime function.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ComptimeOrigin {
     pub module: ComptimeModuleIdentity,
     pub definition: String,
@@ -322,7 +334,7 @@ impl ComptimeOrigin {
 /// Arguments are stored in a private semantic form so source spelling and row
 /// ordering do not fragment the cache. The key is public so later type-IR
 /// slices can carry it without exposing evaluator values.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SpecializationKey {
     pub origin: ComptimeOrigin,
     args: Vec<CanonicalComptimeValue>,
@@ -348,6 +360,42 @@ impl SpecializationKey {
 struct RecursiveTypeInterner {
     by_key: HashMap<SpecializationKey, RecursiveTypeId>,
     displays: Vec<String>,
+}
+
+// Baked types carry semantic keys, never process-local interner indices. In
+// particular an editor may have interned unrelated user types before loading
+// a standard module. Release the lock before traversing nested argument types.
+impl serde::Serialize for RecursiveTypeId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (key, display) = {
+            let interner = recursive_type_interner()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = interner
+                .by_key
+                .iter()
+                .find_map(|(key, id)| (id == self).then(|| key.clone()))
+                .ok_or_else(|| serde::ser::Error::custom("recursive type must be interned"))?;
+            (key, interner.displays[self.0 as usize].clone())
+        };
+        (key, display).serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RecursiveTypeId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (key, display) = <(SpecializationKey, String)>::deserialize(deserializer)?;
+        let mut interner = recursive_type_interner()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(id) = interner.by_key.get(&key) {
+            return Ok(*id);
+        }
+        let id = Self(interner.displays.len() as u32);
+        interner.by_key.insert(key, id);
+        interner.displays.push(display);
+        Ok(id)
+    }
 }
 
 fn recursive_type_interner() -> &'static Mutex<RecursiveTypeInterner> {
@@ -412,7 +460,7 @@ pub(crate) struct LoweredType {
 
 /// A comptime-evaluable function definition that can be stored and carried
 /// across module boundaries (owned AST — no borrows into the defining module).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ComptimeExport {
     pub name: String,
     pub params: Vec<Param>,
@@ -529,7 +577,7 @@ impl ComptimeExport {
 /// this one environment, which represents mutual references without a
 /// recursive owned data structure.
 ///
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ComptimeModuleEnvironment {
     module_identity: ComptimeModuleIdentity,
     type_definitions: HashMap<String, Type>,

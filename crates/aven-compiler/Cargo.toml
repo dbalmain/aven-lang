@@ -10,6 +10,7 @@ version.workspace = true
 workspace = true
 
 [dependencies]
+serde_json.workspace = true
 aven-check.workspace = true
 aven-core.workspace = true
 aven-eval.workspace = true
