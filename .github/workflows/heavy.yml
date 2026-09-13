@@ -28,4 +28,12 @@ jobs:
       - name: heavy tests
         env:
           PROPTEST_CASES: "8192"
+          # A `prop_assume!` rejection costs a case but not a failure, and the
+          # ceiling on them does not scale with PROPTEST_CASES: proptest's
+          # default is a flat 1024, which at 8192 cases aborts any property
+          # rejecting more than about a percent of its inputs. Held at the
+          # same 4:1 ratio proptest ships for its own 256-case default, so
+          # raising PROPTEST_CASES does not silently turn a tolerable
+          # rejection rate into a red nightly.
+          PROPTEST_MAX_GLOBAL_REJECTS: "32768"
         run: cargo test --workspace -- --include-ignored
