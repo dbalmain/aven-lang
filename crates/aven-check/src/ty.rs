@@ -9,10 +9,23 @@ use aven_parser::{Expr, ExprKind, Literal};
 ///
 /// Keeping the arity next to the parameter list prevents a `Type::Function`
 /// from carrying a required count greater than its total parameter count.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct FunctionParams {
     params: Vec<Type>,
     required: usize,
+}
+
+impl<'de> serde::Deserialize<'de> for FunctionParams {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Parts {
+            params: Vec<Type>,
+            required: usize,
+        }
+        let parts = Parts::deserialize(deserializer)?;
+        Self::try_from_parts(parts.params, parts.required)
+            .ok_or_else(|| serde::de::Error::custom("required arity exceeds parameter count"))
+    }
 }
 
 impl FunctionParams {

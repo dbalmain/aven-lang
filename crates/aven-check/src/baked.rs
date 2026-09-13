@@ -22,7 +22,7 @@ struct HostContext {
     types: Vec<(String, Type)>,
     type_definitions: Vec<(String, Type)>,
     statics: HostStatics,
-    comptime_params: Vec<(String, Vec<HostComptimeParam>)>,
+    comptime_params: HashMap<String, Vec<HostComptimeParam>>,
     type_definition_module: ComptimeModuleIdentity,
 }
 
@@ -46,12 +46,8 @@ impl HostContext {
             && self.type_definitions == globals.type_definitions
             && self.statics == globals.statics
             && self.type_definition_module == globals.type_definition_module
-            && self.comptime_params.len() == globals.comptime_fns.len()
-            && self.comptime_params.iter().zip(&globals.comptime_fns).all(
-                |((name, params), (other_name, spec))| {
-                    name == other_name && params == &spec.comptime_params
-                },
-            )
+            && self.comptime_params.iter().collect::<HashMap<_, _>>()
+                == globals.comptime_fns.iter().map(|(name, spec)| (name, &spec.comptime_params)).collect::<HashMap<_, _>>()
     }
 }
 
