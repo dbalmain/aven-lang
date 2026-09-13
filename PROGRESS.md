@@ -1,20 +1,20 @@
 # Implementation status — language proposals
 
-Updated: 2026-09-13, Australia/Sydney.
+Updated: 2026-09-14, Australia/Sydney.
 
 ## Current state
 
-Branch `comptime/final-repairs`, tip `6388e26`, branched from `main` at
-`2e1073a`. Nothing pushed, nothing merged. Gates green in `nix develop`:
-`fmt --all -- --check`, `clippy --workspace --all-targets -D warnings`,
-`git diff --check`, and `cargo test --workspace` at **1901 passed / 0 failed**
-(1888 on `main`). The MSRV gate (`nix develop .#msrv`,
+`main`, tip `c09a7a2`. All three branches described below are now merged into
+it, in this order: `comptime/final-repairs` (`5e8507d`), `perf/unify-trail`
+(`de22322`), and `cli/positional-arguments` (`c09a7a2`). Gates green on the
+merged tip in `nix develop`: `fmt --all -- --check`,
+`clippy --workspace --all-targets -D warnings`, `git diff --check`, and
+`cargo test --workspace` at **1909 passed / 0 failed** (1888 before this
+round). The MSRV gate (`nix develop .#msrv`,
 `cargo check --workspace --all-targets` on 1.91.0) also passes.
 
-Two other branches are live and separate: `cli/positional-arguments`
-(`c68ee82`, `cli.positional` in `std/cli.av`) and `deps/easy-updates`
-(`89acb31`, the dependency bump). Neither is merged, and no commit here
-touches either's files.
+`deps/easy-updates` (`89acb31`, the dependency bump) is still live and
+unmerged; no commit in this round touches its files.
 
 ### This round — the final comptime repair handoff
 
@@ -1116,8 +1116,8 @@ found by profiling rather than reasoning, and each is its own commit:
 | 4000 | 27.7s  | 2.85s |
 | 8000 | 117s   | 6.05s |
 
-Doubling N now doubles the time. Checking a file that imports `std/cli` went
-from 1.67s to 0.23s.
+Doubling N now doubles the time. `examples/cli.av`, which imports `std/cli`,
+went from 1.60s to 0.20s.
 
 Beyond the gates, every `.av` file in the repo — 364 of them — produces
 byte-identical diagnostics before and after all three commits.
@@ -1125,11 +1125,72 @@ byte-identical diagnostics before and after all three commits.
 ### Dropped: caching checked std modules across processes
 
 Section 6 planned this third. It was worth doing when importing `std/cli` cost
-1.67s of unavoidable re-checking; at 0.23s it would buy back a fraction of that
+1.60s of unavoidable re-checking; at 0.20s it would buy back a fraction of that
 in exchange for a serialisation format, an invalidation rule keyed on std
-content, and a new class of stale-cache bug. Revisit only if std grows several
-fold, which would make per-process re-checking structural rather than
-incidental.
+content, and a new class of stale-cache bug.
+
+**This reasoning has since been overturned by its own success** — see the next
+section. The absolute cost fell, but everything around it fell further, so
+re-checking `std/cli` is now about half of a small program's entire runtime.
+The decision to drop it was correct on the day and is no longer.
+
+## Startup is ~135ms of re-checking `std/cli` — 2026-09-14
+
+Recorded, not fixed. Prompted by a real program: the Cox-trigrams course
+harness stub takes 285ms where its Python equivalent takes 29ms, and the
+question was whether a 10x gap is the price of typed CLI argument parsing.
+
+It is not. Argument parsing at runtime is free; the gap is `aven check`
+running in full on every invocation, and `std/cli` being far and away the most
+expensive module to check.
+
+| Measured                          | wall     |
+| --------------------------------- | -------- |
+| `aven run` on a trivial program   | 10--20ms |
+| `aven run` on `import("std/cli")` | 150ms    |
+| the stub, `aven check`            | 280ms    |
+| the stub, `aven run`              | 280ms    |
+
+`run` and `check` are the same number, so **evaluation is ~0ms** --- all 280ms
+is front-end. About 135ms is checking `std/cli` itself and about 130ms is
+checking the stub's own four `cli.define`/`cli.app` calls, which are comptime
+row work over record schemas.
+
+`std/cli` is an outlier rather than a general per-module cost. Every other std
+module --- `array`, `map`, `set`, `result`, `time`, `clock` --- costs 10--20ms,
+and `array.av` is 297 lines against `cli.av`'s 618. The cost is superlinear in
+something `cli.av` has, not in its length.
+
+A `perf record -g` profile of that check says where the cycles go: **~60% in
+`malloc`/`free`**, driven by `String::clone` inside `Type::clone` and
+`Vec<RowEntry>::clone`. This is allocator churn from deep-cloning owned type
+trees whose every row entry owns its label `String`. It is not another
+quadratic --- doubling module size still doubles the time, as the previous
+section left it.
+
+### Why caching bytecode would not help
+
+The natural plan is to cache parsed or compiled output once there is a
+bytecode interpreter. That saves single-digit milliseconds here: a trivial
+program parses, checks and runs in 10--20ms total, so parsing is not the cost.
+What is worth caching is the **checked** module --- `std/cli`'s inferred types,
+so an importing program does not re-infer 135ms of rows every run.
+
+### Levers, cheapest first
+
+1. **Swap the global allocator** to mimalloc or similar. One line, no
+   semantics, and the profile is 60% allocator.
+2. **Intern row labels** as `Rc<str>` so cloning a type stops cloning its
+   labels, and consider sharing `Type` subtrees the same way.
+3. **Cache checked std modules on disk** --- the item dropped above, whose
+   cost-benefit has now inverted.
+
+Only (3) touches the 135ms directly; (1) and (2) make every check cheaper.
+
+Separately, and without touching the compiler: `cli.av`'s last ~240 lines are
+bash and fish completion-script literals that every importer pays to check and
+almost no program calls. Splitting them into a `std/cli-completions` module
+would cut the import cost with no implementation work.
 
 ## Background
 
