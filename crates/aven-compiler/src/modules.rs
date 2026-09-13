@@ -1040,51 +1040,27 @@ fn analyze_node(
         );
     };
     crate::analyze_semantics_with_check(&node.parse, || {
-        // These bytes were produced by this binary's build. Invalid artifacts
-        // are a build-plumbing bug, not an excuse to silently lose the speedup.
-        let decode_start = Instant::now();
+        // include_bytes of this build's own serde output. A decode failure is a
+        // bake-schema bug, not user input; falling back would hide it.
         let baked: aven_check::baked::BakedCheck = serde_json::from_slice(bytes)
             .expect("embedded checked module must decode with the matching build schema");
-        let decode = decode_start.elapsed();
-        let compare_start = Instant::now();
-        let mismatch = baked.first_mismatch(
-            node.file.source(),
-            globals,
-            imports,
-            &identity,
-            node.parse.role,
-        );
-        let compare = compare_start.elapsed();
-        let specifier = library_specifier(&node.path).unwrap_or_else(|| node.path.display().to_string());
-        if std::env::var_os("AVEN_BAKED_TRACE").is_some() {
-            match &mismatch {
-                None => eprintln!(
-                    "BAKED hit {specifier} decode={decode:?} compare={compare:?} bytes={}",
-                    bytes.len()
-                ),
-                Some(field) => eprintln!(
-                    "BAKED miss {specifier} first={field} decode={decode:?} compare={compare:?} bytes={}",
-                    bytes.len()
-                ),
-            }
-        }
-        match mismatch {
-            None => baked.into_checked(
+        baked
+            .into_checked(
                 node.file.source(),
                 globals,
                 imports,
                 &identity,
                 node.parse.role,
             )
-            .expect("first_mismatch none must succeed"),
-            Some(_) => aven_check::check_module_with_host_globals_and_imports_in_role(
-                &node.parse.module,
-                globals,
-                imports,
-                identity,
-                node.parse.role,
-            ),
-        }
+            .unwrap_or_else(|| {
+                aven_check::check_module_with_host_globals_and_imports_in_role(
+                    &node.parse.module,
+                    globals,
+                    imports,
+                    identity,
+                    node.parse.role,
+                )
+            })
     })
 }
 
