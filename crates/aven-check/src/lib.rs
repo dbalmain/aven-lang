@@ -597,12 +597,13 @@ pub fn check_module_with_host_globals_and_imports_in_role(
             .iter()
             .map(|(name, _)| name.clone()),
     );
+    let reserved_items = lower::DeclarationItems::new(module);
     let mut reserved_diagnostics = aven_parser::collect_declarations(module)
         .into_iter()
         .filter(|declaration| declaration.phase == aven_parser::DeclarationPhase::Comptime)
         .filter(|declaration| reserved_type_names.contains(&declaration.name))
         .filter_map(|declaration| {
-            let binding = lower::binding_for_declaration(module, &declaration)?;
+            let binding = reserved_items.binding(&declaration)?;
             (!checker::is_import_call(&binding.value))
                 .then(|| reserved_type_diagnostic(&declaration.name, declaration.name_span))
         })

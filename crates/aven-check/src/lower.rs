@@ -44,7 +44,7 @@ impl AnnotationLowerer {
         module: &Module,
         declaration: &aven_parser::Declaration,
     ) -> Option<DeclaredAnnotation> {
-        let source = declared_annotation_for_declaration(module, declaration)?;
+        let source = DeclarationItems::new(module).declared_annotation(declaration)?;
         let mut checker = Checker::with_module_environment(
             self.known_types.clone(),
             self.type_definitions.clone(),
@@ -90,11 +90,12 @@ pub(crate) fn type_definition_names(
     known_types: &HashSet<String>,
     reserved_names: &HashSet<String>,
 ) -> HashSet<String> {
+    let items = DeclarationItems::new(module);
     collect_declarations(module)
         .into_iter()
         .filter(|declaration| declaration.phase == DeclarationPhase::Comptime)
         .filter_map(|declaration| {
-            let binding = binding_for_declaration(module, &declaration)?;
+            let binding = items.binding(&declaration)?;
             if crate::checker::is_import_call(&binding.value)
                 || crate::checker::is_method_requirement_row(&binding.value)
                 || aven_parser::is_named_method_provider(&binding.value)
@@ -105,7 +106,7 @@ pub(crate) fn type_definition_names(
                     .next()
                     .is_some_and(char::is_uppercase)
                     && aven_parser::lambda_parts(&binding.value).is_some())
-                || (declared_annotation_for_declaration(module, &declaration).is_none()
+                || (items.declared_annotation(&declaration).is_none()
                     && bare_lowercase_unknown_name(&binding.value, known_types).is_some())
                 || reserved_names.contains(&declaration.name)
             {
@@ -154,11 +155,12 @@ pub(crate) struct CyclicAliases {
 }
 
 pub(crate) fn cyclic_aliases(module: &Module, names: &HashSet<String>) -> CyclicAliases {
+    let items = DeclarationItems::new(module);
     let edges: HashMap<String, String> = collect_declarations(module)
         .into_iter()
         .filter(|declaration| names.contains(&declaration.name))
         .filter_map(|declaration| {
-            let binding = binding_for_declaration(module, &declaration)?;
+            let binding = items.binding(&declaration)?;
             let target = match &ungroup_expr(&binding.value).kind {
                 ExprKind::Name(target) | ExprKind::ComptimeName(target) => target,
                 _ => return None,
@@ -248,60 +250,118 @@ pub(crate) struct DeclaredAnnotationSource<'a> {
     pub(crate) annotation: &'a Expr,
 }
 
-pub(crate) fn declared_annotation_for_declaration<'a>(
-    module: &'a Module,
-    declaration: &aven_parser::Declaration,
-) -> Option<DeclaredAnnotationSource<'a>> {
-    for item in &module.items {
-        match item {
-            Item::Signature(signature)
-                if signature.name == declaration.name
-                    && declaration.span.contains(signature.span) =>
-            {
-                return Some(DeclaredAnnotationSource {
-                    name: declaration.name.clone(),
-                    declaration_span: declaration.span,
-                    annotation: &signature.annotation,
-                });
-            }
-            Item::Binding(binding)
-                if binding.name == declaration.name
-                    && declaration.span.contains(binding.span)
-                    && binding.annotation.is_some() =>
-            {
-                return Some(DeclaredAnnotationSource {
-                    name: declaration.name.clone(),
-                    declaration_span: declaration.span,
-                    annotation: binding.annotation.as_ref()?,
-                });
-            }
-            Item::Binding(_)
-            | Item::PatternBinding(_)
-            | Item::SpreadBinding(_)
-            | Item::MethodAttachment(_)
-            | Item::Signature(_)
-            | Item::Expr(_) => {}
-        }
-    }
-
-    None
+/// The module's items grouped by the name they declare.
+///
+/// Both lookups below need "the item this declaration was built from", and both
+/// used to answer it by scanning every item in the module. They are called once
+/// (often several times) per declaration, so the scan made every pass over the
+/// declarations quadratic in module size. Build this once per pass instead.
+pub(crate) struct DeclarationItems<'a> {
+    by_name: HashMap<&'a str, Vec<&'a Item>>,
 }
 
-pub(crate) fn binding_for_declaration<'a>(
-    module: &'a Module,
-    declaration: &Declaration,
-) -> Option<&'a Binding> {
-    module.items.iter().find_map(|item| match item {
-        Item::Binding(binding)
-            if binding.name == declaration.name && declaration.span.contains(binding.span) =>
-        {
-            Some(binding)
+impl<'a> DeclarationItems<'a> {
+    pub(crate) fn new(module: &'a Module) -> Self {
+        let mut by_name: HashMap<&'a str, Vec<&'a Item>> = HashMap::new();
+        for item in &module.items {
+            let name = match item {
+                Item::Binding(binding) => binding.name.as_str(),
+                Item::Signature(signature) => signature.name.as_str(),
+                Item::PatternBinding(_)
+                | Item::SpreadBinding(_)
+                | Item::MethodAttachment(_)
+                | Item::Expr(_) => continue,
+            };
+            by_name.entry(name).or_default().push(item);
         }
-        Item::Binding(_)
-        | Item::PatternBinding(_)
-        | Item::SpreadBinding(_)
-        | Item::MethodAttachment(_)
-        | Item::Signature(_)
-        | Item::Expr(_) => None,
-    })
+        Self { by_name }
+    }
+
+    /// The items declaring `name`, in source order. An item whose name differs
+    /// can never match either lookup, so restricting to this bucket sees the
+    /// same candidates in the same order as a full scan did.
+    fn candidates(&self, name: &str) -> &[&'a Item] {
+        self.by_name.get(name).map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn declared_annotation(
+        &self,
+        declaration: &aven_parser::Declaration,
+    ) -> Option<DeclaredAnnotationSource<'a>> {
+        for item in self.candidates(&declaration.name) {
+            match item {
+                Item::Signature(signature) if declaration.span.contains(signature.span) => {
+                    return Some(DeclaredAnnotationSource {
+                        name: declaration.name.clone(),
+                        declaration_span: declaration.span,
+                        annotation: &signature.annotation,
+                    });
+                }
+                Item::Binding(binding)
+                    if declaration.span.contains(binding.span) && binding.annotation.is_some() =>
+                {
+                    return Some(DeclaredAnnotationSource {
+                        name: declaration.name.clone(),
+                        declaration_span: declaration.span,
+                        annotation: binding.annotation.as_ref()?,
+                    });
+                }
+                Item::Binding(_)
+                | Item::PatternBinding(_)
+                | Item::SpreadBinding(_)
+                | Item::MethodAttachment(_)
+                | Item::Signature(_)
+                | Item::Expr(_) => {}
+            }
+        }
+
+        None
+    }
+
+    pub(crate) fn binding(&self, declaration: &Declaration) -> Option<&'a Binding> {
+        self.candidates(&declaration.name)
+            .iter()
+            .find_map(|item| match *item {
+                Item::Binding(binding) if declaration.span.contains(binding.span) => Some(binding),
+                Item::Binding(_)
+                | Item::PatternBinding(_)
+                | Item::SpreadBinding(_)
+                | Item::MethodAttachment(_)
+                | Item::Signature(_)
+                | Item::Expr(_) => None,
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aven_parser::parse_module;
+
+    /// Two declarations sharing a name land in the same bucket, so the index
+    /// still has to tell them apart by span. Answering from the name alone
+    /// would hand the second declaration the first one's binding, and the
+    /// first one's signature.
+    #[test]
+    fn declarations_sharing_a_name_keep_their_own_items() {
+        let parsed = parse_module("f: (Int) -> Int\nf = (a) =>\n  a\n\nf = (b) =>\n  b\n");
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+        let items = DeclarationItems::new(&parsed.module);
+        let declarations = collect_declarations(&parsed.module);
+        let overloads: Vec<_> = declarations
+            .iter()
+            .filter(|declaration| declaration.name == "f")
+            .collect();
+        assert_eq!(overloads.len(), 2, "both spellings declare `f`");
+
+        let first = items.binding(overloads[0]).expect("the annotated binding");
+        let second = items.binding(overloads[1]).expect("the second binding");
+        assert_ne!(first.span, second.span);
+        assert!(overloads[0].span.contains(first.span));
+        assert!(overloads[1].span.contains(second.span));
+
+        assert!(items.declared_annotation(overloads[0]).is_some());
+        assert!(items.declared_annotation(overloads[1]).is_none());
+    }
 }
