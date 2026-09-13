@@ -1182,15 +1182,43 @@ so an importing program does not re-infer 135ms of rows every run.
    semantics, and the profile is 60% allocator.
 2. **Intern row labels** as `Rc<str>` so cloning a type stops cloning its
    labels, and consider sharing `Type` subtrees the same way.
-3. **Cache checked std modules on disk** --- the item dropped above, whose
-   cost-benefit has now inverted.
+3. **Bake the checked std modules into the binary** at build time. The std
+   sources are already compiled in, so a rebuild is the invalidation: no cache
+   directory, no content hashing, and none of the stale-cache bug class an
+   on-disk cache would introduce. This is the approved form of the item
+   dropped above, whose cost-benefit has now inverted.
 
-Only (3) touches the 135ms directly; (1) and (2) make every check cheaper.
+Only (3) touches the 135ms directly; (1) and (2) make every check cheaper,
+including the ~130ms the stub spends on its *own* four `cli.define` calls,
+which no amount of std caching can help.
 
-Separately, and without touching the compiler: `cli.av`'s last ~240 lines are
-bash and fish completion-script literals that every importer pays to check and
-almost no program calls. Splitting them into a `std/cli-completions` module
-would cut the import cost with no implementation work.
+### What it is not: the completion literals
+
+An early guess was that `cli.av`'s last 240 lines --- bash and fish
+completion-script string literals that almost no program calls --- were the
+cost, and that splitting them into a `std/cli-completions` module would fix it
+for free. Measured by checking the file in prefixes, that is wrong twice over,
+and it is recorded here so nobody spends a slice on it:
+
+| Slice of `cli.av`         | check |
+| ------------------------- | ----- |
+| lines 1--380              | 140ms |
+| lines 381--618 (literals) | 20ms  |
+
+The literals are 40% of the file and 13% of its cost. The split would not have
+worked anyway: a module that merely imports `std/cli` still pays the full
+150ms, so moving the literals into a module `std/cli` itself imports would
+save nothing.
+
+Nor is there a single hot construct in those first 380 lines --- the cost
+accumulates smoothly across them, roughly 0.3ms per line. The comparison that
+matters is with `array.av`, which is 297 lines and checks in 10--20ms, about a
+twentieth the cost per line. What `cli.av` has and `array.av` does not is
+pervasive record and row types: open rows (`{ .. }`), the `Meta` and
+`Completion` records, and `keysOf` comptime work. That matches the profile,
+where the clones are `Vec<RowEntry>` and the `String` labels inside them, and
+it is why lever 2 is the primary attack rather than anything about `cli.av`'s
+text.
 
 ## Background
 
