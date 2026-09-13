@@ -41,13 +41,25 @@ impl HostContext {
         }
     }
 
-    fn matches(&self, globals: &HostGlobals) -> bool {
-        self.types == globals.types
-            && self.type_definitions == globals.type_definitions
-            && self.statics == globals.statics
-            && self.type_definition_module == globals.type_definition_module
-            && self.comptime_params.iter().collect::<HashMap<_, _>>()
-                == globals.comptime_fns.iter().map(|(name, spec)| (name, &spec.comptime_params)).collect::<HashMap<_, _>>()
+    fn first_mismatch(&self, globals: &HostGlobals) -> Option<String> {
+        named_list_mismatch("host.types", &self.types, &globals.types)
+            .or_else(|| {
+                named_list_mismatch(
+                    "host.type_definitions",
+                    &self.type_definitions,
+                    &globals.type_definitions,
+                )
+            })
+            .or_else(|| statics_mismatch(&self.statics, &globals.statics))
+            .or_else(|| {
+                (self.type_definition_module != globals.type_definition_module).then(|| {
+                    format!(
+                        "host.type_definition_module baked={:?} runtime={:?}",
+                        self.type_definition_module, globals.type_definition_module
+                    )
+                })
+            })
+            .or_else(|| comptime_params_mismatch(&self.comptime_params, globals))
     }
 }
 
@@ -111,13 +123,229 @@ impl BakedCheck {
         identity: &ComptimeModuleIdentity,
         role: ModuleRole,
     ) -> Option<CheckOutput> {
-        (self.source == source
-            && self.host.matches(globals)
-            && self.imports == *imports
-            && self.identity == *identity
-            && self.role == role)
+        self.first_mismatch(source, globals, imports, identity, role)
+            .is_none()
             .then_some(self.output)
     }
+
+    /// First checking input that differs from this snapshot, for hit/miss tracing.
+    pub fn first_mismatch(
+        &self,
+        source: &str,
+        globals: &HostGlobals,
+        imports: &ModuleImports,
+        identity: &ComptimeModuleIdentity,
+        role: ModuleRole,
+    ) -> Option<String> {
+        if self.source != source {
+            return Some("source".into());
+        }
+        if let Some(field) = self.host.first_mismatch(globals) {
+            return Some(field);
+        }
+        if let Some(field) = imports_first_mismatch(&self.imports, imports) {
+            return Some(field);
+        }
+        if self.identity != *identity {
+            return Some(format!(
+                "identity baked={:?} runtime={:?}",
+                self.identity, identity
+            ));
+        }
+        if self.role != role {
+            return Some(format!("role baked={:?} runtime={:?}", self.role, role));
+        }
+        None
+    }
+}
+
+fn named_list_mismatch<T: PartialEq>(
+    field: &str,
+    baked: &[(String, T)],
+    runtime: &[(String, T)],
+) -> Option<String> {
+    if baked == runtime {
+        return None;
+    }
+    let baked_names: Vec<&str> = baked.iter().map(|(name, _)| name.as_str()).collect();
+    let runtime_names: Vec<&str> = runtime.iter().map(|(name, _)| name.as_str()).collect();
+    if baked_names != runtime_names {
+        return Some(format!(
+            "{field} names baked={baked_names:?} runtime={runtime_names:?}"
+        ));
+    }
+    let name = baked
+        .iter()
+        .zip(runtime)
+        .find_map(|((name, left), (_, right))| (left != right).then_some(name.as_str()))
+        .unwrap_or("?");
+    Some(format!("{field}[{name}] value"))
+}
+
+fn statics_mismatch(baked: &HostStatics, runtime: &HostStatics) -> Option<String> {
+    named_list_mismatch("host.statics", baked, runtime).map(|mismatch| {
+        if mismatch.ends_with(" value") {
+            let type_name = mismatch
+                .strip_prefix("host.statics[")
+                .and_then(|rest| rest.strip_suffix("] value"))
+                .unwrap_or("?");
+            match (baked.iter().find(|(name, _)| name == type_name), runtime.iter().find(|(name, _)| name == type_name)) {
+                (Some((_, left)), Some((_, right))) => named_list_mismatch(
+                    &format!("host.statics[{type_name}]"),
+                    left,
+                    right,
+                )
+                .unwrap_or(mismatch),
+                _ => mismatch,
+            }
+        } else {
+            mismatch
+        }
+    })
+}
+
+fn comptime_params_mismatch(
+    baked: &HashMap<String, Vec<HostComptimeParam>>,
+    globals: &HostGlobals,
+) -> Option<String> {
+    let runtime: HashMap<&str, _> = globals
+        .comptime_fns
+        .iter()
+        .map(|(name, spec)| (name.as_str(), &spec.comptime_params))
+        .collect();
+    let baked_refs: HashMap<&str, _> = baked
+        .iter()
+        .map(|(name, params)| (name.as_str(), params))
+        .collect();
+    if baked_refs == runtime {
+        return None;
+    }
+    let mut baked_names: Vec<&str> = baked_refs.keys().copied().collect();
+    baked_names.sort_unstable();
+    let mut runtime_names: Vec<&str> = runtime.keys().copied().collect();
+    runtime_names.sort_unstable();
+    if baked_names != runtime_names {
+        return Some(format!(
+            "host.comptime_params names baked={baked_names:?} runtime={runtime_names:?}"
+        ));
+    }
+    let name = baked_names
+        .iter()
+        .copied()
+        .find(|name| baked_refs.get(name) != runtime.get(name))
+        .unwrap_or("?");
+    Some(format!("host.comptime_params[{name}] value"))
+}
+
+fn imports_first_mismatch(baked: &ModuleImports, runtime: &ModuleImports) -> Option<String> {
+    if baked == runtime {
+        return None;
+    }
+    if baked.types != runtime.types {
+        return Some(map_mismatch(
+            "imports.types",
+            &baked.types,
+            &runtime.types,
+        ));
+    }
+    if baked.type_exports != runtime.type_exports {
+        return Some(map_mismatch(
+            "imports.type_exports",
+            &baked.type_exports,
+            &runtime.type_exports,
+        ));
+    }
+    if baked.qualified_exports != runtime.qualified_exports {
+        return Some(map_mismatch(
+            "imports.qualified_exports",
+            &baked.qualified_exports,
+            &runtime.qualified_exports,
+        ));
+    }
+    if baked.named_family_exports != runtime.named_family_exports {
+        return Some(map_mismatch(
+            "imports.named_family_exports",
+            &baked.named_family_exports,
+            &runtime.named_family_exports,
+        ));
+    }
+    if baked.comptime_exports != runtime.comptime_exports {
+        return Some(map_mismatch(
+            "imports.comptime_exports",
+            &baked.comptime_exports,
+            &runtime.comptime_exports,
+        ));
+    }
+    if baked.prelude_qualified_exports != runtime.prelude_qualified_exports {
+        return Some(map_mismatch(
+            "imports.prelude_qualified_exports",
+            &baked.prelude_qualified_exports,
+            &runtime.prelude_qualified_exports,
+        ));
+    }
+    if baked.prelude_comptime_exports != runtime.prelude_comptime_exports {
+        return Some(map_mismatch(
+            "imports.prelude_comptime_exports",
+            &baked.prelude_comptime_exports,
+            &runtime.prelude_comptime_exports,
+        ));
+    }
+    if baked.prelude_modules != runtime.prelude_modules {
+        return Some(format!(
+            "imports.prelude_modules len baked={} runtime={}",
+            baked.prelude_modules.len(),
+            runtime.prelude_modules.len()
+        ));
+    }
+    if baked.prelude_requires_elaboration != runtime.prelude_requires_elaboration {
+        return Some(format!(
+            "imports.prelude_requires_elaboration baked={} runtime={}",
+            baked.prelude_requires_elaboration, runtime.prelude_requires_elaboration
+        ));
+    }
+    if baked.recursive_type_unfoldings != runtime.recursive_type_unfoldings {
+        return Some(format!(
+            "imports.recursive_type_unfoldings len baked={} runtime={}",
+            baked.recursive_type_unfoldings.len(),
+            runtime.recursive_type_unfoldings.len()
+        ));
+    }
+    if baked.builtin_methods != runtime.builtin_methods {
+        if baked.builtin_methods.methods != runtime.builtin_methods.methods {
+            return Some(format!(
+                "imports.builtin_methods.methods len baked={} runtime={}",
+                baked.builtin_methods.methods.len(),
+                runtime.builtin_methods.methods.len()
+            ));
+        }
+        return Some(format!(
+            "imports.builtin_methods.comptime_modules len baked={} runtime={}",
+            baked.builtin_methods.comptime_modules.len(),
+            runtime.builtin_methods.comptime_modules.len()
+        ));
+    }
+    if baked.trusted_builtin_method_source != runtime.trusted_builtin_method_source {
+        return Some(format!(
+            "imports.trusted_builtin_method_source baked={} runtime={}",
+            baked.trusted_builtin_method_source, runtime.trusted_builtin_method_source
+        ));
+    }
+    Some("imports".into())
+}
+
+fn map_mismatch<K: Eq + std::hash::Hash + std::fmt::Debug, V: PartialEq>(
+    field: &str,
+    baked: &HashMap<K, V>,
+    runtime: &HashMap<K, V>,
+) -> String {
+    if baked.len() != runtime.len() || baked.keys().any(|key| !runtime.contains_key(key)) {
+        let mut baked_keys: Vec<_> = baked.keys().collect();
+        baked_keys.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+        let mut runtime_keys: Vec<_> = runtime.keys().collect();
+        runtime_keys.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+        return format!("{field} keys baked={baked_keys:?} runtime={runtime_keys:?}");
+    }
+    format!("{field} value")
 }
 
 struct CallbackSentinel(Rc<Cell<bool>>);
