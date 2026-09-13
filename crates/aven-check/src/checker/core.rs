@@ -301,7 +301,7 @@ impl<'a> Checker<'a> {
                 let base = self.normalize(&lowered_base);
                 let supported = primitive_family_base_is_supported(&base);
                 if !supported {
-                    let (message, note) = if matches!(&base, Type::Named(name) if self.named_family_aliases.contains_key(name))
+                    let (message, note) = if matches!(&base, Type::Named(name) if self.named_family_aliases.contains_key(name.as_ref()))
                     {
                         (
                             "a primitive-base family cannot use another named family as its base",
@@ -325,7 +325,7 @@ impl<'a> Checker<'a> {
                             .with_note(note),
                     );
                 }
-                let family_owner = Type::Named(owner.clone());
+                let family_owner = Type::Named(owner.as_str().into());
                 let methods = if supported {
                     super::method_sets::effective_base_methods(self, &base)
                 } else {
@@ -388,7 +388,7 @@ impl<'a> Checker<'a> {
                     continue;
                 }
                 data_entries.push(RowEntry::Field {
-                    name: field.clone(),
+                    name: field.as_str().into(),
                     ty: self.lower_annotation(annotation),
                 });
             }
@@ -446,7 +446,7 @@ impl<'a> Checker<'a> {
                 self.named_family_aliases
                     .insert(declaration.name.clone(), owner.clone());
                 self.type_definitions
-                    .insert(declaration.name.clone(), Type::Named(owner));
+                    .insert(declaration.name.clone(), Type::Named(owner.into()));
                 changed = true;
             }
             if !changed {
@@ -544,7 +544,7 @@ impl<'a> Checker<'a> {
                     );
                     continue;
                 }
-                if data_labels.contains(name) {
+                if data_labels.contains(name.as_str()) {
                     self.diagnostics.push(
                         Diagnostic::error(format!(
                             "method `{name}` conflicts with a data field of the same name"
@@ -791,13 +791,13 @@ impl<'a> Checker<'a> {
         let lowered_owner = self.lower_annotation(owner);
         let lowered = self.normalize(&lowered_owner);
         let (head, args) = match &lowered {
-            Type::Named(head) => (head.as_str(), &[][..]),
+            Type::Named(head) => (head.as_ref(), &[][..]),
             Type::Apply { callee, args } => {
                 let Type::Named(head) = callee.as_ref() else {
                     self.report_invalid_builtin_owner_pattern(owner.span);
                     return None;
                 };
-                (head.as_str(), args.as_slice())
+                (head.as_ref(), args.as_slice())
             }
             _ => {
                 self.report_invalid_builtin_owner_pattern(owner.span);
@@ -1078,7 +1078,7 @@ impl<'a> Checker<'a> {
                     continue;
                 };
 
-                if let Entry::Vacant(entry) = types.entry(name) {
+                if let Entry::Vacant(entry) = types.entry(name.to_string()) {
                     entry.insert(Some(scheme_from_global(&ty, &mut self.unifier)));
                 }
             }
@@ -1322,7 +1322,7 @@ impl<'a> Checker<'a> {
                         self.local_types.push();
                         self.local_types.define(
                             aven_parser::METHOD_RECEIVER_NAME,
-                            LocalValueType::Known(Type::Named(owner.to_owned())),
+                            LocalValueType::Known(Type::Named(owner.into())),
                         );
                         for (param, ty) in params.iter().zip(signature.params.iter()) {
                             self.local_types
@@ -1776,13 +1776,13 @@ impl<'a> Checker<'a> {
             let RowEntry::Field { name, .. } = entry else {
                 continue;
             };
-            if self.bindings.contains_key(&name)
-                || self.pattern_bindings.contains_key(&name)
-                || top_level_spread_names.contains(&name)
+            if self.bindings.contains_key(name.as_ref())
+                || self.pattern_bindings.contains_key(name.as_ref())
+                || top_level_spread_names.contains(name.as_ref())
             {
                 self.report_duplicate_declaration_from_spread(&name, binding.span);
             }
-            top_level_spread_names.insert(name);
+            top_level_spread_names.insert(name.to_string());
         }
     }
 
@@ -2658,9 +2658,9 @@ fn builtin_owner_patterns_overlap(left: &Type, right: &Type) -> bool {
 
 fn intrinsic_builtin_method_collides(owner: &Type, member: &str) -> bool {
     let head = match owner {
-        Type::Named(name) => name.as_str(),
+        Type::Named(name) => name.as_ref(),
         Type::Apply { callee, .. } => match callee.as_ref() {
-            Type::Named(name) => name.as_str(),
+            Type::Named(name) => name.as_ref(),
             _ => return false,
         },
         _ => return false,
@@ -2672,8 +2672,8 @@ fn intrinsic_builtin_method_collides(owner: &Type, member: &str) -> bool {
                     && builtin_owner_patterns_overlap(
                         owner,
                         &Type::Apply {
-                            callee: Box::new(Type::Named(BuiltinType::Array.name().to_owned())),
-                            args: vec![Type::Named(BuiltinType::Text.name().to_owned())],
+                            callee: Box::new(Type::Named(BuiltinType::Array.name().into())),
+                            args: vec![Type::Named(BuiltinType::Text.name().into())],
                         },
                     ))
         }
@@ -2868,14 +2868,14 @@ fn alpha_equivalent_type(
 ) -> bool {
     match (left, right) {
         (Type::Variable(left), Type::Variable(right)) => {
-            if let Some(bound) = forward.get(left) {
-                return bound == right;
+            if let Some(bound) = forward.get(left.as_ref()) {
+                return bound.as_str() == right.as_ref();
             }
-            if reverse.contains_key(right) {
+            if reverse.contains_key(right.as_ref()) {
                 return false;
             }
-            forward.insert(left.clone(), right.clone());
-            reverse.insert(right.clone(), left.clone());
+            forward.insert(left.to_string(), right.to_string());
+            reverse.insert(right.to_string(), left.to_string());
             true
         }
         (

@@ -126,7 +126,7 @@ impl<'a> Checker<'a> {
         let Type::Named(name) = ty else {
             return None;
         };
-        let owner = self.named_family_aliases.get(name)?;
+        let owner = self.named_family_aliases.get(name.as_ref())?;
         let family = self.named_families.get(owner)?;
         if family.primitive_base.is_some() {
             return None;
@@ -140,7 +140,7 @@ impl<'a> Checker<'a> {
         let Type::Named(name) = ty else {
             return None;
         };
-        let owner = self.named_family_aliases.get(name)?;
+        let owner = self.named_family_aliases.get(name.as_ref())?;
         self.named_families
             .get(owner)?
             .primitive_base
@@ -149,7 +149,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn is_named_family_owner(&self, ty: &Type) -> bool {
-        matches!(ty, Type::Named(name) if self.named_family_aliases.contains_key(name))
+        matches!(ty, Type::Named(name) if self.named_family_aliases.contains_key(name.as_ref()))
     }
 
     /// Unfold exactly one recursive reference when a consumer needs its outer
@@ -250,19 +250,19 @@ impl<'a> Checker<'a> {
     pub(super) fn normalize_with_visited(&self, ty: &Type, visited: HashSet<String>) -> Type {
         match ty {
             Type::Named(name) => {
-                if let Some(owner) = self.named_family_aliases.get(name) {
-                    return Type::Named(owner.clone());
+                if let Some(owner) = self.named_family_aliases.get(name.as_ref()) {
+                    return Type::Named(owner.as_str().into());
                 }
-                let Some(definition) = self.type_definitions.get(name) else {
+                let Some(definition) = self.type_definitions.get(name.as_ref()) else {
                     return Type::Named(name.clone());
                 };
 
-                if visited.contains(name) {
+                if visited.contains(name.as_ref()) {
                     return Type::Named(name.clone());
                 }
 
                 let mut next_visited = visited;
-                next_visited.insert(name.clone());
+                next_visited.insert(name.to_string());
                 self.normalize_with_visited(definition, next_visited)
             }
             Type::Error => Type::Error,
@@ -401,12 +401,12 @@ impl<'a> Checker<'a> {
                 self.check_type_name(name, annotation.span);
                 match BuiltinType::from_name(name) {
                     Some(builtin) => crate::ty::build::builtin(builtin),
-                    None => Type::Named(name.clone()),
+                    None => Type::Named(name.as_str().into()),
                 }
             }
             ExprKind::Name(name) => self
                 .lookup_comptime_reified_type(name)
-                .unwrap_or_else(|| Type::Variable(name.clone())),
+                .unwrap_or_else(|| Type::Variable(name.as_str().into())),
             ExprKind::Group(inner) => self.lower_annotation_in_context(inner),
             ExprKind::Index { callee, args, .. } => self
                 .lower_comptime_type_index(callee, args)

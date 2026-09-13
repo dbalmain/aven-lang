@@ -77,8 +77,8 @@ impl From<&Type> for CanonicalType {
         match ty {
             Type::Error => Self::Error,
             Type::Deferred => Self::Deferred,
-            Type::Named(name) => Self::Named(name.clone()),
-            Type::Variable(name) => Self::Variable(name.clone()),
+            Type::Named(name) => Self::Named(name.to_string()),
+            Type::Variable(name) => Self::Variable(name.to_string()),
             Type::Meta(id) => Self::Meta(*id),
             Type::Recursive(id) => Self::Recursive(*id),
             Type::Apply { callee, args } => Self::Apply {
@@ -137,11 +137,11 @@ impl From<&RowEntry> for CanonicalRowEntry {
     fn from(entry: &RowEntry) -> Self {
         match entry {
             RowEntry::Field { name, ty } => Self::Field {
-                name: name.clone(),
+                name: name.to_string(),
                 ty: CanonicalType::from(ty),
             },
             RowEntry::Tag { name, payload } => Self::Tag {
-                name: name.clone(),
+                name: name.to_string(),
                 payload: payload.iter().map(CanonicalType::from).collect(),
             },
             RowEntry::Literal { value } => Self::Literal(CanonicalLiteral::from(value)),
@@ -1590,7 +1590,7 @@ pub(crate) fn evaluate_keys_of(
         let RowEntry::Field { name, .. } = entry else {
             return EvaluationResult::deferred();
         };
-        labels.push(name.clone());
+        labels.push(name.to_string());
     }
     labels.sort();
 
@@ -1621,7 +1621,7 @@ pub(crate) fn evaluate_tags_of(
         let RowEntry::Tag { name, .. } = entry else {
             return EvaluationResult::deferred();
         };
-        labels.push(name.clone());
+        labels.push(name.to_string());
     }
     labels.sort();
 
@@ -1657,7 +1657,7 @@ pub(crate) fn evaluate_record_selection(
         let RowEntry::Field { name, .. } = entry else {
             return EvaluationResult::deferred();
         };
-        if kind.keeps(labels.contains(name.as_str())) {
+        if kind.keeps(labels.contains(name.as_ref())) {
             entries.push(entry.clone());
         }
     }
@@ -2018,12 +2018,12 @@ mod tests {
         let left = Type::Record(Row {
             entries: vec![
                 RowEntry::Field {
-                    name: "a".to_owned(),
-                    ty: Type::Named("Int".to_owned()),
+                    name: "a".into(),
+                    ty: Type::Named("Int".into()),
                 },
                 RowEntry::Field {
-                    name: "b".to_owned(),
-                    ty: Type::Named("Text".to_owned()),
+                    name: "b".into(),
+                    ty: Type::Named("Text".into()),
                 },
             ],
             tail: RowTail::Closed,
@@ -2031,12 +2031,12 @@ mod tests {
         let right = Type::Record(Row {
             entries: vec![
                 RowEntry::Field {
-                    name: "b".to_owned(),
-                    ty: Type::Named("Text".to_owned()),
+                    name: "b".into(),
+                    ty: Type::Named("Text".into()),
                 },
                 RowEntry::Field {
-                    name: "a".to_owned(),
-                    ty: Type::Named("Int".to_owned()),
+                    name: "a".into(),
+                    ty: Type::Named("Int".into()),
                 },
             ],
             tail: RowTail::Closed,
@@ -2070,7 +2070,7 @@ mod tests {
         .with_module_identity(module.clone());
         let environment = Environment::from_function(
             &f_export,
-            vec![ComptimeValue::ReifiedType(Type::Named("Int".to_owned()))],
+            vec![ComptimeValue::ReifiedType(Type::Named("Int".into()))],
         );
         let sibling = environment
             .captured_function("G")
@@ -2081,11 +2081,11 @@ mod tests {
         assert_ne!(
             SpecializationKey::new(
                 &f_export,
-                &[ComptimeValue::ReifiedType(Type::Named("Int".to_owned()))]
+                &[ComptimeValue::ReifiedType(Type::Named("Int".into()))]
             ),
             SpecializationKey::new(
                 &sibling,
-                &[ComptimeValue::ReifiedType(Type::Named("Int".to_owned()))]
+                &[ComptimeValue::ReifiedType(Type::Named("Int".into()))]
             )
         );
     }

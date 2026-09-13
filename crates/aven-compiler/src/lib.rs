@@ -1098,7 +1098,7 @@ mod tests {
     }
 
     fn named_type(name: &str) -> Type {
-        Type::Named(name.to_owned())
+        Type::Named(name.into())
     }
 
     fn nth_span(source: &str, needle: &str, occurrence: usize) -> Span {

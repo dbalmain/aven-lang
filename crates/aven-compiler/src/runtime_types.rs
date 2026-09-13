@@ -93,7 +93,7 @@ fn descriptor_from_type(
     identities: &HashMap<RecursiveTypeId, (RuntimeTypeId, String)>,
 ) -> Option<RuntimeTypeDescriptor> {
     match ty {
-        Type::Named(name) => Some(RuntimeTypeDescriptor::Named(name.clone())),
+        Type::Named(name) => Some(RuntimeTypeDescriptor::Named(name.to_string())),
         Type::Recursive(id) => {
             identities
                 .get(id)
@@ -141,7 +141,7 @@ fn descriptor_from_type(
                 .iter()
                 .map(|entry| match entry {
                     RowEntry::Tag { name, payload } => Some(RuntimeVariantDescriptor::Tag {
-                        name: name.clone(),
+                        name: name.to_string(),
                         payload: payload
                             .iter()
                             .map(|ty| descriptor_from_type(ty, identities))
@@ -169,7 +169,7 @@ fn record_fields(
         .iter()
         .map(|entry| match entry {
             RowEntry::Field { name, ty } => {
-                Some((name.clone(), descriptor_from_type(ty, identities)?))
+                Some((name.to_string(), descriptor_from_type(ty, identities)?))
             }
             RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
         })
@@ -219,10 +219,10 @@ mod tests {
         };
         let variant = Type::Variant(closed_row(vec![
             RowEntry::Tag {
-                name: "Ok".to_owned(),
+                name: "Ok".into(),
                 payload: vec![Type::Tuple(vec![
-                    Type::Named("Int".to_owned()),
-                    Type::Nullable(Box::new(Type::Named("Text".to_owned()))),
+                    Type::Named("Int".into()),
+                    Type::Nullable(Box::new(Type::Named("Text".into()))),
                 ])],
             },
             RowEntry::Literal {
@@ -231,22 +231,22 @@ mod tests {
         ]));
         let ty = Type::SlotRecord {
             data: Box::new(closed_row(vec![RowEntry::Field {
-                name: "values".to_owned(),
+                name: "values".into(),
                 ty: Type::Apply {
-                    callee: Box::new(Type::Named("Map".to_owned())),
-                    args: vec![Type::Named("Text".to_owned()), variant],
+                    callee: Box::new(Type::Named("Map".into())),
+                    args: vec![Type::Named("Text".into()), variant],
                 },
             }])),
             slots: Box::new(closed_row(vec![RowEntry::Field {
-                name: "load".to_owned(),
+                name: "load".into(),
                 ty: Type::Function {
                     params: FunctionParams::with_optional(
                         vec![],
-                        vec![Type::Optional(Box::new(Type::Named("Int".to_owned())))],
+                        vec![Type::Optional(Box::new(Type::Named("Int".into())))],
                     ),
                     result: Box::new(Type::Record(closed_row(vec![RowEntry::Field {
-                        name: "done".to_owned(),
-                        ty: Type::Named("Bool".to_owned()),
+                        name: "done".into(),
+                        ty: Type::Named("Bool".into()),
                     }]))),
                 },
             }])),

@@ -55,13 +55,13 @@ impl<'a> Checker<'a> {
                 .inline_lambda_type_var_scopes
                 .iter()
                 .rev()
-                .find_map(|scope| scope.get(name).cloned());
+                .find_map(|scope| scope.get(name.as_ref()).cloned());
             Some(existing.unwrap_or_else(|| {
                 let meta = self.unifier.fresh();
                 self.inline_lambda_type_var_scopes
                     .last_mut()
                     .expect("inline lambda annotations always have a type-variable scope")
-                    .insert(name.clone(), meta.clone());
+                    .insert(name.to_string(), meta.clone());
                 meta
             }))
         })
@@ -285,7 +285,7 @@ impl<'a> Checker<'a> {
             }
             (ExprKind::Literal(literal), Type::Named(name)) => {
                 if let Some(found) = mismatched_literal_kind(name, literal)
-                    && self.known_types.contains(name)
+                    && self.known_types.contains(name.as_ref())
                 {
                     self.report_type_mismatch(name, found, value.span);
                 }
@@ -577,7 +577,7 @@ impl<'a> Checker<'a> {
             self.push_method_obligations_at(
                 [MethodPredicate {
                     candidate: actual.clone(),
-                    member: name.clone(),
+                    member: name.to_string(),
                     params: params.iter().cloned().collect(),
                     result: result.as_ref().clone(),
                     operator_span: value.span,
@@ -813,7 +813,7 @@ impl<'a> Checker<'a> {
     /// original variable as their candidate, so match against those.
     fn slot_source_variable_name(&self, actual: &Type) -> Option<String> {
         if let Type::Variable(name) = actual {
-            return Some(name.clone());
+            return Some(name.to_string());
         }
         // A rigid parameter variable (`t`) is instantiated to a meta whose name
         // is recorded in the inline-lambda scope; recover it by matching metas.
@@ -831,7 +831,7 @@ impl<'a> Checker<'a> {
             .iter()
             .flatten()
             .find_map(|assumption| match &assumption.candidate {
-                Type::Variable(name) => Some(name.clone()),
+                Type::Variable(name) => Some(name.to_string()),
                 _ => None,
             })
             .or_else(|| {
@@ -853,7 +853,7 @@ impl<'a> Checker<'a> {
         };
         let env = self.local_types.inference_env();
         match env.get(name)?.clone() {
-            LocalValueType::Known(Type::Variable(var)) => Some(var),
+            LocalValueType::Known(Type::Variable(var)) => Some(var.to_string()),
             _ => None,
         }
     }
@@ -877,7 +877,7 @@ impl<'a> Checker<'a> {
             row.entries
                 .iter()
                 .filter_map(|entry| match entry {
-                    RowEntry::Field { name, .. } => Some(name.clone()),
+                    RowEntry::Field { name, .. } => Some(name.to_string()),
                     RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
                 })
                 .collect()
@@ -1120,7 +1120,7 @@ impl<'a> Checker<'a> {
                             if matches!(actual.applied_builtin(), Some((BuiltinType::Stream, [_])))
                             {
                                 Type::Apply {
-                                    callee: Box::new(Type::Named("Stream".to_owned())),
+                                    callee: Box::new(Type::Named("Stream".into())),
                                     args: vec![element_type.clone()],
                                 }
                             } else {
@@ -1182,7 +1182,7 @@ impl<'a> Checker<'a> {
             && self.named_family_data_view(expected).is_some()
             && matches!(actual, Type::Record(_))
         {
-            let display_owner = Type::Named(owner.to_owned()).render();
+            let display_owner = Type::Named(owner.clone()).render();
             self.diagnostics.push(
                 Diagnostic::error(format!("construct `{display_owner}` explicitly"))
                     .with_code(codes::ty::MISMATCH)
@@ -1279,7 +1279,7 @@ impl<'a> Checker<'a> {
             // expected side above, so an actual wrapper against a named expected
             // is always a shape mismatch (including `Int` vs `?Int`).
             (Type::Named(expected), actual @ (Type::Optional(_) | Type::Nullable(_)))
-                if self.known_types.contains(expected) =>
+                if self.known_types.contains(expected.as_ref()) =>
             {
                 self.report_type_mismatch_between_types(expected, &actual.render(), span);
             }
@@ -1504,7 +1504,7 @@ impl<'a> Checker<'a> {
             (
                 Type::Named(expected),
                 actual @ (Type::Record(_) | Type::Tuple(_) | Type::Function { .. }),
-            ) if self.known_types.contains(expected) => {
+            ) if self.known_types.contains(expected.as_ref()) => {
                 self.report_type_mismatch_between_types(expected, &actual.render(), span);
             }
             // A named family is nominal too, but it reaches here by a second
@@ -1514,15 +1514,15 @@ impl<'a> Checker<'a> {
             // through, so report it — the row is inference's own bookkeeping,
             // so name the methods instead of rendering it.
             (Type::Record(row), Type::Named(actual))
-                if self.named_family_aliases.contains_key(actual)
-                    && !self.known_types.contains(actual) =>
+                if self.named_family_aliases.contains_key(actual.as_ref())
+                    && !self.known_types.contains(actual.as_ref()) =>
             {
                 self.report_unsatisfied_method_row(actual, row, span);
             }
             (
                 expected @ (Type::Record(_) | Type::Tuple(_) | Type::Function { .. }),
                 Type::Named(actual),
-            ) if self.known_types.contains(actual) => {
+            ) if self.known_types.contains(actual.as_ref()) => {
                 self.report_type_mismatch_between_types(&expected.render(), actual, span);
             }
             _ => {}
@@ -1534,7 +1534,7 @@ impl<'a> Checker<'a> {
     /// `{ min: 3 | .. -> a, .. }` — so name the method that did not fit and the
     /// signature the family declares for it.
     fn report_unsatisfied_method_row(&mut self, owner: &str, row: &Row, span: Span) {
-        let owner_type = Type::Named(owner.to_owned());
+        let owner_type = Type::Named(owner.into());
         let owner = display_inferred_type(&owner_type).render();
         let members = row
             .entries
@@ -1581,7 +1581,7 @@ impl<'a> Checker<'a> {
         let Type::Named(name) = expected else {
             return false;
         };
-        let Some(owner) = self.named_family_aliases.get(name).cloned() else {
+        let Some(owner) = self.named_family_aliases.get(name.as_ref()).cloned() else {
             return false;
         };
         let Some(base) = self
@@ -2062,7 +2062,7 @@ impl<'a> Checker<'a> {
                 );
                 return;
             };
-            let expected_payload_ty = match name.as_str() {
+            let expected_payload_ty = match name.as_ref() {
                 "Ok" => &ok_ty,
                 "Err" => &error_ty,
                 _ => {
@@ -2099,7 +2099,7 @@ impl<'a> Checker<'a> {
                     &Type::Variant(row.clone()),
                     &Type::Variant(Row {
                         entries: vec![RowEntry::Tag {
-                            name: tag.to_owned(),
+                            name: tag.into(),
                             payload: Vec::new(),
                         }],
                         tail: RowTail::Closed,

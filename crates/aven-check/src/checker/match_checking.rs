@@ -240,7 +240,7 @@ impl<'a> Checker<'a> {
                         .entries
                         .iter()
                         .filter_map(|entry| match entry {
-                            RowEntry::Tag { name, .. } => Some(name.as_str()),
+                            RowEntry::Tag { name, .. } => Some(name.as_ref()),
                             RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
                         })
                         .collect::<HashSet<_>>();
@@ -267,11 +267,11 @@ impl<'a> Checker<'a> {
                         // `@Err(@{})` on a `Result(a, @{})` that cannot fail)
                         // needs no arm — omitting it stays exhaustive.
                         RowEntry::Tag { name, payload }
-                            if !covered.contains(name.as_str())
+                            if !covered.contains(name.as_ref())
                                 && !payload.iter().any(type_is_uninhabited)
-                                && seen.insert(name.as_str()) =>
+                                && seen.insert(name.as_ref()) =>
                         {
-                            Some(name.as_str())
+                            Some(name.as_ref())
                         }
                         RowEntry::Tag { .. }
                         | RowEntry::Field { .. }
@@ -339,7 +339,7 @@ impl<'a> Checker<'a> {
     /// non-literal subjects return `None` so the check stays silent.
     fn match_subject_literal_kind_name(&self, subject_type: &Type) -> Option<&'static str> {
         match subject_type {
-            Type::Named(name) => match name.as_str() {
+            Type::Named(name) => match name.as_ref() {
                 "Int" => Some("Int"),
                 "Float" => Some("Float"),
                 "Text" => Some("Text"),
@@ -496,7 +496,10 @@ impl<'a> Checker<'a> {
         Some(Type::Variant(Row {
             entries: tags
                 .into_iter()
-                .map(|(name, payload)| RowEntry::Tag { name, payload })
+                .map(|(name, payload)| RowEntry::Tag {
+                    name: name.into(),
+                    payload,
+                })
                 .collect(),
             tail: if open { RowTail::Open } else { RowTail::Closed },
         }))
@@ -673,7 +676,7 @@ impl<'a> Checker<'a> {
                 let RowEntry::Tag { name, payload } = entry else {
                     return None;
                 };
-                let target = match name.as_str() {
+                let target = match name.as_ref() {
                     "Ok" if payload.len() == 1 => {
                         saw_ok_err_shape = true;
                         &ok

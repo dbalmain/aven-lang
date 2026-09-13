@@ -416,7 +416,7 @@ impl Checker<'_> {
 
     fn resolve_prelowered_type_head(&mut self, ty: &Type, span: Span) -> (Type, Vec<Diagnostic>) {
         match ty {
-            Type::Named(name) if self.prelowered_type_bindings.contains_key(name) => {
+            Type::Named(name) if self.prelowered_type_bindings.contains_key(name.as_ref()) => {
                 let result = self.evaluate_prelowered_type_definition(name, span);
                 let ty = match result.evaluation {
                     Evaluation::Evaluated(comptime::ComptimeValue::ReifiedType(ty)) => ty,

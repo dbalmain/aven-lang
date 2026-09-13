@@ -250,7 +250,7 @@ impl<'a> Checker<'a> {
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind {
             if let Some(owner) = self.unbound_method_owner_name(name)
                 && self
-                    .exact_method_signature(&Type::Named(owner), field)
+                    .exact_method_signature(&Type::Named(owner.into()), field)
                     .is_some()
             {
                 return;
@@ -322,7 +322,7 @@ impl<'a> Checker<'a> {
         let has_field = row
             .entries
             .iter()
-            .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == field));
+            .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name.as_ref() == field));
         if !has_field {
             self.report_missing_field_for_receiver(imported_module.as_deref(), field, span);
         }

@@ -1664,7 +1664,7 @@ fn check_export_for_node(
                     .cloned();
                 let exported = if let Some(family) = named_family {
                     named_family_exports.insert(name.clone(), family.clone());
-                    Type::Named(family.owner)
+                    Type::Named(family.owner.into())
                 } else {
                     source_name
                         .filter(|source| {
@@ -1675,7 +1675,7 @@ fn check_export_for_node(
                         })
                         .map_or_else(
                             || definition.clone(),
-                            |source| aven_check::Type::Named(source.to_owned()),
+                            |source| aven_check::Type::Named(source.into()),
                         )
                 };
                 type_exports.insert(name.clone(), exported);
@@ -1690,7 +1690,7 @@ fn check_export_for_node(
                             entries: statics
                                 .into_iter()
                                 .map(|field| aven_check::RowEntry::Field {
-                                    name: field.name,
+                                    name: field.name.into(),
                                     ty: field.ty,
                                 })
                                 .collect(),
@@ -1726,7 +1726,7 @@ fn check_export_for_node(
             field_ty
         };
         fields.push(aven_check::RowEntry::Field {
-            name: name.clone(),
+            name: name.as_str().into(),
             ty: field_ty,
         });
     }
@@ -1752,11 +1752,8 @@ fn check_export_for_node(
 
 fn comptime_function_export_type(export: &ComptimeExport) -> Type {
     Type::Function {
-        params: FunctionParams::all_required(vec![
-            Type::Named("Type".to_owned());
-            export.params.len()
-        ]),
-        result: Box::new(Type::Named("Type".to_owned())),
+        params: FunctionParams::all_required(vec![Type::Named("Type".into()); export.params.len()]),
+        result: Box::new(Type::Named("Type".into())),
     }
 }
 
@@ -1912,7 +1909,7 @@ fn rebuild_value_export_record(
         };
         let field_ty = top_level_types.get(source_name)?.clone();
         fields.push(aven_check::RowEntry::Field {
-            name: name.to_owned(),
+            name: name.into(),
             ty: field_ty,
         });
     }
@@ -2138,7 +2135,7 @@ fn library_interface(
         .entries
         .iter()
         .filter_map(|entry| match entry {
-            aven_check::RowEntry::Field { name, ty } => Some((name.as_str(), ty)),
+            aven_check::RowEntry::Field { name, ty } => Some((name.as_ref(), ty)),
             _ => None,
         })
         .collect::<HashMap<_, _>>();

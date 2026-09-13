@@ -116,7 +116,7 @@ impl Unifier {
     pub(crate) fn default_numerics(&self, ty: &Type) -> Type {
         let resolved = self.resolve(ty);
         map_type(&resolved, &mut |node| match node {
-            Type::Meta(id) if self.numeric.contains(id) => Some(Type::Named("Int".to_owned())),
+            Type::Meta(id) if self.numeric.contains(id) => Some(Type::Named("Int".into())),
             _ => None,
         })
     }
@@ -901,19 +901,19 @@ mod tests {
     use super::*;
 
     fn named(name: &str) -> Type {
-        Type::Named(name.to_owned())
+        Type::Named(name.into())
     }
 
     fn field(name: &str, ty: Type) -> RowEntry {
         RowEntry::Field {
-            name: name.to_owned(),
+            name: name.into(),
             ty,
         }
     }
 
     fn tag(name: &str, payload: Vec<Type>) -> RowEntry {
         RowEntry::Tag {
-            name: name.to_owned(),
+            name: name.into(),
             payload,
         }
     }

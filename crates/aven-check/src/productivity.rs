@@ -25,7 +25,7 @@ pub(crate) fn is_productive(
                     if matches!(
                         BuiltinType::from_name(name),
                         Some(BuiltinType::Array | BuiltinType::Map | BuiltinType::Set)
-                    ) || name == "Stream"
+                    ) || name.as_ref() == "Stream"
             ) =>
         {
             true

@@ -516,11 +516,11 @@ fn row_entry_index(entries: &[RowEntry], label: &str) -> Option<usize> {
 fn relabel_row_entry(entry: &RowEntry, label: &str) -> RowEntry {
     match entry {
         RowEntry::Field { ty, .. } => RowEntry::Field {
-            name: label.to_owned(),
+            name: label.into(),
             ty: ty.clone(),
         },
         RowEntry::Tag { payload, .. } => RowEntry::Tag {
-            name: label.to_owned(),
+            name: label.into(),
             payload: payload.clone(),
         },
         RowEntry::Literal { value } => RowEntry::Literal {
@@ -1114,7 +1114,7 @@ fn row_field_names(row: &Row) -> Vec<String> {
     row.entries
         .iter()
         .filter_map(|entry| match entry {
-            RowEntry::Field { name, .. } => Some(name.clone()),
+            RowEntry::Field { name, .. } => Some(name.to_string()),
             RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
         })
         .collect()
@@ -1309,7 +1309,7 @@ fn subject_variant_row<'a>(ty: &'a Type, context: PatternTypeContext<'a>) -> Opt
     }
 
     if let Type::Named(name) = ty
-        && let Some(definition) = context.type_definitions.get(name)
+        && let Some(definition) = context.type_definitions.get(name.as_ref())
     {
         match definition {
             Type::Variant(row) => return Some(Cow::Borrowed(row)),
@@ -1331,11 +1331,11 @@ fn subject_variant_row<'a>(ty: &'a Type, context: PatternTypeContext<'a>) -> Opt
     Some(Cow::Owned(Row {
         entries: vec![
             RowEntry::Tag {
-                name: "Ok".to_owned(),
+                name: "Ok".into(),
                 payload: vec![ok_ty.clone()],
             },
             RowEntry::Tag {
-                name: "Err".to_owned(),
+                name: "Err".into(),
                 payload: vec![err_ty.clone()],
             },
         ],
@@ -1382,7 +1382,7 @@ fn variant_payload_lookup<'a>(row: &'a Row, tag: &str) -> Option<Option<&'a [Typ
 
     for entry in &row.entries {
         match entry {
-            RowEntry::Tag { name, payload } if name == tag => {
+            RowEntry::Tag { name, payload } if name.as_ref() == tag => {
                 found = Some(payload.as_slice());
             }
             RowEntry::Tag { .. } => {}
@@ -1742,7 +1742,7 @@ pub(crate) fn builtin_type_statics() -> HostStatics {
 /// the collection sources. The declared source is `Stream(a)`; the call path
 /// widens it to any collection while keeping the element link.
 fn collect_statics(target: fn(Type) -> Type) -> Vec<(String, Type)> {
-    let element = Type::Variable("collect_element".to_owned());
+    let element = Type::Variable("collect_element".into());
     vec![(
         "collect".to_owned(),
         function_type(
@@ -1769,15 +1769,15 @@ fn range_statics(result: Type) -> Vec<(String, Type)> {
 }
 
 fn map_statics() -> Vec<(String, Type)> {
-    let key = Type::Variable("k".to_owned());
-    let value = Type::Variable("v".to_owned());
+    let key = Type::Variable("k".into());
+    let value = Type::Variable("v".into());
     let map_type = Type::Apply {
-        callee: Box::new(Type::Named("Map".to_owned())),
+        callee: Box::new(Type::Named("Map".into())),
         args: vec![key.clone(), value.clone()],
     };
     let entry_type = Type::Tuple(vec![key.clone(), value.clone()]);
     let entries_type = Type::Apply {
-        callee: Box::new(Type::Named("Array".to_owned())),
+        callee: Box::new(Type::Named("Array".into())),
         args: vec![entry_type],
     };
 
@@ -1841,7 +1841,7 @@ fn scheme_from_global_with_names(
     };
     let names = metas_by_name
         .into_iter()
-        .map(|(name, id)| (name, Type::Meta(id)))
+        .map(|(name, id)| (name.to_string(), Type::Meta(id)))
         .collect();
     (scheme, names)
 }
@@ -1880,7 +1880,7 @@ fn instantiate_constraint_type(ty: &Type, names: &HashMap<String, Type>) -> Type
         let Type::Variable(name) = node else {
             return None;
         };
-        names.get(name).cloned()
+        names.get(name.as_ref()).cloned()
     })
 }
 
@@ -2110,7 +2110,7 @@ fn result_constructor_tag(callee: &Expr) -> Option<&str> {
 fn result_constructor_type(tag: &str, args: &[Expr]) -> Type {
     Type::Variant(Row {
         entries: vec![RowEntry::Tag {
-            name: tag.to_owned(),
+            name: tag.into(),
             payload: vec![Type::Deferred; args.len()],
         }],
         tail: RowTail::Closed,
@@ -2126,6 +2126,6 @@ fn single_tag_payload_type(ty: &Type, tag: &str) -> Option<Type> {
         let RowEntry::Tag { name, payload } = entry else {
             return None;
         };
-        (name == tag && payload.len() == 1).then(|| payload[0].clone())
+        (name.as_ref() == tag && payload.len() == 1).then(|| payload[0].clone())
     })
 }

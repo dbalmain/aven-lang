@@ -14,7 +14,7 @@ fn number_join_target_meta(target: &Type) -> Option<u32> {
             if args.len() == 1
                 && matches!(
                     callee.as_ref(),
-                    Type::Named(name) if matches!(name.as_str(), "Array" | "Set" | "Stream")
+                    Type::Named(name) if matches!(name.as_ref(), "Array" | "Set" | "Stream")
                 ) =>
         {
             match &args[0] {
@@ -49,7 +49,7 @@ pub(super) fn pipe_call_expr(value: &Expr, target: &Expr) -> Expr {
 
 fn static_owner_application(ty: &Type, owner_name: &str) -> Option<Type> {
     match ty {
-        Type::Apply { callee, args } if matches!(callee.as_ref(), Type::Named(name) if name == owner_name) => {
+        Type::Apply { callee, args } if matches!(callee.as_ref(), Type::Named(name) if name.as_ref() == owner_name) => {
             Some(Type::Apply {
                 callee: callee.clone(),
                 args: args.clone(),
@@ -146,7 +146,7 @@ impl<'a> Checker<'a> {
             .vars
             .iter()
             .enumerate()
-            .map(|(index, id)| (*id, Type::Variable(export_generic_name(index))))
+            .map(|(index, id)| (*id, Type::Variable(export_generic_name(index).into())))
             .collect::<HashMap<_, _>>();
         let ty = crate::ty::map_type_with_rows(
             &scheme.ty,
@@ -341,7 +341,7 @@ impl<'a> Checker<'a> {
             ExprKind::Null => named_builtin("Null"),
             ExprKind::Tag(name) => Type::Variant(Row {
                 entries: vec![RowEntry::Tag {
-                    name: name.clone(),
+                    name: name.as_str().into(),
                     payload: Vec::new(),
                 }],
                 tail: RowTail::Closed,
@@ -365,7 +365,7 @@ impl<'a> Checker<'a> {
                             None => self.infer_name_reference(env, field.name, field.name_span),
                         };
                         fields.push(RowEntry::Field {
-                            name: field.name.to_owned(),
+                            name: field.name.into(),
                             ty,
                         });
                     }
@@ -1499,8 +1499,9 @@ impl<'a> Checker<'a> {
         let left = operator_operand_type(left);
         let right = operator_operand_type(right);
         let attempted_right_fallback =
-            builtin_method_signature(&Type::Named(left.clone()), operator).is_none()
-                && builtin_method_signature(&Type::Named(right.clone()), operator).is_some();
+            builtin_method_signature(&Type::Named(left.as_str().into()), operator).is_none()
+                && builtin_method_signature(&Type::Named(right.as_str().into()), operator)
+                    .is_some();
         let mut diagnostic = Diagnostic::error(format!(
             "operator `{operator}` is not defined for `{left}` and `{right}`"
         ))
@@ -2367,10 +2368,11 @@ impl<'a> Checker<'a> {
 
         if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &ungroup_expr(receiver).kind
             && let Some(owner) = self.unbound_method_owner_name(name)
-            && let Some(signature) = self.exact_method_signature(&Type::Named(owner.clone()), field)
+            && let Some(signature) =
+                self.exact_method_signature(&Type::Named(owner.as_str().into()), field)
         {
             self.push_method_obligations_at(signature.predicates, field_span);
-            let params = signature.params.prepend_required(Type::Named(owner));
+            let params = signature.params.prepend_required(Type::Named(owner.into()));
             return Type::Function {
                 params,
                 result: Box::new(signature.result),
@@ -2422,7 +2424,7 @@ impl<'a> Checker<'a> {
         }
         if let Some(Type::Record(data)) = self.named_family_data_view(&resolved)
             && let Some(ty) = data.entries.iter().find_map(|entry| match entry {
-                RowEntry::Field { name, ty } if name == field => Some(ty.clone()),
+                RowEntry::Field { name, ty } if name.as_ref() == field => Some(ty.clone()),
                 RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
             })
         {
@@ -2477,7 +2479,7 @@ impl<'a> Checker<'a> {
         };
         let required = Type::Record(Row {
             entries: vec![RowEntry::Field {
-                name: field.to_owned(),
+                name: field.into(),
                 ty: entry_type,
             }],
             tail: RowTail::Var(tail),
@@ -2764,7 +2766,7 @@ impl<'a> Checker<'a> {
             for arg in args {
                 self.infer(env, arg);
             }
-            return Type::Named(owner.to_owned());
+            return Type::Named(owner.into());
         }
         let family = self
             .named_families
@@ -2773,14 +2775,14 @@ impl<'a> Checker<'a> {
             .expect("named-family constructor owners have descriptors");
         if let Some(base) = family.primitive_base {
             self.check_value_against(&base, &args[0]);
-            return Type::Named(owner.to_owned());
+            return Type::Named(owner.into());
         }
         let data = family.data;
         let constructor_data = constructor_data_row(&data, &family.defaulted_fields);
         let payload = &args[0];
         if let ExprKind::Record(entries) = &ungroup_expr(payload).kind {
             self.check_record_value_against(&constructor_data, entries, payload.span);
-            return Type::Named(owner.to_owned());
+            return Type::Named(owner.into());
         }
 
         let actual = self.infer(env, payload);
@@ -2793,14 +2795,14 @@ impl<'a> Checker<'a> {
                 && expected.difference(&actual).all(|name| {
                     family.defaulted_fields.contains(name)
                         || data.entries.iter().any(|entry| {
-                            matches!(entry, RowEntry::Field { name: field, ty } if field == name && self.type_admits_undefined(ty))
+                            matches!(entry, RowEntry::Field { name: field, ty } if field.as_ref() == name.as_str() && self.type_admits_undefined(ty))
                         })
                 })
         });
         if exact {
             self.check_type_against_type(&Type::Record(constructor_data), &actual, payload.span);
         } else {
-            let display_owner = Type::Named(owner.to_owned()).render();
+            let display_owner = Type::Named(owner.into()).render();
             self.diagnostics.push(
                 Diagnostic::error(format!(
                     "`{display_owner}` construction requires exactly its declared data fields"
@@ -2813,7 +2815,7 @@ impl<'a> Checker<'a> {
                 .with_note("pass a record with no missing or extra fields"),
             );
         }
-        Type::Named(owner.to_owned())
+        Type::Named(owner.into())
     }
 
     fn infer_named_or_constrained_method_call(
@@ -2974,7 +2976,7 @@ impl<'a> Checker<'a> {
             return None;
         };
 
-        match name.as_str() {
+        match name.as_ref() {
             // A callback that only ever returns `@Ok` recovers every error, so
             // the chain can no longer fail: the error side collapses to the
             // empty closed variant. The success type stays the receiver's.
@@ -3293,7 +3295,7 @@ impl<'a> Checker<'a> {
         result: &Type,
     ) {
         let mut params = Vec::with_capacity(extra_args.len() + 1);
-        params.push(Type::Named(target_name.to_owned()));
+        params.push(Type::Named(target_name.into()));
         params.extend(
             extra_args
                 .iter()
@@ -3368,8 +3370,10 @@ impl<'a> Checker<'a> {
 
     fn method_view_arg_type(arg: &Expr, index: usize) -> Type {
         match &ungroup_expr(arg).kind {
-            ExprKind::Name(name) | ExprKind::ComptimeName(name) => Type::Named(name.clone()),
-            _ => Type::Variable(format!("arg{}", index + 1)),
+            ExprKind::Name(name) | ExprKind::ComptimeName(name) => {
+                Type::Named(name.as_str().into())
+            }
+            _ => Type::Variable(format!("arg{}", index + 1).into()),
         }
     }
 
@@ -3787,7 +3791,7 @@ impl<'a> Checker<'a> {
                 // still used to prove that the argument is a type, while the
                 // resolver result keeps established displays such as
                 // `Result(User, JsonError)`.
-                argument = comptime::ComptimeValue::ReifiedType(Type::Named(name.to_owned()));
+                argument = comptime::ComptimeValue::ReifiedType(Type::Named(name.into()));
             }
             error_span = arg.span;
             comptime_args.push(ComptimeArg::from_comptime_value(argument));
@@ -5035,7 +5039,7 @@ impl<'a> Checker<'a> {
         }
 
         if self.named_family_aliases.contains_key(name) {
-            return Type::Named("Type".to_owned());
+            return Type::Named("Type".into());
         }
 
         if let Some(scheme) = self.infer_top_level(name) {
@@ -5150,7 +5154,7 @@ impl<'a> Checker<'a> {
 
         Type::Variant(Row {
             entries: vec![RowEntry::Tag {
-                name: tag.to_owned(),
+                name: tag.into(),
                 payload,
             }],
             tail: RowTail::Closed,
@@ -5175,7 +5179,7 @@ impl<'a> Checker<'a> {
     ) -> Type {
         let element_type = self.unifier.fresh();
         let collection_type = Type::Apply {
-            callee: Box::new(Type::Named(name.to_owned())),
+            callee: Box::new(Type::Named(name.into())),
             args: vec![element_type.clone()],
         };
         let is_set = name == "Set";
@@ -5192,7 +5196,7 @@ impl<'a> Checker<'a> {
                         Some((BuiltinType::Stream, [_]))
                     ) {
                     Type::Apply {
-                        callee: Box::new(Type::Named("Stream".to_owned())),
+                        callee: Box::new(Type::Named("Stream".into())),
                         args: vec![element_type.clone()],
                     }
                 } else {
@@ -5404,7 +5408,7 @@ impl<'a> Checker<'a> {
         }
 
         Type::Apply {
-            callee: Box::new(Type::Named("Set".to_owned())),
+            callee: Box::new(Type::Named("Set".into())),
             args: vec![element_type],
         }
     }
@@ -5680,7 +5684,7 @@ impl<'a> Checker<'a> {
                             let RowEntry::Field { name, ty } = entry else {
                                 continue;
                             };
-                            next_env.insert(name, LocalValueType::Known(ty));
+                            next_env.insert(name.to_string(), LocalValueType::Known(ty));
                         }
                     }
                 }
@@ -5749,7 +5753,7 @@ impl<'a> Checker<'a> {
         map_type(ty, &mut |node| match node {
             Type::Variable(name) if should_instantiate(name) => Some(
                 metas
-                    .entry(name.clone())
+                    .entry(name.to_string())
                     .or_insert_with(|| self.unifier.fresh())
                     .clone(),
             ),
@@ -5762,7 +5766,7 @@ fn record_label_set(row: &Row) -> HashSet<String> {
     row.entries
         .iter()
         .filter_map(|entry| match entry {
-            RowEntry::Field { name, .. } => Some(name.clone()),
+            RowEntry::Field { name, .. } => Some(name.to_string()),
             RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
         })
         .collect()
@@ -5774,7 +5778,7 @@ fn constructor_data_row(data: &Row, defaulted_fields: &HashSet<String>) -> Row {
             .entries
             .iter()
             .map(|entry| match entry {
-                RowEntry::Field { name, ty } if defaulted_fields.contains(name) => {
+                RowEntry::Field { name, ty } if defaulted_fields.contains(name.as_ref()) => {
                     RowEntry::Field {
                         name: name.clone(),
                         ty: Type::Optional(Box::new(ty.clone())),
@@ -5812,7 +5816,7 @@ fn receiver_type_carries_member(ty: &Type, member: &str) -> bool {
     };
     row.entries
         .iter()
-        .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == member))
+        .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name.as_ref() == member))
 }
 
 fn is_to_result_call(callee: &Expr) -> bool {
@@ -6032,7 +6036,7 @@ fn apply_constructors_match(left: &Type, right: &Type) -> bool {
 
 fn row_field_type<'r>(row: &'r Row, field: &str) -> Option<&'r Type> {
     row.entries.iter().find_map(|entry| match entry {
-        RowEntry::Field { name, ty } if name == field => Some(ty),
+        RowEntry::Field { name, ty } if name.as_ref() == field => Some(ty),
         RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
     })
 }
