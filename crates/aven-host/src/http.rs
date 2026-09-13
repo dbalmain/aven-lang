@@ -173,7 +173,7 @@ fn validate_options_type(method: HttpMethod, options: &Type) -> Result<(), Compt
         let RowEntry::Field { name, ty } = entry else {
             return Ok(());
         };
-        match name.as_str() {
+        match name.as_ref() {
             "headers" => validate_text_values_record_type(method, "header", ty)?,
             "params" => validate_text_values_record_type(method, "param", ty)?,
             "timeout" => validate_timeout_type(ty)?,

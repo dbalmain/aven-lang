@@ -396,11 +396,11 @@ fn builtin_method_receiver(receiver: &Type) -> Option<(Type, String)> {
         Type::Named(name)
             if super::core::builtin_owner_arity(name) == Some(0)
                 || matches!(
-                    name.as_str(),
+                    name.as_ref(),
                     "Null" | "Undefined" | "Date" | "Time" | "DateTime" | "Instant" | "Duration"
                 ) =>
         {
-            name.clone()
+            name.to_string()
         }
         Type::Apply { callee, args } => {
             let Type::Named(name) = callee.as_ref() else {
@@ -409,7 +409,7 @@ fn builtin_method_receiver(receiver: &Type) -> Option<(Type, String)> {
             if super::core::builtin_owner_arity(name) != Some(args.len()) {
                 return None;
             }
-            name.clone()
+            name.to_string()
         }
         Type::Optional(inner) | Type::Nullable(inner) => {
             builtin_method_receiver(inner)?;
@@ -497,7 +497,7 @@ pub(crate) fn effective_base_methods(
         };
         let instantiate_owner = |ty: &Type| {
             map_type(ty, &mut |node| match node {
-                Type::Variable(name) => substitutions.get(name).cloned(),
+                Type::Variable(name) => substitutions.get(name.as_ref()).cloned(),
                 _ => None,
             })
         };
@@ -662,7 +662,7 @@ impl Checker<'_> {
     ) -> Option<MethodSignature> {
         if let Type::SlotRecord { slots, .. } = owner {
             let ty = slots.entries.iter().find_map(|entry| match entry {
-                RowEntry::Field { name, ty } if name == member => Some(ty),
+                RowEntry::Field { name, ty } if name.as_ref() == member => Some(ty),
                 RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
             })?;
             let Type::Function { params, result, .. } = ty else {
@@ -697,7 +697,7 @@ impl Checker<'_> {
             return self.exact_method_signature(&widened, member);
         }
         if let Type::Named(name) = owner
-            && let Some(canonical) = self.named_family_aliases.get(name)
+            && let Some(canonical) = self.named_family_aliases.get(name.as_ref())
         {
             let signature = self.named_families.get(canonical)?.methods.get(member)?;
             let substitutions = signature
@@ -707,7 +707,7 @@ impl Checker<'_> {
                 .collect::<HashMap<_, _>>();
             let instantiate = |ty: &Type| {
                 map_type(ty, &mut |node| match node {
-                    Type::Variable(name) => substitutions.get(name).cloned(),
+                    Type::Variable(name) => substitutions.get(name.as_ref()).cloned(),
                     _ => None,
                 })
             };
@@ -755,7 +755,7 @@ impl Checker<'_> {
         }
         if let Type::Record(row) = owner {
             let ty = row.entries.iter().find_map(|entry| match entry {
-                RowEntry::Field { name, ty } if name == member => Some(ty),
+                RowEntry::Field { name, ty } if name.as_ref() == member => Some(ty),
                 RowEntry::Field { .. } | RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
             })?;
             let Type::Function { params, result, .. } = ty else {
@@ -829,7 +829,7 @@ impl Checker<'_> {
         }
         let instantiate = |ty: &Type| {
             map_type(ty, &mut |node| match node {
-                Type::Variable(name) => substitutions.get(name).cloned(),
+                Type::Variable(name) => substitutions.get(name.as_ref()).cloned(),
                 _ => None,
             })
         };
@@ -1070,13 +1070,15 @@ fn owner_pattern_matches(
     bindings: &mut HashMap<String, Type>,
 ) -> bool {
     match pattern {
-        Type::Variable(name) if variables.contains(name) => match bindings.get(name) {
-            Some(bound) => bound == receiver,
-            None => {
-                bindings.insert(name.clone(), receiver.clone());
-                true
+        Type::Variable(name) if variables.contains(name.as_ref()) => {
+            match bindings.get(name.as_ref()) {
+                Some(bound) => bound == receiver,
+                None => {
+                    bindings.insert(name.to_string(), receiver.clone());
+                    true
+                }
             }
-        },
+        }
         Type::Apply { callee, args } => {
             let Type::Apply {
                 callee: receiver_callee,

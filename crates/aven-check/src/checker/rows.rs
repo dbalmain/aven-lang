@@ -54,7 +54,7 @@ impl<'a> Checker<'a> {
                         return Type::Deferred;
                     }
                     data.entries.push(RowEntry::Field {
-                        name: name.clone(),
+                        name: name.as_str().into(),
                         ty: self.lower_annotation(value),
                     });
                 }
@@ -77,7 +77,7 @@ impl<'a> Checker<'a> {
                     }
                     let params = self.lower_annotations(params);
                     slots.entries.push(RowEntry::Field {
-                        name: name.clone(),
+                        name: name.as_str().into(),
                         ty: Type::Function {
                             params: FunctionParams::all_required(params),
                             result: Box::new(self.lower_annotation(result)),
@@ -157,7 +157,7 @@ impl<'a> Checker<'a> {
                 let ty = self.fold_field_type(value, mode);
 
                 let entry = RowEntry::Field {
-                    name: name.clone(),
+                    name: name.as_str().into(),
                     ty,
                 };
 
@@ -206,7 +206,7 @@ impl<'a> Checker<'a> {
                 }
 
                 let entry = RowEntry::Field {
-                    name: label.clone(),
+                    name: label.as_str().into(),
                     ty,
                 };
 
@@ -245,7 +245,7 @@ impl<'a> Checker<'a> {
                     Err(())
                 } else {
                     row.entries.push(RowEntry::Field {
-                        name: name.clone(),
+                        name: name.as_str().into(),
                         ty,
                     });
                     Ok(())
@@ -514,7 +514,7 @@ impl<'a> Checker<'a> {
         };
 
         let entry = RowEntry::Field {
-            name: label.clone(),
+            name: label.as_str().into(),
             ty: self.fold_field_type(field_value, mode),
         };
 
@@ -855,7 +855,7 @@ impl<'a> Checker<'a> {
     pub(super) fn lower_variant_tag(&mut self, tag: &Expr) -> Option<RowEntry> {
         match &tag.kind {
             ExprKind::Tag(name) => Some(RowEntry::Tag {
-                name: name.clone(),
+                name: name.as_str().into(),
                 payload: Vec::new(),
             }),
             ExprKind::Literal(
@@ -867,19 +867,19 @@ impl<'a> Checker<'a> {
             ExprKind::Name(name) => {
                 self.report_lowercase_variant_tag(name, tag.span);
                 Some(RowEntry::Tag {
-                    name: name.clone(),
+                    name: name.as_str().into(),
                     payload: Vec::new(),
                 })
             }
             ExprKind::Call { callee, args } => match &callee.kind {
                 ExprKind::Tag(name) => Some(RowEntry::Tag {
-                    name: name.clone(),
+                    name: name.as_str().into(),
                     payload: self.lower_annotations(args),
                 }),
                 ExprKind::Name(name) => {
                     self.report_lowercase_variant_tag(name, callee.span);
                     Some(RowEntry::Tag {
-                        name: name.clone(),
+                        name: name.as_str().into(),
                         payload: self.lower_annotations(args),
                     })
                 }

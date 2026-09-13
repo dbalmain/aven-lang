@@ -94,11 +94,11 @@ fn binding_value_named<'a>(module: &'a Module, name: &str) -> &'a Expr {
 }
 
 fn named(name: &str) -> Type {
-    Type::Named(name.to_owned())
+    Type::Named(name.into())
 }
 
 fn variable(name: &str) -> Type {
-    Type::Variable(name.to_owned())
+    Type::Variable(name.into())
 }
 
 fn apply(callee: Type, args: Vec<Type>) -> Type {
@@ -125,14 +125,14 @@ fn optional(ty: Type) -> Type {
 
 fn field(name: &str, ty: Type) -> RowEntry {
     RowEntry::Field {
-        name: name.to_owned(),
+        name: name.into(),
         ty,
     }
 }
 
 fn tag(name: &str, payload: Vec<Type>) -> RowEntry {
     RowEntry::Tag {
-        name: name.to_owned(),
+        name: name.into(),
         payload,
     }
 }
@@ -363,7 +363,7 @@ fn renders_types_as_surface_syntax() {
             entries: vec![
                 field("name", named("Text")),
                 RowEntry::Field {
-                    name: "phone".to_owned(),
+                    name: "phone".into(),
                     ty: optional(nullable(named("Text"))),
                 },
             ],
@@ -376,15 +376,15 @@ fn renders_types_as_surface_syntax() {
         Type::Variant(Row {
             entries: vec![
                 RowEntry::Tag {
-                    name: "Ok".to_owned(),
+                    name: "Ok".into(),
                     payload: vec![variable("t")],
                 },
                 RowEntry::Tag {
-                    name: "Err".to_owned(),
+                    name: "Err".into(),
                     payload: vec![variable("e")],
                 },
                 RowEntry::Tag {
-                    name: "Done".to_owned(),
+                    name: "Done".into(),
                     payload: Vec::new(),
                 },
             ],
@@ -1964,7 +1964,7 @@ fn recursive_types_with_unknown_structure_are_silent() {
         "Open".to_owned(),
         Type::Record(Row {
             entries: vec![RowEntry::Field {
-                name: "next".to_owned(),
+                name: "next".into(),
                 ty: named("Open"),
             }],
             tail: RowTail::Open,
@@ -2182,11 +2182,11 @@ fn lowers_normalized_rows_and_closed_transforms() {
         Type::Variant(Row {
             entries: vec![
                 RowEntry::Tag {
-                    name: "ParseError".to_owned(),
+                    name: "ParseError".into(),
                     payload: vec![named("Text")],
                 },
                 RowEntry::Tag {
-                    name: "NotFound".to_owned(),
+                    name: "NotFound".into(),
                     payload: Vec::new(),
                 },
             ],
@@ -2208,11 +2208,11 @@ fn lowers_normalized_rows_and_closed_transforms() {
         Type::Variant(Row {
             entries: vec![
                 RowEntry::Tag {
-                    name: "ParseError".to_owned(),
+                    name: "ParseError".into(),
                     payload: vec![named("Text")],
                 },
                 RowEntry::Tag {
-                    name: "Io".to_owned(),
+                    name: "Io".into(),
                     payload: Vec::new(),
                 },
             ],
@@ -2390,7 +2390,7 @@ fn lowers_open_row_extension_and_update_transforms() {
         from_var_add.ty,
         Type::Record(Row {
             entries: vec![RowEntry::Field {
-                name: "timeout".to_owned(),
+                name: "timeout".into(),
                 ty: named("Int"),
             }],
             tail: RowTail::Open,
@@ -2402,7 +2402,7 @@ fn lowers_open_row_extension_and_update_transforms() {
         from_var_update.ty,
         Type::Record(Row {
             entries: vec![RowEntry::Field {
-                name: "x".to_owned(),
+                name: "x".into(),
                 ty: named("Float"),
             }],
             tail: RowTail::Open,
@@ -2415,11 +2415,11 @@ fn lowers_open_row_extension_and_update_transforms() {
         Type::Record(Row {
             entries: vec![
                 RowEntry::Field {
-                    name: "x".to_owned(),
+                    name: "x".into(),
                     ty: named("Int"),
                 },
                 RowEntry::Field {
-                    name: "y".to_owned(),
+                    name: "y".into(),
                     ty: named("Text"),
                 },
             ],
@@ -2433,11 +2433,11 @@ fn lowers_open_row_extension_and_update_transforms() {
         Type::Record(Row {
             entries: vec![
                 RowEntry::Field {
-                    name: "host".to_owned(),
+                    name: "host".into(),
                     ty: named("Text"),
                 },
                 RowEntry::Field {
-                    name: "timeout".to_owned(),
+                    name: "timeout".into(),
                     ty: named("Int"),
                 },
             ],
@@ -2450,7 +2450,7 @@ fn lowers_open_row_extension_and_update_transforms() {
         variant_from_var.ty,
         Type::Variant(Row {
             entries: vec![RowEntry::Tag {
-                name: "Extra".to_owned(),
+                name: "Extra".into(),
                 payload: Vec::new(),
             }],
             tail: RowTail::Open,
@@ -2463,11 +2463,11 @@ fn lowers_open_row_extension_and_update_transforms() {
         Type::Variant(Row {
             entries: vec![
                 RowEntry::Tag {
-                    name: "Red".to_owned(),
+                    name: "Red".into(),
                     payload: Vec::new(),
                 },
                 RowEntry::Tag {
-                    name: "Extra".to_owned(),
+                    name: "Extra".into(),
                     payload: Vec::new(),
                 },
             ],
@@ -2495,11 +2495,11 @@ fn type_definitions_compute_closed_transform_aliases() {
         Some(&Type::Record(Row {
             entries: vec![
                 RowEntry::Field {
-                    name: "x".to_owned(),
+                    name: "x".into(),
                     ty: named("Int"),
                 },
                 RowEntry::Field {
-                    name: "name".to_owned(),
+                    name: "name".into(),
                     ty: named("Text"),
                 },
             ],
@@ -2511,11 +2511,11 @@ fn type_definitions_compute_closed_transform_aliases() {
         Some(&Type::Variant(Row {
             entries: vec![
                 RowEntry::Tag {
-                    name: "Red".to_owned(),
+                    name: "Red".into(),
                     payload: Vec::new(),
                 },
                 RowEntry::Tag {
-                    name: "Green".to_owned(),
+                    name: "Green".into(),
                     payload: Vec::new(),
                 },
             ],
@@ -4951,7 +4951,7 @@ fn match_results_merge_closed_variant_rows() {
         .entries
         .iter()
         .filter_map(|entry| match entry {
-            RowEntry::Tag { name, .. } => Some(name.as_str()),
+            RowEntry::Tag { name, .. } => Some(name.as_ref()),
             RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
         })
         .collect();
@@ -5479,7 +5479,7 @@ fn match_results_merge_open_variant_rows_when_an_arm_is_open() {
         .entries
         .iter()
         .filter_map(|entry| match entry {
-            RowEntry::Tag { name, .. } => Some(name.as_str()),
+            RowEntry::Tag { name, .. } => Some(name.as_ref()),
             RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
         })
         .collect();
@@ -5505,7 +5505,7 @@ fn tag_literals_and_constructors_infer_closed_variant_rows() {
         assert_eq!(row.tail, RowTail::Closed);
         assert!(matches!(
             row.entries.as_slice(),
-            [RowEntry::Tag { name, .. }] if name == tag
+            [RowEntry::Tag { name, .. }] if name.as_ref() == tag
         ));
         if binding == "zero" {
             assert!(scheme.row_vars.is_empty());
@@ -6259,7 +6259,7 @@ fn data_decode_and_map_set_result_typed_uses_still_check() {
         panic!("host Data must record its one-level variant head");
     };
     let array_payload = data_head.entries.iter().find_map(|entry| match entry {
-        RowEntry::Tag { name, payload } if name == "Array" => payload.first(),
+        RowEntry::Tag { name, payload } if name.as_ref() == "Array" => payload.first(),
         _ => None,
     });
     assert_eq!(
@@ -6891,7 +6891,7 @@ fn text_index_infers_optional_text() {
 
     let scheme = checker.infer_top_level_scheme("ch").expect("scheme for ch");
     assert!(
-        matches!(&scheme.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::Named(name) if name == "Text")),
+        matches!(&scheme.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::Named(name) if name.as_ref() == "Text")),
         "expected `?Text`, got {:?}",
         scheme.ty
     );
@@ -10138,7 +10138,7 @@ fn inferred_field_access_scheme_contains_a_quantified_row_variable() {
         [RowEntry::Field {
             name,
             ty,
-        }] if name == "x" && ty == result.as_ref()
+        }] if name.as_ref() == "x" && ty == result.as_ref()
     ));
 }
 
@@ -11534,7 +11534,7 @@ fn reflection_and_mapped_types_head_unfold_recursive_references_once() {
             panic!("{name} must be an ordinary structural record");
         };
         let next = row.entries.iter().find_map(|entry| match entry {
-            RowEntry::Field { name, ty } if name == "next" => Some(ty),
+            RowEntry::Field { name, ty } if name.as_ref() == "next" => Some(ty),
             _ => None,
         });
         assert_eq!(next, Some(&optional(Type::Recursive(*node_id))), "{name}");
@@ -11559,7 +11559,7 @@ fn reflection_and_mapped_types_head_unfold_recursive_references_once() {
     }) = chain_patch
         .entries
         .iter()
-        .find(|entry| matches!(entry, RowEntry::Field { name, .. } if name == "next"))
+        .find(|entry| matches!(entry, RowEntry::Field { name, .. } if name.as_ref() == "next"))
     else {
         panic!("ChainPatch.next must retain a recursive reference");
     };
@@ -14738,7 +14738,7 @@ fn named_primitive_family_records_compatible_override_origin() {
         NamedMethodOrigin::Override {
             base_owner: Type::Named(owner),
             base_member,
-        } if owner == "Int" && base_member == "+"
+        } if owner.as_ref() == "Int" && base_member == "+"
     ));
 }
 

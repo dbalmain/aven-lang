@@ -682,7 +682,7 @@ fn deprecated_dynamic_target_name(ty: &Type) -> Option<&str> {
                 Some(BuiltinType::Json | BuiltinType::Yaml | BuiltinType::Toml)
             ) =>
         {
-            Some(name.as_str())
+            Some(name.as_ref())
         }
         Type::Apply { callee, args } => deprecated_dynamic_target_name(callee)
             .or_else(|| args.iter().find_map(deprecated_dynamic_target_name)),

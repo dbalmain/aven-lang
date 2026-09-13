@@ -113,8 +113,8 @@ pub fn builtin_method_fields(
             return None;
         };
         match ty::literal_variant_base(row) {
-            Some(ty::LiteralBase::Bool) => Some(Type::Named("Bool".to_owned())),
-            Some(ty::LiteralBase::Text) => Some(Type::Named("Text".to_owned())),
+            Some(ty::LiteralBase::Bool) => Some(Type::Named("Bool".into())),
+            Some(ty::LiteralBase::Text) => Some(Type::Named("Text".into())),
             Some(ty::LiteralBase::Number) => {
                 let float = row.entries.iter().any(|entry| {
                     matches!(
@@ -124,7 +124,7 @@ pub fn builtin_method_fields(
                         } if number.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
                     )
                 });
-                Some(Type::Named(if float { "Float" } else { "Int" }.to_owned()))
+                Some(Type::Named(if float { "Float" } else { "Int" }.into()))
             }
             None => None,
         }
@@ -145,7 +145,7 @@ pub fn builtin_method_fields(
         };
         let instantiate = |ty: &Type| {
             ty::map_type(ty, &mut |node| match node {
-                Type::Variable(name) => substitutions.get(name).cloned(),
+                Type::Variable(name) => substitutions.get(name.as_ref()).cloned(),
                 _ => None,
             })
         };
@@ -179,13 +179,15 @@ fn builtin_owner_pattern_matches(
     bindings: &mut HashMap<String, Type>,
 ) -> bool {
     match pattern {
-        Type::Variable(name) if variables.contains(name) => match bindings.get(name) {
-            Some(bound) => bound == receiver,
-            None => {
-                bindings.insert(name.clone(), receiver.clone());
-                true
+        Type::Variable(name) if variables.contains(name.as_ref()) => {
+            match bindings.get(name.as_ref()) {
+                Some(bound) => bound == receiver,
+                None => {
+                    bindings.insert(name.to_string(), receiver.clone());
+                    true
+                }
             }
-        },
+        }
         Type::Apply { callee, args } => {
             let Type::Apply {
                 callee: receiver_callee,
@@ -650,7 +652,7 @@ pub fn check_module_with_host_globals_and_imports_in_role(
                         globals.type_definitions.iter().any(|(name, host_ty)| {
                             name == target
                                 && (host_ty == ty
-                                    || matches!(ty, Type::Named(exported) if exported == name))
+                                    || matches!(ty, Type::Named(exported) if exported.as_ref() == name.as_str()))
                         });
                     if !rebinds_host_type {
                         reserved_diagnostics.push(reserved_type_diagnostic(target, target_span));

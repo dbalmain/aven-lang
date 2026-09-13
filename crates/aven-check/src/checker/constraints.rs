@@ -295,7 +295,7 @@ impl<'a> Checker<'a> {
             return candidate.clone();
         }
         if self.is_rigid_type_var(name) {
-            return Type::Variable(name.to_owned());
+            return Type::Variable(name.into());
         }
 
         let candidate = self.unifier.fresh();
@@ -377,7 +377,7 @@ impl<'a> Checker<'a> {
                     self.requirement_self_scopes.pop();
                     let replace_candidate = |ty: &Type| {
                         map_type(ty, &mut |node| match node {
-                            Type::Variable(name) if name == candidate_name => {
+                            Type::Variable(name) if name.as_ref() == candidate_name => {
                                 Some(candidate.clone())
                             }
                             _ => None,
@@ -531,7 +531,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn validate_named_requirement(&mut self, value: &Expr) {
-        let candidate = Type::Variable("Self".to_owned());
+        let candidate = Type::Variable("Self".into());
         let mut visiting = HashSet::new();
         let mut predicates = Vec::new();
         self.collect_requirement_bound(
@@ -915,7 +915,7 @@ fn render_predicate_requirement(predicate: &MethodPredicate) -> String {
 
 fn render_relative_type(ty: &Type, candidate: &Type, replace_candidate: bool) -> String {
     map_type(ty, &mut |node| {
-        (replace_candidate && node == candidate).then(|| Type::Named("Self".to_owned()))
+        (replace_candidate && node == candidate).then(|| Type::Named("Self".into()))
     })
     .render()
 }

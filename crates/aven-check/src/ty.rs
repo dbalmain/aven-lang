@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use aven_core::{BuiltinType, Span};
 use aven_parser::{Expr, ExprKind, Literal};
@@ -75,6 +76,8 @@ impl IntoIterator for FunctionParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecursiveTypeId(pub(crate) u32);
 
+/// Type names share immutable storage across clones. Atomic reference counts
+/// keep checked types shareable with the LSP; equality and hashing use contents.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     /// Error-recovery poison produced after the checker has already emitted a
@@ -85,8 +88,8 @@ pub enum Type {
     /// A type expression that is valid to keep for a later comptime/type phase
     /// but is not part of the core lowered type grammar yet.
     Deferred,
-    Named(String),
-    Variable(String),
+    Named(Arc<str>),
+    Variable(Arc<str>),
     /// A unification variable used only during value inference. It never appears
     /// in a lowered annotation or checked output; published schemes quantify any
     /// metas that remain after inference.
@@ -228,7 +231,7 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
                 .iter()
                 .filter_map(|entry| match entry {
                     RowEntry::Field { name, ty } => Some(RecordField {
-                        name: name.clone(),
+                        name: name.to_string(),
                         ty: ty.clone(),
                     }),
                     RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
@@ -241,7 +244,7 @@ pub fn record_fields(ty: &Type) -> Option<Vec<RecordField>> {
                 .chain(&slots.entries)
                 .filter_map(|entry| match entry {
                     RowEntry::Field { name, ty } => Some(RecordField {
-                        name: name.clone(),
+                        name: name.to_string(),
                         ty: ty.clone(),
                     }),
                     RowEntry::Tag { .. } | RowEntry::Literal { .. } => None,
@@ -279,7 +282,7 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
     if name == "toResult"
         && let Type::Optional(payload) | Type::Nullable(payload) = receiver
     {
-        let error = Type::Variable("result_error".to_owned());
+        let error = Type::Variable("result_error".into());
         return Some(function(
             vec![error.clone()],
             build::result(payload.as_ref().clone(), error),
@@ -317,7 +320,7 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
     }
 
     if let Some(element) = array_type_arg(receiver) {
-        let accumulator = Type::Variable("fold_accumulator".to_owned());
+        let accumulator = Type::Variable("fold_accumulator".into());
         return match name {
             "has" => Some(function(vec![element.clone()], named_builtin("Bool"))),
             "length" => Some(function(Vec::new(), named_builtin("Int"))),
@@ -344,8 +347,8 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
     }
 
     if let Some(element) = stream_type_arg(receiver) {
-        let output = Type::Variable("stream_output".to_owned());
-        let accumulator = Type::Variable("fold_accumulator".to_owned());
+        let output = Type::Variable("stream_output".into());
+        let accumulator = Type::Variable("fold_accumulator".into());
         let unit = Type::Tuple(Vec::new());
         return match name {
             "map" => Some(function(
@@ -390,7 +393,7 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
             }
             "isDisjoint" => Some(function(vec![set], named_builtin("Bool"))),
             "fold" => {
-                let accumulator = Type::Variable("fold_accumulator".to_owned());
+                let accumulator = Type::Variable("fold_accumulator".into());
                 Some(function(
                     vec![
                         accumulator.clone(),
@@ -416,8 +419,8 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
     }
 
     let (ok, error) = result_type_args(receiver)?;
-    let output_ok = Type::Variable("result_ok".to_owned());
-    let output_error = Type::Variable("result_error".to_owned());
+    let output_ok = Type::Variable("result_ok".into());
+    let output_error = Type::Variable("result_error".into());
     match name {
         "mapErr" => Some(function(
             vec![function(vec![error], output_error.clone())],
@@ -456,12 +459,11 @@ pub fn builtin_collection_method_type(receiver: &Type, name: &str) -> Option<Typ
 fn carries_ambient_to_text(ty: &Type) -> bool {
     match ty {
         Type::Optional(_) | Type::Nullable(_) | Type::Tuple(_) | Type::Variant(_) => true,
-        Type::Record(row) => !row
-            .entries
-            .iter()
-            .any(|entry| matches!(entry, RowEntry::Field { name, .. } if name == "toText")),
+        Type::Record(row) => !row.entries.iter().any(
+            |entry| matches!(entry, RowEntry::Field { name, .. } if name.as_ref() == "toText"),
+        ),
         Type::Named(name) => matches!(
-            name.as_str(),
+            name.as_ref(),
             "Int"
                 | "Float"
                 | "Bool"
@@ -663,9 +665,9 @@ fn result_type_args(ty: &Type) -> Option<(Type, Type)> {
         return None;
     }
 
-    match name.as_str() {
-        "Ok" => Some((payload.clone(), Type::Variable("result_error".to_owned()))),
-        "Err" => Some((Type::Variable("result_ok".to_owned()), payload.clone())),
+    match name.as_ref() {
+        "Ok" => Some((payload.clone(), Type::Variable("result_error".into()))),
+        "Err" => Some((Type::Variable("result_ok".into()), payload.clone())),
         _ => None,
     }
 }
@@ -726,7 +728,7 @@ pub fn variant_tags(ty: &Type) -> Option<Vec<String>> {
         row.entries
             .iter()
             .filter_map(|entry| match entry {
-                RowEntry::Tag { name, .. } => Some(name.clone()),
+                RowEntry::Tag { name, .. } => Some(name.to_string()),
                 RowEntry::Field { .. } | RowEntry::Literal { .. } => None,
             })
             .collect(),
@@ -873,10 +875,11 @@ pub struct Row {
     pub tail: RowTail,
 }
 
+/// Row labels share immutable storage so cloning a type does not copy each label.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RowEntry {
-    Field { name: String, ty: Type },
-    Tag { name: String, payload: Vec<Type> },
+    Field { name: Arc<str>, ty: Type },
+    Tag { name: Arc<str>, payload: Vec<Type> },
     Literal { value: Literal },
 }
 
@@ -949,14 +952,14 @@ pub(crate) fn render_type_scheme(scheme: &TypeScheme) -> String {
                     .iter()
                     .map(|param| {
                         let relative = map_type(param, &mut |node| {
-                            (node == candidate).then(|| Type::Named("Self".to_owned()))
+                            (node == candidate).then(|| Type::Named("Self".into()))
                         });
                         renderer.render_type(&relative)
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let relative_result = map_type(&predicate.result, &mut |node| {
-                    (node == candidate).then(|| Type::Named("Self".to_owned()))
+                    (node == candidate).then(|| Type::Named("Self".into()))
                 });
                 format!(
                     "{}({params}): {}",
@@ -995,7 +998,7 @@ impl TypeRenderer {
             Type::Error => "<error>".to_owned(),
             Type::Deferred => "?".to_owned(),
             Type::Named(name) => display_type_name(name).to_owned(),
-            Type::Variable(name) => name.clone(),
+            Type::Variable(name) => name.to_string(),
             Type::Meta(id) => self.render_meta(*id),
             Type::Recursive(id) => crate::comptime::recursive_type_display(*id),
             Type::Apply { callee, args } => {
@@ -1525,7 +1528,7 @@ pub fn might_contain_float(ty: &Type, context: &crate::ComptimeTypeContext<'_>) 
             Type::Error | Type::Deferred | Type::Variable(_) | Type::Meta(_) => true,
             Type::Named(name) if BuiltinType::from_name(name) == Some(BuiltinType::Float) => true,
             Type::Named(name) => {
-                let Some(owner) = context.named_family_aliases.get(name) else {
+                let Some(owner) = context.named_family_aliases.get(name.as_ref()) else {
                     return false;
                 };
                 context
@@ -1585,14 +1588,14 @@ pub(crate) fn type_variable_names(ty: &Type) -> HashSet<String> {
     let mut names = HashSet::new();
     visit_type(ty, &mut |node| {
         if let Type::Variable(name) = node {
-            names.insert(name.clone());
+            names.insert(name.to_string());
         }
     });
     names
 }
 
 pub(crate) fn named_builtin(name: &str) -> Type {
-    Type::Named(name.to_owned())
+    Type::Named(name.into())
 }
 
 pub(crate) fn literal_variant_base(row: &Row) -> Option<LiteralBase> {
@@ -1703,7 +1706,7 @@ pub mod build {
 
     /// A named type such as `Text` or a user/host-defined type name.
     pub fn named(name: &str) -> Type {
-        Type::Named(name.to_owned())
+        Type::Named(name.into())
     }
 
     pub fn builtin(builtin: BuiltinType) -> Type {
@@ -1712,7 +1715,7 @@ pub mod build {
 
     /// A named type variable, used by generic host/global signatures.
     pub fn var(name: &str) -> Type {
-        Type::Variable(name.to_owned())
+        Type::Variable(name.into())
     }
 
     pub fn text() -> Type {
@@ -1782,7 +1785,7 @@ pub mod build {
             entries: tags
                 .into_iter()
                 .map(|(name, payload)| RowEntry::Tag {
-                    name: name.to_owned(),
+                    name: name.into(),
                     payload,
                 })
                 .collect(),
@@ -1867,7 +1870,7 @@ pub mod build {
             entries: fields
                 .into_iter()
                 .map(|(name, ty)| RowEntry::Field {
-                    name: name.to_owned(),
+                    name: name.into(),
                     ty,
                 })
                 .collect(),
@@ -1994,8 +1997,8 @@ enum NumberJoinSide {
 
 fn number_join_side(ty: &Type, is_numeric_meta: impl Fn(u32) -> bool) -> Option<NumberJoinSide> {
     match ty {
-        Type::Named(name) if name == "Int" => Some(NumberJoinSide::IntOnly),
-        Type::Named(name) if name == "Float" => Some(NumberJoinSide::FloatCapable),
+        Type::Named(name) if name.as_ref() == "Int" => Some(NumberJoinSide::IntOnly),
+        Type::Named(name) if name.as_ref() == "Float" => Some(NumberJoinSide::FloatCapable),
         Type::Variant(row) if literal_variant_base(row) == Some(LiteralBase::Number) => {
             Some(if literal_row_contains_float(row) {
                 NumberJoinSide::FloatCapable
@@ -2071,14 +2074,141 @@ pub(crate) fn is_null_value(value: &Expr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FunctionParams, Type, build};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::sync::Arc;
+
+    use super::{FunctionParams, RowEntry, Type, build};
+
+    #[test]
+    fn cloning_nested_records_shares_field_and_type_names() {
+        // Regression: derived Type::clone used to allocate a String per name.
+        let original = build::record(vec![(
+            "outer",
+            build::open_record(vec![("inner", build::text())]),
+        )]);
+        let cloned = original.clone();
+        let (Type::Record(original), Type::Record(cloned)) = (&original, &cloned) else {
+            panic!("record builder produces records");
+        };
+        let (
+            [
+                RowEntry::Field {
+                    name,
+                    ty: Type::Record(inner),
+                },
+            ],
+            [
+                RowEntry::Field {
+                    name: cloned_name,
+                    ty: Type::Record(cloned_inner),
+                },
+            ],
+        ) = (original.entries.as_slice(), cloned.entries.as_slice())
+        else {
+            panic!("outer record retains its nested record field");
+        };
+        assert!(Arc::ptr_eq(name, cloned_name));
+        let (
+            [
+                RowEntry::Field {
+                    name,
+                    ty: Type::Named(ty_name),
+                },
+            ],
+            [
+                RowEntry::Field {
+                    name: cloned_name,
+                    ty: Type::Named(cloned_ty_name),
+                },
+            ],
+        ) = (inner.entries.as_slice(), cloned_inner.entries.as_slice())
+        else {
+            panic!("inner record retains its named type field");
+        };
+        assert!(Arc::ptr_eq(name, cloned_name));
+        assert!(Arc::ptr_eq(ty_name, cloned_ty_name));
+    }
+
+    #[test]
+    fn cloning_variants_shares_tag_and_variable_names() {
+        // Regression: tag labels and generic payload names were deep-cloned.
+        let original = build::variant(vec![("Some", vec![build::var("element")])]);
+        let cloned = original.clone();
+        let (Type::Variant(original), Type::Variant(cloned)) = (&original, &cloned) else {
+            panic!("variant builder produces variants");
+        };
+        let (
+            [RowEntry::Tag { name, payload }],
+            [
+                RowEntry::Tag {
+                    name: cloned_name,
+                    payload: cloned_payload,
+                },
+            ],
+        ) = (original.entries.as_slice(), cloned.entries.as_slice())
+        else {
+            panic!("variant retains its tag");
+        };
+        assert!(Arc::ptr_eq(name, cloned_name));
+        let ([Type::Variable(name)], [Type::Variable(cloned_name)]) =
+            (payload.as_slice(), cloned_payload.as_slice())
+        else {
+            panic!("tag retains its generic payload");
+        };
+        assert!(Arc::ptr_eq(name, cloned_name));
+    }
+
+    #[test]
+    fn independently_allocated_names_keep_structural_equality_and_hashes() {
+        // Storage identity must never become type identity, including in rows.
+        let make_type = || {
+            build::record(vec![(
+                "field",
+                build::variant(vec![(
+                    "Tag",
+                    vec![build::apply("Box", vec![build::var("a")])],
+                )]),
+            )])
+        };
+        let original = make_type();
+        let independent = make_type();
+        let (Type::Record(original_row), Type::Record(independent_row)) = (&original, &independent)
+        else {
+            panic!("record builder produces records");
+        };
+        let (
+            [RowEntry::Field { name, .. }],
+            [
+                RowEntry::Field {
+                    name: independent_name,
+                    ..
+                },
+            ],
+        ) = (
+            original_row.entries.as_slice(),
+            independent_row.entries.as_slice(),
+        )
+        else {
+            panic!("record retains its field");
+        };
+        assert!(!Arc::ptr_eq(name, independent_name));
+        assert_eq!(original, independent);
+        let hash = |ty: &Type| {
+            let mut hasher = DefaultHasher::new();
+            ty.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(hash(&original), hash(&independent));
+        assert_ne!(original, build::record(vec![("different", build::text())]));
+    }
 
     #[test]
     fn build_array_round_trips_through_apply() {
         assert_eq!(
             build::array(build::text()),
             Type::Apply {
-                callee: Box::new(Type::Named("Array".to_owned())),
+                callee: Box::new(Type::Named("Array".into())),
                 args: vec![build::text()],
             }
         );

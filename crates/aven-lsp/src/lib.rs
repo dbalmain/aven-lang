@@ -1976,22 +1976,22 @@ fn synthetic_method_type(member: &str) -> Option<aven_compiler::Type> {
     match member {
         "encode" => Some(aven_compiler::Type::Function {
             params: aven_compiler::FunctionParams::all_required(vec![
-                aven_compiler::Type::Variable("fmt".to_owned()),
+                aven_compiler::Type::Variable("fmt".into()),
             ]),
-            result: Box::new(aven_compiler::Type::Named("Text".to_owned())),
+            result: Box::new(aven_compiler::Type::Named("Text".into())),
         }),
         "decode" => Some(aven_compiler::Type::Function {
             params: aven_compiler::FunctionParams::with_optional(
-                vec![aven_compiler::Type::Variable("fmt".to_owned())],
-                vec![aven_compiler::Type::Variable("target".to_owned())],
+                vec![aven_compiler::Type::Variable("fmt".into())],
+                vec![aven_compiler::Type::Variable("target".into())],
             ),
-            result: Box::new(aven_compiler::Type::Variable("decoded".to_owned())),
+            result: Box::new(aven_compiler::Type::Variable("decoded".into())),
         }),
         "collect" => Some(aven_compiler::Type::Function {
             params: aven_compiler::FunctionParams::all_required(vec![
-                aven_compiler::Type::Variable("target".to_owned()),
+                aven_compiler::Type::Variable("target".into()),
             ]),
-            result: Box::new(aven_compiler::Type::Variable("collected".to_owned())),
+            result: Box::new(aven_compiler::Type::Variable("collected".into())),
         }),
         _ => None,
     }
