@@ -16,14 +16,34 @@ pub(crate) struct Unifier {
     row_merges: Vec<RowMergeConstraint>,
     numeric: HashSet<u32>,
     recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+    /// Every in-place write to `substitution`, `row_subst` and `numeric` since
+    /// the unifier was created, in the order it happened, each paired with what
+    /// it overwrote. [`Unifier::restore`] replays this backwards to undo a
+    /// speculative run. `substitution`, `row_subst` and `row_merges` only ever
+    /// *grow* by pushing, so their growth needs no trail entry — restoring their
+    /// recorded lengths is enough.
+    trail: Vec<TrailEntry>,
 }
 
-#[derive(Clone)]
+/// One undoable mutation. See [`Unifier::trail`].
+#[derive(Debug)]
+enum TrailEntry {
+    /// `substitution[id]` was overwritten; `previous` is what it held.
+    Bound { id: u32, previous: Option<Type> },
+    /// `row_subst[id]` was overwritten; `previous` is what it held.
+    RowBound { id: u32, previous: Option<Row> },
+    /// `id` was newly added to `numeric` (it was not a member before).
+    Numeric { id: u32 },
+}
+
+/// A mark in the unifier's history, not a copy of it. Restoring rewinds the
+/// trail to `trail_len` and drops everything allocated past the three lengths.
+#[derive(Clone, Copy)]
 pub(crate) struct UnifierSnapshot {
-    substitution: Vec<Option<Type>>,
-    row_subst: Vec<Option<Row>>,
-    row_merges: Vec<RowMergeConstraint>,
-    numeric: HashSet<u32>,
+    substitution_len: usize,
+    row_subst_len: usize,
+    row_merges_len: usize,
+    trail_len: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +63,7 @@ impl Unifier {
         let Type::Meta(id) = self.fresh() else {
             unreachable!("fresh types are metavariables");
         };
-        self.numeric.insert(id);
+        self.mark_numeric(id);
         Type::Meta(id)
     }
 
@@ -101,22 +121,61 @@ impl Unifier {
         })
     }
 
-    /// Capture the current substitution so a speculative sequence of
-    /// unifications can be rolled back with [`Unifier::restore`].
+    /// Mark the current substitution so a speculative sequence of unifications
+    /// can be rolled back with [`Unifier::restore`].
+    ///
+    /// This is O(1): it records lengths, not contents. Snapshots must be
+    /// restored innermost-first, which every caller does — each one restores in
+    /// the same function that took the mark, before returning.
     pub(crate) fn snapshot(&self) -> UnifierSnapshot {
         UnifierSnapshot {
-            substitution: self.substitution.clone(),
-            row_subst: self.row_subst.clone(),
-            row_merges: self.row_merges.clone(),
-            numeric: self.numeric.clone(),
+            substitution_len: self.substitution.len(),
+            row_subst_len: self.row_subst.len(),
+            row_merges_len: self.row_merges.len(),
+            trail_len: self.trail.len(),
         }
     }
 
+    /// Undo everything that happened after `snapshot` was taken.
+    ///
+    /// Trail entries are replayed backwards first, so a slot written more than
+    /// once ends on the value it held at the mark; only then are the vectors
+    /// truncated, because an entry may name a slot past the mark's length.
     pub(crate) fn restore(&mut self, snapshot: UnifierSnapshot) {
-        self.substitution = snapshot.substitution;
-        self.row_subst = snapshot.row_subst;
-        self.row_merges = snapshot.row_merges;
-        self.numeric = snapshot.numeric;
+        debug_assert!(
+            snapshot.trail_len <= self.trail.len(),
+            "unifier snapshots must be restored innermost-first"
+        );
+        while self.trail.len() > snapshot.trail_len {
+            let Some(entry) = self.trail.pop() else {
+                break;
+            };
+            match entry {
+                TrailEntry::Bound { id, previous } => {
+                    if let Some(slot) = self.substitution.get_mut(id as usize) {
+                        *slot = previous;
+                    }
+                }
+                TrailEntry::RowBound { id, previous } => {
+                    if let Some(slot) = self.row_subst.get_mut(id as usize) {
+                        *slot = previous;
+                    }
+                }
+                TrailEntry::Numeric { id } => {
+                    self.numeric.remove(&id);
+                }
+            }
+        }
+        self.substitution.truncate(snapshot.substitution_len);
+        self.row_subst.truncate(snapshot.row_subst_len);
+        self.row_merges.truncate(snapshot.row_merges_len);
+    }
+
+    /// Record `id` as numeric, trailing the insert only when it changed the set.
+    fn mark_numeric(&mut self, id: u32) {
+        if self.numeric.insert(id) {
+            self.trail.push(TrailEntry::Numeric { id });
+        }
     }
 
     pub(crate) fn unify(&mut self, left: &Type, right: &Type) -> Result<(), ()> {
@@ -271,7 +330,7 @@ impl Unifier {
                         Some(BuiltinType::Int | BuiltinType::Float)
                     ) => {}
                 Type::Meta(other) => {
-                    self.numeric.insert(*other);
+                    self.mark_numeric(*other);
                 }
                 _ => return Err(()),
             }
@@ -280,7 +339,8 @@ impl Unifier {
         let Some(slot) = self.substitution.get_mut(id as usize) else {
             return Err(());
         };
-        *slot = Some(ty);
+        let previous = slot.replace(ty);
+        self.trail.push(TrailEntry::Bound { id, previous });
         Ok(())
     }
 
@@ -290,7 +350,8 @@ impl Unifier {
     /// checks — callers must only pass a ground type such as Named `Float`.
     pub(crate) fn force_bind(&mut self, id: u32, ty: Type) {
         if let Some(slot) = self.substitution.get_mut(id as usize) {
-            *slot = Some(ty);
+            let previous = slot.replace(ty);
+            self.trail.push(TrailEntry::Bound { id, previous });
         }
     }
 
@@ -445,7 +506,8 @@ impl Unifier {
         if slot.is_some() {
             return Err(());
         }
-        *slot = Some(row);
+        let previous = slot.replace(row);
+        self.trail.push(TrailEntry::RowBound { id, previous });
         Ok(())
     }
 
@@ -1141,5 +1203,126 @@ mod tests {
             Err(())
         );
         assert_eq!(unifier.resolve(&meta), meta);
+    }
+
+    /// Restoring the inner mark keeps what the outer one already saw, and
+    /// restoring the outer mark then unwinds the rest.
+    #[test]
+    fn nested_marks_unwind_one_layer_at_a_time() {
+        let mut unifier = Unifier::default();
+        let first = unifier.fresh();
+        let second = unifier.fresh();
+
+        let outer = unifier.snapshot();
+        assert_eq!(unifier.unify(&first, &named("Int")), Ok(()));
+        let inner = unifier.snapshot();
+        assert_eq!(unifier.unify(&second, &named("Text")), Ok(()));
+
+        unifier.restore(inner);
+        assert_eq!(unifier.resolve(&first), named("Int"));
+        assert_eq!(unifier.resolve(&second), second);
+
+        unifier.restore(outer);
+        assert_eq!(unifier.resolve(&first), first);
+    }
+
+    /// The case a length-only undo cannot reach: the slot existed before the
+    /// mark and was *overwritten* after it, so rewinding has to put the earlier
+    /// binding back rather than drop the slot.
+    #[test]
+    fn restoring_puts_an_overwritten_binding_back() {
+        let mut unifier = Unifier::default();
+        let meta = unifier.fresh();
+        let Type::Meta(id) = meta else {
+            unreachable!("fresh types are metavariables");
+        };
+        assert_eq!(unifier.unify(&meta, &named("Int")), Ok(()));
+
+        let mark = unifier.snapshot();
+        unifier.force_bind(id, named("Float"));
+        assert_eq!(unifier.resolve(&meta), named("Float"));
+
+        unifier.restore(mark);
+        assert_eq!(unifier.resolve(&meta), named("Int"));
+    }
+
+    /// Rewinding frees the metavariable's slot, and the next `fresh` hands the
+    /// same id back. It must not still be numeric from the run that was undone.
+    #[test]
+    fn a_reused_slot_does_not_inherit_a_discarded_numeric_mark() {
+        let mut unifier = Unifier::default();
+        let mark = unifier.snapshot();
+        let discarded = unifier.fresh_numeric();
+        unifier.restore(mark);
+
+        let reused = unifier.fresh();
+        assert_eq!(reused, discarded, "the freed slot is handed out again");
+        assert!(!unifier.is_numeric_meta(&reused));
+    }
+
+    /// Unifying a numeric meta with an ordinary one widens the ordinary one.
+    /// That widening belongs to the speculative run, so it unwinds with it.
+    #[test]
+    fn restoring_forgets_a_numeric_widening() {
+        let mut unifier = Unifier::default();
+        let numeric = unifier.fresh_numeric();
+        let ordinary = unifier.fresh();
+
+        let mark = unifier.snapshot();
+        assert_eq!(unifier.unify(&numeric, &ordinary), Ok(()));
+        assert!(unifier.is_numeric_meta(&ordinary));
+
+        unifier.restore(mark);
+        assert!(!unifier.is_numeric_meta(&ordinary));
+        assert!(unifier.is_numeric_meta(&numeric));
+    }
+
+    /// `bind_row` refuses a row variable that already holds a row, so a second
+    /// bind succeeding is proof the first one was actually undone.
+    #[test]
+    fn restoring_frees_a_row_variable_to_be_bound_again() {
+        let mut unifier = Unifier::default();
+        let id = unifier.fresh_row_var();
+        let closed = |entry| Row {
+            entries: vec![entry],
+            tail: RowTail::Closed,
+        };
+
+        let mark = unifier.snapshot();
+        assert_eq!(
+            unifier.bind_row(id, &closed(field("a", named("Int")))),
+            Ok(())
+        );
+        unifier.restore(mark);
+
+        assert_eq!(
+            unifier.bind_row(id, &closed(field("b", named("Text")))),
+            Ok(())
+        );
+    }
+
+    /// Everything allocated after the mark is dropped, so a speculative run
+    /// leaves no metavariables, row variables or merge constraints behind.
+    #[test]
+    fn restoring_drops_what_the_speculative_run_allocated() {
+        let mut unifier = Unifier::default();
+        let mark = unifier.snapshot();
+
+        let _ = unifier.fresh();
+        let source = unifier.fresh_row_var();
+        let _ = unifier.fresh_row_merge(vec![RowMergeSource {
+            row: Row {
+                entries: Vec::new(),
+                tail: RowTail::Var(source),
+            },
+            overwrite: false,
+            span: Span::new(0, 0),
+        }]);
+
+        unifier.restore(mark);
+        assert!(unifier.substitution.is_empty());
+        assert!(unifier.row_subst.is_empty());
+        assert!(unifier.row_merges.is_empty());
+        assert!(unifier.trail.is_empty());
     }
 }
