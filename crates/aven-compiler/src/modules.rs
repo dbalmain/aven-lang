@@ -104,6 +104,8 @@ pub struct ModuleRoots {
     /// Host-registered libraries resolving bare import specifiers: library
     /// name -> module specifier -> embedded source text. Empty by default.
     pub libraries: HashMap<String, LibraryModules>,
+    /// Checked embedded modules from this build, decoded only when visited.
+    pub baked_checks: HashMap<String, &'static [u8]>,
     /// Canonical embedded module specifiers allowed to publish ambient builtin
     /// methods. Filesystem modules and ordinary library registrations never
     /// acquire this trust implicitly.
@@ -138,6 +140,7 @@ impl ModuleRoots {
             home,
             filesystem: true,
             libraries: HashMap::new(),
+            baked_checks: HashMap::new(),
             trusted_ambient_modules: HashSet::new(),
             trusted_prelude_modules: HashSet::new(),
             library_only_global_names: HashSet::new(),
@@ -463,6 +466,7 @@ pub fn check_path_with_host_globals_and_overlay_and_entry_parse_with_roots(
         entry_parse,
         roots,
         &OperatorFixityTable::default(),
+        None,
     )
 }
 
@@ -474,7 +478,42 @@ pub fn check_path_with_host_globals_and_entry_source_and_fixities_with_roots(
     roots: &ModuleRoots,
 ) -> io::Result<ModuleCheckOutput> {
     let overlay = entry_source_overlay(path, entry_source)?;
-    check_path_impl(path, globals, &overlay, None, roots, operator_fixities)
+    check_path_impl(
+        path,
+        globals,
+        &overlay,
+        None,
+        roots,
+        operator_fixities,
+        None,
+    )
+}
+
+/// Check a graph and capture context-guarded embedded-module artifacts for a
+/// build script. The caller must reject errors in the returned graph output.
+/// Modules invoking a host comptime callback are omitted.
+pub fn bake_library_checks(
+    path: &Path,
+    globals: &HostGlobals,
+    roots: &ModuleRoots,
+) -> io::Result<BakedLibraryChecks> {
+    let mut modules = Vec::new();
+    let output = check_path_impl(
+        path,
+        globals,
+        &SourceOverlay::default(),
+        None,
+        roots,
+        &OperatorFixityTable::default(),
+        Some(&mut modules),
+    )?;
+    Ok(BakedLibraryChecks { output, modules })
+}
+
+/// Build-time graph results and the embedded modules safe to reconstruct.
+pub struct BakedLibraryChecks {
+    pub output: ModuleCheckOutput,
+    pub modules: Vec<(String, aven_check::baked::BakedCheck)>,
 }
 
 fn check_path_impl(
@@ -484,6 +523,7 @@ fn check_path_impl(
     entry_parse: Option<&ParseOutput>,
     roots: &ModuleRoots,
     operator_fixities: &OperatorFixityTable,
+    mut baked: Option<&mut Vec<(String, aven_check::baked::BakedCheck)>>,
 ) -> io::Result<ModuleCheckOutput> {
     let total_start = Instant::now();
     let graph = ModuleGraph::load(path, overlay, entry_parse, operator_fixities, roots)?;
@@ -507,11 +547,25 @@ fn check_path_impl(
             prelude_exports.install(&mut imports);
         }
         let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
-        let semantic = analyze_semantics_with_host_globals_and_imports_in(
-            &graph.nodes[node_id].parse,
+        if let Some(baked) = &mut baked
+            && let Some(specifier) = library_specifier(&graph.nodes[node_id].path)
+            && let Some(checked) = aven_check::baked::BakedCheck::check(
+                graph.nodes[node_id].file.source(),
+                &graph.nodes[node_id].parse.module,
+                &node_globals,
+                &imports,
+                module_identity.clone(),
+                graph.nodes[node_id].parse.role,
+            )
+        {
+            baked.push((specifier, checked));
+        }
+        let semantic = analyze_node(
+            &graph.nodes[node_id],
             &node_globals,
             &imports,
             module_identity.clone(),
+            roots,
         );
         merge_semantic_timing(&mut name_duration, &mut check_duration, &semantic);
         let semantic_has_errors = semantic.diagnostics.iter().any(Diagnostic::is_error);
@@ -713,11 +767,12 @@ fn eval_path_impl(
             prelude_exports.install(&mut check_imports);
         }
         let module_identity = comptime_module_identity(&graph.nodes[node_id].path);
-        let semantic = analyze_semantics_with_host_globals_and_imports_in(
-            &graph.nodes[node_id].parse,
+        let semantic = analyze_node(
+            &graph.nodes[node_id],
             &node_check_globals,
             &check_imports,
             module_identity.clone(),
+            roots,
         );
         let failed_method_constraints = semantic
             .diagnostics
@@ -965,6 +1020,48 @@ fn primitive_family_plan(
         (*span, coercion)
     });
     aven_eval::PrimitiveFamilyPlan::new(runtime_families, runtime_coercions)
+}
+
+fn analyze_node(
+    node: &ModuleNode,
+    globals: &HostGlobals,
+    imports: &CheckModuleImports,
+    identity: ComptimeModuleIdentity,
+    roots: &ModuleRoots,
+) -> SemanticOutput {
+    let bytes =
+        library_specifier(&node.path).and_then(|specifier| roots.baked_checks.get(&specifier));
+    let Some(bytes) = bytes else {
+        return analyze_semantics_with_host_globals_and_imports_in(
+            &node.parse,
+            globals,
+            imports,
+            identity,
+        );
+    };
+    crate::analyze_semantics_with_check(&node.parse, || {
+        // These bytes were produced by this binary's build. Invalid artifacts
+        // are a build-plumbing bug, not an excuse to silently lose the speedup.
+        let baked: aven_check::baked::BakedCheck = serde_json::from_slice(bytes)
+            .expect("embedded checked module must decode with the matching build schema");
+        baked
+            .into_checked(
+                node.file.source(),
+                globals,
+                imports,
+                &identity,
+                node.parse.role,
+            )
+            .unwrap_or_else(|| {
+                aven_check::check_module_with_host_globals_and_imports_in_role(
+                    &node.parse.module,
+                    globals,
+                    imports,
+                    identity,
+                    node.parse.role,
+                )
+            })
+    })
 }
 
 fn globals_for_node(globals: &HostGlobals, roots: &ModuleRoots, path: &Path) -> HostGlobals {

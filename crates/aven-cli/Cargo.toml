@@ -29,5 +29,11 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+aven-check.workspace = true
 aven-core.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+aven-compiler.workspace = true
+aven-host.workspace = true
 serde_json.workspace = true

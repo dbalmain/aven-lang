@@ -25,9 +25,9 @@ mod modules;
 mod operator_config;
 mod runtime_types;
 pub use modules::{
-    ExportProvenance, ExportProvenanceMap, LibraryModules, ModuleCheckOutput, ModuleEvalOutput,
-    ModuleImportResolution, ModuleInterface, ModuleNodeCheckOutput, ModuleRoots, ProjectConfig,
-    SourceOverlay, check_path_with_host_globals,
+    BakedLibraryChecks, ExportProvenance, ExportProvenanceMap, LibraryModules, ModuleCheckOutput,
+    ModuleEvalOutput, ModuleImportResolution, ModuleInterface, ModuleNodeCheckOutput, ModuleRoots,
+    ProjectConfig, SourceOverlay, bake_library_checks, check_path_with_host_globals,
     check_path_with_host_globals_and_entry_source_and_fixities_with_roots,
     check_path_with_host_globals_and_overlay,
     check_path_with_host_globals_and_overlay_and_entry_parse,
@@ -806,9 +806,7 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
     imports: &CheckModuleImports,
     module_identity: aven_check::ComptimeModuleIdentity,
 ) -> SemanticOutput {
-    let parse_has_errors = parse.diagnostics.iter().any(Diagnostic::is_error);
-    let (name_analysis, name_duration) = timed(|| aven_parser::analyze_names(&parse.module));
-    let (check_output, check_duration) = timed(|| {
+    analyze_semantics_with_check(parse, || {
         aven_check::check_module_with_host_globals_and_imports_in_role(
             &parse.module,
             globals,
@@ -816,7 +814,16 @@ pub(crate) fn analyze_semantics_with_host_globals_and_imports_in(
             module_identity,
             parse.role,
         )
-    });
+    })
+}
+
+fn analyze_semantics_with_check(
+    parse: &ParseOutput,
+    check: impl FnOnce() -> aven_check::CheckOutput,
+) -> SemanticOutput {
+    let parse_has_errors = parse.diagnostics.iter().any(Diagnostic::is_error);
+    let (name_analysis, name_duration) = timed(|| aven_parser::analyze_names(&parse.module));
+    let (check_output, check_duration) = timed(check);
     let aven_check::CheckOutput {
         diagnostics: check_diagnostics,
         inferred_types,

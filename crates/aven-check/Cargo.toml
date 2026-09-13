@@ -10,6 +10,7 @@ version.workspace = true
 workspace = true
 
 [dependencies]
+serde = { workspace = true, features = ["derive", "rc"] }
 aven-core.workspace = true
 aven-eval.workspace = true
 aven-parser.workspace = true

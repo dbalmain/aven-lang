@@ -126,7 +126,7 @@ pub struct ComptimeTypeContext<'a> {
     pub recursive_type_unfoldings: &'a HashMap<RecursiveTypeId, Type>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HostComptimeParam {
     Value(usize),
     TypeOf(usize),

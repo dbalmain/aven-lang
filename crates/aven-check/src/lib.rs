@@ -1,3 +1,4 @@
+pub mod baked;
 mod checker;
 mod comptime;
 mod env;
@@ -44,7 +45,7 @@ pub(crate) use lower::{known_type_names, reserved_type_diagnostic, type_definiti
 
 const BUILTIN_TYPES: &[BuiltinType] = BuiltinType::ALL;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CheckOutput {
     pub diagnostics: Vec<Diagnostic>,
     pub inferred_types: Vec<InferredType>,
@@ -63,28 +64,32 @@ pub struct CheckOutput {
     /// Known-target value expressions that must materialize a slot-record at
     /// runtime. The evaluator applies these conversions after evaluating the
     /// expression at the recorded source span.
+    #[serde(with = "baked::map_entries")]
     pub slot_reifications: HashMap<Span, SlotReificationTarget>,
     /// Record-literal spans that directly initialize a slot-record target. The
     /// evaluator materializes a slot-record from the literal's own entries
     /// (data fields plus method bodies) at each recorded span.
+    #[serde(with = "baked::map_entries")]
     pub direct_slot_inits: HashMap<Span, SlotReificationTarget>,
     /// Checked root coercions which the evaluator applies without changing the
     /// source AST. Primitive-family branding and widening are deliberately
     /// boundary-directed rather than HM equations.
+    #[serde(with = "baked::map_entries")]
     pub primitive_family_coercions: HashMap<Span, PrimitiveFamilyCoercion>,
     /// Completed one-level heads for parameterized recursive type references.
     /// Keeping these in a side map makes `Type::Recursive` a small atomic node
     /// while allowing checker consumers to unfold only at structural demands.
+    #[serde(with = "baked::map_entries")]
     pub recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlotReificationTarget {
     pub fields: Vec<String>,
     pub slots: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BuiltinMethodEnvironment {
     methods: Vec<BuiltinMethodType>,
     pub(crate) comptime_modules: Vec<aven_parser::Module>,
@@ -219,7 +224,7 @@ fn builtin_owner_pattern_matches(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BuiltinMethodType {
     pub owner: Type,
     pub owner_variables: Vec<String>,
@@ -231,7 +236,7 @@ pub struct BuiltinMethodType {
     pub member_span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NamedMethodType {
     pub params: FunctionParams,
     pub result: Type,
@@ -240,7 +245,7 @@ pub struct NamedMethodType {
     pub origin: NamedMethodOrigin,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NamedMethodOrigin {
     Declared,
     Override {
@@ -255,7 +260,7 @@ pub enum NamedMethodOrigin {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NamedFamilyType {
     pub owner: String,
     pub data: Row,
@@ -266,7 +271,7 @@ pub struct NamedFamilyType {
     pub methods: HashMap<String, NamedMethodType>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PrimitiveFamilyCoercion {
     Brand { owner: String },
     Widen,
@@ -291,7 +296,7 @@ fn type_span_contains(outer: Span, inner: Span) -> bool {
     inner.start >= outer.start && inner_end <= outer_end
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InferredType {
     pub name_span: Span,
     pub ty: Type,
@@ -304,7 +309,7 @@ impl InferredType {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ModuleImports {
     types: HashMap<String, Option<Type>>,
     type_exports: HashMap<String, HashMap<String, Type>>,
@@ -318,6 +323,7 @@ pub struct ModuleImports {
     prelude_comptime_exports: HashMap<String, ComptimeExport>,
     prelude_modules: Vec<Module>,
     prelude_requires_elaboration: bool,
+    #[serde(with = "baked::map_entries")]
     recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
     builtin_methods: BuiltinMethodEnvironment,
     trusted_builtin_method_source: bool,

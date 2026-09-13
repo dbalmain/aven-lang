@@ -9,7 +9,7 @@ use aven_parser::{Expr, ExprKind, Literal};
 ///
 /// Keeping the arity next to the parameter list prevents a `Type::Function`
 /// from carrying a required count greater than its total parameter count.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FunctionParams {
     params: Vec<Type>,
     required: usize,
@@ -78,7 +78,7 @@ pub struct RecursiveTypeId(pub(crate) u32);
 
 /// Type names share immutable storage across clones. Atomic reference counts
 /// keep checked types shareable with the LSP; equality and hashing use contents.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Type {
     /// Error-recovery poison produced after the checker has already emitted a
     /// diagnostic. It unifies permissively to avoid cascades, but unlike
@@ -817,13 +817,13 @@ impl TypeScheme {
 /// Quantified variables are reified as [`Type::Variable`] nodes so another
 /// checker can instantiate the ordinary type and its constraints together
 /// without sharing unifier-local metavariable ids.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QualifiedType {
     pub ty: Type,
     pub constraints: Vec<MethodConstraint>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MethodConstraint {
     pub candidate: Type,
     pub member: String,
@@ -869,21 +869,21 @@ pub(crate) struct RowMergeSource {
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Row {
     pub entries: Vec<RowEntry>,
     pub tail: RowTail,
 }
 
 /// Row labels share immutable storage so cloning a type does not copy each label.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum RowEntry {
     Field { name: Arc<str>, ty: Type },
     Tag { name: Arc<str>, payload: Vec<Type> },
     Literal { value: Literal },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum RowTail {
     Closed,
     Open,
