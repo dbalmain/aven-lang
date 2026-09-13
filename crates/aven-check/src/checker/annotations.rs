@@ -691,3 +691,28 @@ fn is_collection_type_sugar(callee: &Expr, args: &[Expr]) -> bool {
     ) && args.len() == 1
         && callee.span.start >= args[0].span.end
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aven_parser::parse_module;
+
+    /// A fork happens once per annotation and both tables are the size of the
+    /// module, so copying them made checking quadratic in module size. Sharing
+    /// is the fix, and pointer identity is what proves it is still in place —
+    /// a timing assertion would only say the machine was quiet.
+    #[test]
+    fn forking_shares_the_module_sized_tables_instead_of_copying_them() {
+        let parsed = parse_module("f = (a: Int): Int =>\n  a\ng = (b: Int): Int =>\n  b\n");
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+        let known_types = crate::lower::known_type_names(&parsed.module);
+        let type_definitions = crate::lower::type_definitions(&parsed.module, &known_types);
+        let checker = Checker::with_module(known_types, type_definitions, &parsed.module);
+        assert!(!checker.bindings.is_empty(), "declarations were collected");
+
+        let fork = checker.fork_annotation_checker();
+        assert!(Rc::ptr_eq(&checker.bindings, &fork.bindings));
+        assert!(Rc::ptr_eq(&checker.annotations, &fork.annotations));
+    }
+}

@@ -31,8 +31,8 @@ impl<'a> Checker<'a> {
             local_types: LocalTypeScopes::default(),
             local_comptime_values: Vec::new(),
             local_comptime_params: Vec::new(),
-            bindings: HashMap::new(),
-            annotations: HashMap::new(),
+            bindings: Rc::new(HashMap::new()),
+            annotations: Rc::new(HashMap::new()),
             memo: HashMap::new(),
             in_progress: HashSet::new(),
             execution_context: comptime::ExecutionContext::RuntimeUnknown,
@@ -908,7 +908,7 @@ impl<'a> Checker<'a> {
         self.module_closures.borrow_mut().clear();
         for declaration in collect_declarations(module) {
             if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
-                self.annotations
+                Rc::make_mut(&mut self.annotations)
                     .insert(declaration.name.clone(), source.annotation);
             }
 
@@ -916,7 +916,7 @@ impl<'a> Checker<'a> {
                 self.comptime_bindings.insert(declaration.name.clone());
             }
 
-            match self.bindings.entry(declaration.name.clone()) {
+            match Rc::make_mut(&mut self.bindings).entry(declaration.name.clone()) {
                 Entry::Occupied(mut entry) => {
                     entry.insert(None);
                 }

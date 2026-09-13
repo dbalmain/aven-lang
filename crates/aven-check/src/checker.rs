@@ -101,8 +101,12 @@ pub(crate) struct Checker<'a> {
     local_types: LocalTypeScopes,
     local_comptime_values: Vec<HashMap<String, comptime::ComptimeValue>>,
     local_comptime_params: Vec<HashSet<String>>,
-    bindings: HashMap<String, Option<&'a Binding>>,
-    annotations: HashMap<String, &'a Expr>,
+    /// Shared with every [`Checker::fork_annotation_checker`] fork rather than
+    /// copied into it: both tables are the size of the module, both are written
+    /// only while declarations are collected, and a fork happens once per
+    /// annotation. Mutate through `Rc::make_mut`.
+    bindings: Rc<HashMap<String, Option<&'a Binding>>>,
+    annotations: Rc<HashMap<String, &'a Expr>>,
     memo: HashMap<String, TypeScheme>,
     in_progress: HashSet<String>,
     /// Execution frontier of the current demand, independent of inference order.
