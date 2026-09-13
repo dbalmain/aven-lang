@@ -189,6 +189,42 @@ fn walk_iteration_binders<'a>(entries: &'a [RecordEntry], visit: &mut impl FnMut
     }
 }
 
+/// The record entries an expression carries directly, if it carries any.
+///
+/// Records, arrays, sets and primitive-family declarations all store a
+/// `Vec<RecordEntry>`; everything else stores expressions. A consumer that
+/// needs the *entries* rather than the expressions under them --- because an
+/// entry can reference a name without holding an `Expr` --- starts here.
+pub fn expr_record_entries(expr: &Expr) -> Option<&[RecordEntry]> {
+    match &expr.kind {
+        ExprKind::Record(entries) | ExprKind::Set(entries) | ExprKind::Array(entries) => {
+            Some(entries)
+        }
+        ExprKind::PrimitiveFamily { members, .. } => Some(members),
+        _ => None,
+    }
+}
+
+/// Visit every record entry under `entries`, including the ones nested inside
+/// an iteration body, in source order.
+///
+/// `walk_record_entry_exprs` descends into iteration bodies too, but hands the
+/// caller only expressions. `RecordEntry::Shorthand` stores its name outside
+/// any `Expr` --- `{ price }` has nothing else to walk --- so a name-reference
+/// consumer that goes through expressions alone silently loses it, and loses it
+/// at every depth rather than only the top one.
+pub fn walk_record_entries<'a>(
+    entries: &'a [RecordEntry],
+    visit: &mut impl FnMut(&'a RecordEntry),
+) {
+    for entry in entries {
+        visit(entry);
+        if let RecordEntry::Iteration { body, .. } = entry {
+            walk_record_entries(body, visit);
+        }
+    }
+}
+
 pub fn walk_expr_children<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr)) {
     match &expr.kind {
         ExprKind::Group(inner)

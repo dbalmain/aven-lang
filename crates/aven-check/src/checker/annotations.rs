@@ -549,6 +549,7 @@ impl<'a> Checker<'a> {
                 &self.local_types.inference_env(),
                 arg,
                 &bindings,
+                DemandScope::Caller,
             );
             if matches!(demand, ComptimeDemand::Known(_) | ComptimeDemand::Deferred) {
                 continue;

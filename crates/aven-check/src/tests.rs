@@ -16285,6 +16285,141 @@ fn an_ordinary_call_proves_a_literal_demand() {
     ));
 }
 
+/// An omitted parameter's default is the callee's expression, so it resolves
+/// in the callee's scope.
+///
+/// `f`'s `= x` was written beside the module `x = 1` and closed over it. A
+/// caller that happens to hold an `x := 2` has a different binding of the same
+/// spelling, and calling `f()` from there still passes 1 --- which is what the
+/// program does when it runs.
+///
+/// The pair is the point. Certifying nothing at all would pass the rejection
+/// half on its own, so the accepting half is what shows the default is still
+/// evaluated, and evaluated against the right binding.
+#[test]
+fn a_comptime_default_resolves_at_its_definition_site() {
+    const DEFAULT: &str = "x: Int = 1\nf = (@k: Int = x): Int => k\n";
+
+    // No caller local in sight: the baseline the two halves below are measured
+    // against.
+    assert_checks(&format!("{DEFAULT}checked: 1 = f()\nchecked\n"));
+
+    const SHADOWED: &str =
+        "result: Int =\n  x := 2\n  checked: {} = f()\n  checked + x - x\nresult\n";
+    assert_checks(&format!("{DEFAULT}{}", SHADOWED.replace("{}", "1")));
+    assert_rejects(&format!("{DEFAULT}{}", SHADOWED.replace("{}", "2")));
+}
+
+/// The same rule for a body's free name rather than a default's.
+///
+/// `f`'s body reads the module `x`, and a caller's `x := 2` is not that
+/// binding, so the specialization of `f(2)` is `1 + 2`.
+#[test]
+fn a_callee_body_reads_the_module_binding_it_closed_over() {
+    const SOURCE: &str = "x: Int = 1\nf = (@k: Int): Int => x + k\nresult: Int =\n  x := 2\n  checked: {} = f(2)\n  checked + x - x\nresult\n";
+
+    assert_checks(&SOURCE.replace("{}", "3"));
+    assert_rejects(&SOURCE.replace("{}", "4"));
+}
+
+/// A caller local never stands in for an ordinary parameter of the callee.
+///
+/// `n` is `f`'s second parameter and holds whatever the call passes. A
+/// same-named local at the call site says nothing about it, so nothing about
+/// the call is certified --- not even when the local's value would have made
+/// the annotation true, which is the case written here.
+#[test]
+fn a_caller_local_does_not_stand_in_for_a_callee_parameter() {
+    assert_rejects(
+        "f = (@k: Int, n: Int): Int => n + k\nresult: Int =\n  n = 1\n  checked: 3 = f(2, n)\n  checked + n - n\nresult\n",
+    );
+}
+
+/// A default reaching a primitive family is refused however the caller spells
+/// its own bindings.
+///
+/// The guard has to ask about the *callee's* `price`, which is branded, and
+/// not the caller's, which is an ordinary `Int`. Analysing the default against
+/// the caller's scope finds a plain 99 and certifies `"99"` for a program that
+/// prints `money` --- a correct guard asked of the wrong bindings.
+///
+/// The `price := 100` case is the discriminating one: it distinguishes a guard
+/// that looked in the right place from one that merely failed to find a value,
+/// because the wrong scope yields `"100"` rather than silence.
+#[test]
+fn a_family_reaching_default_is_refused_whatever_the_caller_binds() {
+    const FAMILY: &str = "Money = Int {\n  toText(): Text => \"money\"\n}\nprice: Money = 99\nshow = (@s: Text = \"${price}\"): Text => s\n";
+
+    for caller in ["", "  price := 99\n", "  price := 100\n"] {
+        assert_rejects(&format!(
+            "{FAMILY}result: Text =\n{caller}  checked: \"99\" = show()\n  checked\nresult\n"
+        ));
+    }
+
+    // The same shape with an unbranded module binding still folds, so the
+    // refusal is about the family and not about defaults or shadowing.
+    assert_checks(
+        "n = 99\nshow = (@s: Text = \"${n}\"): Text => s\nresult: Text =\n  n := 99\n  checked: \"99\" = show()\n  checked\nresult\n",
+    );
+}
+
+/// A family dependency survives any depth of record nesting.
+///
+/// `{ @{"a"} -> k; price }` holds its shorthand inside an iteration body, and
+/// an iteration body holds entries rather than expressions. A name walk that
+/// goes through expressions alone therefore loses `price` at depth one and
+/// certifies `"99"` for a program that prints `money`; a walk with a
+/// one-level exception loses it at depth two instead. The table is here so
+/// that adding nesting cannot silently restore the bug.
+#[test]
+fn a_nested_shorthand_keeps_its_family_dependency() {
+    const FAMILY: &str = "Money = Int {\n  toText(): Text => \"money\"\n}\nprice: Money = 99\n";
+
+    // Depth 0 is the plain shorthand; each further level wraps the last in
+    // another comprehension, which is where the walk used to stop.
+    for shape in [
+        "{ NAME }",
+        "{ @{\"a\"} -> k; NAME }",
+        "{ @{\"a\"} -> k; @{\"b\"} -> j; NAME }",
+    ] {
+        let branded = shape.replace("NAME", "price");
+        assert_rejects(&format!(
+            "{FAMILY}show = (): Text => \"${{{branded}.price}}\"\nchecked: \"99\" = show()\nchecked\n"
+        ));
+
+        // The identical shape over an unbranded binding proves `"99"`, so each
+        // row rejects because of the family rather than because the nesting
+        // itself defeated the fold.
+        let plain = shape.replace("NAME", "plain");
+        assert_checks(&format!(
+            "plain = 99\nshow = (): Text => \"${{{plain}.plain}}\"\nchecked: \"99\" = show()\nchecked\n"
+        ));
+    }
+}
+
+/// A demand written inside a lambda cannot read module bindings at all.
+///
+/// A lambda body runs at some future call, so the checker has no initializer
+/// frontier for it and refuses every module binding a demand there reaches ---
+/// `comptime(x)` no less than a callee's `= x` default. This is a support
+/// limitation of the execution-context filter and is pinned here because it is
+/// easy to mistake for the scope bug next door: the repair above makes
+/// `f = (@k: Int = x)` resolve `x` to the module binding, and inside a lambda
+/// that resolution then has nothing to read. Widening it needs an
+/// initialization frontier for deferred code, not a change to scoping.
+#[test]
+fn a_demand_inside_a_lambda_cannot_read_a_module_binding() {
+    // Both spellings, so the limitation is visibly about the demand's
+    // position and not about defaults.
+    assert_rejects("x: Int = 1\ng = () =>\n  checked: 1 = comptime(x)\n  checked\ng()\n");
+    assert_rejects(
+        "x: Int = 1\nf = (@k: Int = x): Int => k\ng = () =>\n  checked: 1 = f()\n  checked\ng()\n",
+    );
+
+    // The same demands at the top level, where there is a frontier, fold.
+    assert_checks("x: Int = 1\nchecked: 1 = comptime(x)\nchecked\n");
+}
+
 /// A demand reached through a local helper, and through what that helper
 /// captured, folds the same way.
 #[test]
