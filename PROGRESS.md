@@ -1,15 +1,35 @@
 # Implementation status — language proposals
 
-Updated: 2026-09-12, Australia/Sydney.
+Updated: 2026-09-13, Australia/Sydney.
 
 ## Current state
 
-Branch `comptime-unification-slices-1-2`, tip `78ebe43`. Nothing pushed. Gates
-green in `nix develop`: `fmt --check`,
-`clippy --workspace --all-targets -D warnings`, `git diff --check`, and
-`cargo test --workspace` at **1893 passed / 0 failed** (1886 before this round).
+Merged to `main` and pushed; tip `5798bba`. Gates green in `nix develop`:
+`fmt --check`, `clippy --workspace --all-targets -D warnings`,
+`git diff --check`, and `cargo test --workspace` at **1888 passed / 0 failed**.
 The MSRV gate (`nix develop .#msrv`, `cargo check --workspace --all-targets` on
-1.91.0) also passes.
+1.91.0) also passes, as does the nightly Heavy job.
+
+> The workspace total was reported as 1893 while this branch was in flight.
+> That figure came from a de-duplicated count of the per-suite result lines,
+> which silently drops two suites reporting the same number in the same time.
+> Summed properly it is 1888, before and after this round.
+
+Both CI workflows had been red since 2026-09-01 on `clippy`, because they
+resolved `dtolnay/rust-toolchain@stable` and a new lint landed; the pin to
+1.98.1 that fixes it was sitting on this branch the whole time. Clearing it
+exposed two further failures neither workflow had been able to reach, both
+fixed here and neither a defect in Aven itself:
+
+| Commit    | Pipeline repair                                                       |
+| --------- | --------------------------------------------------------------------- |
+| `544df97` | bash 5.2 never dispatches completion for `$'` nested inside `$(`       |
+| `5798bba` | proptest's rejection ceiling does not scale with `PROPTEST_CASES`      |
+
+`--include-ignored` in the Heavy job is currently a no-op: the `#[ignore =
+"slow: <reason>"]` tier is described in five files and used by none, so the
+nightly and the PR gate run exactly the same 1888 tests, the nightly only at a
+higher case count.
 
 Astra's follow-up review of `da9c901..af60ed4` (`.ai/REVIEW.md`) found six more
 gaps in the same three repairs, three of them P1. All six reproduced exactly as
