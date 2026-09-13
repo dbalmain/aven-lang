@@ -21,10 +21,7 @@ use crate::env::{
 use crate::host_comptime::{
     ComptimeArg, ComptimeError, HostComptimeFnSpec, HostComptimeParam, HostGlobals, HostStatics,
 };
-use crate::lower::{
-    DeclaredAnnotation, DeclaredAnnotationSource, TypeLowering, binding_for_declaration,
-    declared_annotation_for_declaration,
-};
+use crate::lower::{DeclarationItems, DeclaredAnnotation, DeclaredAnnotationSource, TypeLowering};
 use crate::ty::{
     FunctionParams, IntegerDivisorContext, LiteralBase, MethodPredicate, RecursiveTypeId, Row,
     RowEntry, RowKind, RowMergeSource, RowTail, Type, TypeScheme, builtin_collection_method_type,

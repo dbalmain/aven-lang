@@ -263,11 +263,12 @@ impl<'a> Checker<'a> {
     }
 
     fn prepare_named_families(&mut self, module: &Module) {
+        let items = DeclarationItems::new(module);
         let providers = collect_declarations(module)
             .into_iter()
             .filter(|declaration| declaration.phase == DeclarationPhase::Comptime)
             .filter_map(|declaration| {
-                let binding = binding_for_declaration(module, &declaration)?;
+                let binding = items.binding(&declaration)?;
                 is_named_family_provider(&binding.value)
                     .then_some((declaration.name, binding.value.clone()))
             })
@@ -422,6 +423,7 @@ impl<'a> Checker<'a> {
     }
 
     fn canonicalize_named_family_aliases(&mut self, module: &Module) {
+        let items = DeclarationItems::new(module);
         loop {
             let mut changed = false;
             for declaration in collect_declarations(module) {
@@ -430,7 +432,7 @@ impl<'a> Checker<'a> {
                 {
                     continue;
                 }
-                let Some(binding) = binding_for_declaration(module, &declaration) else {
+                let Some(binding) = items.binding(&declaration) else {
                     continue;
                 };
                 let (ExprKind::Name(target) | ExprKind::ComptimeName(target)) =
@@ -454,11 +456,12 @@ impl<'a> Checker<'a> {
     }
 
     fn lower_named_family_methods(&mut self, module: &Module) {
+        let items = DeclarationItems::new(module);
         let providers = collect_declarations(module)
             .into_iter()
             .filter_map(|declaration| {
                 let owner = self.named_family_aliases.get(&declaration.name)?;
-                let binding = binding_for_declaration(module, &declaration)?;
+                let binding = items.binding(&declaration)?;
                 is_named_family_provider(&binding.value).then_some((
                     declaration.name,
                     owner.clone(),
@@ -906,8 +909,9 @@ impl<'a> Checker<'a> {
         // both.
         self.comptime_definitions.take();
         self.module_closures.borrow_mut().clear();
+        let items = DeclarationItems::new(module);
         for declaration in collect_declarations(module) {
-            if let Some(source) = declared_annotation_for_declaration(module, &declaration) {
+            if let Some(source) = items.declared_annotation(&declaration) {
                 Rc::make_mut(&mut self.annotations)
                     .insert(declaration.name.clone(), source.annotation);
             }
@@ -921,7 +925,7 @@ impl<'a> Checker<'a> {
                     entry.insert(None);
                 }
                 Entry::Vacant(entry) => {
-                    entry.insert(binding_for_declaration(module, &declaration));
+                    entry.insert(items.binding(&declaration));
                 }
             }
         }
@@ -946,6 +950,7 @@ impl<'a> Checker<'a> {
         // up front lets a user binding that references a global (e.g.
         // `x = logger.info`) resolve it through the existing read paths during
         // inference.
+        let items = DeclarationItems::new(module);
         let declarations = collect_declarations(module);
         let declared: HashSet<_> = declarations
             .iter()
@@ -998,7 +1003,7 @@ impl<'a> Checker<'a> {
         for declaration in declarations {
             let name = declaration.name.clone();
             if name.chars().next().is_some_and(char::is_uppercase)
-                && binding_for_declaration(module, &declaration).is_some_and(|binding| {
+                && items.binding(&declaration).is_some_and(|binding| {
                     is_method_requirement_row(&binding.value)
                         || aven_parser::is_named_method_provider(&binding.value)
                 })
@@ -1006,15 +1011,14 @@ impl<'a> Checker<'a> {
                 continue;
             }
 
-            if binding_for_declaration(module, &declaration)
+            if items
+                .binding(&declaration)
                 .is_some_and(|binding| self.is_uppercase_comptime_function(&name, &binding.value))
             {
                 continue;
             }
 
-            if binding_for_declaration(module, &declaration).is_none()
-                && !self.pattern_bindings.contains_key(&name)
-            {
+            if items.binding(&declaration).is_none() && !self.pattern_bindings.contains_key(&name) {
                 continue;
             }
 
@@ -1030,7 +1034,7 @@ impl<'a> Checker<'a> {
                 && let Some(definition) = self.type_definitions.get(&name).cloned()
                 && !matches!(definition, Type::Deferred)
                 && (matches!(definition, Type::Recursive(_))
-                    || binding_for_declaration(module, &declaration).is_some_and(|binding| {
+                    || items.binding(&declaration).is_some_and(|binding| {
                         matches!(&ungroup_expr(&binding.value).kind, ExprKind::Call { .. })
                     }))
             {
@@ -1099,17 +1103,19 @@ impl<'a> Checker<'a> {
 
         // Top-level declared annotations go through declarations so inline and
         // adjacent signature+binding forms share one lookup path.
+        let items = DeclarationItems::new(module);
         for declaration in collect_declarations(module) {
             let previous = self.execution_context;
             self.execution_context = if declaration.phase == DeclarationPhase::Runtime {
-                binding_for_declaration(module, &declaration)
+                items
+                    .binding(&declaration)
                     .map_or(comptime::ExecutionContext::RuntimeUnknown, |b| {
                         comptime::ExecutionContext::RuntimeKnown(b.span.start)
                     })
             } else {
                 comptime::ExecutionContext::Artifact
             };
-            self.check_declaration(module, &declaration);
+            self.check_declaration(&items, &declaration);
             self.execution_context = previous;
         }
 
@@ -1149,8 +1155,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(super) fn check_declaration(&mut self, module: &Module, declaration: &Declaration) {
-        let binding = binding_for_declaration(module, declaration);
+    pub(super) fn check_declaration(
+        &mut self,
+        items: &DeclarationItems<'_>,
+        declaration: &Declaration,
+    ) {
+        let binding = items.binding(declaration);
         // A body-bearing method record defines a named-family *provider* only
         // when it declares a type (uppercase name with a canonical owner). A
         // lowercase binding with method bodies is a direct slot-record
@@ -1174,7 +1184,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let mut checked_value = false;
-        let declared_annotation = declared_annotation_for_declaration(module, declaration);
+        let declared_annotation = items.declared_annotation(declaration);
         let has_declared_annotation = declared_annotation.is_some();
 
         if declaration.phase == DeclarationPhase::Runtime
