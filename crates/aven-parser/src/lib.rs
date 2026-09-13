@@ -41,6 +41,7 @@ pub use resolve::{resolve_local_definition, resolve_local_references, visible_lo
 pub(crate) use strings::decode_string_fragment;
 pub use strings::decode_string_literal;
 pub use walk::{
-    BinderRole, BinderSite, find_map_expr_children, walk_binder_sites_in_expr,
-    walk_binder_sites_in_items, walk_expr_children, walk_module_exprs, walk_record_entry_exprs,
+    BinderRole, BinderSite, expr_record_entries, find_map_expr_children, walk_binder_sites_in_expr,
+    walk_binder_sites_in_items, walk_expr_children, walk_module_exprs, walk_record_entries,
+    walk_record_entry_exprs,
 };

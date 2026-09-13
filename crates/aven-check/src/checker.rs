@@ -8,8 +8,9 @@ use aven_parser::{
     Binding, Declaration, DeclarationPhase, Expr, ExprKind, InterpolationSegment, Item, Literal,
     MatchArm, MergedItem, Module, ModuleRole, Param, PatternBinding, PropagationMode, RecordEntry,
     Requirement, Signature, SpreadBinding, collect_declarations, decode_string_literal,
-    is_comptime_identifier_name, is_custom_operator_token, is_method_operator, lambda_parts,
-    merged_items, pattern_bindings, walk_expr_children, walk_module_exprs,
+    expr_record_entries, is_comptime_identifier_name, is_custom_operator_token, is_method_operator,
+    lambda_parts, merged_items, pattern_bindings, walk_expr_children, walk_module_exprs,
+    walk_record_entries,
 };
 
 use crate::BUILTIN_TYPES;
@@ -59,6 +60,7 @@ mod type_checking;
 mod value;
 
 pub(crate) use aven_parser::is_method_requirement_row;
+pub(crate) use inference::DemandScope;
 
 /// Compiler-only method-row member for runtime collection indexing.
 ///

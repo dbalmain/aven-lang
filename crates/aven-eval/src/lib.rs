@@ -88,13 +88,43 @@ impl EvalSource {
 pub struct NativeContext {
     pub span: Span,
     pub source: Option<Rc<EvalSource>>,
+    /// The environment actually driving this call, when there is one.
+    ///
+    /// A native that calls back into a closure --- `flatMap`, `fold`, a stream
+    /// stage, a family method --- must run that closure on *this* demand's
+    /// fuel, initialization boundary and scope registry, not on whatever the
+    /// closure happened to capture. A prelude closure captured the session's
+    /// preparation environment, which has unlimited fuel and no registry, so
+    /// losing this field is the difference between a bounded demand and an
+    /// unbounded one that also leaks its frames. See `Environment::call_child`.
+    active: Option<Environment>,
 }
 
 impl NativeContext {
     /// Context for application paths that have no lexical evaluator
     /// environment. Location-aware natives must not infer a source here.
+    ///
+    /// There is no driving environment either, so a callback reached from here
+    /// falls back to its own captured state. Every such path inside the
+    /// evaluator has been given a real context; this remains for host natives
+    /// and public entry points that genuinely have none.
     pub fn without_source(span: Span) -> Self {
-        Self { span, source: None }
+        Self {
+            span,
+            source: None,
+            active: None,
+        }
+    }
+
+    /// The same context at a different span. Callbacks are reported at the
+    /// call that drove them, so the span travels with the context rather than
+    /// beside it.
+    fn at(&self, span: Span) -> Self {
+        Self {
+            span,
+            source: self.source.as_ref().map(Rc::clone),
+            active: self.active.clone(),
+        }
     }
 }
 
@@ -401,7 +431,8 @@ impl Stream {
         Some(Value::Int(value))
     }
 
-    fn next_value(&mut self, span: Span) -> Eval<Option<Value>> {
+    fn next_value(&mut self, context: &NativeContext) -> Eval<Option<Value>> {
+        let span = context.span;
         'source: while let Some(mut value) = self.next_source() {
             for stage in &self.stages {
                 match stage {
@@ -410,7 +441,7 @@ impl Stream {
                             callback.clone(),
                             span,
                             vec![value],
-                            NativeContext::without_source(span),
+                            context.at(span),
                         )?;
                     }
                     StreamStage::Filter { callback, .. } => {
@@ -418,7 +449,7 @@ impl Stream {
                             callback.clone(),
                             span,
                             vec![value.clone()],
-                            NativeContext::without_source(span),
+                            context.at(span),
                         )?;
                         match keep {
                             Value::Bool(true) => {}
@@ -484,7 +515,7 @@ impl Iterator for Stream {
     type Item = Result<Value, Vec<Diagnostic>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.next_value(Span::new(0, 0)) {
+        match self.next_value(&NativeContext::without_source(Span::new(0, 0))) {
             Ok(value) => value.map(Ok),
             Err(Flow::Fail(diagnostics)) => Some(Err(diagnostics)),
             Err(Flow::Propagate(value)) => Some(Ok(*value)),
@@ -1589,6 +1620,7 @@ impl Environment {
         NativeContext {
             span,
             source: self.source.as_ref().map(Rc::clone),
+            active: Some(self.clone()),
         }
     }
 
@@ -2423,13 +2455,34 @@ pub struct ComptimeSession {
 }
 
 impl ComptimeSession {
+    /// What preparing a session may spend. See `prepare`.
+    const PREPARATION_FUEL: u64 = 1_000_000;
+
     pub fn prepare(
         ambient_modules: &[Module],
         prelude_modules: &[Module],
     ) -> Result<Self, Diagnostic> {
+        Self::prepare_with_fuel(ambient_modules, prelude_modules, Self::PREPARATION_FUEL)
+    }
+
+    /// `prepare` with an explicit preparation budget, so a test can reach the
+    /// limit without writing a million units of work.
+    fn prepare_with_fuel(
+        ambient_modules: &[Module],
+        prelude_modules: &[Module],
+        preparation_fuel: u64,
+    ) -> Result<Self, Diagnostic> {
         let mut root = Environment::new();
         let teardown = root.track_scopes();
         let root = root;
+        // Preparation runs whatever a prelude writes at its top level, and a
+        // prelude that loops there would otherwise hang the checker with no
+        // diagnostic at all. This budget is preparation's alone: it is cleared
+        // before the session is handed out, and a demand never draws on it.
+        // Real preludes spend about two units, because bindings are lazy and
+        // only the export record is evaluated, so the ceiling is far above
+        // anything a working prelude reaches while still being a ceiling.
+        root.set_fuel(preparation_fuel);
         bind_intrinsics(&root);
         for module in ambient_modules {
             let module_env = root.child();
@@ -2479,6 +2532,11 @@ impl ComptimeSession {
         // A demand's scopes belong to the demand. Stop the session registry
         // from adopting them, so it neither grows nor outlives them.
         defaults.scope_registry = None;
+        // Preparation is over, and the budget was preparation's. Clearing it
+        // keeps the session's own environment unbounded, which is what the
+        // few remaining environment-free call paths fall back to; a demand
+        // gets its own budget from `demand_child` regardless.
+        defaults.fuel.set(None);
         Ok(Self { defaults, teardown })
     }
 
@@ -3301,6 +3359,13 @@ fn receiver_prefixed_arg_values(
 }
 
 /// Apply an already-evaluated callee value to the argument expressions.
+///
+/// Every callable evaluates its arguments the same way and then dispatches the
+/// same way, so this evaluates once and hands off to `apply_callee_values`
+/// with a context carrying `env` --- which is what lets a native's callback
+/// spend this demand's fuel. A closure keeps its own route only because it
+/// checks arity *before* evaluating arguments, and moving that check would
+/// change which diagnostic a mis-arity call reports.
 fn apply_callee(
     callee_value: Value,
     callee_span: Span,
@@ -3308,98 +3373,19 @@ fn apply_callee(
     span: Span,
     env: &Environment,
 ) -> Eval {
-    match callee_value {
-        Value::Native(function) => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_native(function, arg_values, env.native_context(span))
-        }
-        Value::RangeConstructor {
-            inclusive,
-            materialize,
-        } => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_range_constructor(arg_values, inclusive, materialize, span)
-        }
-        Value::CollectConstructor(target) => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_collect_constructor(arg_values, target, span)
-        }
-        Value::ResultMethod { receiver, kind } => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_result_method(*receiver, kind, arg_values, callee_span, span)
-        }
-        Value::StreamMethod { receiver, kind } => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_stream_method(*receiver, kind, arg_values, span)
-        }
-        Value::ArrayFlatMapMethod(items) => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_array_flat_map(items, arg_values, span)
-        }
-        Value::ArrayFoldMethod(items) => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_array_fold(items, arg_values, span)
-        }
-        Value::SetMethod { receiver, kind } => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_set_method(receiver, kind, arg_values, span)
-        }
-        Value::NamedFamily(descriptor) => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_named_family_constructor(descriptor, arg_values, span)
-        }
-        Value::NamedMethod {
-            receiver,
-            member,
-            implementation,
-        } => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_named_method_for_member(*receiver, &member, implementation, arg_values, span)
-        }
-        Value::UnboundNamedMethod {
-            descriptor,
-            member,
-            implementation,
-        } => {
-            let mut arg_values = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_values.push(eval_expr_many(arg, env)?);
-            }
-            apply_unbound_named_method(descriptor, &member, implementation, arg_values, span)
-        }
-        Value::Closure(closure) => apply_closure(closure, args, span, env),
-        value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
+    if let Value::Closure(closure) = callee_value {
+        return apply_closure(closure, args, span, env);
     }
+    let mut arg_values = Vec::with_capacity(args.len());
+    for arg in args {
+        arg_values.push(eval_expr_many(arg, env)?);
+    }
+    apply_callee_values(
+        callee_value,
+        callee_span,
+        arg_values,
+        env.native_context(span),
+    )
 }
 
 fn apply_callee_values(
@@ -3414,17 +3400,21 @@ fn apply_callee_values(
         Value::RangeConstructor {
             inclusive,
             materialize,
-        } => apply_range_constructor(arg_values, inclusive, materialize, span),
-        Value::CollectConstructor(target) => apply_collect_constructor(arg_values, target, span),
+        } => apply_range_constructor(arg_values, inclusive, materialize, &context),
+        Value::CollectConstructor(target) => {
+            apply_collect_constructor(arg_values, target, &context)
+        }
         Value::ResultMethod { receiver, kind } => {
-            apply_result_method(*receiver, kind, arg_values, callee_span, span)
+            apply_result_method(*receiver, kind, arg_values, callee_span, &context)
         }
         Value::StreamMethod { receiver, kind } => {
-            apply_stream_method(*receiver, kind, arg_values, span)
+            apply_stream_method(*receiver, kind, arg_values, &context)
         }
-        Value::ArrayFlatMapMethod(items) => apply_array_flat_map(items, arg_values, span),
-        Value::ArrayFoldMethod(items) => apply_array_fold(items, arg_values, span),
-        Value::SetMethod { receiver, kind } => apply_set_method(receiver, kind, arg_values, span),
+        Value::ArrayFlatMapMethod(items) => apply_array_flat_map(items, arg_values, &context),
+        Value::ArrayFoldMethod(items) => apply_array_fold(items, arg_values, &context),
+        Value::SetMethod { receiver, kind } => {
+            apply_set_method(receiver, kind, arg_values, &context)
+        }
         Value::NamedFamily(descriptor) => {
             apply_named_family_constructor(descriptor, arg_values, span)
         }
@@ -3432,13 +3422,17 @@ fn apply_callee_values(
             receiver,
             member,
             implementation,
-        } => apply_named_method_for_member(*receiver, &member, implementation, arg_values, span),
+        } => {
+            apply_named_method_for_member(*receiver, &member, implementation, arg_values, &context)
+        }
         Value::UnboundNamedMethod {
             descriptor,
             member,
             implementation,
-        } => apply_unbound_named_method(descriptor, &member, implementation, arg_values, span),
-        Value::Closure(closure) => apply_closure_values(closure, arg_values, span, None),
+        } => apply_unbound_named_method(descriptor, &member, implementation, arg_values, &context),
+        Value::Closure(closure) => {
+            apply_closure_values(closure, arg_values, span, context.active.as_ref())
+        }
         value => Err(one_diagnostic(not_callable(callee_span, value.type_name()))),
     }
 }
@@ -3448,8 +3442,9 @@ fn apply_unbound_named_method(
     member: &str,
     implementation: NamedMethodImplementation,
     mut args: Vec<Value>,
-    span: Span,
+    context: &NativeContext,
 ) -> Eval {
+    let span = context.span;
     if args.is_empty() {
         return Err(one_diagnostic(arity_mismatch(span, 1, 1, 0)));
     }
@@ -3471,7 +3466,7 @@ fn apply_unbound_named_method(
             &descriptor.owner,
         )));
     }
-    apply_named_method_for_member(receiver, member, implementation, args, span)
+    apply_named_method_for_member(receiver, member, implementation, args, context)
 }
 
 fn apply_named_method_for_member(
@@ -3479,13 +3474,14 @@ fn apply_named_method_for_member(
     member: &str,
     implementation: NamedMethodImplementation,
     args: Vec<Value>,
-    span: Span,
+    context: &NativeContext,
 ) -> Eval {
+    let span = context.span;
     let Value::BrandedPrimitive { descriptor, .. } = &receiver else {
-        return apply_named_method(receiver, implementation, args, span);
+        return apply_named_method(receiver, implementation, args, context);
     };
     if member != "toText" {
-        return apply_named_method(receiver, implementation, args, span);
+        return apply_named_method(receiver, implementation, args, context);
     }
     // Same re-entry rule as the display-protocol path: a family `toText` body
     // that calls `.toText()` on a derived branded value (e.g. `. % 100`) must
@@ -3499,7 +3495,7 @@ fn apply_named_method_for_member(
     }
     let owner = descriptor.owner.clone();
     display::with_active_to_text_owner(&owner, || {
-        apply_named_method(receiver, implementation, args, span)
+        apply_named_method(receiver, implementation, args, context)
     })
 }
 
@@ -3507,17 +3503,18 @@ fn apply_named_method(
     receiver: Value,
     implementation: NamedMethodImplementation,
     args: Vec<Value>,
-    span: Span,
+    context: &NativeContext,
 ) -> Eval {
+    let span = context.span;
     match implementation {
         NamedMethodImplementation::Declared(implementation) => {
             let mut values = Vec::with_capacity(args.len() + 1);
             values.push(receiver);
             values.extend(args);
-            apply_closure_values(implementation, values, span, None)
+            apply_closure_values(implementation, values, span, context.active.as_ref())
         }
         NamedMethodImplementation::Inherited(implementation) => {
-            apply_inherited_primitive_method(receiver, implementation, args, span)
+            apply_inherited_primitive_method(receiver, implementation, args, context)
         }
     }
 }
@@ -3526,8 +3523,9 @@ fn apply_inherited_primitive_method(
     receiver: Value,
     implementation: Rc<InheritedMethodImplementation>,
     args: Vec<Value>,
-    span: Span,
+    context: &NativeContext,
 ) -> Eval {
+    let span = context.span;
     let descriptor = match &receiver {
         Value::BrandedPrimitive { descriptor, .. } => Rc::clone(descriptor),
         value => {
@@ -3567,7 +3565,7 @@ fn apply_inherited_primitive_method(
             Span::new(0, 0),
             right,
             span,
-            span,
+            context,
         )?
     } else {
         let method = builtin_method(&receiver, &implementation.member, &implementation.env)
@@ -3693,8 +3691,9 @@ fn apply_result_method(
     kind: ResultMethod,
     args: Vec<Value>,
     callee_span: Span,
-    span: Span,
+    context: &NativeContext,
 ) -> Eval {
+    let span = context.span;
     let expected_arity = match kind {
         ResultMethod::IsOk | ResultMethod::IsErr => 0,
         ResultMethod::MapErr
@@ -3735,7 +3734,7 @@ fn apply_result_method(
                     args[0].clone(),
                     callee_span,
                     vec![value.clone()],
-                    NativeContext::without_source(span),
+                    context.at(span),
                 )?;
                 Ok(Value::Tag {
                     name,
@@ -3754,7 +3753,7 @@ fn apply_result_method(
                     args[0].clone(),
                     callee_span,
                     vec![value.clone()],
-                    NativeContext::without_source(span),
+                    context.at(span),
                 )
             } else {
                 Ok(Value::Tag {
@@ -3774,7 +3773,7 @@ fn apply_result_method(
                     args[0].clone(),
                     callee_span,
                     vec![value.clone()],
-                    NativeContext::without_source(span),
+                    context.at(span),
                 )?;
                 Ok(Value::Tag {
                     name,
@@ -3793,14 +3792,20 @@ fn apply_result_method(
                     args[0].clone(),
                     callee_span,
                     vec![value.clone()],
-                    NativeContext::without_source(span),
+                    context.at(span),
                 )
             }
         }
     }
 }
 
-fn apply_stream_method(stream: Stream, kind: StreamMethod, args: Vec<Value>, span: Span) -> Eval {
+fn apply_stream_method(
+    stream: Stream,
+    kind: StreamMethod,
+    args: Vec<Value>,
+    context: &NativeContext,
+) -> Eval {
+    let span = context.span;
     let expected = match kind {
         StreamMethod::Map | StreamMethod::Filter | StreamMethod::Each => 1,
         StreamMethod::Fold => 2,
@@ -3818,48 +3823,46 @@ fn apply_stream_method(stream: Stream, kind: StreamMethod, args: Vec<Value>, spa
     match kind {
         StreamMethod::Map => Ok(Value::Stream(stream.map(args[0].clone()))),
         StreamMethod::Filter => Ok(Value::Stream(stream.filter(args[0].clone()))),
-        StreamMethod::Fold => fold_stream(stream, args[0].clone(), args[1].clone(), span),
+        StreamMethod::Fold => fold_stream(stream, args[0].clone(), args[1].clone(), context),
         StreamMethod::Each => {
             let callback = args[0].clone();
             let mut stream = stream;
-            while let Some(value) = stream.next_value(span)? {
-                apply_callee_values(
-                    callback.clone(),
-                    span,
-                    vec![value],
-                    NativeContext::without_source(span),
-                )?;
+            while let Some(value) = stream.next_value(context)? {
+                apply_callee_values(callback.clone(), span, vec![value], context.at(span))?;
             }
             Ok(Value::unit())
         }
-        StreamMethod::ToArray => materialize_stream(stream, span),
+        StreamMethod::ToArray => materialize_stream(stream, context),
     }
 }
 
-fn fold_stream(mut stream: Stream, mut accumulator: Value, callback: Value, span: Span) -> Eval {
-    while let Some(value) = stream.next_value(span)? {
+fn fold_stream(
+    mut stream: Stream,
+    mut accumulator: Value,
+    callback: Value,
+    context: &NativeContext,
+) -> Eval {
+    let span = context.span;
+    while let Some(value) = stream.next_value(context)? {
         accumulator = apply_callee_values(
             callback.clone(),
             span,
             vec![accumulator, value],
-            NativeContext::without_source(span),
+            context.at(span),
         )?;
     }
     Ok(accumulator)
 }
 
-fn apply_array_flat_map(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval {
+fn apply_array_flat_map(items: Rc<Vec<Value>>, args: Vec<Value>, context: &NativeContext) -> Eval {
+    let span = context.span;
     let [callback] = args.as_slice() else {
         return Err(one_diagnostic(arity_mismatch(span, 1, 1, args.len())));
     };
     let mut values = Vec::new();
     for item in items.iter() {
-        let part = apply_callee_values(
-            callback.clone(),
-            span,
-            vec![item.clone()],
-            NativeContext::without_source(span),
-        )?;
+        let part =
+            apply_callee_values(callback.clone(), span, vec![item.clone()], context.at(span))?;
         let Value::Array(part) = part else {
             return Err(one_diagnostic(array_flat_map_result_type_error(
                 span,
@@ -3871,7 +3874,8 @@ fn apply_array_flat_map(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> 
     Ok(Value::Array(Rc::new(values)))
 }
 
-fn apply_array_fold(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval {
+fn apply_array_fold(items: Rc<Vec<Value>>, args: Vec<Value>, context: &NativeContext) -> Eval {
+    let span = context.span;
     let [initial, callback] = args.as_slice() else {
         return Err(one_diagnostic(arity_mismatch(span, 2, 2, args.len())));
     };
@@ -3881,7 +3885,7 @@ fn apply_array_fold(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval
             callback.clone(),
             span,
             vec![accumulator, value.clone()],
-            NativeContext::without_source(span),
+            context.at(span),
         )?;
     }
     Ok(accumulator)
@@ -3889,7 +3893,13 @@ fn apply_array_fold(items: Rc<Vec<Value>>, args: Vec<Value>, span: Span) -> Eval
 
 /// Folding walks insertion order, so `fold`, `each` and `toArray` all observe
 /// the same sequence a set renders in.
-fn apply_set_method(members: Rc<SetValue>, kind: SetMethod, args: Vec<Value>, span: Span) -> Eval {
+fn apply_set_method(
+    members: Rc<SetValue>,
+    kind: SetMethod,
+    args: Vec<Value>,
+    context: &NativeContext,
+) -> Eval {
+    let span = context.span;
     match kind {
         SetMethod::Fold => {
             let [initial, callback] = args.as_slice() else {
@@ -3901,7 +3911,7 @@ fn apply_set_method(members: Rc<SetValue>, kind: SetMethod, args: Vec<Value>, sp
                     callback.clone(),
                     span,
                     vec![accumulator, member.clone()],
-                    NativeContext::without_source(span),
+                    context.at(span),
                 )?;
             }
             Ok(accumulator)
@@ -3910,22 +3920,22 @@ fn apply_set_method(members: Rc<SetValue>, kind: SetMethod, args: Vec<Value>, sp
             if !args.is_empty() {
                 return Err(one_diagnostic(arity_mismatch(span, 0, 0, args.len())));
             }
-            collect_into_array(CollectSource::Set(members), span)
+            collect_into_array(CollectSource::Set(members), context)
         }
     }
 }
 
-fn materialize_stream(stream: Stream, span: Span) -> Eval {
-    collect_into_array(CollectSource::Stream(stream), span)
+fn materialize_stream(stream: Stream, context: &NativeContext) -> Eval {
+    collect_into_array(CollectSource::Stream(stream), context)
 }
 
 /// The one materialization path. `[..source]`, `stream.toArray()` and
 /// `Array.collect(source)` all reach it, so element order and the
 /// materialization limit are the same fact for all three rather than three
 /// facts that can drift apart.
-fn collect_into_array(source: CollectSource, span: Span) -> Eval {
+fn collect_into_array(source: CollectSource, context: &NativeContext) -> Eval {
     let mut values = Vec::new();
-    append_collection(&mut values, source, span)?;
+    append_collection(&mut values, source, context)?;
     Ok(Value::Array(Rc::new(values)))
 }
 
@@ -3933,7 +3943,8 @@ fn collect_into_array(source: CollectSource, span: Span) -> Eval {
 /// than re-inserting every member; anything else drains through the shared
 /// append path first, so a set inherits the same materialization limit an
 /// array gets.
-fn collect_into_set(source: CollectSource, span: Span) -> Eval {
+fn collect_into_set(source: CollectSource, context: &NativeContext) -> Eval {
+    let span = context.span;
     if let CollectSource::Set(members) = source {
         for member in members.iter() {
             ensure_set_element(member, "Set.collect")
@@ -3942,7 +3953,7 @@ fn collect_into_set(source: CollectSource, span: Span) -> Eval {
         return Ok(Value::Set(members));
     }
     let mut values = Vec::new();
-    append_collection(&mut values, source, span)?;
+    append_collection(&mut values, source, context)?;
     let mut members = SetValue::default();
     for value in values {
         ensure_set_element(&value, "Set.collect")
@@ -3952,17 +3963,27 @@ fn collect_into_set(source: CollectSource, span: Span) -> Eval {
     Ok(Value::Set(Rc::new(members)))
 }
 
-fn append_collection(values: &mut Vec<Value>, source: CollectSource, span: Span) -> Eval<()> {
+fn append_collection(
+    values: &mut Vec<Value>,
+    source: CollectSource,
+    context: &NativeContext,
+) -> Eval<()> {
+    let span = context.span;
     match source {
         CollectSource::Array(part) => append_array(values, &part, span),
         CollectSource::Set(members) => {
             append_exact(values, members.len(), members.iter().cloned(), span)
         }
-        CollectSource::Stream(mut stream) => append_stream(values, &mut stream, span),
+        CollectSource::Stream(mut stream) => append_stream(values, &mut stream, context),
     }
 }
 
-fn append_stream(values: &mut Vec<Value>, stream: &mut Stream, span: Span) -> Eval<()> {
+fn append_stream(
+    values: &mut Vec<Value>,
+    stream: &mut Stream,
+    context: &NativeContext,
+) -> Eval<()> {
+    let span = context.span;
     let maximum_len = MAX_MATERIALIZED_ARRAY_BYTES / std::mem::size_of::<Value>();
     if let Some(additional) = stream.exact_remaining_len() {
         let total = values.len().checked_add(additional);
@@ -3972,7 +3993,7 @@ fn append_stream(values: &mut Vec<Value>, stream: &mut Stream, span: Span) -> Ev
             return Err(one_diagnostic(collection_too_large(span)));
         }
     }
-    while let Some(value) = stream.next_value(span)? {
+    while let Some(value) = stream.next_value(context)? {
         if values.len() >= maximum_len || values.try_reserve(1).is_err() {
             return Err(one_diagnostic(collection_too_large(span)));
         }
@@ -4007,7 +4028,12 @@ fn apply_native(function: NativeFn, arg_values: Vec<Value>, context: NativeConte
     function(&arg_values, context).map_err(|message| one_diagnostic(platform_error(span, message)))
 }
 
-fn apply_collect_constructor(args: Vec<Value>, target: CollectTarget, span: Span) -> Eval {
+fn apply_collect_constructor(
+    args: Vec<Value>,
+    target: CollectTarget,
+    context: &NativeContext,
+) -> Eval {
+    let span = context.span;
     let [source] = <[Value; 1]>::try_from(args)
         .map_err(|args| one_diagnostic(arity_mismatch(span, 1, 1, args.len())))?;
     let type_name = source.type_name();
@@ -4020,8 +4046,8 @@ fn apply_collect_constructor(args: Vec<Value>, target: CollectTarget, span: Span
         )));
     };
     match target {
-        CollectTarget::Array => collect_into_array(source, span),
-        CollectTarget::Set => collect_into_set(source, span),
+        CollectTarget::Array => collect_into_array(source, context),
+        CollectTarget::Set => collect_into_set(source, context),
     }
 }
 
@@ -4029,8 +4055,9 @@ fn apply_range_constructor(
     args: Vec<Value>,
     inclusive: bool,
     materialize: bool,
-    span: Span,
+    context: &NativeContext,
 ) -> Eval {
+    let span = context.span;
     let (start, end, options) = match args.as_slice() {
         [start, end] => (start, end, None),
         [start, end, options] => (start, end, Some(options)),
@@ -4060,7 +4087,7 @@ fn apply_range_constructor(
         step,
         inclusive,
         materialize,
-        span,
+        context,
     )
 }
 
@@ -4105,12 +4132,16 @@ fn apply_closure(closure: Closure, args: &[Expr], span: Span, env: &Environment)
     apply_closure_values(closure, arg_values, span, Some(env))
 }
 
-/// `active` is the environment actually driving this call, when one is
-/// available --- see `Environment::call_child`. Callers reached only through
-/// `NativeContext`, which does not carry an environment, pass `None` and fall
-/// back to the closure's own captured fuel/registry; closing that gap is
-/// unfinished, tracked as a known limitation rather than silently assumed
-/// fixed.
+/// `active` is the environment actually driving this call --- see
+/// `Environment::call_child`. It arrives either directly (an ordinary call, at
+/// which point the evaluator has the environment in hand) or through
+/// `NativeContext`, which is what carries it across a native that calls back
+/// into a closure: `flatMap`, `fold`, a stream stage, a family method.
+///
+/// `None` is now only the genuinely environment-free boundaries --- the public
+/// `call_value`, `Stream`'s `Iterator` impl, the display protocol, and host
+/// natives --- where there is no demand to inherit from and the closure's own
+/// captured fuel and registry are all there is.
 fn apply_closure_values(
     closure: Closure,
     arg_values: Vec<Value>,
@@ -4355,7 +4386,11 @@ fn eval_array(entries: &[RecordEntry], env: &Environment) -> Eval {
                 // array through `Set` -> `Array` collection, which says so.
                 match CollectSource::of(source) {
                     Some(source @ (CollectSource::Array(_) | CollectSource::Stream(_))) => {
-                        append_collection(&mut values, source, source_expr.span)?;
+                        append_collection(
+                            &mut values,
+                            source,
+                            &env.native_context(source_expr.span),
+                        )?;
                     }
                     _ => {
                         return Err(one_diagnostic(record_type_error(
@@ -4961,7 +4996,14 @@ fn unbound_binary_operator(operator: &'static str) -> Value {
         let left = erase_primitive_brand(args[0].clone());
         let right = erase_primitive_brand(args[1].clone());
         let span = Span::new(0, 0);
-        match apply_binary(left, operator, span, right, span, span) {
+        match apply_binary(
+            left,
+            operator,
+            span,
+            right,
+            span,
+            &NativeContext::without_source(span),
+        ) {
             Ok(value) => Ok(value),
             Err(Flow::Fail(diagnostics)) => Err(diagnostics
                 .into_iter()
@@ -7011,7 +7053,14 @@ fn eval_binary(
                 )));
             };
             let step = default_range_step(&start, &end);
-            range_value(start, end, step, operator == "..=", false, span)
+            range_value(
+                start,
+                end,
+                step,
+                operator == "..=",
+                false,
+                &env.native_context(span),
+            )
         }
         _ => {
             let left_value = eval_expr_many(left, env)?;
@@ -7022,7 +7071,7 @@ fn eval_binary(
                 operator_span,
                 right_value,
                 right.span,
-                span,
+                &env.native_context(span),
             )
         }
     }
@@ -7034,12 +7083,13 @@ fn range_value(
     step: Int,
     inclusive: bool,
     materialize: bool,
-    span: Span,
+    context: &NativeContext,
 ) -> Eval {
+    let span = context.span;
     let stream = Stream::range(start, end, step, inclusive)
         .map_err(|StreamError::ZeroStep| one_diagnostic(range_step_zero(span)))?;
     if materialize {
-        materialize_stream(stream, span)
+        materialize_stream(stream, context)
     } else {
         Ok(Value::Stream(stream))
     }
@@ -7106,13 +7156,14 @@ fn apply_binary(
     operator_span: Span,
     right: Value,
     right_span: Span,
-    span: Span,
+    context: &NativeContext,
 ) -> Eval {
+    let span = context.span;
     if let Value::NamedRecord { descriptor, .. } | Value::BrandedPrimitive { descriptor, .. } =
         &left
         && let Some(implementation) = descriptor.methods.get(operator).cloned()
     {
-        return apply_named_method(left, implementation, vec![right], span);
+        return apply_named_method(left, implementation, vec![right], context);
     }
     match operator {
         "+" => add(left, right, span).map_err(one_diagnostic),

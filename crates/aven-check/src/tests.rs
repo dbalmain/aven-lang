@@ -3135,19 +3135,41 @@ fn mixed_number_tuple_and_match_do_not_collapse_to_named_float() {
             .map(Type::render),
         Some("1 | 1.0".to_owned())
     );
+    // `g` keeps the union as its type, and both annotations are satisfied ---
+    // `Float` by the type, `Int` by the proof that this particular call
+    // produced the integer arm. The two claims are separate, which is why the
+    // rendering is asserted above rather than inferred from the acceptance.
     assert_eq!(
         matching_codes(&match_check.diagnostics, codes::ty::MISMATCH),
-        1,
-        "match 1 | 1.0 into Int must fail; Float must pass: {:?}",
+        0,
+        "a call known to take the integer arm satisfies `Int`: {:?}",
         match_check.diagnostics
     );
+
+    // Without a knowable argument the union is all there is, and `Int` fails.
+    let unknown_source = concat!(
+        "f = (x) =>\n",
+        "  x ?>\n",
+        "    0 => 1\n",
+        "    _ => 1.0\n",
+        "h = (n: Int) =>\n",
+        "  asInt : Int = f(n)\n",
+        "  asInt\n",
+    );
+    let unknown_check = check_module(&parse_module(unknown_source).module);
+    assert_eq!(
+        matching_codes(&unknown_check.diagnostics, codes::ty::MISMATCH),
+        1,
+        "an unfoldable call keeps the union: {:?}",
+        unknown_check.diagnostics
+    );
     assert!(
-        match_check
+        unknown_check
             .diagnostics
             .iter()
             .any(|d| d.message.contains("Int") && d.message.contains("Float")),
-        "expected Int/Float mismatch for asInt: {:?}",
-        match_check.diagnostics
+        "expected Int/Float mismatch for the unfoldable asInt: {:?}",
+        unknown_check.diagnostics
     );
 }
 
@@ -7713,15 +7735,34 @@ fn checked_integer_division_narrows_on_static_divisors() {
         accepted.diagnostics
     );
 
+    // The inferred type is unchanged by any of this: a demand met is not a
+    // type rewritten, so a division the static-divisor rule does not narrow is
+    // still `?Int` wherever nothing asks it to be something else --- even
+    // where evidence could have answered such an ask.
+    let optional_source = "x : Int = 7\nn : Int = 2\nquotient = x.div(n)\n";
+    let optional = check_module(&parse_module(optional_source).module);
+    assert!(
+        optional.diagnostics.is_empty(),
+        "{:?}",
+        optional.diagnostics
+    );
+    assert_eq!(
+        optional
+            .type_at(binding_value_named(&parse_module(optional_source).module, "quotient").span)
+            .map(Type::render),
+        Some("?Int".to_owned())
+    );
+
     for source in [
         // A divisor that is statically zero never narrows.
         "x : Int = 7\nvalue : Int = x.div(0)\n",
         "x : Int = 7\nvalue : Int = x.mod(0)\n",
-        // Neither does one the checker cannot prove non-zero.
-        "x : Int = 7\nn : Int = 2\nvalue : Int = x.div(n)\n",
-        "x : Int = 7\nn : Int = 2\nvalue : Int = x.mod(n)\n",
-        // A union with a zero member is not proven non-zero.
-        "mixed : 2 | 0 = 2\nx : Int = 7\nvalue : Int = x.div(mixed)\n",
+        // Nor does one that only exists at runtime. `n : Int = 2` used to
+        // belong here too, on the rule that an unasked-for proof could not
+        // discharge optionality; a known divisor now does, so the surviving
+        // negative is a divisor the checker genuinely cannot see.
+        "f = (n: Int) =>\n  value : Int = 7.div(n)\n  value\n",
+        "f = (n: Int) =>\n  value : Int = 7.mod(n)\n  value\n",
         // Only the builtin `Int` pair narrows. A named family carries its own
         // `div`, whose empty case is not the builtin one to rule out.
         "Money = Int {\n  cents(): Int => .\n}\nprice : Money = 2599\nhalf : Int = price.div(2)\n",
@@ -7773,12 +7814,12 @@ fn checked_integer_division_narrows_through_an_unannotated_receiver() {
         // for; blessing it would be the obvious way to get this wrong.
         "by_zero = (n) => n.div(0)\nvalue : Int = by_zero(10)\n",
         "by_zero = (n) => n.mod(0)\nvalue : Int = by_zero(10)\n",
-        // An unproven divisor keeps `?Int` on this path too.
-        "divisor : Int = 2\nunproven = (n) => n.div(divisor)\nvalue : Int = unproven(10)\n",
-        "divisor : Int = 2\nunproven = (n) => n.mod(divisor)\nvalue : Int = unproven(10)\n",
-        // The divisor is a parameter of the enclosing lambda, so the body has
-        // no evidence about it at all.
-        "unproven = (n, d) => n.div(d)\nvalue : Int = unproven(10, 2)\n",
+        // A divisor that only exists at runtime. The two module-level
+        // `divisor : Int = 2` cases that used to sit here are now accepted
+        // through evidence, since the call really does produce a value; a
+        // proof needs an argument the checker can evaluate, and this has none.
+        "call = (d: Int) =>\n  unproven = (n) => n.div(d)\n  value : Int = unproven(10)\n  value\n",
+        "call = (d: Int) =>\n  unproven = (n) => n.mod(d)\n  value : Int = unproven(10)\n  value\n",
     ] {
         let output = parse_module(source);
         let check = check_module(&output.module);
@@ -15576,24 +15617,38 @@ fn a_declared_literal_return_type_stays_literal() {
 #[test]
 fn a_known_present_optional_satisfies_a_nonoptional_demand() {
     // A present optional is represented by its payload, so proving it against
-    // a nonoptional type is just proving the payload. The ordinary function is
-    // the control: identical body, no `@`, and the demand must fail — which is
-    // what shows the proof, rather than some widening rule, is doing the work.
-    for (definition, expected_diagnostics) in [
-        ("first = (@n: Int) => [n][0]\n", 0),
-        ("first = (n: Int) => [n][0]\n", 1),
+    // a nonoptional type is just proving the payload. The `@` spelling and the
+    // ordinary one now behave alike: evidence is evidence whoever asked for it.
+    //
+    // The control is a call the checker cannot evaluate. `first(m)` has the
+    // same signature and the same body and proves nothing, which is what shows
+    // a proof rather than some widening rule is doing the work.
+    for definition in [
+        "first = (@n: Int) => [n][0]\n",
+        "first = (n: Int) => [n][0]\n",
     ] {
         for demand in ["Int", "7"] {
             let source = format!("{definition}checked: {demand} = first(7)\n");
             let checked = check_module(&parse_module(&source).module);
-            assert_eq!(
-                checked.diagnostics.len(),
-                expected_diagnostics,
+            assert!(
+                !checked.diagnostics.iter().any(Diagnostic::is_error),
                 "{source}: {:?}",
                 checked.diagnostics
             );
         }
     }
+
+    let unprovable = check_module(
+        &parse_module(
+            "first = (n: Int) => [n][0]\ncall = (m: Int) =>\n  checked: Int = first(m)\n  checked\n",
+        )
+        .module,
+    );
+    assert!(
+        has_diagnostic_code(&unprovable.diagnostics, codes::ty::MISMATCH),
+        "an unevaluable call keeps its optional type: {:?}",
+        unprovable.diagnostics
+    );
 }
 
 #[test]
@@ -15673,23 +15728,29 @@ fn knowledge_does_not_reach_a_binding_that_runs_before_it() {
 }
 
 #[test]
-fn an_ordinary_call_does_not_certify_a_literal_demand() {
-    // The discriminating case for "proof needs provenance". `f(0)` really does
-    // evaluate to 1, so an implementation that evaluated on demand would accept
-    // `Int` here. Only an explicit comptime demand may establish knowledge.
-    let source = concat!(
-        "f = (x) =>\n",
-        "  x ?>\n",
-        "    0 => 1\n",
-        "    _ => 1.0\n",
-        "g = f(0)\n",
-        "asInt: Int = g\n",
-    );
-    let checked = check_module(&parse_module(source).module);
+fn an_ordinary_call_certifies_only_what_it_can_evaluate() {
+    // `f(0)` evaluates to 1 and answers `Int`; `f(n)` for a runtime `n`
+    // evaluates to nothing and answers nothing. The pair is what distinguishes
+    // a fold from a guess --- an implementation that assumed the first arm
+    // would accept both.
+    const F: &str = concat!("f = (x) =>\n", "  x ?>\n", "    0 => 1\n", "    _ => 1.0\n",);
+    let folded = check_module(&parse_module(&format!("{F}g = f(0)\nasInt: Int = g\n")).module);
     assert!(
-        has_diagnostic_code(&checked.diagnostics, codes::ty::MISMATCH),
-        "an ordinary call is not a proof: {:?}",
-        checked.diagnostics
+        !folded.diagnostics.iter().any(Diagnostic::is_error),
+        "a call the checker can evaluate answers the demand: {:?}",
+        folded.diagnostics
+    );
+
+    let unfolded = check_module(
+        &parse_module(&format!(
+            "{F}h = (n: Int) =>\n  asInt: Int = f(n)\n  asInt\n"
+        ))
+        .module,
+    );
+    assert!(
+        has_diagnostic_code(&unfolded.diagnostics, codes::ty::MISMATCH),
+        "a runtime argument is not a proof: {:?}",
+        unfolded.diagnostics
     );
 }
 
@@ -15774,14 +15835,21 @@ fn comptime_demand_does_not_reuse_a_later_binding_memoized_before_an_early_initi
 /// has always been guarded — `bad: Int = m.get(k)` reports `Int` vs `?Int` — but
 /// the literal-union side had no arm at all, so a `?Int` silently inhabited the
 /// annotation `1`, and even a `Text` literal annotation accepted it.
+///
+/// The lookup key is deliberately one the checker cannot evaluate. A *known*
+/// present optional now satisfies a nonoptional demand
+/// (`a_known_present_optional_discharges_optionality`), so a literal key would
+/// test the proof path rather than the type rule this pins: the two must both
+/// hold, and only an unfoldable receiver isolates the second.
 #[test]
 fn a_literal_annotation_rejects_an_optional_value() {
     for (annotation, expected) in [
         ("1", "expected `1`, found `?Int`"),
         ("\"x\"", "expected `\"x\"`, found `?Int`"),
     ] {
-        let source =
-            format!("m = Map.from([(\"a\", 1)])\ngot = m.get(\"a\")\nbad: {annotation} = got\n");
+        let source = format!(
+            "at = (k: Text) =>\n  m = Map.from([(\"a\", 1)])\n  got = m.get(k)\n  bad: {annotation} = got\n  bad\n"
+        );
         let check = check_module(&parse_module(&source).module);
         assert!(
             check
@@ -16285,6 +16353,141 @@ fn an_ordinary_call_proves_a_literal_demand() {
     ));
 }
 
+/// An omitted parameter's default is the callee's expression, so it resolves
+/// in the callee's scope.
+///
+/// `f`'s `= x` was written beside the module `x = 1` and closed over it. A
+/// caller that happens to hold an `x := 2` has a different binding of the same
+/// spelling, and calling `f()` from there still passes 1 --- which is what the
+/// program does when it runs.
+///
+/// The pair is the point. Certifying nothing at all would pass the rejection
+/// half on its own, so the accepting half is what shows the default is still
+/// evaluated, and evaluated against the right binding.
+#[test]
+fn a_comptime_default_resolves_at_its_definition_site() {
+    const DEFAULT: &str = "x: Int = 1\nf = (@k: Int = x): Int => k\n";
+
+    // No caller local in sight: the baseline the two halves below are measured
+    // against.
+    assert_checks(&format!("{DEFAULT}checked: 1 = f()\nchecked\n"));
+
+    const SHADOWED: &str =
+        "result: Int =\n  x := 2\n  checked: {} = f()\n  checked + x - x\nresult\n";
+    assert_checks(&format!("{DEFAULT}{}", SHADOWED.replace("{}", "1")));
+    assert_rejects(&format!("{DEFAULT}{}", SHADOWED.replace("{}", "2")));
+}
+
+/// The same rule for a body's free name rather than a default's.
+///
+/// `f`'s body reads the module `x`, and a caller's `x := 2` is not that
+/// binding, so the specialization of `f(2)` is `1 + 2`.
+#[test]
+fn a_callee_body_reads_the_module_binding_it_closed_over() {
+    const SOURCE: &str = "x: Int = 1\nf = (@k: Int): Int => x + k\nresult: Int =\n  x := 2\n  checked: {} = f(2)\n  checked + x - x\nresult\n";
+
+    assert_checks(&SOURCE.replace("{}", "3"));
+    assert_rejects(&SOURCE.replace("{}", "4"));
+}
+
+/// A caller local never stands in for an ordinary parameter of the callee.
+///
+/// `n` is `f`'s second parameter and holds whatever the call passes. A
+/// same-named local at the call site says nothing about it, so nothing about
+/// the call is certified --- not even when the local's value would have made
+/// the annotation true, which is the case written here.
+#[test]
+fn a_caller_local_does_not_stand_in_for_a_callee_parameter() {
+    assert_rejects(
+        "f = (@k: Int, n: Int): Int => n + k\nresult: Int =\n  n = 1\n  checked: 3 = f(2, n)\n  checked + n - n\nresult\n",
+    );
+}
+
+/// A default reaching a primitive family is refused however the caller spells
+/// its own bindings.
+///
+/// The guard has to ask about the *callee's* `price`, which is branded, and
+/// not the caller's, which is an ordinary `Int`. Analysing the default against
+/// the caller's scope finds a plain 99 and certifies `"99"` for a program that
+/// prints `money` --- a correct guard asked of the wrong bindings.
+///
+/// The `price := 100` case is the discriminating one: it distinguishes a guard
+/// that looked in the right place from one that merely failed to find a value,
+/// because the wrong scope yields `"100"` rather than silence.
+#[test]
+fn a_family_reaching_default_is_refused_whatever_the_caller_binds() {
+    const FAMILY: &str = "Money = Int {\n  toText(): Text => \"money\"\n}\nprice: Money = 99\nshow = (@s: Text = \"${price}\"): Text => s\n";
+
+    for caller in ["", "  price := 99\n", "  price := 100\n"] {
+        assert_rejects(&format!(
+            "{FAMILY}result: Text =\n{caller}  checked: \"99\" = show()\n  checked\nresult\n"
+        ));
+    }
+
+    // The same shape with an unbranded module binding still folds, so the
+    // refusal is about the family and not about defaults or shadowing.
+    assert_checks(
+        "n = 99\nshow = (@s: Text = \"${n}\"): Text => s\nresult: Text =\n  n := 99\n  checked: \"99\" = show()\n  checked\nresult\n",
+    );
+}
+
+/// A family dependency survives any depth of record nesting.
+///
+/// `{ @{"a"} -> k; price }` holds its shorthand inside an iteration body, and
+/// an iteration body holds entries rather than expressions. A name walk that
+/// goes through expressions alone therefore loses `price` at depth one and
+/// certifies `"99"` for a program that prints `money`; a walk with a
+/// one-level exception loses it at depth two instead. The table is here so
+/// that adding nesting cannot silently restore the bug.
+#[test]
+fn a_nested_shorthand_keeps_its_family_dependency() {
+    const FAMILY: &str = "Money = Int {\n  toText(): Text => \"money\"\n}\nprice: Money = 99\n";
+
+    // Depth 0 is the plain shorthand; each further level wraps the last in
+    // another comprehension, which is where the walk used to stop.
+    for shape in [
+        "{ NAME }",
+        "{ @{\"a\"} -> k; NAME }",
+        "{ @{\"a\"} -> k; @{\"b\"} -> j; NAME }",
+    ] {
+        let branded = shape.replace("NAME", "price");
+        assert_rejects(&format!(
+            "{FAMILY}show = (): Text => \"${{{branded}.price}}\"\nchecked: \"99\" = show()\nchecked\n"
+        ));
+
+        // The identical shape over an unbranded binding proves `"99"`, so each
+        // row rejects because of the family rather than because the nesting
+        // itself defeated the fold.
+        let plain = shape.replace("NAME", "plain");
+        assert_checks(&format!(
+            "plain = 99\nshow = (): Text => \"${{{plain}.plain}}\"\nchecked: \"99\" = show()\nchecked\n"
+        ));
+    }
+}
+
+/// A demand written inside a lambda cannot read module bindings at all.
+///
+/// A lambda body runs at some future call, so the checker has no initializer
+/// frontier for it and refuses every module binding a demand there reaches ---
+/// `comptime(x)` no less than a callee's `= x` default. This is a support
+/// limitation of the execution-context filter and is pinned here because it is
+/// easy to mistake for the scope bug next door: the repair above makes
+/// `f = (@k: Int = x)` resolve `x` to the module binding, and inside a lambda
+/// that resolution then has nothing to read. Widening it needs an
+/// initialization frontier for deferred code, not a change to scoping.
+#[test]
+fn a_demand_inside_a_lambda_cannot_read_a_module_binding() {
+    // Both spellings, so the limitation is visibly about the demand's
+    // position and not about defaults.
+    assert_rejects("x: Int = 1\ng = () =>\n  checked: 1 = comptime(x)\n  checked\ng()\n");
+    assert_rejects(
+        "x: Int = 1\nf = (@k: Int = x): Int => k\ng = () =>\n  checked: 1 = f()\n  checked\ng()\n",
+    );
+
+    // The same demands at the top level, where there is a frontier, fold.
+    assert_checks("x: Int = 1\nchecked: 1 = comptime(x)\nchecked\n");
+}
+
 /// A demand reached through a local helper, and through what that helper
 /// captured, folds the same way.
 #[test]
@@ -16297,37 +16500,70 @@ fn an_ordinary_call_proves_a_demand_through_a_local_helper() {
     );
 }
 
-/// An unasked-for proof answers a literal demand and nothing wider.
+/// A proof answers whatever demand the known value satisfies, asked for or not.
 ///
-/// `f(0)` really is `1`, so an implementation that folded without regard to
-/// what was being demanded would accept `Int` here. It stays rejected because
-/// `Int` asks about the expression's contract rather than about this value:
-/// accepting it would mean the annotation held only while the checker could
-/// still fold `f`, so adding a runtime dependency anywhere inside `f` would
-/// break an annotation that was never wrong. Writing `comptime(...)` is how an
-/// author asks for it anyway.
+/// `f(0)` really is `1`, and `1` sits inside `Int`, so the typed use is
+/// answered --- the same answer `comptime(f(0))` gives, because the value is
+/// the same value. An earlier rule let an unasked-for proof answer only a
+/// literal demand; that is the restriction this decision removed, accepting
+/// that an upstream change from a known value to runtime input can break a
+/// distant typed use that relied on the proof.
+///
+/// What does not change is `g`'s type. It is `1 | 1.0` here and stays `1 | 1.0`
+/// --- see `mixed_number_tuple_and_match_do_not_collapse_to_named_float`, which
+/// asserts the rendering alongside the acceptance. A demand met is not a type
+/// rewritten.
+///
+/// The discriminating case is the last: the same call with an argument the
+/// checker cannot see. Nothing is known there, so nothing is answered.
 #[test]
-fn an_unasked_proof_answers_a_literal_demand_and_nothing_wider() {
+fn a_proof_answers_a_typed_use_of_the_value_it_proves() {
     const F: &str = "f = (x) =>\n  x ?>\n    0 => 1\n    _ => 1.0\n";
 
     assert_checks(&format!("{F}g = f(0)\nasOne: 1 = g\nasOne\n"));
-    assert_rejects(&format!("{F}g = f(0)\nasInt: Int = g\nasInt\n"));
+    assert_checks(&format!("{F}g = f(0)\nasInt: Int = g\nasInt\n"));
     assert_checks(&format!("{F}g = comptime(f(0))\nasInt: Int = g\nasInt\n"));
+
+    // The wrong literal is still wrong, so acceptance is about this value
+    // rather than about the demand being waived.
+    assert_rejects(&format!("{F}g = f(0)\nasTwo: 2 = g\nasTwo\n"));
+    // And an argument the checker cannot fold proves nothing at all.
+    assert_rejects(&format!(
+        "{F}h = (n: Int) =>\n  asInt: Int = f(n)\n  asInt\nh(0)\n"
+    ));
 }
 
-/// An unasked-for proof does not discharge optionality, however literal the
-/// demand.
+/// A known *present* optional satisfies a nonoptional demand, with no
+/// assertion operator and no `comptime(...)` wrapper.
 ///
-/// That a value exists is a safety claim, not a question about which literal
-/// it is, and it is the one an author should have to make deliberately. The
-/// lookup really does find `1`; `comptime(...)` is where saying so belongs.
+/// The lookup finds `1`. The evaluator represents a present optional as its
+/// payload, so the evidence already *is* the payload and the only question is
+/// whether it fits the annotation. An earlier rule made this a safety claim an
+/// author had to restate; the decision here is that a value the program is
+/// known to have may be used where the program requires one.
+///
+/// Absence is the discriminating case, and it is the reason this is not a
+/// hole: `m.get("b")` is known to find nothing, has no literal spelling, and
+/// satisfies no nonoptional demand. Neither does a key the checker cannot
+/// evaluate.
 #[test]
-fn an_unasked_proof_does_not_discharge_optionality() {
+fn a_known_present_optional_discharges_optionality() {
     const MAP: &str = "m = Map.from([(\"a\", 1)])\n";
 
-    assert_rejects(&format!("{MAP}found: 1 = m.get(\"a\")\nfound\n"));
+    assert_checks(&format!("{MAP}found: 1 = m.get(\"a\")\nfound\n"));
+    assert_checks(&format!("{MAP}found: Int = m.get(\"a\")\nfound\n"));
     assert_checks(&format!("{MAP}found: 1 = comptime(m.get(\"a\"))\nfound\n"));
     assert_checks(&format!("{MAP}found: Int = m.get(\"a\") ?? 0\nfound\n"));
+
+    // Known absence proves nothing, and neither does an unknown key.
+    assert_rejects(&format!("{MAP}found: Int = m.get(\"b\")\nfound\n"));
+    assert_rejects(&format!(
+        "{MAP}at = (k: Text) =>\n  found: Int = m.get(k)\n  found\nat(\"a\")\n"
+    ));
+    // The payload must still fit the annotation.
+    assert_rejects(&format!("{MAP}found: 2 = m.get(\"a\")\nfound\n"));
+    // And the binding's own type is unchanged by any of it.
+    assert_rejects(&format!("{MAP}found: Text = m.get(\"a\")\nfound\n"));
 }
 
 /// Folding stops at a primitive family, the same way an explicit demand does.

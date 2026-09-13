@@ -507,7 +507,12 @@ impl<'a> Checker<'a> {
     /// be cached; module bindings are followed through `module_closure`, which
     /// is why a file's worth of definitions is walked once rather than once
     /// per demand.
-    fn walk_demand_reach(&self, expr: &Expr, mut visit: impl FnMut(DemandReach<'_>) -> bool) {
+    fn walk_demand_reach(
+        &self,
+        expr: &Expr,
+        scope: DemandScope,
+        mut visit: impl FnMut(DemandReach<'_>) -> bool,
+    ) {
         let mut seen = HashSet::new();
         let mut pending = vec![expr];
         let mut names = Vec::new();
@@ -526,7 +531,7 @@ impl<'a> Checker<'a> {
                 // between the two. Gated on a hash lookup, because the scan is
                 // proportional to the enclosing block and most names are not
                 // local at all.
-                let local = self.local_types.has_value(name);
+                let local = scope == DemandScope::Caller && self.local_types.has_value(name);
                 if local {
                     for (local_name, value) in self.local_types.values_in_scope() {
                         if local_name == name {
@@ -560,9 +565,9 @@ impl<'a> Checker<'a> {
     /// walking the demanded expression together with the definitions it can
     /// reach, annotations included, catches every case. Over-refusal costs an
     /// error message; under-refusal costs a wrong answer.
-    fn demand_reaches_primitive_family(&self, expr: &Expr) -> bool {
+    fn demand_reaches_primitive_family(&self, expr: &Expr, scope: DemandScope) -> bool {
         let mut found = false;
-        self.walk_demand_reach(expr, |reach| {
+        self.walk_demand_reach(expr, scope, |reach| {
             found = match reach {
                 DemandReach::Name(name) => self.names_a_primitive_family(name),
                 DemandReach::Module(closure) => closure.reaches_primitive_family,
@@ -600,9 +605,15 @@ impl<'a> Checker<'a> {
             return None;
         }
         let value = self
-            .evaluate_demanded_expression(env, expr, &HashMap::new(), OPPORTUNISTIC_FUEL, true)
+            .evaluate_demanded_expression(
+                env,
+                expr,
+                &HashMap::new(),
+                OPPORTUNISTIC_FUEL,
+                DemandScope::Caller,
+            )
             .ok()?;
-        knowledge::Known::from_value_with(&value, knowledge::Provenance::Opportunistic)
+        knowledge::Known::from_value(&value)
     }
 
     /// The preflight: decide whether a call could possibly fold, before paying
@@ -648,7 +659,7 @@ impl<'a> Checker<'a> {
         }
 
         let mut worth = true;
-        self.walk_demand_reach(expr, |reach| {
+        self.walk_demand_reach(expr, DemandScope::Caller, |reach| {
             worth = match reach {
                 DemandReach::Name(name) => {
                     !self.demand_blocks_name(env, name) && !self.names_a_primitive_family(name)
@@ -694,8 +705,9 @@ impl<'a> Checker<'a> {
         env: &TypeEnv,
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
+        scope: DemandScope,
     ) -> Result<aven_eval::Value, Diagnostic> {
-        self.evaluate_demanded_expression(env, expr, bindings, DEMAND_FUEL, true)
+        self.evaluate_demanded_expression(env, expr, bindings, DEMAND_FUEL, scope)
     }
 
     /// Evaluate a resolved module (or imported) function's body: never through
@@ -715,7 +727,7 @@ impl<'a> Checker<'a> {
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
     ) -> Result<aven_eval::Value, Diagnostic> {
-        self.evaluate_demanded_expression(env, expr, bindings, DEMAND_FUEL, false)
+        self.evaluate_demanded_expression(env, expr, bindings, DEMAND_FUEL, DemandScope::Callee)
     }
 
     /// The same, with the budget the caller is entitled to.
@@ -726,18 +738,18 @@ impl<'a> Checker<'a> {
     /// file spent the allowance first --- whether a program checks cannot
     /// depend on how much folding happened above it.
     ///
-    /// `include_caller_scope` says whether the expression is lexically part
-    /// of the current local scope (an argument, an ordinary block
-    /// expression) and so may see this scope's locals, or is a resolved
-    /// callee's body evaluated at a distance, which may not.
+    /// `scope` says which lexical environment the expression's free names
+    /// resolve in, and is the same value the dependency walk was given for
+    /// this expression. See `DemandScope`.
     fn evaluate_demanded_expression(
         &self,
         env: &TypeEnv,
         expr: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
         fuel: u64,
-        include_caller_scope: bool,
+        scope: DemandScope,
     ) -> Result<aven_eval::Value, Diagnostic> {
+        let include_caller_scope = scope == DemandScope::Caller;
         if self.imports.prelude_requires_elaboration() {
             return Err(Diagnostic::error("prelude value evaluation requires runtime elaborations that are not yet available at compile time")
                 .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
@@ -801,16 +813,21 @@ impl<'a> Checker<'a> {
         // an initializer is not that: it has a value the demand may compute, so
         // it is a definition above rather than a blocked name. Blocking it too
         // was what kept a demand inside a function from seeing its own locals.
-        // A callee body evaluated at a distance keeps every caller local
-        // blocked instead, since none of them are its own.
-        let mut blocked = self
-            .local_types
-            .inference_env()
-            .into_keys()
-            .collect::<HashSet<_>>();
+        //
+        // Which locals those are is `scope`'s question. A caller-scoped demand
+        // blocks the caller's valueless locals. A callee-scoped one — a body,
+        // or a default for an omitted parameter — blocks the *callee's* own
+        // parameters, and says nothing whatever about the caller's locals:
+        // they are not merely unknown to it, they are not its bindings at all,
+        // so a name it shares with one must still reach the module binding the
+        // callee was written against. Blocking by caller spelling would leave
+        // `f = (@k: Int = x)` unable to see the module `x` it closed over
+        // merely because some caller happened to write `x := 2`.
+        let mut blocked = HashSet::new();
         blocked.extend(env.keys().cloned());
-        blocked.extend(self.pattern_bindings.keys().cloned());
-        if include_caller_scope {
+        if scope == DemandScope::Caller {
+            blocked.extend(self.local_types.inference_env().into_keys());
+            blocked.extend(self.pattern_bindings.keys().cloned());
             for (name, _) in self.local_values_in_scope() {
                 blocked.remove(name);
             }
@@ -3739,7 +3756,12 @@ impl<'a> Checker<'a> {
                 // published runtime signature remains valid if no refinement
                 // can be computed, unlike a user function's explicit `@` demand.
                 HostComptimeParam::Value(_) => {
-                    match self.evaluate_comptime_param_argument(env, arg, &bindings) {
+                    match self.evaluate_comptime_param_argument(
+                        env,
+                        arg,
+                        &bindings,
+                        DemandScope::Caller,
+                    ) {
                         ComptimeDemand::Known(argument) => Some(argument.value),
                         ComptimeDemand::Deferred
                         | ComptimeDemand::Unsupported(_)
@@ -4152,7 +4174,7 @@ impl<'a> Checker<'a> {
     ) -> LabelSetEvaluation {
         let bindings = self.current_comptime_value_bindings();
         if let ComptimeDemand::Known(argument) =
-            self.evaluate_comptime_param_argument(env, arg, &bindings)
+            self.evaluate_comptime_param_argument(env, arg, &bindings, DemandScope::Caller)
             && let comptime::ComptimeValue::LabelSet(labels) = argument.value
         {
             return LabelSetEvaluation::Labels(labels);
@@ -4300,11 +4322,20 @@ impl<'a> Checker<'a> {
                         })
                 })
                 .flatten();
-            let arg_env = if index < args.len() { env } else { &body_env };
-            let arg_bindings = if index < args.len() {
+            let supplied = index < args.len();
+            let arg_env = if supplied { env } else { &body_env };
+            let arg_bindings = if supplied {
                 &runtime_value_bindings
             } else {
                 &body_comptime_values
+            };
+            // A supplied argument was written here and sees this scope. An
+            // omitted one falls back to the callee's default, which was written
+            // at the definition site and never saw this scope at all.
+            let arg_scope = if supplied {
+                DemandScope::Caller
+            } else {
+                DemandScope::Callee
             };
             // A family-tainted argument must never reach the evaluator at
             // all: its value would go on to select a match arm or a domain
@@ -4315,25 +4346,15 @@ impl<'a> Checker<'a> {
             // argument, defaults included, so an omitted `= "${price}"`
             // default is caught the same way a written one would be.
             let family_tainted =
-                reflected_default.is_none() && self.demand_reaches_primitive_family(arg);
+                reflected_default.is_none() && self.demand_reaches_primitive_family(arg, arg_scope);
             let demand = match reflected_default {
                 Some(argument) => ComptimeDemand::Known(argument),
                 None if family_tainted => {
-                    let diagnostic = Diagnostic::error(
-                        "this argument's value cannot be certified at compile time",
-                    )
-                    .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
-                    .with_label(Label::primary(
-                        arg.span,
-                        "reaches a primitive family, whose rendering compile-time evaluation cannot reproduce",
-                    ))
-                    .with_note(
-                        "this is a support limitation, not a rejection of the program: \
-                         family-dependent compile-time evaluation is not yet implemented",
-                    );
-                    ComptimeDemand::Failed(vec![diagnostic])
+                    ComptimeDemand::Failed(vec![primitive_family_demand_unsupported(arg.span)])
                 }
-                None => self.evaluate_comptime_param_argument(arg_env, arg, arg_bindings),
+                None => {
+                    self.evaluate_comptime_param_argument(arg_env, arg, arg_bindings, arg_scope)
+                }
             };
             let argument = match demand {
                 ComptimeDemand::Known(argument) => argument,
@@ -4456,10 +4477,10 @@ impl<'a> Checker<'a> {
         // working and only the proof is withheld. Refusing the evaluation
         // instead would break an honest `comptime(price)` pin, which never
         // needed a proof to begin with.
-        let family_in_reach = self.demand_reaches_primitive_family(&body)
+        let family_in_reach = self.demand_reaches_primitive_family(&body, DemandScope::Callee)
             || args
                 .iter()
-                .any(|arg| self.demand_reaches_primitive_family(arg));
+                .any(|arg| self.demand_reaches_primitive_family(arg, DemandScope::Caller));
         self.pending_known = (!family_in_reach)
             .then(|| self.evaluate_module_function_body(&body_env, &body, &body_comptime_values))
             .and_then(Result::ok)
@@ -4487,6 +4508,7 @@ impl<'a> Checker<'a> {
         env: &TypeEnv,
         arg: &Expr,
         bindings: &HashMap<String, comptime::ComptimeValue>,
+        scope: DemandScope,
     ) -> ComptimeDemand {
         if self.expr_references_unresolved_comptime_param(arg) {
             return ComptimeDemand::Deferred;
@@ -4516,9 +4538,23 @@ impl<'a> Checker<'a> {
         }) {
             return ComptimeDemand::Failed(type_position.diagnostics);
         }
+        // The last resort is to run the expression, and a run is where a
+        // primitive family's rendering would be lost: the evaluator has no
+        // elaborations, so `"${price}"` produces the bare payload. Refuse here
+        // rather than at each caller, because this is the one point every
+        // caller passes through on the way to a compile-time *value*. The type
+        // walk above is deliberately upstream of it --- a family used as a
+        // type, `pick(Money, ...)`, reifies a type and renders nothing.
+        //
+        // Analysed in `scope`, not in whichever scope the checker happens to be
+        // standing in: a default's `price` is the callee's `price`, however
+        // many locals of that spelling the caller has.
+        if self.demand_reaches_primitive_family(arg, scope) {
+            return ComptimeDemand::Failed(vec![primitive_family_demand_unsupported(arg.span)]);
+        }
         // Keep the evidence from the evaluation that was demanded. Reporting
         // must not re-run helpers or discard an already explained type error.
-        match self.evaluate_known_expression(env, arg, bindings) {
+        match self.evaluate_known_expression(env, arg, bindings, scope) {
             Ok(value) => match comptime::eval_value_as_comptime_value(&value) {
                 Some(value) => ComptimeDemand::Known(ComptimeArgument {
                     value,
@@ -6286,6 +6322,23 @@ const DEMAND_FUEL: u64 = 100_000;
 /// was before folding existed.
 const OPPORTUNISTIC_FUEL: u64 = 10_000;
 
+/// The one refusal every family-tainted demand reports.
+///
+/// Shared rather than written at each site so the wording, code and note cannot
+/// drift apart between the paths that reach it.
+fn primitive_family_demand_unsupported(span: Span) -> Diagnostic {
+    Diagnostic::error("this argument's value cannot be certified at compile time")
+        .with_code(codes::comptime::EVALUATION_UNSUPPORTED)
+        .with_label(Label::primary(
+            span,
+            "reaches a primitive family, whose rendering compile-time evaluation cannot reproduce",
+        ))
+        .with_note(
+            "this is a support limitation, not a rejection of the program: \
+             family-dependent compile-time evaluation is not yet implemented",
+        )
+}
+
 /// What a demand reaches: a name written somewhere in it, or everything one
 /// module binding among those names reaches in turn.
 enum DemandReach<'a> {
@@ -6293,27 +6346,46 @@ enum DemandReach<'a> {
     Module(Rc<ModuleClosure>),
 }
 
+/// Which lexical environment a demanded expression resolves its free names in.
+///
+/// Evaluation and dependency analysis must agree on this, which is why it is a
+/// value threaded through both rather than a rule each restates. Analysing a
+/// callee's default against the caller's scope asks a correct question of the
+/// wrong bindings, and answers about a `price` the default never mentions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DemandScope {
+    /// Written in the current local scope --- an argument, an ordinary block
+    /// expression --- and so entitled to see this scope's locals.
+    Caller,
+    /// Belongs to a resolved callee: its body, or the default of a parameter
+    /// this call omitted. Both were written at the callee's definition site
+    /// and closed over the bindings visible *there*, so a caller local of the
+    /// same spelling is a different binding by construction and stays invisible.
+    Callee,
+}
+
 /// Every name mentioned anywhere inside an expression, including its
 /// annotations. Deliberately syntactic: a name that is shadowed, or is a field
 /// label, still counts, because the only use is deciding whether something
 /// *might* be in reach.
 ///
-/// `walk_expr_children` does not visit `RecordEntry::Shorthand` — a shorthand
-/// field stores its name outside any `Expr`, since `{ price }` has nothing
-/// else to walk — so it is collected here explicitly. Missing it would let
-/// `{ price }` carry a primitive family past this guard unseen.
+/// `walk_expr_children` hands over expressions, and `RecordEntry::Shorthand`
+/// stores its name outside any `Expr` — `{ price }` has nothing else to walk —
+/// so shorthand names are collected from the entries directly. They are
+/// collected through `walk_record_entries`, which descends into iteration
+/// bodies, because an entry list nests: `{ @{"a"} -> k; price }` holds its
+/// shorthand one level down, and a one-level exception would let that `price`
+/// carry a primitive family past this guard unseen.
 fn collect_expr_names<'a>(expr: &'a Expr, names: &mut Vec<&'a str>) {
     if let ExprKind::Name(name) | ExprKind::ComptimeName(name) = &expr.kind {
         names.push(name);
     }
-    if let ExprKind::Record(entries) | ExprKind::Array(entries) | ExprKind::Set(entries) =
-        &expr.kind
-    {
-        for entry in entries {
+    if let Some(entries) = expr_record_entries(expr) {
+        walk_record_entries(entries, &mut |entry| {
             if let RecordEntry::Shorthand { name, .. } = entry {
                 names.push(name);
             }
-        }
+        });
     }
     walk_expr_children(expr, &mut |child| collect_expr_names(child, names));
 }

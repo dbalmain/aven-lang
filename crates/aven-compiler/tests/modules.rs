@@ -3293,6 +3293,60 @@ fn an_imported_specialization_proves_a_value_at_the_callers_span() {
     assert_eq!(evaluated.value, Some(Value::Int(3.into())));
 }
 
+/// An imported function's comptime default resolves at its definition site,
+/// and the importer's locals are not that site.
+///
+/// `bump`'s `= base` was written in `helper.av` beside `base = 1`. An importer
+/// holding its own `base = 2` has a different binding of the same spelling, so
+/// `h.bump()` passes 1 --- and running it does. Certifying 2 would be a value
+/// the program never produces, which is what this pins.
+///
+/// Both halves reject today: the wrong one because the caller's `base` is not
+/// the callee's, and the *right* one because a demand cannot reach into the
+/// defining module's bindings at all --- `definitions` is built from the
+/// importing module. That second refusal is a support limitation, not a
+/// judgement about the program; if reaching a dependency's bindings ever
+/// lands, the `1` case should start checking and this test should be split.
+/// The discriminating fact is which way it fails: silence, not `2`.
+#[test]
+fn an_imported_comptime_default_does_not_read_the_importer_locals() {
+    for (annotation, code) in [
+        ("2", codes::comptime::ARGUMENT_NOT_KNOWN),
+        ("1", codes::comptime::ARGUMENT_NOT_KNOWN),
+    ] {
+        let dir = TempDir::new("imported-comptime-default");
+        write(
+            dir.path(),
+            "helper.av",
+            "base: Int = 1\nbump = (@k: Int = base): Int => k\n{ bump, base }\n",
+        );
+        write(
+            dir.path(),
+            "main.av",
+            &format!(
+                "h = import(\"./helper\")\nresult: Int =\n  base = 2\n  checked: {annotation} = h.bump()\n  checked + base - base\nresult\n"
+            ),
+        );
+
+        let output =
+            check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+                .expect("check should load graph");
+        assert_has_code(&output.reports, code);
+        // Specifically not a literal mismatch: a mismatch would mean some
+        // value was certified, and the only value available here is wrong.
+        assert!(
+            !output
+                .reports
+                .iter()
+                .flat_map(|report| &report.diagnostics)
+                .any(|diagnostic| diagnostic.code.as_deref()
+                    == Some(codes::ty::LITERAL_NOT_IN_UNION)),
+            "a caller local must not supply the callee's default: {:?}",
+            output.reports
+        );
+    }
+}
+
 fn assert_no_errors(reports: &[aven_core::DiagnosticReport]) {
     assert!(
         !reports.iter().any(aven_core::DiagnosticReport::has_errors),
