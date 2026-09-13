@@ -325,7 +325,7 @@ fn send_http_request(args: &HttpArgs<'_>) -> Result<HttpResponse, ureq::Error> {
         HttpMethod::Patch => send_with_optional_body(agent.patch(args.url), &args.options),
     };
 
-    // ureq 3.3 can still return a delayed local response after the configured
+    // ureq 3.4 can still return a delayed local response after the configured
     // receive timeout; preserve Aven's single timeout contract at this boundary.
     if args
         .options

@@ -8,8 +8,21 @@ updates:
       rust-dependencies:
         patterns:
           - "*"
+        exclude-patterns:
+          - "tower"
+          - "tower-lsp"
+    # tower 0.5 and a tower-lsp-server migration are API work, not version
+    # bumps. Keep them out of the weekly group until that lands.
+    ignore:
+      - dependency-name: tower
+      - dependency-name: tower-lsp
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    # dtolnay/rust-toolchain tags are Rust versions (`@1.98.1` installs
+    # rustc 1.98.1), not action versions. Dependabot reads them as the
+    # latter and proposes tags such as 1.120.0 that are not a toolchain.
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain

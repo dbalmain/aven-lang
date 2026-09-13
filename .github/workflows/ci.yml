@@ -8,7 +8,7 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install shells for CLI completion tests
         run: |
           sudo apt-get update
@@ -30,7 +30,7 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.91.0
       - name: Check the declared minimum Rust version
         env:
