@@ -33,6 +33,7 @@ aven-lsp = { path = "crates/aven-lsp" }
 aven-parser = { path = "crates/aven-parser" }
 clap = { version = "4.6.5", features = ["derive"] }
 futures-util = "0.3.33"
+mimalloc = "0.1.52"
 proptest = "1.11.0"
 serde = "1.0.229"
 # Preserve JSON object order and arbitrary-precision number lexemes; use the
