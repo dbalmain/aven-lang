@@ -6,7 +6,7 @@
 # Value domains are explicit metadata, never inferred from a decoder. This
 # vocabulary can grow with Files/Dirs/Values without changing the command tree.
 ValueCompletion = @{ @Unspecified }
-Meta = { name: Text, names: Array(Text), takesValue: Bool, help: Text, valueName: Text, valueCompletion: ValueCompletion }
+Meta = { name: Text, names: Array(Text), takesValue: Bool, positional: Bool, help: Text, valueName: Text, valueCompletion: ValueCompletion }
 Completion = @{ @Opaque, @Options(Array(Meta)), @Commands(Array(CommandMeta)) }
 
 int = (raw: Text): Result(Int, Text) =>
@@ -20,7 +20,14 @@ metadata = (name: Text, takesValue: Bool, config): Meta =>
   aliases: Array(Text) = []
   m = { short: "", help: "", valueName: "VALUE", aliases, ..config }
   short: Array(Text) = m.short == "" ?> true => [], false => ["-${m.short}"]
-  { name, names: ["--${name}", ..short, ..m.aliases], takesValue, help: m.help, valueName: m.valueName, valueCompletion: @Unspecified }
+  { name, names: ["--${name}", ..short, ..m.aliases], takesValue, positional: false, help: m.help, valueName: m.valueName, valueCompletion: @Unspecified }
+
+# A positional is spelled by its place on the line, so it has no names to match
+# and none to offer. The field name is the default label because a positional
+# with no `valueName` still has to print as something in usage.
+positionalMetadata = (name: Text, config): Meta =>
+  m = { help: "", valueName: name, ..config }
+  { name, names: [], takesValue: true, positional: true, help: m.help, valueName: m.valueName, valueCompletion: @Unspecified }
 
 flag = (config: { .. } = {}) => {
   meta: (name: Text) => metadata(name, false, config),
@@ -48,60 +55,99 @@ required = (decode: (Text) -> Result(a, Text), config: { .. } = {}) => {
         @Err(message) => @Err("--${name}: ${message}")
 }
 
+# Positionals are filled in declaration order from the words that are not
+# options. Like `required`, a positional has no default: leaving one out is an
+# error, so the parsed field keeps the decoder's own type rather than an
+# optional one.
+positional = (decode: (Text) -> Result(a, Text), config: { .. } = {}) => {
+  meta: (name: Text) => positionalMetadata(name, config),
+  read: (tokens: Map(Text, Text), name: Text): Result(a, Text) =>
+    label = { valueName: name, ..config }.valueName
+    tokens.get(name) ?>
+      undefined => @Err("<${label}> is required")
+      raw => decode(raw) ?>
+        @Ok(value) => @Ok(value)
+        @Err(message) => @Err("<${label}>: ${message}")
+}
+
 # Every token is consumed once. An option's separate value is consumed with it,
 # even when that value resembles a flag. Attached values retain every '='.
-# Repetition is an error; positionals and short bundles are not supported yet.
-tokenizeGo : (Array(Meta), Array(Text), Int, Map(Text, Text)) -> Result(Map(Text, Text), Text)
-tokenizeGo = (options, argv, index, tokens) =>
+# Repetition is an error; short bundles such as `-abc` are not supported yet.
+#
+# A word that names no option is a positional unless it is spelled like one.
+# A leading '-' means the user meant an option and misspelled it, so reporting
+# an unknown argument beats silently storing the misspelling as a value. Bare
+# "-" is conventionally stdin, so it stays a positional.
+tokenizeGo : (Array(Meta), Array(Meta), Array(Text), Int, Map(Text, Text), Int) -> Result(Map(Text, Text), Text)
+tokenizeGo = (options, positionals, argv, index, tokens, slot) =>
   index >= argv.length() ?>
     true => @Ok(tokens)
     false =>
       word = argv[index] ?? ""
       word == "--" ?>
-        true => index + 1 == argv.length() ?>
-          true => @Ok(tokens)
-          false => @Err("unexpected positional argument '${argv[index + 1] ?? ""}'")
+        true => tokenizeRest(positionals, argv, index + 1, tokens, slot)
         false =>
           head = word.splitOn("=")[0] ?? ""
           options.find((m) => m.names.has(head)) ?>
-            undefined => @Err("unknown argument '${head}'")
+            undefined => word.startsWith("-") && word != "-" ?>
+              true => @Err("unknown argument '${head}'")
+              false => positionals[slot] ?>
+                undefined => @Err("unexpected positional argument '${word}'")
+                p => tokenizeGo(options, positionals, argv, index + 1, tokens.set(p.name, word), slot + 1)
             m =>
               tokens.get(m.name) ?>
                 undefined =>
                   m.takesValue ?>
                     false => word.contains("=") ?>
                       true => @Err("${head} does not take a value")
-                      false => tokenizeGo(options, argv, index + 1, tokens.set(m.name, "true"))
+                      false => tokenizeGo(options, positionals, argv, index + 1, tokens.set(m.name, "true"), slot)
                     true => word.contains("=") ?>
-                      true => tokenizeGo(options, argv, index + 1, tokens.set(m.name, word.dropPrefix("${head}=")))
+                      true => tokenizeGo(options, positionals, argv, index + 1, tokens.set(m.name, word.dropPrefix("${head}=")), slot)
                       false => argv[index + 1] ?>
                         undefined => @Err("${head} needs a value")
                         "--" => @Err("${head} needs a value")
-                        raw => tokenizeGo(options, argv, index + 2, tokens.set(m.name, raw))
+                        raw => tokenizeGo(options, positionals, argv, index + 2, tokens.set(m.name, raw), slot)
                 _ => @Err("${head} was supplied more than once")
 
-tokenize : (Array(Meta), Array(Text)) -> Result(Map(Text, Text), Text)
-tokenize = (options, argv) =>
-  seed: Map(Text, Text) = Map.empty()
-  tokenizeGo(options, argv, 0, seed)
+# After '--' every remaining word is a positional value, however it is spelled.
+tokenizeRest : (Array(Meta), Array(Text), Int, Map(Text, Text), Int) -> Result(Map(Text, Text), Text)
+tokenizeRest = (positionals, argv, index, tokens, slot) =>
+  index >= argv.length() ?>
+    true => @Ok(tokens)
+    false =>
+      word = argv[index] ?? ""
+      positionals[slot] ?>
+        undefined => @Err("unexpected positional argument '${word}'")
+        p => tokenizeRest(positionals, argv, index + 1, tokens.set(p.name, word), slot + 1)
 
-renderHelp = (options: Array(Meta), info): Text =>
+tokenize : (Array(Meta), Array(Meta), Array(Text)) -> Result(Map(Text, Text), Text)
+tokenize = (options, positionals, argv) =>
+  seed: Map(Text, Text) = Map.empty()
+  tokenizeGo(options, positionals, argv, 0, seed, 0)
+
+renderHelp = (options: Array(Meta), positionals: Array(Meta), info): Text =>
   examples: Array(Text) = []
   m = { name: "tool", description: "", examples, ..info }
   lines = options.map((o) =>
     value = o.takesValue ?> true => " <${o.valueName}>", false => ""
     "  ${o.names.joinWith(", ")}${value}  ${o.help}"
   )
+  operands = positionals.map((p) => " <${p.valueName}>").joinWith("")
+  argumentText = positionals.isEmpty() ?>
+    true => ""
+    false => "\n\nArguments:\n${positionals.map((p) => "  <${p.valueName}>  ${p.help}").joinWith("\n")}"
   exampleText = m.examples.isEmpty() ?>
     true => ""
     false => "\n\nExamples:\n${m.examples.map((e) => "  ${e}").joinWith("\n")}"
-  "Usage: ${m.name} [options]\n${m.description}\n\nOptions:\n${lines.joinWith("\n")}${exampleText}"
+  "Usage: ${m.name} [options]${operands}\n${m.description}${argumentText}\n\nOptions:\n${lines.joinWith("\n")}${exampleText}"
 
 # Capture the static key set and normalize metadata at definition time. Calling
 # the returned parser allocates only token data and the typed result record.
 define = (schema: s, info: { .. } = {}, @keys = keysOf(schema)) =>
-  options = valuesOf({ keys -> key; (key, schema[key].meta(key)) })
-  usage = renderHelp(options, info)
+  declared: Array(Meta) = valuesOf({ keys -> key; (key, schema[key].meta(key)) })
+  options = declared.filter((m) => !m.positional)
+  positionals = declared.filter((m) => m.positional)
+  usage = renderHelp(options, positionals, info)
   completion: Completion = @Options(options)
   {
     completion,
@@ -109,7 +155,7 @@ define = (schema: s, info: { .. } = {}, @keys = keysOf(schema)) =>
     helpFor: (_: Array(Text)): Text => usage,
     parse: (argv: Array(Text)) =>
       result = (() =>
-        tokens = tokenize(options, argv)?^
+        tokens = tokenize(options, positionals, argv)?^
         @Ok({ keys -> key; (key, schema[key].read(tokens, key)?^) })
       )()
       result ?>
@@ -569,4 +615,4 @@ fishEndLines = (): Array(Text) =>
   end
   """.splitOn("\n")
 
-{ int, text, flag, option, required, define, parse, help, command, app, completions }
+{ int, text, flag, option, required, positional, define, parse, help, command, app, completions }
