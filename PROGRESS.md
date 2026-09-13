@@ -1134,20 +1134,21 @@ section. The absolute cost fell, but everything around it fell further, so
 re-checking `std/cli` is now about half of a small program's entire runtime.
 The decision to drop it was correct on the day and is no longer.
 
-## Startup: 285ms to 130ms, and counting — 2026-09-14
+## Startup: 285ms to 70ms — 2026-09-14
 
-Two of the three levers below are implemented and merged; the third is in
-progress. Results on the program that prompted this, the Cox-trigrams harness
-stub, `aven run ... match a a`:
+All three levers below are implemented and merged. Results on the program that
+prompted this, the Cox-trigrams harness stub, `aven run ... match a a`:
 
-| Tip                          | stub  | `import("std/cli")` check |
-| ---------------------------- | ----- | ------------------------- |
-| `ff90448` (before)           | 285ms | 150ms                     |
-| + mimalloc (`cae812e`)       | 140ms | 80ms                      |
+| Tip                            | stub  | `import("std/cli")` check |
+| ------------------------------ | ----- | ------------------------- |
+| `ff90448` (before)             | 285ms | 150ms                     |
+| + mimalloc (`cae812e`)         | 140ms | 80ms                      |
 | + `Arc<str>` names (`6842e12`) | 130ms | 70ms                      |
+| + baked std (`c36bb6e`)        | 70ms  | 10ms                      |
 
 Python does the same work in 29ms, so the gap has gone from about 10x to about
-4.5x. Both changes are behaviour-neutral: `aven check` over all 364 tracked
+2.4x, and what remains is mostly the stub's own four `cli.define` calls, which
+no amount of std caching can touch. Both changes are behaviour-neutral: `aven check` over all 364 tracked
 `.av` files produces byte-identical diagnostics before and after, compared
 across worktrees with paths normalised. Workspace tests went 1909 to 1912.
 
@@ -1185,6 +1186,37 @@ in place in `unify.rs` and `rows.rs`, so sharing entry vectors or whole
 subtrees needs a mutation audit that was deliberately out of scope. But the
 ordering lesson is that the allocator swap was worth more than the refactor,
 and it was the thing nobody would have guessed from reading the code.
+
+**Lever 3, baked checked std (`c36bb6e`).** A `build.rs` in `crates/aven-cli`
+checks the eleven embedded std modules at build time and emits each as a blob
+that `crates/aven-check/src/baked.rs` decodes lazily when the compiler first
+visits that module. A rebuild is the invalidation, so there is no cache
+directory and no staleness window — which is why this shape was chosen over the
+on-disk cache.
+
+The soundness question was whether a checked module is context-independent. It
+is **not**: host types and statics, callback parameter specs, imports,
+preludes, ambient method sets, role and module identity are all inputs. So the
+blob captures those inputs and the loader compares them exactly, falling back to
+ordinary checking on any mismatch. A sentinel refuses to bake any module that
+invokes a host comptime resolver, since a host callback's behaviour cannot be
+assumed stable. Correctness therefore does not depend on the bake being right —
+a wrong or stale blob costs speed, never a wrong diagnostic — and the
+364-file sweep is byte-identical.
+
+Decode is ~10ms across the four modules an `import("std/cli")` program visits,
+against the ~60ms of checking it replaces; the context comparison is 17-40µs per
+module. So the win is real rather than a re-spend.
+
+**The bug worth remembering.** The first implementation made `check` four times
+faster and `run` _slower_ — 70ms to 90ms. The cause was not that the two modes
+have different host contexts, which was my guess. They have the _same_ comptime
+functions registered in a _different_ `Vec` order, and the guard compared them
+by zipping two iterators. Every module missed, and each miss paid a decode
+_plus_ a full check. Comparing by name fixed it. Two lessons: a cache guard that
+compares ordered sequences of unordered data fails closed but silently, and it
+is worth measuring `run` and `check` separately, because the mode users actually
+invoke was the one that regressed.
 
 ### The measurement tooling
 
