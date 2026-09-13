@@ -6,6 +6,12 @@ aliased = cli.define({
   out: cli.option(cli.text, { default: "stdout", short: "o", help: "Output destination", valueName: "PATH" })
 }, { name: "tool", description: "Example tool", examples: ["tool -v -o report.txt"] })
 required = cli.define({ jobs: cli.required(cli.int) })
+placed = cli.define({
+  pattern: cli.positional(cli.text, { help: "Regexp", valueName: "PATTERN" })
+  count: cli.positional(cli.int, { help: "How many", valueName: "COUNT" })
+  verbose: cli.flag({ short: "v" })
+}, { name: "match" })
+unlabelled = cli.define({ src: cli.positional(cli.text) })
 
 {
   defaults: () => test.expectEq(cli.parse(spec, []), @Ok({ verbose: false, jobs: 1 }))
@@ -30,6 +36,37 @@ required = cli.define({ jobs: cli.required(cli.int) })
   requiredMissing: () => test.expectErr(cli.parse(required, []))
   requiredPresent: () => test.expectEq(cli.parse(required, ["--jobs=9"]), @Ok({ jobs: 9 }))
   emptySpec: () => test.expectEq(cli.parse(cli.define({}), []), @Ok({}))
+  positionalsInOrder: () =>
+    test.expectEq(cli.parse(placed, ["ab", "3"]), @Ok({ pattern: "ab", count: 3, verbose: false }))
+  positionalsKeepDecoderTypes: () =>
+    parsed = cli.parse(placed, ["ab", "3"])?^
+    test.expectEq(parsed.count + 1, 4)
+  positionalsAroundOptions: () =>
+    test.expectEq(cli.parse(placed, ["ab", "-v", "3"]), @Ok({ pattern: "ab", count: 3, verbose: true }))
+  positionalMissing: () => test.expectErr(cli.parse(placed, ["ab"]))
+  positionalSurplus: () => test.expectErr(cli.parse(placed, ["ab", "3", "extra"]))
+  positionalDecoderError: () => test.expectErr(cli.parse(placed, ["ab", "many"]))
+  # A misspelled option must not be swallowed as a positional value.
+  positionalDoesNotAbsorbOptions: () => test.expectErr(cli.parse(placed, ["--verbse", "ab", "3"]))
+  # `-` is the conventional spelling for stdin, so it is a value, not an option.
+  positionalTakesBareDash: () =>
+    test.expectEq(cli.parse(unlabelled, ["-"]), @Ok({ src: "-" }))
+  separatorFeedsPositionals: () =>
+    test.expectEq(cli.parse(placed, ["--", "-v", "3"]), @Ok({ pattern: "-v", count: 3, verbose: false }))
+  # An option consumed before `--` still counts; only the spelling stops.
+  separatorAfterOption: () =>
+    test.expectEq(cli.parse(placed, ["-v", "--", "ab", "3"]), @Ok({ pattern: "ab", count: 3, verbose: true }))
+  positionalNamesDefaultToTheField: () =>
+    test.expectTrue(cli.help(unlabelled).contains("Usage: tool [options] <src>"))
+  positionalHelp: () =>
+    usage = cli.help(placed)
+    test.expectTrue(usage.contains("Usage: match [options] <PATTERN> <COUNT>"))?^
+    test.expectTrue(usage.contains("Arguments:\n  <PATTERN>  Regexp\n  <COUNT>  How many"))
+  # Positionals have no spelling, so no completion candidate may mention them.
+  positionalsAreNotCompletionCandidates: () =>
+    script = cli.completions(placed, "bash", "match")
+    test.expectTrue(!script.contains("PATTERN"))?^
+    test.expectTrue(script.contains("'--verbose'"))
   help: () =>
     usage = cli.help(aliased)
     test.expectTrue(usage.contains("Usage: tool [options]"))?^

@@ -26,9 +26,42 @@ does not rebuild metadata or recompute `keysOf` in each parser call.
 
 Long and short aliases accept separate or attached values (`--jobs=4`, `-j=4`).
 An option consumes its next token even when that token resembles a flag; an
-attached empty value stays empty. Repeated arguments are errors. A final `--`
-is accepted, and tokens following it are positional input. Positionals and
-short bundles such as `-abc` are currently rejected.
+attached empty value stays empty. Repeated arguments are errors. Short bundles
+such as `-abc` are currently rejected.
+
+## Positional arguments
+
+`cli.positional` declares an argument spelled by its place on the line rather
+than by a name:
+
+```aven
+match = cli.define({
+  pattern: cli.positional(cli.text, { help: "Regexp", valueName: "PATTERN" })
+  text: cli.positional(cli.text, { help: "Input text", valueName: "TEXT" })
+  verbose: cli.flag({ short: "v" })
+}, { name: "match" })
+```
+
+`match a+ aaa` and `match -v a+ aaa` and `match a+ -v aaa` all parse: options
+and positionals may interleave, because a positional is matched by its order
+among the *non-option* words, not by its index in argv. Positionals fill in
+declaration order, so the record's field order is the command line's argument
+order.
+
+A positional keeps its decoder's type exactly as an option does, and like
+`cli.required` it has no default — a missing one is an error rather than an
+optional field. `valueName` is the label used in usage and in error messages,
+and defaults to the field name.
+
+A word that starts with `-` is never taken as a positional value, so a
+misspelled `--verbse` is reported as an unknown argument instead of being
+silently stored. Bare `-` is the conventional spelling for stdin and is a
+value. After `--` every remaining word is a positional however it is spelled,
+which is how a value that genuinely begins with `-` is passed.
+
+Positionals have no spelling for a shell to offer, so they contribute no
+completion candidates; `valueCompletion` is the seam where file and directory
+domains will attach.
 
 `cli.help(spec)` returns usage, descriptions, aliases, value labels, and examples.
 `cli.parse` returns `Result(args, Text)`; error text includes usage and examples.
