@@ -224,18 +224,65 @@ fn generated_bash_completions_survive_pasted_line_continuations() {
     ]);
 }
 
+/// Lines whose completion bash only dispatches from 5.3 on.
+///
+/// Readline consults the programmable-completion table only after bash's own
+/// scanner has found a command word on the line. Through 5.2 that scan gives up
+/// on `$'` nested inside `$(`, so the line silently completes to nothing and
+/// the callback never runs --- bash never asks us, and there is no answer of
+/// ours to judge. Handed the same COMP_LINE directly, the generated script
+/// answers these correctly on 5.2 as well, which is how they are checked there.
+const DISPATCHED_FROM_BASH_5_3: &[&str] = &["tool add --out $(printf $'\\'(') --"];
+
+/// `(major, minor)` of the bash on PATH, from its own `--version` banner.
+fn bash_version() -> (u32, u32) {
+    let output = Command::new("bash")
+        .arg("--version")
+        .output()
+        .expect("required completion test shell bash");
+    assert_success(&output);
+    let banner = String::from_utf8_lossy(&output.stdout);
+    let digits = |field: Option<&str>| -> Option<u32> {
+        field?
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    };
+    let mut fields = banner
+        .split_once("version ")
+        .unwrap_or_else(|| panic!("unreadable bash version banner: {banner}"))
+        .1
+        .split('.');
+    match (digits(fields.next()), digits(fields.next())) {
+        (Some(major), Some(minor)) => (major, minor),
+        _ => panic!("unreadable bash version banner: {banner}"),
+    }
+}
+
 fn assert_bash_completions(cases: &[(&str, &[&str])]) {
     let fixture = CompletionFixture::new("bash", "tool");
-    let inputs: Vec<_> = cases.iter().map(|(input, _)| *input).collect();
+    let undispatched = bash_version() < (5, 3);
+    let (deferred, through_readline): (Vec<_>, Vec<_>) = cases
+        .iter()
+        .partition(|(input, _)| undispatched && DISPATCHED_FROM_BASH_5_3.contains(input));
+    let inputs: Vec<_> = through_readline.iter().map(|(input, _)| *input).collect();
     let actual = fixture.query("bash", "tool", &inputs);
-    for ((input, expected), mut found) in cases.iter().zip(actual) {
-        found.sort();
-        let mut expected: Vec<_> = expected.iter().map(|s| (*s).to_owned()).collect();
-        expected.sort();
-        assert_eq!(found, expected, "bash: {input:?}");
+    for ((input, expected), found) in through_readline.iter().zip(actual) {
+        assert_candidates(input, expected, found);
+    }
+    for (input, expected) in deferred {
+        assert_candidates(input, expected, fixture.bash_direct_query("tool", input));
     }
     assert!(!fixture.directory().join("INJECTED").exists());
     assert!(!fixture.directory().join("TOOL_RAN").exists());
+}
+
+fn assert_candidates(input: &str, expected: &[&str], mut found: Vec<String>) {
+    found.sort();
+    let mut expected: Vec<_> = expected.iter().map(|s| (*s).to_owned()).collect();
+    expected.sort();
+    assert_eq!(found, expected, "bash: {input:?}");
 }
 
 #[test]
@@ -391,6 +438,34 @@ impl CompletionFixture {
             .env("XDG_CACHE_HOME", self.directory().join("cache"))
             .env("AVEN_COMPLETION_SCRIPT", &self.generated);
         command
+    }
+
+    /// Run the registered callback on `input` without going through Readline.
+    ///
+    /// Only for lines bash will not dispatch on its own (see
+    /// `DISPATCHED_FROM_BASH_5_3`); everywhere else the real Readline path is
+    /// the point, because it is what decides the COMP_LINE a user gets.
+    fn bash_direct_query(&self, program: &str, input: &str) -> Vec<String> {
+        let output = self
+            .command("bash")
+            .args(["-c", include_str!("fixtures/cli/complete_direct.bash")])
+            .env("AVEN_COMPLETION_PROGRAM", program)
+            .env("AVEN_COMPLETION_INPUT", input)
+            .output()
+            .expect("run bash completion callback");
+        assert_success(&output);
+        let decoded = String::from_utf8(output.stdout).expect("bash UTF-8");
+        let mut words = decoded.split_terminator('\0');
+        let count: usize = words
+            .next()
+            .expect("completion count")
+            .parse()
+            .expect("completion count");
+        let found: Vec<_> = (0..count)
+            .map(|_| words.next().expect("completion candidate").to_owned())
+            .collect();
+        assert!(words.next().is_none(), "unexpected extra candidate");
+        found
     }
 
     /// Source the generated script and print the `complete` spec bash holds for
