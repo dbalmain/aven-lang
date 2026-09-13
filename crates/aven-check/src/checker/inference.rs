@@ -613,7 +613,7 @@ impl<'a> Checker<'a> {
                 DemandScope::Caller,
             )
             .ok()?;
-        knowledge::Known::from_value_with(&value, knowledge::Provenance::Opportunistic)
+        knowledge::Known::from_value(&value)
     }
 
     /// The preflight: decide whether a call could possibly fold, before paying

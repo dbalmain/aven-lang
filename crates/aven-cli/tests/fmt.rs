@@ -448,6 +448,43 @@ fn run_prints_last_expression_value() {
     assert_eq!(stdout(&output), "7\n");
 }
 
+/// A demand answered by a proof must be a demand the program actually meets.
+///
+/// `m.get("a")` has type `?Int` and the annotation says `Int`; the check
+/// accepts it because the lookup is known to find `1`. That acceptance is only
+/// sound if running really does produce `1` there, so the two halves are
+/// asserted together --- a proof the runtime disagrees with is worse than no
+/// proof at all. The absent key is the control: it is rejected, and running it
+/// would have failed.
+#[test]
+fn check_and_run_agree_on_a_proof_that_discharges_optionality() {
+    let file = TempFile::new(
+        "run-proof-optional",
+        "m = Map.from([(\"a\", 1)])\n\
+         found: Int = m.get(\"a\")\n\
+         use = (n: Int): Int => n + 1\n\
+         bumped = use(m.get(\"a\"))\n\
+         writeLine(\"${found}\")\n\
+         writeLine(\"${bumped}\")\n",
+    );
+
+    assert_success(&run_aven(["check"], file.path()));
+    let output = run_aven(["run"], file.path());
+    assert_success(&output);
+    assert_eq!(stdout(&output), "1\n2\n");
+
+    let absent = TempFile::new(
+        "run-proof-optional-absent",
+        "m = Map.from([(\"a\", 1)])\nfound: Int = m.get(\"z\")\nwriteLine(\"${found}\")\n",
+    );
+    let rejected = run_aven(["check"], absent.path());
+    assert!(
+        !rejected.status.success(),
+        "a known-absent lookup must not discharge optionality: {}",
+        stderr(&rejected)
+    );
+}
+
 #[test]
 fn check_and_run_agree_on_arbitrary_precision_integers() {
     let file = TempFile::new(

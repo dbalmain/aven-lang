@@ -89,6 +89,17 @@ impl<'a> Checker<'a> {
     /// the path that was already going to report an error, so an ordinary
     /// program pays nothing for it, and it can only ever turn a rejection into
     /// an acceptance — never the reverse, and never a different inferred type.
+    ///
+    /// Evidence is evidence whoever asked for it. An earlier rule let an
+    /// unasked-for proof answer only a literal demand, and never discharge
+    /// optionality; that made `found: Int = m.get("a")` an error for a program
+    /// whose value is known, and it is the decision this restores. A demand is
+    /// answered when the known value sits inside the expected type --- so a
+    /// known *present* optional satisfies a nonoptional expectation, and a
+    /// result whose type is `1 | 1.0` satisfies `Int` at a call known to
+    /// produce the integer. What does not change is the expression's inferred
+    /// type: `m.get("a")` is still `?Int`, and `f(0)` is still `1 | 1.0`.
+    /// Nothing here narrows a type; it decides whether one demand is met.
     fn demand_is_discharged_by_knowledge(
         &mut self,
         expected: &Type,
@@ -115,15 +126,6 @@ impl<'a> Checker<'a> {
             return false;
         };
 
-        // An unasked-for proof answers only a literal-type demand, and the
-        // check comes first so a demand it may not answer is reported exactly
-        // as it was before ordinary calls were folded at all.
-        if known.provenance() == knowledge::Provenance::Opportunistic
-            && !self.opportunistic_proof_may_answer(expected)
-        {
-            return false;
-        }
-
         // Evidence must agree with the expression's *own* type before it can
         // speak about any other. `other : Float = 1` evaluates to an integer
         // because the widening lives in the elaboration, not in the literal, so
@@ -133,18 +135,6 @@ impl<'a> Checker<'a> {
         let env = self.local_types.inference_env();
         let actual = self.infer(&env, value);
         let actual = self.normalize(&self.resolve_and_default(&actual));
-        // An unasked-for proof may say *which* value this is; it may not say
-        // that there is one. Discharging optionality is a safety claim rather
-        // than a question about a literal, and `comptime(...)` is where an
-        // author makes it.
-        if known.provenance() == knowledge::Provenance::Opportunistic
-            && matches!(
-                self.unifier.resolve(&actual),
-                Type::Optional(_) | Type::Nullable(_)
-            )
-        {
-            return false;
-        }
         if !self.knowledge_satisfies(&known, &actual) {
             return false;
         }
