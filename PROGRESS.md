@@ -1218,6 +1218,25 @@ compares ordered sequences of unordered data fails closed but silently, and it
 is worth measuring `run` and `check` separately, because the mode users actually
 invoke was the one that regressed.
 
+**Lever 3a, interning the shared context.** Baking cost **+5.0MB** of binary
+(15.9MB to 20.9MB), which matters for a language whose pitch is being small and
+embeddable. Roughly two thirds of it was duplication: the eleven blobs each
+carried their own copy of the host context, the builtin-method environment and
+the import environment, so `std/zones` — a **two-line** module — baked to 294KB.
+
+Those three are now interned into side tables addressed by `u16`, with the
+per-module blob carrying only what is unique to it. Blob total went 4.04MB to
+1.61MB (−60%), binary growth from +5.0MB to **+2.6MB**, and decode on the
+`import-cli` path from ~10ms to 7.8ms, since a shared table is decoded once
+rather than once per module. The guards still compare **assembled values**, not
+table indices — sharing is a storage decision and must not become the equality
+test, or two genuinely different contexts could alias.
+
+The trap worth recording: interning by _encoded bytes_ would have deduplicated
+nothing. There is exactly one distinct host context, but eleven distinct
+encodings of it, because `HashMap` JSON is not byte-stable. Comparison has to be
+by value, and each distinct value serialized once afterwards.
+
 ### The measurement tooling
 
 `.ai/bench.sh` (median of 7 warm runs per case) and `.ai/sweep.sh` (diagnostics
