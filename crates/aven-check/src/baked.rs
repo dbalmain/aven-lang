@@ -286,6 +286,11 @@ fn comptime_params_match(
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BakedCheck {
     source: String,
+    /// Equal source bytes do not determine equal syntax: a custom operator
+    /// table changes how an entry module's infix chain associates, and so what
+    /// the checker sees. The fingerprint of the table the module was parsed
+    /// with is therefore a checking input like any other.
+    fixity_fingerprint: String,
     #[serde(default, skip_serializing)]
     host: Arc<HostContext>,
     #[serde(default, skip_serializing)]
@@ -301,6 +306,7 @@ impl BakedCheck {
     /// was invoked, its implementation cannot have influenced the result.
     pub fn check(
         source: &str,
+        fixity_fingerprint: &str,
         module: &Module,
         globals: &HostGlobals,
         imports: &ModuleImports,
@@ -321,6 +327,7 @@ impl BakedCheck {
         );
         (!invoked.get()).then(|| Self {
             source: source.to_owned(),
+            fixity_fingerprint: fixity_fingerprint.to_owned(),
             host: Arc::new(HostContext::new(globals)),
             imports: Arc::new(imports.clone()),
             identity,
@@ -335,12 +342,14 @@ impl BakedCheck {
     pub fn into_checked(
         self,
         source: &str,
+        fixity_fingerprint: &str,
         globals: &HostGlobals,
         imports: &ModuleImports,
         identity: &ComptimeModuleIdentity,
         role: ModuleRole,
     ) -> Option<CheckOutput> {
         (self.source == source
+            && self.fixity_fingerprint == fixity_fingerprint
             && self.host.matches(globals)
             && *self.imports == *imports
             && self.identity == *identity
@@ -407,6 +416,10 @@ mod tests {
     use crate::{HostComptimeFnSpec, build};
     use aven_parser::parse_module;
 
+    /// Every module in these tests is parsed with the default operator
+    /// table, so they all share its fingerprint.
+    const FIXITY: &str = "";
+
     #[test]
     fn checked_output_matches_fresh_and_rejects_context_changes() {
         // A same-source snapshot must not hide host-dependent type errors or
@@ -418,6 +431,7 @@ mod tests {
         let identity = ComptimeModuleIdentity::specifier("test");
         let baked = BakedCheck::check(
             source,
+            FIXITY,
             &module,
             &globals,
             &imports,
@@ -435,6 +449,7 @@ mod tests {
         assert_eq!(
             baked.clone().into_checked(
                 source,
+                FIXITY,
                 &globals,
                 &imports,
                 &identity,
@@ -448,6 +463,7 @@ mod tests {
                 .clone()
                 .into_checked(
                     source,
+                    FIXITY,
                     &different,
                     &imports,
                     &identity,
@@ -462,6 +478,7 @@ mod tests {
                 .clone()
                 .into_checked(
                     source,
+                    FIXITY,
                     &globals,
                     &different,
                     &identity,
@@ -476,6 +493,7 @@ mod tests {
                 .clone()
                 .into_checked(
                     source,
+                    FIXITY,
                     &globals,
                     &different,
                     &identity,
@@ -488,6 +506,7 @@ mod tests {
                 .clone()
                 .into_checked(
                     "{ value: 1 }",
+                    FIXITY,
                     &globals,
                     &imports,
                     &identity,
@@ -498,13 +517,36 @@ mod tests {
         assert!(
             baked
                 .clone()
-                .into_checked(source, &globals, &imports, &identity, ModuleRole::Entry)
+                .into_checked(
+                    source,
+                    FIXITY,
+                    &globals,
+                    &imports,
+                    &identity,
+                    ModuleRole::Entry
+                )
+                .is_none()
+        );
+        // Same bytes, different operator table: an entry module's infix chain
+        // associates differently, so this is a different module to check.
+        assert!(
+            baked
+                .clone()
+                .into_checked(
+                    source,
+                    "custom-fixities",
+                    &globals,
+                    &imports,
+                    &identity,
+                    ModuleRole::Dependency
+                )
                 .is_none()
         );
         assert!(
             baked
                 .into_checked(
                     source,
+                    FIXITY,
                     &globals,
                     &imports,
                     &ComptimeModuleIdentity::Current,
@@ -539,6 +581,7 @@ mod tests {
         assert!(
             BakedCheck::check(
                 source,
+                FIXITY,
                 &parse_module(source).module,
                 &globals,
                 &ModuleImports::default(),
@@ -576,6 +619,7 @@ mod tests {
         let source = "{ 1 }\n";
         let baked = BakedCheck::check(
             source,
+            FIXITY,
             &parse_module(source).module,
             &globals,
             &ModuleImports::default(),
@@ -585,16 +629,40 @@ mod tests {
         .expect("module never calls a host callback");
         let mut reversed = globals.clone();
         reversed.comptime_fns.reverse();
+        // Both orders, against clones of one artifact. Testing only the
+        // reversed vector would let the original zip comparison pass whenever
+        // the baked HashMap happened to iterate in that same order; an
+        // order-sensitive comparison has to reject one of these two.
+        for (label, candidate) in [("registered", &globals), ("reversed", &reversed)] {
+            assert!(
+                baked
+                    .clone()
+                    .into_checked(
+                        source,
+                        FIXITY,
+                        candidate,
+                        &ModuleImports::default(),
+                        &ComptimeModuleIdentity::specifier("test"),
+                        ModuleRole::Dependency,
+                    )
+                    .is_some(),
+                "{label} order must match the same baked artifact"
+            );
+        }
+        // Order is not significant; the params themselves still are.
+        let mut respecified = globals.clone();
+        respecified.comptime_fns[1].1 = HostComptimeFnSpec::new(Rc::new(Unused), vec![0]);
         assert!(
             baked
                 .into_checked(
                     source,
-                    &reversed,
+                    FIXITY,
+                    &respecified,
                     &ModuleImports::default(),
                     &ComptimeModuleIdentity::specifier("test"),
                     ModuleRole::Dependency,
                 )
-                .is_some()
+                .is_none()
         );
     }
 }

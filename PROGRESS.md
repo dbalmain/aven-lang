@@ -1227,7 +1227,7 @@ the import environment, so `std/zones` — a **two-line** module — baked to 29
 Those three are now interned into side tables addressed by `u16`, with the
 per-module blob carrying only what is unique to it. Blob total went 4.04MB to
 1.61MB (−60%), binary growth from +5.0MB to **+2.6MB**, and decode on the
-`import-cli` path from ~10ms to 7.8ms, since a shared table is decoded once
+`import-cli` path from ~10ms to 7.5ms, since a shared table is decoded once
 rather than once per module. The guards still compare **assembled values**, not
 table indices — sharing is a storage decision and must not become the equality
 test, or two genuinely different contexts could alias.
@@ -1247,6 +1247,50 @@ reports GNU `time -f %e` at **10ms resolution**, so the `trivial` and
 change — they are the floor, not a measurement. Both also caught that an
 earlier brief of mine claimed 368 `.av` files when the tracked count is 364;
 the extra four were my own untracked scratch.
+
+### What the cross-model reviews found
+
+Each slice was implemented by one model and reviewed by a different one, and
+the reviewer was told not to re-run the gates. Four confirmed findings came
+back, none of them a wrong diagnostic on the shipped path, all four fixed here.
+
+**The guard did not cover how the module was parsed.** `BakedCheck::check`
+accepts any parsed module, including an entry one, but the guard compared
+source *bytes*. Equal bytes are not an equal AST: with a right-associative
+custom `**`, `s ** s ** "ok"` checks, and with a left-associative one the same
+bytes are `(s ** s) ** "ok"` and fail. Everything else in the guard --- host,
+imports, identity, role --- is unchanged between those two, so a blob baked
+from one would have been handed back for the other. Not reachable from the
+eleven bundled modules, because dependency parses always use the default table
+and the parser rejects dependency bare custom infix before consulting it; but
+the guard is a public contract and "every checking input" has to mean it. The
+blob now carries `ParseOutput::operator_fixity_fingerprint`, which already
+existed for exactly this purpose, and the guard compares it.
+
+**`aven check --timings` stopped counting the decode.** Decoding a blob was
+hoisted out of the timed closure, so the reported `check` phase excluded work
+the invocation still paid --- 7.5ms of it on an `import("std/cli")` program.
+The phase timings are the tool users reach for to answer "where did my build
+go", and a number that improves because the work moved out of frame is worse
+than no number. Decode is back inside the closure.
+
+**Two tests did not discriminate.** The registration-order test compared one
+reversed vector against a randomly-ordered baked `HashMap`, so the original zip
+bug passed it whenever the map happened to iterate in that same order --- a
+coin flip. It now checks the registered *and* reversed order against clones of
+one artifact, which an order-sensitive comparison cannot both satisfy, plus a
+changed parameter spec that must still be rejected. Both mutations were run
+against the fixed tests to confirm they fail.
+
+**A benchmark that measured warm and called it isolated.** The per-module decode
+figures shared one loader, so every module after the first read intern tables
+somebody else had already decoded, and the harness destroyed each artifact
+inside the timed region while its comment claimed destruction was excluded. It
+now reports warm and cold separately and holds each artifact past `elapsed()`.
+The correction is not cosmetic: `std/zones` was recorded at 0.15ms, which is
+its marginal cost once the tables are warm; the cost of being the first module
+a process decodes is **904µs**. The `import-cli` figure was measured on the
+cold path and survives at 7.5ms.
 
 ### The original finding
 

@@ -21,8 +21,7 @@ use crate::operator_config::{
 };
 use crate::{
     HostGlobals, OperatorConfigDiagnostic, OperatorConfigDiagnosticSource, OperatorManifestSource,
-    PhaseTimings, SemanticOutput, analyze_semantics_with_host_globals_and_imports_in,
-    runtime_type_bindings,
+    PhaseTimings, SemanticOutput, runtime_type_bindings,
 };
 
 #[derive(Debug)]
@@ -551,6 +550,7 @@ fn check_path_impl(
             && let Some(specifier) = library_specifier(&graph.nodes[node_id].path)
             && let Some(checked) = aven_check::baked::BakedCheck::check(
                 graph.nodes[node_id].file.source(),
+                &graph.nodes[node_id].parse.operator_fixity_fingerprint,
                 &graph.nodes[node_id].parse.module,
                 &node_globals,
                 &imports,
@@ -1029,34 +1029,31 @@ fn analyze_node(
     identity: ComptimeModuleIdentity,
     roots: &ModuleRoots,
 ) -> SemanticOutput {
-    let baked = library_specifier(&node.path)
-        .and_then(|specifier| roots.baked_std.as_ref()?.decode(&specifier));
-    let Some(baked) = baked else {
-        return analyze_semantics_with_host_globals_and_imports_in(
-            &node.parse,
-            globals,
-            imports,
-            identity,
-        );
-    };
+    // Decoding a baked blob is how this module's check result gets produced, so
+    // it belongs inside the timed closure. Hoisting it out left `--timings`
+    // reporting a check phase that excluded work the invocation still paid for.
     crate::analyze_semantics_with_check(&node.parse, || {
-        baked
-            .into_checked(
-                node.file.source(),
-                globals,
-                imports,
-                &identity,
-                node.parse.role,
-            )
-            .unwrap_or_else(|| {
-                aven_check::check_module_with_host_globals_and_imports_in_role(
-                    &node.parse.module,
+        let reused = library_specifier(&node.path)
+            .and_then(|specifier| roots.baked_std.as_ref()?.decode(&specifier))
+            .and_then(|baked| {
+                baked.into_checked(
+                    node.file.source(),
+                    &node.parse.operator_fixity_fingerprint,
                     globals,
                     imports,
-                    identity,
+                    &identity,
                     node.parse.role,
                 )
-            })
+            });
+        reused.unwrap_or_else(|| {
+            aven_check::check_module_with_host_globals_and_imports_in_role(
+                &node.parse.module,
+                globals,
+                imports,
+                identity,
+                node.parse.role,
+            )
+        })
     })
 }
 

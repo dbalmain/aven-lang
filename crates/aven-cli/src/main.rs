@@ -1944,57 +1944,80 @@ mod tests {
     fn measure_baked_std_decode() -> Result<()> {
         // Keep this measurement on the production blobs and decoder. Run with
         // --release --nocapture; it deliberately excludes process startup,
-        // parsing, context comparison, fresh checking and artifact destruction.
-        let loader = aven_compiler::BakedStd::new(&BAKED_STD);
-        let mut durations = Vec::new();
-        for _ in 0..7 {
-            let start = std::time::Instant::now();
-            let decoded = loader
-                .decode(std::hint::black_box("std/cli"))
-                .expect("std/cli is baked");
-            durations.push(start.elapsed());
-            std::hint::black_box(decoded);
+        // parsing, context comparison and fresh checking. Every decoded
+        // artifact is held past `elapsed()`, so destruction is excluded too.
+        //
+        // Warm and cold are different questions and one loader cannot answer
+        // both. A warm loader has already decoded the shared intern tables, so
+        // it reports the marginal cost of a module's own blob; a cold one pays
+        // for the tables that module references, which is what the first
+        // import of it in a process actually costs.
+        fn median(durations: &mut [std::time::Duration]) -> std::time::Duration {
+            durations.sort();
+            durations[durations.len() / 2]
         }
-        durations.sort();
-        eprintln!(
-            "std/cli via interned loader (warm tables after first): median {:?}",
-            durations[3]
-        );
+
+        let warm = aven_compiler::BakedStd::new(&BAKED_STD);
+        for module in BAKED_STD.modules {
+            std::hint::black_box(
+                warm.decode(module.specifier)
+                    .expect("baked specifier must decode"),
+            );
+        }
         for module in BAKED_STD.modules {
             let mut durations = Vec::new();
             for _ in 0..7 {
                 let start = std::time::Instant::now();
-                let decoded = loader
+                let decoded = warm
                     .decode(std::hint::black_box(module.specifier))
                     .expect("baked specifier must decode");
                 durations.push(start.elapsed());
                 std::hint::black_box(decoded);
             }
-            durations.sort();
             eprintln!(
-                "{}: blob {} bytes, median decode {:?}",
+                "{}: blob {} bytes, warm median decode {:?}",
                 module.specifier,
                 module.blob.len(),
-                durations[3]
+                median(&mut durations)
             );
         }
+
+        for module in BAKED_STD.modules {
+            let mut durations = Vec::new();
+            for _ in 0..7 {
+                let cold = aven_compiler::BakedStd::new(&BAKED_STD);
+                let start = std::time::Instant::now();
+                let decoded = cold
+                    .decode(std::hint::black_box(module.specifier))
+                    .expect("baked specifier must decode");
+                durations.push(start.elapsed());
+                std::hint::black_box(decoded);
+            }
+            eprintln!(
+                "{}: cold median decode {:?}",
+                module.specifier,
+                median(&mut durations)
+            );
+        }
+
         let import_cli = ["std/prelude", "std/array", "std/set", "std/cli"];
         let mut durations = Vec::new();
         for _ in 0..7 {
             let cold = aven_compiler::BakedStd::new(&BAKED_STD);
             let start = std::time::Instant::now();
-            for specifier in import_cli {
-                std::hint::black_box(
+            let decoded: Vec<_> = import_cli
+                .iter()
+                .map(|specifier| {
                     cold.decode(specifier)
-                        .expect("import-cli specifier is baked"),
-                );
-            }
+                        .expect("import-cli specifier is baked")
+                })
+                .collect();
             durations.push(start.elapsed());
+            std::hint::black_box(decoded);
         }
-        durations.sort();
         eprintln!(
             "import-cli path (prelude+array+set+cli, cold intern tables): median {:?}",
-            durations[3]
+            median(&mut durations)
         );
         Ok(())
     }
