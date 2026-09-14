@@ -995,13 +995,11 @@ fn discover_roots_for_host(path: &Path, host: &aven_host::Host) -> aven_compiler
     )
 }
 
-const BAKED_STD: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/baked_std.rs"));
+const BAKED_STD: aven_compiler::BakedStdTables =
+    include!(concat!(env!("OUT_DIR"), "/baked_std.rs"));
 
 fn with_baked_std(mut roots: aven_compiler::ModuleRoots) -> aven_compiler::ModuleRoots {
-    roots.baked_checks = BAKED_STD
-        .iter()
-        .map(|(name, bytes)| ((*name).to_owned(), *bytes))
-        .collect();
+    roots.baked_std = Some(aven_compiler::BakedStd::new(&BAKED_STD));
     roots
 }
 
@@ -1806,20 +1804,25 @@ mod tests {
             "Tree(a) = @{ @Leaf(a), @Branch(Array(Tree(a))) }\nvalue: Tree(Int) = @Leaf(1)\n",
         );
         aven_check::check_module(&unrelated.module);
+        let loader = aven_compiler::BakedStd::new(&BAKED_STD);
         let mut decoded = std::collections::HashMap::new();
-        for (specifier, bytes) in BAKED_STD.iter().rev() {
-            let module: aven_check::baked::BakedCheck = serde_json::from_slice(bytes)?;
-            decoded.insert(*specifier, module);
+        for module in BAKED_STD.modules.iter().rev() {
+            decoded.insert(
+                module.specifier,
+                loader
+                    .decode(module.specifier)
+                    .expect("every baked specifier must decode"),
+            );
         }
         let entry = Path::new(concat!(env!("OUT_DIR"), "/bake.av"));
         let mut roots = discover_roots(entry);
-        roots.baked_checks.clear();
+        roots.baked_std = None;
         let fresh = aven_compiler::bake_library_checks(
             entry,
             &aven_host::standard_check_host_globals(),
             &roots,
         )?;
-        assert_eq!(fresh.modules.len(), BAKED_STD.len());
+        assert_eq!(fresh.modules.len(), BAKED_STD.modules.len());
         assert_eq!(fresh.modules.len(), aven_host::standard_std_library().len());
         for (specifier, module) in fresh.modules {
             assert_eq!(
@@ -1832,26 +1835,167 @@ mod tests {
     }
 
     #[test]
+    fn baked_std_interns_shared_snapshots_once() -> Result<()> {
+        // Drive the generated artifact, not a restatement of intern_std_modules.
+        // Duplicate canonical JSON in a side table means bake stopped sharing
+        // by value. A host/imports/builtin_methods key on a module blob means
+        // bake stopped stripping interned fields.
+        assert_eq!(
+            BAKED_STD.hosts.len(),
+            1,
+            "every baked std module is checked with the same host globals"
+        );
+        assert!(
+            BAKED_STD.imports.len() < BAKED_STD.modules.len(),
+            "std import environments are shared across modules"
+        );
+        assert!(
+            BAKED_STD.methods.len() < BAKED_STD.modules.len(),
+            "std builtin-method environments are shared across modules"
+        );
+        assert_unique_interned(BAKED_STD.hosts, "host");
+        assert_unique_interned(BAKED_STD.imports, "imports");
+        assert_unique_interned(BAKED_STD.methods, "builtin methods");
+        for module in BAKED_STD.modules {
+            let value: serde_json::Value = serde_json::from_slice(module.blob)?;
+            assert!(
+                value.get("host").is_none(),
+                "{} blob must not embed interned host",
+                module.specifier
+            );
+            assert!(
+                value.get("imports").is_none(),
+                "{} blob must not embed interned imports",
+                module.specifier
+            );
+            assert!(
+                value
+                    .get("output")
+                    .and_then(|output| output.get("builtin_methods"))
+                    .is_none(),
+                "{} blob must not embed interned builtin_methods",
+                module.specifier
+            );
+            assert!(
+                usize::from(module.host) < BAKED_STD.hosts.len(),
+                "{} host index",
+                module.specifier
+            );
+            assert!(
+                usize::from(module.imports) < BAKED_STD.imports.len(),
+                "{} imports index",
+                module.specifier
+            );
+            assert!(
+                usize::from(module.import_methods) < BAKED_STD.methods.len(),
+                "{} import_methods index",
+                module.specifier
+            );
+            assert!(
+                usize::from(module.output_methods) < BAKED_STD.methods.len(),
+                "{} output_methods index",
+                module.specifier
+            );
+        }
+        for bytes in BAKED_STD.imports {
+            let value: serde_json::Value = serde_json::from_slice(bytes)?;
+            assert!(
+                value.get("builtin_methods").is_none(),
+                "interned imports must reference builtin_methods by table index"
+            );
+        }
+        Ok(())
+    }
+
+    fn assert_unique_interned(blobs: &[&[u8]], what: &str) {
+        let mut seen = std::collections::HashSet::new();
+        for bytes in blobs {
+            let value: serde_json::Value =
+                serde_json::from_slice(bytes).expect("interned snapshot is JSON");
+            let canonical = serde_json::to_string(&canonical_json(value))
+                .expect("canonical interned JSON serializes");
+            assert!(
+                seen.insert(canonical),
+                "{what} intern table has a duplicate snapshot"
+            );
+        }
+    }
+
+    fn canonical_json(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut entries = map.into_iter().collect::<Vec<_>>();
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+                serde_json::Value::Object(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key, canonical_json(value)))
+                        .collect(),
+                )
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(canonical_json).collect())
+            }
+            other => other,
+        }
+    }
+
+    #[test]
     fn measure_baked_std_decode() -> Result<()> {
         // Keep this measurement on the production blobs and decoder. Run with
         // --release --nocapture; it deliberately excludes process startup,
         // parsing, context comparison, fresh checking and artifact destruction.
-        for (specifier, bytes) in BAKED_STD {
+        let loader = aven_compiler::BakedStd::new(&BAKED_STD);
+        let mut durations = Vec::new();
+        for _ in 0..7 {
+            let start = std::time::Instant::now();
+            let decoded = loader
+                .decode(std::hint::black_box("std/cli"))
+                .expect("std/cli is baked");
+            durations.push(start.elapsed());
+            std::hint::black_box(decoded);
+        }
+        durations.sort();
+        eprintln!(
+            "std/cli via interned loader (warm tables after first): median {:?}",
+            durations[3]
+        );
+        for module in BAKED_STD.modules {
             let mut durations = Vec::new();
             for _ in 0..7 {
                 let start = std::time::Instant::now();
-                let decoded: aven_check::baked::BakedCheck =
-                    serde_json::from_slice(std::hint::black_box(bytes))?;
+                let decoded = loader
+                    .decode(std::hint::black_box(module.specifier))
+                    .expect("baked specifier must decode");
                 durations.push(start.elapsed());
                 std::hint::black_box(decoded);
             }
             durations.sort();
             eprintln!(
-                "{specifier}: {} bytes, median decode {:?}",
-                bytes.len(),
+                "{}: blob {} bytes, median decode {:?}",
+                module.specifier,
+                module.blob.len(),
                 durations[3]
             );
         }
+        let import_cli = ["std/prelude", "std/array", "std/set", "std/cli"];
+        let mut durations = Vec::new();
+        for _ in 0..7 {
+            let cold = aven_compiler::BakedStd::new(&BAKED_STD);
+            let start = std::time::Instant::now();
+            for specifier in import_cli {
+                std::hint::black_box(
+                    cold.decode(specifier)
+                        .expect("import-cli specifier is baked"),
+                );
+            }
+            durations.push(start.elapsed());
+        }
+        durations.sort();
+        eprintln!(
+            "import-cli path (prelude+array+set+cli, cold intern tables): median {:?}",
+            durations[3]
+        );
         Ok(())
     }
 

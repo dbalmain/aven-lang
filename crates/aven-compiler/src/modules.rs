@@ -105,7 +105,7 @@ pub struct ModuleRoots {
     /// name -> module specifier -> embedded source text. Empty by default.
     pub libraries: HashMap<String, LibraryModules>,
     /// Checked embedded modules from this build, decoded only when visited.
-    pub baked_checks: HashMap<String, &'static [u8]>,
+    pub baked_std: Option<aven_check::baked::BakedStd>,
     /// Canonical embedded module specifiers allowed to publish ambient builtin
     /// methods. Filesystem modules and ordinary library registrations never
     /// acquire this trust implicitly.
@@ -140,7 +140,7 @@ impl ModuleRoots {
             home,
             filesystem: true,
             libraries: HashMap::new(),
-            baked_checks: HashMap::new(),
+            baked_std: None,
             trusted_ambient_modules: HashSet::new(),
             trusted_prelude_modules: HashSet::new(),
             library_only_global_names: HashSet::new(),
@@ -1029,9 +1029,9 @@ fn analyze_node(
     identity: ComptimeModuleIdentity,
     roots: &ModuleRoots,
 ) -> SemanticOutput {
-    let bytes =
-        library_specifier(&node.path).and_then(|specifier| roots.baked_checks.get(&specifier));
-    let Some(bytes) = bytes else {
+    let baked = library_specifier(&node.path)
+        .and_then(|specifier| roots.baked_std.as_ref()?.decode(&specifier));
+    let Some(baked) = baked else {
         return analyze_semantics_with_host_globals_and_imports_in(
             &node.parse,
             globals,
@@ -1040,10 +1040,6 @@ fn analyze_node(
         );
     };
     crate::analyze_semantics_with_check(&node.parse, || {
-        // include_bytes of this build's own serde output. A decode failure is a
-        // bake-schema bug, not user input; falling back would hide it.
-        let baked: aven_check::baked::BakedCheck = serde_json::from_slice(bytes)
-            .expect("embedded checked module must decode with the matching build schema");
         baked
             .into_checked(
                 node.file.source(),

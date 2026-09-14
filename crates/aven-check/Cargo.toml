@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
 aven-core.workspace = true
 aven-eval.workspace = true
 aven-parser.workspace = true

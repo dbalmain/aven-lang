@@ -145,6 +145,7 @@ dependencies = [
  "aven-eval",
  "aven-parser",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
