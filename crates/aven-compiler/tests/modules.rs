@@ -3715,3 +3715,33 @@ fn imported_comptime_helper_respects_initializer_order() {
         .expect("load late");
     assert_no_errors(&late.reports);
 }
+
+#[test]
+fn graph_phase_timings_do_not_overlap() {
+    // `parse` was reported as the whole elapsed time, so it contained `check`
+    // and the breakdown summed to more than the total it was a breakdown of.
+    // A multi-module graph is the only shape that shows it: the single-module
+    // path always timed the phases separately.
+    let dir = TempDir::new("phase-timings");
+    write(dir.path(), "leaf.av", "value = \"leaf\"\n{ value }\n");
+    write(
+        dir.path(),
+        "main.av",
+        "leaf = import(\"./leaf\")\n{ value: leaf.value }\n",
+    );
+
+    let output = check_path_with_host_globals(&dir.path().join("main.av"), &HostGlobals::default())
+        .expect("graph checks");
+    let timings = output.timings;
+    let name = timings.name.expect("name analysis ran");
+    let check = timings.check.expect("checking ran");
+
+    assert!(
+        timings.parse + name + check <= timings.total,
+        "phases must partition the total, got parse {:?} + name {:?} + check {:?} > total {:?}",
+        timings.parse,
+        name,
+        check,
+        timings.total
+    );
+}

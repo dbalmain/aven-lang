@@ -1292,6 +1292,32 @@ its marginal cost once the tables are warm; the cost of being the first module
 a process decodes is **904µs**. The `import-cli` figure was measured on the
 cold path and survives at 7.5ms.
 
+### The phase breakdown that did not add up
+
+Found while verifying the fix above, and older than any of this work. On a
+multi-module program `parse` was set to `total_start.elapsed()` --- the whole
+run --- while `name` and `check` were real sums across the graph. So `parse`
+*contained* `check`, the four numbers summed to more than the total they were a
+breakdown of, and `parse` always printed the same figure as `total`:
+
+```
+parse: 14.786 ms    parse:  1.531 ms
+name:   0.150 ms    name:   0.153 ms
+check: 10.673 ms    check: 10.308 ms
+total: 14.786 ms    total: 14.627 ms
+```
+
+`parse` is now the time to load the graph, which is where every module is read,
+resolved and parsed, and the only front-end work that happens before checking
+starts. The parts no longer overlap and no longer cover the total: the ~2.6ms
+remainder is graph bookkeeping --- export computation, provenance, diagnostic
+merging --- which is a real cost this breakdown had never shown.
+
+The single-module path was always right, which is why this survived: it times
+`parse_source` directly. Only a program with imports takes the graph path, and
+`crates/aven-compiler/tests/modules.rs` now pins `parse + name + check <= total`
+on one.
+
 ### The original finding
 
 Recorded, not fixed. Prompted by a real program: the Cox-trigrams course

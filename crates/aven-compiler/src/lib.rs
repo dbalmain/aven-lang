@@ -1052,7 +1052,7 @@ where
     }
 }
 
-fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
+pub(crate) fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
     let start = Instant::now();
     let value = f();
     (value, start.elapsed())

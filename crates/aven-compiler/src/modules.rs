@@ -525,7 +525,12 @@ fn check_path_impl(
     mut baked: Option<&mut Vec<(String, aven_check::baked::BakedCheck)>>,
 ) -> io::Result<ModuleCheckOutput> {
     let total_start = Instant::now();
-    let graph = ModuleGraph::load(path, overlay, entry_parse, operator_fixities, roots)?;
+    // Loading the graph is where every module is read, resolved and parsed,
+    // and it is the only front-end work that happens before checking starts.
+    // Reporting the whole elapsed time as `parse` made it contain `check`.
+    let (graph, parse_duration) =
+        crate::timed(|| ModuleGraph::load(path, overlay, entry_parse, operator_fixities, roots));
+    let graph = graph?;
     let mut diagnostics = parse_diagnostics(&graph);
     let mut exports = vec![CheckExport::HasErrors; graph.nodes.len()];
     let mut export_provenance = vec![ExportProvenanceMap::new(); graph.nodes.len()];
@@ -662,7 +667,7 @@ fn check_path_impl(
         reports,
         nodes,
         timings: PhaseTimings {
-            parse: total_start.elapsed(),
+            parse: parse_duration,
             name: name_duration,
             check: check_duration,
             total: total_start.elapsed(),
