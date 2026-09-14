@@ -186,7 +186,7 @@ pub fn intern_std_modules(
     Ok(InternedStdModules {
         hosts: hosts
             .iter()
-            .map(|host| serde_json::to_vec(host))
+            .map(serde_json::to_vec)
             .collect::<Result<_, _>>()?,
         imports: shells
             .iter()
@@ -194,7 +194,7 @@ pub fn intern_std_modules(
             .collect::<Result<_, _>>()?,
         methods: methods
             .iter()
-            .map(|methods| serde_json::to_vec(methods))
+            .map(serde_json::to_vec)
             .collect::<Result<_, _>>()?,
         modules: interned,
     })
