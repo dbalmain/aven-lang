@@ -12,6 +12,7 @@ use aven_parser::{
     resolve_local_definition, walk_expr_children,
 };
 
+pub use aven_check::baked::{BakedStd, BakedStdModule, BakedStdTables, intern_std_modules};
 pub use aven_check::{
     BuiltinMethodEnvironment, COMPTIME_BUILTIN_FUNCTIONS, FunctionParams, FunctionSignature,
     HostGlobals, InferredType, ModuleImports as CheckModuleImports, NamedFamilyType,

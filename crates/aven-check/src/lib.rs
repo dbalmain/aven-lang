@@ -60,6 +60,10 @@ pub struct CheckOutput {
     pub named_family_aliases: HashMap<String, String>,
     /// Source-defined builtin methods visible after this module was checked.
     /// Ambient graph wiring seals and forwards this environment to user nodes.
+    ///
+    /// Baked module blobs store this in an intern table; missing JSON
+    /// deserializes empty and the loader fills it from that table.
+    #[serde(default, skip_serializing)]
     pub builtin_methods: BuiltinMethodEnvironment,
     /// Known-target value expressions that must materialize a slot-record at
     /// runtime. The evaluator applies these conversions after evaluating the
@@ -325,6 +329,8 @@ pub struct ModuleImports {
     prelude_requires_elaboration: bool,
     #[serde(with = "baked::map_entries")]
     recursive_type_unfoldings: HashMap<RecursiveTypeId, Type>,
+    /// Baked import snapshots intern this beside the rest of the environment.
+    #[serde(default, skip_serializing)]
     builtin_methods: BuiltinMethodEnvironment,
     trusted_builtin_method_source: bool,
 }

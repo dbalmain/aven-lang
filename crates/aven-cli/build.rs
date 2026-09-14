@@ -42,13 +42,41 @@ fn main() -> Result<(), Box<dyn Error>> {
         baked.output.reports
     );
     let check_duration = start.elapsed();
-    let mut generated = String::from("&[\n");
-    for (index, (specifier, checked)) in baked.modules.iter().enumerate() {
-        let file = directory.join(format!("std-{index}.json"));
-        fs::write(&file, serde_json::to_vec(checked)?)?;
-        generated.push_str(&format!("({specifier:?}, include_bytes!({:?})),\n", file));
+    let interned = aven_compiler::intern_std_modules(&baked.modules)?;
+    let mut generated = String::from("aven_compiler::BakedStdTables {\n");
+    generated.push_str("    hosts: &[");
+    for (index, bytes) in interned.hosts.iter().enumerate() {
+        let file = directory.join(format!("host-{index}.json"));
+        fs::write(&file, bytes)?;
+        generated.push_str(&format!("include_bytes!({:?}), ", file));
     }
-    generated.push_str("]\n");
+    generated.push_str("],\n    imports: &[");
+    for (index, bytes) in interned.imports.iter().enumerate() {
+        let file = directory.join(format!("imports-{index}.json"));
+        fs::write(&file, bytes)?;
+        generated.push_str(&format!("include_bytes!({:?}), ", file));
+    }
+    generated.push_str("],\n    methods: &[");
+    for (index, bytes) in interned.methods.iter().enumerate() {
+        let file = directory.join(format!("methods-{index}.json"));
+        fs::write(&file, bytes)?;
+        generated.push_str(&format!("include_bytes!({:?}), ", file));
+    }
+    generated.push_str("],\n    modules: &[\n");
+    for (index, module) in interned.modules.iter().enumerate() {
+        let file = directory.join(format!("std-{index}.json"));
+        fs::write(&file, &module.blob)?;
+        generated.push_str(&format!(
+            "        aven_compiler::BakedStdModule {{ specifier: {:?}, blob: include_bytes!({:?}), host: {}, imports: {}, import_methods: {}, output_methods: {} }},\n",
+            module.specifier,
+            file,
+            module.host,
+            module.imports,
+            module.import_methods,
+            module.output_methods,
+        ));
+    }
+    generated.push_str("    ],\n}\n");
     fs::write(directory.join("baked_std.rs"), generated)?;
     fs::write(
         directory.join("baked-timing.txt"),
