@@ -57,7 +57,18 @@ unlabelled = cli.define({ src: cli.positional(cli.text) })
   separatorAfterOption: () =>
     test.expectEq(cli.parse(placed, ["-v", "--", "ab", "3"]), @Ok({ pattern: "ab", count: 3, verbose: true }))
   positionalNamesDefaultToTheField: () =>
-    test.expectTrue(cli.help(unlabelled).contains("Usage: tool [options] <src>"))
+    test.expectTrue(cli.help(unlabelled).contains("Usage: tool <src>"))
+  # A tool with no flags accepts no options, so neither the heading nor the
+  # usage placeholder may claim otherwise.
+  noOptionsHasNoOptionsSection: () =>
+    usage = cli.help(unlabelled)
+    test.expectTrue(!usage.contains("Options:"))?^
+    test.expectTrue(!usage.contains("[options]"))?^
+    test.expectTrue(usage.startsWith("Usage: tool <src>\n\nArguments:\n  <src>  "))
+  # A description is the only thing entitled to the line under the usage; an
+  # omitted one must not leave that line blank.
+  descriptionSitsUnderTheUsageLine: () =>
+    test.expectTrue(cli.help(aliased).startsWith("Usage: tool [options]\nExample tool\n\nOptions:"))
   positionalHelp: () =>
     usage = cli.help(placed)
     test.expectTrue(usage.contains("Usage: match [options] <PATTERN> <COUNT>"))?^

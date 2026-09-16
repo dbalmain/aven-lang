@@ -136,10 +136,18 @@ renderHelp = (options: Array(Meta), positionals: Array(Meta), info): Text =>
   argumentText = positionals.isEmpty() ?>
     true => ""
     false => "\n\nArguments:\n${positionals.map((p) => "  <${p.valueName}>  ${p.help}").joinWith("\n")}"
+  # A tool with no flags has no options section and takes no options, so
+  # neither the heading nor the usage placeholder belongs in its help.
+  optionText = options.isEmpty() ?>
+    true => ""
+    false => "\n\nOptions:\n${lines.joinWith("\n")}"
+  optionSlot = options.isEmpty() ?> true => "", false => " [options]"
   exampleText = m.examples.isEmpty() ?>
     true => ""
     false => "\n\nExamples:\n${m.examples.map((e) => "  ${e}").joinWith("\n")}"
-  "Usage: ${m.name} [options]${operands}\n${m.description}${argumentText}\n\nOptions:\n${lines.joinWith("\n")}${exampleText}"
+  # An omitted description is no description, not a blank line under the usage.
+  descriptionText = m.description.isEmpty() ?> true => "", false => "\n${m.description}"
+  "Usage: ${m.name}${optionSlot}${operands}${descriptionText}${argumentText}${optionText}${exampleText}"
 
 # Capture the static key set and normalize metadata at definition time. Calling
 # the returned parser allocates only token data and the typed result record.
@@ -187,7 +195,8 @@ renderCommandHelp = (commands: Array(CommandMeta), info): Text =>
   exampleText = m.examples.isEmpty() ?>
     true => ""
     false => "\n\nExamples:\n${m.examples.map((e) => "  ${e}").joinWith("\n")}"
-  "Usage: ${m.name} <command> [options]\n${m.description}\n\nCommands:\n${lines.joinWith("\n")}${exampleText}"
+  descriptionText = m.description.isEmpty() ?> true => "", false => "\n${m.description}"
+  "Usage: ${m.name} <command> [options]${descriptionText}\n\nCommands:\n${lines.joinWith("\n")}${exampleText}"
 
 # Parser functions have the same argv input, and their closed tagged results
 # join into one variant. Every branch retains its command-specific payload.
